@@ -1,0 +1,37 @@
+﻿  Collision_Detection.cpp
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(8): error C2059: syntax error: 'public'
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(118): error C2143: syntax error: missing ';' before '}'
+w:\gamestudio\gs_engine\gs_engine\collision_detection.cpp(12): error C2065: 'Box': undeclared identifier
+w:\gamestudio\gs_engine\gs_engine\collision_detection.cpp(12): error C2146: syntax error: missing ')' before identifier 'Box1'
+w:\gamestudio\gs_engine\gs_engine\collision_detection.cpp(13): error C2143: syntax error: missing ';' before '{'
+w:\gamestudio\gs_engine\gs_engine\collision_detection.cpp(13): error C2447: '{': missing function header (old-style formal list?)
+w:\gamestudio\gs_engine\gs_engine\collision_detection.cpp(19): fatal error C1004: unexpected end-of-file found
+  GS_DataTypes.cpp
+  GS_Math.cpp
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(8): error C2059: syntax error: 'public'
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(118): error C2143: syntax error: missing ';' before '}'
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(27): error C2143: syntax error: missing ';' before 'if'
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(103): error C2084: function 'Vector3 GSMath::operator *(const Vector3 &,float)' already has a body
+  w:\gamestudio\gs_engine\gs_engine\gs_math.h(59): note: see previous definition of '*'
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(119): warning C4244: 'return': conversion from 'double' to 'float', possible loss of data
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(124): warning C4244: 'return': conversion from 'double' to 'float', possible loss of data
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(166): error C4578: 'abs': conversion from 'const float' to 'int', possible loss of data (Did you mean to call 'fabsf' or to #include <cmath>?)
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(166): error C2397: conversion from 'int' to 'float' requires a narrowing conversion
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(166): warning C4244: 'initializing': conversion from 'int' to 'float', possible loss of data
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(171): error C4578: 'abs': conversion from 'const float' to 'int', possible loss of data (Did you mean to call 'fabsf' or to #include <cmath>?)
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(171): error C2397: conversion from 'int' to 'float' requires a narrowing conversion
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(171): warning C4244: 'initializing': conversion from 'int' to 'float', possible loss of data
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(210): error C2801: 'operator =' must be a non-static member
+w:\gamestudio\gs_engine\gs_engine\gs_math.cpp(220): error C2801: 'operator =' must be a non-static member
+  GS_Object.cpp
+  PhysicsEngine.cpp
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(8): error C2059: syntax error: 'public'
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(118): error C2143: syntax error: missing ';' before '}'
+w:\gamestudio\gs_engine\gs_engine\physicsengine.cpp(19): error C2511: 'Vector3 PhysicsEngine::CalculateVelocity(Vector3,Vector3,float)': overloaded member function not found in 'PhysicsEngine'
+  w:\gamestudio\gs_engine\gs_engine\physicsengine.h(4): note: see declaration of 'PhysicsEngine'
+w:\gamestudio\gs_engine\gs_engine\physicsengine.cpp(24): error C2511: 'Vector3 PhysicsEngine::CalculateDisplacement(Vector3,Vector3,float)': overloaded member function not found in 'PhysicsEngine'
+  w:\gamestudio\gs_engine\gs_engine\physicsengine.h(4): note: see declaration of 'PhysicsEngine'
+  Query.cpp
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(8): error C2059: syntax error: 'public'
+w:\gamestudio\gs_engine\gs_engine\gs_math.h(118): error C2143: syntax error: missing ';' before '}'
+  Generating Code...

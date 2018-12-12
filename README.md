@@ -1,1 +1,1 @@
-# Game-Studio
+# Game Studio

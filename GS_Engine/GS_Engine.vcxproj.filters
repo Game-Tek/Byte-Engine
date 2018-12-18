@@ -11,30 +11,51 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="GS_DataTypes.h">
+    <ClInclude Include="src\Game Studio\Application.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="GS_Math.h">
+    <ClInclude Include="src\Game Studio\Core.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="GS_Object.h">
+    <ClInclude Include="src\Game Studio\Logger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Logger.h">
+    <ClInclude Include="src\GameStudio.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="GSArray.h">
+    <ClInclude Include="src\Game Studio\EntryPoint.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Clock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\String.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Array.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Object.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\DataTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="GS_Math.cpp">
+    <ClCompile Include="src\Game Studio\Application.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="GS_Object.cpp">
+    <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Application.cpp">
+    <ClCompile Include="src\Game Studio\Object.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Math.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

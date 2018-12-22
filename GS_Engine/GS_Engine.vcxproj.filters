@@ -53,6 +53,15 @@
     <ClInclude Include="src\Game Studio\Window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\VAO.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EBO.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\VBO.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\Game Studio\Buffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -76,7 +85,13 @@
     <ClCompile Include="src\Game Studio\Window.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Buffer.cpp">
+    <ClCompile Include="src\Game Studio\VAO.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\EBO.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\VBO.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

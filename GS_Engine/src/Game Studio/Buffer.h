@@ -5,7 +5,8 @@
 GS_CLASS Buffer
 {
 public:
-	Buffer();
-	virtual ~Buffer();
-};
+	void Bind();
 
+protected:
+	unsigned int Id;
+};

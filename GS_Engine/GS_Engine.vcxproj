@@ -76,7 +76,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -88,6 +88,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Buffer.h" />
+    <ClInclude Include="src\Game Studio\EBO.h" />
     <ClInclude Include="src\Game Studio\GSArray.hpp" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
@@ -102,15 +103,19 @@
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.hpp" />
     <ClInclude Include="src\GameStudio.h" />
+    <ClInclude Include="src\Game Studio\VAO.h" />
+    <ClInclude Include="src\Game Studio\VBO.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Buffer.cpp" />
+    <ClCompile Include="src\Game Studio\EBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Math.cpp" />
     <ClCompile Include="src\Game Studio\Application.cpp" />
     <ClCompile Include="src\Game Studio\Object.cpp" />
     <ClCompile Include="src\Game Studio\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Window.cpp" />
+    <ClCompile Include="src\Game Studio\VAO.cpp" />
+    <ClCompile Include="src\Game Studio\VBO.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -5,6 +5,7 @@
 
 Renderer::Renderer()
 {
+	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 }
 
 Renderer::~Renderer()

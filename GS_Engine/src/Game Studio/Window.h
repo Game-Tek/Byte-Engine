@@ -10,6 +10,7 @@ public:
 	Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName);
 	~Window();
 
+	void SetVsync(bool Enable);
 private:
 	GLFWwindow * GLWindow;
 

@@ -2,24 +2,22 @@
 
 #include "Core.h"
 
-#include "Array.h"
-
+#include "GSArray.hpp"
 
 GS_CLASS String
 {
 public:
 	String(const char * In);
-
 	~String();
 
 private:
-	Array<char> * Arrayptr;
+	GArray<char> * Arrayptr;
 };
 
 
 String::String(const char * In)
 {
-	Arrayptr = new Array<char>(5);
+	Arrayptr = new GArray<char>(5);
 }
 
 String::~String()

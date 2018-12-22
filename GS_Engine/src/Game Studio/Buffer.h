@@ -2,10 +2,10 @@
 
 #include "Core.h"
 
-GS_CLASS Renderer
+GS_CLASS Buffer
 {
 public:
-	Renderer();
-	~Renderer();
+	Buffer();
+	virtual ~Buffer();
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DataTypes.h"
+#include "Matrix4x4.h"
 
 namespace GS
 {
@@ -65,4 +66,12 @@ namespace GS
 
 	//Returns true if all of Vector A's components are bigger than B's.
 	static bool AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B);
+
+	//////////////////////////////////////////////////////////////
+	//						MATRIX MATH							//
+	//////////////////////////////////////////////////////////////
+
+	Matrix4x4 Translate(const Vector3 & Vector);
+	Matrix4x4 Rotate(const Quat & A);
 };
+

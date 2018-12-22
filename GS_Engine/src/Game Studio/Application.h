@@ -2,16 +2,29 @@
 
 #include "Core.h"
 
+#include "Clock.h"
+
+#include "Window.h"
+
+#include "Renderer.h"
+
 namespace GS
 {
 	GS_CLASS Application
 	{
-		public:
-			Application();
+	public:
+		Application();
+		
+		virtual ~Application();
 
-			virtual ~Application();
+		void Run();
 
-			void Run();
+	private:
+		Clock * ClockInstance;
+
+		Window * WindowInstance;
+
+		Renderer * RendererInstance;
 	};
 
 	Application * CreateApplication();

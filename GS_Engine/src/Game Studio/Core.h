@@ -1,6 +1,8 @@
 #pragma once
 
-#include "Logger.h"
+//Class setup simplification.
+
+#define GS_CLASS class GS_API
 
 //Library import/export.
 
@@ -12,17 +14,10 @@
 	#endif
 #endif
 
-
-//Class setup simplification.
-
-#define GS_CLASS class GS_API
-
-
 //Assert
 #ifdef GS_DEBUG
 	#define GS_ASSERT(func) func;\
-							(!(func)) ? GS_LOG_ERROR("Function: ", #func, "\n", "File ", __FILE__, "\n", "Line: ", __LINE__)
-	#else
+							if (!(func))
+#else
 	#define GS_ASSERT(func) func;
 #endif
-

@@ -1,32 +1,27 @@
 #include "Application.h"
 
-#include "Clock.h"
-#include "Renderer/Renderer.h"
-
 namespace GS
 {
 	Application::Application()
 	{
-		//FileManagerInstace = new FileManager();
-		//EventDispatcherInstance = new EventDispatcher();
-		//ClockInstance = new Clock();
-		//RendererInstance = new Renderer();
-		//SoundInstance = new Sound();
-		//EntityManager = new EntityManager();
+		ClockInstance = new Clock();
+		WindowInstance = new Window(1280, 720, "Game Studio");
+		RendererInstance = new Renderer();
 	}
 
 	Application::~Application()
 	{
-		//delete ClockInstance;
-		//delete RendererInstance;
-		//delete EventDispatcherInstance;
+		delete ClockInstance;
+		delete WindowInstance;
+		delete RendererInstance;
 	}
 
 	void Application::Run()
 	{
 		while (true);
 		{
-			//RendererInstance::Update();
+			ClockInstance->Update();
+			RendererInstance->Update(ClockInstance->GetDeltaTime());
 		}	
 	}
 }

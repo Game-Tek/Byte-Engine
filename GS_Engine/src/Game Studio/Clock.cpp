@@ -11,24 +11,28 @@ Clock::Clock()
 
 	QueryPerformanceFrequency(& WinProcessorFrequency);
 
-	ProcessorFrequency = WinProcessorFrequency.QuadPart;
+	ProcessorFrequency = (unsigned long)WinProcessorFrequency.QuadPart;
 
 
-	SYSTEMTIME * WinTimeStructure;
+	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(WinTimeStructure);
+	GetLocalTime(& WinTimeStructure);
 
-	Year = WinTimeStructure->wYear;
+	Year = WinTimeStructure.wYear;
 
-	Month = (Months)WinTimeStructure->wMonth;
+	Month = (Months)WinTimeStructure.wMonth;
 
-	DayOfMonth = WinTimeStructure->wDay;
+	DayOfMonth = WinTimeStructure.wDay;
 
-	DayOfWeek = (WinTimeStructure->wDayOfWeek == 0) ? Sunday : (Days)WinTimeStructure->wDayOfWeek;
+	DayOfWeek = (WinTimeStructure.wDayOfWeek == 0) ? Sunday : (Days)WinTimeStructure.wDayOfWeek;
 #endif
 }
 
 Clock::~Clock()
+{
+}
+
+void Clock::Update()
 {
 }
 

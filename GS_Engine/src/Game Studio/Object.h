@@ -9,7 +9,7 @@ GS_CLASS Object
 public:
 	//Methods
 	Object();
-	~Object();
+	virtual ~Object();
 
 	void OnUpdate();
 

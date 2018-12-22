@@ -2,6 +2,8 @@
 
 #include "Core.h"
 
+#include "EngineSystem.h"
+
 struct Time
 {
 	unsigned short Hour;
@@ -35,12 +37,13 @@ enum Months {
 	December,
 };
 
-GS_CLASS Clock
+GS_CLASS Clock : public ESystem
 {
 public:
 	Clock();
-
 	~Clock();
+
+	virtual void Update();
 
 	//CLOCK FUNCTIONALITY GETTERS
 

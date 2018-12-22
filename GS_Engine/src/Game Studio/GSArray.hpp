@@ -5,12 +5,12 @@
 const int DEFAULT_ARRAY_SIZE = 5;
 
 template <typename ArrayType>
-GS_CLASS Array
+GS_CLASS GArray
 {
 public:
-	Array(int N);
-	~Array();
-	void AddElement(int Index, ArrayType Element);
+	GArray(int N);
+	~GArray();
+	void AddElement(int Index, const ArrayType & Element);
 	void RemoveElement(int Index, bool AdjustStack);
 	int GetLastIndex();
 	int GetArrayLength();
@@ -21,32 +21,31 @@ private:
 	int TotalNumberOfElements;																		//The size of the array including the unnocuppied elements. NOT BASE 0.
 
 	ArrayType * AllocateNewArray(int N);
-	void FillArray(ArrayType * ArrayToFill, ArrayType * SourceArray);
+	void FillArray(ArrayType ArrayToFill[], ArrayType SourceArray[]);
 };
 
 template <typename ArrayType>
-Array<ArrayType>::Array(int N)
+GArray<ArrayType>::GArray(int N)
 {
 	Arrayptr = AllocateNewArray((N < DEFAULT_ARRAY_SIZE) ? DEFAULT_ARRAY_SIZE : N);
 }
 
 template <typename ArrayType>
-Array<ArrayType>::~Array()
+GArray<ArrayType>::~GArray()
 {
 	delete[] Arrayptr;
 }
 
-
-template<typename ArrayType>
-inline void Array<ArrayType>::AddElement(int Index, ArrayType Element)
+template <typename ArrayType>
+void GArray<ArrayType>::AddElement(int Index, const ArrayType & Element)
 {
 	if (NumberOfElements + 1 > TotalNumberOfElements)													//We check if adding a new element will exceed the allocated elements.
 	{
 		ArrayType * NewArray = AllocateNewArray(NumberOfElements + 1 + DEFAULT_ARRAY_SIZE);				//We allocate a new array to a temp pointer.
 
-		FillArray(NewArray, Array);																		//We fill the new array with the contents of the old/current one.
+		FillArray(NewArray, Arrayptr);																	//We fill the new array with the contents of the old/current one.
 
-		delete[] Arrayptr;																				//We delete the old array which Array is pointing to.
+		delete[] Arrayptr;																				//We delete the old array which Arrayptr is pointing to.
 
 		Arrayptr = NewArray;																			//We set the Array pointer to the recently created and filled array.
 
@@ -55,7 +54,7 @@ inline void Array<ArrayType>::AddElement(int Index, ArrayType Element)
 
 	else
 	{
-		Array[NumberOfElements] = Element;																//We set the last index + 1 as the Element parameter.
+		Arrayptr[NumberOfElements] = Element;																//We set the last index + 1 as the Element parameter.
 	}
 
 	NumberOfElements += 1;																				//We update the number of elements count.
@@ -63,41 +62,45 @@ inline void Array<ArrayType>::AddElement(int Index, ArrayType Element)
 	return;
 }
 
-template<typename ArrayType>
-inline void Array<ArrayType>::RemoveElement(int Index, bool AdjustStack)
+template <typename ArrayType>
+void GArray<ArrayType>::RemoveElement(int Index, bool AdjustStack)
 {
 	if (AdjustStack)
 	{
-		for (i = Index; i < GetArrayLength(); i++)
+		for (unsigned short i = Index; i < GetArrayLength(); i++)
 		{
 
 		}
 	}
+
+	return;
 }
 
-template<typename ArrayType>
-inline int Array<ArrayType>::GetLastIndex()
+template <typename ArrayType>
+int GArray<ArrayType>::GetLastIndex()
 {
 	return NumberOfElements - 1;
 }
 
-template<typename ArrayType>
-inline int Array<ArrayType>::GetArrayLength()
+template <typename ArrayType>
+int GArray<ArrayType>::GetArrayLength()
 {
 	return NumberOfElements;
 }
 
-template<typename ArrayType>
-inline ArrayType * Array<ArrayType>::AllocateNewArray(int N)
+template <typename ArrayType>
+ArrayType * GArray<ArrayType>::AllocateNewArray(int N)
 {
-	return new New[N];
+	return new ArrayType[N];
 }
 
-template<typename ArrayType>
-inline void Array<ArrayType>::FillArray(ArrayType * ArrayToFill, ArrayType * SourceArray)
+template <typename ArrayType>
+void GArray<ArrayType>::FillArray(ArrayType ArrayToFill[], ArrayType SourceArray[])
 {
-	for (i = 0; i < NumberOfElements, i++)
+	for (unsigned short i = 0; i < NumberOfElements; i++)
 	{
 		ArrayToFill[i] = SourceArray[i];
 	}
+
+	return;
 }

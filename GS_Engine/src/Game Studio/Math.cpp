@@ -1,5 +1,9 @@
 #include "Math.h"
 
+#include "math.h"
+
+const float PI = 3.14159265359f;
+
 //INLINE STATIC	
 
 //////////////////////////////////////////////////////////////
@@ -35,6 +39,11 @@ static float SquareRoot(float A)
 	return X;
 }
 
+static float Sine(float A)
+{
+	return A - (A * A * A) / 6 + (A * A * A * A * A) / 120 - (A * A * A * A * A * A * A) / 5040;
+}
+
 static float Abs(float A)
 {
 	return A > 0 ? A : -A;
@@ -53,6 +62,16 @@ int Round(float A)
 	{
 		return Truncated;
 	}
+}
+
+float DegreesToRadians(float Angle)
+{
+	return Angle * PI / 180;
+}
+
+float RadiansToDegrees(float Radians)
+{
+	return Radians * 180 / PI;
 }
 
 //////////////////////////////////////////////////////////////
@@ -165,3 +184,44 @@ static bool GS::AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B)
 {
 	return A.X > B.X && A.Y > B.Y && A.Z > B.Z;
 }
+
+//////////////////////////////////////////////////////////////
+//						MATRIX MATH							//
+//////////////////////////////////////////////////////////////
+
+Matrix4x4 GS::Translate(const Vector3 & Vector)
+{
+	Matrix4x4 Result;
+
+	Result.Array[0 + 3 * 4] = Vector.X;
+	Result.Array[1 + 3 * 4] = Vector.Y;
+	Result.Array[2 + 3 * 4] = Vector.Z;
+
+	return Result;
+}
+
+/*Matrix4x4 GS::Rotate(const Quat & A)
+{
+	Matrix4x4 Result;
+	Result.Identity();
+
+	float r = DegreesToRadians(A.Q);
+	//float cos = cos(r);
+	//float sin = Sine(r);
+	float omc = 1.0f - cos;
+
+	Result.Array[0] = A.X * omc + cos;
+	Result.Array[1] = A.Y * A.X * omc - A.Y * sin;
+	Result.Array[2] = A.X * A.Z * omc - A.Y * sin;
+
+	Result.Array[4] = A.X * A.Y * omc - A.Z * sin;
+	Result.Array[5] = A.Y * omc + cos;
+	Result.Array[6] = A.Y * A.Z * omc + A.X * sin;
+
+	Result.Array[8] = A.X * A.Z * omc + A.Y * sin;
+	Result.Array[9] = A.Y * A.Z * omc - A.X * sin;
+	Result.Array[10] = A.Z * omc + cos;
+
+	return Matrix4x4();
+}
+*/

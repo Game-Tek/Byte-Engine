@@ -87,9 +87,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Event.h" />
+    <ClInclude Include="EventDispatcher.h" />
+    <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\Buffer.h" />
     <ClInclude Include="src\Game Studio\EBO.h" />
-    <ClInclude Include="src\Game Studio\GSArray.hpp" />
+    <ClInclude Include="src\Game Studio\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
     <ClInclude Include="src\Game Studio\EntryPoint.h" />
@@ -100,6 +103,7 @@
     <ClInclude Include="src\Game Studio\Matrix4x4.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
+    <ClInclude Include="src\Game Studio\SArray.hpp" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.hpp" />
     <ClInclude Include="src\GameStudio.h" />
@@ -107,6 +111,8 @@
     <ClInclude Include="src\Game Studio\VBO.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Event.cpp" />
+    <ClCompile Include="EventDispatcher.cpp" />
     <ClCompile Include="src\Game Studio\EBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Math.cpp" />

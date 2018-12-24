@@ -1,43 +1,39 @@
 #pragma once
 
-#include "Core.h"
-
-const int DEFAULT_ARRAY_SIZE = 5;
+#include "Array.hpp"
 
 template <typename ArrayType>
-GS_CLASS GArray
+GS_CLASS DArray : Array<ArrayType>
 {
 public:
-	GArray(int N);
-	~GArray();
+	DArray(int N);
+	~DArray();
+
 	void AddElement(int Index, const ArrayType & Element);
 	void RemoveElement(int Index, bool AdjustStack);
-	int GetLastIndex();
-	int GetArrayLength();
-
+	unsigned short GetArrayLength();
+	unsigned short GetLastIndex();
 private:
-	ArrayType * Arrayptr;																			//Pointer to the array.
-	int NumberOfElements;																			//Number of elements the array currently holds occupied. NOT BASE 0.
-	int TotalNumberOfElements;																		//The size of the array including the unnocuppied elements. NOT BASE 0.
+	const int DEFAULT_ARRAY_SIZE = 5;
 
 	ArrayType * AllocateNewArray(int N);
 	void FillArray(ArrayType ArrayToFill[], ArrayType SourceArray[]);
 };
 
 template <typename ArrayType>
-GArray<ArrayType>::GArray(int N)
+DArray<ArrayType>::DArray(int N)
 {
 	Arrayptr = AllocateNewArray((N < DEFAULT_ARRAY_SIZE) ? DEFAULT_ARRAY_SIZE : N);
 }
 
 template <typename ArrayType>
-GArray<ArrayType>::~GArray()
+DArray<ArrayType>::~DArray()
 {
 	delete[] Arrayptr;
 }
 
 template <typename ArrayType>
-void GArray<ArrayType>::AddElement(int Index, const ArrayType & Element)
+void DArray<ArrayType>::AddElement(int Index, const ArrayType & Element)
 {
 	if (NumberOfElements + 1 > TotalNumberOfElements)													//We check if adding a new element will exceed the allocated elements.
 	{
@@ -63,7 +59,7 @@ void GArray<ArrayType>::AddElement(int Index, const ArrayType & Element)
 }
 
 template <typename ArrayType>
-void GArray<ArrayType>::RemoveElement(int Index, bool AdjustStack)
+void DArray<ArrayType>::RemoveElement(int Index, bool AdjustStack)
 {
 	if (AdjustStack)
 	{
@@ -73,29 +69,19 @@ void GArray<ArrayType>::RemoveElement(int Index, bool AdjustStack)
 		}
 	}
 
+	Arrayptr[Index] = ArrayType();
+
 	return;
 }
 
 template <typename ArrayType>
-int GArray<ArrayType>::GetLastIndex()
-{
-	return NumberOfElements - 1;
-}
-
-template <typename ArrayType>
-int GArray<ArrayType>::GetArrayLength()
-{
-	return NumberOfElements;
-}
-
-template <typename ArrayType>
-ArrayType * GArray<ArrayType>::AllocateNewArray(int N)
+ArrayType * DArray<ArrayType>::AllocateNewArray(int N)
 {
 	return new ArrayType[N];
 }
 
 template <typename ArrayType>
-void GArray<ArrayType>::FillArray(ArrayType ArrayToFill[], ArrayType SourceArray[])
+void DArray<ArrayType>::FillArray(ArrayType ArrayToFill[], ArrayType SourceArray[])
 {
 	for (unsigned short i = 0; i < NumberOfElements; i++)
 	{

@@ -13,7 +13,7 @@ public:
 	~VAO();
 
 	void Bind();
-	void CreateVertexAttribute();
+	void CreateVertexAttribute(unsigned short AttributeId);
 private:
 
 };

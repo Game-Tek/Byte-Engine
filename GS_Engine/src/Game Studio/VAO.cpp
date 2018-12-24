@@ -16,8 +16,8 @@ void VAO::Bind()
 	glBindVertexArray(Id);
 }
 
-void VAO::CreateVertexAttribute()
+void VAO::CreateVertexAttribute(unsigned short AttributeId)
 {
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	glVertexAttribPointer(AttributeId, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(0);
 }

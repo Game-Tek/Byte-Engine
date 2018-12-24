@@ -9,6 +9,21 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Array">
+      <UniqueIdentifier>{e2e8519c-615a-4d49-a289-35a03e129e42}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine Systems">
+      <UniqueIdentifier>{7d83fe5f-cb2e-4a25-9bf2-9651aaafc8f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine Systems\Events">
+      <UniqueIdentifier>{3b96b18b-4237-43a9-b391-5f076fc32c6b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine Systems\Renderer">
+      <UniqueIdentifier>{c5fb3db2-ad1f-4ef9-a3dd-c3ad3a33ef61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine Systems\Renderer\Buffers">
+      <UniqueIdentifier>{529962db-4acc-4ea8-890e-14b2de711925}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Application.h">
@@ -32,9 +47,6 @@
     <ClInclude Include="src\Game Studio\Clock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\GSArray.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\String.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -47,23 +59,38 @@
     <ClInclude Include="src\Game Studio\Matrix4x4.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="EventDispatcher.h">
+      <Filter>Engine Systems\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Event.h">
+      <Filter>Engine Systems\Events</Filter>
+    </ClInclude>
     <ClInclude Include="src\Game Studio\Renderer.h">
-      <Filter>Header Files</Filter>
+      <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Window.h">
-      <Filter>Header Files</Filter>
+      <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\VAO.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\EBO.h">
-      <Filter>Header Files</Filter>
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\VBO.h">
-      <Filter>Header Files</Filter>
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EBO.h">
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Buffer.h">
-      <Filter>Header Files</Filter>
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\DArray.hpp">
+      <Filter>Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Array.hpp">
+      <Filter>Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\SArray.hpp">
+      <Filter>Array</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -79,20 +106,26 @@
     <ClCompile Include="src\Game Studio\Math.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="EventDispatcher.cpp">
+      <Filter>Engine Systems\Events</Filter>
+    </ClCompile>
+    <ClCompile Include="Event.cpp">
+      <Filter>Engine Systems\Events</Filter>
+    </ClCompile>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Engine Systems\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Window.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Engine Systems\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\VAO.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\EBO.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\VBO.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\EBO.cpp">
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

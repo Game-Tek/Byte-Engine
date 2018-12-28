@@ -65,6 +65,12 @@ struct Vector3
 	}
 };
 
+struct TextureCoordinates
+{
+	float U;
+	float V;
+};
+
 //Used to specify a rotation with floating point precision.
 struct Rotator
 {

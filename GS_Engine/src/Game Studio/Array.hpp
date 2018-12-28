@@ -6,12 +6,15 @@ template <typename ArrayType>
 GS_CLASS Array
 {
 public:
-	void AddElement(int Index, const ArrayType & Element);
-	void RemoveElement(int Index, bool AdjustStack);
+	void SetElement(unsigned int Index, const ArrayType & Object);
+	void SetElement(const ArrayType & Object);
+	void RemoveElement(unsigned int Index, bool AdjustStack);
+	ArrayType & operator[](unsigned int Index);
+	ArrayType & operator=(const ArrayType & Other);
 	unsigned short GetArrayLength();
 	unsigned short GetLastIndex();
 
-private:
+protected:
 	ArrayType * Arrayptr;			//Pointer to the array.
 
 	unsigned short ArrayLength;		//Number of elements the array currently holds occupied. NOT BASE 0.

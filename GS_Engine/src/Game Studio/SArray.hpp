@@ -9,8 +9,11 @@ public:
 	SArray(int N);
 	~SArray();
 
-	void AddElement(int Index, const ArrayType & Element);
-	void RemoveElement(int Index, bool AdjustStack);
+	void SetElement(unsigned int Index, const ArrayType & Object);
+	void SetElement(const ArrayType & Object);
+	void RemoveElement(unsigned int Index, bool AdjustStack);
+	ArrayType & operator[](unsigned int Index);
+	ArrayType & operator=(const ArrayType & Other);
 	unsigned short GetArrayLength();
 	unsigned short GetLastIndex();
 };
@@ -28,19 +31,39 @@ SArray<ArrayType>::~SArray()
 }
 
 template <typename ArrayType>
-void SArray<ArrayType>::AddElement(int Index, const ArrayType & Element)
+void SArray<ArrayType>::SetElement(unsigned int Index, const ArrayType & Object)
 {
-	Arrayptr[ArrayLength] = Element;
+	(* Arrayptr)[Index] = Object;
 
 	return;
 }
 
 template <typename ArrayType>
-void SArray<ArrayType>::RemoveElement(int Index, bool AdjustStack)
+void SArray<ArrayType>::SetElement(const ArrayType & Object)
 {
-	Arrayptr[Index] = ArrayType();
+	(* Arrayptr)[ArrayLength] = Object;
+
+	return;
+}
+
+template <typename ArrayType>
+void SArray<ArrayType>::RemoveElement(unsigned int Index, bool AdjustStack)
+{
+	(* Arrayptr)[Index] = ArrayType();
 
 	ArrayLength -= 1;
+}
+
+template <typename ArrayType>
+ArrayType & SArray<ArrayType>::operator[](unsigned int Index)
+{
+	return (* Arrayptr)[Index];
+}
+
+template <typename ArrayType>
+ArrayType & SArray<ArrayType>::operator=(const ArrayType & Other)
+{
+	return Other;
 }
 
 template <typename ArrayType>

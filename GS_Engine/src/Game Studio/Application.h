@@ -8,6 +8,8 @@
 
 #include "Renderer.h"
 
+#include "EventDispatcher.h"
+
 namespace GS
 {
 	GS_CLASS Application
@@ -25,6 +27,8 @@ namespace GS
 		Window * WindowInstance;
 
 		Renderer * RendererInstance;
+
+		EventDispatcher * EventDispatcherInstance;
 	};
 
 	Application * CreateApplication();

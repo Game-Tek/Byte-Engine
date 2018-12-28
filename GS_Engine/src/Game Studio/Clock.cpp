@@ -32,7 +32,7 @@ Clock::~Clock()
 {
 }
 
-void Clock::Update()
+void Clock::OnUpdate()
 {
 }
 

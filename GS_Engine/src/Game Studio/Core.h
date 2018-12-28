@@ -4,6 +4,8 @@
 
 #define GS_CLASS class GS_API
 
+#define GS_STRUCT struct GS_API
+
 //Library import/export.
 
 #ifdef GS_PLATFORM_WIN

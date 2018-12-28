@@ -87,8 +87,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Event.h" />
-    <ClInclude Include="EventDispatcher.h" />
+    <ClInclude Include="src\Game Studio\EventDispatcher.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\Buffer.h" />
     <ClInclude Include="src\Game Studio\EBO.h" />
@@ -109,10 +108,10 @@
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\VAO.h" />
     <ClInclude Include="src\Game Studio\VBO.h" />
+    <ClInclude Include="src\Game Studio\Vertex.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Event.cpp" />
-    <ClCompile Include="EventDispatcher.cpp" />
+    <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
     <ClCompile Include="src\Game Studio\EBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Math.cpp" />

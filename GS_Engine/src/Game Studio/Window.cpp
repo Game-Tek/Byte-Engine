@@ -24,3 +24,8 @@ void Window::SetVsync(bool Enable)
 	glfwSwapInterval(Enable ? 1 : 0);
 	return;
 }
+
+GLFWwindow * Window::GetWindowInstance()
+{
+	return GLWindow;
+}

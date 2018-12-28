@@ -41,9 +41,6 @@
     <ClInclude Include="src\Game Studio\Object.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\EngineSystem.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Clock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -58,12 +55,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Matrix4x4.h">
       <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="EventDispatcher.h">
-      <Filter>Engine Systems\Events</Filter>
-    </ClInclude>
-    <ClInclude Include="Event.h">
-      <Filter>Engine Systems\Events</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Renderer.h">
       <Filter>Engine Systems\Renderer</Filter>
@@ -92,6 +83,15 @@
     <ClInclude Include="src\Game Studio\SArray.hpp">
       <Filter>Array</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\EventDispatcher.h">
+      <Filter>Engine Systems\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EngineSystem.h">
+      <Filter>Engine Systems</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vertex.h">
+      <Filter>Engine Systems\Renderer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -105,12 +105,6 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\Math.cpp">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="EventDispatcher.cpp">
-      <Filter>Engine Systems\Events</Filter>
-    </ClCompile>
-    <ClCompile Include="Event.cpp">
-      <Filter>Engine Systems\Events</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
       <Filter>Engine Systems\Renderer</Filter>
@@ -126,6 +120,9 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\EBO.cpp">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\EventDispatcher.cpp">
+      <Filter>Engine Systems\Events</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

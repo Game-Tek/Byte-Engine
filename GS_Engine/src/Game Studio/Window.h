@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "W:\Game Studio\GS_Engine\vendor\GLFW\glfw3.h"
+#include "glfw3.h"
 
 GS_CLASS Window
 {
@@ -11,8 +11,9 @@ public:
 	~Window();
 
 	void SetVsync(bool Enable);
+	static GLFWwindow * GetWindowInstance();
 private:
-	GLFWwindow * GLWindow;
+	static GLFWwindow * GLWindow;
 
 	const unsigned short WNDW_WIDTH;
 	const unsigned short WNDW_HEIGHT;

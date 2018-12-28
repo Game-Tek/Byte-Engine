@@ -12,9 +12,10 @@ public:
 	VAO();
 	~VAO();
 
-	void Bind();
-	void CreateVertexAttribute(unsigned short AttributeId);
+	void Bind() override;
+	void Enable() override;
+	void CreateVertexAttributes();
 private:
-
+	unsigned short VertexAttributeIndex;
 };
 

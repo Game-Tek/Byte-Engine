@@ -4,12 +4,20 @@
 
 #include "EngineSystem.h"
 
-GS_CLASS Renderer : public ESystem
+#include "glad.h"
+#include "glfw3.h"
+
+#include "Window.h"
+
+GS_CLASS Renderer : ESystem
 {
 public:
-	Renderer();
+	Renderer(Window * WD);
 	~Renderer();
 
-	void Update(float DeltaTime);
+	void OnUpdate(float DeltaTime) override;
+
+private:
+	Window * WindowInstanceRef;
 };
 

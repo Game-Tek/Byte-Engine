@@ -1,9 +1,6 @@
 #pragma once
 
 #include "Core.h"
-#pragma once
-
-#include "Core.h"
 
 #include "Buffer.h"
 
@@ -17,7 +14,5 @@ public:
 	~EBO();
 
 	void Bind(int Usage = GL_STATIC_DRAW);
-private:
-
 };
 

@@ -37,13 +37,13 @@ enum Months {
 	December,
 };
 
-GS_CLASS Clock : public ESystem
+GS_CLASS Clock : ESystem
 {
 public:
 	Clock();
 	~Clock();
 
-	virtual void Update();
+	void OnUpdate() override;
 
 	//CLOCK FUNCTIONALITY GETTERS
 

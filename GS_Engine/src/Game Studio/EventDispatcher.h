@@ -8,6 +8,8 @@
 
 #include "SArray.hpp"
 
+typedef void (*FunctionPointer)();
+
 GS_CLASS EventDispatcher : ESystem
 {
 public:

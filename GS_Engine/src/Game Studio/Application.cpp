@@ -20,10 +20,15 @@ namespace GS
 
 	void Application::Run()
 	{
-		while (true);
+		while (!ShouldClose());
 		{
 			ClockInstance->OnUpdate();
 			RendererInstance->OnUpdate(ClockInstance->GetDeltaTime());
 		}	
+	}
+
+	int Application::ShouldClose()
+	{
+		//return WindowInstance;
 	}
 }

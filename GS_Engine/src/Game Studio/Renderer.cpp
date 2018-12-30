@@ -11,10 +11,18 @@ Renderer::~Renderer()
 {
 }
 
+void Renderer::Draw()
+{
+	
+}
+
 void Renderer::OnUpdate(float DeltaTime)
 {
 	glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT);
 
-	glfwSwapBuffers(WindowInstanceRef->GetWindowInstance());
+	//DrawCalls = times to loop Draw().
+	Draw();													//Perform draw call.
+
+	glfwSwapBuffers(WindowInstanceRef->GetGLFWWindow());
 }

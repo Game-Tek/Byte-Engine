@@ -24,11 +24,14 @@
     <Filter Include="Engine Systems\Renderer\Buffers">
       <UniqueIdentifier>{529962db-4acc-4ea8-890e-14b2de711925}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine Systems\Renderer\Shaders">
+      <UniqueIdentifier>{e0b6ab77-afd6-4494-acc7-346d55957e21}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine Systems\Renderer\Shaders\GLSL Code">
+      <UniqueIdentifier>{37d4b3ff-a6b4-42ed-9949-2d5cf33ce159}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\Application.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Core.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -68,12 +71,6 @@
     <ClInclude Include="src\Game Studio\VBO.h">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\EBO.h">
-      <Filter>Engine Systems\Renderer\Buffers</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Buffer.h">
-      <Filter>Engine Systems\Renderer\Buffers</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\DArray.hpp">
       <Filter>Array</Filter>
     </ClInclude>
@@ -92,11 +89,26 @@
     <ClInclude Include="src\Game Studio\Vertex.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\IBO.h">
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RendererObject.h">
+      <Filter>Engine Systems\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="VertexShader.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="Program.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="FragmentShader.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Application.h">
+      <Filter>Engine Systems</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Application.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -118,14 +130,34 @@
     <ClCompile Include="src\Game Studio\VBO.cpp">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\EBO.cpp">
-      <Filter>Engine Systems\Renderer\Buffers</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\EventDispatcher.cpp">
       <Filter>Engine Systems\Events</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\IBO.cpp">
+      <Filter>Engine Systems\Renderer\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="VertexShader.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="Program.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="FragmentShader.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Application.cpp">
+      <Filter>Engine Systems</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
+    <None Include="FragmentShader.fshader">
+      <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="VertexShader.vshader">
+      <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
+    </FxCompile>
   </ItemGroup>
 </Project>

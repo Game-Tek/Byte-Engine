@@ -16,7 +16,6 @@ namespace GS
 	{
 	public:
 		Application();
-		
 		virtual ~Application();
 
 		void Run();
@@ -29,6 +28,8 @@ namespace GS
 		Renderer * RendererInstance;
 
 		EventDispatcher * EventDispatcherInstance;
+
+		int ShouldClose();
 	};
 
 	Application * CreateApplication();

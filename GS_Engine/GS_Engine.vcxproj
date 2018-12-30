@@ -87,10 +87,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="FragmentShader.h" />
+    <ClInclude Include="Program.h" />
     <ClInclude Include="src\Game Studio\EventDispatcher.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
-    <ClInclude Include="src\Game Studio\Buffer.h" />
-    <ClInclude Include="src\Game Studio\EBO.h" />
+    <ClInclude Include="src\Game Studio\RendererObject.h" />
+    <ClInclude Include="src\Game Studio\IBO.h" />
     <ClInclude Include="src\Game Studio\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
@@ -109,10 +111,13 @@
     <ClInclude Include="src\Game Studio\VAO.h" />
     <ClInclude Include="src\Game Studio\VBO.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
+    <ClInclude Include="VertexShader.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="FragmentShader.cpp" />
+    <ClCompile Include="Program.cpp" />
     <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
-    <ClCompile Include="src\Game Studio\EBO.cpp" />
+    <ClCompile Include="src\Game Studio\IBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Math.cpp" />
     <ClCompile Include="src\Game Studio\Application.cpp" />
@@ -121,9 +126,14 @@
     <ClCompile Include="src\Game Studio\Window.cpp" />
     <ClCompile Include="src\Game Studio\VAO.cpp" />
     <ClCompile Include="src\Game Studio\VBO.cpp" />
+    <ClCompile Include="VertexShader.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
+    <None Include="FragmentShader.fshader" />
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="VertexShader.vshader" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

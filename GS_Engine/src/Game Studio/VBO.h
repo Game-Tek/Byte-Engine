@@ -2,16 +2,16 @@
 
 #include "Core.h"
 
-#include "Buffer.h"
+#include "RendererObject.h"
 
-#include "glad.h"
+#define GL_STATIC_DRAW 0x88E4
 
-GS_CLASS VBO : Buffer
+GS_CLASS VBO : RendererObject
 {
 public:
 	VBO();
 	~VBO();
 
-	void Bind(int Usage = GL_STATIC_DRAW);
+	void Bind(int Usage = GL_STATIC_DRAW) const;
 };
 

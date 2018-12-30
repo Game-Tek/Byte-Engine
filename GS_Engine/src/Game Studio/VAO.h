@@ -2,18 +2,16 @@
 
 #include "Core.h"
 
-#include "Buffer.h"
+#include "RendererObject.h"
 
-#include "glad.h"
-
-GS_CLASS VAO : Buffer
+GS_CLASS VAO : RendererObject
 {
 public:
 	VAO();
 	~VAO();
 
-	void Bind() override;
-	void Enable() override;
+	void Bind() const override;
+	void Enable() const override;
 	void CreateVertexAttributes();
 private:
 	unsigned short VertexAttributeIndex;

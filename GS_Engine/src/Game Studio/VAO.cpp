@@ -2,29 +2,32 @@
 
 #include <stddef.h>
 
+#include "glad.h"
+
 #include "Vertex.h"
+
 
 VAO::VAO()
 {
-	glGenVertexArrays(1, & (unsigned int&) Id);
+	glGenVertexArrays(1, & RendererObjectId);
 }
 
 
 VAO::~VAO()
 {
-	glDeleteVertexArrays(1, & (unsigned int&) Id);
+	glDeleteVertexArrays(1, & RendererObjectId);
 }
 
-void VAO::Bind()
+void VAO::Bind() const
 {
-	glBindVertexArray(Id);
+	glBindVertexArray(RendererObjectId);
 
 	return;
 }
 
-void VAO::Enable()
+void VAO::Enable() const
 {
-	glEnableVertexAttribArray(Id);
+	glEnableVertexAttribArray(RendererObjectId);
 
 	return;
 }
@@ -32,10 +35,6 @@ void VAO::Enable()
 void VAO::CreateVertexAttributes()
 {
 	glVertexAttribPointer(VertexAttributeIndex, 3, GL_FLOAT, GL_FALSE, sizeof(Vector3), (void*)0);
-
-	VertexAttributeIndex++;
-
-	glVertexAttribPointer(VertexAttributeIndex, 2, GL_FLOAT, GL_FALSE, sizeof(TextureCoordinates), (void*)offsetof(Vertex, TextCoord));
 
 	VertexAttributeIndex++;
 

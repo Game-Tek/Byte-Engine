@@ -16,8 +16,11 @@ public:
 	~Renderer();
 
 	void OnUpdate(float DeltaTime) override;
+	void Draw();
 
 private:
+	unsigned int DrawCalls;
+
 	Window * WindowInstanceRef;
 };
 

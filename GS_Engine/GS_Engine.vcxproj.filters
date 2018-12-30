@@ -95,17 +95,17 @@
     <ClInclude Include="src\Game Studio\RendererObject.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
-    <ClInclude Include="VertexShader.h">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="Program.h">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="FragmentShader.h">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Application.h">
       <Filter>Engine Systems</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\FragmentShader.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Program.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\VertexShader.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -136,27 +136,27 @@
     <ClCompile Include="src\Game Studio\IBO.cpp">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
-    <ClCompile Include="VertexShader.cpp">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClCompile>
-    <ClCompile Include="Program.cpp">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClCompile>
-    <ClCompile Include="FragmentShader.cpp">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Application.cpp">
       <Filter>Engine Systems</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\FragmentShader.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Program.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\VertexShader.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
-    <None Include="FragmentShader.fshader">
+    <None Include="src\Game Studio\FragmentShader.fshader">
       <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="VertexShader.vshader">
+    <FxCompile Include="src\Game Studio\VertexShader.vshader">
       <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
     </FxCompile>
   </ItemGroup>

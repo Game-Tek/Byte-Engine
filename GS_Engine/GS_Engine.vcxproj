@@ -15,6 +15,8 @@
     <ProjectGuid>{3086AB51-E516-40F6-A741-5BD94F6BA720}</ProjectGuid>
     <RootNamespace>GSEngine</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <ProjectName>
+    </ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -87,7 +89,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\RGB.h" />
+    <ClInclude Include="src\Game Studio\RGBA.h" />
+    <ClInclude Include="src\Game Studio\Rotator.h" />
+    <ClInclude Include="src\Game Studio\Event.h" />
     <ClInclude Include="src\Game Studio\FragmentShader.h" />
+    <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Program.h" />
     <ClInclude Include="src\Game Studio\EventDispatcher.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
@@ -100,7 +107,6 @@
     <ClInclude Include="src\Game Studio\Math.h" />
     <ClInclude Include="src\Game Studio\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
-    <ClInclude Include="src\Game Studio\DataTypes.h" />
     <ClInclude Include="src\Game Studio\Matrix4x4.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
@@ -112,6 +118,11 @@
     <ClInclude Include="src\Game Studio\VBO.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
     <ClInclude Include="src\Game Studio\VertexShader.h" />
+    <ClInclude Include="src\Game Studio\Vector2.h" />
+    <ClInclude Include="src\Game Studio\WorldObject.h" />
+    <ClInclude Include="src\Game Studio\Transform2.h" />
+    <ClInclude Include="src\Game Studio\Transform3.h" />
+    <ClInclude Include="src\Game Studio\Vector3.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\FragmentShader.cpp" />

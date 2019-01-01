@@ -1,17 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
-    </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
-    <Filter Include="Array">
-      <UniqueIdentifier>{e2e8519c-615a-4d49-a289-35a03e129e42}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Engine Systems">
       <UniqueIdentifier>{7d83fe5f-cb2e-4a25-9bf2-9651aaafc8f4}</UniqueIdentifier>
     </Filter>
@@ -30,35 +19,32 @@
     <Filter Include="Engine Systems\Renderer\Shaders\GLSL Code">
       <UniqueIdentifier>{37d4b3ff-a6b4-42ed-9949-2d5cf33ce159}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine Systems\Clock">
+      <UniqueIdentifier>{324d8236-686e-4eed-988d-a3b7b56f6f9e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc">
+      <UniqueIdentifier>{9c40395e-d181-4c74-9766-14313884e0c4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math">
+      <UniqueIdentifier>{f8f0c03a-dfc7-4ee2-958a-410b4f3df571}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math\Math Objects">
+      <UniqueIdentifier>{98f4c226-6cf7-4440-8735-239d67b2101e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game Objects">
+      <UniqueIdentifier>{809ad5c6-c667-4e11-a957-15f59d2b06eb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Array">
+      <UniqueIdentifier>{e2e8519c-615a-4d49-a289-35a03e129e42}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine">
+      <UniqueIdentifier>{e09db881-b598-4bd2-b86c-c18d6a9cd6c4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Application">
+      <UniqueIdentifier>{9669b65e-2eba-4026-9f31-190e2ee371e9}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\Core.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\GameStudio.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\EntryPoint.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Object.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Clock.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\String.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\DataTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Matrix4x4.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Renderer.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
@@ -72,13 +58,13 @@
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\DArray.hpp">
-      <Filter>Array</Filter>
+      <Filter>Misc\Array</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Array.hpp">
-      <Filter>Array</Filter>
+      <Filter>Misc\Array</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\SArray.hpp">
-      <Filter>Array</Filter>
+      <Filter>Misc\Array</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\EventDispatcher.h">
       <Filter>Engine Systems\Events</Filter>
@@ -95,9 +81,6 @@
     <ClInclude Include="src\Game Studio\RendererObject.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Application.h">
-      <Filter>Engine Systems</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\FragmentShader.h">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClInclude>
@@ -107,17 +90,61 @@
     <ClInclude Include="src\Game Studio\VertexShader.h">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Application.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Clock.h">
+      <Filter>Engine Systems\Clock</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math.h">
+      <Filter>Misc\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Matrix4x4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Event.h">
+      <Filter>Engine Systems\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Object.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\String.hpp">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Core.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EntryPoint.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GameStudio.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\WorldObject.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Logger.h" />
+    <ClInclude Include="src\Game Studio\Rotator.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Transform2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Transform3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RGBA.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RGB.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Clock.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\Object.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\Math.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
       <Filter>Engine Systems\Renderer</Filter>
     </ClCompile>
@@ -136,9 +163,6 @@
     <ClCompile Include="src\Game Studio\IBO.cpp">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Application.cpp">
-      <Filter>Engine Systems</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\FragmentShader.cpp">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClCompile>
@@ -147,6 +171,18 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\VertexShader.cpp">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Application.cpp">
+      <Filter>Engine\Application</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Clock.cpp">
+      <Filter>Engine Systems\Clock</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Math.cpp">
+      <Filter>Misc\Math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Object.cpp">
+      <Filter>Game Objects</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

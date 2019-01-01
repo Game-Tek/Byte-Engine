@@ -1,26 +1,50 @@
 #pragma once
 
-#include <Windows.h>
+#include "windows.h"
 
 #include "Clock.h"
 
+enum LogColors
+{
+	Red,
+	Yellow,
+	Green,
+	White
+};
 
 //COLORS
 //6 Yellow, 10 Light Green, 12 Bright Red, 15 White.
 
-#define GS_LOG_SUCCESS(Text) PrintLog(Text, 10);
-#define GS_LOG_MESSAGE(Text) PrintLog(Text, 15);
-#define GS_LOG_WARNING(Text) PrintLog(Text, 6);
-#define GS_LOG_ERROR(Text)   PrintLog(Text, 12);
+#define GS_LOG_SUCCESS	(Text) PrintLog(Text, Green);
+#define GS_LOG_MESSAGE	(Text) PrintLog(Text, White);
+#define GS_LOG_WARNING	(Text) PrintLog(Text, Yellow);
+#define GS_LOG_ERROR	(Text) PrintLog(Text, Red);
 
-void SetLogTextColor(int Color)
+void SetLogTextColor(LogColors Color)
 {
-	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), Color);
+	switch (Color)
+	{
+	Red:	
+			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
+			break;
+
+	Yellow:	
+			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 6);
+			break;
+
+	Green:	
+			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
+			break;
+
+	White:
+			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
+			break;
+	}
 
 	return;
 }
 
-void PrintLog(const char* Text, int Color)
+void PrintLog(const char* Text, LogColors Color)
 {
 	SetLogTextColor(Color);
 

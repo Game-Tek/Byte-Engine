@@ -89,6 +89,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\ImageSize.h" />
+    <ClInclude Include="src\Game Studio\Importer.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
@@ -123,6 +125,8 @@
     <ClInclude Include="src\Game Studio\Transform2.h" />
     <ClInclude Include="src\Game Studio\Transform3.h" />
     <ClInclude Include="src\Game Studio\Vector3.h" />
+    <ClInclude Include="src\Game Studio\Texture.h" />
+    <ClInclude Include="src\Game Studio\TextureCoordinates.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\FragmentShader.cpp" />
@@ -138,6 +142,7 @@
     <ClCompile Include="src\Game Studio\VAO.cpp" />
     <ClCompile Include="src\Game Studio\VBO.cpp" />
     <ClCompile Include="src\Game Studio\VertexShader.cpp" />
+    <ClCompile Include="src\Game Studio\Texture.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "windows.h"
-
 #include "Clock.h"
 
 enum LogColors
@@ -15,10 +13,10 @@ enum LogColors
 //COLORS
 //6 Yellow, 10 Light Green, 12 Bright Red, 15 White.
 
-#define GS_LOG_SUCCESS	(Text) PrintLog(Text, Green);
-#define GS_LOG_MESSAGE	(Text) PrintLog(Text, White);
-#define GS_LOG_WARNING	(Text) PrintLog(Text, Yellow);
-#define GS_LOG_ERROR	(Text) PrintLog(Text, Red);
+#define GS_LOG_SUCCESS(Text) PrintLog(Text, Green);
+#define GS_LOG_MESSAGE(Text) PrintLog(Text, White);
+#define GS_LOG_WARNING(Text) PrintLog(Text, Yellow);
+#define GS_LOG_ERROR(Text) PrintLog(Text, Red);
 
 void SetLogTextColor(LogColors Color)
 {

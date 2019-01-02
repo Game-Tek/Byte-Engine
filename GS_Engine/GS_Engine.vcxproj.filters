@@ -126,7 +126,6 @@
     <ClInclude Include="src\Game Studio\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Rotator.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
@@ -142,7 +141,24 @@
     <ClInclude Include="src\Game Studio\RGBA.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\RGB.h" />
+    <ClInclude Include="src\Game Studio\RGB.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Logger.h">
+      <Filter>Engine Systems</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\TextureCoordinates.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\ImageSize.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Importer.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Texture.h">
+      <Filter>Engine Systems\Renderer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -183,6 +199,9 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\Object.cpp">
       <Filter>Game Objects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Texture.cpp">
+      <Filter>Engine Systems\Renderer</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

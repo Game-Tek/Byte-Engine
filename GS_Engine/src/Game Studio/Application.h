@@ -27,9 +27,9 @@ namespace GS
 
 		Renderer * RendererInstance;
 
-		EventDispatcher * EventDispatcherInstance;
+		//EventDispatcher * EventDispatcherInstance;
 
-		int ShouldClose();
+		/*int ShouldClose();*/
 	};
 
 	Application * CreateApplication();

@@ -1,4 +1,4 @@
-#include "EventDispatcher.h"
+/*#include "EventDispatcher.h"
 
 
 
@@ -51,3 +51,4 @@ void EventDispatcher::Dispatch(unsigned short EventIndex)
 		EventInfo[EventIndex][i]();
 	}
 }
+*/

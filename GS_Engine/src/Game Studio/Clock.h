@@ -43,7 +43,7 @@ public:
 	Clock();
 	~Clock();
 
-	void OnUpdate() override;
+	void OnUpdate();
 
 	//CLOCK FUNCTIONALITY GETTERS
 

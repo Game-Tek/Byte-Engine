@@ -2,19 +2,25 @@
 
 #include "glad.h"
 
-IBO::IBO()
-{
-	glGenBuffers(1, & RendererObjectId);
-	//glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, Usage);
-}
+#include "GL.h"
 
+IBO::IBO(const void * Data, unsigned int Count)
+{
+	GS_GL_CALL(glGenBuffers(1, & RendererObjectId));
+	Bind();
+	GS_GL_CALL(glBufferData(GL_ELEMENT_ARRAY_BUFFER, Count * sizeof(unsigned int), Data, GL_STATIC_DRAW));
+
+	//IndexArray = Indices;
+
+	IndexCount = Count;
+}
 
 IBO::~IBO()
 {
-	glDeleteBuffers(1, & RendererObjectId);
+	GS_GL_CALL(glDeleteBuffers(1, & RendererObjectId));
 }
 
-void IBO::Bind(int Usage) const
+void IBO::Bind() const
 {
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, RendererObjectId);
+	GS_GL_CALL(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, RendererObjectId));
 }

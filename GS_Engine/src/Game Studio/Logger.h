@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Clock.h"
+#include "Core.h"
 
 enum LogColors
 {
@@ -10,47 +10,24 @@ enum LogColors
 	White
 };
 
-//COLORS
-//6 Yellow, 10 Light Green, 12 Bright Red, 15 White.
 
-#define GS_LOG_SUCCESS(Text) PrintLog(Text, Green);
-#define GS_LOG_MESSAGE(Text) PrintLog(Text, White);
-#define GS_LOG_WARNING(Text) PrintLog(Text, Yellow);
-#define GS_LOG_ERROR(Text) PrintLog(Text, Red);
+#ifdef GS_DEBUG
+	#define GS_LOG_SUCCESS(Text, ...) Logger::PrintLog(Text, Green, __VA_ARGS__);
+	#define GS_LOG_MESSAGE(Text, ...) Logger::PrintLog(Text, White, __VA_ARGS__);
+	#define GS_LOG_WARNING(Text, ...) Logger::PrintLog(Text, Yellow, __VA_ARGS__);
+	#define GS_LOG_ERROR(Text, ...) Logger::PrintLog(Text, Red, __VA_ARGS__);
+#else
+	#define GS_LOG_SUCCESS(Text, ...)
+	#define GS_LOG_MESSAGE(Text, ...)
+	#define GS_LOG_WARNING(Text, ...)
+	#define GS_LOG_ERROR(Text, ...)
+#endif
 
-void SetLogTextColor(LogColors Color)
+GS_CLASS Logger
 {
-	switch (Color)
-	{
-	Red:	
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
-			break;
-
-	Yellow:	
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 6);
-			break;
-
-	Green:	
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
-			break;
-
-	White:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
-			break;
-	}
-
-	return;
-}
-
-void PrintLog(const char* Text, LogColors Color)
-{
-	SetLogTextColor(Color);
-
-	//Print whole message.
-	//printf("[Time: %02d:%02d:%02d] %s \n", Time.Hour, Time.Minute, Time.Second, Text);
-
-	//Set console text color back to white just in case.
-	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
-
-	return;
-}
+public:
+	static void PrintLog(const char * Text, LogColors Color, ...);
+	static const char * GetglGetError();
+private:
+	static void SetLogTextColor(LogColors Color);
+};

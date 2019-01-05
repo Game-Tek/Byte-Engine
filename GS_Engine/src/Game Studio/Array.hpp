@@ -15,6 +15,7 @@ public:
 
 	unsigned short GetArrayLength() const { return ArrayLength; }
 	unsigned short GetLastIndex() const { return ArrayLength - 1; }
+	ArrayType * GetArrayPointer() const { return Arrayptr; }
 
 protected:
 	//Pointer to the array.

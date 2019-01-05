@@ -81,13 +81,7 @@
     <ClInclude Include="src\Game Studio\RendererObject.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\FragmentShader.h">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Program.h">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\VertexShader.h">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Application.h">
@@ -95,9 +89,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Clock.h">
       <Filter>Engine Systems\Clock</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math.h">
-      <Filter>Misc\Math</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Matrix4x4.h">
       <Filter>Misc\Math\Math Objects</Filter>
@@ -159,6 +150,15 @@
     <ClInclude Include="src\Game Studio\Texture.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Shader.h">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\GSMath.h">
+      <Filter>Misc\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\GL.h">
+      <Filter>Engine Systems\Renderer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -179,13 +179,7 @@
     <ClCompile Include="src\Game Studio\IBO.cpp">
       <Filter>Engine Systems\Renderer\Buffers</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\FragmentShader.cpp">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Program.cpp">
-      <Filter>Engine Systems\Renderer\Shaders</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\VertexShader.cpp">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -203,16 +197,21 @@
     <ClCompile Include="src\Game Studio\Texture.cpp">
       <Filter>Engine Systems\Renderer</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game Studio\Shader.cpp">
+      <Filter>Engine Systems\Renderer\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Game Studio\Logger.cpp">
+      <Filter>Engine Systems</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
     <None Include="src\Game Studio\FragmentShader.fshader">
       <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
     </None>
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="src\Game Studio\VertexShader.vshader">
+    <None Include="src\Game Studio\VertexShader.vshader">
       <Filter>Engine Systems\Renderer\Shaders\GLSL Code</Filter>
-    </FxCompile>
+    </None>
   </ItemGroup>
 </Project>

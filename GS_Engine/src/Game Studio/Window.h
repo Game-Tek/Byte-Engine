@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "glfw3.h"
+#include "W:/Game Studio/GS_Engine/vendor/GLFW/glfw3.h"
 
 GS_CLASS Window
 {
@@ -13,12 +13,15 @@ public:
 	//Enable or disable V-Sync.
 	void SetVsync(bool Enable);
 
-	GLFWwindow * GetGLFWWindow();
+	GLFWwindow * GetGLFWWindow() const { return GLWindow; }
+
+	unsigned short GetWindowWidth() const { return WNDW_WIDTH; }
+	unsigned short GetWindowHeight() const { return WNDW_HEIGHT; }
 private:
 	GLFWwindow * GLWindow;
 
-	const unsigned short WNDW_WIDTH;
-	const unsigned short WNDW_HEIGHT;
+	unsigned short WNDW_WIDTH;
+	unsigned short WNDW_HEIGHT;
 
 };
 

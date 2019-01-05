@@ -2,29 +2,29 @@
 
 #include "glad.h"
 
-#include "VertexShader.h"
-#include "FragmentShader.h"
+#include "Shader.h"
 
+#include "GL.h"
 
 Program::Program()
 {
-	VertexShader VS;
-	FragmentShader FS;
+	Shader VS(GL_VERTEX_SHADER, "W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader");
+	Shader FS(GL_FRAGMENT_SHADER, "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
-	RendererObjectId = glCreateProgram();
-	glAttachShader(RendererObjectId, VS.GetId());
-	glAttachShader(RendererObjectId, FS.GetId());
-	glLinkProgram(RendererObjectId);
+	RendererObjectId = GS_GL_CALL(glCreateProgram());
+	GS_GL_CALL(glAttachShader(RendererObjectId, VS.GetId()));
+	GS_GL_CALL(glAttachShader(RendererObjectId, FS.GetId()));
+	GS_GL_CALL(glLinkProgram(RendererObjectId));
 }
 
 Program::~Program()
 {
-	glDeleteProgram(RendererObjectId);
+	GS_GL_CALL(glDeleteProgram(RendererObjectId));
 }
 
 void Program::Bind() const
 {
-	glUseProgram(RendererObjectId);
+	GS_GL_CALL(glUseProgram(RendererObjectId));
 }
 
 void Program::SetUniform(const char * UniformName, float F1) const
@@ -69,5 +69,5 @@ void Program::SetUniform(const char * UniformName, int I1, int I2, int I3, int I
 
 void Program::SetUniform(const char * UniformName, bool B1)
 {
-	glUniform1uiv(glGetUniformLocation(RendererObjectId, UniformName), B1);
+	glUniform1ui(glGetUniformLocation(RendererObjectId, UniformName), B1);
 }

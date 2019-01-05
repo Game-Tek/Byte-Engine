@@ -1,4 +1,4 @@
-#pragma once
+/*#pragma once
 
 #include "Core.h"
 
@@ -21,9 +21,10 @@ public:
 	void Post(unsigned short Index, Event & Event);
 
 private:
-	SArray<Event *>				Events;
-	SArray<SArray<void (*)()>>	EventInfo;
-	SArray<Event *>				EventQueue;
+	//SArray<Event *>					Events;
+	//SArray<SArray<FunctionPointer>>	EventInfo;
+	//SArray<Event *>					EventQueue;
 
 	void Dispatch(unsigned short Index);
 };
+*/

@@ -4,8 +4,6 @@
 
 #include "Vertex.h"
 
-#include "DataTypes.h"
-
 //Bind then buffer data.
 
 //			TERMINOLOGY
@@ -15,11 +13,10 @@
 GS_CLASS RendererObject
 {
 public:
-	virtual void Bind() const;
-	virtual void Enable() const;
+	void Bind() const;
 
 	unsigned int GetId() const { return RendererObjectId; }
 
 protected:
-	unsigned int RendererObjectId;
+	unsigned int RendererObjectId = 0;
 };

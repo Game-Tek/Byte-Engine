@@ -1,6 +1,4 @@
-#include "Math.h"
-
-#include "math.h"
+#include "GSMath.h"
 
 const float PI = 3.14159265359f;
 
@@ -193,9 +191,9 @@ Matrix4x4 GS::Translate(const Vector3 & Vector)
 {
 	Matrix4x4 Result;
 
-	Result.Array[0 + 3 * 4] = Vector.X;
-	Result.Array[1 + 3 * 4] = Vector.Y;
-	Result.Array[2 + 3 * 4] = Vector.Z;
+	Result[0 + 3 * 4] = Vector.X;
+	Result[1 + 3 * 4] = Vector.Y;
+	Result[2 + 3 * 4] = Vector.Z;
 
 	return Result;
 }

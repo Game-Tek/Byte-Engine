@@ -1,20 +1,23 @@
 #include "VBO.h"
 
 #include "glad.h"
+#include "glad.c"
 
-VBO::VBO()
+#include "GL.h"
+
+VBO::VBO(const void * Data, unsigned int Size, int Usage)
 {
-	glGenBuffers(1, & RendererObjectId);
-	//glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, Usage);
+	GS_GL_CALL(glGenBuffers(1, & RendererObjectId));
+	Bind();
+	GS_GL_CALL(glBufferData(GL_ARRAY_BUFFER, Size, Data, Usage));
 }
-
 
 VBO::~VBO()
 {
-	glDeleteBuffers(1, & RendererObjectId);
+	GS_GL_CALL(glDeleteBuffers(1, & RendererObjectId));
 }
 
-void VBO::Bind(int Usage) const
+void VBO::Bind() const
 {
-	glBindBuffer(GL_ARRAY_BUFFER, RendererObjectId);
+	GS_GL_CALL(glBindBuffer(GL_ARRAY_BUFFER, RendererObjectId));
 }

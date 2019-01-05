@@ -47,13 +47,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)GS_Engine\vendor$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
     <LibraryPath>$(ProjectName)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)GS_Engine\vendor$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
     <LibraryPath>$(ProjectName)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -63,12 +63,16 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image;</AdditionalIncludeDirectories>
+      <CompileAs>CompileAsCpp</CompileAs>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
       <AdditionalDependencies>glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -79,7 +83,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -87,15 +91,19 @@
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
       <AdditionalDependencies>glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Importer.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
     <ClInclude Include="src\Game Studio\Event.h" />
-    <ClInclude Include="src\Game Studio\FragmentShader.h" />
+    <ClInclude Include="src\Game Studio\Shader.h" />
     <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Program.h" />
     <ClInclude Include="src\Game Studio\EventDispatcher.h" />
@@ -106,7 +114,7 @@
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
     <ClInclude Include="src\Game Studio\EntryPoint.h" />
-    <ClInclude Include="src\Game Studio\Math.h" />
+    <ClInclude Include="src\Game Studio\GSMath.h" />
     <ClInclude Include="src\Game Studio\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Matrix4x4.h" />
@@ -119,7 +127,6 @@
     <ClInclude Include="src\Game Studio\VAO.h" />
     <ClInclude Include="src\Game Studio\VBO.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
-    <ClInclude Include="src\Game Studio\VertexShader.h" />
     <ClInclude Include="src\Game Studio\Vector2.h" />
     <ClInclude Include="src\Game Studio\WorldObject.h" />
     <ClInclude Include="src\Game Studio\Transform2.h" />
@@ -129,7 +136,8 @@
     <ClInclude Include="src\Game Studio\TextureCoordinates.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\FragmentShader.cpp" />
+    <ClCompile Include="src\Game Studio\Logger.cpp" />
+    <ClCompile Include="src\Game Studio\Shader.cpp" />
     <ClCompile Include="src\Game Studio\Program.cpp" />
     <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
     <ClCompile Include="src\Game Studio\IBO.cpp" />
@@ -141,15 +149,17 @@
     <ClCompile Include="src\Game Studio\Window.cpp" />
     <ClCompile Include="src\Game Studio\VAO.cpp" />
     <ClCompile Include="src\Game Studio\VBO.cpp" />
-    <ClCompile Include="src\Game Studio\VertexShader.cpp" />
     <ClCompile Include="src\Game Studio\Texture.cpp" />
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
     <None Include="src\Game Studio\FragmentShader.fshader" />
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="src\Game Studio\VertexShader.vshader" />
+    <None Include="src\Game Studio\VertexShader.vshader">
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

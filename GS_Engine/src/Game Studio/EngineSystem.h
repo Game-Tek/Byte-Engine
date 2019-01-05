@@ -5,6 +5,6 @@
 GS_CLASS ESystem
 {
 public:
-	virtual void OnUpdate();
-	virtual void OnUpdate(float DeltaTime);
+	void OnUpdate();
+	void OnUpdate(float DeltaTime);
 };

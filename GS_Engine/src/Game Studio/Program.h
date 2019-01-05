@@ -10,7 +10,7 @@ public:
 	Program();
 	~Program();
 
-	void Bind() const override;
+	void Bind() const;
 
 	void SetUniform(const char * UniformName, float F1) const;
 	void SetUniform(const char * UniformName, float F1, float F2) const;

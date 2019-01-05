@@ -10,10 +10,9 @@ public:
 	VAO();
 	~VAO();
 
-	void Bind() const override;
-	void Enable() const override;
-	void CreateVertexAttributes();
+	void Bind() const;
+	void CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, int Stride, void * Offset);
 private:
-	unsigned short VertexAttributeIndex;
+	unsigned short VertexAttributeIndex = 0;
 };
 

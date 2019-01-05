@@ -11,7 +11,7 @@ public:
 	Object();
 	virtual ~Object();
 
-	virtual void OnUpdate();
+	void OnUpdate();
 
 protected:
 	bool CanTick;

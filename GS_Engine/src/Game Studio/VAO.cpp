@@ -1,40 +1,33 @@
 #include "VAO.h"
 
-#include <stddef.h>
+#include "GL.h"
 
 #include "glad.h"
 
 #include "Vertex.h"
 
-
 VAO::VAO()
 {
-	glGenVertexArrays(1, & RendererObjectId);
+	GS_GL_CALL(glGenVertexArrays(1, & RendererObjectId));
+	Bind();
 }
-
 
 VAO::~VAO()
 {
-	glDeleteVertexArrays(1, & RendererObjectId);
+	GS_GL_CALL(glDeleteVertexArrays(1, & RendererObjectId));
 }
 
 void VAO::Bind() const
 {
-	glBindVertexArray(RendererObjectId);
+	GS_GL_CALL(glBindVertexArray(RendererObjectId));
 
 	return;
 }
 
-void VAO::Enable() const
+void VAO::CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, int Stride, void * Offset)
 {
-	glEnableVertexAttribArray(RendererObjectId);
-
-	return;
-}
-
-void VAO::CreateVertexAttributes()
-{
-	glVertexAttribPointer(VertexAttributeIndex, 3, GL_FLOAT, GL_FALSE, sizeof(Vector3), (void*)0);
+	GS_GL_CALL(glVertexAttribPointer((GLuint)VertexAttributeIndex, (GLint)NumberOfElementsInThisAttribute, (GLenum)DataType, (GLboolean)Normalize, (GLsizei)Stride, Offset));
+	GS_GL_CALL(glEnableVertexAttribArray((GLuint)VertexAttributeIndex));
 
 	VertexAttributeIndex++;
 

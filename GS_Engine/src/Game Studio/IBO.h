@@ -4,19 +4,21 @@
 
 #include "RendererObject.h"
 
-#define GL_STATIC_DRAW 0x88E4
-
 GS_CLASS IBO : RendererObject
 
 {
 public:
 	//Generates a new buffer.
-	IBO();
+	IBO(const void * Data, unsigned int Count);
 	~IBO();
 
 	//Makes this buffer the currently bound buffer.
-	void Bind(int Usage = GL_STATIC_DRAW) const;
+	void Bind() const;
+
+	unsigned int GetCount() const { return IndexCount; }
+	unsigned int * GetIndexArrayPointer() const { return IndexArray; }
 private:
 	unsigned int IndexCount;
+	unsigned int * IndexArray;
 };
 

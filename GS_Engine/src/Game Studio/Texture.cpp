@@ -4,6 +4,8 @@
 
 #include "Logger.h"
 
+#include "stb_image.h"
+
 Texture::Texture(const char * ImageFilePath)
 {
 	glGenTextures(1, & RendererObjectId);								//Generate a buffer to store the texture.
@@ -16,9 +18,9 @@ Texture::Texture(const char * ImageFilePath)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);	//Set texture minification filter as GL_LINEAR blend.
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);	//Set texture magnification filter as GL_LINEAR blend.
 
-	unsigned int NumberOfChannels;
+	int NumberOfChannels;
 	
-	unsigned char * ImageData = stbi_load(FileSystem::getPath("resources/textures/container.jpg").c_str(), & ImageDimensions.Width, & ImageDimensions.Height, & NumberOfChannels, 0);	//Import the image.
+	unsigned char * ImageData = stbi_load(ImageFilePath, & (int &)TextureDimensions.Width, & (int &)TextureDimensions.Height, & NumberOfChannels, 0);	//Import the image.
 
 	if (ImageData)	//Check if image import succeeded. If so.
 	{
@@ -29,7 +31,7 @@ Texture::Texture(const char * ImageFilePath)
 	{
 		GS_LOG_WARNING("Failed to import texture!")
 	}
-	stbi_image_free(data);
+	stbi_image_free(ImageData);
 }
 
 

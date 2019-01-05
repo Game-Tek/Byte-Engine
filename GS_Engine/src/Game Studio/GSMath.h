@@ -1,6 +1,8 @@
 #pragma once
 
-#include "DataTypes.h"
+#include "Vector2.h"
+#include "Vector3.h"
+
 #include "Matrix4x4.h"
 
 namespace GS
@@ -72,6 +74,5 @@ namespace GS
 	//////////////////////////////////////////////////////////////
 
 	Matrix4x4 Translate(const Vector3 & Vector);
-	Matrix4x4 Rotate(const Quat & A);
 };
 

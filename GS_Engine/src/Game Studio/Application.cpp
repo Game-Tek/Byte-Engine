@@ -4,6 +4,8 @@
 
 #include "windows.h"
 
+#include <iostream>
+
 namespace GS
 {
 	Application::Application()
@@ -30,8 +32,11 @@ namespace GS
 		{
 			ClockInstance->OnUpdate();
 			RendererInstance->OnUpdate(ClockInstance->GetDeltaTime());
+			WindowInstance->OnUpdate();
 
-			Sleep(1000);
+			std::cout << Clock::GetDeltaTime() << std::endl;
+
+			//Sleep(100);
 		}	
 	}
 

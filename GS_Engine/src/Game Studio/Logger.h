@@ -10,7 +10,6 @@ enum LogColors
 	White
 };
 
-
 #ifdef GS_DEBUG
 	#define GS_LOG_SUCCESS(Text, ...) Logger::PrintLog(Text, Green, __VA_ARGS__);
 	#define GS_LOG_MESSAGE(Text, ...) Logger::PrintLog(Text, White, __VA_ARGS__);
@@ -27,7 +26,7 @@ GS_CLASS Logger
 {
 public:
 	static void PrintLog(const char * Text, LogColors Color, ...);
-	static const char * GetglGetError();
+	static void GetglGetError();
 private:
 	static void SetLogTextColor(LogColors Color);
 };

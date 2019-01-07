@@ -4,27 +4,29 @@
 
 #include "windows.h"
 
+/*-----Static Members Declaration in .cpp-----*/
+bool Clock::ShouldUpdateGameTime;
+float Clock::DeltaTime;
+unsigned long long Clock::SystemTicks;
+float Clock::ElapsedTime;
+float Clock::ElapsedGameTime;
+unsigned long long Clock::StartSystemTicks;
+float Clock::TimeDivisor;
+unsigned long long Clock::ProcessorFrequency;
+/*--------------------------------------------*/
+
 Clock::Clock()
 {
 #ifdef GS_PLATFORM_WIN
 	LARGE_INTEGER WinProcessorFrequency;
+	LARGE_INTEGER WinProcessorTicks;
 
 	QueryPerformanceFrequency(& WinProcessorFrequency);
+	QueryPerformanceCounter(& WinProcessorTicks);
 
-	ProcessorFrequency = (unsigned long)WinProcessorFrequency.QuadPart;
-
-
-	SYSTEMTIME WinTimeStructure;
-
-	GetLocalTime(& WinTimeStructure);
-
-	Year = WinTimeStructure.wYear;
-
-	Month = (Months)WinTimeStructure.wMonth;
-
-	DayOfMonth = WinTimeStructure.wDay;
-
-	DayOfWeek = (WinTimeStructure.wDayOfWeek == 0) ? Sunday : (Days)WinTimeStructure.wDayOfWeek;
+	ProcessorFrequency = WinProcessorFrequency.QuadPart;
+	StartSystemTicks = WinProcessorTicks.QuadPart;
+	SystemTicks = WinProcessorTicks.QuadPart;
 #endif
 }
 
@@ -34,6 +36,25 @@ Clock::~Clock()
 
 void Clock::OnUpdate()
 {
+	LARGE_INTEGER WinProcessorTicks;
+
+	QueryPerformanceCounter(&WinProcessorTicks);
+
+	unsigned long long Delta = WinProcessorTicks.QuadPart - SystemTicks;
+
+	//Set delta time.
+	DeltaTime = Delta / (float)ProcessorFrequency;
+
+	//Set system ticks as this frame's ticks so in the next update we can work with it.
+	SystemTicks = WinProcessorTicks.QuadPart;
+
+	//Update elpased time counter.
+	ElapsedTime += DeltaTime;
+
+	//Update elapsed game time counter.
+	ElapsedGameTime += GetGameDeltaTime();
+
+	return;
 }
 
 //CLOCK FUNCTIONALITY GETTERS
@@ -43,42 +64,66 @@ float Clock::GetDeltaTime()
 	return DeltaTime;
 }
 
+float Clock::GetGameDeltaTime()
+{
+	return DeltaTime * TimeDivisor;
+}
+
 float Clock::GetElapsedTime()
 {
-	return ElapsedTime;
+	return (SystemTicks - StartSystemTicks) / (float)ProcessorFrequency;
 }
 
 float Clock::GetElapsedGameTime()
 {
-	return GameTime;
+	return ElapsedGameTime;
 }
-
 
 //UTILITY GETTERS
 
 unsigned short Clock::GetYear()
 {
-	return Year;
+	SYSTEMTIME WinTimeStructure;
+
+	GetLocalTime(&WinTimeStructure);
+
+	return WinTimeStructure.wYear;
 }
 
 Months Clock::GetMonth()
 {
-	return Month;
+	SYSTEMTIME WinTimeStructure;
+
+	GetLocalTime(&WinTimeStructure);
+
+	return (Months)WinTimeStructure.wMonth;
 }
 
 unsigned short Clock::GetDayOfMonth()
 {
-	return DayOfMonth;
+	SYSTEMTIME WinTimeStructure;
+
+	GetLocalTime(&WinTimeStructure);
+
+	return WinTimeStructure.wDay;
 }
 
 Days Clock::GetDayOfWeek()
 {
-	return DayOfWeek;
+	SYSTEMTIME WinTimeStructure;
+
+	GetLocalTime(& WinTimeStructure);
+
+	return (WinTimeStructure.wDayOfWeek == 0) ? Sunday : (Days)WinTimeStructure.wDayOfWeek;
 }
 
 Time Clock::GetTime()
 {
-	return Time;
+	SYSTEMTIME WinTimeStructure;
+
+	GetLocalTime(& WinTimeStructure);
+	
+	return { (unsigned short)WinTimeStructure.wHour, (unsigned short)WinTimeStructure.wMinute, (unsigned short)WinTimeStructure.wSecond };
 }
 
 //CLOCK FUNCTIONALITY

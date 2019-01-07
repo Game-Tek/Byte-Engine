@@ -8,6 +8,8 @@
 
 #include "glad.h"
 
+#include "Clock.h"
+
 void Logger::SetLogTextColor(LogColors Color)
 {
 	switch (Color)
@@ -39,11 +41,9 @@ void Logger::PrintLog(const char * Text, LogColors Color, ...)
 {
 	SetLogTextColor(Color);
 
-	SYSTEMTIME Time;
+	Time LogTime = Clock::GetTime();
 
-	GetLocalTime(&Time);
-
-	printf("[Time: %02d:%02d:%02d]", Time.wHour, Time.wMinute, Time.wSecond);
+	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 
 
 	va_list args;
@@ -56,14 +56,15 @@ void Logger::PrintLog(const char * Text, LogColors Color, ...)
 	SetLogTextColor(White);
 }
 
-const char * Logger::GetglGetError()
+void Logger::GetglGetError()
 {
 	switch (glGetError())
 	{
 	case GL_NO_ERROR:
-		return "No error.";
+		return;
 	case GL_INVALID_ENUM:
-		return "Inavalid ENUM";
+		GS_LOG_ERROR("Invalid enum!");
+		return;
 	}
-	return "Exited prematurely!";
+	return;
 }

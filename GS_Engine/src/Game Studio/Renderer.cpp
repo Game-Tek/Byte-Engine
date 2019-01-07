@@ -66,9 +66,5 @@ void Renderer::OnUpdate(float DeltaTime)
 	//DrawCalls = times to loop Draw().
 	Draw(VertexBuffer, IndexBuffer, VertexAttribute, Prog);							//Perform draw call.
 
-	glfwPollEvents();
-
-	glfwSwapBuffers(WindowInstanceRef->GetGLFWWindow());
-
 	return;
 }

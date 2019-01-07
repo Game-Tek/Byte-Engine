@@ -1,6 +1,6 @@
 #include "Window.h"
 
-Window::Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName) : WNDW_WIDTH(WindowWidth), WNDW_HEIGHT(WindowHeight)
+Window::Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName) : WindowWidth(WindowWidth), WindowHeight(WindowHeight)
 {
 	GS_ASSERT(glfwInit());															//Initialize GLFW.
 	
@@ -17,6 +17,13 @@ Window::Window(unsigned short WindowWidth, unsigned short WindowHeight, const ch
 Window::~Window()
 {
 	glfwTerminate();																//Tells GLFW to remove all of it's allocated resources.
+}
+
+void Window::OnUpdate()
+{
+	glfwPollEvents();
+
+	glfwSwapBuffers(GLWindow);
 }
 
 void Window::SetVsync(bool Enable)

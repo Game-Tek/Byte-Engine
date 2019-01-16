@@ -6,13 +6,13 @@
 
 #include "ImageSize.h"
 
-class Texture : public RendererObject
+GS_CLASS Texture : public RendererObject
 {
 public:
 	Texture(const char * ImageFilePath);
 	~Texture();
 
-	void Bind() const;
+	void Bind() const override;
 	void ActivateTexture(unsigned short Index) const;
 protected:
 	ImageSize TextureDimensions;

@@ -2,17 +2,13 @@
 
 #include "Core.h"
 
-#include "String.h"
-
 GS_CLASS Object
 {
 public:
-	//Methods
 	Object();
 	virtual ~Object();
 
-	void OnUpdate();
-
+	unsigned int GetId() const { return UUID; }
 protected:
-	bool CanTick;
+	unsigned int UUID;
 };

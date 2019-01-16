@@ -153,12 +153,20 @@
     <ClInclude Include="src\Game Studio\Shader.h">
       <Filter>Engine Systems\Renderer\Shaders</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\GSMath.h">
-      <Filter>Misc\Math</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\GSM.hpp">
+      <Filter>Misc\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Line.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Quat.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector4.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -188,9 +196,6 @@
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine Systems\Clock</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Math.cpp">
-      <Filter>Misc\Math</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Object.cpp">
       <Filter>Game Objects</Filter>
     </ClCompile>
@@ -203,6 +208,9 @@
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp">
       <Filter>Engine Systems</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\GSM.cpp">
+      <Filter>Misc\Math</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

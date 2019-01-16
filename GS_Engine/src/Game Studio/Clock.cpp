@@ -4,7 +4,7 @@
 
 #include "windows.h"
 
-/*-----Static Members Declaration in .cpp-----*/
+/*-----Members Declaration in .cpp-----*/
 bool Clock::ShouldUpdateGameTime;
 float Clock::DeltaTime;
 unsigned long long Clock::SystemTicks;
@@ -42,8 +42,23 @@ void Clock::OnUpdate()
 
 	unsigned long long Delta = WinProcessorTicks.QuadPart - SystemTicks;
 
-	//Set delta time.
-	DeltaTime = Delta / (float)ProcessorFrequency;
+
+	//Calculate delta time.
+	float loc_DeltaTime = Delta / (float)ProcessorFrequency;
+
+
+	//Check if loc_DeltaTime exceed 1 seconds.
+	//This is done to prevent possible problems caused by large time deltas,
+	//which could be caused by checking breakpoints during development
+	//or by ocassional freezes during normal gameplay.
+
+	if (loc_DeltaTime > 1.0f)
+	{
+		DeltaTime = 0.01666f;
+	}
+
+	//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
+	DeltaTime = loc_DeltaTime;
 
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	SystemTicks = WinProcessorTicks.QuadPart;
@@ -123,7 +138,7 @@ Time Clock::GetTime()
 
 	GetLocalTime(& WinTimeStructure);
 	
-	return { (unsigned short)WinTimeStructure.wHour, (unsigned short)WinTimeStructure.wMinute, (unsigned short)WinTimeStructure.wSecond };
+	return { WinTimeStructure.wHour, WinTimeStructure.wMinute, WinTimeStructure.wSecond };
 }
 
 //CLOCK FUNCTIONALITY

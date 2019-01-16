@@ -12,7 +12,7 @@ public:
 	Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName);
 	~Window();
 
-	void OnUpdate();
+	void OnUpdate() override;
 
 	//Enable or disable V-Sync.
 	void SetVsync(bool Enable);

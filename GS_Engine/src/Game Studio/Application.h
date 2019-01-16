@@ -21,13 +21,13 @@ namespace GS
 		void Run();
 
 	private:
-		Clock * ClockInstance;
+		Clock * ClockInstance = nullptr;
 
-		Window * WindowInstance;
+		Window * WindowInstance = nullptr;
 
-		Renderer * RendererInstance;
+		Renderer * RendererInstance = nullptr;
 
-		//EventDispatcher * EventDispatcherInstance;
+		EventDispatcher * EventDispatcherInstance = nullptr;
 
 		/*int ShouldClose();*/
 	};

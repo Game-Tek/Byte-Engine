@@ -4,7 +4,7 @@
 
 #include "RendererObject.h"
 
-GS_CLASS IBO : RendererObject
+GS_CLASS IBO : public RendererObject
 
 {
 public:
@@ -13,12 +13,10 @@ public:
 	~IBO();
 
 	//Makes this buffer the currently bound buffer.
-	void Bind() const;
+	void Bind() const override;
 
 	unsigned int GetCount() const { return IndexCount; }
-	unsigned int * GetIndexArrayPointer() const { return IndexArray; }
 private:
 	unsigned int IndexCount;
-	unsigned int * IndexArray;
 };
 

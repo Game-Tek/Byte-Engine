@@ -13,7 +13,7 @@
 GS_CLASS RendererObject
 {
 public:
-	void Bind() const;
+	virtual void Bind() const {} ;
 
 	unsigned int GetId() const { return RendererObjectId; }
 

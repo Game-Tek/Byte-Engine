@@ -4,14 +4,16 @@
 
 #include "RendererObject.h"
 
-GS_CLASS VAO : RendererObject
+GS_CLASS VAO : public RendererObject
 {
 public:
 	VAO();
 	~VAO();
 
-	void Bind() const;
-	void CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, int Stride, void * Offset);
+	void Bind() const override;
+
+	template <typename VertexType>
+	void CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, void * Offset);
 private:
 	unsigned short VertexAttributeIndex = 0;
 };

@@ -33,10 +33,8 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	VertexAttribute = new VAO();
 	Prog = new Program();
 
-	VertexAttribute->Bind();
-
-	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(Vector3));
+	VertexAttribute->CreateVertexAttribute<Vertex>(3, GL_FLOAT, GL_FALSE, (void*)0);
+	VertexAttribute->CreateVertexAttribute<Vertex>(2, GL_FLOAT, GL_FALSE, (void*)sizeof(Vector3));
 }
 
 Renderer::~Renderer()
@@ -59,9 +57,9 @@ void Renderer::Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const
 	return;
 }
 
-void Renderer::OnUpdate(float DeltaTime)
+void Renderer::OnUpdate()
 {
-	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT));
+	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
 	//DrawCalls = times to loop Draw().
 	Draw(VertexBuffer, IndexBuffer, VertexAttribute, Prog);							//Perform draw call.

@@ -20,7 +20,7 @@ public:
 	Renderer(Window * WD);
 	~Renderer();
 
-	void OnUpdate(float DeltaTime);
+	void OnUpdate() override;
 	void Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const;
 
 private:

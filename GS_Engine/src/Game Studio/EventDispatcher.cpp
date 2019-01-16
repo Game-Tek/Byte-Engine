@@ -1,54 +1,97 @@
-/*#include "EventDispatcher.h"
+#include "EventDispatcher.h"
 
+unsigned char					EventDispatcher::ActiveLevel = 0;
 
+//SArray<unsigned short>			EventDispatcher::Events;
+unsigned short					EventDispatcher::EventCount = 0;
+SArray<SArray<FunctionPointer>>	EventDispatcher::EventInfo;
+SArray<const Event &>			EventDispatcher::EventQueue;
 
 EventDispatcher::EventDispatcher()
 {
 }
 
-
 EventDispatcher::~EventDispatcher()
 {
-	for (unsigned short i = 0; i < Events.GetArrayLength(); i++)	//Delete every instanced event Events points to.
+}
+
+void EventDispatcher::OnUpdate()
+{
+	for (unsigned short i = 0; i < EventQueue.GetArrayLength(); i++)
 	{
-		delete Events[i];
+		for (unsigned short j = 0; j < EventInfo[EventQueue[i].EventIndex].GetArrayLength(); j++)
+		{
+			EventInfo[EventQueue[i].EventIndex][j](EventQueue[i]);
+		}
+		EventQueue.RemoveElement(i);
 	}
 }
 
-void EventDispatcher::CreateEvent(unsigned short EventId)
+unsigned short EventDispatcher::CreateEvent()
 {
-	Event * NewEvent = new Event(EventId);
-	Events.SetElement(NewEvent);		//Register event.
+	//Events.PopBack(EventId);
+
+	EventCount++;
+
+	return EventCount;
+}
+
+void EventDispatcher::Subscribe(unsigned short EventId, FunctionPointer FunctionToCall)
+{
+	//unsigned short EventIndex = Loop(EventId);		//Call loop and store the return in _local_var_EventIndex.
+
+	EventInfo[EventId].PopBack(FunctionToCall);			//Access EventInfo at _local_var_EventIndex and store in the array inside that index the function to call.
 
 	return;
 }
 
-void EventDispatcher::Subscribe(void * Subscriber, unsigned short EventId, void(*FunctionToCall)())
+void EventDispatcher::UnSubscribe(unsigned short EventId, FunctionPointer OrigFunction)
 {
-	unsigned short Index;
-
-	for (unsigned short i = 0; i < EventInfo.GetArrayLength(); i++)
+	/*for (unsigned short i = 0; i < EventInfo.GetArrayLength(); i++)
 	{
-		if (Events[i]->EventId == EventId)
+		for (unsigned short j = 0; j < EventInfo[i].GetArrayLength(); j++)
 		{
-			Index = i;
+			if (EventInfo[i][j] == OrigFunction);
+			{
+				EventInfo[i].RemoveElement(j, false);
+			}
+		}
+	}
+	*/
+
+	for (unsigned short i = 0; i < EventInfo[EventId].GetArrayLength(); i++)
+	{
+		if (EventInfo[EventId][i] == OrigFunction)
+		{
+			EventInfo[EventId].RemoveElement(i);
 
 			break;
 		}
 	}
-	EventInfo[Index][EventInfo.GetArrayLength()] = FunctionToCall;
+
+	return;
 }
 
-void EventDispatcher::Post(unsigned short Index, Event & Event)
+void EventDispatcher::Notify(unsigned short EventId, Event & Event)
 {
-	EventInfo[0][0];
+	EventQueue.PopBack(Event);
+
+	//Event.EventIndex = Loop(EventId);
+
+	return;
 }
 
-void EventDispatcher::Dispatch(unsigned short EventIndex)
+/*
+//Find index for EventId.
+int EventDispatcher::Loop(unsigned short EventId)
 {
-	for (unsigned short i = 0; i < EventInfo[EventIndex].GetArrayLength(); i++)
+	for (unsigned short i = 0; i < Events.GetArrayLength(); i++)	//Loop through each registered event.
 	{
-		EventInfo[EventIndex][i]();
+		if (Events[i] = EventId)									//If _param_EventId equals the EventId in the current index return i.
+		{
+			return i;
+		}
 	}
+	return;
 }
 */

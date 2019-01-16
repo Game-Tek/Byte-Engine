@@ -6,16 +6,20 @@ template <typename ArrayType>
 GS_CLASS SArray : public Array<ArrayType>
 {
 public:
-	SArray(int N);
+	//Constructs a new SArray with N elements.
+	SArray(unsigned int N);
+
 	~SArray();
 
-	void SetElement(unsigned int Index, const ArrayType & Object);
-	void SetElement(const ArrayType & Object);
-	void RemoveElement(unsigned int Index, bool AdjustStack);
+	//Places the Object after the last occupied element.
+	void PopBack(const ArrayType & Object);
+
+	//Removes the specified element.
+	void RemoveElement(unsigned int Index);
 };
 
 template <typename ArrayType>
-SArray<ArrayType>::SArray(int N)
+SArray<ArrayType>::SArray(unsigned int N)
 {
 	this->Arrayptr = new ArrayType[N];
 }
@@ -23,29 +27,16 @@ SArray<ArrayType>::SArray(int N)
 template <typename ArrayType>
 SArray<ArrayType>::~SArray()
 {
+	//Delete the heap allocated array located in Arrayptr.
 	delete[] this->Arrayptr;
 }
 
 template <typename ArrayType>
-void SArray<ArrayType>::SetElement(unsigned int Index, const ArrayType & Object)
+void SArray<ArrayType>::PopBack(const ArrayType & Object)
 {
-	this->Arrayptr[Index] = Object;
+	this->Arrayptr[this->LastIndex] = Object;
+
+	this->LastIndex++;
 
 	return;
-}
-
-template <typename ArrayType>
-void SArray<ArrayType>::SetElement(const ArrayType & Object)
-{
-	this->Arrayptr[this->ArrayLength] = Object;
-
-	return;
-}
-
-template <typename ArrayType>
-void SArray<ArrayType>::RemoveElement(unsigned int Index, bool AdjustStack)
-{
-	this->Arrayptr[Index] = ArrayType();
-
-	this->ArrayLength -= 1;
 }

@@ -24,9 +24,10 @@ void VAO::Bind() const
 	return;
 }
 
-void VAO::CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, int Stride, void * Offset)
+template <typename VertexType>
+void VAO::CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, void * Offset)
 {
-	GS_GL_CALL(glVertexAttribPointer((GLuint)VertexAttributeIndex, (GLint)NumberOfElementsInThisAttribute, (GLenum)DataType, (GLboolean)Normalize, (GLsizei)Stride, Offset));
+	GS_GL_CALL(glVertexAttribPointer((GLuint)VertexAttributeIndex, (GLint)NumberOfElementsInThisAttribute, (GLenum)DataType, (GLboolean)Normalize, sizeof(VertexType), Offset));
 	GS_GL_CALL(glEnableVertexAttribArray((GLuint)VertexAttributeIndex));
 
 	VertexAttributeIndex++;

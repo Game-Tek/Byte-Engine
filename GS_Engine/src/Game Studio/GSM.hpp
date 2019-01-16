@@ -3,10 +3,13 @@
 #include "Vector2.h"
 #include "Vector3.h"
 
+#include "Quat.h"
+
 #include "Matrix4x4.h"
 
-namespace GS
+GS_CLASS GSM
 {
+public:
 	//Mixes A and B by the specified values, Where Alpha 0 returns A and Alpha 1 returns B.
 	static float Lerp(float A, float B, float Alpha);
 
@@ -14,6 +17,16 @@ namespace GS
 	static float FInterp(float Target, float Current, float DT, float InterpSpeed);
 
 	static float MapToRange(float A, float AMin, float AMax, float RangeMin, float RangeMax);
+
+	static float SquareRoot(float A);
+	
+	static float Abs(float A);
+
+	static int Round(float A);
+
+	static float DegreesToRadians(float Degrees);
+
+	static float RadiansToDegrees(float Radians);
 
 	//////////////////////////////////////////////////////////////
 	//						VECTOR MATH							//
@@ -73,6 +86,8 @@ namespace GS
 	//						MATRIX MATH							//
 	//////////////////////////////////////////////////////////////
 
-	Matrix4x4 Translate(const Vector3 & Vector);
+	static Matrix4 Translate(const Vector3 & Vector);
+
+	static Matrix4 Rotate(const Quat & A);
 };
 

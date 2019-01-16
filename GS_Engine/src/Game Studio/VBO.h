@@ -6,12 +6,12 @@
 
 #define GL_STATIC_DRAW 0x88E4
 
-GS_CLASS VBO : RendererObject
+GS_CLASS VBO : public RendererObject
 {
 public:
 	VBO(const void * Data, unsigned int Size, int Usage = GL_STATIC_DRAW);
 	~VBO();
 
-	void Bind() const;
+	void Bind() const override;
 };
 

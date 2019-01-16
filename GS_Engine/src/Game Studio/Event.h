@@ -5,7 +5,7 @@
 GS_CLASS Event
 {
 public:
-	Event(unsigned short EventId);
+	Event();
 	~Event();
 
 	unsigned short EventId;

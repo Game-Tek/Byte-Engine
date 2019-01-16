@@ -100,6 +100,7 @@
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Importer.h" />
     <ClInclude Include="src\Game Studio\Line.h" />
+    <ClInclude Include="src\Game Studio\Matrix4.h" />
     <ClInclude Include="src\Game Studio\Quat.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
@@ -119,7 +120,6 @@
     <ClInclude Include="src\Game Studio\GSM.hpp" />
     <ClInclude Include="src\Game Studio\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
-    <ClInclude Include="src\Game Studio\Matrix4x4.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
     <ClInclude Include="src\Game Studio\SArray.hpp" />

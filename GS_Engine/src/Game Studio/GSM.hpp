@@ -5,7 +5,7 @@
 
 #include "Quat.h"
 
-#include "Matrix4x4.h"
+#include "Matrix4.h"
 
 GS_CLASS GSM
 {

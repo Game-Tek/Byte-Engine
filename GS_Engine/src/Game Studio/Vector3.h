@@ -71,22 +71,22 @@ public:
 		return { X + Other.X, Y + Other.Y, Z + Other.Z };
 	}
 
-	void operator+= (float Other)
+	Vector3 & operator+= (float Other)
 	{
 		X += Other;
 		Y += Other;
 		Z += Other;
 
-		return;
+		return *this;
 	}
 
-	void operator+= (const Vector3 & Other)
+	Vector3 & operator+= (const Vector3 & Other)
 	{
 		X += Other.X;
 		Y += Other.Y;
 		Z += Other.Z;
 
-		return;
+		return *this;
 	}
 
 	Vector3 operator- (float Other) const
@@ -99,22 +99,22 @@ public:
 		return { X - Other.X, Y - Other.Y, Z - Other.Z };
 	}
 
-	void operator-= (float Other)
+	Vector3 & operator-= (float Other)
 	{
 		X -= Other;
 		Y -= Other;
 		Z -= Other;
 
-		return;
+		return *this;
 	}
 
-	void operator-= (const Vector3 & Other)
+	Vector3 & operator-= (const Vector3 & Other)
 	{
 		X -= Other.X;
 		Y -= Other.Y;
 		Z -= Other.Z;
 
-		return;
+		return *this;
 	}
 
 	Vector3 operator* (float Other) const
@@ -122,13 +122,13 @@ public:
 		return { X * Other, Y * Other, Z * Other };
 	}
 
-	void operator*= (float Other)
+	Vector3 & operator*= (float Other)
 	{
 		X *= Other;
 		Y *= Other;
 		Z *= Other;
 
-		return;
+		return *this;
 	}
 
 	Vector3 operator/ (float Other) const
@@ -136,12 +136,12 @@ public:
 		return { X / Other, Y / Other, Z / Other };
 	}
 
-	void operator/= (float Other)
+	Vector3 & operator/= (float Other)
 	{
 		X /= Other;
 		Y /= Other;
 		Z /= Other;
 
-		return;
+		return *this;
 	}
 };

@@ -81,7 +81,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 operator+= (float Other)
+	Matrix4 & operator+= (float Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -91,7 +91,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator+= (const Matrix4 & Other)
+	Matrix4 & operator+= (const Matrix4 & Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -125,7 +125,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 operator-= (float Other)
+	Matrix4 & operator-= (float Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -135,7 +135,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator-= (const Matrix4 & Other)
+	Matrix4 & operator-= (const Matrix4 & Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -190,7 +190,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 operator*= (float Other)
+	Matrix4 & operator*= (float Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -200,7 +200,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator*= (const Matrix4 & Other)
+	Matrix4 & operator*= (const Matrix4 & Other)
 	{
 		for (unsigned short y = 0; y < 4; y++)
 		{
@@ -231,12 +231,14 @@ public:
 		return Result;
 	}
 
-	Matrix4 operator/= (float Other)
+	Matrix4 & operator/= (float Other)
 	{
 		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] /= Other;
 		}
+
+		return *this;
 	}
 
 	float & operator[] (unsigned int Index) { return Array[Index]; }

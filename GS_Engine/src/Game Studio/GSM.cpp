@@ -4,9 +4,8 @@
 
 const static float PI = 3.1415926535f;
 
-using namespace std;
-
 //INLINE STATIC	
+
 
 float Mod(float A, float B)
 {
@@ -91,26 +90,27 @@ float Cosine(float Degrees) {
 	return cos;
 }
 
+
 //////////////////////////////////////////////////////////////
 //						SCALAR MATH							//
 //////////////////////////////////////////////////////////////
 
-float GSM::Lerp(float A, float B, float Alpha)
+const float GSM::Lerp(float A, float B, float Alpha)
 {
 	return A + Alpha * (B - A);
 }
 
-float GSM::FInterp(float Target, float Current, float DT, float InterpSpeed)
+const float GSM::FInterp(float Target, float Current, float DT, float InterpSpeed)
 {
 	return (((Target - Current) * DT) * InterpSpeed) + Current;
 }
 
-float GSM::MapToRange(float A, float InMin, float InMax, float OutMin, float OutMax)
+const float GSM::MapToRange(float A, float InMin, float InMax, float OutMin, float OutMax)
 {
 	return InMin + ((OutMax - OutMin) / (InMax - InMin)) * (A - InMin);
 }
 
-float GSM::SquareRoot(float A)
+const float GSM::SquareRoot(float A)
 {
 	//https://www.geeksforgeeks.org/square-root-of-a-perfect-square/
 	float X = A;
@@ -124,12 +124,12 @@ float GSM::SquareRoot(float A)
 	return X;
 }
 
-float GSM::Abs(float A)
+const float GSM::Abs(float A)
 {
 	return A > 0 ? A : -A;
 }
 
-int GSM::Round(float A)
+const int GSM::Round(float A)
 {
 	int Truncated = (int)A;
 
@@ -144,12 +144,12 @@ int GSM::Round(float A)
 	}
 }
 
-float GSM::DegreesToRadians(float Degrees)
+const float GSM::DegreesToRadians(float Degrees)
 {
 	return Degrees * PI / 180;
 }
 
-float GSM::RadiansToDegrees(float Radians)
+const float GSM::RadiansToDegrees(float Radians)
 {
 	return Radians * 180 / PI;
 }
@@ -158,59 +158,59 @@ float GSM::RadiansToDegrees(float Radians)
 //						VECTOR MATH							//
 //////////////////////////////////////////////////////////////
 
-float GSM::VectorLength(const Vector2 & Vec1)
+const float GSM::VectorLength (const Vector2 & Vec1)
 {
 	return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y);
 }
 
-float GSM::VectorLength(const Vector3 & Vec1)
+const float GSM::VectorLength (const Vector3 & Vec1)
 {
 	return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z);	
 }
 
-float GSM::VectorLengthSquared(const Vector2 & Vec1)
+const float GSM::VectorLengthSquared(const Vector2 & Vec1)
 {
 	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
 }
 
-float GSM::VectorLengthSquared(const Vector3 & Vec1)
+const float GSM::VectorLengthSquared(const Vector3 & Vec1)
 {
 	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z;
 }
 
-Vector2 GSM::Normalize(const Vector2 & Vec1)
+const Vector2 GSM::Normalize(const Vector2 & Vec1)
 {
 	float Length = VectorLength(Vec1);
 	return { Vec1.X / Length, Vec1.Y / Length };
 }
 
-Vector3 GSM::Normalize(const Vector3 & Vec1)
+const Vector3 GSM::Normalize(const Vector3 & Vec1)
 {
 	float Length = VectorLength(Vec1);
 	return { Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length };
 }
 
-float GSM::Dot(const Vector2 & Vec1, const Vector2 & Vec2)
+const float GSM::Dot(const Vector2 & Vec1, const Vector2 & Vec2)
 {
 	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y;
 }
 
-float GSM::Dot(const Vector3 & Vec1, const Vector3 & Vec2)
+const float GSM::Dot(const Vector3 & Vec1, const Vector3 & Vec2)
 {
 	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
 }
 
-Vector3 GSM::Cross(const Vector3 & Vec1, const Vector3 & Vec2)
+const Vector3 GSM::Cross(const Vector3 & Vec1, const Vector3 & Vec2)
 {
 	return { Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X };
 }
 
-Vector2 GSM::AbsVector(const Vector2 & Vec1)
+const Vector2 GSM::AbsVector(const Vector2 & Vec1)
 {
 	return { Abs(Vec1.X), Abs(Vec1.Y) };
 }
 
-Vector3 GSM::AbsVector(const Vector3 & Vec1)
+const Vector3 GSM::AbsVector(const Vector3 & Vec1)
 {
 	return { Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z) };
 }
@@ -230,37 +230,37 @@ Vector3 GSM::AbsVector(const Vector3 & Vec1)
 //						LOGIC								//
 //////////////////////////////////////////////////////////////
 
-bool GSM::IsNearlyEqual(float A, float Target, float Tolerance)
+const bool GSM::IsNearlyEqual(float A, float Target, float Tolerance)
 {
 	return A > Target - Tolerance && A < Target + Tolerance;
 }
 
-bool GSM::IsInRange(float A, float Min, float Max)
+const bool GSM::IsInRange(float A, float Min, float Max)
 {
 	return A > Min && A < Max;
 }
 
-bool GSM::IsVectorEqual(const Vector2 & A, const Vector2 & B)
+const bool GSM::IsVectorEqual(const Vector2 & A, const Vector2 & B)
 {
 	return A.X == B.X && A.Y == B.Y;
 }
 
-bool GSM::IsVectorEqual(const Vector3 & A, const Vector3 & B)
+const bool GSM::IsVectorEqual(const Vector3 & A, const Vector3 & B)
 {
 	return A.X == B.X && A.Y == B.Y && A.Z == B.Z;
 }
 
-bool GSM::IsVectorNearlyEqual(const Vector2 & A, const Vector2 & Target, float Tolerance)
+const bool GSM::IsVectorNearlyEqual(const Vector2 & A, const Vector2 & Target, float Tolerance)
 {
 	return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance);
 }
 
-bool GSM::IsVectorNearlyEqual(const Vector3 & A, const Vector3 & Target, float Tolerance)
+const bool GSM::IsVectorNearlyEqual(const Vector3 & A, const Vector3 & Target, float Tolerance)
 {
 	return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance) && IsNearlyEqual(A.Z, Target.Z, Tolerance);
 }
 
-bool GSM::AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B)
+const bool GSM::AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B)
 {
 	return A.X > B.X && A.Y > B.Y && A.Z > B.Z;
 }
@@ -269,9 +269,9 @@ bool GSM::AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B)
 //						MATRIX MATH							//
 //////////////////////////////////////////////////////////////
 
-Matrix4x4 GSM::Translate(const Vector3 & Vector)
+const Matrix4 GSM::Translate(const Vector3 & Vector)
 {
-	Matrix4x4 Result;
+	Matrix4 Result;
 
 	Result[0 + 3 * 4] = Vector.X;
 	Result[1 + 3 * 4] = Vector.Y;
@@ -280,9 +280,9 @@ Matrix4x4 GSM::Translate(const Vector3 & Vector)
 	return Result;
 }
 
-Matrix4x4 GSM::Rotate(const Quat & A)
+const Matrix4 GSM::Rotate(const Quat & A)
 {
-	Matrix4x4 Result;
+	Matrix4 Result;
 	Result.Identity();
 
 	float r = DegreesToRadians(A.Q);

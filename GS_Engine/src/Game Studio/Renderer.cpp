@@ -31,7 +31,7 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	VertexBuffer = new VBO(Vertices, sizeof(Vertices), GL_STATIC_DRAW);
 	IndexBuffer = new IBO(Indices, 3);
 	VertexAttribute = new VAO();
-	Prog = new Program();
+	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
 	VertexAttribute->CreateVertexAttribute<Vertex>(3, GL_FLOAT, GL_FALSE, (void*)0);
 	VertexAttribute->CreateVertexAttribute<Vertex>(2, GL_FLOAT, GL_FALSE, (void*)sizeof(Vector3));

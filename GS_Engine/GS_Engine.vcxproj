@@ -96,12 +96,14 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="ResourceManager.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Importer.h" />
     <ClInclude Include="src\Game Studio\Line.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h" />
     <ClInclude Include="src\Game Studio\Quat.h" />
+    <ClInclude Include="src\Game Studio\Resource.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
@@ -123,6 +125,7 @@
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
     <ClInclude Include="src\Game Studio\SArray.hpp" />
+    <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.hpp" />
     <ClInclude Include="src\GameStudio.h" />
@@ -140,6 +143,7 @@
     <ClInclude Include="src\Game Studio\Vector4.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Shader.cpp" />
     <ClCompile Include="src\Game Studio\Program.cpp" />
@@ -150,6 +154,7 @@
     <ClCompile Include="src\Game Studio\Application.cpp" />
     <ClCompile Include="src\Game Studio\Object.cpp" />
     <ClCompile Include="src\Game Studio\Renderer.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\Window.cpp" />
     <ClCompile Include="src\Game Studio\VAO.cpp" />
     <ClCompile Include="src\Game Studio\VBO.cpp" />

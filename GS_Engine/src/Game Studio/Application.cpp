@@ -31,7 +31,7 @@ namespace GS
 		while (true/*!ShouldClose()*/)
 		{
 			ClockInstance->OnUpdate();
-			RendererInstance->OnUpdate(ClockInstance->GetDeltaTime());
+			RendererInstance->OnUpdate();
 			WindowInstance->OnUpdate();
 
 			std::cout << Clock::GetDeltaTime() << std::endl;

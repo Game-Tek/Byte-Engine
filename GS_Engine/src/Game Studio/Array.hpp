@@ -10,22 +10,43 @@ public:
 	void SetElement(unsigned int Index, const ArrayType & Object);
 
 	//Places the object after the last occupied element.
-	virtual void PopBack(const ArrayType & Object) = 0;
+	virtual void PopBack(const ArrayType & Object) = 0 {};
 
 	//Places the object on the first free element found.
-	void PopOnFree(const ArrayType & Object);
+	void PopOnFree(const ArrayType & Object)
+	{
+		unsigned int FirstIndex = FindFirstFreeSlot();
+
+		this->Arrayptr[FirstIndex];
+
+		if (FirstIndex == this->LastIndex)
+		{
+			this->LastIndex++;
+		}
+	}
 
 	//Removes the specified element.
-	virtual void RemoveElement(unsigned int Index) = 0;
+	virtual void RemoveElement(unsigned int Index)
+	{
+		this->Arrayptr[Index] = ArrayType();
 
-	ArrayType & operator[](unsigned int Index) { return[Index]; }
+		this->ArrayLength--;
+
+		if (Index == this->LastIndex)
+		{
+			this->LastIndex--;
+		}
+
+		return;
+	}
+
+	ArrayType & operator[](unsigned int Index) { return this->Arrayptr[Index]; }
+	ArrayType operator[](unsigned int Index) const { return this->Arrayptr[Index]; }
 	ArrayType & operator=(const ArrayType & Other) { return Other; }
 
-	unsigned short GetArrayLength() const { return ArrayLength; }
-	unsigned short GetLastIndex() const { return LastIndex; }
-	ArrayType * GetArrayPointer() const { return Arrayptr; }
+	unsigned short GetArrayLength() const { return this->ArrayLength; }
+	unsigned short GetLastIndex() const { return this->LastIndex; }
 
-	unsigned int FindFirstFreeSlot() const;
 
 protected:
 	//Pointer to the array.
@@ -39,61 +60,16 @@ protected:
 
 	unsigned int LastIndex = 0;
 
-	unsigned int FindFirstFreeSlot();
-};
-
-template <typename ArrayType>
-void Array<ArrayType>::SetElement(unsigned int Index, const ArrayType & Object)
-{
-	this->Arrayptr[Index] = Object;
-
-	if (Index == LastIndex)
+	unsigned int FindFirstFreeSlot()
 	{
-		this->LastIndex = Index + 1;
-	}
+		ArrayType DefaultValue = ArrayType();
 
-	return;
-}
-
-template <typename ArrayType>
-unsigned int Array<ArrayType>::FindFirstFreeSlot()
-{
-	ArrayType DefaultValue = ArrayType();
-
-	for (unsigned int i = 0; i < this->ArrayLength; i++)
-	{
-		if (this->Arrayptr[i] == DefaultValue)
+		for (unsigned int i = 0; i < this->ArrayLength; i++)
 		{
-			return i;
+			if (this->Arrayptr[i] == DefaultValue)
+			{
+				return i;
+			}
 		}
 	}
-}
-
-template <typename ArrayType>
-void Array<ArrayType>::PopOnFree(const ArrayType & Element)
-{
-	unsigned int FirstIndex = FindFirstFreeSlot();
-
-	this->Arrayptr[FirstIndex];
-
-	if (FirstIndex == this->LastIndex)
-	{
-		this->LastIndex++;
-	}
-}
-
-
-template <typename ArrayType>
-void Array<ArrayType>::RemoveElement(unsigned int Index)
-{
-	this->Arrayptr[Index] = ArrayType();
-
-	this->ArrayLength--;
-
-	if (Index == this->LastIndex)
-	{
-		LastIndex--;
-	}
-
-	return;
-}
+};

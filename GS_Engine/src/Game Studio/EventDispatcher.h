@@ -6,13 +6,17 @@
 
 #include "Event.h"
 
-#include "SArray.hpp"
+#include "DArray.hpp"
 
 typedef void (*FunctionPointer)(const Event & Event);
 
-struct EventSubInfo
+struct Func
 {
-	FunctionPointer FuncPointer;
+	Func(FunctionPointer Pointer) : FuncPointer(Pointer)
+	{
+	}
+
+	FunctionPointer FuncPointer = nullptr;
 };
 
 GS_CLASS EventDispatcher : public ESystem
@@ -33,9 +37,9 @@ private:
 	static unsigned char					ActiveLevel;
 
 	//static SArray<unsigned short>			Events;
-	static unsigned short EventCount;
-	static SArray<SArray<FunctionPointer>>	EventInfo;
-	static SArray<const Event &>			EventQueue;
+	static unsigned short						EventCount;
+	static DArray<DArray<FunctionPointer>>		EventInfo;
+	static DArray<Event>						EventQueue;
 
 	void Dispatch(unsigned short Index);
 	static int Loop(unsigned short EventId);

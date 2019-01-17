@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "GSM.hpp"
+//#include "GSM.hpp"
 
 //Used to specify a location in 2D space with floating point precision.
 GS_CLASS Vector2
@@ -36,7 +36,7 @@ public:
 
 	void Normalize()
 	{
-		*this = GSM::Normalize(*this);
+		//*this = GSM::Normalize(*this);
 
 		return;
 	}

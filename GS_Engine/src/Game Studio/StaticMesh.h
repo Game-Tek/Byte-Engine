@@ -8,5 +8,5 @@
 
 GS_CLASS StaticMesh : public Object
 {
-	DArray<unsigned int>(5) Meshes;
+	void * MeshData;
 };

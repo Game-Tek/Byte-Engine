@@ -45,7 +45,6 @@ void Logger::PrintLog(const char * Text, LogColors Color, ...)
 
 	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 
-
 	va_list args;
 	va_start(args, Text);
 	printf(Text, args);

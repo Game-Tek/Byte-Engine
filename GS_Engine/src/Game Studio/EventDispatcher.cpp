@@ -4,10 +4,10 @@ unsigned char					EventDispatcher::ActiveLevel = 0;
 
 //SArray<unsigned short>			EventDispatcher::Events;
 unsigned short					EventDispatcher::EventCount = 0;
-SArray<SArray<FunctionPointer>>	EventDispatcher::EventInfo;
-SArray<const Event &>			EventDispatcher::EventQueue;
+DArray<DArray<FunctionPointer>>	EventDispatcher::EventInfo(50);
+DArray<Event>					EventDispatcher::EventQueue(50);
 
-EventDispatcher::EventDispatcher()
+EventDispatcher::EventDispatcher() 
 {
 }
 
@@ -17,13 +17,14 @@ EventDispatcher::~EventDispatcher()
 
 void EventDispatcher::OnUpdate()
 {
+	//For every element inside of the event queue.
 	for (unsigned short i = 0; i < EventQueue.GetArrayLength(); i++)
 	{
-		for (unsigned short j = 0; j < EventInfo[EventQueue[i].EventIndex].GetArrayLength(); j++)
+		//Access EventInfo[(at the current event queue's EventId)] and loop through each calling the function whith the current event queue event as a parameter.
+		for (unsigned short j = 0; i < EventInfo[EventQueue[i].EventId].GetArrayLength(); i++)
 		{
-			EventInfo[EventQueue[i].EventIndex][j](EventQueue[i]);
+			EventInfo[EventQueue[i].EventId][j](EventQueue[i]);
 		}
-		EventQueue.RemoveElement(i);
 	}
 }
 
@@ -74,9 +75,9 @@ void EventDispatcher::UnSubscribe(unsigned short EventId, FunctionPointer OrigFu
 
 void EventDispatcher::Notify(unsigned short EventId, Event & Event)
 {
-	EventQueue.PopBack(Event);
+	Event.EventId = EventId;
 
-	//Event.EventIndex = Loop(EventId);
+	EventQueue.PopBack(Event);
 
 	return;
 }

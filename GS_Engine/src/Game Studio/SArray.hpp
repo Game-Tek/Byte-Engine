@@ -7,36 +7,53 @@ GS_CLASS SArray : public Array<ArrayType>
 {
 public:
 	//Constructs a new SArray with N elements.
-	SArray(unsigned int N);
+	SArray(unsigned int N)
+	{
+		this->Arrayptr = new ArrayType[N];
+	}
 
-	~SArray();
+	~SArray()
+	{
+		//Delete the heap allocated array located in Arrayptr.
+		delete[] this->Arrayptr;
+	}
 
 	//Places the Object after the last occupied element.
-	void PopBack(const ArrayType & Object);
+	void PopBack(const ArrayType & Object)
+	{
+		this->Arrayptr[this->LastIndex] = Object;
 
-	//Removes the specified element.
-	void RemoveElement(unsigned int Index);
+		this->LastIndex++;
+
+		return;
+	}
+
+	void SetElement(unsigned int Index, const ArrayType & Object)
+	{
+		this->Arrayptr[Index] = Object;
+
+		if (Index == this->LastIndex)
+		{
+			this->LastIndex = Index + 1;
+		}
+
+	return;
+	}
 };
 
+/*
 template <typename ArrayType>
 SArray<ArrayType>::SArray(unsigned int N)
-{
-	this->Arrayptr = new ArrayType[N];
-}
+
 
 template <typename ArrayType>
 SArray<ArrayType>::~SArray()
-{
-	//Delete the heap allocated array located in Arrayptr.
-	delete[] this->Arrayptr;
-}
+
 
 template <typename ArrayType>
 void SArray<ArrayType>::PopBack(const ArrayType & Object)
-{
-	this->Arrayptr[this->LastIndex] = Object;
 
-	this->LastIndex++;
 
-	return;
-}
+template <typename ArrayType>
+void SArray<ArrayType>::SetElement(unsigned int Index, const ArrayType & Object)
+*/

@@ -6,8 +6,13 @@
 GS_CLASS Rotator
 {
 public:
+	//Yaw(Y) component of this rotator.
 	float Yaw;
+
+	//Pitch(X) component of this rotator.
 	float Pitch;
+
+	//Roll(Z) component of this rotator.
 	float Roll;
 
 	Rotator operator+ (const Rotator & Other)

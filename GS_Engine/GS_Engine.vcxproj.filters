@@ -163,10 +163,15 @@
     <ClInclude Include="src\Game Studio\Quat.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Vector4.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Resource.h" />
+    <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
+    <ClInclude Include="ResourceManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -212,6 +217,8 @@
     <ClCompile Include="src\Game Studio\GSM.cpp">
       <Filter>Misc\Math</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
+    <ClCompile Include="ResourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

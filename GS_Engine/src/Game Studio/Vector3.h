@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "GSM.hpp"
+//#include "GSM.hpp"
 
 //Used to specify a location in 3D space with floating point precision.
 GS_CLASS Vector3
@@ -40,12 +40,12 @@ public:
 
 	void Normalize()
 	{
-		*this = GSM::Normalize(*this);
+		//*this = GSM::Normalize(*this);
 
 		return;
 	}
 
-	inline float Length() const { return GSM::SquareRoot(LengthSquared()); }
+	//inline float Length() const { return GSM::SquareRoot(LengthSquared()); }
 
 	inline float LengthSquared() const
 	{

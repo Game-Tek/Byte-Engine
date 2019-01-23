@@ -1,11 +1,15 @@
 #include "EventDispatcher.h"
 
+#include "Event.h"
+
+using namespace std;
+
 unsigned char					EventDispatcher::ActiveLevel = 0;
 
 //SArray<unsigned short>			EventDispatcher::Events;
 unsigned short					EventDispatcher::EventCount = 0;
-DArray<DArray<FunctionPointer>>	EventDispatcher::EventInfo(50);
-DArray<Event>					EventDispatcher::EventQueue(50);
+vector<vector<Functor>>			EventDispatcher::SubscriberInfo(50);
+vector<Event *>					EventDispatcher::EventQueue(50);
 
 EventDispatcher::EventDispatcher() 
 {
@@ -18,12 +22,13 @@ EventDispatcher::~EventDispatcher()
 void EventDispatcher::OnUpdate()
 {
 	//For every element inside of the event queue.
-	for (unsigned short i = 0; i < EventQueue.GetArrayLength(); i++)
+	for (unsigned short i = 0; i < EventQueue.size(); i++)
 	{
-		//Access EventInfo[(at the current event queue's EventId)] and loop through each calling the function whith the current event queue event as a parameter.
-		for (unsigned short j = 0; i < EventInfo[EventQueue[i].EventId].GetArrayLength(); i++)
+		//Access SubscriberInfo[(at the current event queue's EventId)] and loop through each calling the function whith the current event queue event as a parameter.
+		for (unsigned short j = 0; j < SubscriberInfo[i].size(); j++)
 		{
-			EventInfo[EventQueue[i].EventId][j](EventQueue[i]);
+			//SubscriberInfo at 
+			SubscriberInfo[i][j](*EventQueue[i]);
 		}
 	}
 }
@@ -37,34 +42,32 @@ unsigned short EventDispatcher::CreateEvent()
 	return EventCount;
 }
 
-void EventDispatcher::Subscribe(unsigned short EventId, FunctionPointer FunctionToCall)
+void EventDispatcher::Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func)
 {
 	//unsigned short EventIndex = Loop(EventId);		//Call loop and store the return in _local_var_EventIndex.
 
-	EventInfo[EventId].PopBack(FunctionToCall);			//Access EventInfo at _local_var_EventIndex and store in the array inside that index the function to call.
+	SubscriberInfo[EventId].push_back(Functor(Subscriber, Func));			//Access SubscriberInfo at _local_var_EventIndex and store in the array inside that index the function to call.
 
 	return;
 }
 
-void EventDispatcher::UnSubscribe(unsigned short EventId, FunctionPointer OrigFunction)
+void EventDispatcher::UnSubscribe(unsigned short EventId, Object * Subscriber)
 {
-	/*for (unsigned short i = 0; i < EventInfo.GetArrayLength(); i++)
+	for (unsigned short i = 0; i < SubscriberInfo[EventId].size(); i++)
 	{
-		for (unsigned short j = 0; j < EventInfo[i].GetArrayLength(); j++)
+		if (SubscriberInfo[EventId][i].Obj == Subscriber)
 		{
-			if (EventInfo[i][j] == OrigFunction);
-			{
-				EventInfo[i].RemoveElement(j, false);
-			}
+			SubscriberInfo[EventId].erase(SubscriberInfo[EventId].begin() + i);
 		}
 	}
-	*/
+}
 
-	for (unsigned short i = 0; i < EventInfo[EventId].GetArrayLength(); i++)
+/*
+	for (unsigned short i = 0; i < SubscriberInfo[EventId].size(); i++)
 	{
-		if (EventInfo[EventId][i] == OrigFunction)
+		if (SubscriberInfo[EventId][i] == Subscriber)
 		{
-			EventInfo[EventId].RemoveElement(i);
+			SubscriberInfo[EventId].erase(SubscriberInfo[EventId].begin() + i);
 
 			break;
 		}
@@ -77,10 +80,12 @@ void EventDispatcher::Notify(unsigned short EventId, Event & Event)
 {
 	Event.EventId = EventId;
 
-	EventQueue.PopBack(Event);
+	EventQueue.push_back(Event);
 
 	return;
 }
+
+
 
 /*
 //Find index for EventId.

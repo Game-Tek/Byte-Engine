@@ -2,6 +2,8 @@
 
 #include "Core.h"
 
+#include "GL.h"
+
 #include "RendererObject.h"
 
 GS_CLASS VAO : public RendererObject
@@ -12,9 +14,11 @@ public:
 
 	void Bind() const override;
 
-	template <typename VertexType>
-	void CreateVertexAttribute(int NumberOfElementsInThisAttribute, int DataType, int Normalize, void * Offset);
+	void CreateVertexAttribute(int NOfElementsInThisAttribute, unsigned int DataType, unsigned char Normalize, size_t VertexTypeSize, size_t AttributeSize);
+
 private:
-	unsigned short VertexAttributeIndex = 0;
+	unsigned char VertexAttributeIndex = 0;
+
+	size_t Offset = 0;
 };
 

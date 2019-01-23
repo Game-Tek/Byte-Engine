@@ -4,20 +4,15 @@
 
 #include "EngineSystem.h"
 
+#include <functional>
+
 #include "Event.h"
 
-#include "DArray.hpp"
+#include "Functor.h"
 
-typedef void (*FunctionPointer)(const Event & Event);
+#include <vector>
 
-struct Func
-{
-	Func(FunctionPointer Pointer) : FuncPointer(Pointer)
-	{
-	}
 
-	FunctionPointer FuncPointer = nullptr;
-};
 
 GS_CLASS EventDispatcher : public ESystem
 {
@@ -28,8 +23,8 @@ public:
 	void OnUpdate() override;
 
 	static unsigned short CreateEvent();
-	static void Subscribe(unsigned short EventId, FunctionPointer FunctionToCall);
-	static void UnSubscribe(unsigned short EventId, FunctionPointer OrigFunction);
+	static void Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func);
+	static void UnSubscribe(unsigned short EventId, Object * Subscriber);
 	static void Notify(unsigned short Index, Event & Event);
 
 private:
@@ -37,9 +32,9 @@ private:
 	static unsigned char					ActiveLevel;
 
 	//static SArray<unsigned short>			Events;
-	static unsigned short						EventCount;
-	static DArray<DArray<FunctionPointer>>		EventInfo;
-	static DArray<Event>						EventQueue;
+	static unsigned short								EventCount;
+	static std::vector<std::vector<Functor>>			SubscriberInfo;
+	static std::vector<Event *>							EventQueue;
 
 	void Dispatch(unsigned short Index);
 	static int Loop(unsigned short EventId);

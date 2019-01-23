@@ -17,7 +17,7 @@ public:
 	{
 		unsigned int FirstIndex = FindFirstFreeSlot();
 
-		this->Arrayptr[FirstIndex];
+		this->Arrayptr[FirstIndex] = new ArrayType(Object);
 
 		if (FirstIndex == this->LastIndex)
 		{
@@ -28,7 +28,8 @@ public:
 	//Removes the specified element.
 	virtual void RemoveElement(unsigned int Index)
 	{
-		this->Arrayptr[Index] = ArrayType();
+		delete this->Arrayptr[Index];
+		this->Arrayptr[Index] = nullptr;
 
 		this->ArrayLength--;
 
@@ -40,9 +41,8 @@ public:
 		return;
 	}
 
-	ArrayType & operator[](unsigned int Index) { return this->Arrayptr[Index]; }
-	ArrayType operator[](unsigned int Index) const { return this->Arrayptr[Index]; }
-	ArrayType & operator=(const ArrayType & Other) { return Other; }
+	ArrayType & operator[](unsigned int Index) { return (*this->Arrayptr[Index]); }
+	ArrayType operator[](unsigned int Index) const { return (*this->Arrayptr[Index]); }
 
 	unsigned short GetArrayLength() const { return this->ArrayLength; }
 	unsigned short GetLastIndex() const { return this->LastIndex; }
@@ -50,7 +50,7 @@ public:
 
 protected:
 	//Pointer to the array.
-	ArrayType * Arrayptr = nullptr;			
+	ArrayType ** Arrayptr = nullptr;
 
 	//Number of elements the array currently holds occupied. NOT BASE 0.
 	unsigned short ArrayLength = 0;
@@ -62,11 +62,9 @@ protected:
 
 	unsigned int FindFirstFreeSlot()
 	{
-		ArrayType DefaultValue = ArrayType();
-
 		for (unsigned int i = 0; i < this->ArrayLength; i++)
 		{
-			if (this->Arrayptr[i] == DefaultValue)
+			if (this->Arrayptr[i] == nullptr)
 			{
 				return i;
 			}

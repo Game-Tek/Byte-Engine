@@ -5,9 +5,7 @@
 GS_CLASS Event
 {
 public:
-	Event()
-	{
-	}
+	Event();
 
 	~Event();
 

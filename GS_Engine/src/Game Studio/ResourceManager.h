@@ -4,6 +4,8 @@
 
 #include "Resource.h"
 
+#include <vector>
+
 class ResourceManager
 {
 public:
@@ -12,6 +14,6 @@ public:
 
 	static void LoadAsset();
 private:
-	Resource * LoadedResources[100];
+	//std::vector<Resource<*> *> LoadedResources[100];
 };
 

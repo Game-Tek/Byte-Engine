@@ -9,6 +9,8 @@
 GS_STRUCT Vertex
 {
 	Vector3				Position;
-	RGB					Color;
+	Vector3				Normal;
 	TextureCoordinates	TextCoord;
+	Vector3				Tangent;
+	Vector3				BiTangent;
 };

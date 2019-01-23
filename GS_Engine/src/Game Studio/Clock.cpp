@@ -4,7 +4,7 @@
 
 #include "windows.h"
 
-/*--------Members Declaration in .cpp--------
+/*--------Members Declaration in .cpp--------*/
 bool Clock::ShouldUpdateGameTime;
 float Clock::DeltaTime;
 unsigned long long Clock::SystemTicks;

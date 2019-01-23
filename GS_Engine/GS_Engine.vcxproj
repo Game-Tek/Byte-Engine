@@ -47,8 +47,8 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(SolutionDir)GS_Engine\vendor$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectName)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+    <IncludePath>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
@@ -63,12 +63,12 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(ProjectDir)vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp,$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
@@ -96,7 +96,9 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\InputManager.h" />
+    <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Importer.h" />
@@ -141,9 +143,11 @@
     <ClInclude Include="src\Game Studio\TextureCoordinates.h" />
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Vector4.h" />
+    <ClInclude Include="src\Game Studio\TextureResource.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\InputManager.cpp" />
+    <ClCompile Include="src\Game Studio\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Shader.cpp" />
     <ClCompile Include="src\Game Studio\Program.cpp" />
@@ -159,6 +163,7 @@
     <ClCompile Include="src\Game Studio\VAO.cpp" />
     <ClCompile Include="src\Game Studio\VBO.cpp" />
     <ClCompile Include="src\Game Studio\Texture.cpp" />
+    <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>

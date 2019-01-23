@@ -43,6 +43,9 @@
     <Filter Include="Engine\Application">
       <UniqueIdentifier>{9669b65e-2eba-4026-9f31-190e2ee371e9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine Systems\Resource Manager">
+      <UniqueIdentifier>{24a2456e-0f7d-47f1-b352-aa8129c7db33}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Renderer.h">
@@ -153,7 +156,6 @@
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine Systems\Renderer</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\GSM.hpp">
       <Filter>Misc\Math</Filter>
     </ClInclude>
@@ -169,9 +171,21 @@
     <ClInclude Include="src\Game Studio\Vector4.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Resource.h" />
-    <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
-    <ClInclude Include="ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resource.h">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\ResourceManager.h">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\StaticMesh.h">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\StaticMeshResource.h">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\InputManager.h" />
+    <ClInclude Include="src\Game Studio\TextureResource.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -217,8 +231,14 @@
     <ClCompile Include="src\Game Studio\GSM.cpp">
       <Filter>Misc\Math</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
-    <ClCompile Include="ResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\ResourceManager.cpp">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp">
+      <Filter>Engine Systems\Resource Manager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\InputManager.cpp" />
+    <ClCompile Include="src\Game Studio\TextureResource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

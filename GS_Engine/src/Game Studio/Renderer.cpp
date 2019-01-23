@@ -13,7 +13,10 @@
 
 #include "TextureCoordinates.h"
 
-Vertex Vertices[] = { { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f } }, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f } }, { { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.0f } } };
+Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } };
+
 unsigned int Indices[] = { 0, 1, 2 };
 
 VBO * VertexBuffer;
@@ -33,8 +36,8 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	VertexAttribute = new VAO();
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
-	VertexAttribute->CreateVertexAttribute<Vertex>(3, GL_FLOAT, GL_FALSE, (void*)0);
-	VertexAttribute->CreateVertexAttribute<Vertex>(2, GL_FLOAT, GL_FALSE, (void*)sizeof(Vector3));
+	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vertex), sizeof(Vector3));
+	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(Vertex), sizeof(TextureCoordinates));
 }
 
 Renderer::~Renderer()

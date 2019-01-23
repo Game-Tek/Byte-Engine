@@ -4,6 +4,6 @@
 
 GS_STRUCT ImageSize
 {
-	unsigned short Width;
-	unsigned short Height;
+	unsigned short Width = 0;
+	unsigned short Height = 0;
 };

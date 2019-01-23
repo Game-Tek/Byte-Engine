@@ -1,5 +1,18 @@
 #pragma once
 
+// TYPEDEFS
+
+typedef unsigned char UINT8;
+typedef char INT8;
+typedef unsigned short UINT16;
+typedef short INT16;
+typedef unsigned int UINT32;
+typedef int INT32;
+typedef unsigned long UINT64;
+typedef long INT64;
+typedef unsigned long long UINT_64;
+typedef long long INT_64;
+
 //Class setup simplification.
 
 #define GS_CLASS class GS_API

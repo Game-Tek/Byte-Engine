@@ -8,8 +8,8 @@ unsigned char					EventDispatcher::ActiveLevel = 0;
 
 //SArray<unsigned short>			EventDispatcher::Events;
 unsigned short					EventDispatcher::EventCount = 0;
-vector<vector<Functor>>			EventDispatcher::SubscriberInfo(50);
-vector<Event *>					EventDispatcher::EventQueue(50);
+FVector<FVector<Functor>>		EventDispatcher::SubscriberInfo(50);
+FVector<Event *>				EventDispatcher::EventQueue(50);
 
 EventDispatcher::EventDispatcher() 
 {
@@ -30,6 +30,8 @@ void EventDispatcher::OnUpdate()
 			//SubscriberInfo at 
 			SubscriberInfo[i][j](*EventQueue[i]);
 		}
+
+		delete EventQueue[i];
 	}
 }
 
@@ -57,47 +59,7 @@ void EventDispatcher::UnSubscribe(unsigned short EventId, Object * Subscriber)
 	{
 		if (SubscriberInfo[EventId][i].Obj == Subscriber)
 		{
-			SubscriberInfo[EventId].erase(SubscriberInfo[EventId].begin() + i);
+			SubscriberInfo[EventId].erase(i);
 		}
 	}
 }
-
-/*
-	for (unsigned short i = 0; i < SubscriberInfo[EventId].size(); i++)
-	{
-		if (SubscriberInfo[EventId][i] == Subscriber)
-		{
-			SubscriberInfo[EventId].erase(SubscriberInfo[EventId].begin() + i);
-
-			break;
-		}
-	}
-
-	return;
-}
-
-void EventDispatcher::Notify(unsigned short EventId, Event & Event)
-{
-	Event.EventId = EventId;
-
-	EventQueue.push_back(Event);
-
-	return;
-}
-
-
-
-/*
-//Find index for EventId.
-int EventDispatcher::Loop(unsigned short EventId)
-{
-	for (unsigned short i = 0; i < Events.GetArrayLength(); i++)	//Loop through each registered event.
-	{
-		if (Events[i] = EventId)									//If _param_EventId equals the EventId in the current index return i.
-		{
-			return i;
-		}
-	}
-	return;
-}
-*/

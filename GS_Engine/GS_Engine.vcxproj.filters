@@ -186,6 +186,9 @@
     <ClInclude Include="src\Game Studio\Functor.h" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
+    <ClInclude Include="src\Game Studio\KeyPressedEvent.h" />
+    <ClInclude Include="src\Game Studio\FVector.hpp" />
+    <ClInclude Include="src\Game Studio\MouseMovedEvent.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">

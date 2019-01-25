@@ -2,13 +2,21 @@
 
 #include "Core.h"
 
-GS_CLASS Event
+GS_STRUCT Event
 {
 public:
-	Event();
-
-	~Event();
-
 	unsigned short EventId = 0;
+
+	Event()
+	{
+	}
+
+	Event(uint16 Id) : EventId(Id)
+	{
+	}
+
+	~Event()
+	{
+	}
 };
 

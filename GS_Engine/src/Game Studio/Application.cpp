@@ -34,7 +34,7 @@ namespace GS
 			RendererInstance->OnUpdate();
 			WindowInstance->OnUpdate();
 
-			std::cout << Clock::GetDeltaTime() << std::endl;
+			//std::cout << Clock::GetDeltaTime() << std::endl;
 
 			//Sleep(100);
 		}	

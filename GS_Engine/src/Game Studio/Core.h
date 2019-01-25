@@ -2,16 +2,20 @@
 
 // TYPEDEFS
 
-typedef unsigned char UINT8;
-typedef char INT8;
-typedef unsigned short UINT16;
-typedef short INT16;
-typedef unsigned int UINT32;
-typedef int INT32;
-typedef unsigned long UINT64;
-typedef long INT64;
-typedef unsigned long long UINT_64;
-typedef long long INT_64;
+typedef unsigned char uint8;
+typedef char int8;
+typedef unsigned short uint16;
+typedef short int16;
+typedef unsigned int uint32;
+typedef int int32;
+typedef unsigned long uint64;
+typedef long int64;
+typedef unsigned long long uint_64;
+typedef long long int_64;
+
+#ifdef GS_PLATFORM_WIN
+	#define INLINE __forceinline
+#endif
 
 //Class setup simplification.
 

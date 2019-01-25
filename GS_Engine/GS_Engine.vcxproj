@@ -96,8 +96,11 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\KeyPressedEvent.h" />
+    <ClInclude Include="src\Game Studio\MouseMovedEvent.h" />
     <ClInclude Include="src\Game Studio\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />

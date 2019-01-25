@@ -19,7 +19,7 @@ struct Functor
 	{
 	}
 
-	void operator() (const Event & Ev)
+	INLINE void operator() (const Event & Ev)
 	{
 		((Obj)->*(Fptr))(Ev);
 	}

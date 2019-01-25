@@ -47,7 +47,7 @@ void Logger::PrintLog(const char * Text, LogColors Color, ...)
 
 	va_list args;
 	va_start(args, Text);
-	printf(Text, args);
+	vprintf(Text, args);
 	va_end(args);
 
 	printf("\n");

@@ -4,15 +4,11 @@
 
 #include "GL.h"
 
-IBO::IBO(const void * Data, unsigned int Count)
+IBO::IBO(const void * Data, unsigned int Count) : IndexCount(Count)
 {
 	GS_GL_CALL(glGenBuffers(1, & RendererObjectId));
 	Bind();
-	GS_GL_CALL(glBufferData(GL_ELEMENT_ARRAY_BUFFER, Count * sizeof(unsigned int), Data, GL_STATIC_DRAW));
-
-	//IndexArray = Indices;
-
-	IndexCount = Count;
+	GS_GL_CALL(glBufferData(GL_ELEMENT_ARRAY_BUFFER, IndexCount * sizeof(unsigned int), Data, GL_STATIC_DRAW));
 }
 
 IBO::~IBO()

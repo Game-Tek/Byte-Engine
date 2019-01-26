@@ -4,9 +4,9 @@
 
 #include "GL.h"
 
-Uniform::Uniform(const Program & Progr, const char * UniformName)
+Uniform::Uniform(const RendererObject & Program, const char * UniformName)
 {
-	GS_GL_CALL(RendererObjectId = glGetUniformLocation(Progr.GetId(), UniformName));
+	GS_GL_CALL(RendererObjectId = glGetUniformLocation(Program.GetId(), UniformName));
 }
 
 

@@ -17,6 +17,6 @@ public:
 
 	unsigned int GetCount() const { return IndexCount; }
 private:
-	unsigned int IndexCount;
+	unsigned int IndexCount = 0;
 };
 

@@ -1,10 +1,10 @@
 #pragma once
 
+#include "Uniform.h"
+
 #include "Core.h"
 
 #include "RendererObject.h"
-
-#include "Uniform.h"
 
 #include "Matrix4.h"
 

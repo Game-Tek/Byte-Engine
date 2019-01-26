@@ -6,7 +6,7 @@
 
 #include "Vertex.h"
 
-VAO::VAO()
+VAO::VAO(size_t VertexSize) : VertexSize(VertexSize)
 {
 	GS_GL_CALL(glGenVertexArrays(1, & RendererObjectId));
 	Bind();
@@ -24,9 +24,9 @@ void VAO::Bind() const
 	return;
 }
 
-void VAO::CreateVertexAttribute(int NOfElementsInThisAttribute, unsigned int DataType, unsigned char Normalize, size_t VertexTypeSize, size_t AttributeSize)
+void VAO::CreateVertexAttribute(int NOfElementsInThisAttribute, unsigned int DataType, unsigned char Normalize, size_t AttributeSize)
 {
-	GS_GL_CALL(glVertexAttribPointer((unsigned int)VertexAttributeIndex, NOfElementsInThisAttribute, DataType, Normalize, VertexTypeSize, (void*)Offset));
+	GS_GL_CALL(glVertexAttribPointer((unsigned int)VertexAttributeIndex, NOfElementsInThisAttribute, DataType, Normalize, VertexSize, (void*)Offset));
 	GS_GL_CALL(glEnableVertexAttribArray((unsigned int)VertexAttributeIndex));
 
 	VertexAttributeIndex++;

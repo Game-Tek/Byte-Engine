@@ -34,11 +34,14 @@ void InputManager::MouseMoved(const Vector2 & Pos)
 {
 	MouseOffset = Pos - MousePos;
 
+	if (MousePos != Pos)
+	{
+		EventDispatcher::Notify<MouseMovedEvent>(MouseMovedEventId, MouseMovedEvent(MouseOffset));
+	}
+
 	MousePos = Pos;
 
-	EventDispatcher::Notify<MouseMovedEvent>(MouseMovedEventId, MouseMovedEvent(MouseOffset));
-
-	//GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
+	GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
 
 	//std::cout << Pos.Y << std::endl;
 }

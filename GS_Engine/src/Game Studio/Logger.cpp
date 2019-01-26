@@ -2,8 +2,6 @@
 
 #include "stdio.h"
 
-#include "stdarg.h"
-
 #include "windows.h"
 
 #include "glad.h"
@@ -37,9 +35,9 @@ void Logger::SetLogTextColor(LogColors Color)
 	return;
 }
 
-void Logger::PrintLog(const char * Text, LogColors Color, ...)
+void Logger::PrintLog(const char * Text, ...)
 {
-	SetLogTextColor(Color);
+	//SetLogTextColor(Color);
 
 	Time LogTime = Clock::GetTime();
 

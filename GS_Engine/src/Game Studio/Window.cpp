@@ -48,6 +48,6 @@ void Window::OnUpdate()
 
 void Window::SetVsync(bool Enable)
 {
-	glfwSwapInterval(Enable);														//Set the swap interval to unlimited framerate (0) or in sync with the screen (1).
+	glfwSwapInterval(Enable);	//Set the swap interval to unlimited framerate (0) or in sync with the screen (1).
 	return;
 }

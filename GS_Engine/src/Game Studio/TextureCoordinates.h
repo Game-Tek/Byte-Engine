@@ -4,6 +4,6 @@
 
 GS_STRUCT TextureCoordinates
 {
-	float U;
-	float V;
+	float U = 0;
+	float V = 0;
 };

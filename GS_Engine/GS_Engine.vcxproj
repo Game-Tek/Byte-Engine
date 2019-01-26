@@ -147,6 +147,7 @@
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
+    <ClInclude Include="src\Game Studio\Uniform.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
@@ -167,6 +168,7 @@
     <ClCompile Include="src\Game Studio\VBO.cpp" />
     <ClCompile Include="src\Game Studio\Texture.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
+    <ClCompile Include="src\Game Studio\Uniform.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -189,6 +189,7 @@
     <ClInclude Include="src\Game Studio\KeyPressedEvent.h" />
     <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\MouseMovedEvent.h" />
+    <ClInclude Include="src\Game Studio\Uniform.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Renderer.cpp">
@@ -242,6 +243,7 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
+    <ClCompile Include="src\Game Studio\Uniform.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -28,7 +28,8 @@ Shader::Shader(unsigned int ShaderType, const char * ShaderPath)
 	else
 	{
 		GS_LOG_ERROR("Shader at %s, failed to compile.", ShaderPath)
-
+		
+#ifdef GS_DEBUG
 		GLint logSize = 0;
 		glGetShaderiv(RendererObjectId, GL_INFO_LOG_LENGTH, &logSize);
 
@@ -39,6 +40,7 @@ Shader::Shader(unsigned int ShaderType, const char * ShaderPath)
 		GS_LOG_WARNING(log)
 
 		delete[] log;
+#endif // GS_DEBUG
 	}
 }
 

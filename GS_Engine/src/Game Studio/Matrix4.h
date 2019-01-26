@@ -57,6 +57,8 @@ public:
 		return;
 	}
 
+	const float * GetData() const { return Array; }
+
 	Matrix4 operator+ (float Other) const
 	{
 		Matrix4 Result;
@@ -246,6 +248,5 @@ public:
 	float operator[] (unsigned int Index) const { return Array[Index]; }
 
 private:
-
 	float Array[MATRIX_SIZE];
 };

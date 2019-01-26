@@ -118,4 +118,14 @@ public:
 
 		return *this;
 	}
+
+	inline bool operator==(const Vector2 & Other)
+	{
+		return X == Other.X && Y == Other.Y;
+	}
+
+	inline bool operator!=(const Vector2 & Other)
+	{
+		return X != Other.X || Y != Other.Y;
+	}
 };

@@ -3,12 +3,10 @@
 #include "Core.h"
 
 #include "Clock.h"
-
 #include "Window.h"
-
 #include "Renderer.h"
-
 #include "EventDispatcher.h"
+#include "InputManager.h"
 
 namespace GS
 {
@@ -28,6 +26,8 @@ namespace GS
 		Renderer * RendererInstance = nullptr;
 
 		EventDispatcher * EventDispatcherInstance = nullptr;
+
+		InputManager * InputManagerInstance = nullptr;
 
 		/*int ShouldClose();*/
 	};

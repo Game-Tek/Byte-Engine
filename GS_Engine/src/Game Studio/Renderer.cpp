@@ -8,14 +8,15 @@
 #include "Vertex.h"
 #include "Shader.h"
 #include "Program.h"
+#include "Texture.h"
 
 #include <iostream>
 
 #include "TextureCoordinates.h"
 
 Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
-					, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
-					, { { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } };
+					, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.5f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } };
 
 unsigned int Indices[] = { 0, 1, 2 };
 
@@ -23,6 +24,7 @@ VBO * VertexBuffer;
 IBO * IndexBuffer;
 VAO * VertexAttribute;
 Program * Prog;
+Texture * Text;
 
 Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 {
@@ -35,9 +37,13 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	IndexBuffer = new IBO(Indices, 3);
 	VertexAttribute = new VAO();
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
+	Text = new Texture("W:/Game Studio/bin/Sandbox/Debug-x64/texture.png");
 
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vertex), sizeof(Vector3));
+	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vertex), sizeof(Vector3));
 	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(Vertex), sizeof(TextureCoordinates));
+
+	Text->Bind();
 }
 
 Renderer::~Renderer()

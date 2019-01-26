@@ -150,7 +150,7 @@ public:
 		return X == Other.X && Y == Other.Y && Z == Other.Z;
 	}
 
-	inline bool operator== (const Vector3 & Other)
+	inline bool operator!= (const Vector3 & Other)
 	{
 		return X != Other.X || Y != Other.Y || Z != Other.Z;
 	}

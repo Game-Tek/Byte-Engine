@@ -13,7 +13,7 @@ public:
 	~Texture();
 
 	void Bind() const override;
-	void ActivateTexture(unsigned short Index) const;
+	static void SetActiveTextureUnit(uint8 Index);
 protected:
 	ImageSize TextureDimensions;
 };

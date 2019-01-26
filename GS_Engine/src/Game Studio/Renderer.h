@@ -24,7 +24,7 @@ public:
 	void Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const;
 
 private:
-	unsigned int DrawCalls;
+	unsigned int DrawCalls = 0;
 
 	Window * WindowInstanceRef;
 };

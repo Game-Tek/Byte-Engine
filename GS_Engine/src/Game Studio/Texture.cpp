@@ -17,17 +17,20 @@ Texture::Texture(const char * ImageFilePath)
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT));		//Set texture wrapping method for the the S axis as GL_REPEAT.
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT));		//Set texture wrapping method for the the T axis as GL_REPEAT.
 	
-	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));	//Set texture minification filter as GL_LINEAR blend.
+	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));	//Set texture minification filter as GL_LINEAR blend.
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));	//Set texture magnification filter as GL_LINEAR blend.
 
 	int NumberOfChannels;
-	
-	unsigned char * ImageData = stbi_load(ImageFilePath, & (int &)TextureDimensions.Width, & (int &)TextureDimensions.Height, & NumberOfChannels, 0);	//Import the image.
+
+	//stbi_set_flip_vertically_on_load(true);
+
+	unsigned char * ImageData = stbi_load(ImageFilePath, & (int &)TextureDimensions.Width, & (int &)TextureDimensions.Height, & NumberOfChannels, 3);	//Import the image.
 
 	if (ImageData)	//Check if image import succeeded. If so.
 	{
 		GS_GL_CALL(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TextureDimensions.Width, TextureDimensions.Height, 0, GL_RGB, GL_UNSIGNED_BYTE, ImageData));
 		GS_GL_CALL(glGenerateMipmap(GL_TEXTURE_2D));
+		GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR));
 	}
 	else
 	{
@@ -46,7 +49,7 @@ void Texture::Bind() const
 	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, RendererObjectId));
 }
 
-void Texture::ActivateTexture(unsigned short Index) const
+void Texture::SetActiveTextureUnit(uint8 Index)
 {
 	GS_GL_CALL(glActiveTexture(GL_TEXTURE0 + Index));
 }

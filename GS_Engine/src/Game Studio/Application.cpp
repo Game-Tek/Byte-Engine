@@ -4,8 +4,6 @@
 
 #include "windows.h"
 
-#include <iostream>
-
 namespace GS
 {
 	Application::Application()
@@ -15,7 +13,8 @@ namespace GS
 		ClockInstance = new Clock();
 		WindowInstance = new Window(1280, 720, "Game Studio");
 		RendererInstance = new Renderer(WindowInstance);
-		//EventDispatcherInstance = new EventDispatcher();
+		EventDispatcherInstance = new EventDispatcher();
+		InputManagerInstance = new InputManager();
 	}
 
 	Application::~Application()
@@ -23,7 +22,8 @@ namespace GS
 		delete ClockInstance;
 		delete WindowInstance;
 		delete RendererInstance;
-		//delete EventDispatcherInstance;
+		delete EventDispatcherInstance;
+		delete InputManagerInstance;
 	}
 
 	void Application::Run()
@@ -33,8 +33,6 @@ namespace GS
 			ClockInstance->OnUpdate();
 			RendererInstance->OnUpdate();
 			WindowInstance->OnUpdate();
-
-			//std::cout << Clock::GetDeltaTime() << std::endl;
 
 			//Sleep(100);
 		}	

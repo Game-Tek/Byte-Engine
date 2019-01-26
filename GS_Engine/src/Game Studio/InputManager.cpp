@@ -4,10 +4,6 @@
 
 #include "Logger.h"
 
-#include <iostream>
-
-#include <stdio.h>
-
 uint16 InputManager::KeyPressedEventId = 0;
 uint16 InputManager::MouseMovedEventId = 0;
 
@@ -17,6 +13,7 @@ Vector2 InputManager::MouseOffset;
 InputManager::InputManager()
 {
 	KeyPressedEventId = EventDispatcher::CreateEvent();
+	MouseMovedEventId = EventDispatcher::CreateEvent();
 }
 
 InputManager::~InputManager()
@@ -32,16 +29,17 @@ void InputManager::KeyPressed(Key PressedKey)
 
 void InputManager::MouseMoved(const Vector2 & Pos)
 {
+	//Update MouseOffset.
 	MouseOffset = Pos - MousePos;
 
+	//If the mouse's position dosn't equal last frame's position update. This is to avoid unnecesary event posts.
 	if (MousePos != Pos)
 	{
 		EventDispatcher::Notify<MouseMovedEvent>(MouseMovedEventId, MouseMovedEvent(MouseOffset));
+
+		GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
 	}
 
+	//Set mouse position as the current position.
 	MousePos = Pos;
-
-	GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
-
-	//std::cout << Pos.Y << std::endl;
 }

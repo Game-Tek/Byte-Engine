@@ -2,11 +2,16 @@
 
 #include "Core.h"
 
-#include "Object.h"
+#include "WorldObject.h"
 
-#include "DArray.hpp"
+#include "StaticMeshResource.h"
 
-GS_CLASS StaticMesh : public Object
+GS_CLASS StaticMesh : public WorldObject
 {
-	void * MeshData;
+public:
+	StaticMesh(const std::string & Path);
+	~StaticMesh();
+
+private:
+	StaticMeshResource * MeshData;
 };

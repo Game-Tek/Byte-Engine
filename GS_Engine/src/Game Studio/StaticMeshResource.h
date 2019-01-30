@@ -14,10 +14,10 @@
 struct Mesh
 {
 	Vertex * VertexArray = nullptr;
-	unsigned int * IndexArray = nullptr;
+	uint32 * IndexArray = nullptr;
 
-	unsigned int VertexCount = 0;
-	unsigned int IndexCount = 0;
+	uint32 VertexCount = 0;
+	uint32 IndexCount = 0;
 };
 
 GS_CLASS StaticMeshResource : public Resource<Mesh>
@@ -26,14 +26,12 @@ public:
 	StaticMeshResource(const char * FilePath);
 	~StaticMeshResource();
 
-	unsigned int GetMeshIndexCount(unsigned int MeshIndex) const { return Data[MeshIndex].IndexCount; };
-	unsigned int GetMeshVertexCount(unsigned int MeshIndex) const { return Data[MeshIndex].VertexCount; }
-
-protected:
-	Mesh * LoadFallbackResource() override;
+	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return Data[MeshIndex].IndexCount; };
+	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return Data[MeshIndex].VertexCount; }
 
 private:
-	Mesh * Load(const char * FilePath) override;
+	Mesh * Load(const char * FilePath);
+	Mesh * LoadFallbackResource();
 	Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
 	Mesh * ProcessMesh(aiMesh * Mesh);
 };

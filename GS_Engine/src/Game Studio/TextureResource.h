@@ -23,8 +23,8 @@ protected:
 	//Used to hold the number of channels this texture has.
 	unsigned char NumberOfChannels = 0;
 
-	RGB * Load(const char * FilePath) override;
+	RGB * Load(const char * FilePath);
 
-	RGB * LoadFallbackResource() override;
+	RGB * LoadFallbackResource();
 };
 

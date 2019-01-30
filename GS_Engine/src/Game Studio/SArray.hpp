@@ -40,20 +40,3 @@ public:
 	return;
 	}
 };
-
-/*
-template <typename ArrayType>
-SArray<ArrayType>::SArray(unsigned int N)
-
-
-template <typename ArrayType>
-SArray<ArrayType>::~SArray()
-
-
-template <typename ArrayType>
-void SArray<ArrayType>::PopBack(const ArrayType & Object)
-
-
-template <typename ArrayType>
-void SArray<ArrayType>::SetElement(unsigned int Index, const ArrayType & Object)
-*/

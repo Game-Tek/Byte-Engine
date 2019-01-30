@@ -5,7 +5,7 @@
 #include <string>
 
 template <typename T>
-GS_CLASS Resource
+GS_CLASS TemplateResource : public Resource
 {
 public:
 	//Returns a pointer to the data.

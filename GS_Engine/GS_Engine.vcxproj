@@ -108,7 +108,7 @@
     <ClInclude Include="src\Game Studio\Line.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h" />
     <ClInclude Include="src\Game Studio\Quat.h" />
-    <ClInclude Include="src\Game Studio\Resource.h" />
+    <ClInclude Include="src\Game Studio\TemplateResource.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
@@ -148,6 +148,7 @@
     <ClInclude Include="src\Game Studio\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
     <ClInclude Include="src\Game Studio\Uniform.h" />
+    <ClInclude Include="src\Game Studio\World.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
@@ -162,6 +163,7 @@
     <ClCompile Include="src\Game Studio\Application.cpp" />
     <ClCompile Include="src\Game Studio\Object.cpp" />
     <ClCompile Include="src\Game Studio\Renderer.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\Window.cpp" />
     <ClCompile Include="src\Game Studio\VAO.cpp" />
@@ -170,6 +172,7 @@
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Uniform.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Game Studio\World.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

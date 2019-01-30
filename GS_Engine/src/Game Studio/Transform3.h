@@ -9,6 +9,18 @@
 GS_CLASS Transform3
 {
 public:
+	Transform3()
+	{
+	}
+
+	Transform3(const Vector3 & Pos, const Rotator & Rot, const Vector3 & Sca) : Position(Pos), Rotation(Rot), Scale(Sca)
+	{
+	}
+
+	Transform3(const Transform3 & Other) : Position(Other.Position), Rotation(Other.Rotation), Scale(Other.Scale)
+	{
+	}
+
 	Vector3 Position;
 	Rotator Rotation;
 	Vector3 Scale;

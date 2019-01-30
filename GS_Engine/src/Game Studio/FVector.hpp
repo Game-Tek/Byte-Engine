@@ -57,7 +57,24 @@ public:
 			this->Data[i] = this->Data[i - 1];
 		}
 
-		Data[index] = obj;
+		this->Data[index] = obj;
+	}
+
+	void place(size_t index, T arr[], size_t length)
+	{
+		checkfornew(length);
+
+		this->Length += length;
+
+		for (size_t i = this->Length; i > this->index; i--)
+		{
+			this->Data[i] = this->Data[i - length];
+		}
+
+		for (size_t i = 0; i < length; i++)
+		{
+			this->Data[index] = arr[i];
+		}
 	}
 
 	void erase(size_t index)
@@ -67,6 +84,16 @@ public:
 		for (size_t i = index; i < this->Length; i++)
 		{
 			this->Data[i] = this->Data[i + 1];
+		}
+	}
+
+	void erase(size_t index, size_t length)
+	{
+		this->Length -= length;
+
+		for (size_t i = index; i < this->Length; i++)
+		{
+			this->Data[i] = this->Data[i + length];
 		}
 	}
 

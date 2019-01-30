@@ -2,16 +2,15 @@
 
 
 
-ResourceManager::ResourceManager()
+ResourceManager::ResourceManager() : LoadedResources(100)
 {
 }
 
 
 ResourceManager::~ResourceManager()
 {
-}
-
-void ResourceManager::LoadAsset()
-{
-	//Check if asset exists. If it exists return a pointer to it, else load the resource and then pass the pointer. ?Callback?
+	for (uint16 i = 0; i < LoadedResources.size(); i++)
+	{
+		delete LoadedResources[i];
+	}
 }

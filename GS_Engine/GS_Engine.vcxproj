@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -96,6 +96,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\RenderProxy.h" />
     <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
@@ -149,6 +150,7 @@
     <ClInclude Include="src\Game Studio\TextureResource.h" />
     <ClInclude Include="src\Game Studio\Uniform.h" />
     <ClInclude Include="src\Game Studio\World.h" />
+    <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
@@ -171,6 +173,7 @@
     <ClCompile Include="src\Game Studio\Texture.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Uniform.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
   </ItemGroup>

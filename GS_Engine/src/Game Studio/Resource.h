@@ -4,16 +4,16 @@
 
 #include <string>
 
-template <typename T>
 GS_CLASS Resource
 {
 public:
 	//Returns a pointer to the data.
-	T * GetData() const { return Data; };
+	void * GetData() const { return Data; };
+	const std::string &  GetPath() { return Path; }
 
 protected:
 
-	T * Data = nullptr;
+	void * Data;
 
 	//Resource identifier. Used to check if a resource has already been loaded.
 	std::string Path;

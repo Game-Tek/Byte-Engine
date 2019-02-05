@@ -6,9 +6,9 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
-StaticMeshResource::StaticMeshResource(const char * FilePath)
+StaticMeshResource::StaticMeshResource(const std::string & Path)
 {
-	Data = Load(FilePath);
+	Data = Load(Path.c_str());
 }
 
 StaticMeshResource::~StaticMeshResource()

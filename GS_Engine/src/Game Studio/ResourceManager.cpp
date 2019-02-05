@@ -2,7 +2,7 @@
 
 
 
-ResourceManager::ResourceManager() : LoadedResources(100)
+ResourceManager::ResourceManager()
 {
 }
 

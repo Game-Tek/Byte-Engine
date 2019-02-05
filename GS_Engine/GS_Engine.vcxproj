@@ -47,7 +47,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -108,7 +108,7 @@
     <ClInclude Include="src\Game Studio\Line.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h" />
     <ClInclude Include="src\Game Studio\Quat.h" />
-    <ClInclude Include="src\Game Studio\TemplateResource.h" />
+    <ClInclude Include="src\Game Studio\Resource.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
@@ -171,6 +171,7 @@
     <ClCompile Include="src\Game Studio\Texture.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Uniform.cpp" />
+    <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
   </ItemGroup>

@@ -4,9 +4,7 @@
 
 #include <string>
 
-template <typename T>
-GS_CLASS TemplateResource : public Resource
-{
+GS_CLASS Resource
 public:
 	//Returns a pointer to the data.
 	T * GetData() const { return Data; };

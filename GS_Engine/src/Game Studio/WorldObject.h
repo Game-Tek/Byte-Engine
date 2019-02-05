@@ -9,6 +9,9 @@
 GS_CLASS WorldObject : public Object
 {
 public:
+	WorldObject();
+	WorldObject(const Transform3 & Transform);
+
 	Transform3 GetTransform() const { return Transform; }
 	Vector3 GetPosition() const { return Transform.Position; }
 	Rotator GetRotation() const { return Transform.Rotation; }

@@ -8,7 +8,7 @@
 
 #include "ImageSize.h"
 
-GS_CLASS TextureResource : public Resource<RGB>
+GS_CLASS TextureResource : public Resource
 {
 public:
 	TextureResource(const char * FilePath);

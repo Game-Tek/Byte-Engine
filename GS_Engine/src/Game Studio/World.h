@@ -14,11 +14,13 @@ public:
 	World();
 	~World();
 
-	FVector<Object *> EntityList;
+	FVector<WorldObject *> EntityList;
 
 	template <class O>
-	void SpawnObject(const O & Object)
+	void SpawnObject(const O & Object, const Vector3 & Position)
 	{
+		WorldObject * ptr = new O(Object);
+		ptr->SetPosition(Position);
 		EntityList.push_back(new O(Object));
 	}
 };

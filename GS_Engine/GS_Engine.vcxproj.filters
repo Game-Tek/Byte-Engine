@@ -218,7 +218,7 @@
       <Filter>Engine</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\World.h" />
-    <ClInclude Include="src\Game Studio\TemplateResource.h">
+    <ClInclude Include="src\Game Studio\Resource.h">
       <Filter>Engine\Resource Manager</Filter>
     </ClInclude>
   </ItemGroup>
@@ -285,6 +285,7 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
+    <ClCompile Include="src\Game Studio\WorldObject.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

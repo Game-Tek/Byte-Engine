@@ -20,14 +20,14 @@ struct Mesh
 	uint32 IndexCount = 0;
 };
 
-GS_CLASS StaticMeshResource : public Resource<Mesh>
+GS_CLASS StaticMeshResource : public Resource
 {
 public:
-	StaticMeshResource(const char * FilePath);
+	StaticMeshResource(const std::string & Path);
 	~StaticMeshResource();
 
-	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return Data[MeshIndex].IndexCount; };
-	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return Data[MeshIndex].VertexCount; }
+	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return ((Mesh *)Data)[MeshIndex].IndexCount; };
+	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return ((Mesh *)Data)[MeshIndex].VertexCount; }
 
 private:
 	Mesh * Load(const char * FilePath);

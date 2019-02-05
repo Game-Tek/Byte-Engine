@@ -10,6 +10,9 @@
 
 class ResourceManager
 {
+private:
+	static FVector<Resource *> LoadedResources;
+
 public:
 	ResourceManager();
 	~ResourceManager();
@@ -19,9 +22,9 @@ public:
 	{
 		for (uint16 i = 0; i < LoadedResources.size(); i++)
 		{
-			if (LoadedResources[i].Path == Path)
+			if (LoadedResources[i]->GetPath() == Path)
 			{
-				return LoadedResources[i];
+				return (T *)LoadedResources[i];
 			}
 		}
 
@@ -31,10 +34,8 @@ public:
 	}
 
 private:
-	FVector<Resource> LoadedResources;
-
 	template <typename T>
-	T * LoadAsset(const std::string & Path)
+	static T * LoadAsset(const std::string & Path)
 	{
 		T * ptr = new T(Path);
 

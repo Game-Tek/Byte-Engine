@@ -7,6 +7,7 @@
 #include "Renderer.h"
 #include "EventDispatcher.h"
 #include "InputManager.h"
+#include "ResourceManager.h"
 
 namespace GS
 {
@@ -18,6 +19,8 @@ namespace GS
 
 		void Run();
 
+		static const ResourceManager * GetResourceManager() { return ResourceManagerInstance; };
+
 	private:
 		Clock * ClockInstance = nullptr;
 
@@ -28,6 +31,8 @@ namespace GS
 		EventDispatcher * EventDispatcherInstance = nullptr;
 
 		InputManager * InputManagerInstance = nullptr;
+
+		static ResourceManager * ResourceManagerInstance;
 
 		/*int ShouldClose();*/
 	};

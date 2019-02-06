@@ -4,10 +4,12 @@
 
 #include "RenderProxy.h"
 
+#include "WorldObject.h"
+
 GS_CLASS StaticMeshRenderProxy : public RenderProxy
 {
 public:
-	StaticMeshRenderProxy();
+	StaticMeshRenderProxy(WorldObject * Owner);
 	~StaticMeshRenderProxy();
 };
 

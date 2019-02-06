@@ -1,0 +1,195 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>15.0</VCProjectVersion>
+    <ProjectGuid>{3086AB51-E516-40F6-A741-5BD94F6BA720}</ProjectGuid>
+    <RootNamespace>GSEngine</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <ProjectName>
+    </ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v141</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v141</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
+    <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
+    <IncludePath>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
+    <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
+    <IncludePath>$(SolutionDir)GS_Engine\vendor$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectName)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(ProjectDir)vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image</AdditionalIncludeDirectories>
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp,$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image;</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Game Studio\Camera.h" />
+    <ClInclude Include="src\Game Studio\RenderProxy.h" />
+    <ClInclude Include="src\Game Studio\FVector.hpp" />
+    <ClInclude Include="src\Game Studio\InputManager.h" />
+    <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\KeyPressedEvent.h" />
+    <ClInclude Include="src\Game Studio\MouseMovedEvent.h" />
+    <ClInclude Include="src\Game Studio\Resource.h" />
+    <ClInclude Include="src\Game Studio\ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\GL.h" />
+    <ClInclude Include="src\Game Studio\ImageSize.h" />
+    <ClInclude Include="src\Game Studio\Importer.h" />
+    <ClInclude Include="src\Game Studio\Line.h" />
+    <ClInclude Include="src\Game Studio\Matrix4.h" />
+    <ClInclude Include="src\Game Studio\Quat.h" />
+    <ClInclude Include="src\Game Studio\TemplateResource.h" />
+    <ClInclude Include="src\Game Studio\RGB.h" />
+    <ClInclude Include="src\Game Studio\RGBA.h" />
+    <ClInclude Include="src\Game Studio\Rotator.h" />
+    <ClInclude Include="src\Game Studio\Event.h" />
+    <ClInclude Include="src\Game Studio\Shader.h" />
+    <ClInclude Include="src\Game Studio\Logger.h" />
+    <ClInclude Include="src\Game Studio\Program.h" />
+    <ClInclude Include="src\Game Studio\EventDispatcher.h" />
+    <ClInclude Include="src\Game Studio\Array.hpp" />
+    <ClInclude Include="src\Game Studio\RendererObject.h" />
+    <ClInclude Include="src\Game Studio\IBO.h" />
+    <ClInclude Include="src\Game Studio\DArray.hpp" />
+    <ClInclude Include="src\Game Studio\Clock.h" />
+    <ClInclude Include="src\Game Studio\EngineSystem.h" />
+    <ClInclude Include="src\Game Studio\EntryPoint.h" />
+    <ClInclude Include="src\Game Studio\GSM.hpp" />
+    <ClInclude Include="src\Game Studio\Application.h" />
+    <ClInclude Include="src\Game Studio\Core.h" />
+    <ClInclude Include="src\Game Studio\Object.h" />
+    <ClInclude Include="src\Game Studio\Renderer.h" />
+    <ClInclude Include="src\Game Studio\SArray.hpp" />
+    <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
+    <ClInclude Include="src\Game Studio\Window.h" />
+    <ClInclude Include="src\Game Studio\String.hpp" />
+    <ClInclude Include="src\GameStudio.h" />
+    <ClInclude Include="src\Game Studio\VAO.h" />
+    <ClInclude Include="src\Game Studio\VBO.h" />
+    <ClInclude Include="src\Game Studio\Vertex.h" />
+    <ClInclude Include="src\Game Studio\Vector2.h" />
+    <ClInclude Include="src\Game Studio\WorldObject.h" />
+    <ClInclude Include="src\Game Studio\Transform2.h" />
+    <ClInclude Include="src\Game Studio\Transform3.h" />
+    <ClInclude Include="src\Game Studio\Vector3.h" />
+    <ClInclude Include="src\Game Studio\Texture.h" />
+    <ClInclude Include="src\Game Studio\TextureCoordinates.h" />
+    <ClInclude Include="src\Game Studio\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\Vector4.h" />
+    <ClInclude Include="src\Game Studio\TextureResource.h" />
+    <ClInclude Include="src\Game Studio\Uniform.h" />
+    <ClInclude Include="src\Game Studio\World.h" />
+    <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Game Studio\Camera.cpp" />
+    <ClCompile Include="src\Game Studio\InputManager.cpp" />
+    <ClCompile Include="src\Game Studio\ResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Logger.cpp" />
+    <ClCompile Include="src\Game Studio\Shader.cpp" />
+    <ClCompile Include="src\Game Studio\Program.cpp" />
+    <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
+    <ClCompile Include="src\Game Studio\IBO.cpp" />
+    <ClCompile Include="src\Game Studio\Clock.cpp" />
+    <ClCompile Include="src\Game Studio\GSM.cpp" />
+    <ClCompile Include="src\Game Studio\Application.cpp" />
+    <ClCompile Include="src\Game Studio\Object.cpp" />
+    <ClCompile Include="src\Game Studio\Renderer.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
+    <ClCompile Include="src\Game Studio\Window.cpp" />
+    <ClCompile Include="src\Game Studio\VAO.cpp" />
+    <ClCompile Include="src\Game Studio\VBO.cpp" />
+    <ClCompile Include="src\Game Studio\Texture.cpp" />
+    <ClCompile Include="src\Game Studio\TextureResource.cpp" />
+    <ClCompile Include="src\Game Studio\Uniform.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Game Studio\World.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cpp.hint" />
+    <None Include="src\Game Studio\FragmentShader.fshader" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\Game Studio\VertexShader.vshader">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

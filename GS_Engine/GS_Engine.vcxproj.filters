@@ -1,0 +1,304 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Misc">
+      <UniqueIdentifier>{9c40395e-d181-4c74-9766-14313884e0c4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math">
+      <UniqueIdentifier>{f8f0c03a-dfc7-4ee2-958a-410b4f3df571}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math\Math Objects">
+      <UniqueIdentifier>{98f4c226-6cf7-4440-8735-239d67b2101e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game Objects">
+      <UniqueIdentifier>{809ad5c6-c667-4e11-a957-15f59d2b06eb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Array">
+      <UniqueIdentifier>{e2e8519c-615a-4d49-a289-35a03e129e42}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine">
+      <UniqueIdentifier>{7d83fe5f-cb2e-4a25-9bf2-9651aaafc8f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Events">
+      <UniqueIdentifier>{3b96b18b-4237-43a9-b391-5f076fc32c6b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render">
+      <UniqueIdentifier>{c5fb3db2-ad1f-4ef9-a3dd-c3ad3a33ef61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Buffers">
+      <UniqueIdentifier>{529962db-4acc-4ea8-890e-14b2de711925}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Shaders">
+      <UniqueIdentifier>{e0b6ab77-afd6-4494-acc7-346d55957e21}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Shaders\GLSL Code">
+      <UniqueIdentifier>{37d4b3ff-a6b4-42ed-9949-2d5cf33ce159}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Objects">
+      <UniqueIdentifier>{6bb20616-6d06-4996-a9ce-ddf7cda7153d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Window">
+      <UniqueIdentifier>{8908fd2c-3082-4886-9ae5-3fea920eb4e3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Renderer">
+      <UniqueIdentifier>{8a427f36-913a-4afa-8eee-f22ac3685b55}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Clock">
+      <UniqueIdentifier>{324d8236-686e-4eed-988d-a3b7b56f6f9e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Resource Manager">
+      <UniqueIdentifier>{24a2456e-0f7d-47f1-b352-aa8129c7db33}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Resource Manager\Resources">
+      <UniqueIdentifier>{5513227a-3009-4368-80a8-edfa2163f281}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\InputManager">
+      <UniqueIdentifier>{d8135fcb-5a1e-4857-953e-37d836b63974}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\InputManager\Events">
+      <UniqueIdentifier>{2a651d8e-df00-4284-baa5-7abc672b40db}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Log">
+      <UniqueIdentifier>{d7eb5379-c059-40f4-abea-11baa036cdd3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Application">
+      <UniqueIdentifier>{9669b65e-2eba-4026-9f31-190e2ee371e9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Game Studio\VAO.h">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\VBO.h">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\DArray.hpp">
+      <Filter>Misc\Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Array.hpp">
+      <Filter>Misc\Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\SArray.hpp">
+      <Filter>Misc\Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EventDispatcher.h">
+      <Filter>Engine\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EngineSystem.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vertex.h">
+      <Filter>Engine\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\IBO.h">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Program.h">
+      <Filter>Engine\Render\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Application.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Clock.h">
+      <Filter>Engine\Clock</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Event.h">
+      <Filter>Engine\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Object.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\String.hpp">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\WorldObject.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Rotator.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Transform2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Transform3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RGBA.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RGB.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\TextureCoordinates.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\ImageSize.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Importer.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Shader.h">
+      <Filter>Engine\Render\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\GL.h">
+      <Filter>Engine\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\GSM.hpp">
+      <Filter>Misc\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Line.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Quat.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Matrix4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Vector4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\ResourceManager.h">
+      <Filter>Engine\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\StaticMesh.h">
+      <Filter>Engine\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Functor.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\FVector.hpp">
+      <Filter>Misc\Array</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\InputManager.h">
+      <Filter>Engine\InputManager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\KeyPressedEvent.h">
+      <Filter>Engine\InputManager\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\MouseMovedEvent.h">
+      <Filter>Engine\InputManager\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\TextureResource.h">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\StaticMeshResource.h">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Texture.h">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Uniform.h">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RendererObject.h">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Window.h">
+      <Filter>Engine\Render\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Renderer.h">
+      <Filter>Engine\Render\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Logger.h">
+      <Filter>Engine\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\EntryPoint.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GameStudio.h" />
+    <ClInclude Include="src\Game Studio\Core.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\World.h" />
+    <ClInclude Include="src\Game Studio\TemplateResource.h">
+      <Filter>Engine\Resource Manager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\RenderProxy.h" />
+    <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
+    <ClInclude Include="src\Game Studio\Camera.h" />
+    <ClInclude Include="src\Game Studio\Resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Game Studio\VAO.cpp">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\VBO.cpp">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\EventDispatcher.cpp">
+      <Filter>Engine\Events</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\IBO.cpp">
+      <Filter>Engine\Render\Buffers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Program.cpp">
+      <Filter>Engine\Render\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Application.cpp">
+      <Filter>Engine\Application</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Clock.cpp">
+      <Filter>Engine\Clock</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Object.cpp">
+      <Filter>Game Objects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Shader.cpp">
+      <Filter>Engine\Render\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\GSM.cpp">
+      <Filter>Misc\Math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\ResourceManager.cpp">
+      <Filter>Engine\Resource Manager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\InputManager.cpp">
+      <Filter>Engine\InputManager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\TextureResource.cpp">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Texture.cpp">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Uniform.cpp">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Window.cpp">
+      <Filter>Engine\Render\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Renderer.cpp">
+      <Filter>Engine\Render\Renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Logger.cpp">
+      <Filter>Engine\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp">
+      <Filter>Engine\Resource Manager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
+    <ClCompile Include="src\Game Studio\World.cpp" />
+    <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\Camera.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cpp.hint" />
+    <None Include="src\Game Studio\FragmentShader.fshader">
+      <Filter>Engine\Render\Shaders\GLSL Code</Filter>
+    </None>
+    <None Include="src\Game Studio\VertexShader.vshader">
+      <Filter>Engine\Render\Shaders\GLSL Code</Filter>
+    </None>
+  </ItemGroup>
+</Project>

@@ -18,7 +18,7 @@ public:
 	~ResourceManager();
 
 	template <typename T>
-	static T * GetAsset(const std::string & Path)
+	static T * GetResource(const std::string & Path)
 	{
 		for (uint16 i = 0; i < LoadedResources.size(); i++)
 		{

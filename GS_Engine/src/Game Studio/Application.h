@@ -19,10 +19,11 @@ namespace GS
 
 		void Run();
 
-		static const ResourceManager * GetResourceManager() { return ResourceManagerInstance; };
+		static const ResourceManager * GetResourceManager() { return ResourceManagerInstance; }
+		static const Clock * GetClock() { return ClockInstance; }
 
 	private:
-		Clock * ClockInstance = nullptr;
+		static Clock * ClockInstance;
 
 		Window * WindowInstance = nullptr;
 

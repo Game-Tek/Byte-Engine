@@ -7,9 +7,9 @@
 //Used to specify time(Hour, Minute, Second).
 struct Time
 {
-	unsigned short Hour;
-	unsigned short Minute;
-	unsigned short Second;
+	uint8 Hour;
+	uint8 Minute;
+	uint8 Second;
 };
 
 //Used to specify days of the week, with Monday being 1 and Sunday being 7.
@@ -25,7 +25,8 @@ enum Days
 };
 
 //Used to specify months, with January being 1 and December being 12.
-enum Months {
+enum Months
+{
 	January = 1,
 	February,
 	March,
@@ -51,40 +52,40 @@ public:
 	//CLOCK FUNCTIONALITY GETTERS
 
 	//Returns the real seconds elapsed since the last game update (tick).
-	static float GetDeltaTime();
+	float GetDeltaTime();
 	
 	//Returns the delta time adjusted for time dilation.
-	static float GetGameDeltaTime();
+	float GetGameDeltaTime();
 	
 	//Returns the time the game has been running in real seconds.
-	static float GetElapsedTime();
+	float GetElapsedTime();
 	
 	//Returns the elapsed game time adjusted for time dilations and game pauses.
-	static float GetElapsedGameTime();					
+	float GetElapsedGameTime();					
 
 
 	//UTILITY GETTERS
 
 	//Returns the current local year of the computer.
-	static unsigned short GetYear();
+	unsigned short GetYear();
 
 	//Returns the current local month of the computer.
-	static Months GetMonth();
+	Months GetMonth();
 
 	//Returns the current local day of the month of the computer.
-	static unsigned short GetDayOfMonth();
+	unsigned short GetDayOfMonth();
 
 	//Returns the current local day of the week of the computer.
-	static Days GetDayOfWeek();
+	Days GetDayOfWeek();
 
 	//Returns the current local time (Hour, Minute, Second) of the computer.
-	static Time GetTime();
+	Time GetTime();
 
 	
 	//CLOCK FUNCTIONALITY SETTERS
 
-	static void SetTimeDilation(float Dilation);		//Sets the percentage by which time should be divided.
-	static void SetIsPaused(bool IsPaused);
+	void SetTimeDilation(float Dilation);		//Sets the percentage by which time should be divided.
+	void SetIsPaused(bool IsPaused);
 
 	// CALC
 
@@ -93,17 +94,17 @@ public:
 	inline float NanosecondsToSeconds(unsigned long long In) { return In / 1000000000.f; }
 
 private:
-	static bool ShouldUpdateGameTime;
+	bool ShouldUpdateGameTime;
 
-	static float DeltaTime;								//Stores the real seconds elapsed since the last game update (tick).
-	static unsigned long long SystemTicks;
-	static float ElapsedTime;							//Stores the time the game has been running in real microseconds. 1,000,000.
-	static float ElapsedGameTime;						//Stores the elapsed game time adjusted for time dilation and game pauses.
-	static unsigned long long StartSystemTicks;
+	float DeltaTime;								//Stores the real seconds elapsed since the last game update (tick).
+	unsigned long long SystemTicks;
+	float ElapsedTime;							//Stores the time the game has been running in real microseconds. 1,000,000.
+	float ElapsedGameTime;						//Stores the elapsed game time adjusted for time dilation and game pauses.
+	unsigned long long StartSystemTicks;
 
-	static float TimeDivisor;							//Stores the percentage by which time should be divided.
+	float TimeDivisor;							//Stores the percentage by which time should be divided.
 
-	static unsigned long long ProcessorFrequency;		//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
+	unsigned long long ProcessorFrequency;		//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
 
 	void SetDeltaTime();								//Sets DeltaTime.
 };

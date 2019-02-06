@@ -4,9 +4,9 @@
 
 #include "Logger.h"
 
-StaticMesh::StaticMesh(const std::string & Path)
+StaticMesh::StaticMesh(const std::string & Path) : RenderProxy(this)
 {
-	MeshData = ResourceManager::GetAsset<StaticMeshResource>(Path);
+	MeshResource = ResourceManager::GetResource<StaticMeshResource>(Path);
 
 	GS_LOG_MESSAGE("Loaded static mesh %s, ", Path.c_str())
 }

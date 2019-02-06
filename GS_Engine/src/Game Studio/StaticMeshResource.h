@@ -26,6 +26,9 @@ public:
 	StaticMeshResource(const std::string & Path);
 	~StaticMeshResource();
 
+	Mesh * GetMeshData() const { return ((Mesh *)Data); }
+	size_t GetDataSize() const override { return sizeof(*((Mesh*)(Data))); }
+
 	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return ((Mesh *)Data)[MeshIndex].IndexCount; };
 	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return ((Mesh *)Data)[MeshIndex].VertexCount; }
 

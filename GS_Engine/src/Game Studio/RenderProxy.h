@@ -5,9 +5,22 @@
 #include "VBO.h"
 #include "IBO.h"
 
+#include "WorldObject.h"
+
 GS_CLASS RenderProxy
 {
-private:
+public:
+	RenderProxy();
+	RenderProxy(WorldObject * Owner);
+
+protected:
+	WorldObject * Owner = nullptr;
+
 	VBO * VertexBuffer = nullptr;
 	IBO * IndexBuffer = nullptr;
 };
+
+
+RenderProxy::RenderProxy(WorldObject * Owner) : Owner(Owner)
+{
+}

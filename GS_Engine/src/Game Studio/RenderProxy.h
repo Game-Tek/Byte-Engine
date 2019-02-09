@@ -11,7 +11,9 @@ GS_CLASS RenderProxy
 {
 public:
 	RenderProxy();
-	RenderProxy(WorldObject * Owner);
+	RenderProxy(WorldObject * Owner) : Owner(Owner)
+	{
+	}
 
 protected:
 	WorldObject * Owner = nullptr;
@@ -19,8 +21,3 @@ protected:
 	VBO * VertexBuffer = nullptr;
 	IBO * IndexBuffer = nullptr;
 };
-
-
-RenderProxy::RenderProxy(WorldObject * Owner) : Owner(Owner)
-{
-}

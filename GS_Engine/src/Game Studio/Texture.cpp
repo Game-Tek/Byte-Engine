@@ -1,12 +1,12 @@
 #include "Texture.h"
 
-#include "glad.h"
+#include <GLAD/glad.h>
 
 #include "Logger.h"
 
 #include "GL.h"
 
-#include "stb_image.h"
+#include <stb image/stb_image.h>
 
 Texture::Texture(const char * ImageFilePath)
 {
@@ -34,7 +34,7 @@ Texture::Texture(const char * ImageFilePath)
 	}
 	else
 	{
-		GS_LOG_WARNING("Failed to import texture!")
+		GS_LOG_WARNING("Failed to import texture at, %s", ImageFilePath)
 	}
 	stbi_image_free(ImageData);
 }

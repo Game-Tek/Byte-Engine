@@ -1,6 +1,6 @@
 #include "TextureResource.h"
 
-#include "stb_image.h"
+#include "stb image/stb_image.h"
 
 #include "Logger.h"
 

@@ -47,14 +47,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor$(ProjectDir)vendor\GLFW;$(ProjectDir)vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <IncludePath>W:\Game Studio\GS_Engine\vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(SolutionDir)GS_Engine\vendor$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectName)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+    <IncludePath>W:\Game Studio\GS_Engine\vendor;W:\Game Studio\GS_Engine\vendor\assimp;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -63,11 +63,11 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)vendor\assimp;$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(ProjectDir)vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>W:\Game Studio\GS_Engine\vendor</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp,$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
       <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
@@ -83,13 +83,13 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)GS_Engine\vendor;$(SolutionDir)GS_Engine\vendor\GLFW;$(SolutionDir)GS_Engine\vendor\GLAD;$(SolutionDir)GS_Engine\vendor\stb image;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>W:\Game Studio\GS_Engine\vendor;W:\Game Studio\GS_Engine\vendor\assimp</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
@@ -177,8 +177,10 @@
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Uniform.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
-    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
+    <ClCompile Include="vendor\GLAD\glad.c" />
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

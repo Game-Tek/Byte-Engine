@@ -11,14 +11,14 @@
 class ResourceManager
 {
 private:
-	static FVector<Resource *> LoadedResources;
+	FVector<Resource *> LoadedResources;
 
 public:
 	ResourceManager();
 	~ResourceManager();
 
 	template <typename T>
-	static T * GetResource(const std::string & Path)
+	T * GetResource(const std::string & Path)
 	{
 		for (uint16 i = 0; i < LoadedResources.size(); i++)
 		{
@@ -35,7 +35,7 @@ public:
 
 private:
 	template <typename T>
-	static T * LoadAsset(const std::string & Path)
+	T * LoadAsset(const std::string & Path)
 	{
 		T * ptr = new T(Path);
 

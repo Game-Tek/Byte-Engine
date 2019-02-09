@@ -1,6 +1,6 @@
 #include "VAO.h"
 
-#include "glad.h"
+#include "GLAD/glad.h"
 
 #include "GL.h"
 

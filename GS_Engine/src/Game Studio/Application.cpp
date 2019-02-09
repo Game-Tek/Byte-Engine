@@ -4,6 +4,9 @@
 
 #include "windows.h"
 
+Clock * GS::Application::ClockInstance;
+ResourceManager * GS::Application::ResourceManagerInstance;
+
 namespace GS
 {
 	Application::Application()

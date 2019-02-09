@@ -4,17 +4,6 @@
 
 #include "windows.h"
 
-/*--------Members Declaration in .cpp--------*/
-bool Clock::ShouldUpdateGameTime;
-float Clock::DeltaTime;
-unsigned long long Clock::SystemTicks;
-float Clock::ElapsedTime;
-float Clock::ElapsedGameTime;
-unsigned long long Clock::StartSystemTicks;
-float Clock::TimeDivisor;
-unsigned long long Clock::ProcessorFrequency;
-/*--------------------------------------------*/
-
 Clock::Clock()
 {
 #ifdef GS_PLATFORM_WIN
@@ -138,7 +127,7 @@ Time Clock::GetTime()
 
 	GetLocalTime(& WinTimeStructure);
 	
-	return { WinTimeStructure.wHour, WinTimeStructure.wMinute, WinTimeStructure.wSecond };
+	return { (uint8)WinTimeStructure.wHour, (uint8)WinTimeStructure.wMinute, (uint8)WinTimeStructure.wSecond };
 }
 
 //CLOCK FUNCTIONALITY

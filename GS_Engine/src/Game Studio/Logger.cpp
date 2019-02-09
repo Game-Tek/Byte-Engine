@@ -4,9 +4,9 @@
 
 #include "windows.h"
 
-#include "glad.h"
+#include "GLAD/glad.h"
 
-#include "Clock.h"
+#include "Application.h"
 
 void Logger::SetLogTextColor(LogColors Color)
 {
@@ -39,7 +39,7 @@ void Logger::PrintLog(const char * Text, ...)
 {
 	//SetLogTextColor(Color);
 
-	Time LogTime = Clock::GetTime();
+	Time LogTime = GS::Application::GetClockInstance()->GetTime();
 
 	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 
@@ -58,10 +58,19 @@ void Logger::GetglGetError()
 	switch (glGetError())
 	{
 	case GL_NO_ERROR:
-		return;
+		break;
 	case GL_INVALID_ENUM:
 		GS_LOG_ERROR("Invalid enum!");
-		return;
+		break;
+	case GL_INVALID_VALUE:
+		GS_LOG_ERROR("Inavlid Value!");
+		break;
+	case GL_INVALID_OPERATION:
+		GS_LOG_ERROR("Invalid Operation!");
+		break;
+	case GL_OUT_OF_MEMORY:
+		GS_LOG_ERROR("Out of Memory!");
+		break;
 	}
 	return;
 }

@@ -3,7 +3,6 @@
 #include "Logger.h"
 
 #include <assimp/Importer.hpp>
-#include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
 StaticMeshResource::StaticMeshResource(const std::string & Path)

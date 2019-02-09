@@ -168,9 +168,6 @@
     <ClInclude Include="src\Game Studio\ResourceManager.h">
       <Filter>Engine\Resource Manager</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\StaticMesh.h">
-      <Filter>Engine\Resource Manager</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Functor.h">
       <Filter>Misc</Filter>
     </ClInclude>
@@ -225,6 +222,7 @@
     <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\Resource.h" />
+    <ClInclude Include="src\Game Studio\StaticMesh.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -284,13 +282,13 @@
     <ClCompile Include="src\Game Studio\Logger.cpp">
       <Filter>Engine\Log</Filter>
     </ClCompile>
-    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp">
-      <Filter>Engine\Resource Manager</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
+    <ClCompile Include="src\Game Studio\WorldObject.cpp" />
+    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="vendor\GLAD\glad.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

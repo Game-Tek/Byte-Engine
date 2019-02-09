@@ -11,7 +11,7 @@
 GS_CLASS StaticMesh : public WorldObject
 {
 public:
-	StaticMesh(const std::string & Path);
+	StaticMesh(const std::string & StaticMeshAsset);
 	~StaticMesh();
 
 	//Returns a const pointer to the static mesh resource.

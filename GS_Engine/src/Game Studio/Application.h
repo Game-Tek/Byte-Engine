@@ -19,8 +19,10 @@ namespace GS
 
 		void Run();
 
-		static const ResourceManager * GetResourceManager() { return ResourceManagerInstance; }
-		static const Clock * GetClock() { return ClockInstance; }
+		//TO-DO: CHECK CONST FOR POINTERS.
+
+		static ResourceManager * GetResourceManagerInstance() { return ResourceManagerInstance; }
+		static Clock * GetClockInstance() { return ClockInstance; }
 
 	private:
 		static Clock * ClockInstance;

@@ -5,7 +5,7 @@
 #include <fstream>
 #include <sstream>
 
-#include "glad.h"
+#include "GLAD/glad.h"
 
 #include "GL.h"
 

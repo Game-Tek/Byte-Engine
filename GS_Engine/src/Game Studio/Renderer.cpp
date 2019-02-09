@@ -2,13 +2,14 @@
 
 #include "Window.h"
 
-#include "glad.h"
+#include <GLAD/glad.h>
 #include "GL.h"
 
 #include "Vertex.h"
 #include "Shader.h"
 #include "Program.h"
 #include "Texture.h"
+#include "Uniform.h"
 
 #include <iostream>
 
@@ -31,7 +32,7 @@ VAO * VertexAttribute;
 Program * Prog;
 Texture * Text;
 
-Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
+Renderer::Renderer(Window * WD) : WindowInstanceRef(WD), ProjectionMatrix(BuildProjectionMatrix(GSM::DegreesToRadians(45), 0.01f, 100.0f, 1.0f, 1.0f, 1.0f, 1.0f))
 {
 	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 
@@ -50,6 +51,11 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(TextureCoordinates));
 
 	Text->Bind();
+
+	Uniform ProjUni(Prog, "uProjection");
+	Uniform ViewUni(Prog, "uView");
+
+	ProjUni = ProjectionMatrix;
 }
 
 Renderer::~Renderer()

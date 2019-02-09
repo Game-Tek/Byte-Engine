@@ -1,7 +1,6 @@
 #include "VBO.h"
 
-#include "glad.h"
-#include "glad.c"
+#include "GLAD/glad.h"
 
 #include "GL.h"
 

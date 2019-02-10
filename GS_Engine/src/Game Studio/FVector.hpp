@@ -20,7 +20,7 @@ public:
 		this->Data = allocate(DEF_VEC_SIZE);
 	}
 
-	FVector(size_t length) : Capacity(length)
+	explicit FVector(size_t length) : Capacity(length)
 	{
 		this->Data = allocate(length);
 	}
@@ -38,21 +38,21 @@ public:
 
 		this->Data[Length] = obj;
 
-		this->Length++;
+		++this->Length;
 	}
 
 	void pop_back()
 	{
-		this->Length--;
+		--this->Length;
 	}
 
 	void place(size_t index, const T & obj)
 	{
 		checkfornew(1);
 
-		this->Length++;
+		++this->Length;
 
-		for (size_t i = this->Length; i > this->index; i--)
+		for (size_t i = this->Length; i > index; i--)
 		{
 			this->Data[i] = this->Data[i - 1];
 		}
@@ -66,7 +66,7 @@ public:
 
 		this->Length += length;
 
-		for (size_t i = this->Length; i > this->index; i--)
+		for (size_t i = this->Length; i > index; i--)
 		{
 			this->Data[i] = this->Data[i - length];
 		}
@@ -79,7 +79,7 @@ public:
 
 	void erase(size_t index)
 	{
-		this->Length--;
+		--this->Length;
 
 		for (size_t i = index; i < this->Length; i++)
 		{

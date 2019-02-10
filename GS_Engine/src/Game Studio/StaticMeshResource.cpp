@@ -2,9 +2,10 @@
 
 #include "Logger.h"
 
-//#include <assimp/Importer.hpp>
-//#include <assimp/postprocess.h>
-/*
+#include <assimp/scene.h>
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+
 StaticMeshResource::StaticMeshResource(const std::string & Path)
 {
 	Data = Load(Path.c_str());
@@ -106,8 +107,7 @@ Mesh * StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	return LocMesh;
 }
 
-Mesh * StaticMeshResource::LoadFallbackResource()
+Mesh * StaticMeshResource::LoadFallbackResource() const
 {
 	return new Mesh;
 }
-*/

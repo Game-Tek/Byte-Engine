@@ -16,7 +16,9 @@ struct Mesh
 	uint32 IndexCount = 0;
 };
 
-#include <assimp/scene.hpp>
+struct aiNode;
+struct aiMesh;
+class aiScene;
 
 GS_CLASS StaticMeshResource : public Resource
 {
@@ -32,7 +34,7 @@ public:
 
 private:
 	Mesh * Load(const char * FilePath);
-	Mesh * LoadFallbackResource();
-	//Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
-	//Mesh * ProcessMesh(aiMesh * Mesh);
+	Mesh * LoadFallbackResource() const;
+	Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
+	Mesh * ProcessMesh(aiMesh * Mesh);
 };

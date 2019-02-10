@@ -16,12 +16,12 @@ struct Mesh
 	uint32 IndexCount = 0;
 };
 
-#include "assimp/scene.hpp"
+#include <assimp/scene.hpp>
 
 GS_CLASS StaticMeshResource : public Resource
 {
 public:
-	StaticMeshResource(const std::string & Path);
+	explicit StaticMeshResource(const std::string & Path);
 	~StaticMeshResource();
 
 	Mesh * GetMeshData() const { return static_cast<Mesh *>(Data); }
@@ -33,6 +33,6 @@ public:
 private:
 	Mesh * Load(const char * FilePath);
 	Mesh * LoadFallbackResource();
-	Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
-	Mesh * ProcessMesh(aiMesh * Mesh);
+	//Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
+	//Mesh * ProcessMesh(aiMesh * Mesh);
 };

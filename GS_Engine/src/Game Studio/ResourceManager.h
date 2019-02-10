@@ -8,9 +8,8 @@
 
 #include "FVector.hpp"
 
-class ResourceManager
+GS_CLASS ResourceManager
 {
-private:
 	FVector<Resource *> LoadedResources;
 
 public:
@@ -24,7 +23,7 @@ public:
 		{
 			if (LoadedResources[i]->GetPath() == Path)
 			{
-				return (T *)LoadedResources[i];
+				return dynamic_cast<T *>(LoadedResources[i]);
 			}
 		}
 

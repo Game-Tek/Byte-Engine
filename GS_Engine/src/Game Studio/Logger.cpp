@@ -53,7 +53,7 @@ void Logger::PrintLog(const char * Text, ...)
 	SetLogTextColor(White);
 }
 
-void Logger::GetglGetError()
+void Logger::GetglGetError(const char* Details)
 {
 	switch (glGetError())
 	{
@@ -72,5 +72,7 @@ void Logger::GetglGetError()
 		GS_LOG_ERROR("Out of Memory!");
 		break;
 	}
+
+	GS_LOG_ERROR(Details)
 	return;
 }

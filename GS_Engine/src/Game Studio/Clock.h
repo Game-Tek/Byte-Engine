@@ -94,17 +94,17 @@ public:
 	inline float NanosecondsToSeconds(unsigned long long In) { return In / 1000000000.f; }
 
 private:
-	bool ShouldUpdateGameTime;
+	bool ShouldUpdateGameTime = true;
 
-	float DeltaTime;								//Stores the real seconds elapsed since the last game update (tick).
-	unsigned long long SystemTicks;
-	float ElapsedTime;							//Stores the time the game has been running in real microseconds. 1,000,000.
-	float ElapsedGameTime;						//Stores the elapsed game time adjusted for time dilation and game pauses.
-	unsigned long long StartSystemTicks;
+	float DeltaTime = 0.0f;								//Stores the real seconds elapsed since the last game update (tick).
+	unsigned long long SystemTicks = 0;
+	float ElapsedTime = 0.0f;							//Stores the time the game has been running in real microseconds. 1,000,000.
+	float ElapsedGameTime = 0.0f;						//Stores the elapsed game time adjusted for time dilation and game pauses.
+	unsigned long long StartSystemTicks = 0;
 
-	float TimeDivisor;							//Stores the percentage by which time should be divided.
+	float TimeDivisor = 1.0f;							//Stores the percentage by which time should be divided.
 
-	unsigned long long ProcessorFrequency;		//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
+	unsigned long long ProcessorFrequency = 0;			//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
 
 	void SetDeltaTime();								//Sets DeltaTime.
 };

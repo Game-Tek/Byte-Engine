@@ -8,12 +8,12 @@ StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner) : RenderProxy(
 {
 	//Create new Vertex buffer object to store this static mesh data.
 	//Cast Owner to StaticMesh pointer, GetMeshResource pointer, Get Pointer to the data; Cast Owner to StaticMesh pointer, GetMeshResource pointer, Get the size of the data, Set render mode.
-	VertexBuffer = new VBO(((StaticMesh *)Owner)->GetMeshResource()->GetData(), (uint32)((StaticMesh *)Owner)->GetMeshResource()->GetDataSize(), GL_STATIC_DRAW);
+	VertexBuffer = new VBO(dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetData(), (uint32)dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetDataSize(), GL_STATIC_DRAW);
 
 	//Create new IndexBuffer object to store this static mesh indeces.
 	//					Cast Owner to Static	Get S.M. resource	Get Mesh	Get a pointer
 	//					Mesh pointer.			pointer.			Data.		to the Index Array.
-	IndexBuffer = new IBO(((StaticMesh *)Owner)->GetMeshResource()->GetMeshData()->IndexArray, ((StaticMesh *)Owner)->GetMeshResource()->GetMeshData()->IndexCount);
+	IndexBuffer = new IBO(dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData()->IndexArray, dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData()->IndexCount);
 }
 
 StaticMeshRenderProxy::~StaticMeshRenderProxy()

@@ -17,7 +17,7 @@ TextureResource::~TextureResource()
 RGB * TextureResource::Load(const char * FilePath)
 {
 	//Load  the image.
-	unsigned char * ImageData = stbi_load(FilePath, &(int &)TextureDimensions.Width, &(int &)TextureDimensions.Height, &(int &)NumberOfChannels, 0);
+	unsigned char * ImageData = stbi_load(FilePath, & reinterpret_cast<int &>(TextureDimensions.Width), & reinterpret_cast<int &>(TextureDimensions.Height), & reinterpret_cast<int &>(NumberOfChannels), 0);
 
 	//Error checking.
 	if (!ImageData)
@@ -27,7 +27,7 @@ RGB * TextureResource::Load(const char * FilePath)
 		return LoadFallbackResource();
 	}
 
-	return (RGB *)ImageData;
+	return reinterpret_cast<RGB *>(ImageData);
 }
 
 RGB * TextureResource::LoadFallbackResource()

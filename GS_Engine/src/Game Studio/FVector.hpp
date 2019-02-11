@@ -16,45 +16,47 @@ private:
 
 public:
 
+	//Constructs a new FVector and allocates some previsional space.
 	FVector() : Capacity(DEF_VEC_SIZE), Data(allocate(DEF_VEC_SIZE))
 	{
 	}
 
+	//Constructs a new FVector allocating space for the quantity of elements specified in length.
 	explicit FVector(size_t length) : Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
 	}
 
+	//Constructs a new FVector filling the internal array with the contents of the passed in array.
 	explicit FVector(T Array[], size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
 
+	//Constructs a new FVector from another FVector.
 	FVector(const FVector & Other) : Length(Other.Length), Capacity(Other.Capacity), Data(allocate(this->Capacity))
 	{
 		copyarray(Other.Data, this->Data);
 	}
 
+	//Assigns the internal array the contents of the passed in array.
 	FVector & operator=(T Other[])
 	{
 		const size_t length = (sizeof(*Other) / sizeof(T));
 
-		if (length > this->Capacity)
-		{
-			Capacity = length + EXTRA;
-
-			this->Data = allocate();
-		}
+		checkfornew(length - this->Length);
 
 		Length = length;
 
-		copyarray(Other, this->Data, length);
+		copyarray(Other, this->Data);
 
 		return *this;
 	}
 
+	//Assigns this object the data of the passed in FVector.
 	FVector & operator=(const FVector & Other)
 	{
-		this->Capacity = Other.Capacity;
+		checkfornew(Other.Length - this->Length);
+
 		this->Length = Other.Length;
 
 		copyarray(Other.Data, this->Data);
@@ -86,9 +88,9 @@ public:
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
 	void insert(size_t index, const T & obj)
 	{
-		checkfornew(1);
-
 		++this->Length;
+
+		checkfornew();
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -101,9 +103,9 @@ public:
 	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
 	void insert(size_t index, T arr[], size_t length)
 	{
-		checkfornew(length);
-
 		this->Length += length;
+
+		checkfornew();
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -173,11 +175,13 @@ public:
 	}
 
 private:
+	//Allocates a new a array of type T with enough space to hold elementcount elements.
 	T * allocate(size_t elementcount)
 	{
 		return new T[elementcount];
 	}
 
+	//Fills array to with from.
 	void copyarray(T* from, T* to)
 	{
 		for (size_t i = 0; i < this->Length; i++)
@@ -186,21 +190,30 @@ private:
 		}
 	}
 
-	void copyarray(T* from, T* to, size_t length)
+	//Allocates a new array if Length + newelements exceeds the allocated space.
+	void checkfornew()
 	{
-		for (size_t i = 0; i < length; i++)
-		{
-			to[i] = from[i];
-		}
-	}
-
-	void checkfornew(size_t newelements)
-	{
-		if ((this->Length + newelements) > this->Capacity)
+		if (this->Length > this->Capacity)
 		{
 			this->Capacity = this->Length * 2;
 
-			T* buffer = allocate(this->Capacity);
+			T * buffer = allocate(this->Capacity);
+
+			copyarray(this->Data, buffer);
+
+			delete[] this->Data;
+
+			this->Data = buffer;
+		}
+	}
+
+	void checkfornew(size_t additionalelements)
+	{
+		if (this->Length + additionalelements > this->Capacity)
+		{
+			this->Capacity = (this->Length * 2) + additionalelements;
+
+			T * buffer = allocate(this->Capacity);
 
 			copyarray(this->Data, buffer);
 

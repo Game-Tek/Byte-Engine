@@ -32,12 +32,12 @@ void InputManager::MouseMoved(const Vector2 & Pos)
 	//Update MouseOffset.
 	MouseOffset = Pos - MousePos;
 
-	//If the mouse's position dosn't equal last frame's position update. This is to avoid unnecesary event posts.
+	//If the mouse's position dosn't equal last frame's position update don't post an event. This is to avoid unnecesary event posts.
 	if (MousePos != Pos)
 	{
 		EventDispatcher::Notify<MouseMovedEvent>(MouseMovedEventId, MouseMovedEvent(MouseOffset));
 
-		GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
+		//GS_LOG_MESSAGE("Mouse Moved: %f, %f", Pos.X, Pos.Y)
 	}
 
 	//Set mouse position as the current position.

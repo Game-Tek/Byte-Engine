@@ -41,7 +41,7 @@ Mesh ** StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 	// Loop through each of the node’s meshes (if any)
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)
 	{
-		//Create a placeholder to store the this scene's mesh at [m].
+		//Create a insertholder to store the this scene's mesh at [m].
 		aiMesh * Mesh = Scene->mMeshes[Node->mMeshes[m]];
 
 		//Store in Data at [m] a pointer to the array of vertices created for this mesh.

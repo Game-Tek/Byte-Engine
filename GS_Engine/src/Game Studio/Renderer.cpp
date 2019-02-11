@@ -36,7 +36,7 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD), ProjectionMatrix(BuildP
 {
 	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 
-	GS_GL_CALL(glViewport(0, 0, (GLsizei)WindowInstanceRef->GetWindowWidth(), (GLsizei)WindowInstanceRef->GetWindowHeight()));
+	GS_GL_CALL(glViewport(0, 0, static_cast<GLsizei>(WindowInstanceRef->GetWindowWidth()), static_cast<GLsizei>(WindowInstanceRef->GetWindowHeight())));
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
 	VertexBuffer = new VBO(Vertices, sizeof(Vertices), GL_STATIC_DRAW);
@@ -73,7 +73,7 @@ void Renderer::Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const
 	ibo->Bind();
 	progr->Bind();
 
-	GS_GL_CALL(glDrawElements(GL_TRIANGLES, (GLsizei)ibo->GetCount(), GL_UNSIGNED_INT, 0));
+	GS_GL_CALL(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(ibo->GetCount()), GL_UNSIGNED_INT, 0));
 
 	return;
 }

@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #define DEF_VEC_SIZE 15
+#define EXTRA 5
 
 template <typename T>
 GS_CLASS FVector
@@ -15,23 +16,58 @@ private:
 
 public:
 
-	FVector() : Capacity(DEF_VEC_SIZE)
+	FVector() : Capacity(DEF_VEC_SIZE), Data(allocate(DEF_VEC_SIZE))
 	{
-		this->Data = allocate(DEF_VEC_SIZE);
 	}
 
-	explicit FVector(size_t length) : Capacity(length)
+	explicit FVector(size_t length) : Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
-		this->Data = allocate(length);
 	}
 
-	FVector(const FVector & Other) : Length(Other.Length), Capacity(Other.Capacity)
+	explicit FVector(T Array[], size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
-		Data = allocate(this->Capacity);
+		copyarray(Array, this->Data);
+	}
 
+	FVector(const FVector & Other) : Length(Other.Length), Capacity(Other.Capacity), Data(allocate(this->Capacity))
+	{
 		copyarray(Other.Data, this->Data);
 	}
 
+	FVector & operator=(T Other[])
+	{
+		const size_t length = (sizeof(*Other) / sizeof(T));
+
+		if (length > this->Capacity)
+		{
+			Capacity = length + EXTRA;
+
+			this->Data = allocate();
+		}
+
+		Length = length;
+
+		copyarray(Other, this->Data, length);
+
+		return *this;
+	}
+
+	FVector & operator=(const FVector & Other)
+	{
+		this->Capacity = Other.Capacity;
+		this->Length = Other.Length;
+
+		copyarray(Other.Data, this->Data);
+
+		return *this;
+	}
+
+	~FVector()
+	{
+		delete this->Data;
+	}
+
+	//Places the passed in element at the end of the array.
 	void push_back(const T & obj)
 	{
 		checkfornew(1);
@@ -41,12 +77,14 @@ public:
 		++this->Length;
 	}
 
+	//Deletes the array's last element.
 	void pop_back()
 	{
 		--this->Length;
 	}
 
-	void place(size_t index, const T & obj)
+	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
+	void insert(size_t index, const T & obj)
 	{
 		checkfornew(1);
 
@@ -60,7 +98,8 @@ public:
 		this->Data[index] = obj;
 	}
 
-	void place(size_t index, T arr[], size_t length)
+	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
+	void insert(size_t index, T arr[], size_t length)
 	{
 		checkfornew(length);
 
@@ -77,6 +116,16 @@ public:
 		}
 	}
 
+	//Overwrites existing data with the data from tha passed array.
+	void overlay(size_t index, T arr[], size_t length)
+	{
+		for (uint32 i = 0; i < length; ++i)
+		{
+			this->Data[index + i] = arr[i];
+		}
+	}
+
+	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
 	void erase(size_t index)
 	{
 		--this->Length;
@@ -87,6 +136,7 @@ public:
 		}
 	}
 
+	//Deletes all elements between index and index + length and shifts the entiry array backwards to fill the empty space.
 	void erase(size_t index, size_t length)
 	{
 		this->Length -= length;
@@ -97,14 +147,29 @@ public:
 		}
 	}
 
-	T & operator[] (size_t index)
+	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
+	T & operator[](size_t index)
 	{
+#ifdef GS_DEBUG
+		if (index > this->Length)
+		{
+			throw("Out of bounds!");
+		}
+#endif
+
 		return this->Data[index];
 	}
 
-	size_t size() const
+	//Retuns the ocuppied elements count.
+	size_t length() const
 	{
 		return this->Length;
+	}
+
+	//Returns a pointer to the allocated array.
+	T * data()
+	{
+		return this->Data;
 	}
 
 private:
@@ -113,14 +178,20 @@ private:
 		return new T[elementcount];
 	}
 
-	void copyarray(T * from, T * to)
+	void copyarray(T* from, T* to)
 	{
 		for (size_t i = 0; i < this->Length; i++)
 		{
 			to[i] = from[i];
-		};
+		}
+	}
 
-		return;
+	void copyarray(T* from, T* to, size_t length)
+	{
+		for (size_t i = 0; i < length; i++)
+		{
+			to[i] = from[i];
+		}
 	}
 
 	void checkfornew(size_t newelements)
@@ -129,7 +200,7 @@ private:
 		{
 			this->Capacity = this->Length * 2;
 
-			T * buffer = allocate(this->Capacity);
+			T* buffer = allocate(this->Capacity);
 
 			copyarray(this->Data, buffer);
 
@@ -137,7 +208,5 @@ private:
 
 			this->Data = buffer;
 		}
-
-		return;
 	}
 };

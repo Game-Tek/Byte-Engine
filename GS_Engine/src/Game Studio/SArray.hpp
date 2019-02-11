@@ -18,7 +18,7 @@ public:
 		delete[] this->Arrayptr;
 	}
 
-	//Places the Object after the last occupied element.
+	//inserts the Object after the last occupied element.
 	void PopBack(const ArrayType & Object)
 	{
 		this->Arrayptr[this->LastIndex] = Object;

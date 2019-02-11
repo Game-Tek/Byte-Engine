@@ -43,7 +43,7 @@ void Window::OnUpdate()
 	double MousePositionY;
 
 	glfwGetCursorPos(GLWindow, &MousePositionX, &MousePositionY);
-	InputManager::MouseMoved(Vector2((float)MousePositionX, (float)MousePositionY));
+	InputManager::MouseMoved(Vector2(static_cast<float>(MousePositionX), static_cast<float>(MousePositionY)));
 }
 
 void Window::SetVsync(bool Enable)

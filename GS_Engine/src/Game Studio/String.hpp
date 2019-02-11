@@ -2,52 +2,23 @@
 
 #include "Core.h"
 
-#include "DArray.hpp"
-
 #include <cstring>
+#include "FVector.hpp"
 
 GS_CLASS String
 {
 public:
+	String();
 	String(const char * In);
+	String(const char* In, size_t Length);
 	~String();
 
-	void operator=(const char *);
+	String & operator=(const char *);
+	String & operator=(const String & Other);
 
 	const char * c_str();
-	unsigned int GetLength() const { return Arrayptr->GetArrayLength(); }
-	bool IsEmpty() const { return Arrayptr->GetArrayLength() == 0; }
+	INLINE unsigned int GetLength() const { return Array.length(); }
+	INLINE bool IsEmpty() const { return Array.length() == 0; }
 private:
-	DArray<char> * Arrayptr;
+	FVector<char> Array;
 };
-
-
-String::String(const char * In)
-{
-	unsigned short TextLength = strlen(In) + 1;
-
-	Arrayptr = new DArray<char>(TextLength);
-
-	for (unsigned int i = 0; i < TextLength; i++)
-	{
-		(* Arrayptr)[i] = In[i];
-	}
-}
-
-String::~String()
-{
-	delete Arrayptr;
-}
-
-void String::operator=(const char * In)
-{
-	for (unsigned int i = 0; i < strlen(In) + 1; i++)
-	{
-		(* Arrayptr)[i] = In[i];
-	}
-}
-
-const char * String::c_str()
-{
-	return Arrayptr->GetArrayPointer();
-}

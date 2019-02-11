@@ -289,6 +289,7 @@
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
+    <ClCompile Include="src\Game Studio\String.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

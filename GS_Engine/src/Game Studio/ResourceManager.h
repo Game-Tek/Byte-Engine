@@ -19,7 +19,7 @@ public:
 	template <typename T>
 	T * GetResource(const std::string & Path)
 	{
-		for (uint16 i = 0; i < LoadedResources.size(); i++)
+		for (uint16 i = 0; i < LoadedResources.length(); i++)
 		{
 			if (LoadedResources[i]->GetPath() == Path)
 			{

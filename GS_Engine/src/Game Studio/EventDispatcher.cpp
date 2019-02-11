@@ -22,10 +22,10 @@ EventDispatcher::~EventDispatcher()
 void EventDispatcher::OnUpdate()
 {
 	//For every element inside of the event queue.
-	for (unsigned short i = 0; i < EventQueue.size(); i++)
+	for (unsigned short i = 0; i < EventQueue.length(); i++)
 	{
 		//Access SubscriberInfo[(at the current event queue's EventId)] and loop through each calling the function whith the current event queue event as a parameter.
-		for (unsigned short j = 0; j < SubscriberInfo[i].size(); j++)
+		for (unsigned short j = 0; j < SubscriberInfo[i].length(); j++)
 		{
 			//SubscriberInfo at 
 			SubscriberInfo[i][j](*EventQueue[i]);
@@ -55,7 +55,7 @@ void EventDispatcher::Subscribe(unsigned short EventId, Object * Subscriber, Mem
 
 void EventDispatcher::UnSubscribe(unsigned short EventId, Object * Subscriber)
 {
-	for (unsigned short i = 0; i < SubscriberInfo[EventId].size(); i++)
+	for (unsigned short i = 0; i < SubscriberInfo[EventId].length(); i++)
 	{
 		if (SubscriberInfo[EventId][i].Obj == Subscriber)
 		{

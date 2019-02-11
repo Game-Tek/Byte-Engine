@@ -9,10 +9,10 @@ public:
 	//Sets the specified element as the object.
 	void SetElement(unsigned int Index, const ArrayType & Object);
 
-	//Places the object after the last occupied element.
+	//inserts the object after the last occupied element.
 	virtual void PopBack(const ArrayType & Object) = 0 {};
 
-	//Places the object on the first free element found.
+	//inserts the object on the first free element found.
 	void PopOnFree(const ArrayType & Object)
 	{
 		unsigned int FirstIndex = FindFirstFreeSlot();

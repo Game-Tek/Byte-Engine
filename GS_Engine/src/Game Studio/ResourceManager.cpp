@@ -9,7 +9,7 @@ ResourceManager::ResourceManager()
 
 ResourceManager::~ResourceManager()
 {
-	for (uint16 i = 0; i < LoadedResources.size(); i++)
+	for (uint16 i = 0; i < LoadedResources.length(); i++)
 	{
 		delete LoadedResources[i];
 	}

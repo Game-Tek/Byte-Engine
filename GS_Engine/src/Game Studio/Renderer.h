@@ -4,9 +4,6 @@
 
 #include "EngineSystem.h"
 
-#include "W:/Game Studio/GS_Engine/vendor/GLAD/glad.h"
-#include "W:/Game Studio/GS_Engine/vendor/GLFW/glfw3.h"
-
 #include "Window.h"
 
 #include "Matrix4.h"

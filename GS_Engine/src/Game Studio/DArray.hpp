@@ -41,7 +41,7 @@ public:
 		delete[] this->Arrayptr;
 	}
 
-	//Places the object after the last occupied element.
+	//inserts the object after the last occupied element.
 	void PopBack(const ArrayType & Object)
 	{
 		//Check if adding a new element will exceed the allocated elements.

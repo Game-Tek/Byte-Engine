@@ -22,12 +22,12 @@ public:
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(size_t length) : Capacity(length + EXTRA), Data(allocate(this->Capacity))
+	explicit FVector(const size_t length) : Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	explicit FVector(T Array[], size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
+	explicit FVector(T Array[], const size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
@@ -90,7 +90,7 @@ public:
 	{
 		++this->Length;
 
-		checkfornew();
+		checkfornew(0);
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -101,11 +101,11 @@ public:
 	}
 
 	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
-	void insert(size_t index, T arr[], size_t length)
+	void insert(const size_t index, T arr[], const size_t length)
 	{
 		this->Length += length;
 
-		checkfornew();
+		checkfornew(0);
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -119,7 +119,7 @@ public:
 	}
 
 	//Overwrites existing data with the data from tha passed array.
-	void overlay(size_t index, T arr[], size_t length)
+	void overlay(const size_t index, T arr[], const size_t length)
 	{
 		for (uint32 i = 0; i < length; ++i)
 		{
@@ -128,7 +128,7 @@ public:
 	}
 
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
-	void erase(size_t index)
+	void erase(const size_t index)
 	{
 		--this->Length;
 
@@ -139,7 +139,7 @@ public:
 	}
 
 	//Deletes all elements between index and index + length and shifts the entiry array backwards to fill the empty space.
-	void erase(size_t index, size_t length)
+	void erase(const size_t index, const size_t length)
 	{
 		this->Length -= length;
 
@@ -150,7 +150,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	T & operator[](size_t index)
+	T & operator[](const size_t index)
 	{
 #ifdef GS_DEBUG
 		if (index > this->Length)
@@ -176,13 +176,13 @@ public:
 
 private:
 	//Allocates a new a array of type T with enough space to hold elementcount elements.
-	T * allocate(size_t elementcount)
+	T * allocate(const size_t elementcount)
 	{
 		return new T[elementcount];
 	}
 
 	//Fills array to with from.
-	void copyarray(T* from, T* to)
+	void copyarray(T * from, T * to)
 	{
 		for (size_t i = 0; i < this->Length; i++)
 		{
@@ -191,23 +191,7 @@ private:
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.
-	void checkfornew()
-	{
-		if (this->Length > this->Capacity)
-		{
-			this->Capacity = this->Length * 2;
-
-			T * buffer = allocate(this->Capacity);
-
-			copyarray(this->Data, buffer);
-
-			delete[] this->Data;
-
-			this->Data = buffer;
-		}
-	}
-
-	void checkfornew(size_t additionalelements)
+	void checkfornew(const size_t additionalelements)
 	{
 		if (this->Length + additionalelements > this->Capacity)
 		{

@@ -1,8 +1,8 @@
-#pragma once
-
 #include "Clock.h"
 
+#ifdef GS_PLATFORM_WIN
 #include "windows.h"
+#endif
 
 Clock::Clock()
 {
@@ -25,15 +25,16 @@ Clock::~Clock()
 
 void Clock::OnUpdate()
 {
+#ifdef GS_PLATFORM_WIN
 	LARGE_INTEGER WinProcessorTicks;
 
 	QueryPerformanceCounter(&WinProcessorTicks);
 
-	unsigned long long Delta = WinProcessorTicks.QuadPart - SystemTicks;
+	const uint_64 Delta = WinProcessorTicks.QuadPart - SystemTicks;
 
 
 	//Calculate delta time.
-	float loc_DeltaTime = Delta / (float)ProcessorFrequency;
+	const float loc_DeltaTime = Delta / static_cast<float>(ProcessorFrequency);
 
 
 	//Check if loc_DeltaTime exceed 1 seconds.
@@ -57,89 +58,100 @@ void Clock::OnUpdate()
 
 	//Update elapsed game time counter.
 	ElapsedGameTime += GetGameDeltaTime();
+#endif
 
 	return;
 }
 
 //CLOCK FUNCTIONALITY GETTERS
 
-float Clock::GetDeltaTime()
+float Clock::GetDeltaTime() const
 {
 	return DeltaTime;
 }
 
-float Clock::GetGameDeltaTime()
+float Clock::GetGameDeltaTime() const
 {
-	return DeltaTime * TimeDivisor;
+	return DeltaTime * TimeDivisor * ShouldUpdateGameTime;
 }
 
-float Clock::GetElapsedTime()
+float Clock::GetElapsedTime() const
 {
-	return (SystemTicks - StartSystemTicks) / (float)ProcessorFrequency;
+	return (SystemTicks - StartSystemTicks) / static_cast<float>(ProcessorFrequency);
 }
 
-float Clock::GetElapsedGameTime()
+float Clock::GetElapsedGameTime() const
 {
 	return ElapsedGameTime;
 }
 
 //UTILITY GETTERS
 
-unsigned short Clock::GetYear()
+uint16 Clock::GetYear()
 {
+#ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(&WinTimeStructure);
+	GetLocalTime(& WinTimeStructure);
 
 	return WinTimeStructure.wYear;
+#endif
 }
 
 Months Clock::GetMonth()
 {
+#ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(&WinTimeStructure);
+	GetLocalTime(& WinTimeStructure);
 
-	return (Months)WinTimeStructure.wMonth;
+	return static_cast<Months>(WinTimeStructure.wMonth);
+#endif
 }
 
-unsigned short Clock::GetDayOfMonth()
+uint8 Clock::GetDayOfMonth()
 {
+#ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(&WinTimeStructure);
+	GetLocalTime(& WinTimeStructure);
 
 	return WinTimeStructure.wDay;
+#endif
 }
 
 Days Clock::GetDayOfWeek()
 {
+#ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
 	GetLocalTime(& WinTimeStructure);
 
-	return (WinTimeStructure.wDayOfWeek == 0) ? Sunday : (Days)WinTimeStructure.wDayOfWeek;
+	return (WinTimeStructure.wDayOfWeek == 0) ? Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
+#endif
 }
 
 Time Clock::GetTime()
 {
+#ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
 	GetLocalTime(& WinTimeStructure);
 	
-	return { (uint8)WinTimeStructure.wHour, (uint8)WinTimeStructure.wMinute, (uint8)WinTimeStructure.wSecond };
+	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
+#endif
 }
 
 //CLOCK FUNCTIONALITY
 
-void Clock::SetTimeDilation(float Dilation)
+void Clock::SetTimeDilation(const float Dilation)
 {
 	TimeDivisor = Dilation;
 
 	return;
 }
 
-void Clock::SetIsPaused(bool IsPaused)
+void Clock::SetIsPaused(const bool IsPaused)
 {
 	ShouldUpdateGameTime = IsPaused;
 	

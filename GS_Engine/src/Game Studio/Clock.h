@@ -52,59 +52,60 @@ public:
 	//CLOCK FUNCTIONALITY GETTERS
 
 	//Returns the real seconds elapsed since the last game update (tick).
-	float GetDeltaTime();
+	float GetDeltaTime() const;
 	
 	//Returns the delta time adjusted for time dilation.
-	float GetGameDeltaTime();
+	float GetGameDeltaTime() const;
 	
 	//Returns the time the game has been running in real seconds.
-	float GetElapsedTime();
+	float GetElapsedTime() const;
 	
 	//Returns the elapsed game time adjusted for time dilations and game pauses.
-	float GetElapsedGameTime();					
+	float GetElapsedGameTime() const;					
 
 
 	//UTILITY GETTERS
 
 	//Returns the current local year of the computer.
-	unsigned short GetYear();
+	static uint16 GetYear();
 
 	//Returns the current local month of the computer.
-	Months GetMonth();
+	static Months GetMonth();
 
 	//Returns the current local day of the month of the computer.
-	unsigned short GetDayOfMonth();
+	static uint8 GetDayOfMonth();
 
 	//Returns the current local day of the week of the computer.
-	Days GetDayOfWeek();
+	static Days GetDayOfWeek();
 
 	//Returns the current local time (Hour, Minute, Second) of the computer.
-	Time GetTime();
+	static Time GetTime();
 
 	
 	//CLOCK FUNCTIONALITY SETTERS
 
-	void SetTimeDilation(float Dilation);		//Sets the percentage by which time should be divided.
+	//Sets the percentage by which time should be divided.
+	void SetTimeDilation(float Dilation);
+
+	//Sets if (game)time should be updated.
 	void SetIsPaused(bool IsPaused);
 
 	// CALC
 
-	inline float MilisecondsToSeconds(unsigned long long In) { return In / 1000.f; }
-	inline float MicrosecondsToSeconds(unsigned long long In) { return In / 1000000.f; }
-	inline float NanosecondsToSeconds(unsigned long long In) { return In / 1000000000.f; }
+	static INLINE float MilisecondsToSeconds(const uint_64 In) { return In / 1000.f; }
+	static INLINE float MicrosecondsToSeconds(const uint_64 In) { return In / 1000000.f; }
+	static INLINE float NanosecondsToSeconds(const uint_64 In) { return In / 1000000000.f; }
 
 private:
 	bool ShouldUpdateGameTime = true;
 
-	float DeltaTime = 0.0f;								//Stores the real seconds elapsed since the last game update (tick).
-	unsigned long long SystemTicks = 0;
-	float ElapsedTime = 0.0f;							//Stores the time the game has been running in real microseconds. 1,000,000.
-	float ElapsedGameTime = 0.0f;						//Stores the elapsed game time adjusted for time dilation and game pauses.
-	unsigned long long StartSystemTicks = 0;
+	float DeltaTime = 0.0f;							//Stores the real seconds elapsed since the last game update (tick).
+	uint_64 SystemTicks = 0;
+	float ElapsedTime = 0.0f;						//Stores the time the game has been running in real microseconds. 1,000,000.
+	float ElapsedGameTime = 0.0f;					//Stores the elapsed game time adjusted for time dilation and game pauses.
+	uint_64 StartSystemTicks = 0;
 
-	float TimeDivisor = 1.0f;							//Stores the percentage by which time should be divided.
+	float TimeDivisor = 1.0f;						//Stores the percentage by which time should be divided.
 
-	unsigned long long ProcessorFrequency = 0;			//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
-
-	void SetDeltaTime();								//Sets DeltaTime.
+	uint_64 ProcessorFrequency = 0;					//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
 };

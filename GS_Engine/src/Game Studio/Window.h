@@ -9,7 +9,7 @@
 GS_CLASS Window : public ESystem
 {
 public:
-	Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName);
+	Window(uint16 WindowWidth, uint16 WindowHeight, const char * WindowName);
 	~Window();
 
 	void OnUpdate() override;
@@ -19,13 +19,11 @@ public:
 
 	GLFWwindow * GetGLFWWindow() const { return GLWindow; }
 
-	unsigned short GetWindowWidth() const { return WindowWidth; }
-	unsigned short GetWindowHeight() const { return WindowHeight; }
+	uint16 GetWindowWidth() const { return WindowWidth; }
+	uint16 GetWindowHeight() const { return WindowHeight; }
 private:
 	GLFWwindow * GLWindow;
 
-	unsigned short WindowWidth;
-	unsigned short WindowHeight;
-
+	uint16 WindowWidth;
+	uint16 WindowHeight;
 };
-

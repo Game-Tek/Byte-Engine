@@ -57,6 +57,8 @@ void Logger::GetglGetError(const char* Details)
 {
 	switch (glGetError())
 	{
+	default:
+		break;
 	case GL_NO_ERROR:
 		break;
 	case GL_INVALID_ENUM:
@@ -73,6 +75,6 @@ void Logger::GetglGetError(const char* Details)
 		break;
 	}
 
-	GS_LOG_ERROR(Details)
+	//GS_LOG_ERROR(Details)
 	return;
 }

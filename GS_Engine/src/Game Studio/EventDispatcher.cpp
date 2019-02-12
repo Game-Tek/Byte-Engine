@@ -2,16 +2,7 @@
 
 #include "Event.h"
 
-using namespace std;
-
-unsigned char					EventDispatcher::ActiveLevel = 0;
-
-//SArray<unsigned short>			EventDispatcher::Events;
-unsigned short					EventDispatcher::EventCount = 0;
-FVector<FVector<Functor>>		EventDispatcher::SubscriberInfo(50);
-FVector<Event *>				EventDispatcher::EventQueue(50);
-
-EventDispatcher::EventDispatcher() 
+EventDispatcher::EventDispatcher() : SubscriberInfo(50), EventQueue(50)
 {
 }
 
@@ -35,10 +26,8 @@ void EventDispatcher::OnUpdate()
 	}
 }
 
-unsigned short EventDispatcher::CreateEvent()
+uint16 EventDispatcher::CreateEvent()
 {
-	//Events.PopBack(EventId);
-
 	EventCount++;
 
 	return EventCount;

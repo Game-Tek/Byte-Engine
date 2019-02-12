@@ -2,10 +2,13 @@
 
 #include "Logger.h"
 
-#include "windows.h"
+#include "Windows.h"
 
 Clock * GS::Application::ClockInstance;
 ResourceManager * GS::Application::ResourceManagerInstance;
+EventDispatcher * GS::Application::EventDispatcherInstance;
+InputManager * GS::Application::InputManagerInstance;
+
 
 namespace GS
 {

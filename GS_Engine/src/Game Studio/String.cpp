@@ -8,7 +8,7 @@ String::String(const char * In) : Array(const_cast<char *>(In), strlen(In) + 1)
 {
 }
 
-String::String(const char * In, size_t Length) : Array(const_cast<char *>(In), Length)
+String::String(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length)
 {
 }
 

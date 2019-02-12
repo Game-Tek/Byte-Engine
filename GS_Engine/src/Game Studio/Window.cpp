@@ -1,8 +1,9 @@
 #include "Window.h"
 
 #include "InputManager.h"
+#include "Application.h"
 
-Window::Window(unsigned short WindowWidth, unsigned short WindowHeight, const char * WindowName) : WindowWidth(WindowWidth), WindowHeight(WindowHeight)
+Window::Window(uint16 WindowWidth, uint16 WindowHeight, const char * WindowName) : WindowWidth(WindowWidth), WindowHeight(WindowHeight)
 {
 	GS_ASSERT(glfwInit());															//Initialize GLFW.
 	
@@ -10,7 +11,7 @@ Window::Window(unsigned short WindowWidth, unsigned short WindowHeight, const ch
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);									//Set context's min OpenGL version.
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);					//Set context's OpenGL profile.
 
-	GLWindow = glfwCreateWindow(WindowWidth, WindowHeight, WindowName, NULL, NULL);	//Create window.
+	GLWindow = glfwCreateWindow(WindowWidth, WindowHeight, WindowName, 0, 0);	//Create window.
 
 	glfwMakeContextCurrent(GLWindow);												//Make the recently created window the current context.
 }
@@ -28,22 +29,22 @@ void Window::OnUpdate()
 	glfwSwapBuffers(GLWindow);
 
 	int WState = glfwGetKey(GLWindow, GLFW_KEY_W);
-	if (WState == GLFW_PRESS) InputManager::KeyPressed(W);
+	if (WState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(W);
 
 	int AState = glfwGetKey(GLWindow, GLFW_KEY_A);
-	if (AState == GLFW_PRESS) InputManager::KeyPressed(A);
+	if (AState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(A);
 
 	int SState = glfwGetKey(GLWindow, GLFW_KEY_S);
-	if (SState == GLFW_PRESS) InputManager::KeyPressed(S);
+	if (SState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(S);
 
 	int DState = glfwGetKey(GLWindow, GLFW_KEY_D);
-	if (DState == GLFW_PRESS) InputManager::KeyPressed(D);
+	if (DState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(D);
 
 	double MousePositionX;
 	double MousePositionY;
 
 	glfwGetCursorPos(GLWindow, &MousePositionX, &MousePositionY);
-	InputManager::MouseMoved(Vector2(static_cast<float>(MousePositionX), static_cast<float>(MousePositionY)));
+	GS::Application::GetInputManagerInstance()->MouseMoved(Vector2(static_cast<float>(MousePositionX), static_cast<float>(MousePositionY)));
 }
 
 void Window::SetVsync(bool Enable)

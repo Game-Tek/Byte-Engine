@@ -1,7 +1,5 @@
 #include "Renderer.h"
 
-#include "Window.h"
-
 #include <GLAD/glad.h>
 #include "GL.h"
 
@@ -52,10 +50,10 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD), ProjectionMatrix(BuildP
 
 	Text->Bind();
 
-	Uniform ProjUni(Prog, "uProjection");
-	Uniform ViewUni(Prog, "uView");
+	//Uniform ProjUni(Prog, "uProjection");
+	//Uniform ViewUni(Prog, "uView");
 
-	ProjUni = ProjectionMatrix;
+	//ProjUni = ProjectionMatrix;
 }
 
 Renderer::~Renderer()

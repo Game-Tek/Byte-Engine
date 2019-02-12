@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intrin.h>
+
 // TYPEDEFS
 
 typedef unsigned char uint8;

@@ -22,24 +22,21 @@ public:
 
 	void OnUpdate() override;
 
-	static unsigned short CreateEvent();
-	static void Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func);
-	static void UnSubscribe(unsigned short EventId, Object * Subscriber);
+	uint16 CreateEvent();
+	void Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func);
+	void UnSubscribe(unsigned short EventId, Object * Subscriber);
 
 
 private:
 	//Determines which levels receive the events. Every level from the specified level upwards will get the events.
-	static uint8					ActiveLevel;
+	uint8							ActiveLevel;
 
-	static unsigned short							EventCount;
-	static FVector<FVector<Functor>>			SubscriberInfo;
-	static FVector<Event *>							EventQueue;
-
-	//void Dispatch(unsigned short Index);
-	//static int Loop(unsigned short EventId);
+	uint16							EventCount;
+	FVector<FVector<Functor>>		SubscriberInfo;
+	FVector<Event *>				EventQueue;
 public:
 	template<typename T>
-	static void Notify(unsigned short EventId, const T & Event)
+	void Notify(unsigned short EventId, const T & Event)
 	{
 		T * ptr = new T(Event);
 

@@ -16,16 +16,16 @@ public:
 	~InputManager();
 
 	//Event Ids
-	static uint16 KeyPressedEventId;
-	static uint16 MouseMovedEventId;
+	uint16 KeyPressedEventId;
+	uint16 MouseMovedEventId;
 
 	//Mouse vars
-	static Vector2 MousePos;
+	Vector2 MousePos;
 
-	static Vector2 MouseOffset;
+	Vector2 MouseOffset;
 
-	static void KeyPressed(Key PressedKey);
-	static void MouseMoved(const Vector2 & Pos);
+	void KeyPressed(Key PressedKey);
+	void MouseMoved(const Vector2 & Pos);
 
 };
 

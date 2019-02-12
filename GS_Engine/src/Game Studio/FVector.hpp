@@ -17,7 +17,7 @@ private:
 public:
 
 	//Constructs a new FVector and allocates some previsional space.
-	FVector() : Capacity(DEF_VEC_SIZE), Data(allocate(DEF_VEC_SIZE))
+	FVector() : Capacity(DEF_VEC_SIZE), Data(allocate(this->Capacity))
 	{
 	}
 
@@ -76,19 +76,19 @@ public:
 
 		this->Data[Length] = obj;
 
-		++this->Length;
+		this->Length += 1;
 	}
 
 	//Deletes the array's last element.
 	void pop_back()
 	{
-		--this->Length;
+		this->Length -= 1;
 	}
 
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
 	void insert(size_t index, const T & obj)
 	{
-		++this->Length;
+		this->Length += 1;
 
 		checkfornew(0);
 
@@ -130,7 +130,7 @@ public:
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
 	void erase(const size_t index)
 	{
-		--this->Length;
+		this->Length += 1;
 
 		for (size_t i = index; i < this->Length; i++)
 		{

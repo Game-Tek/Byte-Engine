@@ -62,19 +62,18 @@ void Logger::GetglGetError(const char* Details)
 	case GL_NO_ERROR:
 		break;
 	case GL_INVALID_ENUM:
-		GS_LOG_ERROR("Invalid enum!");
+		GS_LOG_ERROR("Invalid enum, %s", Details);
 		break;
 	case GL_INVALID_VALUE:
-		GS_LOG_ERROR("Inavlid Value!");
+		GS_LOG_ERROR("Inavlid Value, %s", Details);
 		break;
 	case GL_INVALID_OPERATION:
-		GS_LOG_ERROR("Invalid Operation!");
+		GS_LOG_ERROR("Invalid Operation, %s", Details);
 		break;
 	case GL_OUT_OF_MEMORY:
-		GS_LOG_ERROR("Out of Memory!");
+		GS_LOG_ERROR("Out of Memory, %s", Details);
 		break;
 	}
 
-	//GS_LOG_ERROR(Details)
 	return;
 }

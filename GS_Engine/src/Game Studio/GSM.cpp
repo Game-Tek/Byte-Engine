@@ -1,5 +1,7 @@
 #include "GSM.hpp"
 
+#include <cmath>
+
 #define TERMS 6
 
 const static float PI = 3.1415926535f;
@@ -70,8 +72,7 @@ float Sine(float Degrees)
 	float rad = Degrees * PI / 180;
 	float sin = 0;
 
-	int i;
-	for (i = 0; i < TERMS; i++)
+	for (uint8 i = 0; i < TERMS; i++)
 	{ // That's Taylor series!!
 		sin += Power(-1, i) * Power(rad, 2 * i + 1) / Fact(2 * i + 1);
 	}
@@ -83,8 +84,7 @@ float Cosine(float Degrees) {
 	float rad = Degrees * PI / 180;
 	float cos = 0;
 
-	int i;
-	for (i = 0; i < TERMS; i++) { // That's also Taylor series!!
+	for (uint8 i = 0; i < TERMS; i++) { // That's also Taylor series!!
 		cos += Power(-1, i) * Power(rad, 2 * i) / Fact(2 * i);
 	}
 	return cos;
@@ -280,15 +280,15 @@ const Matrix4 GSM::Translate(const Vector3 & Vector)
 	return Result;
 }
 
-const Matrix4 GSM::Rotate(const Quat & A)
+Matrix4 GSM::Rotate(const Quat& A)
 {
 	Matrix4 Result;
 	Result.Identity();
 
-	float r = DegreesToRadians(A.Q);
-	float cos = Cosine(r);
-	float sin = Sine(r);
-	float omc = 1.0f - cos;
+	const float r = DegreesToRadians(A.Q);
+	const float cos = cosf(r);
+	const float sin = sinf(r);
+	const float omc = 1.0f - cos;
 
 	Result[0] = A.X * omc + cos;
 	Result[1] = A.Y * A.X * omc - A.Y * sin;

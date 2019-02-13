@@ -15,8 +15,6 @@
 
 #include "Matrix4.h"
 
-#include "GSM.hpp"
-
 Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
@@ -30,30 +28,36 @@ VAO * VertexAttribute;
 Program * Prog;
 Texture * Text;
 
-Renderer::Renderer(Window * WD) : WindowInstanceRef(WD), ProjectionMatrix(BuildProjectionMatrix(GSM::DegreesToRadians(45), 0.01f, 100.0f, 1.0f, 1.0f, 1.0f, 1.0f))
+Uniform * View;
+Uniform * Projection;
+
+Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 {
 	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 
 	GS_GL_CALL(glViewport(0, 0, static_cast<GLsizei>(WindowInstanceRef->GetWindowWidth()), static_cast<GLsizei>(WindowInstanceRef->GetWindowHeight())));
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
-	VertexBuffer = new VBO(Vertices, sizeof(Vertices), GL_STATIC_DRAW);
-
-	IndexBuffer = new IBO(Indices, 6);
 	VertexAttribute = new VAO(sizeof(Vertex));
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
-	Text = new Texture("W:/Game Studio/bin/Sandbox/Debug-x64/texture.png");
 
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
 	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(TextureCoordinates));
+	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
+	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
+	
+	View = new Uniform(Prog, "uView");
+	Projection = new Uniform(Prog, "uProjection");
 
-	Text->Bind();
+	Matrix4 Model, Viewm, Projectionm;
 
-	//Uniform ProjUni(Prog, "uProjection");
-	//Uniform ViewUni(Prog, "uView");
+	Viewm.Identity();
+	Projectionm = BuildPerspectiveMatrix(1.0f, -1.0f, 0.8f, -0.8f, 0.01f, 100.0f);
 
-	//ProjUni = ProjectionMatrix;
+	View->Set(Viewm);
+
+	Projection->Set(Projectionm);
 }
 
 Renderer::~Renderer()

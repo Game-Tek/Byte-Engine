@@ -14,10 +14,9 @@
 GS_CLASS Matrix4
 {
 public:
-
 	Matrix4()
 	{
-		for (unsigned short i = 0; i < MATRIX_SIZE; i++)
+		for(uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] = 0;
 		}
@@ -63,7 +62,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] += Other;
 		}
@@ -75,7 +74,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] += Other[i];
 		}
@@ -85,7 +84,7 @@ public:
 
 	Matrix4 & operator+= (float Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] += Other;
 		}
@@ -95,7 +94,7 @@ public:
 
 	Matrix4 & operator+= (const Matrix4 & Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] += Other[i];
 		}
@@ -107,7 +106,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] -= Other;
 		}
@@ -119,7 +118,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] -= Other[i];
 		}
@@ -129,7 +128,7 @@ public:
 
 	Matrix4 & operator-= (float Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] -= Other;
 		}
@@ -139,7 +138,7 @@ public:
 
 	Matrix4 & operator-= (const Matrix4 & Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] -= Other[i];
 		}
@@ -151,7 +150,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] *= Other;
 		}
@@ -175,12 +174,12 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned short y = 0; y < 4; y++)
+		for (uint8 y = 0; y < 4; y++)
 		{
-			for (unsigned short x = 0; x < 4; x++)
+			for (uint8 x = 0; x < 4; x++)
 			{
 				float Sum = 0.0f;
-				for (unsigned short e = 0; e < 4; e++)
+				for (uint8 e = 0; e < 4; e++)
 				{
 					Sum += Result[e + y * 4] * Other[x + e * 4];
 				}
@@ -194,7 +193,7 @@ public:
 
 	Matrix4 & operator*= (float Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] *= Other;
 		}
@@ -204,12 +203,12 @@ public:
 
 	Matrix4 & operator*= (const Matrix4 & Other)
 	{
-		for (unsigned short y = 0; y < 4; y++)
+		for (uint8 y = 0; y < 4; y++)
 		{
-			for (unsigned short x = 0; x < 4; x++)
+			for (uint8 x = 0; x < 4; x++)
 			{
 				float Sum = 0.0f;
-				for (unsigned short e = 0; e < 4; e++)
+				for (uint8 e = 0; e < 4; e++)
 				{
 					Sum += Array[e + y * 4] * Other[x + e * 4];
 				}
@@ -225,7 +224,7 @@ public:
 	{
 		Matrix4 Result;
 
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Result[i] /= Other;
 		}
@@ -235,7 +234,7 @@ public:
 
 	Matrix4 & operator/= (float Other)
 	{
-		for (unsigned char i = 0; i < MATRIX_SIZE; i++)
+		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
 			Array[i] /= Other;
 		}
@@ -243,9 +242,9 @@ public:
 		return *this;
 	}
 
-	float & operator[] (unsigned int Index) { return Array[Index]; }
+	float & operator[] (uint8 Index) { return Array[Index]; }
 
-	float operator[] (unsigned int Index) const { return Array[Index]; }
+	float operator[] (uint8 Index) const { return Array[Index]; }
 
 private:
 	float Array[MATRIX_SIZE];

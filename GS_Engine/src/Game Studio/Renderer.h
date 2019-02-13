@@ -13,6 +13,10 @@
 #include "VAO.h"
 #include "Program.h"
 
+#include "GSM.hpp"
+
+#include <cmath>
+
 GS_CLASS Renderer : public ESystem
 {
 public:
@@ -29,10 +33,32 @@ private:
 
 	Matrix4 ProjectionMatrix;
 
-	//Builds 4x4 matrix to create a projection matrix. FOV needs to be in radians. 
-	Matrix4 BuildProjectionMatrix(float FOV, float Near, float Far, float Right, float Bottom, float Left, float Top)
+	/*
+	Matrix4 BuilProjectionMatrix(const float FOV, const float AspectRatio, const float Near, const float Far) const
 	{
-		return Matrix4(2 / (Right - Left), 0, 0, 0, 0, 2 / (Top - Bottom), 0, 0, 0, 0, -(Far + Near) / (Far - Near), -1, -Near * (Right + Left) / (Right - Left), -Near * (Top + Bottom) / (Top - Bottom), 2 * Far * Near / (Near - Far), 0);
+		const float Top = Near * tan(FOV * 2);
+		const float Bottom = -Top;
+		const float Right = Top * AspectRatio;
+		const float Left = -Right;	
+
+		return Matrix4(2.0f * Near / (Right - Left), 0.0f, 0.0f, 0.0f, 0.0f, 2.0f * Near / (Top - Bottom), 0.0f, 0.0f, (Right + Left) / (Right - Left), (Top + Bottom) / (Top - Bottom), -((Far + Near) / (Far - Near)), -1.0f, 0.0f, 0.0f, -((2.0f * Far * Near) / (Far - Near)), 0.0f);
+	}
+	*/
+
+	Matrix4 BuildPerspectiveMatrix(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
+	{
+		Matrix4 Result;
+		Result.Identity();
+
+		Result[0] = (2.0f * Near) / (Right - Left);
+		Result[5] = (2.0f * Near) / (Top - Bottom);
+		Result[8] = (Right + Left) / (Right - Left);
+		Result[9] = (Top + Bottom) / (Top - Bottom);
+		Result[10] = (-(Far + Near) / (Far - Near));
+		Result[11] = -1.0f;
+		Result[14] = (-(2.0f * Far * Near) / (Far - Near));
+
+		return Result;
 	}
 };
 

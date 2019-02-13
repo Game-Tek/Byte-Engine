@@ -19,33 +19,12 @@ public:
 	Uniform(Program * Program, const char * UniformName);
 	~Uniform();
 
-	void operator=(float Other) const
-	{
-		GS_GL_CALL(glUniform1f(RendererObjectId, Other));
-	}
-	void operator=(const Vector2 & Other) const
-	{
-		GS_GL_CALL(glUniform2f(RendererObjectId, Other.X, Other.Y));
-	}
-	void operator=(const Vector3 & Other) const
-	{
-		GS_GL_CALL(glUniform3f(RendererObjectId, Other.X, Other.Y, Other.Z));
-	}
-	void operator=(const Vector4 & Other) const
-	{
-		GS_GL_CALL(glUniform4f(RendererObjectId, Other.X, Other.Y, Other.Z, Other.W));
-	}
-	void operator=(int Other) const
-	{
-		GS_GL_CALL(glUniform1i(RendererObjectId, Other));
-	}
-	void operator=(bool Other) const
-	{
-		GS_GL_CALL(glUniform1i(RendererObjectId, Other));
-	}
-	void operator=(const Matrix4 & Other) const
-	{
-		GS_GL_CALL(glUniformMatrix4fv(RendererObjectId, 1, GL_FALSE, Other.GetData()));
-	}
+	void Set(float Other) const;
+	void Set(const Vector2 & Other) const;
+	void Set(const Vector3 & Other) const;
+	void Set(const Vector4 & Other) const;
+	void Set(int Other) const;
+	void Set(bool Other) const;
+	void Set(const Matrix4 & Other) const;
 };
 

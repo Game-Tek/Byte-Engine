@@ -15,6 +15,8 @@ Program::Program(const char * VertexShaderPath, const char * FragmentShaderPath)
 	GS_GL_CALL(glAttachShader(RendererObjectId, VS.GetId()));
 	GS_GL_CALL(glAttachShader(RendererObjectId, FS.GetId()));
 	GS_GL_CALL(glLinkProgram(RendererObjectId));
+
+	Bind();
 }
 
 Program::~Program()

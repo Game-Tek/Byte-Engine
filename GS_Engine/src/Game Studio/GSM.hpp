@@ -88,5 +88,5 @@ public:
 
 	static const Matrix4 Translate(const Vector3 & Vector);
 
-	static const Matrix4 Rotate(const Quat & A);
+	static Matrix4 Rotate(const Quat& A);
 };

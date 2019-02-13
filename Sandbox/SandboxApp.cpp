@@ -9,7 +9,7 @@ class Sandbox : public GS::Application
 public:
 	Sandbox()
 	{
-		/*StaticMesh SM (std::string("W:/lantern_fbx.fbx"));
+		/*StaticMesh SM (std::string("W:/WPN_Eder22.FBX"));
 		Vector3 Vec(0, 0, 0);
 		W.SpawnObject<StaticMesh>(SM, Vec);*/
 	}

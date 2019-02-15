@@ -10,8 +10,6 @@
 
 GS_CLASS ResourceManager
 {
-	FVector<Resource *> LoadedResources;
-
 public:
 	ResourceManager();
 	~ResourceManager();
@@ -32,7 +30,10 @@ public:
 		return LoadAsset<T>(Path);
 	}
 
-private:
+protected:
+	FVector<Resource *> LoadedResources;
+
+
 	template <typename T>
 	T * LoadAsset(const std::string & Path)
 	{

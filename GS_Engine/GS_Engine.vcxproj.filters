@@ -223,6 +223,9 @@
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\Resource.h" />
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\GameInstance.h" />
+    <ClInclude Include="src\Game Studio\Scene.h" />
+    <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -290,6 +293,10 @@
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="src\Game Studio\String.cpp" />
+    <ClCompile Include="src\Game Studio\RenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\GameInstance.cpp" />
+    <ClCompile Include="src\Game Studio\Scene.cpp" />
+    <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

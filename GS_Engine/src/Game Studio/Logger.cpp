@@ -53,7 +53,7 @@ void Logger::PrintLog(const char * Text, ...)
 	SetLogTextColor(White);
 }
 
-void Logger::GetglGetError(const char* Details)
+void Logger::GetglGetError(const char * Details, int32 Line)
 {
 	switch (glGetError())
 	{
@@ -62,16 +62,16 @@ void Logger::GetglGetError(const char* Details)
 	case GL_NO_ERROR:
 		break;
 	case GL_INVALID_ENUM:
-		GS_LOG_ERROR("Invalid enum, %s", Details);
+		GS_LOG_ERROR("Invalid enum, %s, %d", Details, Line);
 		break;
 	case GL_INVALID_VALUE:
-		GS_LOG_ERROR("Inavlid Value, %s", Details);
+		GS_LOG_ERROR("Inavlid Value, %s, %d", Details, Line);
 		break;
 	case GL_INVALID_OPERATION:
-		GS_LOG_ERROR("Invalid Operation, %s", Details);
+		GS_LOG_ERROR("Invalid Operation, %s, %d", Details, Line);
 		break;
 	case GL_OUT_OF_MEMORY:
-		GS_LOG_ERROR("Out of Memory, %s", Details);
+		GS_LOG_ERROR("Out of Memory, %s, %d", Details, Line);
 		break;
 	}
 

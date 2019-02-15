@@ -14,10 +14,10 @@ public:
 
 	void Bind() const override;
 
-	void CreateVertexAttribute(int NOfElementsInThisAttribute, unsigned int DataType, unsigned char Normalize, size_t AttributeSize);
+	void CreateVertexAttribute(uint8 NOfElementsInThisAttribute, uint32 DataType, uint8 Normalize, size_t AttributeSize);
 
 private:
-	unsigned char VertexAttributeIndex = 0;
+	uint8 VertexAttributeIndex = 0;
 
 	size_t VertexSize = 0;
 	size_t Offset = 0;

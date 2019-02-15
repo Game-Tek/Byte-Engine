@@ -6,6 +6,8 @@
 
 #include "Vertex.h"
 
+#include "FVector.hpp"
+
 //Used to specify a single mesh. Contains a pointer to an array of vertices, and a pointer to an array of indices.
 struct Mesh
 {
@@ -35,6 +37,6 @@ public:
 private:
 	Mesh * Load(const char * FilePath);
 	Mesh * LoadFallbackResource() const;
-	Mesh ** ProcessNode(aiNode * Node, const aiScene * Scene);
-	Mesh * ProcessMesh(aiMesh * Mesh);
+	Mesh * ProcessNode(aiNode * Node, const aiScene * Scene);
+	Mesh ProcessMesh(aiMesh * Mesh);
 };

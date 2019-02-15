@@ -162,6 +162,19 @@ public:
 		return this->Data[index];
 	}
 
+	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
+	const T & operator[](const size_t index) const
+	{
+#ifdef GS_DEBUG
+		if (index > this->Length)
+		{
+			throw("Out of bounds!");
+		}
+#endif
+
+		return this->Data[index];
+	}
+
 	//Retuns the ocuppied elements count.
 	size_t length() const
 	{

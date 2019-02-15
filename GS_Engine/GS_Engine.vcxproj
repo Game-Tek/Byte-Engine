@@ -96,7 +96,9 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
+    <ClInclude Include="src\Game Studio\GameInstance.h" />
     <ClInclude Include="src\Game Studio\RenderProxy.h" />
     <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
@@ -153,10 +155,14 @@
     <ClInclude Include="src\Game Studio\Uniform.h" />
     <ClInclude Include="src\Game Studio\World.h" />
     <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
+    <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
+    <ClCompile Include="src\Game Studio\GameInstance.cpp" />
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
+    <ClCompile Include="src\Game Studio\RenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Shader.cpp" />
@@ -182,6 +188,7 @@
     <ClCompile Include="src\Game Studio\World.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

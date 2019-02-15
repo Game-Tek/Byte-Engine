@@ -24,7 +24,7 @@ public:
 	~Renderer();
 
 	void OnUpdate() override;
-	void Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const;
+	void Draw(IBO* ibo, VAO* vao, Program* progr) const;
 
 private:
 	uint32 DrawCalls = 0;

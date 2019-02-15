@@ -8,6 +8,7 @@
 #include "EventDispatcher.h"
 #include "InputManager.h"
 #include "ResourceManager.h"
+#include "GameInstance.h"
 
 namespace GS
 {
@@ -25,6 +26,7 @@ namespace GS
 		static ResourceManager * GetResourceManagerInstance() { return ResourceManagerInstance; }
 		static Clock * GetClockInstance() { return ClockInstance; }
 		static InputManager * GetInputManagerInstance() { return InputManagerInstance; }
+		static GameInstance * GetGameInstanceInstance() { return GameInstanceInstance; }
 
 	private:
 		static Clock * ClockInstance;
@@ -38,6 +40,8 @@ namespace GS
 		static InputManager * InputManagerInstance;
 
 		static ResourceManager * ResourceManagerInstance;
+
+		static GameInstance * GameInstanceInstance;
 
 		/*int ShouldClose();*/
 	};

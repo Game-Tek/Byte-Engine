@@ -38,7 +38,7 @@ GS_CLASS Logger
 
 public:
 	static void PrintLog(const char * Text, ...);
-	static void GetglGetError(const char * Details);
+	static void GetglGetError(const char * Details, int32 Line);
 	static void SetLogTextColor(LogColors Color);
 private:
 

@@ -14,6 +14,7 @@
 #include "TextureCoordinates.h"
 
 #include "Matrix4.h"
+#include "Application.h"
 
 Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
@@ -33,9 +34,13 @@ Uniform * Projection;
 
 Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 {
+	//"Initialize" GLAD.
 	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 
+	//Set viewport size.
 	GS_GL_CALL(glViewport(0, 0, static_cast<GLsizei>(WindowInstanceRef->GetWindowWidth()), static_cast<GLsizei>(WindowInstanceRef->GetWindowHeight())));
+
+	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
 	VertexAttribute = new VAO(sizeof(Vertex));
@@ -44,9 +49,7 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
 	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(TextureCoordinates));
-	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
-	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
-	
+
 	View = new Uniform(Prog, "uView");
 	Projection = new Uniform(Prog, "uProjection");
 
@@ -57,7 +60,7 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 
 	View->Set(Viewm);
 
-	Projection->Set(Projectionm);
+	Projection->Set(Viewm);
 }
 
 Renderer::~Renderer()
@@ -68,14 +71,13 @@ Renderer::~Renderer()
 	delete Prog;
 }
 
-void Renderer::Draw(VBO * vbo, IBO * ibo, VAO * vao, Program * progr) const
+void Renderer::Draw(IBO * ibo, VAO * vao, Program * progr) const
 {
 	vao->Bind();
-	vbo->Bind();
 	ibo->Bind();
 	progr->Bind();
 
-	GS_GL_CALL(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(ibo->GetCount()), GL_UNSIGNED_INT, 0));
+	GS_GL_CALL(glDrawElements(GL_TRIANGLES, ibo->GetCount(), GL_UNSIGNED_INT, nullptr));
 
 	return;
 }
@@ -84,8 +86,12 @@ void Renderer::OnUpdate()
 {
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
-	//DrawCalls = times to loop Draw().
-	Draw(VertexBuffer, IndexBuffer, VertexAttribute, Prog);							//Perform draw call.
+	for(uint32 i = 0; i < GS::Application::GetGameInstanceInstance()->GetWorld()->GetEntityList().length(); i++)
+	{
+		//RenderProxy * loc = GS::Application::GetGameInstanceInstance()->GetWorld()->GetEntityList()[i]->GetRenderProxy();
+
+		//Draw(loc->GetVertexBuffer(), loc->GetIndexBuffer(), VertexAttribute, Prog);
+	}
 
 	return;
 }

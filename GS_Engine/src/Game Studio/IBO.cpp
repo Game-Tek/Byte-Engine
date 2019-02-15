@@ -4,7 +4,7 @@
 
 #include "GL.h"
 
-IBO::IBO(const void * Data, unsigned int Count) : IndexCount(Count)
+IBO::IBO(const void * Data, uint32 Count) : IndexCount(Count)
 {
 	GS_GL_CALL(glGenBuffers(1, & RendererObjectId));
 	Bind();

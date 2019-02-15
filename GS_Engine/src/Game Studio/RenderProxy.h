@@ -5,19 +5,15 @@
 #include "VBO.h"
 #include "IBO.h"
 
-#include "WorldObject.h"
-
 GS_CLASS RenderProxy
 {
 public:
-	RenderProxy();
-	RenderProxy(WorldObject * Owner) : Owner(Owner)
-	{
-	}
+	RenderProxy(VBO * VertexBuffer, IBO * IndexBuffer);
+
+	VBO * GetVertexBuffer() { return VertexBuffer; }
+	IBO * GetIndexBuffer() { return IndexBuffer; }
 
 protected:
-	WorldObject * Owner = nullptr;
-
 	VBO * VertexBuffer = nullptr;
 	IBO * IndexBuffer = nullptr;
 };

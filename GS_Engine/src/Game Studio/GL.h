@@ -4,7 +4,7 @@
 
 #ifdef GS_DEBUG
 	#define GS_GL_CALL(func)	func;\
-								Logger::GetglGetError(__FILE__);
+								Logger::GetglGetError(__FILE__, __LINE__);
 #else
 	#define GS_GL_CALL(func)	func;
 #endif

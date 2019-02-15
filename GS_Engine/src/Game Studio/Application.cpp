@@ -8,6 +8,8 @@ Clock * GS::Application::ClockInstance;
 ResourceManager * GS::Application::ResourceManagerInstance;
 EventDispatcher * GS::Application::EventDispatcherInstance;
 InputManager * GS::Application::InputManagerInstance;
+GameInstance * GS::Application::GameInstanceInstance;
+
 
 
 namespace GS
@@ -21,6 +23,8 @@ namespace GS
 		RendererInstance = new Renderer(WindowInstance);
 		EventDispatcherInstance = new EventDispatcher();
 		InputManagerInstance = new InputManager();
+		ResourceManagerInstance = new ResourceManager();
+		GameInstanceInstance = new GameInstance();
 	}
 
 	Application::~Application()
@@ -30,6 +34,8 @@ namespace GS
 		delete RendererInstance;
 		delete EventDispatcherInstance;
 		delete InputManagerInstance;
+		delete ResourceManagerInstance;
+		delete GameInstanceInstance;
 	}
 
 	void Application::Run()
@@ -39,6 +45,7 @@ namespace GS
 			ClockInstance->OnUpdate();
 			RendererInstance->OnUpdate();
 			WindowInstance->OnUpdate();
+			GameInstanceInstance->OnUpdate();
 
 			//Sleep(100);
 		}	

@@ -8,19 +8,19 @@
 
 #include "FVector.hpp"
 
-GS_CLASS World
+GS_CLASS World : public Object
 {
 public:
 	World();
 	~World();
 
+	void OnUpdate() override;
+
+	void SpawnObject(WorldObject * NewObject, const Vector3 & Position);
+
+	const FVector<WorldObject *> & GetEntityList() const { return EntityList; }
+
+protected:
 	FVector<WorldObject *> EntityList;
 
-	template <class O>
-	void SpawnObject(const O & Object, const Vector3 & Position)
-	{
-		WorldObject * ptr = new O(Object);
-		ptr->SetPosition(Position);
-		EntityList.push_back(new O(Object));
-	}
 };

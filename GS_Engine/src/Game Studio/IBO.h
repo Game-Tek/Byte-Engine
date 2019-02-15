@@ -9,14 +9,14 @@ GS_CLASS IBO : public RendererObject
 {
 public:
 	//Generates a new buffer.
-	IBO(const void * Data, unsigned int Count);
+	IBO(const void * Data, uint32 Count);
 	~IBO();
 
 	//Makes this buffer the currently bound buffer.
 	void Bind() const override;
 
-	unsigned int GetCount() const { return IndexCount; }
+	uint32 GetCount() const { return IndexCount; }
 private:
-	unsigned int IndexCount = 0;
+	uint32 IndexCount = 0;
 };
 

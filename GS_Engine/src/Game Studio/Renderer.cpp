@@ -43,7 +43,6 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
-	VertexAttribute = new VAO(sizeof(Vertex));
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
 	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));

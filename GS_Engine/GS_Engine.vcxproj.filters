@@ -226,6 +226,7 @@
     <ClInclude Include="src\Game Studio\GameInstance.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
+    <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -297,6 +298,7 @@
     <ClCompile Include="src\Game Studio\GameInstance.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
+    <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

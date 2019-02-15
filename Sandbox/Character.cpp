@@ -24,6 +24,6 @@ void Character::Move(const KeyPressedEvent & Event)
 	switch (Event.PressedKey)
 	{
 	case S:
-		AddOfssetPosition(Vector3(0, 0, -10));
+		AddDeltaPosition(Vector3(0, 0, -10));
 	}
 }

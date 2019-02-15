@@ -14,7 +14,7 @@ public:
 	WorldObject();
 	WorldObject(const Transform3 & Transform);
 
-	RenderProxy * GetRenderProxy() { return RenderProxy; }
+	RenderProxy * GetRenderProxy() const { return RenderProxy; }
 
 protected:
 	RenderProxy * RenderProxy;

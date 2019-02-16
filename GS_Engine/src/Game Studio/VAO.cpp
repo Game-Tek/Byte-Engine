@@ -7,7 +7,6 @@
 VAO::VAO(size_t VertexSize) : VertexSize(VertexSize)
 {
 	GS_GL_CALL(glGenVertexArrays(1, & RendererObjectId));
-	Bind();
 }
 
 VAO::~VAO()
@@ -25,7 +24,7 @@ void VAO::Bind() const
 void VAO::CreateVertexAttribute(uint8 NOfElementsInThisAttribute, uint32 DataType, uint8 Normalize, size_t AttributeSize)
 {
 	GS_GL_CALL(glEnableVertexAttribArray(static_cast<uint32>(VertexAttributeIndex)));
-	GS_GL_CALL(glVertexAttribPointer(static_cast<uint32>(VertexAttributeIndex), static_cast<uint32>(NOfElementsInThisAttribute), DataType, Normalize, VertexSize, 0/*reinterpret_cast<void*>(Offset)*/));
+	GS_GL_CALL(glVertexAttribPointer(static_cast<uint32>(VertexAttributeIndex), static_cast<uint32>(NOfElementsInThisAttribute), DataType, Normalize, VertexSize, reinterpret_cast<void*>(Offset)));
 
 	//Increment index count so when the next attribute is created it has the index corresponding to the next one.
 	VertexAttributeIndex++;

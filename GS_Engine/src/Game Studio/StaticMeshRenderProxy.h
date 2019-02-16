@@ -2,15 +2,18 @@
 
 #include "Core.h"
 
-#include "RenderProxy.h"
-
 #include "WorldObject.h"
-#include "StaticMeshResource.h"
 
-GS_CLASS StaticMeshRenderProxy : public RenderProxy
+#include "MeshRenderProxy.h"
+
+class WorldObject;
+
+GS_CLASS StaticMeshRenderProxy : public MeshRenderProxy
 {
 public:
-	StaticMeshRenderProxy(StaticMeshResource * MeshResource);
+	StaticMeshRenderProxy(WorldObject * Owner);
 	~StaticMeshRenderProxy();
+
+protected:
 };
 

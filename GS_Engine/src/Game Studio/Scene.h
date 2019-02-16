@@ -7,7 +7,7 @@ GS_CLASS Scene
 {
 public:
 	Scene();
-	~Scene();
+	virtual ~Scene();
 
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 

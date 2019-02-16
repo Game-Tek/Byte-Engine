@@ -1,5 +1,5 @@
 #include "RenderProxy.h"
 
-RenderProxy::RenderProxy()
+RenderProxy::RenderProxy(WorldObject * Owner) : Owner(Owner)
 {
 }

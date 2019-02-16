@@ -12,7 +12,7 @@ GS_CLASS ResourceManager
 {
 public:
 	ResourceManager();
-	~ResourceManager();
+	virtual ~ResourceManager();
 
 	template <typename T>
 	T * GetResource(const std::string & Path)

@@ -10,10 +10,10 @@
 
 StaticMesh::StaticMesh(const std::string & StaticMeshAsset) : MeshResource(GS::Application::GetResourceManagerInstance()->GetResource<StaticMeshResource>(StaticMeshAsset))
 {
-	RenderProxy = new StaticMeshRenderProxy(MeshResource);
+	RenderProxy = new StaticMeshRenderProxy(this);
 }
 
 StaticMesh::~StaticMesh()
 {
-
+	delete MeshResource;
 }

@@ -7,8 +7,9 @@
 GS_CLASS WorldPrimitive
 {
 public:
-	WorldPrimitive();
-	~WorldPrimitive();
+	WorldPrimitive() = default;
+	explicit WorldPrimitive(const Transform3 & Transform);
+	virtual ~WorldPrimitive() = default;
 
 	Transform3 GetTransform() const { return Transform; }
 	Vector3 GetPosition() const { return Transform.Position; }

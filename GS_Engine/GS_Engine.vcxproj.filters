@@ -215,9 +215,6 @@
       <Filter>Engine</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\World.h" />
-    <ClInclude Include="src\Game Studio\TemplateResource.h">
-      <Filter>Engine\Resource Manager</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\RenderProxy.h" />
     <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />

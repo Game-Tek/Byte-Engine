@@ -9,8 +9,8 @@
 class MeshRenderProxy : public RenderProxy
 {
 public:
-	MeshRenderProxy(VBO * VertexBuffer, IBO * IndexBuffer, VAO * VertexArray);
-	~MeshRenderProxy();
+	MeshRenderProxy(WorldObject * Owner, VBO * VertexBuffer, IBO * IndexBuffer, VAO * VertexArray);
+	virtual ~MeshRenderProxy();
 
 	VBO * GetVertexBuffer() const { return VertexBuffer; }
 	IBO * GetIndexBuffer() const { return IndexBuffer; }

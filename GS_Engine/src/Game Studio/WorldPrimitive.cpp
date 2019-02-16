@@ -1,12 +1,5 @@
 #include "WorldPrimitive.h"
 
-
-
-WorldPrimitive::WorldPrimitive()
-{
-}
-
-
-WorldPrimitive::~WorldPrimitive()
+WorldPrimitive::WorldPrimitive(const Transform3 & Transform) : Transform(Transform)
 {
 }

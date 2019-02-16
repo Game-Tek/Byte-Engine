@@ -4,6 +4,11 @@ WorldObject::WorldObject()
 {
 }
 
-WorldObject::WorldObject(const Transform3 & Transform) : Transform(Transform)
+WorldObject::WorldObject(const Transform3 & Transform) : WorldPrimitive(Transform)
 {
+}
+
+WorldObject::~WorldObject()
+{
+	delete RenderProxy;
 }

@@ -13,7 +13,7 @@ public:
 	~StaticMesh();
 
 	//Returns a const pointer to the static mesh resource.
-	const StaticMeshResource * GetMeshResource() { return MeshResource; }
+	const StaticMeshResource * GetMeshResource() const { return MeshResource; }
 
 protected:
 	//Pointer to the static mesh resource that this static mesh represents.

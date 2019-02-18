@@ -1,9 +1,13 @@
 #include "Camera.h"
+#include "GSM.hpp"
 
-Camera::Camera()
+Camera::Camera(const float FOV) : FOV(FOV)
 {
 }
 
-Camera::~Camera()
+void Camera::SetFocusDistance(const Vector3 & Object)
 {
+	FocusDistance = GSM::VectorLength(this->GetPosition() - Object);
+	
+	return;
 }

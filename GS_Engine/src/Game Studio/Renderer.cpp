@@ -23,11 +23,7 @@ Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.
 
 unsigned int Indices[] = { 0, 1, 2, 2, 3, 0 };
 
-VBO * VertexBuffer;
-IBO * IndexBuffer;
-VAO * VertexAttribute;
 Program * Prog;
-Texture * Text;
 
 Uniform * View;
 Uniform * Projection;
@@ -45,28 +41,23 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
-	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
-	VertexAttribute->CreateVertexAttribute(3, GL_FLOAT, GL_FALSE, sizeof(Vector3));
-	VertexAttribute->CreateVertexAttribute(2, GL_FLOAT, GL_FALSE, sizeof(TextureCoordinates));
-
 	View = new Uniform(Prog, "uView");
 	Projection = new Uniform(Prog, "uProjection");
 
-	Matrix4 Model, Viewm, Projectionm;
+	Matrix4 Model;
+	Matrix4 Viewm;
+	Matrix4 Projectionm;
 
 	Viewm.Identity();
-	Projectionm = BuildPerspectiveMatrix(1.0f, -1.0f, 0.8f, -0.8f, 0.01f, 100.0f);
+	Projectionm = BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f);
 
 	View->Set(Viewm);
 
-	Projection->Set(Viewm);
+	Projection->Set(Projectionm);
 }
 
 Renderer::~Renderer()
 {
-	delete VertexBuffer;
-	delete IndexBuffer;
-	delete VertexAttribute;
 	delete Prog;
 }
 

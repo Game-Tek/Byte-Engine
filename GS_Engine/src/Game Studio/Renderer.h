@@ -15,8 +15,6 @@
 
 #include "GSM.hpp"
 
-#include <cmath>
-
 GS_CLASS Renderer : public ESystem
 {
 public:
@@ -33,19 +31,17 @@ private:
 
 	Matrix4 ProjectionMatrix;
 
-	/*
-	Matrix4 BuilProjectionMatrix(const float FOV, const float AspectRatio, const float Near, const float Far) const
+	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
 	{
-		const float Top = Near * tan(FOV * 2);
+		const float Top = Near * GSM::Tan(FOV * 2);
 		const float Bottom = -Top;
 		const float Right = Top * AspectRatio;
 		const float Left = -Right;	
 
 		return Matrix4(2.0f * Near / (Right - Left), 0.0f, 0.0f, 0.0f, 0.0f, 2.0f * Near / (Top - Bottom), 0.0f, 0.0f, (Right + Left) / (Right - Left), (Top + Bottom) / (Top - Bottom), -((Far + Near) / (Far - Near)), -1.0f, 0.0f, 0.0f, -((2.0f * Far * Near) / (Far - Near)), 0.0f);
 	}
-	*/
 
-	Matrix4 BuildPerspectiveMatrix(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
+	static Matrix4 BuildOrthoMatrix(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
 	{
 		Matrix4 Result;
 		Result.Identity();

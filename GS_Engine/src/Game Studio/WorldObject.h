@@ -18,5 +18,5 @@ public:
 	RenderProxy * GetRenderProxy() const { return RenderProxy; }
 
 protected:
-	RenderProxy * RenderProxy;
+	RenderProxy * RenderProxy = nullptr;
 };

@@ -72,15 +72,6 @@
     <ClInclude Include="src\Game Studio\VBO.h">
       <Filter>Engine\Render\Buffers</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\DArray.hpp">
-      <Filter>Misc\Array</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Array.hpp">
-      <Filter>Misc\Array</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\SArray.hpp">
-      <Filter>Misc\Array</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\EventDispatcher.h">
       <Filter>Engine\Events</Filter>
     </ClInclude>

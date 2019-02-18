@@ -122,10 +122,8 @@
     <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Program.h" />
     <ClInclude Include="src\Game Studio\EventDispatcher.h" />
-    <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\RendererObject.h" />
     <ClInclude Include="src\Game Studio\IBO.h" />
-    <ClInclude Include="src\Game Studio\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
     <ClInclude Include="src\Game Studio\EntryPoint.h" />
@@ -134,7 +132,6 @@
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
-    <ClInclude Include="src\Game Studio\SArray.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.hpp" />

@@ -7,9 +7,10 @@ class WorldObject;
 GS_CLASS RenderProxy
 {
 public:
-	RenderProxy(WorldObject * Owner);
+	RenderProxy() = default;
+	explicit RenderProxy(WorldObject * Owner);
 	virtual ~RenderProxy() = default;
 
 protected:
-	WorldObject * Owner;
+	WorldObject * Owner = nullptr;
 };

@@ -11,8 +11,8 @@
 GS_CLASS WorldObject : public Object, public WorldPrimitive
 {
 public:
-	WorldObject();
-	WorldObject(const Transform3 & Transform);
+	WorldObject() = default;
+	explicit WorldObject(const Transform3 & Transform);
 	virtual ~WorldObject();
 
 	RenderProxy * GetRenderProxy() const { return RenderProxy; }

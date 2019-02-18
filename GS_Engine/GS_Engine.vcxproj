@@ -171,7 +171,6 @@
     <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
     <ClCompile Include="src\Game Studio\IBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
-    <ClCompile Include="src\Game Studio\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Application.cpp" />
     <ClCompile Include="src\Game Studio\Object.cpp" />
     <ClCompile Include="src\Game Studio\Renderer.cpp" />

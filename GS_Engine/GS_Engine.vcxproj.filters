@@ -253,9 +253,6 @@
     <ClCompile Include="src\Game Studio\Shader.cpp">
       <Filter>Engine\Render\Shaders</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\GSM.cpp">
-      <Filter>Misc\Math</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\ResourceManager.cpp">
       <Filter>Engine\Resource Manager</Filter>
     </ClCompile>

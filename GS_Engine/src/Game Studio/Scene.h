@@ -6,12 +6,12 @@
 GS_CLASS Scene
 {
 public:
-	Scene();
-	virtual ~Scene();
+	Scene() = default;
+	virtual ~Scene() = default;
 
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
 protected:
-	Camera * ActiveCamera;
+	Camera * ActiveCamera = nullptr;
 };
 

@@ -24,6 +24,8 @@ public:
 	void OnUpdate() override;
 	void Draw(IBO* ibo, VAO* vao, Program* progr) const;
 
+	Vector3 CameraPos;
+
 private:
 	uint32 DrawCalls = 0;
 
@@ -31,28 +33,30 @@ private:
 
 	Matrix4 ProjectionMatrix;
 
+	//Returns a symetric perspective frustrum.
 	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
 	{
-		const float Top = Near * GSM::Tan(FOV * 2);
-		const float Bottom = -Top;
-		const float Right = Top * AspectRatio;
-		const float Left = -Right;	
+		const float Tangent = GSM::Tan(FOV / 2.0f); //Tangent of half the vertical view angle.
+		const float Height = Near * Tangent;		//Half height of the near plane(point that says where it is placed).
+		const float Width = Height * AspectRatio;	//Half width of the near plane(point that says where it is placed).
 
-		return Matrix4(2.0f * Near / (Right - Left), 0.0f, 0.0f, 0.0f, 0.0f, 2.0f * Near / (Top - Bottom), 0.0f, 0.0f, (Right + Left) / (Right - Left), (Top + Bottom) / (Top - Bottom), -((Far + Near) / (Far - Near)), -1.0f, 0.0f, 0.0f, -((2.0f * Far * Near) / (Far - Near)), 0.0f);
+		return BuildPerspectiveFrustrum(-Width, Width, -Height, Height, Near, Far);
 	}
 
-	static Matrix4 BuildOrthoMatrix(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
+	//Returns a perspective frustrum.
+	static Matrix4 BuildPerspectiveFrustrum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
 	{
 		Matrix4 Result;
 		Result.Identity();
 
-		Result[0] = (2.0f * Near) / (Right - Left);
-		Result[5] = (2.0f * Near) / (Top - Bottom);
+		Result[0] = 2.0f * Near / (Right - Left);
+		Result[5] = 2.0f * Near / (Top - Bottom);
 		Result[8] = (Right + Left) / (Right - Left);
 		Result[9] = (Top + Bottom) / (Top - Bottom);
-		Result[10] = (-(Far + Near) / (Far - Near));
+		Result[10] = -(Far + Near) / (Far - Near);
 		Result[11] = -1.0f;
-		Result[14] = (-(2.0f * Far * Near) / (Far - Near));
+		Result[14] = -(2.0f * Far * Near) / (Far - Near);
+		Result[15] = 0.0f;
 
 		return Result;
 	}

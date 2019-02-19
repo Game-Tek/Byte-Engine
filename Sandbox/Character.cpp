@@ -16,7 +16,7 @@ Character::~Character()
 
 void Character::OnUpdate()
 {
-	GS_LOG_SUCCESS("Tick!")
+	GS::Application::GetRendererInstance()->CameraPos = MyCamera.GetPosition();
 }
 
 void Character::Move(const KeyPressedEvent & Event)

@@ -22,6 +22,7 @@ namespace GS
 
 		//TO-DO: CHECK CONST FOR POINTERS.
 
+		static Renderer * GetRendererInstance() { return RendererInstance; }
 		static EventDispatcher * GetEventDispatcherInstance() { return EventDispatcherInstance; }
 		static ResourceManager * GetResourceManagerInstance() { return ResourceManagerInstance; }
 		static Clock * GetClockInstance() { return ClockInstance; }
@@ -33,7 +34,7 @@ namespace GS
 
 		Window * WindowInstance = nullptr;
 
-		Renderer * RendererInstance = nullptr;
+		static Renderer * RendererInstance;
 
 		static EventDispatcher * EventDispatcherInstance;
 

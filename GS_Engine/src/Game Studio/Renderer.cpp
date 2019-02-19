@@ -51,7 +51,7 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	Viewm.Identity();
 	Projectionm = BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f);
 
-	View->Set(Viewm);
+	View->Set(GSM::Translate(CameraPos));
 
 	Projection->Set(Projectionm);
 }

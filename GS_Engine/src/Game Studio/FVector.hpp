@@ -79,6 +79,19 @@ public:
 		this->Length += 1;
 	}
 
+	//Places the passed in array at the end of the array.
+	void push_back(T arr[], size_t length)
+	{
+		checkfornew(length);
+
+		for (size_t i = 0; i < length; i++)
+		{
+			this->Data[Length + i] = arr[i];
+		}
+
+		this->Length += length;
+	}
+
 	//Deletes the array's last element.
 	void pop_back()
 	{

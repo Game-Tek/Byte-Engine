@@ -236,9 +236,6 @@
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine\Clock</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Object.cpp">
-      <Filter>Game Objects</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Shader.cpp">
       <Filter>Engine\Render\Shaders</Filter>
     </ClCompile>

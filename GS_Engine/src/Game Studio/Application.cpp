@@ -4,14 +4,6 @@
 
 #include "Windows.h"
 
-Clock * GS::Application::ClockInstance;
-ResourceManager * GS::Application::ResourceManagerInstance;
-EventDispatcher * GS::Application::EventDispatcherInstance;
-InputManager * GS::Application::InputManagerInstance;
-GameInstance * GS::Application::GameInstanceInstance;
-
-
-
 namespace GS
 {
 	Application::Application()

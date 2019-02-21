@@ -7,6 +7,8 @@
 Character::Character()
 {
 	//GS::Application::GetEventDispatcherInstance()->Subscribe(GS::Application::GetInputManagerInstance()->KeyPressedEventId, this, &reinterpret_cast<MemberFuncPtr>(Character::Move));
+
+	GetGameInstance()->GetWorld()->SetActiveCamera(&MyCamera);
 }
 
 
@@ -16,7 +18,6 @@ Character::~Character()
 
 void Character::OnUpdate()
 {
-	GS::Application::GetRendererInstance()->CameraPos = MyCamera.GetPosition();
 }
 
 void Character::Move(const KeyPressedEvent & Event)

@@ -96,6 +96,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
@@ -154,6 +155,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />

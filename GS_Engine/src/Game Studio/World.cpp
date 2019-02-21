@@ -5,7 +5,6 @@ World::World()
 {
 }
 
-
 World::~World()
 {
 	for (uint32 i = 0; i < EntityList.length(); i++)
@@ -24,6 +23,10 @@ void World::SpawnObject(WorldObject * NewObject, const Vector3 & Position)
 	GS::Application::Get()->GetRendererInstance()->GetScene().AddWorldObject(NewObject);
 }
 
+void World::SetActiveCamera(Camera * Camera) const
+{
+	GS::Application::Get()->GetRendererInstance()->GetScene().SetCamera(Camera);
+}
 
 void World::OnUpdate()
 {

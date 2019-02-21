@@ -18,6 +18,8 @@ public:
 
 	void SpawnObject(WorldObject * NewObject, const Vector3 & Position);
 
+	void SetActiveCamera(Camera * Camera) const;
+
 	const FVector<WorldObject *> & GetEntityList() const { return EntityList; }
 
 protected:

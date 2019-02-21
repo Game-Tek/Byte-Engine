@@ -12,12 +12,12 @@ public:
 	String();
 
 	//Constructs an String from a C-String.
-	String(const char * In);
+	explicit String(const char * In);
 
 	//Constructs a String from a non null terminated character array.
 	String(const char * In, size_t Length);
 
-	~String();
+	~String() = default;
 
 	String & operator=(const char *);
 	String & operator=(const String & Other);

@@ -27,7 +27,7 @@ public:
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	explicit FVector(T Array[], const size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
+	FVector(T Array[], const size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
@@ -131,13 +131,23 @@ public:
 		}
 	}
 
-	//Overwrites existing data with the data from tha passed array.
+	//Overwrites existing data with the data from the passed array.
 	void overlay(const size_t index, T arr[], const size_t length)
 	{
 		for (uint32 i = 0; i < length; ++i)
 		{
 			this->Data[index + i] = arr[i];
 		}
+	}
+
+	//Adjusts the array's size to only fit the passed array.
+	void recreate(T arr[], const size_t length)
+	{
+		overlay(0, arr, length);
+
+		this->Length = length;
+
+		return;
 	}
 
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.

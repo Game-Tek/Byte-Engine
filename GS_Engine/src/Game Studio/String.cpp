@@ -14,7 +14,7 @@ String::String(const char * In, const size_t Length) : Array(const_cast<char *>(
 
 String & String::operator=(const char * In)
 {
-	Array.overlay(0, const_cast<char *>(In), StringLength(In));
+	Array.recreate(const_cast<char *>(In), StringLength(In));
 
 	return *this;
 }

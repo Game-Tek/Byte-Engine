@@ -132,9 +132,6 @@
     <ClInclude Include="src\Game Studio\ImageSize.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Importer.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Shader.h">
       <Filter>Engine\Render\Shaders</Filter>
     </ClInclude>
@@ -284,6 +281,7 @@
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\InputEnums.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

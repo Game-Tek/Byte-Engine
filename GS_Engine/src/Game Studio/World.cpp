@@ -1,4 +1,5 @@
 #include "World.h"
+#include "Application.h"
 
 World::World()
 {
@@ -15,8 +16,12 @@ World::~World()
 
 void World::SpawnObject(WorldObject * NewObject, const Vector3 & Position)
 {
+	//Set position.
 	NewObject->SetPosition(Position);
+	//Add it to the entity list array.
 	EntityList.push_back(NewObject);
+
+	GS::Application::Get()->GetRendererInstance()->GetScene().AddWorldObject(NewObject);
 }
 
 

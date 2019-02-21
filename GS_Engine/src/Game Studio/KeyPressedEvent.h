@@ -2,20 +2,17 @@
 
 #include "Event.h"
 
-enum Key
-{
-	W = 0, A, S, D
-};
+#include "InputEnums.h"
 
 GS_STRUCT KeyPressedEvent : public Event
 {
-	Key PressedKey = W;
+	KeyboardKeys PressedKey = W;
 
 	KeyPressedEvent()
 	{
 	}
 
-	KeyPressedEvent(Key InKey) : PressedKey(InKey)
+	KeyPressedEvent(KeyboardKeys InKey) : PressedKey(InKey)
 	{
 	}
 

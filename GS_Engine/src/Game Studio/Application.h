@@ -20,30 +20,33 @@ namespace GS
 
 		void Run();
 
+		static Application * Get() { return ApplicationInstance; }
+
 		//TO-DO: CHECK CONST FOR POINTERS.
 
-		static Renderer * GetRendererInstance() { return RendererInstance; }
-		static EventDispatcher * GetEventDispatcherInstance() { return EventDispatcherInstance; }
-		static ResourceManager * GetResourceManagerInstance() { return ResourceManagerInstance; }
-		static Clock * GetClockInstance() { return ClockInstance; }
-		static InputManager * GetInputManagerInstance() { return InputManagerInstance; }
-		static GameInstance * GetGameInstanceInstance() { return GameInstanceInstance; }
+		Renderer * GetRendererInstance() const { return RendererInstance; }
+		EventDispatcher * GetEventDispatcherInstance() const { return EventDispatcherInstance; }
+		ResourceManager * GetResourceManagerInstance() const { return ResourceManagerInstance; }
+		Clock * GetClockInstance() const { return ClockInstance; }
+		InputManager * GetInputManagerInstance() const { return InputManagerInstance; }
+		GameInstance * GetGameInstanceInstance() const { return GameInstanceInstance; }
 
 	private:
-		static Clock * ClockInstance;
+		Clock * ClockInstance;
 
 		Window * WindowInstance = nullptr;
 
-		static Renderer * RendererInstance;
+		Renderer * RendererInstance;
 
-		static EventDispatcher * EventDispatcherInstance;
+		EventDispatcher * EventDispatcherInstance;
 
-		static InputManager * InputManagerInstance;
+		InputManager * InputManagerInstance;
 
-		static ResourceManager * ResourceManagerInstance;
+		ResourceManager * ResourceManagerInstance;
 
-		static GameInstance * GameInstanceInstance;
+		GameInstance * GameInstanceInstance;
 
+		static Application * ApplicationInstance;
 		/*int ShouldClose();*/
 	};
 

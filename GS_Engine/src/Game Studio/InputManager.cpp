@@ -13,9 +13,11 @@ InputManager::InputManager()
 
 InputManager::~InputManager()
 {
+	GS::Application::GetEventDispatcherInstance()->UnSubscribe(KeyPressedEventId, this);
+	GS::Application::GetEventDispatcherInstance()->UnSubscribe(MouseMovedEventId, this);
 }
 
-void InputManager::KeyPressed(Key PressedKey)
+void InputManager::KeyPressed(KeyboardKeys PressedKey)
 {
 	GS::Application::GetEventDispatcherInstance()->Notify<KeyPressedEvent>(KeyPressedEventId, KeyPressedEvent(PressedKey));
 

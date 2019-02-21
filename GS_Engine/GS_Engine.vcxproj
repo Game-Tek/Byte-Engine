@@ -110,7 +110,6 @@
     <ClInclude Include="src\Game Studio\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />
-    <ClInclude Include="src\Game Studio\Importer.h" />
     <ClInclude Include="src\Game Studio\Line.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h" />
     <ClInclude Include="src\Game Studio\Quat.h" />
@@ -155,6 +154,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />

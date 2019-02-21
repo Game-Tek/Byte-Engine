@@ -1,12 +1,15 @@
 #include "Scene.h"
 
-
-
-Scene::Scene()
+void Scene::AddWorldObject(WorldObject * Object)
 {
+	ObjectList.push_back(Object);
+
+	return;
 }
 
-
-Scene::~Scene()
+void Scene::RemoveWorldObject(WorldObject * Object)
 {
+	ObjectList.eraseObject(Object);
+
+	return;
 }

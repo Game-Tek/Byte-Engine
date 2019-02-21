@@ -15,6 +15,7 @@
 
 #include "Matrix4.h"
 #include "Application.h"
+#include "StaticMeshRenderProxy.h"
 
 Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
@@ -76,11 +77,11 @@ void Renderer::OnUpdate()
 {
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
-	for(uint32 i = 0; i < GS::Application::GetGameInstanceInstance()->GetWorld()->GetEntityList().length(); i++)
+	for(uint32 i = 0; i < ActiveScene.ObjectList.length(); i++)
 	{
-		//RenderProxy * loc = GS::Application::GetGameInstanceInstance()->GetWorld()->GetEntityList()[i]->GetRenderProxy();
+		RenderProxy * loc = ActiveScene.ObjectList[i]->GetRenderProxy();
 
-		//Draw(loc->GetVertexBuffer(), loc->GetIndexBuffer(), VertexAttribute, Prog);
+		Draw(dynamic_cast<StaticMeshRenderProxy *>(loc)->GetIndexBuffer(), dynamic_cast<StaticMeshRenderProxy *>(loc)->GetVertexArray(), Prog);
 	}
 
 	return;

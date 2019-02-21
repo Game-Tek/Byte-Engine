@@ -14,6 +14,7 @@
 #include "Program.h"
 
 #include "GSM.hpp"
+#include "Scene.h"
 
 GS_CLASS Renderer : public ESystem
 {
@@ -24,7 +25,10 @@ public:
 	void OnUpdate() override;
 	void Draw(IBO* ibo, VAO* vao, Program* progr) const;
 
-	Vector3 CameraPos;
+	Scene & GetScene() { return ActiveScene; }
+
+protected:
+	Scene ActiveScene;
 
 private:
 	uint32 DrawCalls = 0;

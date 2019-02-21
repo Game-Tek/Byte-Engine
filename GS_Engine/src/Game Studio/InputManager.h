@@ -24,7 +24,7 @@ public:
 
 	Vector2 MouseOffset;
 
-	void KeyPressed(Key PressedKey);
+	void KeyPressed(KeyboardKeys PressedKey);
 	void MouseMoved(const Vector2 & Pos);
 
 };

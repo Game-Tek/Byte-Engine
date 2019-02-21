@@ -149,6 +149,22 @@ public:
 		}
 	}
 
+	//Looks for object inside of the array and when it finds it, it deletes it.
+	void eraseObject(T & object)
+	{
+		this->Length -= length;
+
+		for (size_t i = 0; i < this->Length; i++)
+		{
+			if (object == Data[i])
+			{
+				erase(i);
+
+				break;
+			}
+		}
+	}
+
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	T & operator[](const size_t index)
 	{

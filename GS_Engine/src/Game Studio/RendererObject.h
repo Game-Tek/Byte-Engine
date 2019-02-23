@@ -13,8 +13,8 @@
 GS_CLASS RendererObject
 {
 public:
-	RendererObject();
-	virtual ~RendererObject();
+	RendererObject() = default;
+	virtual ~RendererObject() = default;
 
 	virtual void Bind() const {} ;
 

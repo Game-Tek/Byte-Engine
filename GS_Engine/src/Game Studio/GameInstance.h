@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Core.h"
-#include "World.h"
+#include "Object.h"
+
+class World;
 
 GS_CLASS GameInstance : public Object
 {
@@ -12,6 +14,7 @@ public:
 	void OnUpdate() override;
 
 	void SetActiveWorld(World * NewWorld);
+
 	World * GetWorld() { return ActiveWorld; }
 
 private:

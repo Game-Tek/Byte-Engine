@@ -16,7 +16,7 @@ public:
 
 	INLINE static int Floor(const float A)
 	{
-		return A - (static_cast<int>(A) % 1);
+		return static_cast<int>(A - (static_cast<int>(A) % 1));
 	}
 
 	INLINE static float Modulo(const float A, const float B)

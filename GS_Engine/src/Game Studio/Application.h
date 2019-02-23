@@ -32,21 +32,16 @@ namespace GS
 		GameInstance * GetGameInstanceInstance() const { return GameInstanceInstance; }
 
 	private:
-		Clock * ClockInstance;
-
+		Clock * ClockInstance = nullptr;
 		Window * WindowInstance = nullptr;
-
-		Renderer * RendererInstance;
-
-		EventDispatcher * EventDispatcherInstance;
-
-		InputManager * InputManagerInstance;
-
-		ResourceManager * ResourceManagerInstance;
-
-		GameInstance * GameInstanceInstance;
+		Renderer * RendererInstance = nullptr;
+		EventDispatcher * EventDispatcherInstance = nullptr;
+		InputManager * InputManagerInstance = nullptr;
+		ResourceManager * ResourceManagerInstance = nullptr;
+		GameInstance * GameInstanceInstance = nullptr;
 
 		static Application * ApplicationInstance;
+
 		/*int ShouldClose();*/
 	};
 

@@ -3,26 +3,14 @@
 #include <GLAD/glad.h>
 #include "GL.h"
 
-#include "Vertex.h"
-#include "Shader.h"
+#include "IBO.h"
+#include "VAO.h"
 #include "Program.h"
-#include "Texture.h"
+#include "Shader.h"
 #include "Uniform.h"
 
-#include <iostream>
-
-#include "TextureCoordinates.h"
-
-#include "Matrix4.h"
 #include "Application.h"
 #include "StaticMeshRenderProxy.h"
-
-Vertex Vertices[] =	{ { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
-					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
-					, { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
-					, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } };
-
-unsigned int Indices[] = { 0, 1, 2, 2, 3, 0 };
 
 Program * Prog;
 
@@ -44,15 +32,6 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 
 	View = new Uniform(Prog, "uView");
 	Projection = new Uniform(Prog, "uProjection");
-
-	Matrix4 Model;
-	Matrix4 Viewm;
-	Matrix4 Projectionm;
-
-	Viewm.Identity();
-	Projectionm = BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f);
-
-	Projection->Set(Projectionm);
 }
 
 Renderer::~Renderer()
@@ -75,11 +54,11 @@ void Renderer::OnUpdate()
 {
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
-	for(uint32 i = 0; i < ActiveScene.ObjectList.length(); i++)
+	for(uint32 i = 0; i < ActiveScene.StaticMeshList.length(); i++)
 	{
-		RenderProxy * loc = ActiveScene.ObjectList[i]->GetRenderProxy();
+		StaticMeshRenderProxy * loc = dynamic_cast<StaticMeshRenderProxy *>(ActiveScene.StaticMeshList[i]->GetRenderProxy());
 
-		Draw(dynamic_cast<StaticMeshRenderProxy *>(loc)->GetIndexBuffer(), dynamic_cast<StaticMeshRenderProxy *>(loc)->GetVertexArray(), Prog);
+		RenderFrame(loc->GetIndexBuffer(), loc->GetVertexArray(), Prog);
 	}
 
 	return;

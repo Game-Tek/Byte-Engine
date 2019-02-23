@@ -4,11 +4,15 @@
 
 #include "Windows.h"
 
+GS::Application * GS::Application::ApplicationInstance;
+
 namespace GS
 {
 	Application::Application()
 	{
 		GS_LOG_SUCCESS("Started Game Studio Engine!")
+
+		ApplicationInstance = this;
 
 		ClockInstance = new Clock();
 		WindowInstance = new Window(1280, 720, "Game Studio");

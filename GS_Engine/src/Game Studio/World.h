@@ -8,6 +8,9 @@
 
 #include "FVector.hpp"
 
+class StaticMesh;
+class Camera;
+
 GS_CLASS World : public Object
 {
 public:
@@ -17,6 +20,7 @@ public:
 	void OnUpdate() override;
 
 	void SpawnObject(WorldObject * NewObject, const Vector3 & Position);
+	void SpawnObject(StaticMesh * NewStaticMesh, const Vector3 & Position);
 
 	void SetActiveCamera(Camera * Camera) const;
 

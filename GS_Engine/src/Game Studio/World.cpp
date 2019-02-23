@@ -1,7 +1,9 @@
 #include "World.h"
 #include "Application.h"
 
-World::World()
+#include "StaticMesh.h"
+
+World::World() : EntityList(10)
 {
 }
 
@@ -19,13 +21,21 @@ void World::SpawnObject(WorldObject * NewObject, const Vector3 & Position)
 	NewObject->SetPosition(Position);
 	//Add it to the entity list array.
 	EntityList.push_back(NewObject);
+}
 
-	GS::Application::Get()->GetRendererInstance()->GetScene().AddWorldObject(NewObject);
+void World::SpawnObject(StaticMesh * NewStaticMesh, const Vector3 & Position)
+{
+	//Set position.
+	NewStaticMesh->SetPosition(Position);
+	//Add it to the entity list array.
+	EntityList.push_back(reinterpret_cast<WorldObject *>(NewStaticMesh));
+
+	GS::Application::Get()->GetRendererInstance()->GetScene()->AddStaticMesh(NewStaticMesh);
 }
 
 void World::SetActiveCamera(Camera * Camera) const
 {
-	GS::Application::Get()->GetRendererInstance()->GetScene().SetCamera(Camera);
+	GS::Application::Get()->GetRendererInstance()->GetScene()->SetCamera(Camera);
 }
 
 void World::OnUpdate()

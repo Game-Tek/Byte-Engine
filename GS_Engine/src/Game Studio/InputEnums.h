@@ -40,7 +40,7 @@ enum KeyboardKeys
 	Keyboard9,
 	Enter,
 	Tab,
-	Escape,
+	Esc,
 	RShift,
 	LShift,
 	Control,

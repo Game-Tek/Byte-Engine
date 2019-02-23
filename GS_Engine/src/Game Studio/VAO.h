@@ -2,9 +2,9 @@
 
 #include "Core.h"
 
-#include "GL.h"
-
 #include "RendererObject.h"
+
+#define GL_FLOAT 0x1406
 
 GS_CLASS VAO : public RendererObject
 {

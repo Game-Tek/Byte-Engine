@@ -2,9 +2,9 @@
 
 #include "Core.h"
 
-#include "WorldObject.h"
+#include "WorldPrimitive.h"
 
-GS_CLASS Camera : public WorldObject
+GS_CLASS Camera : public WorldPrimitive
 {
 public:
 	Camera() = default;

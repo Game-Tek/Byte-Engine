@@ -2,14 +2,17 @@
 
 #include "Core.h"
 
-#include "WorldObject.h"
+#include "MeshObject.h"
 
-#include "StaticMeshResource.h"
+#include <string>
 
-GS_CLASS StaticMesh : public WorldObject
+class StaticMeshResource;
+
+GS_CLASS StaticMesh : public MeshObject
 {
 public:
-	StaticMesh(const std::string & StaticMeshAsset);
+	StaticMesh();
+	explicit StaticMesh(const std::string & StaticMeshAsset);
 	~StaticMesh();
 
 	//Returns a const pointer to the static mesh resource.
@@ -17,5 +20,5 @@ public:
 
 protected:
 	//Pointer to the static mesh resource that this static mesh represents.
-	StaticMeshResource * MeshResource;
+	StaticMeshResource * MeshResource = nullptr;
 };

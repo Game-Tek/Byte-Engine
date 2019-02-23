@@ -8,8 +8,8 @@
 GS_CLASS Resource
 {
 public:
-	Resource();
-	virtual ~Resource();
+	Resource() = default;
+	virtual ~Resource() = default;
 
 	//Returns a pointer to the data.
 	void * GetData() const { return Data; }

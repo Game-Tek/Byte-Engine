@@ -2,7 +2,19 @@
 
 #include "StaticMesh.h"
 
+#include "StaticMeshResource.h"
+
+#include "VBO.h"
+#include "IBO.h"
+#include "VAO.h"
+
 //TODO: CHECK HOW GETDATASIZE() WORKS.
+
+StaticMeshRenderProxy::StaticMeshRenderProxy(const void * MeshData, size_t DataSize, const void * IndexData, uint32 IndexCount) : MeshRenderProxy(new VBO(MeshData, DataSize), new IBO(IndexData, IndexCount), new VAO(sizeof(Vertex)))
+{
+	VertexArray->Bind();
+	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
+}
 
 StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner) : MeshRenderProxy(Owner, 
 	new VBO(dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData(),
@@ -11,9 +23,4 @@ StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner) : MeshRenderPr
 	        dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData()->IndexCount),
 	new VAO(sizeof(Vertex)))
 {
-}
-
-StaticMeshRenderProxy::~StaticMeshRenderProxy()
-{
-
 }

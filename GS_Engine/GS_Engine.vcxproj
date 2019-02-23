@@ -65,6 +65,7 @@
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>W:\Game Studio\GS_Engine\vendor</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
+      <ShowIncludes>true</ShowIncludes>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -96,6 +97,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\MeshObject.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
@@ -155,6 +157,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\MeshObject.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />

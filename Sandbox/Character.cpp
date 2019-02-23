@@ -3,6 +3,7 @@
 #include "Game Studio/Application.h"
 
 #include "Game Studio/Logger.h"
+#include "Game Studio/World.h"
 
 Character::Character()
 {

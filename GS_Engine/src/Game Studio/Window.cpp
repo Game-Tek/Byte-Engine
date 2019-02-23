@@ -29,22 +29,22 @@ void Window::OnUpdate()
 	glfwSwapBuffers(GLWindow);
 
 	int WState = glfwGetKey(GLWindow, GLFW_KEY_W);
-	if (WState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(W);
+	if (WState == GLFW_PRESS) GS::Application::Get()->GetInputManagerInstance()->KeyPressed(W);
 
 	int AState = glfwGetKey(GLWindow, GLFW_KEY_A);
-	if (AState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(A);
+	if (AState == GLFW_PRESS) GS::Application::Get()->GetInputManagerInstance()->KeyPressed(A);
 
 	int SState = glfwGetKey(GLWindow, GLFW_KEY_S);
-	if (SState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(S);
+	if (SState == GLFW_PRESS) GS::Application::Get()->GetInputManagerInstance()->KeyPressed(S);
 
 	int DState = glfwGetKey(GLWindow, GLFW_KEY_D);
-	if (DState == GLFW_PRESS) GS::Application::GetInputManagerInstance()->KeyPressed(D);
+	if (DState == GLFW_PRESS) GS::Application::Get()->GetInputManagerInstance()->KeyPressed(D);
 
 	double MousePositionX;
 	double MousePositionY;
 
 	glfwGetCursorPos(GLWindow, &MousePositionX, &MousePositionY);
-	GS::Application::GetInputManagerInstance()->MouseMoved(Vector2(static_cast<float>(MousePositionX), static_cast<float>(MousePositionY)));
+	GS::Application::Get()->GetInputManagerInstance()->MouseMoved(Vector2(static_cast<float>(MousePositionX), static_cast<float>(MousePositionY)));
 }
 
 void Window::SetVsync(bool Enable)

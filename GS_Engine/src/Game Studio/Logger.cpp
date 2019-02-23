@@ -39,7 +39,7 @@ void Logger::PrintLog(const char * Text, ...)
 {
 	//SetLogTextColor(Color);
 
-	Time LogTime = GS::Application::GetClockInstance()->GetTime();
+	const Time LogTime = Clock::GetTime();
 
 	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 

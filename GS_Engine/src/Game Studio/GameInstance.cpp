@@ -1,5 +1,7 @@
 #include "GameInstance.h"
 
+#include "World.h"
+
 GameInstance::GameInstance() : ActiveWorld(new World())
 {
 	

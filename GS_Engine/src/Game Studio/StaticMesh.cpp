@@ -2,15 +2,25 @@
 
 #include "ResourceManager.h"
 
-#include "Logger.h"
-
 #include "Application.h"
+
+#include "StaticMeshResource.h"
 
 #include "StaticMeshRenderProxy.h"
 
-StaticMesh::StaticMesh(const std::string & StaticMeshAsset) : MeshResource(GS::Application::GetResourceManagerInstance()->GetResource<StaticMeshResource>(StaticMeshAsset))
+Vertex Vertices[] = { { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
+					, { { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } };
+
+unsigned int Indices[] = { 0, 1, 2, 2, 3, 0 };
+
+StaticMesh::StaticMesh() : MeshObject(new StaticMeshRenderProxy(Vertices, sizeof(Vertices), Indices, 6))
 {
-	RenderProxy = new StaticMeshRenderProxy(this);
+}
+
+StaticMesh::StaticMesh(const std::string & StaticMeshAsset) : MeshObject(new StaticMeshRenderProxy(this)), MeshResource(GS::Application::Get()->GetResourceManagerInstance()->GetResource<StaticMeshResource>(StaticMeshAsset))
+{
 }
 
 StaticMesh::~StaticMesh()

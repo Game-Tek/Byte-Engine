@@ -6,25 +6,21 @@
 
 #include "Window.h"
 
-#include "Matrix4.h"
-
-#include "VBO.h"
-#include "IBO.h"
-#include "VAO.h"
-#include "Program.h"
-
-#include "GSM.hpp"
 #include "Scene.h"
+
+class IBO;
+class VAO;
+class Program;
 
 GS_CLASS Renderer : public ESystem
 {
 public:
 	Renderer(Window * WD);
-	~Renderer();
+	virtual ~Renderer();
 
 	void OnUpdate() override;
 
-	Scene & GetScene() { return ActiveScene; }
+	Scene * GetScene() { return &ActiveScene; }
 
 protected:
 	//Renders a whole frame.

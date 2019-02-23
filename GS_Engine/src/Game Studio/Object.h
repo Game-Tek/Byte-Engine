@@ -5,8 +5,8 @@
 GS_CLASS Object
 {
 public:
-	Object();
-	virtual ~Object();
+	Object() {};
+	virtual ~Object() {};
 
 	virtual void OnUpdate() {};
 };

@@ -1,19 +1,21 @@
 #include "Scene.h"
 
-Scene::Scene() : ObjectList(50), ViewMatrix(), ProjectionMatrix(BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f))
+#include "GSM.hpp"
+
+Scene::Scene() : StaticMeshList(50), ViewMatrix(), ProjectionMatrix(BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f))
 {
 }
 
-void Scene::AddWorldObject(WorldObject * Object)
+void Scene::AddStaticMesh(StaticMesh * Object)
 {
-	ObjectList.push_back(Object);
+	StaticMeshList.push_back(Object);
 
 	return;
 }
 
-void Scene::RemoveWorldObject(WorldObject * Object)
+void Scene::RemoveStaticMesh(StaticMesh * Object)
 {
-	ObjectList.eraseObject(Object);
+	StaticMeshList.eraseObject(Object);
 
 	return;
 }

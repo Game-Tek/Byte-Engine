@@ -1,10 +1,11 @@
 #include "WorldObject.h"
+#include "Application.h"
 
-WorldObject::WorldObject(const Transform3 & Transform) : WorldPrimitive(Transform)
+WorldObject::WorldObject(const Transform3 & Transform) : Transform(Transform)
 {
 }
 
-WorldObject::~WorldObject()
+GameInstance* WorldObject::GetGameInstance()
 {
-	delete RenderProxy;
+	return GS::Application::Get()->GetGameInstanceInstance();
 }

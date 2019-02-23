@@ -1,14 +1,17 @@
 #pragma once
 
+#include "Core.h"
+
 #include "RenderProxy.h"
 
 #include "VBO.h"
 #include "IBO.h"
 #include "VAO.h"
 
-class MeshRenderProxy : public RenderProxy
+GS_CLASS MeshRenderProxy : public RenderProxy
 {
 public:
+	MeshRenderProxy(VBO * VertexBuffer, IBO * IndexBuffer, VAO * VertexArray);
 	MeshRenderProxy(WorldObject * Owner, VBO * VertexBuffer, IBO * IndexBuffer, VAO * VertexArray);
 	virtual ~MeshRenderProxy();
 

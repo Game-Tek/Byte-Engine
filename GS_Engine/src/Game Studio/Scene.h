@@ -3,6 +3,10 @@
 #include "Core.h"
 #include "Camera.h"
 #include "FVector.hpp"
+#include "Matrix4.h"
+#include "StaticMesh.h"
+
+class StaticMesh;
 
 //Stores all the data necessary for the renderer to work. It's the renderers representation of the game world.
 GS_CLASS Scene
@@ -11,8 +15,8 @@ public:
 	Scene();
 	virtual ~Scene() = default;
 
-	void AddWorldObject(WorldObject * Object);
-	void RemoveWorldObject(WorldObject * Object);
+	void AddStaticMesh(StaticMesh * Object);
+	void RemoveStaticMesh(StaticMesh * Object);
 
 	//Returns a pointer to the active camera.
 	Camera * GetCamera() const { return ActiveCamera; }
@@ -20,7 +24,7 @@ public:
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
-	FVector<WorldObject *> ObjectList;
+	FVector<StaticMesh *> StaticMeshList;
 
 protected:
 	//Pointer to the active camera.

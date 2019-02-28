@@ -144,9 +144,6 @@
     <ClInclude Include="src\Game Studio\Line.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Quat.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Matrix4.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
@@ -214,6 +211,10 @@
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshObject.h" />
+    <ClInclude Include="src\Game Studio\Octree.h" />
+    <ClInclude Include="src\Game Studio\Quaternion.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">

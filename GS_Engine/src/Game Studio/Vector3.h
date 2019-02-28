@@ -2,8 +2,6 @@
 
 #include "Core.h"
 
-//#include "GSM.hpp"
-
 //Used to specify a location in 3D space with floating point precision.
 GS_CLASS Vector3
 {
@@ -17,9 +15,7 @@ public:
 	//Z component of this vector.
 	float Z = 0.0f;
 
-	Vector3()
-	{
-	}
+	Vector3() = default;
 
 	Vector3(float X, float Y, float Z) : X(X), Y(Y), Z(Z)
 	{
@@ -29,37 +25,7 @@ public:
 	{
 	}
 
-	void Negate()
-	{
-		X = -X;
-		Y = -Y;
-		Z = -Z;
-
-		return;
-	}
-
-	void Normalize()
-	{
-		//*this = GSM::Normalize(*this);
-
-		return;
-	}
-
-	//inline float Length() const { return GSM::SquareRoot(LengthSquared()); }
-
-	inline float LengthSquared() const
-	{
-		return X * X + Y * Y + Z * Z;
-	}
-
-	void operator= (const Vector3 & Other)
-	{
-		X = Other.X;
-		Y = Other.Y;
-		Z = Other.Z;
-
-		return;
-	}
+	~Vector3() = default;
 
 	Vector3 operator+ (float Other) const
 	{

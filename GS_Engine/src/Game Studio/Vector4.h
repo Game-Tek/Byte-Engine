@@ -6,28 +6,24 @@ GS_CLASS Vector4
 {
 public:
 	//X component of this vector.
-	float X = 0;
+	float X = 0.0f;
 
 	//Y component of this vector.
-	float Y = 0;
+	float Y = 0.0f;
 
 	//Z component of this vector.
-	float Z = 0;
+	float Z = 0.0f;
 
 	//W component of this vector.
-	float W = 0;
+	float W = 0.0f;
 
-	Vector4()
-	{
-	}
+	Vector4() = default;
 
 	Vector4(float X, float Y, float Z, float W) : X(X), Y(Y), Z(Z), W(W)
 	{
 	}
 
-	~Vector4()
-	{
-	}
+	~Vector4() = default;
 
 	Vector4 operator+ (float Other) const
 	{

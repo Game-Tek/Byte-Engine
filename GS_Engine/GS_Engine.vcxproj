@@ -100,6 +100,7 @@
     <ClInclude Include="src\Game Studio\MeshObject.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
+    <ClInclude Include="src\Game Studio\Octree.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\GameInstance.h" />
@@ -115,7 +116,7 @@
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Line.h" />
     <ClInclude Include="src\Game Studio\Matrix4.h" />
-    <ClInclude Include="src\Game Studio\Quat.h" />
+    <ClInclude Include="src\Game Studio\Quaternion.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />

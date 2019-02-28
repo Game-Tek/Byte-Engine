@@ -2,8 +2,6 @@
 
 #include "Core.h"
 
-//#include "GSM.hpp"
-
 //Used to specify a location in 2D space with floating point precision.
 GS_CLASS Vector2
 {
@@ -14,9 +12,7 @@ public:
 	//Y component of this vector.
 	float Y = 0.0f;
 
-	Vector2()
-	{
-	}
+	Vector2() = default;
 
 	Vector2(float X, float Y) : X(X), Y(Y)
 	{
@@ -26,20 +22,7 @@ public:
 	{
 	}
 
-	void Negate()
-	{
-		X = -X;
-		Y = -Y;
-
-		return;
-	}
-
-	void Normalize()
-	{
-		//*this = GSM::Normalize(*this);
-
-		return;
-	}
+	~Vector2() = default;
 
 	Vector2 operator+ (float Other) const
 	{

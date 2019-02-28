@@ -4,7 +4,9 @@
 
 #include "Vector2.h"
 #include "Vector3.h"
-#include "Quat.h"
+#include "Vector4.h"
+
+#include "Quaternion.h"
 #include "Matrix4.h"
 
 GS_CLASS GSM
@@ -14,9 +16,9 @@ public:
 
 	//INLINE STATIC	
 
-	INLINE static int Floor(const float A)
+	INLINE static int32 Floor(const float A)
 	{
-		return static_cast<int>(A - (static_cast<int>(A) % 1));
+		return static_cast<int32>(A - (static_cast<int32>(A) % 1));
 	}
 
 	INLINE static float Modulo(const float A, const float B)
@@ -25,7 +27,7 @@ public:
 		return (C - Floor(C)) * B;
 	}
 
-	INLINE static float Power(const float Base, const int Exp)
+	INLINE static float Power(const float Base, const int32 Exp)
 	{
 		if (Exp < 0)
 		{
@@ -50,7 +52,7 @@ public:
 		return Base * Power(Base, Exp - 1);
 	}
 
-	INLINE static int Fact(const int A)
+	INLINE static int32 Fact(const int32 A)
 	{
 		return A <= 0 ? 1 : A * Fact(A - 1);
 	}
@@ -156,13 +158,13 @@ public:
 	INLINE static Vector2 Normalize(const Vector2 & Vec1)
 	{
 		const float Length = VectorLength(Vec1);
-		return { Vec1.X / Length, Vec1.Y / Length };
+		return Vector2(Vec1.X / Length, Vec1.Y / Length);
 	}
 
 	INLINE static Vector3 Normalize(const Vector3 & Vec1)
 	{
 		const float Length = VectorLength(Vec1);
-		return { Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length };
+		return Vector3(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length);
 	}
 
 	INLINE static float Dot(const Vector2 & Vec1, const Vector2 & Vec2)
@@ -176,19 +178,45 @@ public:
 	}
 	INLINE static Vector3 Cross(const Vector3 & Vec1, const Vector3 & Vec2)
 	{
-		return { Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X };
+		return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
 	}
 
 	INLINE static Vector2 AbsVector(const Vector2 & Vec1)
 	{
-		return { Abs(Vec1.X), Abs(Vec1.Y) };
+		return Vector2(Abs(Vec1.X), Abs(Vec1.Y));
 	}
 
 	INLINE static Vector3 AbsVector(const Vector3 & Vec1)
 	{
-		return { Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z) };
+		return Vector3(Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z));
 	}
 
+	INLINE static void Negate(Vector2 & Vec)
+	{
+		Vec.X = -Vec.X;
+		Vec.Y = -Vec.Y;
+
+		return;
+	}
+
+	INLINE static void Negate(Vector3 & Vec)
+	{
+		Vec.X = -Vec.X;
+		Vec.Y = -Vec.Y;
+		Vec.Z = -Vec.Z;
+
+		return;
+	}
+
+	INLINE static void Negate(Vector4 & Vec)
+	{
+		Vec.X = -Vec.X;
+		Vec.Y = -Vec.Y;
+		Vec.Z = -Vec.Z;
+		Vec.W = -Vec.W;
+
+		return;
+	}
 
 	//////////////////////////////////////////////////////////////
 	//						ROTATOR MATH						//
@@ -196,9 +224,26 @@ public:
 
 
 
+	//////////////////////////////////////////////////////////////
+	//						QUATERNION MATH						//
+	//////////////////////////////////////////////////////////////
 
+	INLINE static float QuaternionLength(const Quaternion & Quaternion)
+	{
+		return SquareRoot(Quaternion.X * Quaternion.X + Quaternion.Y * Quaternion.Y + Quaternion.Z * Quaternion.Z + Quaternion.Q * Quaternion.Q);
+	}
 
+	INLINE static Quaternion Normalize(const Quaternion & Quat)
+	{
+		const float Length = QuaternionLength(Quat);
 
+		return Quaternion(Quat.X / Length, Quat.Y / Length, Quat.Z / Length, Quat.Q / Length);
+	}
+
+	INLINE static Quaternion Conjugate(const Quaternion & Quat)
+	{
+		return Quaternion(-Quat.X, -Quat.Y, -Quat.Z, Quat.Q);
+	}
 
 	//////////////////////////////////////////////////////////////
 	//						LOGIC								//
@@ -243,18 +288,17 @@ public:
 	//						MATRIX MATH							//
 	//////////////////////////////////////////////////////////////
 
-	INLINE static Matrix4 Translate(const Vector3 & Vector)
+	//Modifies the given matrix to make it a translation matrix.
+	INLINE static void Translate(Matrix4 & Matrix, const Vector3 & Vector)
 	{
-		Matrix4 Result;
+		Matrix[0 + 3 * 4] = Vector.X;
+		Matrix[1 + 3 * 4] = Vector.Y;
+		Matrix[2 + 3 * 4] = Vector.Z;
 
-		Result[0 + 3 * 4] = Vector.X;
-		Result[1 + 3 * 4] = Vector.Y;
-		Result[2 + 3 * 4] = Vector.Z;
-
-		return Result;
+		return;
 	}
 
-	INLINE static Matrix4 Rotate(const Quat& A)
+	INLINE static Matrix4 Rotate(const Quaternion& A)
 	{
 		Matrix4 Result;
 		Result.Identity();

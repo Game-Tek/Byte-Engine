@@ -22,6 +22,8 @@ public:
 	String & operator=(const char *);
 	String & operator=(const String & Other);
 
+	bool operator==(const String & Other);
+
 	const char * c_str();
 	INLINE size_t GetLength() const { return Array.length(); }
 	INLINE bool IsEmpty() const { return Array.length() == 0; }

@@ -1,6 +1,7 @@
 #include "Renderer.h"
 
 #include <GLAD/glad.h>
+#include <GLFW/glfw3.h>
 #include "GL.h"
 
 #include "IBO.h"

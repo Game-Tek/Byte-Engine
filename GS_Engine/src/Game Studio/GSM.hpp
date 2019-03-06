@@ -60,9 +60,11 @@ public:
 	//Returns the sine of an angle. EXPECTS RADIANS.
 	INLINE static float Sine(const float Degrees)
 	{
-		const float Adeg = Degrees * 0.99026f;
+		//const float Adeg = Degrees * 0.99026f;
 
-		return Degrees - ((1.0f/6.0f) * (Degrees * Degrees * Degrees)) + ((1.0f/120.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees)) - ((1.0f/5040.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees)) + ((1.0f/362880.0f) * (Adeg * Adeg * Adeg * Adeg * Adeg * Adeg * Adeg * Adeg * Adeg));
+		float MultpDeg = Degrees * Degrees * Degrees;
+
+		return Degrees - ((1.0f/6.0f) * (MultpDeg)) + ((1.0f/120.0f) * (MultpDeg *= Degrees * Degrees)) - ((1.0f/5040.0f) * (MultpDeg *= Degrees * Degrees)) + ((1.0f/362880.0f) * ((MultpDeg * Degrees * Degrees) * 0.99026f)); //We multiply by 0.99026 the last term to adjust the end of the curve.
 	}
 
 	//Returns the cosine of an angle. EXPECTS RADIANS.

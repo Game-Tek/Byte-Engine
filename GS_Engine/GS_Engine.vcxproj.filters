@@ -215,6 +215,9 @@
     <ClInclude Include="src\Game Studio\Quaternion.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Cone.h" />
+    <ClInclude Include="src\Game Studio\ConeWithFallof.h" />
+    <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">

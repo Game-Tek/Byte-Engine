@@ -92,7 +92,7 @@ GLAPI int gladLoadGL(void);
 
 GLAPI int gladLoadGLLoader(GLADloadproc);
 
-#include "W:/Game Studio/GS_Engine/vendor/GLAD/khrplatform.h"
+#include "GLAD/khrplatform.h"
 typedef unsigned int GLenum;
 typedef unsigned char GLboolean;
 typedef unsigned int GLbitfield;

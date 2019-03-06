@@ -14,7 +14,7 @@
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{3086AB51-E516-40F6-A741-5BD94F6BA720}</ProjectGuid>
     <RootNamespace>GSEngine</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>
     </ProjectName>
   </PropertyGroup>
@@ -47,7 +47,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>W:\Game Studio\GS_Engine\vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -63,7 +63,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_PLATFORM_WIN;GS_BUILD;GS_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>W:\Game Studio\GS_Engine\vendor</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
       <ShowIncludes>true</ShowIncludes>
     </ClCompile>
@@ -72,7 +72,7 @@
       <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+      <Command>copy "$(SolutionDir)bin\$(ProjectName)\Debug-x64\GS_Engine.dll" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -97,6 +97,8 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Cone.h" />
+    <ClInclude Include="src\Game Studio\ConeWithFallof.h" />
     <ClInclude Include="src\Game Studio\MeshObject.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
@@ -135,6 +137,7 @@
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Renderer.h" />
+    <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.hpp" />

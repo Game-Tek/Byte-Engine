@@ -50,7 +50,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef AI_DEFINES_H_INC
 #define AI_DEFINES_H_INC
 
-#include <W:/Game Studio/GS_Engine/vendor/assimp/config.h>
+#include <assimp/config.h>
 
 //////////////////////////////////////////////////////////////////////////
 /* Define ASSIMP_BUILD_NO_XX_IMPORTER to disable a specific

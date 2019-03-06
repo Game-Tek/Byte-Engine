@@ -4,7 +4,7 @@
 
 #include "EngineSystem.h"
 
-#include "W:/Game Studio/GS_Engine/vendor/GLFW/glfw3.h"
+struct GLFWwindow;
 
 GS_CLASS Window : public ESystem
 {

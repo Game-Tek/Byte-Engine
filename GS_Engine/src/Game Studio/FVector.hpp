@@ -140,7 +140,7 @@ public:
 		}
 	}
 
-	//Adjusts the array's size to only fit the passed array.
+	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
 	void recreate(T arr[], const size_t length)
 	{
 		overlay(0, arr, length);

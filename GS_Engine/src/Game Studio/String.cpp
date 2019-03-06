@@ -26,6 +26,19 @@ String & String::operator=(const String & Other)
 	return *this;
 }
 
+bool String::operator==(const String & Other)
+{
+	for (size_t i = 0; i < (Array.length() < Other.Array.length() ? Array.length() : Other.Array.length()); i++)
+	{
+		if(Array[i] != Other.Array[i])
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 const char * String::c_str()
 {
 	return Array.data();
@@ -38,14 +51,14 @@ void String::Append(const char * In)
 	return;
 }
 
-void String::Insert(const char * In, size_t Index)
+void String::Insert(const char * In, const size_t Index)
 {
 	Array.insert(Index, const_cast<char *>(In), StringLength(In));
 
 	return;
 }
 
-size_t String::StringLength(const char* In)
+size_t String::StringLength(const char * In)
 {
 	size_t Length = 0;
 

@@ -221,7 +221,7 @@ public:
 	}
 
 	//Returns a pointer to the allocated array.
-	T * data()
+	const T * data() const
 	{
 		return this->Data;
 	}

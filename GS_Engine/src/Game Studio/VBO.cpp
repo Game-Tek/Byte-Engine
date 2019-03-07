@@ -4,7 +4,7 @@
 
 #include "GL.h"
 
-VBO::VBO(const void * Data, unsigned int Size, int Usage)
+VBO::VBO(const void * Data, const uint32 Size, int32 Usage)
 {
 	GS_GL_CALL(glGenBuffers(1, & RendererObjectId));
 	Bind();

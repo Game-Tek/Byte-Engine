@@ -13,6 +13,8 @@ public:
 	explicit StaticMeshRenderProxy(WorldObject * Owner);
 	~StaticMeshRenderProxy() = default;
 
+	virtual void Draw() override;
+
 protected:
 };
 

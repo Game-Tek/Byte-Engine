@@ -11,6 +11,8 @@ public:
 	explicit RenderProxy(WorldObject * Owner);
 	virtual ~RenderProxy() = default;
 
+	virtual void Draw() = 0;
+
 protected:
 	WorldObject * Owner = nullptr;
 };

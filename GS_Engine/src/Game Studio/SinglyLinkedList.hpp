@@ -9,11 +9,11 @@ GS_STRUCT SingleLinkListNode
 {
 	SingleLinkListNode();
 
-	SinglyLinkedListNode * GetChild() { return Child; }
+	SingleLinkListNode * GetChild() { return Child; }
 	T & GetElement() { return Element; }
 
 protected:
-	SinglyLinkedListNode<T> * Child;
+	SingleLinkListNode<T> * Child;
 
 	T Element;
 };
@@ -24,12 +24,22 @@ GS_CLASS SingleLinkList
 public:
 	SingleLinkList();
 
-	SingleLinkList(const size_t Length);
+	explicit SingleLinkList(const size_t Length);
 
-	SingleLinkListNode & operator[](const size_t Index);
+	SingleLinkListNode<T> & operator[](const size_t Index);
 protected:
 	SingleLinkListNode<T> Root;
 };
+
+template <class T>
+SingleLinkList<T>::SingleLinkList()
+{
+}
+
+template <class T>
+SingleLinkList<T>::SingleLinkList(const size_t Length)
+{
+}
 
 template <class T>
 SingleLinkListNode<T> & SingleLinkList<T>::operator[](const size_t Index)

@@ -13,11 +13,3 @@ MeshRenderProxy::MeshRenderProxy(WorldObject * Owner, VBO * VertexBuffer, IBO * 
 	VertexArray(VertexArray)
 {
 }
-
-
-MeshRenderProxy::~MeshRenderProxy()
-{
-	delete VertexBuffer;
-	delete IndexBuffer;
-	delete VertexArray;
-}

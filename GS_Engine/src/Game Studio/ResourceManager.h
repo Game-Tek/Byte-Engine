@@ -4,7 +4,7 @@
 
 #include "Resource.h"
 
-#include <string>
+#include "String.h"
 
 #include "FVector.hpp"
 
@@ -15,11 +15,11 @@ public:
 	virtual ~ResourceManager();
 
 	template <typename T>
-	T * GetResource(const std::string & Path)
+	T * GetResource(String Path)
 	{
 		for (uint16 i = 0; i < LoadedResources.length(); i++)
 		{
-			if (LoadedResources[i]->GetPath() == Path)
+			if (Path == LoadedResources[i]->GetPath())
 			{
 				return dynamic_cast<T *>(LoadedResources[i]);
 			}
@@ -35,7 +35,7 @@ protected:
 
 
 	template <typename T>
-	T * LoadAsset(const std::string & Path)
+	T * LoadAsset(const String & Path)
 	{
 		T * ptr = new T(Path);
 

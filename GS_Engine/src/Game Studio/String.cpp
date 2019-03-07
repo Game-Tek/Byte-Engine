@@ -1,4 +1,4 @@
-#include "String.hpp"
+#include "String.h"
 
 String::String() : Array(10)
 {
@@ -8,7 +8,7 @@ String::String(const char * In) : Array(const_cast<char *>(In), StringLength(In)
 {
 }
 
-String::String(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length)
+String::String(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length + 1)
 {
 }
 
@@ -39,7 +39,7 @@ bool String::operator==(const String & Other)
 	return true;
 }
 
-const char * String::c_str()
+const char * String::c_str() const
 {
 	return Array.data();
 }

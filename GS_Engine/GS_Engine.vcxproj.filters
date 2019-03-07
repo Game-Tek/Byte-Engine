@@ -99,9 +99,6 @@
     <ClInclude Include="src\Game Studio\Object.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\String.hpp">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Vector2.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
@@ -218,6 +215,9 @@
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\ConeWithFallof.h" />
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
+    <ClInclude Include="src\Game Studio\String.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -278,7 +278,6 @@
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
-    <ClCompile Include="src\Game Studio\String.cpp" />
     <ClCompile Include="src\Game Studio\RenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\GameInstance.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
@@ -287,6 +286,7 @@
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\MeshObject.cpp" />
+    <ClCompile Include="src\Game Studio\String.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

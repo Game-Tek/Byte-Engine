@@ -2,11 +2,13 @@
 
 #include "Logger.h"
 
+#include "String.h"
+
 #include <assimp/scene.h>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
-StaticMeshResource::StaticMeshResource(const std::string & Path)
+StaticMeshResource::StaticMeshResource(const String & Path)
 {
 	Data = Load(Path.c_str());
 }

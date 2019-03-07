@@ -24,7 +24,7 @@ public:
 
 	bool operator==(const String & Other);
 
-	const char * c_str();
+	const char * c_str() const;
 	INLINE size_t GetLength() const { return Array.length(); }
 	INLINE bool IsEmpty() const { return Array.length() == 0; }
 

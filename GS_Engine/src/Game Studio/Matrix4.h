@@ -14,37 +14,16 @@
 GS_CLASS Matrix4
 {
 public:
-	Matrix4()
+	Matrix4() : Array{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
 	{
-		for(uint8 i = 0; i < MATRIX_SIZE; i++)
-		{
-			Array[i] = 0;
-		}
 	}
 
-	Matrix4(float A, float B, float C, float D, float E, float F, float G, float H, float I, float J, float K, float L, float M, float N, float O, float P)
+	Matrix4(const float A, const float B, const float C, const float D, const float E, const float F, const float G, const float H, const float I, const float J, const float K, const float L, const float M, const float N, const float O, const float P) :
+		Array{ A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P }
 	{
-		Array[0] = A;
-		Array[1] = B;
-		Array[2] = C;
-		Array[3] = D;
-		Array[4] = E;
-		Array[5] = F;
-		Array[6] = G;
-		Array[7] = H;
-		Array[8] = I;
-		Array[9] = J;
-		Array[10] = K;
-		Array[11] = L;
-		Array[12] = M;
-		Array[13] = N;
-		Array[14] = O;
-		Array[15] = P;
 	}
 
-	~Matrix4()
-	{
-	}
+	~Matrix4() = default;
 
 	void Identity()
 	{
@@ -58,7 +37,7 @@ public:
 
 	const float * GetData() const { return Array; }
 
-	Matrix4 operator+ (float Other) const
+	Matrix4 operator+ (const float Other) const
 	{
 		Matrix4 Result;
 
@@ -82,7 +61,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 & operator+= (float Other)
+	Matrix4 & operator+= (const float Other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -102,7 +81,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator- (float Other) const
+	Matrix4 operator- (const float Other) const
 	{
 		Matrix4 Result;
 
@@ -126,7 +105,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 & operator-= (float Other)
+	Matrix4 & operator-= (const float Other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -146,7 +125,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator* (float Other) const
+	Matrix4 operator* (const float Other) const
 	{
 		Matrix4 Result;
 
@@ -179,6 +158,7 @@ public:
 			for (uint8 x = 0; x < 4; x++)
 			{
 				float Sum = 0.0f;
+
 				for (uint8 e = 0; e < 4; e++)
 				{
 					Sum += Result[e + y * 4] * Other[x + e * 4];
@@ -191,7 +171,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 & operator*= (float Other)
+	Matrix4 & operator*= (const float Other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -208,6 +188,7 @@ public:
 			for (uint8 x = 0; x < 4; x++)
 			{
 				float Sum = 0.0f;
+
 				for (uint8 e = 0; e < 4; e++)
 				{
 					Sum += Array[e + y * 4] * Other[x + e * 4];
@@ -220,7 +201,7 @@ public:
 		return *this;
 	}
 
-	Matrix4 operator/ (float Other) const
+	Matrix4 operator/ (const float Other) const
 	{
 		Matrix4 Result;
 
@@ -232,7 +213,7 @@ public:
 		return Result;
 	}
 
-	Matrix4 & operator/= (float Other)
+	Matrix4 & operator/= (const float Other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
@@ -242,9 +223,9 @@ public:
 		return *this;
 	}
 
-	float & operator[] (uint8 Index) { return Array[Index]; }
+	float & operator[] (const uint8 Index) { return Array[Index]; }
 
-	float operator[] (uint8 Index) const { return Array[Index]; }
+	float operator[] (const uint8 Index) const { return Array[Index]; }
 
 private:
 	float Array[MATRIX_SIZE];

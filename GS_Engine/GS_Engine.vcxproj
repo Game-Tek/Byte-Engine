@@ -140,7 +140,7 @@
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
-    <ClInclude Include="src\Game Studio\String.hpp" />
+    <ClInclude Include="src\Game Studio\String.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\VAO.h" />
     <ClInclude Include="src\Game Studio\VBO.h" />

@@ -9,7 +9,7 @@
 GS_CLASS VBO : public RendererObject
 {
 public:
-	VBO(const void * Data, unsigned int Size, int Usage = GL_STATIC_DRAW);
+	VBO(const void * Data, const uint32 Size, const int32 Usage = GL_STATIC_DRAW);
 	~VBO();
 
 	void Bind() const override;

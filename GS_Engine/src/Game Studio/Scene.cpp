@@ -2,29 +2,29 @@
 
 #include "GSM.hpp"
 
-Scene::Scene() : StaticMeshList(50), ViewMatrix(), ProjectionMatrix(BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.01f, 100.0f))
+Scene::Scene() : RenderProxyList(50), ViewMatrix(), ProjectionMatrix(BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.1f, 100.0f))
 {
 }
 
-void Scene::AddStaticMesh(StaticMesh * Object)
+void Scene::AddObject(RenderProxy * Object)
 {
-	StaticMeshList.push_back(Object);
-
-	return;
+	RenderProxyList.push_back(Object);
 }
 
-void Scene::RemoveStaticMesh(StaticMesh * Object)
+void Scene::RemoveObject(RenderProxy * Object)
 {
-	StaticMeshList.eraseObject(Object);
-
-	return;
+	RenderProxyList.eraseObject(Object);
 }
 
 void Scene::UpdateViewMatrix()
 {
-	ViewMatrix[12] = GetCamera()->GetPosition().X;
-	ViewMatrix[13] = GetCamera()->GetPosition().Y;
-	ViewMatrix[14] = GetCamera()->GetPosition().Z;
+	//We get and store the camera's position so as to not access it several times.
+	const Vector3 CamPos = GetActiveCamera()->GetPosition();
+
+	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
+	ViewMatrix[12] = -CamPos.X;
+	ViewMatrix[13] = -CamPos.Y;
+	ViewMatrix[14] = -CamPos.Z;
 
 	return;
 }

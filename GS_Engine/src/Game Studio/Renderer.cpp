@@ -38,6 +38,8 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 Renderer::~Renderer()
 {
 	delete Prog;
+	delete View;
+	delete Projection;
 }
 
 void Renderer::RenderFrame(IBO * ibo, VAO * vao, Program * progr) const
@@ -53,13 +55,14 @@ void Renderer::RenderFrame(IBO * ibo, VAO * vao, Program * progr) const
 
 void Renderer::OnUpdate()
 {
+	//Clear all buffers.
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
-	for(uint32 i = 0; i < ActiveScene.StaticMeshList.length(); i++)
+	//Loop through every object to render them.
+	for(uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
 	{
-		StaticMeshRenderProxy * loc = dynamic_cast<StaticMeshRenderProxy *>(ActiveScene.StaticMeshList[i]->GetRenderProxy());
-
-		RenderFrame(loc->GetIndexBuffer(), loc->GetVertexArray(), Prog);
+		//Draw the current object.
+		ActiveScene.RenderProxyList[i]->Draw();
 	}
 
 	return;

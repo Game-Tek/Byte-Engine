@@ -30,7 +30,7 @@ void World::SpawnObject(StaticMesh * NewStaticMesh, const Vector3 & Position)
 	//Add it to the entity list array.
 	EntityList.push_back(reinterpret_cast<WorldObject *>(NewStaticMesh));
 
-	GS::Application::Get()->GetRendererInstance()->GetScene()->AddStaticMesh(NewStaticMesh);
+	GS::Application::Get()->GetRendererInstance()->GetScene()->AddObject(NewStaticMesh->GetRenderProxy());
 }
 
 void World::SetActiveCamera(Camera * Camera) const

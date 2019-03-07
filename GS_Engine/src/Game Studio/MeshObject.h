@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "WorldObject.h"
+#include "RenderProxy.h"
 
 class MeshRenderProxy;
 
@@ -13,9 +14,9 @@ public:
 	explicit MeshObject(MeshRenderProxy * RenderProxy);
 	~MeshObject();
 
-	MeshRenderProxy * GetRenderProxy() const { return RenderProxy; }
+	RenderProxy * GetRenderProxy() const { return RenderProxy; }
 
 protected:
-	MeshRenderProxy * RenderProxy = nullptr;
+	RenderProxy * RenderProxy = nullptr;
 };
 

@@ -8,6 +8,8 @@
 
 #include "StaticMeshRenderProxy.h"
 
+#include "String.h"
+
 Vertex Vertices[] = { { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
@@ -19,7 +21,7 @@ StaticMesh::StaticMesh() : MeshObject(new StaticMeshRenderProxy(Vertices, sizeof
 {
 }
 
-StaticMesh::StaticMesh(const std::string & StaticMeshAsset) : MeshObject(new StaticMeshRenderProxy(this)), MeshResource(GS::Application::Get()->GetResourceManagerInstance()->GetResource<StaticMeshResource>(StaticMeshAsset))
+StaticMesh::StaticMesh(const String & StaticMeshAsset) : MeshObject(new StaticMeshRenderProxy(this)), MeshResource(GS::Application::Get()->GetResourceManagerInstance()->GetResource<StaticMeshResource>(StaticMeshAsset))
 {
 }
 

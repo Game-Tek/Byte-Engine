@@ -6,8 +6,6 @@
 
 #include "Vertex.h"
 
-#include "FVector.hpp"
-
 //Used to specify a single mesh. Contains a pointer to an array of vertices, and a pointer to an array of indices.
 struct Mesh
 {
@@ -18,6 +16,8 @@ struct Mesh
 	uint32 IndexCount = 0;
 };
 
+class String;
+
 struct aiNode;
 struct aiMesh;
 class aiScene;
@@ -25,7 +25,7 @@ class aiScene;
 GS_CLASS StaticMeshResource : public Resource
 {
 public:
-	explicit StaticMeshResource(const std::string & Path);
+	explicit StaticMeshResource(const String & Path);
 	~StaticMeshResource();
 
 	Mesh * GetMeshData() const { return static_cast<Mesh *>(Data); }

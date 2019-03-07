@@ -4,15 +4,14 @@
 
 #include "MeshObject.h"
 
-#include <string>
-
+class String;
 class StaticMeshResource;
 
 GS_CLASS StaticMesh : public MeshObject
 {
 public:
 	StaticMesh();
-	explicit StaticMesh(const std::string & StaticMeshAsset);
+	explicit StaticMesh(const String & StaticMeshAsset);
 	~StaticMesh();
 
 	//Returns a const pointer to the static mesh resource.

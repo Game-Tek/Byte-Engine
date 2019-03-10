@@ -33,11 +33,11 @@ uint16 EventDispatcher::CreateEvent()
 	return EventCount;
 }
 
-void EventDispatcher::Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func)
+void EventDispatcher::Subscribe(unsigned short EventId, Object * Subscriber, const MemberFunctionPointer Func)
 {
-	//unsigned short EventIndex = Loop(EventId);		//Call loop and store the return in _local_var_EventIndex.
+	//unsigned short EventIndex = Loop(EventId);					//Call loop and store the return in _local_var_EventIndex.
 
-	SubscriberInfo[EventId].push_back(Functor(Subscriber, Func));			//Access SubscriberInfo at _local_var_EventIndex and store in the array inside that index the function to call.
+	SubscriberInfo[EventId].push_back(Functor(Subscriber, Func));	//Access SubscriberInfo at _local_var_EventIndex and store in the array inside that index the function to call.
 
 	return;
 }

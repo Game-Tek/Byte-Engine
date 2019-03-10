@@ -14,7 +14,7 @@ out vec2 tTextCoord;
 
 void main()
 {
-   gl_Position = vec4(inPos, 1.0);
+   gl_Position = uProjection * uView * vec4(inPos, 1.0);
 
    tTextCoord = inTextCoord;
 }

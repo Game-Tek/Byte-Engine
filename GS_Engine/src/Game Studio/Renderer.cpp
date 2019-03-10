@@ -58,8 +58,13 @@ void Renderer::OnUpdate()
 	//Clear all buffers.
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
+	ActiveScene.OnUpdate();
+
+	View->Set(*ActiveScene.GetViewMatrix());
+	Projection->Set(*ActiveScene.GetProjectionMatrix());
+
 	//Loop through every object to render them.
-	for(uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
+	for (uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
 	{
 		//Draw the current object.
 		ActiveScene.RenderProxyList[i]->Draw();

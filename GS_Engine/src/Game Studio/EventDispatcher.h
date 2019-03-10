@@ -12,8 +12,6 @@
 
 #include "FVector.hpp"
 
-
-
 GS_CLASS EventDispatcher : public ESystem
 {
 public:
@@ -23,7 +21,7 @@ public:
 	void OnUpdate() override;
 
 	uint16 CreateEvent();
-	void Subscribe(unsigned short EventId, Object * Subscriber, MemberFuncPtr Func);
+	void Subscribe(unsigned short EventId, Object * Subscriber, MemberFunctionPointer Func);
 	void UnSubscribe(unsigned short EventId, Object * Subscriber);
 
 

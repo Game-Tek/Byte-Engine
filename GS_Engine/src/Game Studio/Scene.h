@@ -4,22 +4,27 @@
 #include "Camera.h"
 #include "FVector.hpp"
 #include "Matrix4.h"
+#include "EngineSystem.h"
 
 class StaticMesh;
 class RenderProxy;
 
 //Stores all the data necessary for the renderer to work. It's the renderers representation of the game world.
-GS_CLASS Scene
+GS_CLASS Scene : public ESystem
 {
 public:
 	Scene();
 	virtual ~Scene() = default;
+
+	virtual void OnUpdate() override;
 
 	void AddObject(RenderProxy * Object);
 	void RemoveObject(RenderProxy * Object);
 
 	//Returns a pointer to the active camera.
 	Camera * GetActiveCamera() const { return ActiveCamera; }
+	const Matrix4 * GetViewMatrix() const { return &ViewMatrix; }
+	const Matrix4 * GetProjectionMatrix() const { return &ProjectionMatrix; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }

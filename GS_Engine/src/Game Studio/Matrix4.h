@@ -27,10 +27,10 @@ public:
 
 	void Identity()
 	{
-		Array[0] = 1;
-		Array[5] = 1;
-		Array[10] = 1;
-		Array[15] = 1;
+		Array[0] = 1.0f;
+		Array[5] = 1.0f;
+		Array[10] = 1.0f;
+		Array[15] = 1.0f;
 
 		return;
 	}

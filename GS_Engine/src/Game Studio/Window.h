@@ -4,6 +4,7 @@
 
 #include "EngineSystem.h"
 
+struct ImageSize;
 struct GLFWwindow;
 
 GS_CLASS Window : public ESystem
@@ -15,13 +16,19 @@ public:
 	void OnUpdate() override;
 
 	//Enable or disable V-Sync.
-	void SetVsync(bool Enable);
+	void SetVsync(const bool Enable) const;
 
-	GLFWwindow * GetGLFWWindow() const { return GLWindow; }
+	INLINE GLFWwindow * GetGLFWWindow() const { return GLWindow; }
 
-	uint16 GetWindowWidth() const { return WindowWidth; }
-	uint16 GetWindowHeight() const { return WindowHeight; }
-private:
+	ImageSize GetWindowSize() const;
+	INLINE uint16 GetWindowWidth() const { return WindowWidth; }
+	INLINE uint16 GetWindowHeight() const { return WindowHeight; }
+
+	INLINE float GetAspectRatio() const { return static_cast<float>(WindowWidth) / static_cast<float>(WindowHeight); }
+
+	void ResizeWindow(uint16 WWidth, uint16 WHeight);
+
+protected:
 	GLFWwindow * GLWindow;
 
 	uint16 WindowWidth;

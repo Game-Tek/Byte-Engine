@@ -19,7 +19,7 @@ void EventDispatcher::OnUpdate()
 		for (unsigned short j = 0; j < SubscriberInfo[i].length(); j++)
 		{
 			//SubscriberInfo at 
-			SubscriberInfo[i][j](*EventQueue[i]);
+			SubscriberInfo[i][j](EventQueue[i]);
 		}
 
 		delete EventQueue[i];

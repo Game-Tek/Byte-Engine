@@ -24,7 +24,7 @@ public:
 
 protected:
 	//Renders a whole frame.
-	void RenderFrame(IBO * ibo, VAO * vao, Program * progr) const;
+	void RenderFrame() const;
 
 	Scene ActiveScene;
 

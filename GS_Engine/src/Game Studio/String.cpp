@@ -12,6 +12,10 @@ String::String(const char * In, const size_t Length) : Array(const_cast<char *>(
 {
 }
 
+String::String(const String & Other) : Array(Other.Array)
+{
+}
+
 String & String::operator=(const char * In)
 {
 	Array.recreate(const_cast<char *>(In), StringLength(In));
@@ -26,7 +30,7 @@ String & String::operator=(const String & Other)
 	return *this;
 }
 
-bool String::operator==(const String & Other)
+bool String::operator==(const String & Other) const
 {
 	for (size_t i = 0; i < (Array.length() < Other.Array.length() ? Array.length() : Other.Array.length()); i++)
 	{
@@ -39,7 +43,7 @@ bool String::operator==(const String & Other)
 	return true;
 }
 
-const char * String::c_str() const
+char * String::c_str()
 {
 	return Array.data();
 }

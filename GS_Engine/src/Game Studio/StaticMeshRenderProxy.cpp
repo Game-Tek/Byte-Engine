@@ -12,19 +12,10 @@
 
 //TODO: CHECK HOW GETDATASIZE() WORKS.
 
-StaticMeshRenderProxy::StaticMeshRenderProxy(const void * MeshData, size_t DataSize, const void * IndexData, uint32 IndexCount) : MeshRenderProxy(new VBO(MeshData, DataSize), new IBO(IndexData, IndexCount), new VAO(sizeof(Vertex)))
+StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner, const void * MeshData, size_t DataSize, const void * IndexData, uint32 IndexCount) : MeshRenderProxy(Owner, new VBO(MeshData, DataSize), new IBO(IndexData, IndexCount), new VAO(sizeof(Vertex)))
 {
 	VertexArray->Bind();
 	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
-}
-
-StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner) : MeshRenderProxy(Owner, 
-	new VBO(dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData(),
-			dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetDataSize()),
-	new IBO(dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData()->IndexArray,
-			dynamic_cast<StaticMesh *>(Owner)->GetMeshResource()->GetMeshData()->IndexCount),
-	new VAO(sizeof(Vertex)))
-{
 }
 
 void StaticMeshRenderProxy::Draw()

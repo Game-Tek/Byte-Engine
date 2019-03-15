@@ -11,12 +11,18 @@
 #include "Uniform.h"
 
 #include "Application.h"
-#include "StaticMeshRenderProxy.h"
+
+#include "GSM.hpp"
+
+#include "RenderProxy.h"
+
+#include "WorldObject.h"
 
 Program * Prog;
 
-Uniform * View;
 Uniform * Projection;
+Uniform * View;
+Uniform * Model;
 
 Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 {
@@ -24,33 +30,36 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	GS_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 
 	//Set viewport size.
-	GS_GL_CALL(glViewport(0, 0, static_cast<GLsizei>(WindowInstanceRef->GetWindowWidth()), static_cast<GLsizei>(WindowInstanceRef->GetWindowHeight())));
+	GS_GL_CALL(glViewport(0, 0, static_cast<int32>(WindowInstanceRef->GetWindowWidth()), static_cast<int32>(WindowInstanceRef->GetWindowHeight())));
 
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
 	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
-	View = new Uniform(Prog, "uView");
 	Projection = new Uniform(Prog, "uProjection");
+	View = new Uniform(Prog, "uView");
+	Model = new Uniform(Prog, "uModel");
 }
 
 Renderer::~Renderer()
 {
 	delete Prog;
-	delete View;
 	delete Projection;
+	delete View;
+	delete Model;
 }
 
-void Renderer::RenderFrame(IBO * ibo, VAO * vao, Program * progr) const
+void Renderer::RenderFrame() const
 {
-	vao->Bind();
-	ibo->Bind();
-	progr->Bind();
+	//Loop through every object to render them.
+	for (uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
+	{
+		Model->Set(GSM::Translation(ActiveScene.RenderProxyList[i]->GetOwner()->GetPosition()));
 
-	GS_GL_CALL(glDrawElements(GL_TRIANGLES, ibo->GetCount(), GL_UNSIGNED_INT, nullptr));
-
-	return;
+		//Draw the current object.
+		ActiveScene.RenderProxyList[i]->Draw();
+	}
 }
 
 void Renderer::OnUpdate()
@@ -63,12 +72,7 @@ void Renderer::OnUpdate()
 	View->Set(*ActiveScene.GetViewMatrix());
 	Projection->Set(*ActiveScene.GetProjectionMatrix());
 
-	//Loop through every object to render them.
-	for (uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
-	{
-		//Draw the current object.
-		ActiveScene.RenderProxyList[i]->Draw();
-	}
+	RenderFrame();
 
 	return;
 }

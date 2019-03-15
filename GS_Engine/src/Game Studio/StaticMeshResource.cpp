@@ -8,9 +8,9 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
-StaticMeshResource::StaticMeshResource(const String & Path)
+StaticMeshResource::StaticMeshResource(const String & Path) : Resource(Path)
 {
-	Data = Load(Path.c_str());
+	Data = Load(FilePath.c_str());
 }
 
 StaticMeshResource::~StaticMeshResource()
@@ -21,6 +21,7 @@ StaticMeshResource::~StaticMeshResource()
 Mesh * StaticMeshResource::Load(const char * FilePath)
 {
 	//Create Importer.
+
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
@@ -98,7 +99,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 			Result.VertexArray[i].TextCoord.U = InMesh->mTextureCoords[0][i].x;
 			Result.VertexArray[i].TextCoord.V = InMesh->mTextureCoords[0][i].y;
 		}
-
+		/*
 		// Tangent
 		Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
 		Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
@@ -108,6 +109,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 		Result.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
 		Result.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;
 		Result.VertexArray[i].BiTangent.Z = InMesh->mBitangents[i].z;
+		*/
 	}
 
 	//We allocate a new array of unsigned ints big enough to hold the number of indices in this mesh and assign it to the

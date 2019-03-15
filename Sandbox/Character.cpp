@@ -14,21 +14,20 @@ Character::Character()
 	GetGameInstance()->GetWorld()->SetActiveCamera(&MyCamera);
 }
 
-
 Character::~Character()
 {
 }
 
 void Character::OnUpdate()
 {
-	MyCamera.AddDeltaPosition(Vector3(0.0005f, 0.0f, 0.005f));
+	MyCamera.AddDeltaPosition(Vector3(0.0f, 0.0f, 0.005f));
 }
 
-void Character::Move(const KeyPressedEvent & Event)
+void Character::Move(const KeyPressedEvent * Event)
 {
 	GS_LOG_MESSAGE("Moved!")
 
-	switch (Event.PressedKey)
+	switch (Event->PressedKey)
 	{
 	default:
 		AddDeltaPosition(Vector3());

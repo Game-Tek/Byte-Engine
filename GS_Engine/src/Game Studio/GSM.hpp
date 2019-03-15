@@ -290,6 +290,18 @@ public:
 	//						MATRIX MATH							//
 	//////////////////////////////////////////////////////////////
 
+	//Creates a translation matrix.
+	INLINE static Matrix4 Translation(const Vector3 & Vector)
+	{
+		Matrix4 Result;
+
+		Result[0 + 3 * 4] = Vector.X;
+		Result[1 + 3 * 4] = Vector.Y;
+		Result[2 + 3 * 4] = Vector.Z;
+
+		return Result;
+	}
+
 	//Modifies the given matrix to make it a translation matrix.
 	INLINE static void Translate(Matrix4 & Matrix, const Vector3 & Vector)
 	{

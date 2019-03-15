@@ -2,12 +2,13 @@
 
 #include "Core.h"
 
-#include "MeshObject.h"
+#include "WorldObject.h"
 
 class String;
+class StaticMeshRenderProxy;
 class StaticMeshResource;
 
-GS_CLASS StaticMesh : public MeshObject
+GS_CLASS StaticMesh : public WorldObject
 {
 public:
 	StaticMesh();
@@ -17,7 +18,11 @@ public:
 	//Returns a const pointer to the static mesh resource.
 	const StaticMeshResource * GetMeshResource() const { return MeshResource; }
 
+	RenderProxy * GetRenderProxy() override { return (RenderProxy *)(MeshRenderProxy); }
+
 protected:
 	//Pointer to the static mesh resource that this static mesh represents.
 	StaticMeshResource * MeshResource = nullptr;
+
+	StaticMeshRenderProxy * MeshRenderProxy = nullptr;
 };

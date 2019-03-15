@@ -1,7 +1,6 @@
 #include "Scene.h"
 
 #include "GSM.hpp"
-#include "Logger.h"
 
 Scene::Scene() : RenderProxyList(50)
 {
@@ -9,19 +8,26 @@ Scene::Scene() : RenderProxyList(50)
 
 void Scene::OnUpdate()
 {
+	//----UPDATE MATRICES----
 	UpdateViewMatrix();
 	UpdateProjectionMatrix();
+	UpdateVPMatrix();
+	//----UPDATE MATRICES----
 }
 
 
 void Scene::AddObject(RenderProxy * Object)
 {
 	RenderProxyList.push_back(Object);
+
+	return;
 }
 
 void Scene::RemoveObject(RenderProxy * Object)
 {
 	RenderProxyList.eraseObject(Object);
+
+	return;
 }
 
 void Scene::UpdateViewMatrix()
@@ -34,15 +40,12 @@ void Scene::UpdateViewMatrix()
 	ViewMatrix[13] = -CamPos.Y;
 	ViewMatrix[14] = -CamPos.Z;
 
-	GS_LOG_MESSAGE("View Matrix 11th component: %f", ViewMatrix[3])
-
 	return;
 }
 
 void Scene::UpdateProjectionMatrix()
 {
-	ProjectionMatrix = BuildPerspectiveMatrix(GSM::DegreesToRadians(GetActiveCamera()->GetFOV()), 1280.0f / 720.0f, 0.1f, 100.0f);
-	//ProjectionMatrix.Identity();
+	ProjectionMatrix = BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.1f, 100.0f);
 
 	return;
 }

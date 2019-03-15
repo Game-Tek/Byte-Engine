@@ -8,37 +8,41 @@
 
 #include "FVector.hpp"
 
+#include "Logger.h"
+
+#include "StaticMeshResource.h"
+
 GS_CLASS ResourceManager
 {
 public:
 	ResourceManager();
 	virtual ~ResourceManager();
 
-	template <typename T>
-	T * GetResource(String Path)
+	StaticMeshResource * GetResource(const String & Path)
 	{
 		for (uint16 i = 0; i < LoadedResources.length(); i++)
 		{
-			if (Path == LoadedResources[i]->GetPath())
+			if (LoadedResources[i]->GetPath() == Path)
 			{
-				return dynamic_cast<T *>(LoadedResources[i]);
+				return LoadedResources[i];
+				GS_LOG_MESSAGE("Returned found")
 			}
 		}
 
 		//SHOULD RETURN NULLPTR IF NOT ALREADY LOADED. THIS IS FOR TESTING PURPOUSES ONLY!
-
-		return LoadAsset<T>(Path);
+		GS_LOG_MESSAGE("Loading")
+		return LoadAsset(Path);
 	}
 
 protected:
-	FVector<Resource *> LoadedResources;
+	FVector<StaticMeshResource *> LoadedResources;
 
 
-	template <typename T>
-	T * LoadAsset(const String & Path)
+	StaticMeshResource * LoadAsset(const String & Path)
 	{
-		T * ptr = new T(Path);
+		StaticMeshResource * ptr = new StaticMeshResource(Path);
 
+		GS_LOG_MESSAGE("PushBack")
 		LoadedResources.push_back(ptr);
 
 		return ptr;

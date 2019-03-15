@@ -4,7 +4,7 @@
 
 #include "Event.h"
 
-typedef void (Object::*MemberFunctionPointer)(const Event & Ev);
+typedef void (*MemberFunctionPointer)(const Event * Ev);
 
 struct Functor
 {
@@ -17,8 +17,8 @@ struct Functor
 	{
 	}
 
-	INLINE void operator() (const Event & Ev) const
+	INLINE void operator()(const Event * Ev) const
 	{
-		(Obj->*Fptr)(Ev);
+		(*Fptr)(Ev);
 	}
 };

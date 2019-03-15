@@ -97,9 +97,9 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\ConeWithFallof.h" />
-    <ClInclude Include="src\Game Studio\MeshObject.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Octree.h" />
@@ -161,7 +161,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\MeshObject.cpp" />
+    <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />

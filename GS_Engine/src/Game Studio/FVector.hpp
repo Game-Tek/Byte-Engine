@@ -27,7 +27,7 @@ public:
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	FVector(T Array[], const size_t length) : Length(length), Capacity(length + EXTRA), Data(allocate(this->Capacity))
+	FVector(T Array[], const size_t length) : Capacity(length + EXTRA), Length(length), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
@@ -55,11 +55,11 @@ public:
 	//Assigns this object the data of the passed in FVector.
 	FVector & operator=(const FVector & Other)
 	{
-		checkfornew(Other.Length - this->Length);
-
 		this->Length = Other.Length;
 
-		copyarray(Other.Data, this->Data);
+		this->Data = allocate(this->Length);
+
+		this->Capacity = Other.Capacity;
 
 		return *this;
 	}
@@ -218,6 +218,12 @@ public:
 	size_t length() const
 	{
 		return this->Length;
+	}
+
+	//Returns a pointer to the allocated array.
+	T * data()
+	{
+		return this->Data;
 	}
 
 	//Returns a pointer to the allocated array.

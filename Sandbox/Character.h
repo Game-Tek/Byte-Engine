@@ -13,7 +13,7 @@ public:
 
 	void OnUpdate() override;
 
-	void Move(const KeyPressedEvent & Event);
+	void Move(const KeyPressedEvent * Event);
 
 	Camera MyCamera;
 };

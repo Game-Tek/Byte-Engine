@@ -7,14 +7,15 @@ layout(location = 2) in vec2 inTextCoord;
 layout(location = 3) in vec3 inTangent;
 layout(location = 4) in vec3 inBiTangent;
 
-uniform mat4 uView;
 uniform mat4 uProjection;
+uniform mat4 uView;
+uniform mat4 uModel;
 
 out vec2 tTextCoord;
 
 void main()
 {
-   gl_Position = uProjection * uView * vec4(inPos, 1.0);
+   gl_Position = uProjection * uView * uModel * vec4(inPos, 1.0);
 
    tTextCoord = inTextCoord;
 }

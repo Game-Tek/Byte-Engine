@@ -7,6 +7,7 @@
 #include "Transform3.h"
 
 class GameInstance;
+class RenderProxy;
 
 GS_CLASS WorldObject : public Object
 {
@@ -26,6 +27,8 @@ public:
 	void SetScale(const Vector3 & NewScale) { Transform.Scale = NewScale; }
 
 	void AddDeltaPosition(const Vector3 & Delta) { Transform.Position += Delta; }
+
+	virtual RenderProxy * GetRenderProxy() { return nullptr; }
 
 protected:
 	Transform3 Transform;

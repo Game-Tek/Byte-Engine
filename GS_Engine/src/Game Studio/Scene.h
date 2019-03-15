@@ -25,6 +25,7 @@ public:
 	Camera * GetActiveCamera() const { return ActiveCamera; }
 	const Matrix4 * GetViewMatrix() const { return &ViewMatrix; }
 	const Matrix4 * GetProjectionMatrix() const { return &ProjectionMatrix; }
+	const Matrix4 * GetVPMatrix() const { return &VPMatrix; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
@@ -41,10 +42,16 @@ protected:
 	//Matrix necessary to represent the active camera's view angle.
 	Matrix4 ProjectionMatrix;
 
+	//Matrix to represent the multiplication of the view and projection matrix.
+	Matrix4 VPMatrix;
+
 	//Updates the view matrix to follow the active's camera position.
 	void UpdateViewMatrix();
 
+	//Updated the projection to keep up with window size changes and FOV changes.
 	void UpdateProjectionMatrix();
+
+	void UpdateVPMatrix();
 
 	//Returns a symetric perspective frustrum.
 	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far);
@@ -53,3 +60,9 @@ protected:
 	static Matrix4 BuildPerspectiveFrustrum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
 };
 
+INLINE void Scene::UpdateVPMatrix()
+{
+	VPMatrix = ProjectionMatrix * ViewMatrix;
+
+	return;
+}

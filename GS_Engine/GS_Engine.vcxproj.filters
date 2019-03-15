@@ -207,7 +207,6 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
-    <ClInclude Include="src\Game Studio\MeshObject.h" />
     <ClInclude Include="src\Game Studio\Octree.h" />
     <ClInclude Include="src\Game Studio\Quaternion.h">
       <Filter>Misc\Math\Math Objects</Filter>
@@ -218,6 +217,7 @@
     <ClInclude Include="src\Game Studio\String.h">
       <Filter>Misc</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Id.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -285,8 +285,8 @@
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
-    <ClCompile Include="src\Game Studio\MeshObject.cpp" />
     <ClCompile Include="src\Game Studio\String.cpp" />
+    <ClCompile Include="src\Game Studio\Id.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

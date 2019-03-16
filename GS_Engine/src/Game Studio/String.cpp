@@ -10,6 +10,7 @@ String::String(const char * In) : Array(const_cast<char *>(In), StringLength(In)
 
 String::String(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length + 1)
 {
+	Array.push_back('\0');
 }
 
 String::String(const String & Other) : Array(Other.Array)

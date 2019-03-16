@@ -14,9 +14,11 @@ public:
 	TextureResource(const char * FilePath);
 	~TextureResource();
 
-	size_t GetDataSize() const override{ return sizeof(*((RGB *)(Data))); }
+	size_t GetDataSize() const override{ return sizeof(*Data); }
 
 protected:
+	RGB * Data;
+
 	//Used to hold the texture's dimensions once it's been loaded.
 	ImageSize TextureDimensions;
 

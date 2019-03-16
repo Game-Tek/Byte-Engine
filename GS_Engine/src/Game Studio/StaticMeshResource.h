@@ -32,16 +32,21 @@ public:
 	explicit StaticMeshResource(const String & Path);
 	~StaticMeshResource();
 
-	Vertex * GetVertexArray() const { return static_cast<Mesh *>(Data)->VertexArray; }
-	uint32 * GetIndexArray() const { return static_cast<Mesh *>(Data)->IndexArray; }
+	Vertex * GetVertexArray() const { return Data->VertexArray; }
+	uint32 * GetIndexArray() const { return Data->IndexArray; }
 
-	size_t GetDataSize() const override { return sizeof(*static_cast<Mesh*>(Data)); }
+	size_t GetVertexArraySize() const { return Data->VertexCount * sizeof(Vertex); }
+	size_t GetIndexArraySize() const { return Data->IndexCount * sizeof(uint32); }
 
-	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return static_cast<Mesh *>(Data)[MeshIndex].IndexCount; };
-	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return static_cast<Mesh *>(Data)[MeshIndex].VertexCount; }
+	size_t GetDataSize() const override { return sizeof(*Data); }
+
+	uint32 GetMeshIndexCount(uint8 MeshIndex) const { return Data->IndexCount; };
+	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return Data->VertexCount; }
 
 private:
-	Mesh * Load(const char * FilePath);
+	Mesh * Data;
+
+	Mesh * Load(const String & Path);
 	Mesh * LoadFallbackResource() const;
 	Mesh * ProcessNode(aiNode * Node, const aiScene * Scene);
 	Mesh ProcessMesh(aiMesh * Mesh);

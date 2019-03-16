@@ -10,7 +10,7 @@
 
 StaticMeshResource::StaticMeshResource(const String & Path) : Resource(Path)
 {
-	Data = Load(FilePath.c_str());
+	Data = Load(FilePath);
 }
 
 StaticMeshResource::~StaticMeshResource()
@@ -18,22 +18,23 @@ StaticMeshResource::~StaticMeshResource()
 	delete static_cast<Mesh *>(Data);
 }
 
-Mesh * StaticMeshResource::Load(const char * FilePath)
+Mesh * StaticMeshResource::Load(const String & Path)
 {
 	//Create Importer.
 
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene * Scene = Importer.ReadFile(FilePath, aiProcess_Triangulate | aiProcess_FlipUVs);
+	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
-		GS_LOG_WARNING("Failed to load StaticMesh: %s", FilePath);
+		GS_LOG_WARNING("Failed to load StaticMesh: %s", FilePath.c_str());
 		return LoadFallbackResource();
 	}
 
-	Mesh * Result = new Mesh[Scene->mNumMeshes];
+	//Create pointer for return.
+	Mesh * Result = new Mesh[Scene->mNumMeshes];	//Create new array of meshes.
 
 	for (int i = 0; i < Scene->mNumMeshes; i++)
 	{
@@ -48,7 +49,7 @@ Mesh * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 	//Store inside MeshData a new Array of meshes.
 	Mesh * MeshData = new Mesh[Node->mNumMeshes];
 
-	// Loop through each of the node’s meshes (if any)
+	// Loop through each of the node's meshes (if any)
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)
 	{
 		//Create a insertholder to store the this scene's mesh at [m].
@@ -67,7 +68,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	//Create a mesh object to hold the mesh currently being processed.
 	Mesh Result;
 
-	//--MESH SETUP--
+	//------------MESH SETUP------------
 
 	//We allocate a new array of vertices big enough to hold the number of vertices in this mesh and assign it to the
 	//pointer found inside the mesh.
@@ -76,7 +77,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	//Set this mesh's vertex count as the number of vertices found in this mesh.
 	Result.VertexCount = InMesh->mNumVertices;
 
-	//--MESH SETUP--
+	//------------MESH SETUP------------
 
 	// Loop through each vertex.
 	for (auto i = 0; i < InMesh->mNumVertices; i++)
@@ -114,21 +115,21 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 
 	//We allocate a new array of unsigned ints big enough to hold the number of indices in this mesh and assign it to the
 	//pointer found inside the mesh.
-	Result.IndexArray = new unsigned int[InMesh->mNumFaces];
+	Result.IndexArray = new uint32[InMesh->mNumFaces * 3];
 
 	//Wow loop through each of the mesh's faces and retrieve the corresponding vertex indices.
 	for (auto f = 0; f < InMesh->mNumFaces; f++)
 	{
 		const aiFace Face = InMesh->mFaces[f];
 
-		//Update the vertex count by summing the number of indices that each face we loop through has.
-		Result.VertexCount += Face.mNumIndices;
-
 		// Retrieve all indices of the face and store them in the indices array.
-		for (auto j = 0; j < Face.mNumIndices; j++)
+		for (auto i = 0; i < Face.mNumIndices; i++)
 		{
-			Result.IndexArray[j] = Face.mIndices[j];
+			Result.IndexArray[Result.IndexCount + i] = Face.mIndices[i];
 		}
+
+		//Update the vertex count by summing the number of indices that each face we loop through has.
+		Result.IndexCount += Face.mNumIndices;
 	}
 
 	return Result;

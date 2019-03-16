@@ -14,18 +14,12 @@ public:
 	}
 	virtual ~Resource() = default;
 
-	//Returns a pointer to the data.
-	void * GetData() const { return Data; }
-
 	//Returns the size of the data.
 	virtual size_t GetDataSize() const = 0;
 
 	const String & GetPath() const { return FilePath; }
 
 protected:
-	//Pointer to the data owned by this resource;
-	void * Data = nullptr;
-
 	//Resource identifier. Used to check if a resource has already been loaded.
 	String FilePath;
 };

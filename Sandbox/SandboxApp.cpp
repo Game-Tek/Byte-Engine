@@ -11,7 +11,7 @@ public:
 	Sandbox()
 	{
 		//Vector3 Vec(0, 0, -100.0f);
-		GetGameInstanceInstance()->GetWorld()->SpawnObject(new StaticMesh(), Vector3());
+		GetGameInstanceInstance()->GetWorld()->SpawnObject(new StaticMesh(String("W:/Box.obj")), Vector3());
 		GetGameInstanceInstance()->GetWorld()->SpawnObject(new Character(), Vector3());
 	}
 

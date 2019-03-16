@@ -32,6 +32,8 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	//Set viewport size.
 	GS_GL_CALL(glViewport(0, 0, static_cast<int32>(WindowInstanceRef->GetWindowWidth()), static_cast<int32>(WindowInstanceRef->GetWindowHeight())));
 
+	glEnable(GL_DEPTH_TEST);
+
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 

@@ -16,6 +16,10 @@ StaticMeshRenderProxy::StaticMeshRenderProxy(WorldObject * Owner, const void * M
 {
 	VertexArray->Bind();
 	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
+	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
+	VertexArray->CreateVertexAttribute(2, GL_FLOAT, false, sizeof(float) * 2);
+	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
+	VertexArray->CreateVertexAttribute(3, GL_FLOAT, false, sizeof(Vector3));
 }
 
 void StaticMeshRenderProxy::Draw()

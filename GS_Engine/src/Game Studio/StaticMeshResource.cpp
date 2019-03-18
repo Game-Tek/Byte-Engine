@@ -36,7 +36,7 @@ Mesh * StaticMeshResource::Load(const String & Path)
 	//Create pointer for return.
 	Mesh * Result = new Mesh[Scene->mNumMeshes];	//Create new array of meshes.
 
-	for (int i = 0; i < Scene->mNumMeshes; i++)
+	for (uint32 i = 0; i < Scene->mNumMeshes; i++)
 	{
 		Result[i] = ProcessMesh(Scene->mMeshes[i]);
 	}
@@ -80,7 +80,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	//------------MESH SETUP------------
 
 	// Loop through each vertex.
-	for (auto i = 0; i < InMesh->mNumVertices; i++)
+	for (uint32 i = 0; i < InMesh->mNumVertices; i++)
 	{
 		// Positions
 		Result.VertexArray[i].Position.X = InMesh->mVertices[i].x;
@@ -118,12 +118,12 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	Result.IndexArray = new uint32[InMesh->mNumFaces * 3];
 
 	//Wow loop through each of the mesh's faces and retrieve the corresponding vertex indices.
-	for (auto f = 0; f < InMesh->mNumFaces; f++)
+	for (uint32 f = 0; f < InMesh->mNumFaces; f++)
 	{
 		const aiFace Face = InMesh->mFaces[f];
 
 		// Retrieve all indices of the face and store them in the indices array.
-		for (auto i = 0; i < Face.mNumIndices; i++)
+		for (uint32 i = 0; i < Face.mNumIndices; i++)
 		{
 			Result.IndexArray[Result.IndexCount + i] = Face.mIndices[i];
 		}

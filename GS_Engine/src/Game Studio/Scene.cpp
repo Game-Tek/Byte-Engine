@@ -45,7 +45,7 @@ void Scene::UpdateViewMatrix()
 
 void Scene::UpdateProjectionMatrix()
 {
-	ProjectionMatrix = BuildPerspectiveMatrix(GSM::DegreesToRadians(45.0f), 1280.0f / 720.0f, 0.1f, 500.0f);
+	ProjectionMatrix = BuildPerspectiveMatrix(45.0f, 1280.0f / 720.0f, 0.1f, 500.0f);
 
 	return;
 }
@@ -53,9 +53,9 @@ void Scene::UpdateProjectionMatrix()
 //Returns a symetric perspective frustrum.
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
 {
-	const float Tangent = GSM::Tan(FOV * 0.5f); //Tangent of half the vertical view angle.
-	const float Height = Near * Tangent;		//Half height of the near plane(point that says where it is placed).
-	const float Width = Height * AspectRatio;	//Half width of the near plane(point that says where it is placed).
+	const float Tangent = GSM::Tangent(FOV * 0.5f); //Tangent of half the vertical view angle.
+	const float Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
+	const float Width = Height * AspectRatio;		//Half width of the near plane(point that says where it is placed).
 
 	return BuildPerspectiveFrustrum(Width, -Width, Height, -Height, Near, Far);
 }

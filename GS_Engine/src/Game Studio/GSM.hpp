@@ -11,6 +11,78 @@
 
 GS_CLASS GSM
 {
+private:
+	static constexpr float SinTable[] = {	0.00000,
+	0.01745, 0.03490, 0.05234, 0.06976, 0.08716, 0.10453, 0.12187, 0.13917, 0.15643, 0.17365,
+	0.19081, 0.20791, 0.22495, 0.24192, 0.25882, 0.27564, 0.29237, 0.30902, 0.32557, 0.34202,
+	0.35837, 0.37461, 0.39073, 0.40674, 0.42262, 0.43837, 0.45399, 0.46947, 0.48481, 0.5,
+	0.51504, 0.52992, 0.54464, 0.55919, 0.57358, 0.58779, 0.60182, 0.61566, 0.62932, 0.64279,
+	0.65606, 0.66913, 0.68200, 0.69466, 0.70711, 0.71934, 0.73135, 0.74314, 0.75471, 0.76604,
+	0.77715, 0.78801, 0.79864, 0.80902, 0.81915, 0.82904, 0.83867, 0.84805, 0.85717, 0.86603,
+	0.87462, 0.88295, 0.89101, 0.89879, 0.90631, 0.91355, 0.92050, 0.92718, 0.93358, 0.93969,
+	0.94552, 0.95106, 0.95630, 0.96126, 0.96593, 0.97030, 0.97437, 0.97815, 0.98163, 0.98481,
+	0.98769, 0.99027, 0.99255, 0.99452, 0.99619, 0.99756, 0.99863, 0.99939, 0.99985, 1.00000,
+	0.99985, 0.99939, 0.99863, 0.99756, 0.99619, 0.99452, 0.99255, 0.99027, 0.98769, 0.98481,
+	0.98163, 0.97815, 0.97437, 0.97030, 0.96593, 0.96126, 0.95630, 0.95106, 0.94552, 0.93969,
+	0.93358, 0.92718, 0.92050, 0.91355, 0.90631, 0.89879, 0.89101, 0.88295, 0.87462, 0.86603,
+	0.85717, 0.84805, 0.83867, 0.82904, 0.81915, 0.80902, 0.79864, 0.78801, 0.77715, 0.76604,
+	0.75471, 0.74314, 0.73135, 0.71934, 0.70711, 0.69466, 0.68200, 0.66913, 0.65606, 0.64279,
+	0.62932, 0.61566, 0.60182, 0.58779, 0.57358, 0.55919, 0.54464, 0.52992, 0.51504, 0.50000,
+	0.48481, 0.46947, 0.45399, 0.43837, 0.42262, 0.40674, 0.39073, 0.37461, 0.35837, 0.34202,
+	0.32557, 0.30902, 0.29237, 0.27564, 0.25882, 0.24192, 0.22495, 0.20791, 0.19081, 0.17365,
+	0.15643, 0.13917, 0.12187, 0.10453, 0.08716, 0.06976, 0.05234, 0.03490, 0.01745, };
+
+	static constexpr float TanTable[] = {  0.00000,
+	0.01745506492, 0.03492076949, 0.05240777928, 0.06992681194, 0.08748866352,
+	0.10510423526, 0.1227845609,  0.1405408347,  0.15838444032, 0.1763269807,
+	0.19438030913, 0.21255656167, 0.23086819112, 0.24932800284, 0.26794919243,
+	0.28674538575, 0.30573068145, 0.32491969623, 0.34432761329, 0.36397023426,
+	0.38386403503, 0.40402622583, 0.42447481621, 0.4452286853,  0.46630765815,
+	0.48773258856, 0.50952544949, 0.53170943166, 0.55430905145, 0.57735026919,
+	0.60086061902, 0.6248693519,  0.64940759319, 0.67450851684, 0.70020753821,
+	0.726542528,   0.7535540501,  0.7812856265,  0.80978403319, 0.83909963117,
+	0.86928673781, 0.90040404429, 0.93251508613, 0.9656887748,  1.00000,
+	1.03553031379, 1.07236871002, 1.11061251483, 1.15036840722, 1.19175359259,
+	1.23489715654, 1.27994163219, 1.32704482162, 1.37638192047, 1.42814800674,
+	1.48256096851, 1.53986496381, 1.60033452904, 1.66427948235, 1.73205080757,
+	1.80404775527, 1.88072646535, 1.96261050551, 2.05030384158, 2.14450692051,
+	2.2460367739,  2.35585236582, 2.47508685342, 2.60508906469, 2.74747741945,
+	2.90421087768, 3.07768353718, 3.27085261848, 3.48741444384, 3.73205080757,
+	4.01078093354, 4.33147587428, 4.70463010948, 5.14455401597, 5.67128181962,
+	6.31375151468, 6.31375151468, 8.14434642797, 9.51436445422, 11.4300523028,
+	14.3006662567, 19.0811366877, 28.6362532829, 57.2899616308, 1000.00000 };
+
+	INLINE static float Sin(const float Degrees)
+	{
+		int a = Floor(Degrees);
+		int b = a + 1;
+
+		return Lerp(SinTable[a], SinTable[b], Degrees - a);
+	}
+
+	INLINE static float Tan(const float Degrees)
+	{
+		int a = Floor(Degrees);
+		int b = a + 1;
+
+		return Lerp(TanTable[a], TanTable[b], Degrees - a);
+	}
+
+	INLINE static double CoTangent(const float Degrees)
+	{
+		return 1.0 / Tangent(Degrees);
+	}
+
+	INLINE static float StraightRaise(float A, uint8 Times)
+	{
+		for (uint8 i = 0; i < Times - 1; i++)
+		{
+			A *= A;
+		}
+
+		return A;
+	}
+
 public:
 	constexpr static float PI = 3.1415926535f;
 
@@ -57,53 +129,100 @@ public:
 		return A <= 0 ? 1 : A * Fact(A - 1);
 	}
 
-	//Returns the sine of an angle. EXPECTS RADIANS.
+	//Returns the sine of an angle.
 	INLINE static float Sine(const float Degrees)
 	{
-		//const float Adeg = Degrees * 0.99026f;
+		float abs = Abs(Degrees);
 
-		float MultpDeg = Degrees * Degrees * Degrees;
+		float Result;
 
-		return Degrees - ((1.0f/6.0f) * (MultpDeg)) + ((1.0f/120.0f) * (MultpDeg *= Degrees * Degrees)) - ((1.0f/5040.0f) * (MultpDeg *= Degrees * Degrees)) + ((1.0f/362880.0f) * ((MultpDeg * Degrees * Degrees) * 0.99026f)); //We multiply by 0.99026 the last term to adjust the end of the curve.
+		if (Modulo(abs, 360.0f) > 180.0f)
+		{
+			Result = -Sin(Modulo(abs, 180.0f));
+		}
+		else
+		{
+			Result = Sin(Modulo(abs, 180.0f));
+		}
+
+		return (Degrees > 0.0f) ? Result : -Result;
 	}
 
-	//Returns the cosine of an angle. EXPECTS RADIANS.
+	//Returns the cosine of an angle.
 	INLINE static float Cosine(const float Degrees)
 	{
-		const float Adeg = Degrees * 0.98666f;
-
-		return 1 - ((1.0f / 2.0f) * (Degrees * Degrees)) + ((1.0f / 24.0f) * (Degrees * Degrees * Degrees * Degrees)) - ((1.0f / 720.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees * Degrees)) + ((1.0f / 40320.0f) * (Adeg * Adeg * Adeg * Adeg * Adeg * Adeg * Adeg * Adeg));
+		return Sine(Degrees + 90.0f);
 	}
 
-	//Returns the tangent of an angle. EXPECTS RADIANS.
-	INLINE static float Tan(const float Degrees)
+	//Returns the tangent of an angle.
+	INLINE static float Tangent(const float Degrees)
 	{
-		return Degrees + ((1.0f / 3.0f) * (Degrees * Degrees * Degrees)) + ((2.0f / 15.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees)) + ((17.0f / 315.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees)) + ((62.0f / 2835.0f) * (Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees * Degrees));
+		if (Degrees > 0.0f)
+		{
+			return Tan(Degrees);
+		}
+		else
+		{
+			return -Tan(Abs(Degrees));
+		}
 	}
 
+	INLINE static float ArcTangent(const float Degrees)
+	{
+		return CoTangent(1.0 / Degrees);
+	}
+
+	INLINE static float Power(const float A, const float Times)
+	{
+		const float Timesplus = StraightRaise(A, Floor(Times));
+
+		return Lerp(Timesplus, Timesplus * Timesplus, Times - Floor(Times));
+	}
 
 	//////////////////////////////////////////////////////////////
 	//						SCALAR MATH							//
 	//////////////////////////////////////////////////////////////
 
+	//Returns 1 if A is bigger than 0, 0 if A is equal to 0, and -1 if A is less than 0.
+	INLINE static int32 Sign(const float A)
+	{
+		if (A > 0.0f)
+		{
+			return 1;
+		}
+		else if (A < 0.0f)
+		{
+			return -1;
+		}
+		else
+		{
+			return 0;
+		}
+	}
+
 	//Mixes A and B by the specified values, Where Alpha 0 returns A and Alpha 1 returns B.
-	static float Lerp(const float A, const float B, const float Alpha)
+	INLINE static float Lerp(const float A, const float B, const float Alpha)
 	{
 		return A + Alpha * (B - A);
 	}
 
 	//Interpolates from Current to Target, returns Current + an amount determined by the InterpSpeed.
-	static float FInterp(const float Target, const float Current, const float DT, const float InterpSpeed)
+	INLINE static float FInterp(const float Target, const float Current, const float DT, const float InterpSpeed)
 	{
 		return (((Target - Current) * DT) * InterpSpeed) + Current;
 	}
 
-	static float MapToRange(const float A, const float InMin, const float InMax, const float OutMin, const float OutMax)
+	INLINE static float MapToRange(const float A, const float InMin, const float InMax, const float OutMin, const float OutMax)
 	{
 		return InMin + ((OutMax - OutMin) / (InMax - InMin)) * (A - InMin);
 	}
 
-	static float SquareRoot(const float A)
+	INLINE static float obMapToRange(const float A, const float InMax, const float OutMax)
+	{
+		return A / (InMax / OutMax);
+	}
+
+	INLINE static float SquareRoot(const float A)
 	{
 		//https://www.geeksforgeeks.org/square-root-of-a-perfect-square/
 		float X = A;
@@ -117,9 +236,26 @@ public:
 		return X;
 	}
 
-	INLINE static float Abs(const float A)
+	INLINE static uint32 Abs(const int32 A)
 	{
 		return A > 0 ? A : -A;
+	}
+
+	INLINE static float Abs(const float A)
+	{
+		return A > 0.0f ? A : -A;
+	}
+
+	template<typename T>
+	INLINE static T Min(const T & A, const T & B)
+	{
+		return (A < B) ? A : B;
+	}
+
+	template<typename T>
+	INLINE static T Max(const T & A, const T & B)
+	{
+		return (A > B) ? A : B;
 	}
 
 	INLINE static float DegreesToRadians(const float Degrees)
@@ -312,14 +448,31 @@ public:
 		return;
 	}
 
-	INLINE static Matrix4 Rotate(const Quaternion& A)
+	INLINE static void Rotate(Matrix4 & A, const Quaternion & Q)
+	{
+		const float cos = Cosine(Q.Q);
+		const float sin = Sine(Q.Q);
+		const float omc = 1.0f - cos;
+
+		A[0] = Q.X * omc + cos;
+		A[1] = Q.Y * Q.X * omc - Q.Y * sin;
+		A[2] = Q.X * Q.Z * omc - Q.Y * sin;
+
+		A[4] = Q.X * Q.Y * omc - Q.Z * sin;
+		A[5] = Q.Y * omc + cos;
+		A[6] = Q.Y * Q.Z * omc + Q.X * sin;
+
+		A[8] = Q.X * Q.Z * omc + Q.Y * sin;
+		A[9] = Q.Y * Q.Z * omc - Q.X * sin;
+		A[10] = Q.Z * omc + cos;
+	}
+
+	INLINE static Matrix4 Rotation(const Quaternion & A)
 	{
 		Matrix4 Result;
-		Result.Identity();
 
-		const float r = DegreesToRadians(A.Q);
-		const float cos = Cosine(r);
-		const float sin = Sine(r);
+		const float cos = Cosine(A.Q);
+		const float sin = Sine(A.Q);
 		const float omc = 1.0f - cos;
 
 		Result[0] = A.X * omc + cos;

@@ -24,7 +24,7 @@ class String;
 
 struct aiNode;
 struct aiMesh;
-class aiScene;
+struct aiScene;
 
 GS_CLASS StaticMeshResource : public Resource
 {

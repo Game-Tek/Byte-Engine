@@ -52,6 +52,42 @@ private:
 	6.31375151468, 6.31375151468, 8.14434642797, 9.51436445422, 11.4300523028,
 	14.3006662567, 19.0811366877, 28.6362532829, 57.2899616308, 1000.00000 };
 
+	static constexpr float ArcSinTable[] = {
+	0.00000,
+	2.86598398, 5.73917048,  8.62692656,  11.53695903, 14.47751219, 17.45760312, 20.48731511, 23.57817848, 26.74368395, 30.00000,
+	33.36701297, 36.86989765, 40.54160187, 44.427004,   48.59037789, 53.13010235, 58.21166938, 64.15806724, 71.80512766,
+	90.00000,
+	};
+
+	static constexpr float AtanTable[] = {
+
+	0.00000,
+	5.71059314,  11.30993247, 16.69924423, 21.80140949, 26.56505118,
+	30.96375653, 34.9920202,  38.65980825, 41.9872125,  45.00000,
+	47.72631099, 50.19442891, 52.43140797, 54.46232221, 56.30993247,
+	57.99461679, 59.53445508, 60.9453959,  62.2414594,  63.43494882,
+	64.53665494, 65.55604522, 66.50143432, 67.38013505, 68.19859051,
+	68.96248897, 69.67686317, 70.34617594, 70.97439396, 71.56505118,
+	72.1213034,  72.64597536, 73.14160123, 73.61045967, 74.0546041,
+	74.475889,   74.87599269, 75.25643716, 75.61860541, 75.96375653,
+	76.293039,   76.60750225, 76.90810694, 77.19573393, 77.47119229,
+	77.73522627, 77.98852161, 78.23171107, 78.46537935, 78.69006753,
+	78.90627699, 79.11447295, 79.3150876,  79.50852299, 79.69515353,
+	79.87532834, 80.04937331, 80.21759297, 80.3802722,  80.53767779, //ArcTan of 6
+	80.69005983, 80.83765295, 80.98067757, 81.11934085, 81.25383774,
+	81.38435182, 81.51105612, 81.63411388, 81.75367919, 81.86989765,
+	81.98290693, 82.0928373,  82.19981212, 82.30394828, 82.40535663,
+	82.50414236, 82.60040534, 82.69424047, 82.78573796, 82.87498365, // ArcTan of 8
+	82.96205924, 83.04704253, 83.13000769, 83.21102543, 83.29016319,
+	83.36748538, 83.4430535,  83.51692631, 83.58915998, 83.65980825,
+	83.72892255, 83.7965521,  83.86274405, 83.92754359, 83.99099404,
+	84.05313695, 84.11401217, 84.17365797, 84.2321111,  84.28940686,
+	84.34557918, 84.40066066, 84.45468269, 84.50767544, 84.55966797,
+	84.61068824, 84.6607632,  84.70991879, 84.75818005, 84.80557109,
+	84.85211518, 84.89783475, 84.94275147, 84.98688624, 85.03025927,
+	85.07289005, 85.11479743, 85.15599962, 85.19651424, 85.23635831 // ArcTan of 12
+	};
+
 	INLINE static float Sin(const float Degrees)
 	{
 		int a = Floor(Degrees);
@@ -68,9 +104,24 @@ private:
 		return Lerp(TanTable[a], TanTable[b], Degrees - a);
 	}
 
-	INLINE static double CoTangent(const float Degrees)
+	INLINE static float ASin(float Degrees)
 	{
-		return 1.0 / Tangent(Degrees);
+		Degrees *= 20.0f;
+
+		int a = Floor(Degrees);
+		int b = a + 1;
+
+		return Lerp(ArcSinTable[a], ArcSinTable[b], Degrees - a);
+	}
+
+	INLINE static float ATan(float Degrees)
+	{
+		Degrees *= 10.0f;
+
+		int a = Floor(Degrees);
+		int b = a + 1;
+
+		return Lerp(AtanTable[a], AtanTable[b], Degrees - a);
 	}
 
 	INLINE static float StraightRaise(float A, uint8 Times)
@@ -167,9 +218,30 @@ public:
 		}
 	}
 
-	INLINE static float ArcTangent(const float Degrees)
+	//Returns the ArcSine. MUST BE BETWEEN 0 AND 1.
+	INLINE static float ArcSine(const float A)
 	{
-		return CoTangent(1.0 / Degrees);
+		if (A > 0.0f)
+		{
+			return ASin(A);
+		}
+		else
+		{
+			return -ASin(Abs(A));
+		}
+	}
+
+	//Returns the arctangent of the number. MUST BE BETWEEN 0 AND 12.
+	INLINE static float ArcTangent(const float A)
+	{
+		if (A > 0.0f)
+		{
+			return ATan(A);
+		}
+		else
+		{
+			return -ATan(Abs(A));
+		}
 	}
 
 	INLINE static float Power(const float A, const float Times)
@@ -182,6 +254,23 @@ public:
 	//////////////////////////////////////////////////////////////
 	//						SCALAR MATH							//
 	//////////////////////////////////////////////////////////////
+
+		//Returns 1 if A is bigger than 0, 0 if A is equal to 0, and -1 if A is less than 0.
+	INLINE static int32 Sign(const int32 A)
+	{
+		if (A > 0)
+		{
+			return 1;
+		}
+		else if (A < 0)
+		{
+			return -1;
+		}
+		else
+		{
+			return 0;
+		}
+	}
 
 	//Returns 1 if A is bigger than 0, 0 if A is equal to 0, and -1 if A is less than 0.
 	INLINE static int32 Sign(const float A)
@@ -246,6 +335,26 @@ public:
 		return A > 0.0f ? A : -A;
 	}
 
+	INLINE static int32 Min(const int32 A, const int32 B)
+	{
+		return (A < B) ? A : B;
+	}
+
+	INLINE static int32 Max(const int32 A, const int32 B)
+	{
+		return (A > B) ? A : B;
+	}
+
+	INLINE static float Min(const float A, const float B)
+	{
+		return (A < B) ? A : B;
+	}
+
+	INLINE static float Max(const float A, const float B)
+	{
+		return (A > B) ? A : B;
+	}
+
 	template<typename T>
 	INLINE static T Min(const T & A, const T & B)
 	{
@@ -283,6 +392,11 @@ public:
 		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z);
 	}
 
+	INLINE static float VectorLength(const Vector4 & Vec1)
+	{
+		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z + Vec1.W * Vec1.W);
+	}
+
 	INLINE static float VectorLengthSquared(const Vector2 & Vec1)
 	{
 		return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
@@ -293,16 +407,49 @@ public:
 		return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z;
 	}
 
-	INLINE static Vector2 Normalize(const Vector2 & Vec1)
+	INLINE static Vector2 Normalized(const Vector2 & Vec1)
 	{
 		const float Length = VectorLength(Vec1);
 		return Vector2(Vec1.X / Length, Vec1.Y / Length);
 	}
 
-	INLINE static Vector3 Normalize(const Vector3 & Vec1)
+	INLINE static void Normalize(Vector2 & Vec1)
+	{
+		const float Length = VectorLength(Vec1);
+
+		Vec1.X = Vec1.X / Length;
+		Vec1.Y = Vec1.Y / Length;
+	}
+
+	INLINE static Vector3 Normalized(const Vector3 & Vec1)
 	{
 		const float Length = VectorLength(Vec1);
 		return Vector3(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length);
+	}
+
+	INLINE static void Normalize(Vector3 & Vec1)
+	{
+		const float Length = VectorLength(Vec1);
+
+		Vec1.X = Vec1.X / Length;
+		Vec1.Y = Vec1.Y / Length;
+		Vec1.Z = Vec1.Z / Length;
+	}
+
+	INLINE static Vector4 Normalized(const Vector4 & Vec1)
+	{
+		const float Length = VectorLength(Vec1);
+		return Vector4(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length, Vec1.W / Length);
+	}
+
+	INLINE static void Normalize(Vector4 & Vec1)
+	{
+		const float Length = VectorLength(Vec1);
+
+		Vec1.X = Vec1.X / Length;
+		Vec1.Y = Vec1.Y / Length;
+		Vec1.Z = Vec1.Z / Length;
+		Vec1.W = Vec1.W / Length;
 	}
 
 	INLINE static float Dot(const Vector2 & Vec1, const Vector2 & Vec2)
@@ -314,6 +461,7 @@ public:
 	{
 		return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
 	}
+
 	INLINE static Vector3 Cross(const Vector3 & Vec1, const Vector3 & Vec2)
 	{
 		return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
@@ -329,12 +477,33 @@ public:
 		return Vector3(Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z));
 	}
 
+	INLINE static Vector2 Negated(const Vector2 & Vec)
+	{
+		Vector2 Result;
+
+		Result.X = -Vec.X;
+		Result.Y = -Vec.Y;
+
+		return Result;
+	}
+
 	INLINE static void Negate(Vector2 & Vec)
 	{
 		Vec.X = -Vec.X;
 		Vec.Y = -Vec.Y;
 
 		return;
+	}
+
+	INLINE static Vector3 Negated(const Vector3 & Vec)
+	{
+		Vector3 Result;
+
+		Result.X = -Vec.X;
+		Result.Y = -Vec.Y;
+		Result.Z = -Vec.Z;
+
+		return Result;
 	}
 
 	INLINE static void Negate(Vector3 & Vec)
@@ -344,6 +513,18 @@ public:
 		Vec.Z = -Vec.Z;
 
 		return;
+	}
+
+	INLINE static Vector4 Negated(const Vector4 & Vec)
+	{
+		Vector4 Result;
+
+		Result.X = -Vec.X;
+		Result.Y = -Vec.Y;
+		Result.Z = -Vec.Z;
+		Result.W = -Vec.W;
+
+		return Result;
 	}
 
 	INLINE static void Negate(Vector4 & Vec)
@@ -371,16 +552,35 @@ public:
 		return SquareRoot(Quaternion.X * Quaternion.X + Quaternion.Y * Quaternion.Y + Quaternion.Z * Quaternion.Z + Quaternion.Q * Quaternion.Q);
 	}
 
-	INLINE static Quaternion Normalize(const Quaternion & Quat)
+	INLINE static Quaternion Normalized(const Quaternion & Quat)
 	{
 		const float Length = QuaternionLength(Quat);
 
 		return Quaternion(Quat.X / Length, Quat.Y / Length, Quat.Z / Length, Quat.Q / Length);
 	}
 
-	INLINE static Quaternion Conjugate(const Quaternion & Quat)
+	INLINE static void Normalize(Quaternion & Quat)
+	{
+		const float Length = QuaternionLength(Quat);
+
+		Quat.X = Quat.X / Length;
+		Quat.Y = Quat.Y / Length;
+		Quat.Z = Quat.Z / Length;
+		Quat.Q = Quat.Q / Length;
+	}
+
+	INLINE static Quaternion Conjugated(const Quaternion & Quat)
 	{
 		return Quaternion(-Quat.X, -Quat.Y, -Quat.Z, Quat.Q);
+	}
+
+	INLINE static void Conjugate(Quaternion & Quat)
+	{
+		Quat.X = -Quat.X;
+		Quat.Y = -Quat.Y;
+		Quat.Z = -Quat.Z;
+
+		return;
 	}
 
 	//////////////////////////////////////////////////////////////
@@ -407,12 +607,12 @@ public:
 		return A.X == B.X && A.Y == B.Y && A.Z == B.Z;
 	}
 
-	INLINE static bool IsVectorNearlyEqual(const Vector2 & A, const Vector2 & Target, float Tolerance)
+	INLINE static bool IsVectorNearlyEqual(const Vector2 & A, const Vector2 & Target, const float Tolerance)
 	{
 		return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance);
 	}
 
-	INLINE static bool IsVectorNearlyEqual(const Vector3 & A, const Vector3 & Target, float Tolerance)
+	INLINE static bool IsVectorNearlyEqual(const Vector3 & A, const Vector3 & Target, const float Tolerance)
 	{
 		return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance) && IsNearlyEqual(A.Z, Target.Z, Tolerance);
 	}

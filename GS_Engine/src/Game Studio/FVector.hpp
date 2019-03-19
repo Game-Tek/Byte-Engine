@@ -92,6 +92,19 @@ public:
 		this->Length += length;
 	}
 
+	//Places the passed in array at the end of the array.
+	void push_back(const FVector & other)
+	{
+		checkfornew(other.Length);
+
+		for (size_t i = 0; i < other.Length; i++)
+		{
+			this->Data[Length + i] = other[i];
+		}
+
+		this->Length += length;
+	}
+
 	//Deletes the array's last element.
 	void pop_back()
 	{

@@ -31,6 +31,20 @@ String & String::operator=(const String & Other)
 	return *this;
 }
 
+String & String::operator+(const char * Other)
+{
+	Array.push_back(const_cast<char *>(Other), StringLength(Other));
+
+	return *this;
+}
+
+String & String::operator+(const String & Other)
+{
+	Array.push_back(Other.Array);
+
+	return *this;
+}
+
 bool String::operator==(const String & Other) const
 {
 	for (size_t i = 0; i < (Array.length() < Other.Array.length() ? Array.length() : Other.Array.length()); i++)
@@ -49,9 +63,25 @@ char * String::c_str()
 	return Array.data();
 }
 
+const char * String::c_str() const
+{
+	return Array.data();
+}
+
 void String::Append(const char * In)
 {
+	Array.push_back(' ');
+
 	Array.push_back(const_cast<char *>(In), StringLength(In));
+
+	return;
+}
+
+void String::Append(const String & In)
+{
+	Array.push_back(' ');
+
+	Array.push_back(In.Array);
 
 	return;
 }

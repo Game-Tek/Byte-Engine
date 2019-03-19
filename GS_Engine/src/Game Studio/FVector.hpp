@@ -102,7 +102,7 @@ public:
 			this->Data[Length + i] = other[i];
 		}
 
-		this->Length += length;
+		this->Length += other.Length;
 	}
 
 	//Deletes the array's last element.

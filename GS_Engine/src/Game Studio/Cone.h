@@ -15,6 +15,8 @@ GS_STRUCT Cone
 	//Returns the value of Length.
 	float GetLength() const { return Length; }
 
+	float GetInnerAngle() const;
+
 	//Sets Radius as NewRadius.
 	void SetRadius(const float NewRadius);
 	//Sets Length as NewLength.

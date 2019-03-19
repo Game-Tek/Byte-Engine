@@ -287,6 +287,8 @@
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\String.cpp" />
     <ClCompile Include="src\Game Studio\Id.cpp" />
+    <ClCompile Include="src\Game Studio\Cone.cpp" />
+    <ClCompile Include="src\Game Studio\ConeWithFallof.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

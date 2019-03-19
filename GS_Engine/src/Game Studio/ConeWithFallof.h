@@ -18,6 +18,8 @@ GS_STRUCT ConeWithFallof : public Cone
 	//Sets Extra Radius as NewExtraRadius.
 	void SetExtraRadius(const float NewExtraRadius);
 
+	float GetOuterConeInnerRadius() const;
+
 protected:
 	//Determines the extra radius on top of the original radius to determine the outer radius.
 	float ExtraRadius = 10.0f;

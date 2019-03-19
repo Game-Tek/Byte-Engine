@@ -212,12 +212,12 @@
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Cone.h" />
-    <ClInclude Include="src\Game Studio\ConeWithFallof.h" />
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\String.h">
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Id.h" />
+    <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -288,7 +288,7 @@
     <ClCompile Include="src\Game Studio\String.cpp" />
     <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
-    <ClCompile Include="src\Game Studio\ConeWithFallof.cpp" />
+    <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

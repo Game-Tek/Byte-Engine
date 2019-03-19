@@ -24,15 +24,11 @@ GS_STRUCT Cone
 
 protected:
 	//Specifies the radius of the cone.
-	float Radius = 0.0f;
+	float Radius = 100.0f;
 
 	//Specifies the length of the cone.
-	float Length = 0.0f;
+	float Length = 500.0f;
 };
-
-Cone::Cone(const float Radius, const float Length) : Radius(Radius), Length(Length)
-{
-}
 
 INLINE void Cone::SetRadius(const float NewRadius)
 {

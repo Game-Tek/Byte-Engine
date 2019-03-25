@@ -38,3 +38,15 @@ void FrameBuffer::AttachTexture(Texture * Texture)
 	
 	BoundTextures++;
 }
+
+Array<uint32, 5, uint8> FrameBuffer::GetActiveColorAttachments() const
+{
+	Array<uint32, 5, uint8> arr;
+
+	for (uint8 i = 0; i < BoundTextures; i++)
+	{
+		arr.PushBack(GL_COLOR_ATTACHMENT0 + i);
+	}
+
+	return arr;
+}

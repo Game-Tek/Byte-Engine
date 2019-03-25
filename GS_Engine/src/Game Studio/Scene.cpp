@@ -45,7 +45,7 @@ void Scene::UpdateViewMatrix()
 
 void Scene::UpdateProjectionMatrix()
 {
-	ProjectionMatrix = BuildPerspectiveMatrix(45.0f, 1280.0f / 720.0f, 0.1f, 500.0f);
+	ProjectionMatrix = BuildPerspectiveMatrix(GetActiveCamera()->GetFOV(), 1280.0f / 720.0f, 0.1f, 500.0f);
 
 	return;
 }

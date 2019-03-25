@@ -19,7 +19,6 @@ Window::Window(const uint16 WindowWidth, const uint16 WindowHeight, const char *
 	glfwMakeContextCurrent(GLWindow);											//Make the recently created window the current context.
 }
 
-
 Window::~Window()
 {
 	glfwTerminate();															//Tells GLFW to remove all of it's allocated resources.

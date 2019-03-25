@@ -5,12 +5,8 @@
 #include "Game Studio/Logger.h"
 #include "Game Studio/World.h"
 
-#include "Game Studio/EventDispatcher.h"
-
 Character::Character()
 {
-	//GS::Application::Get()->GetEventDispatcherInstance()->Subscribe(GS::Application::Get()->GetInputManagerInstance()->KeyPressedEventId, this, &Character::Move);
-
 	GetGameInstance()->GetWorld()->SetActiveCamera(&MyCamera);
 }
 
@@ -20,7 +16,7 @@ Character::~Character()
 
 void Character::OnUpdate()
 {
-	MyCamera.AddDeltaPosition(Vector3(0.0f, 0.0f, 1.0f));
+	MyCamera.AddDeltaPosition(Vector3(0.0f, 0.0001f, 1.0f));
 }
 
 void Character::Move(const KeyPressedEvent * Event)

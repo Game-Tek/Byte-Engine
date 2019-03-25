@@ -97,6 +97,9 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
+    <ClInclude Include="src\Game Studio\FrameBuffer.h" />
+    <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
@@ -126,7 +129,6 @@
     <ClInclude Include="src\Game Studio\Shader.h" />
     <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Program.h" />
-    <ClInclude Include="src\Game Studio\EventDispatcher.h" />
     <ClInclude Include="src\Game Studio\RendererObject.h" />
     <ClInclude Include="src\Game Studio\IBO.h" />
     <ClInclude Include="src\Game Studio\Clock.h" />
@@ -161,6 +163,9 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\FrameBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Id.cpp" />
@@ -176,7 +181,6 @@
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Shader.cpp" />
     <ClCompile Include="src\Game Studio\Program.cpp" />
-    <ClCompile Include="src\Game Studio\EventDispatcher.cpp" />
     <ClCompile Include="src\Game Studio\IBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application.cpp" />

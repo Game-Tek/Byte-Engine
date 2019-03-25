@@ -72,9 +72,6 @@
     <ClInclude Include="src\Game Studio\VBO.h">
       <Filter>Engine\Render\Buffers</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\EventDispatcher.h">
-      <Filter>Engine\Events</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\EngineSystem.h">
       <Filter>Engine</Filter>
     </ClInclude>
@@ -218,6 +215,9 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
+    <ClInclude Include="src\Game Studio\Light.h" />
+    <ClInclude Include="src\Game Studio\FrameBuffer.h" />
+    <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -225,9 +225,6 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\VBO.cpp">
       <Filter>Engine\Render\Buffers</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\EventDispatcher.cpp">
-      <Filter>Engine\Events</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\IBO.cpp">
       <Filter>Engine\Render\Buffers</Filter>
@@ -289,6 +286,9 @@
     <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
+    <ClCompile Include="src\Game Studio\Light.cpp" />
+    <ClCompile Include="src\Game Studio\FrameBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

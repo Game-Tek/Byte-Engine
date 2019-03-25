@@ -25,7 +25,7 @@ Mesh * StaticMeshResource::Load(const String & Path)
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices);
+	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices | aiProcess_GenSmoothNormals);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
@@ -100,12 +100,13 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 			Result.VertexArray[i].TextCoord.U = InMesh->mTextureCoords[0][i].x;
 			Result.VertexArray[i].TextCoord.V = InMesh->mTextureCoords[0][i].y;
 		}
-		/*
-		// Tangent
-		Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
-		Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
-		Result.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
 
+		// Tangent
+		//Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
+		//Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
+		//Result.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
+		
+		/*
 		// BiTangent
 		Result.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
 		Result.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;

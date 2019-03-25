@@ -9,10 +9,13 @@
 GS_CLASS Texture : public RendererObject
 {
 public:
+	Texture(const ImageSize & TextureSize);
 	Texture(const char * ImageFilePath);
 	~Texture();
 
 	void Bind() const override;
+	void UnBind() const override;
+
 	static void SetActiveTextureUnit(uint8 Index);
 protected:
 	ImageSize TextureDimensions;

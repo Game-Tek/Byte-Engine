@@ -12,10 +12,19 @@ uniform mat4 uView;
 uniform mat4 uModel;
 
 out vec2 tTextCoord;
+out vec3 tNormal;
+
+out vec3 FragPos;
+
+void SetPassthroughVariables()
+{
+	tTextCoord = inTextCoord;
+	tNormal = inNormal;
+}
 
 void main()
 {
    gl_Position = uProjection * uView * uModel * vec4(inPos, 1.0);
 
-   tTextCoord = inTextCoord;
+   FragPos = vec3(uModel * vec4(inPos, 1.0));
 }

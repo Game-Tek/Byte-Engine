@@ -49,6 +49,11 @@ void Texture::Bind() const
 	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, RendererObjectId));
 }
 
+void Texture::UnBind() const
+{
+	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
+}
+
 void Texture::SetActiveTextureUnit(uint8 Index)
 {
 	GS_GL_CALL(glActiveTexture(GL_TEXTURE0 + Index));

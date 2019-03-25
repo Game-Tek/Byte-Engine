@@ -2,8 +2,6 @@
 
 #include "Core.h"
 
-#include "Vertex.h"
-
 //Bind then buffer data.
 
 //			TERMINOLOGY
@@ -17,6 +15,7 @@ public:
 	virtual ~RendererObject() = default;
 
 	virtual void Bind() const {} ;
+	virtual void UnBind() const {};
 
 	uint32 GetId() const { return RendererObjectId; }
 

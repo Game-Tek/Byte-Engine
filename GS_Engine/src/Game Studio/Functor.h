@@ -4,21 +4,20 @@
 
 #include "Event.h"
 
-typedef void (*MemberFunctionPointer)(const Event * Ev);
-
+template<class C, typename ET>
 struct Functor
 {
-	Object * Obj = nullptr;
-	MemberFunctionPointer Fptr = nullptr;
+	C * Obj = nullptr;
+	void (C::*MFPTR)(const ET * Ev) = nullptr;
 	
 	Functor() = default;
 
-	Functor(Object * Obj, const MemberFunctionPointer Func) : Obj(Obj), Fptr(Func)
+	Functor(C * Obj, void (C::*MFPTR)(const ET * Ev)) : Obj(Obj), Fptr(MFPTR)
 	{
 	}
 
-	INLINE void operator()(const Event * Ev) const
+	INLINE void operator()(const ET * Ev) const
 	{
-		(*Fptr)(Ev);
+		((Obj)->*(MFPTR))(Ev);
 	}
 };

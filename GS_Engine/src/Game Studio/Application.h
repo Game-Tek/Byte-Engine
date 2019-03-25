@@ -5,7 +5,6 @@
 #include "Clock.h"
 #include "Window.h"
 #include "Renderer.h"
-#include "EventDispatcher.h"
 #include "InputManager.h"
 #include "ResourceManager.h"
 #include "GameInstance.h"
@@ -25,7 +24,6 @@ namespace GS
 		//TO-DO: CHECK CONST FOR POINTERS.
 
 		Renderer * GetRendererInstance() const { return RendererInstance; }
-		EventDispatcher * GetEventDispatcherInstance() const { return EventDispatcherInstance; }
 		ResourceManager * GetResourceManagerInstance() const { return ResourceManagerInstance; }
 		Clock * GetClockInstance() const { return ClockInstance; }
 		InputManager * GetInputManagerInstance() const { return InputManagerInstance; }
@@ -35,7 +33,6 @@ namespace GS
 		Clock * ClockInstance = nullptr;
 		Window * WindowInstance = nullptr;
 		Renderer * RendererInstance = nullptr;
-		EventDispatcher * EventDispatcherInstance = nullptr;
 		InputManager * InputManagerInstance = nullptr;
 		ResourceManager * ResourceManagerInstance = nullptr;
 		GameInstance * GameInstanceInstance = nullptr;

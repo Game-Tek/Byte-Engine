@@ -16,7 +16,7 @@ Character::~Character()
 
 void Character::OnUpdate()
 {
-	MyCamera.AddDeltaPosition(Vector3(0.0f, 0.0001f, 1.0f));
+	MyCamera.AddDeltaPosition(Vector3(0.0f, 0.0001f, -1.0f));
 }
 
 void Character::Move(const KeyPressedEvent * Event)

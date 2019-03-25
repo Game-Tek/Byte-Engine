@@ -9,7 +9,7 @@
 GS_CLASS Texture : public RendererObject
 {
 public:
-	Texture(const ImageSize & TextureSize);
+	Texture(const ImageSize & TextureSize, uint32 TextureColorComponents, uint32 PixelDataFormat, uint32 PixelDataType);
 	Texture(const char * ImageFilePath);
 	~Texture();
 

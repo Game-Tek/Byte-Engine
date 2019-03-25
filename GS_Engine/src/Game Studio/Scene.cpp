@@ -36,9 +36,9 @@ void Scene::UpdateViewMatrix()
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
 
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix[12] = -CamPos.X;
-	ViewMatrix[13] = -CamPos.Y;
-	ViewMatrix[14] = -CamPos.Z;
+	ViewMatrix[12] = CamPos.X;
+	ViewMatrix[13] = CamPos.Y;
+	ViewMatrix[14] = CamPos.Z;
 
 	return;
 }

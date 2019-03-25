@@ -106,6 +106,7 @@
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Octree.h" />
+    <ClInclude Include="src\Game Studio\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\GameInstance.h" />

@@ -17,5 +17,9 @@ public:
 
 	void AttachTexture(const Texture & Texture);
 	void AttachTexture(Texture * Texture);
+
+private:
+	//Keeps track of how many textures have been bound.
+	uint8 BoundTextures = 0;
 };
 

@@ -8,6 +8,8 @@
 
 #include "Scene.h"
 
+#include "GBufferPass.h"
+
 class IBO;
 class VAO;
 class Program;
@@ -27,6 +29,8 @@ protected:
 	void RenderFrame() const;
 
 	Scene ActiveScene;
+
+	GBufferPass * GBufferRenderPass;
 
 private:
 	uint32 DrawCalls = 0;

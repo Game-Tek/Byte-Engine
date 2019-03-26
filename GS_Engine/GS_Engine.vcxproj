@@ -207,12 +207,16 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
-    <None Include="src\Game Studio\FragmentShader.fshader" />
+    <None Include="src\Game Studio\GBufferFS.fshader" />
+    <None Include="src\Game Studio\LightingFS.fshader" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\Game Studio\VertexShader.vshader">
+    <None Include="src\Game Studio\GBufferVS.vshader">
       <FileType>Document</FileType>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="src\Game Studio\LightingVS.vshader" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

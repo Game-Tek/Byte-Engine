@@ -5,6 +5,8 @@
 
 #include "Texture.h"
 
+uint32 ACA[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+
 FrameBuffer::FrameBuffer()
 {
 	GS_GL_CALL(glGenFramebuffers(1, &RendererObjectId));
@@ -39,14 +41,7 @@ void FrameBuffer::AttachTexture(Texture * Texture)
 	BoundTextures++;
 }
 
-Array<uint32, 5, uint8> FrameBuffer::GetActiveColorAttachments() const
+uint32 * FrameBuffer::GetActiveColorAttachments() const
 {
-	Array<uint32, 5, uint8> arr;
-
-	for (uint8 i = 0; i < BoundTextures; i++)
-	{
-		arr.PushBack(GL_COLOR_ATTACHMENT0 + i);
-	}
-
-	return arr;
+	return ACA;
 }

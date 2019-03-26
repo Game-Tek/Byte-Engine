@@ -25,7 +25,7 @@ Mesh * StaticMeshResource::Load(const String & Path)
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices | aiProcess_GenSmoothNormals);
+	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{

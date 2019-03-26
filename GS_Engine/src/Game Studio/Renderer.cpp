@@ -18,8 +18,6 @@
 
 #include "WorldObject.h"
 
-Program * Prog;
-
 Uniform * Projection;
 Uniform * View;
 Uniform * Model;
@@ -37,16 +35,16 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
-	Prog = new Program("W:/Game Studio/GS_Engine/src/Game Studio/VertexShader.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/FragmentShader.fshader");
 
 	Projection = new Uniform(Prog, "uProjection");
 	View = new Uniform(Prog, "uView");
 	Model = new Uniform(Prog, "uModel");
+
+	GBufferRenderPass = new GBufferPass();
 }
 
 Renderer::~Renderer()
 {
-	delete Prog;
 	delete Projection;
 	delete View;
 	delete Model;
@@ -54,14 +52,7 @@ Renderer::~Renderer()
 
 void Renderer::RenderFrame() const
 {
-	//Loop through every object to render them.
-	for (uint32 i = 0; i < ActiveScene.RenderProxyList.length(); i++)
-	{
-		Model->Set(GSM::Translation(ActiveScene.RenderProxyList[i]->GetOwner()->GetPosition()));
-
-		//Draw the current object.
-		ActiveScene.RenderProxyList[i]->Draw();
-	}
+	GBufferRenderPass->SetAsActive();
 }
 
 void Renderer::OnUpdate()

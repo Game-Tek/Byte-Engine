@@ -4,8 +4,6 @@
 
 #include "RendererObject.h"
 
-#include "Array.hpp"
-
 class Texture;
 
 GS_CLASS FrameBuffer : public RendererObject
@@ -22,7 +20,7 @@ public:
 
 	uint8 GetNumberOfBoundTextures() const { return BoundTextures; }
 
-	Array<uint32, 5, uint8> GetActiveColorAttachments() const;
+	uint32 * GetActiveColorAttachments() const;
 
 private:
 	//Keeps track of how many textures have been bound.

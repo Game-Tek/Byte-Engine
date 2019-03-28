@@ -21,6 +21,7 @@ public:
 
 	void AddObject(RenderProxy * Object);
 	void AddLight(LightRenderProxy * Light);
+	void RemoveLight(LightRenderProxy * Light);
 	void RemoveObject(RenderProxy * Object);
 
 	//Returns a pointer to the active camera.
@@ -33,6 +34,7 @@ public:
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
 	FVector<RenderProxy *> RenderProxyList;
+	FVector<LightRenderProxy *> LightRenderProxyList;
 
 protected:
 	//Pointer to the active camera.

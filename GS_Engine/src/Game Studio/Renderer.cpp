@@ -6,7 +6,6 @@
 
 #include "IBO.h"
 #include "VAO.h"
-#include "Program.h"
 #include "Shader.h"
 #include "Uniform.h"
 
@@ -16,7 +15,8 @@
 
 #include "RenderProxy.h"
 
-#include "WorldObject.h"
+#include "GBufferPass.h"
+#include "LightingPass.h"
 
 Uniform * Projection;
 Uniform * View;
@@ -35,24 +35,16 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
-
-	Projection = new Uniform(Prog, "uProjection");
-	View = new Uniform(Prog, "uView");
-	Model = new Uniform(Prog, "uModel");
-
-	GBufferRenderPass = new GBufferPass();
+	GBufferRenderPass = new GBufferPass(this);
 }
 
 Renderer::~Renderer()
 {
-	delete Projection;
-	delete View;
-	delete Model;
 }
 
 void Renderer::RenderFrame() const
 {
-	GBufferRenderPass->SetAsActive();
+	GBufferRenderPass->Render();
 }
 
 void Renderer::OnUpdate()
@@ -61,9 +53,6 @@ void Renderer::OnUpdate()
 	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
 	ActiveScene.OnUpdate();
-
-	View->Set(*ActiveScene.GetViewMatrix());
-	Projection->Set(*ActiveScene.GetProjectionMatrix());
 
 	RenderFrame();
 

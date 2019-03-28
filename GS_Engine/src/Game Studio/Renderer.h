@@ -8,11 +8,12 @@
 
 #include "Scene.h"
 
-#include "GBufferPass.h"
-
 class IBO;
 class VAO;
 class Program;
+
+class GBufferPass;
+class LightingPass;
 
 GS_CLASS Renderer : public ESystem
 {
@@ -31,6 +32,7 @@ protected:
 	Scene ActiveScene;
 
 	GBufferPass * GBufferRenderPass;
+	LightingPass * LightingRenderPass;
 
 private:
 	uint32 DrawCalls = 0;

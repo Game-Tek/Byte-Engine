@@ -219,8 +219,9 @@
     <ClInclude Include="src\Game Studio\FrameBuffer.h" />
     <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
     <ClInclude Include="src\Game Studio\RenderPass.h" />
-    <ClInclude Include="src\Game Studio\GBufferPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
+    <ClInclude Include="src\Game Studio\LightRenderPass.h" />
+    <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -292,7 +293,8 @@
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\FrameBuffer.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
-    <ClCompile Include="src\Game Studio\GBufferPass.cpp" />
+    <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -1,8 +1,10 @@
-#version 330 core
+#version 410 core
 
-in vec2 inTexCoords;
+in vec2 tTexCoords;
 
 out vec4 FragColor;
+
+//GBuffer input uniform variables.
 
 uniform sampler2D uPosition;
 uniform sampler2D uNormal;
@@ -10,5 +12,5 @@ uniform sampler2D uAlbedo;
 
 void main()
 {             
-    FragColor = vec4(lighting, 1.0);
+    FragColor = texture(uPosition, tTexCoords);
 }

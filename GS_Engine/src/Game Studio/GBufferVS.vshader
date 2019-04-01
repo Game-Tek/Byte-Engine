@@ -1,5 +1,6 @@
 #version 410 core
 
+//Input Vertex Variables.
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
@@ -10,6 +11,8 @@ layout(location = 4) in vec3 inBiTangent;
 uniform mat4 uProjection;
 uniform mat4 uView;
 uniform mat4 uModel;
+
+//VertexShader out variables.
 
 out vec3 tViewFragPos;
 out vec2 tTextCoord;

@@ -17,6 +17,8 @@ public:
 	//
 	virtual void Render() = 0;
 
+	uint16 GetDrawCalls() const { return DrawCalls; }
+
 protected:
 	//
 	//Call to set all variables to prepare for rendering of this pass.
@@ -29,7 +31,3 @@ protected:
 
 	uint16 DrawCalls;
 };
-
-RenderPass::RenderPass(Renderer * RendererOwner) : RendererOwner(RendererOwner)
-{
-}

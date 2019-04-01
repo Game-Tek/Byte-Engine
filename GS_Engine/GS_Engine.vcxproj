@@ -97,6 +97,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
@@ -167,6 +168,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
@@ -178,6 +180,7 @@
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\RenderPass.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\GameInstance.cpp" />
@@ -218,7 +221,11 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="src\Game Studio\LightingVS.vshader" />
+    <None Include="src\Game Studio\LightingVS.vshader">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      </ExcludedFromBuild>
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

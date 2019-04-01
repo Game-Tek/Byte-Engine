@@ -15,8 +15,8 @@
 
 #include "RenderProxy.h"
 
-#include "GBufferPass.h"
-#include "LightingPass.h"
+#include "GBufferRenderPass.h"
+#include "LightRenderPass.h"
 
 Uniform * Projection;
 Uniform * View;
@@ -35,7 +35,8 @@ Renderer::Renderer(Window * WD) : WindowInstanceRef(WD)
 	//Set clear color.
 	GS_GL_CALL(glClearColor(0.5f, 0.5f, 0.5f, 1.0f));
 
-	GBufferRenderPass = new GBufferPass(this);
+	GBufferPass = new GBufferRenderPass(this);
+	LightingRenderPass = new LightRenderPass(this);
 }
 
 Renderer::~Renderer()
@@ -44,14 +45,12 @@ Renderer::~Renderer()
 
 void Renderer::RenderFrame() const
 {
-	GBufferRenderPass->Render();
+	GBufferPass->Render();
+	LightingRenderPass->Render();
 }
 
 void Renderer::OnUpdate()
 {
-	//Clear all buffers.
-	GS_GL_CALL(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
-
 	ActiveScene.OnUpdate();
 
 	RenderFrame();

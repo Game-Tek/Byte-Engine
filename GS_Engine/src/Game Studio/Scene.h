@@ -26,8 +26,8 @@ public:
 
 	//Returns a pointer to the active camera.
 	Camera * GetActiveCamera() const { return ActiveCamera; }
-	const Matrix4 * GetViewMatrix() const { return &ViewMatrix; }
-	const Matrix4 * GetProjectionMatrix() const { return &ProjectionMatrix; }
+	const Matrix4 & GetViewMatrix() const { return ViewMatrix; }
+	const Matrix4 & GetProjectionMatrix() const { return ProjectionMatrix; }
 	const Matrix4 * GetVPMatrix() const { return &VPMatrix; }
 
 	//Sets the active camera as the NewCamera.

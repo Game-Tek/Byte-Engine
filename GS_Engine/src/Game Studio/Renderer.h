@@ -12,8 +12,8 @@ class IBO;
 class VAO;
 class Program;
 
-class GBufferPass;
-class LightingPass;
+class GBufferRenderPass;
+class LightRenderPass;
 
 GS_CLASS Renderer : public ESystem
 {
@@ -25,14 +25,16 @@ public:
 
 	Scene * GetScene() { return &ActiveScene; }
 
+	GBufferRenderPass * GetGBufferPass() const { return GBufferPass; }
+
 protected:
 	//Renders a whole frame.
 	void RenderFrame() const;
 
 	Scene ActiveScene;
 
-	GBufferPass * GBufferRenderPass;
-	LightingPass * LightingRenderPass;
+	GBufferRenderPass * GBufferPass;
+	LightRenderPass * LightingRenderPass;
 
 private:
 	uint32 DrawCalls = 0;

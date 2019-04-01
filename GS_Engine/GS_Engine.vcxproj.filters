@@ -222,6 +222,7 @@
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
+    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -295,6 +296,8 @@
     <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\RenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
@@ -305,8 +308,6 @@
       <Filter>Engine\Render\Shaders\GLSL Code</Filter>
     </None>
     <None Include="src\Game Studio\LightingFS.fshader" />
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="src\Game Studio\LightingVS.vshader" />
+    <None Include="src\Game Studio\LightingVS.vshader" />
   </ItemGroup>
 </Project>

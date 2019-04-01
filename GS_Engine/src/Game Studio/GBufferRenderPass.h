@@ -18,6 +18,10 @@ public:
 
 	void Render() override;
 
+	const Texture & GetPositionTexture() const { return Position; }
+	const Texture & GetNormalTexture() const { return Normal; }
+	const Texture & GetAlbedoTexture() const { return Albedo; }
+
 protected:
 	void SetAsActive() const override;
 
@@ -26,6 +30,7 @@ private:
 
 	Uniform ViewMatrix;
 	Uniform ProjMatrix;
+	Uniform ModelMatrix;
 
 	FrameBuffer GBuffer;
 	

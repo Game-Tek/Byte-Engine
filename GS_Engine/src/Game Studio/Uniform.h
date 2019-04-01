@@ -16,6 +16,7 @@
 GS_CLASS Uniform : public RendererObject
 {
 public:
+	Uniform(const Program & Program, const char * UniformName);
 	Uniform(Program * Program, const char * UniformName);
 	~Uniform();
 
@@ -23,8 +24,9 @@ public:
 	void Set(const Vector2 & Other) const;
 	void Set(const Vector3 & Other) const;
 	void Set(const Vector4 & Other) const;
-	void Set(int Other) const;
+	void Set(int32 Other) const;
 	void Set(bool Other) const;
 	void Set(const Matrix4 & Other) const;
+	void Set(Matrix4 * Other) const;
 };
 

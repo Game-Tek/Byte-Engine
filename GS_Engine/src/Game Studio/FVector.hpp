@@ -66,7 +66,7 @@ public:
 
 	~FVector()
 	{
-		delete this->Data;
+		delete[] this->Data;
 	}
 
 	//Places the passed in element at the end of the array.

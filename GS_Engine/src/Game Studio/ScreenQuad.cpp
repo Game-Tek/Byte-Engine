@@ -1,4 +1,8 @@
 #include "ScreenQuad.h"
+
+#include "GL.h"
+#include "GLAD/glad.h"
+
 										//Position		   //UV		   //Position		  //UV		  //Position		  //UV		  //Position		 //UV
 float ScreenQuad::SquareVertexData[] = { 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, -1.0f, 0.0f, 1.0f, 0.0f, -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f };
 uint8 ScreenQuad::SquareIndexData[] = { 0, 1, 2, 2, 3, 0 };
@@ -12,4 +16,12 @@ ScreenQuad::ScreenQuad() : MeshRenderProxy(new VBO(SquareVertexData, sizeof(Squa
 
 ScreenQuad::~ScreenQuad()
 {
+}
+
+void ScreenQuad::Draw()
+{
+	IndexBuffer->Bind();
+	VertexArray->Bind();
+
+	GS_GL_CALL(glDrawElements(GL_TRIANGLES, IndexBuffer->GetCount(), GL_UNSIGNED_INT, nullptr));
 }

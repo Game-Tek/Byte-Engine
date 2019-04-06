@@ -12,12 +12,9 @@ in vec3 tViewFragPos;
 in vec2 tTextCoord;
 in vec3 tNormal;
 
-//Texture input.
-uniform sampler2D ourTexture;
-
 void main()
 {
    outPosition = tViewFragPos;
    outNormal = tNormal;
-   outAlbedo = vec3(0.2, 0.5, 0.6);
+   outAlbedo = vec3(0.8, 0.5, 0.2);
 }

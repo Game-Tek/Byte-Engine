@@ -7,11 +7,11 @@
 class Texture;
 struct ImageSize;
 
-GS_CLASS FrameBuffer : public RendererObject
+GS_CLASS FBO : public RendererObject
 {
 public:
-	explicit FrameBuffer(const uint8 NumberOfColorAttachments);
-	~FrameBuffer();
+	explicit FBO(const uint8 NumberOfColorAttachments);
+	~FBO();
 
 	//Sets this frame buffer as the currently bound frame buffer.
 	void Bind() const override;
@@ -22,10 +22,14 @@ public:
 	//Unbinds this frame buffer.
 	void UnBind() const override;
 
+	static void BindDefault();
+	static void BindDefaultForWrite();
+
 	//Clears the currently bound frame buffer.
 	static void Clear();
 	//Copies content from one frame buffer to the other.
-	static void CopyFrameBuffer(const ImageSize & Size);
+	static void CopyFBO(const ImageSize & Size);
+	static void CopyDepthFBOAttachment(const ImageSize & Size);
 
 	//Sets all of this frame buffer's color attachments as the bound draw targets.
 	void SetAsDrawBuffer() const;
@@ -39,6 +43,8 @@ public:
 	void AttachTexture(const Texture & Texture);
 	//Attaches a texture to one of this frame buffer's color attachments.
 	void AttachTexture(Texture * Texture);
+
+	void AttachDepthTexture(const Texture & Texture);
 
 	//Sets the bound frame buffer's Index color attachment as the currently bound read texture/target.
 	static void SetReadBuffer(const uint8 Index);

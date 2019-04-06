@@ -15,7 +15,6 @@ public:
 	LightRenderPass(Renderer * RendererOwner);
 	~LightRenderPass();
 
-	void SetAsActive() const override;
 	void Render() override;
 
 protected:
@@ -23,6 +22,10 @@ protected:
 
 	Uniform ViewMatrix;
 	Uniform ProjMatrix;
+
+	Uniform PositionTextureSampler;
+	Uniform NormalTextureSampler;
+	Uniform AlbedoTextureSampler;
 
 	ScreenQuad Quad;
 };

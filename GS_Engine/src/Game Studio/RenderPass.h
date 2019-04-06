@@ -20,13 +20,6 @@ public:
 	uint16 GetDrawCalls() const { return DrawCalls; }
 
 protected:
-	//
-	//Call to set all variables to prepare for rendering of this pass.
-	//
-	//Must be called before Render().
-	//
-	virtual void SetAsActive() const = 0;
-
 	Renderer * RendererOwner;
 
 	uint16 DrawCalls;

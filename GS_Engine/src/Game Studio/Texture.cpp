@@ -12,7 +12,7 @@ Texture::Texture(const char * ImageFilePath)
 {
 	GS_GL_CALL(glGenTextures(1, & RendererObjectId));								//Generate a buffer to store the texture.
 
-	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, RendererObjectId));						//Bind the texture so all following texture setup calls have effect on this texture.
+	Bind();																			//Bind the texture so all following texture setup calls have effect on this texture.
 
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT));		//Set texture wrapping method for the the S axis as GL_REPEAT.
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT));		//Set texture wrapping method for the the T axis as GL_REPEAT.
@@ -43,7 +43,7 @@ Texture::Texture(const ImageSize & TextureSize, uint32 TextureColorComponents, u
 {
 	GS_GL_CALL(glGenTextures(1, &RendererObjectId));								//Generate a buffer to store the texture.
 
-	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, RendererObjectId));						//Bind the texture so all following texture setup calls have effect on this texture.
+	Bind();																			//Bind the texture so all following texture setup calls have effect on this texture.
 	
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));	//Set texture minification filter as GL_LINEAR blend.
 	GS_GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));	//Set texture magnification filter as GL_LINEAR blend.
@@ -66,7 +66,7 @@ void Texture::UnBind() const
 	GS_GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
 }
 
-void Texture::SetActiveTextureUnit(uint8 Index)
+void Texture::SetActiveTextureUnit(const uint8 Index)
 {
-	GS_GL_CALL(glActiveTexture(GL_TEXTURE0 + Index));
+	GS_GL_CALL(glActiveTexture(GL_TEXTURE0 +  Index));
 }

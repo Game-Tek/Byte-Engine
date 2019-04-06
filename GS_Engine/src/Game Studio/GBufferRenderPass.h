@@ -7,7 +7,7 @@
 #include "Program.h"
 #include "Uniform.h"
 
-#include "FrameBuffer.h"
+#include "FBO.h"
 #include "Texture.h"
 
 GS_CLASS GBufferRenderPass : public RenderPass
@@ -22,8 +22,7 @@ public:
 	const Texture & GetNormalTexture() const { return Normal; }
 	const Texture & GetAlbedoTexture() const { return Albedo; }
 
-protected:
-	void SetAsActive() const override;
+	const FBO & GetGBuffer() const { return GBuffer; }
 
 private:
 	Program GBufferPassProgram;
@@ -32,10 +31,11 @@ private:
 	Uniform ProjMatrix;
 	Uniform ModelMatrix;
 
-	FrameBuffer GBuffer;
+	FBO GBuffer;
 	
 	Texture Position;
 	Texture Normal;
 	Texture Albedo;
+	Texture Depth;
 };
 

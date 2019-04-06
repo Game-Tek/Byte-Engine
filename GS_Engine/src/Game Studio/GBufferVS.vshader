@@ -29,5 +29,5 @@ void main()
 {
    gl_Position = uProjection * uView * uModel * vec4(inPos, 1.0);
 
-   tViewFragPos = vec3(uView * uModel * vec4(inPos, 1.0));
+   tViewFragPos = vec3(vec4(inPos, 1.0));
 }

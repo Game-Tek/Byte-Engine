@@ -216,13 +216,13 @@
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
-    <ClInclude Include="src\Game Studio\FrameBuffer.h" />
     <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
     <ClInclude Include="src\Game Studio\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
+    <ClInclude Include="src\Game Studio\FBO.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -292,12 +292,12 @@
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
-    <ClCompile Include="src\Game Studio\FrameBuffer.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RenderPass.cpp" />
     <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
+    <ClCompile Include="src\Game Studio\FBO.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

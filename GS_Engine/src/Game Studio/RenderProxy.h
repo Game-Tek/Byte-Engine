@@ -13,8 +13,8 @@ public:
 
 	virtual void Draw() {};
 
-	const WorldObject * GetOwner() const { return Owner; }
+	const WorldObject * GetOwner() const { return WorldObjectOwner; }
 
 protected:
-	WorldObject * Owner = nullptr;
+	WorldObject * WorldObjectOwner = nullptr;
 };

@@ -10,6 +10,7 @@
 
 class StaticMesh;
 class Camera;
+class PointLight;
 
 GS_CLASS World : public Object
 {
@@ -21,6 +22,7 @@ public:
 
 	void SpawnObject(WorldObject * NewObject, const Vector3 & Position);
 	void SpawnObject(StaticMesh * NewStaticMesh, const Vector3 & Position);
+	void SpawnObject(PointLight * NewStaticMesh, const Vector3 & Position);
 
 	void SetActiveCamera(Camera * Camera) const;
 

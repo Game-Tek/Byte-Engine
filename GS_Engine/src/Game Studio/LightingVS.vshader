@@ -5,6 +5,7 @@ layout(location = 1) in vec2 inTexCoords;
 
 out vec2 tTexCoords;
 
+uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
 

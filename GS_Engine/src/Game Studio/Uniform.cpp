@@ -1,5 +1,11 @@
 #include "Uniform.h"
 
+#include "GL.h"
+
+#include <GLAD/glad.h>
+
+#include "Program.h"
+
 Uniform::Uniform(const Program & Program, const char * UniformName)
 {
 	GS_GL_CALL(RendererObjectId = glGetUniformLocation(Program.GetId(), UniformName));
@@ -12,6 +18,11 @@ Uniform::Uniform(Program * Program, const char * UniformName)
 
 Uniform::~Uniform()
 {
+}
+
+void Uniform::Setup(Program * Program, const char * UniformName)
+{
+	GS_GL_CALL(RendererObjectId = glGetUniformLocation(Program->GetId(), UniformName));
 }
 
 void Uniform::Set(float Other) const

@@ -14,7 +14,7 @@
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{3086AB51-E516-40F6-A741-5BD94F6BA720}</ProjectGuid>
     <RootNamespace>GSEngine</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <ProjectName>
     </ProjectName>
   </PropertyGroup>
@@ -22,13 +22,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -97,11 +97,15 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\PointLightProgram.h" />
+    <ClInclude Include="src\Game Studio\GBufferProgram.h" />
+    <ClInclude Include="src\Game Studio\LightingProgram.h" />
+    <ClInclude Include="src\Game Studio\PointLight.h" />
+    <ClInclude Include="src\Game Studio\PointLightRenderProxy.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
-    <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
     <ClInclude Include="src\Game Studio\FBO.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Id.h" />
@@ -168,10 +172,14 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\PointLightProgram.cpp" />
+    <ClCompile Include="src\Game Studio\GBufferProgram.cpp" />
+    <ClCompile Include="src\Game Studio\LightingProgram.cpp" />
+    <ClCompile Include="src\Game Studio\PointLight.cpp" />
+    <ClCompile Include="src\Game Studio\PointLightRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\FBO.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
@@ -214,6 +222,7 @@
     <None Include="cpp.hint" />
     <None Include="src\Game Studio\GBufferFS.fshader" />
     <None Include="src\Game Studio\LightingFS.fshader" />
+    <None Include="src\Game Studio\PointLight.fshader" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\Game Studio\GBufferVS.vshader">
@@ -224,6 +233,11 @@
     <None Include="src\Game Studio\LightingVS.vshader">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
       </ExcludedFromBuild>
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\Game Studio\PointLight.vshader">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

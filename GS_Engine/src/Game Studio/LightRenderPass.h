@@ -4,7 +4,8 @@
 
 #include "RenderPass.h"
 
-#include "Program.h"
+#include "LightingProgram.h"
+#include "PointLightProgram.h"
 
 #include "Uniform.h"
 #include "ScreenQuad.h"
@@ -18,14 +19,9 @@ public:
 	void Render() override;
 
 protected:
-	Program LightingPassProgram;
+	LightingProgram LightingPassProgram;
 
-	Uniform ViewMatrix;
-	Uniform ProjMatrix;
-
-	Uniform PositionTextureSampler;
-	Uniform NormalTextureSampler;
-	Uniform AlbedoTextureSampler;
+	PointLightProgram PointLightProg;
 
 	ScreenQuad Quad;
 };

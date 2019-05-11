@@ -16,7 +16,7 @@ public:
 	void Bind() const override;
 	void UnBind() const override;
 
-	static void SetActiveTextureUnit(uint8 Index);
+	static void SetTargetTextureUnit(uint8 Index);
 protected:
 	ImageSize TextureDimensions;
 };

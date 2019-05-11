@@ -2,6 +2,7 @@
 #include "Application.h"
 
 #include "StaticMesh.h"
+#include "PointLight.h"
 
 World::World() : EntityList(10)
 {
@@ -31,6 +32,16 @@ void World::SpawnObject(StaticMesh * NewStaticMesh, const Vector3 & Position)
 	EntityList.push_back(reinterpret_cast<WorldObject *>(NewStaticMesh));
 
 	GS::Application::Get()->GetRendererInstance()->GetScene()->AddObject(NewStaticMesh->GetRenderProxy());
+}
+
+void World::SpawnObject(PointLight * NewPointLight, const Vector3 & Position)
+{
+	//Set position.
+	NewPointLight->SetPosition(Position);
+	//Add it to the entity list array.
+	EntityList.push_back(reinterpret_cast<WorldObject *>(NewPointLight));
+
+	GS::Application::Get()->GetRendererInstance()->GetScene()->AddLight((PointLightRenderProxy *)NewPointLight->GetRenderProxy());
 }
 
 void World::SetActiveCamera(Camera * Camera) const

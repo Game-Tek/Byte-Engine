@@ -4,7 +4,7 @@
 
 #include "RendererObject.h"
 
-#include "Matrix4.h"
+#include "Uniform.h"
 
 GS_CLASS Program : public RendererObject
 {
@@ -13,4 +13,8 @@ public:
 	~Program();
 
 	void Bind() const override;
+
+	Uniform ModelMatrix;
+	Uniform ViewMatrix;
+	Uniform ProjectionMatrix;
 };

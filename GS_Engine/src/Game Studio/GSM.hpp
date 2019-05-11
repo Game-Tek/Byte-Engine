@@ -13,25 +13,26 @@ GS_CLASS GSM
 {
 private:
 	static constexpr float SinTable[] = {	0.00000,
-	0.01745, 0.03490, 0.05234, 0.06976, 0.08716, 0.10453, 0.12187, 0.13917, 0.15643, 0.17365,
-	0.19081, 0.20791, 0.22495, 0.24192, 0.25882, 0.27564, 0.29237, 0.30902, 0.32557, 0.34202,
-	0.35837, 0.37461, 0.39073, 0.40674, 0.42262, 0.43837, 0.45399, 0.46947, 0.48481, 0.5,
-	0.51504, 0.52992, 0.54464, 0.55919, 0.57358, 0.58779, 0.60182, 0.61566, 0.62932, 0.64279,
-	0.65606, 0.66913, 0.68200, 0.69466, 0.70711, 0.71934, 0.73135, 0.74314, 0.75471, 0.76604,
-	0.77715, 0.78801, 0.79864, 0.80902, 0.81915, 0.82904, 0.83867, 0.84805, 0.85717, 0.86603,
-	0.87462, 0.88295, 0.89101, 0.89879, 0.90631, 0.91355, 0.92050, 0.92718, 0.93358, 0.93969,
-	0.94552, 0.95106, 0.95630, 0.96126, 0.96593, 0.97030, 0.97437, 0.97815, 0.98163, 0.98481,
-	0.98769, 0.99027, 0.99255, 0.99452, 0.99619, 0.99756, 0.99863, 0.99939, 0.99985, 1.00000,
-	0.99985, 0.99939, 0.99863, 0.99756, 0.99619, 0.99452, 0.99255, 0.99027, 0.98769, 0.98481,
-	0.98163, 0.97815, 0.97437, 0.97030, 0.96593, 0.96126, 0.95630, 0.95106, 0.94552, 0.93969,
-	0.93358, 0.92718, 0.92050, 0.91355, 0.90631, 0.89879, 0.89101, 0.88295, 0.87462, 0.86603,
-	0.85717, 0.84805, 0.83867, 0.82904, 0.81915, 0.80902, 0.79864, 0.78801, 0.77715, 0.76604,
-	0.75471, 0.74314, 0.73135, 0.71934, 0.70711, 0.69466, 0.68200, 0.66913, 0.65606, 0.64279,
-	0.62932, 0.61566, 0.60182, 0.58779, 0.57358, 0.55919, 0.54464, 0.52992, 0.51504, 0.50000,
-	0.48481, 0.46947, 0.45399, 0.43837, 0.42262, 0.40674, 0.39073, 0.37461, 0.35837, 0.34202,
-	0.32557, 0.30902, 0.29237, 0.27564, 0.25882, 0.24192, 0.22495, 0.20791, 0.19081, 0.17365,
-	0.15643, 0.13917, 0.12187, 0.10453, 0.08716, 0.06976, 0.05234, 0.03490, 0.01745, };
+	0.01745241, 0.0348995,  0.05233596, 0.06975647, 0.08715574, 0.10452846, 0.12186934, 0.1391731,  0.15643447, 0.17364818,
+	0.190809,   0.20791169, 0.22495105, 0.2419219,  0.25881905, 0.27563736, 0.2923717,  0.30901699, 0.32556815, 0.34202014,
+	0.35836795, 0.37460659, 0.39073113, 0.40673664, 0.42261826, 0.43837115, 0.4539905,  0.46947156, 0.48480962, 0.5,
+	0.51503807, 0.52991926, 0.54463904, 0.5591929,  0.57357644, 0.58778525, 0.60181502, 0.61566148, 0.62932039, 0.64278761,
+	0.65605903, 0.66913061, 0.68199836, 0.69465837, 0.70710678, 0.7193398,  0.7313537,  0.74314483, 0.75470958, 0.76604444,
+	0.77714596, 0.78801075, 0.79863551, 0.80901699, 0.81915204, 0.82903757, 0.83867057, 0.8480481,  0.8571673,  0.8660254,
+	0.87461971, 0.88294759, 0.89100652, 0.89879405, 0.90630779, 0.91354546, 0.92050485, 0.92718385, 0.93358043, 0.93969262,
+	0.94551858, 0.95105652, 0.95630476, 0.9612617,  0.96592583, 0.97029573, 0.97437006, 0.9781476,  0.98162718, 0.98480775,
+	0.98768834, 0.99026807, 0.99254615, 0.9945219,  0.9961947,  0.99756405, 0.99862953, 0.99939083, 0.9998477,  1.00000,
+	0.9998477,  0.99939083, 0.99862953, 0.99756405, 0.9961947,  0.9945219,  0.99254615, 0.99026807, 0.98768834, 0.98480775,
+	0.98162718, 0.9781476,  0.97437006, 0.97029573, 0.96592583, 0.9612617,  0.95630476, 0.95105652, 0.94551858, 0.93969262,
+	0.93358043, 0.92718385, 0.92050485, 0.91354546, 0.90630779, 0.89879405, 0.89100652, 0.88294759, 0.87461971, 0.8660254,
+	0.8571673,  0.8480481,  0.83867057, 0.82903757, 0.81915204, 0.80901699, 0.79863551, 0.78801075, 0.77714596, 0.76604444,
+	0.75470958, 0.74314483, 0.7313537,  0.7193398,  0.70710678, 0.69465837, 0.68199836, 0.66913061, 0.65605903, 0.64278761,
+	0.62932039, 0.61566148, 0.60181502, 0.58778525, 0.57357644, 0.5591929,  0.54463904, 0.52991926, 0.51503807, 0.5,
+	0.48480962, 0.46947156, 0.4539905,  0.43837115, 0.42261826, 0.40673664, 0.39073113, 0.37460659, 0.35836795, 0.34202014,
+	0.32556815, 0.30901699, 0.2923717,  0.27563736, 0.25881905, 0.2419219,  0.22495105, 0.20791169, 0.190809,   0.17364818,
+	0.15643447, 0.1391731,  0.12186934, 0.10452846, 0.08715574, 0.06975647, 0.05233596, 0.0348995,  0.01745241, };
 
+	//Increments by 1
 	static constexpr float TanTable[] = {  0.00000,
 	0.01745506492, 0.03492076949, 0.05240777928, 0.06992681194, 0.08748866352,
 	0.10510423526, 0.1227845609,  0.1405408347,  0.15838444032, 0.1763269807,
@@ -52,6 +53,7 @@ private:
 	6.31375151468, 6.31375151468, 8.14434642797, 9.51436445422, 11.4300523028,
 	14.3006662567, 19.0811366877, 28.6362532829, 57.2899616308, 1000.00000 };
 
+	//Increments by 0.05
 	static constexpr float ArcSinTable[] = {
 	0.00000,
 	2.86598398, 5.73917048,  8.62692656,  11.53695903, 14.47751219, 17.45760312, 20.48731511, 23.57817848, 26.74368395, 30.00000,
@@ -59,6 +61,7 @@ private:
 	90.00000,
 	};
 
+	//Increments by 0.1
 	static constexpr float AtanTable[] = {
 
 	0.00000,
@@ -90,52 +93,60 @@ private:
 
 	INLINE static float Sin(const float Degrees)
 	{
-		int a = Floor(Degrees);
-		int b = a + 1;
+		const uint8 a = Floor(Degrees);
 
-		return Lerp(SinTable[a], SinTable[b], Degrees - a);
+		return Lerp(SinTable[a], SinTable[a + 1], Degrees - a);
 	}
 
 	INLINE static float Tan(const float Degrees)
 	{
-		int a = Floor(Degrees);
-		int b = a + 1;
+		const uint8 a = Floor(Degrees);
 
-		return Lerp(TanTable[a], TanTable[b], Degrees - a);
+		return Lerp(TanTable[a], TanTable[a + 1], Degrees - a);
 	}
 
 	INLINE static float ASin(float Degrees)
 	{
 		Degrees *= 20.0f;
 
-		int a = Floor(Degrees);
-		int b = a + 1;
+		const uint8 a = Floor(Degrees);
 
-		return Lerp(ArcSinTable[a], ArcSinTable[b], Degrees - a);
+		return Lerp(ArcSinTable[a], ArcSinTable[a + 1], Degrees - a);
+	}
+
+	INLINE static float ACos(float Degrees)
+	{
+		Degrees *= 20.0f;
+
+		const uint8 a = Floor(Degrees);
+
+		return Lerp(ArcSinTable[a], ArcSinTable[a + 1], Degrees - a);
 	}
 
 	INLINE static float ATan(float Degrees)
 	{
 		Degrees *= 10.0f;
 
-		int a = Floor(Degrees);
-		int b = a + 1;
+		const uint8 a = Floor(Degrees);
 
-		return Lerp(AtanTable[a], AtanTable[b], Degrees - a);
+		return Lerp(AtanTable[a], AtanTable[a + 1], Degrees - a);
 	}
 
-	INLINE static float StraightRaise(float A, uint8 Times)
+	INLINE static float StraightRaise(const float A, const uint8 Times)
 	{
+		float Result = A;
+
 		for (uint8 i = 0; i < Times - 1; i++)
 		{
-			A *= A;
+			Result *= A;
 		}
 
-		return A;
+		return Result;
 	}
 
 public:
-	constexpr static float PI = 3.1415926535f;
+	static constexpr float PI = 3.1415926535f;
+	static constexpr float e = 2.718281828459045235360;
 
 	//INLINE STATIC	
 
@@ -175,9 +186,16 @@ public:
 		return Base * Power(Base, Exp - 1);
 	}
 
-	INLINE static int32 Fact(const int32 A)
+	INLINE static uint32 Fact(const int8 A)
 	{
-		return A <= 0 ? 1 : A * Fact(A - 1);
+		uint8 Result = 1;
+
+		for (uint8 i = 1; i < A + 1; i++)
+		{
+			Result *= (i + 1);
+		}
+
+		return Result;
 	}
 
 	//Returns the sine of an angle.
@@ -185,7 +203,7 @@ public:
 	{
 		float abs = Abs(Degrees);
 
-		float Result;
+		float Result = 0.0f;
 
 		if (Modulo(abs, 360.0f) > 180.0f)
 		{
@@ -231,6 +249,18 @@ public:
 		}
 	}
 
+	INLINE static float ArcCosine(const float A)
+	{
+		if (A > 0.0f)
+		{
+			return 90.0f - ASin(1.0f - A);
+		}
+		else
+		{
+			return 90.0f + ASin(Abs(A));
+		}
+	}
+
 	//Returns the arctangent of the number. MUST BE BETWEEN 0 AND 12.
 	INLINE static float ArcTangent(const float A)
 	{
@@ -244,11 +274,16 @@ public:
 		}
 	}
 
+	INLINE static float ArcTan2(const float X, const float Y)
+	{
+		return ArcTangent(Y / X);
+	}
+
 	INLINE static float Power(const float A, const float Times)
 	{
 		const float Timesplus = StraightRaise(A, Floor(Times));
 
-		return Lerp(Timesplus, Timesplus * Timesplus, Times - Floor(Times));
+		return Lerp(Timesplus, Timesplus * Times, Times - Floor(Times));
 	}
 
 	//////////////////////////////////////////////////////////////
@@ -256,7 +291,7 @@ public:
 	//////////////////////////////////////////////////////////////
 
 		//Returns 1 if A is bigger than 0, 0 if A is equal to 0, and -1 if A is less than 0.
-	INLINE static int32 Sign(const int32 A)
+	INLINE static int8 Sign(const int32 A)
 	{
 		if (A > 0)
 		{
@@ -315,13 +350,15 @@ public:
 	{
 		//https://www.geeksforgeeks.org/square-root-of-a-perfect-square/
 		float X = A;
-		float Y = 1;
+		float Y = 1.0f;
 		float e = 0.000001f; /*e determines the level of accuracy*/
+		
 		while (X - Y > e)
 		{
-			X = (X + Y) / 2;
+			X = (X + Y) / 2.0f;
 			Y = A / X;
 		}
+
 		return X;
 	}
 
@@ -372,7 +409,7 @@ public:
 		return Degrees * PI / 180;
 	}
 
-	INLINE static float RadiansToDegrees(float Radians)
+	INLINE static float RadiansToDegrees(const float Radians)
 	{
 		return Radians * 180 / PI;
 	}
@@ -686,6 +723,26 @@ public:
 		Result[8] = A.X * A.Z * omc + A.Y * sin;
 		Result[9] = A.Y * A.Z * omc - A.X * sin;
 		Result[10] = A.Z * omc + cos;
+
+		return Result;
+	}
+
+	INLINE static void Scale(Matrix4 & A, const Vector3 & B)
+	{
+		A[0] = B.X;
+		A[5] = B.Y;
+		A[10] = B.Z;
+
+		return;
+	}
+
+	INLINE static Matrix4 Scaling(const Vector3 & A)
+	{
+		Matrix4 Result;
+
+		Result[0] = A.X;
+		Result[5] = A.Y;
+		Result[10] = A.Z;
 
 		return Result;
 	}

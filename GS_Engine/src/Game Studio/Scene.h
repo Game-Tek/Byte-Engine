@@ -8,7 +8,7 @@
 
 class StaticMesh;
 class RenderProxy;
-class LightRenderProxy;
+class PointLightRenderProxy;
 
 //Stores all the data necessary for the renderer to work. It's the renderers representation of the game world.
 GS_CLASS Scene : public ESystem
@@ -20,8 +20,8 @@ public:
 	virtual void OnUpdate() override;
 
 	void AddObject(RenderProxy * Object);
-	void AddLight(LightRenderProxy * Light);
-	void RemoveLight(LightRenderProxy * Light);
+	void AddLight(PointLightRenderProxy * Light);
+	void RemoveLight(PointLightRenderProxy * Light);
 	void RemoveObject(RenderProxy * Object);
 
 	//Returns a pointer to the active camera.
@@ -34,7 +34,7 @@ public:
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
 	FVector<RenderProxy *> RenderProxyList;
-	FVector<LightRenderProxy *> LightRenderProxyList;
+	FVector<PointLightRenderProxy *> PointLightRenderProxyList;
 
 protected:
 	//Pointer to the active camera.

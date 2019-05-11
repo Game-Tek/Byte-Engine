@@ -4,9 +4,13 @@
 #include "GBufferRenderPass.h"
 #include "Renderer.h"
 
-#include "LightRenderProxy.h"
+#include "GSM.hpp"
 
-LightRenderPass::LightRenderPass(Renderer * RendererOwner) : RenderPass(RendererOwner), LightingPassProgram("W:/Game Studio/GS_Engine/src/Game Studio/LightingVS.vshader", "W:/Game Studio/GS_Engine/src/Game Studio/LightingFS.fshader"), ViewMatrix(LightingPassProgram, "uView"), ProjMatrix(LightingPassProgram, "uProjection"), PositionTextureSampler(LightingPassProgram, "uPosition"), NormalTextureSampler(LightingPassProgram, "uNormal"), AlbedoTextureSampler(LightingPassProgram, "uAlbedo")
+#include "PointLightRenderProxy.h"
+
+#include "WorldObject.h"
+
+LightRenderPass::LightRenderPass(Renderer * RendererOwner) : RenderPass(RendererOwner), LightingPassProgram()
 {
 }
 
@@ -20,27 +24,41 @@ void LightRenderPass::Render()
 
 	FBO::Clear();
 
+	PointLightProg.Bind();
+
+	PointLightProg.ViewMatrix.Set(RendererOwner->GetScene()->GetViewMatrix());
+	PointLightProg.ProjectionMatrix.Set(RendererOwner->GetScene()->GetProjectionMatrix());
+
+	Texture::SetTargetTextureUnit(0);
+	RendererOwner->GetGBufferPass()->GetPositionTexture().Bind();
+
+	/*
+	for (size_t i = 0; i < RendererOwner->GetScene()->PointLightRenderProxyList.length(); i++)
+	{
+		PointLightProg.ModelMatrix.Set(GSM::Translation(RendererOwner->GetScene()->RenderProxyList[i]->GetOwner()->GetPosition()));
+
+		RendererOwner->GetScene()->PointLightRenderProxyList[i]->Draw();
+	}
+	*/
+
+
 	LightingPassProgram.Bind();
 
-	Texture::SetActiveTextureUnit(0);
+	Texture::SetTargetTextureUnit(0);
 	RendererOwner->GetGBufferPass()->GetPositionTexture().Bind();
-	PositionTextureSampler.Set(0);
-	Texture::SetActiveTextureUnit(1);
+	LightingPassProgram.AlbedoTextureSampler.Set(0);
+
+	Texture::SetTargetTextureUnit(1);
 	RendererOwner->GetGBufferPass()->GetNormalTexture().Bind();
-	NormalTextureSampler.Set(1);
-	Texture::SetActiveTextureUnit(2);
+	LightingPassProgram.NormalTextureSampler.Set(1);
+
+	Texture::SetTargetTextureUnit(2);
 	RendererOwner->GetGBufferPass()->GetAlbedoTexture().Bind();
-	AlbedoTextureSampler.Set(2);
+	LightingPassProgram.AlbedoTextureSampler.Set(2);
 
-	DrawCalls = RendererOwner->GetScene()->LightRenderProxyList.length();
 
-	ViewMatrix.Set(RendererOwner->GetScene()->GetViewMatrix());
-	ProjMatrix.Set(RendererOwner->GetScene()->GetProjectionMatrix());
-
-	//for (size_t i = 0; i < DrawCalls; i++)
-	//{
-	//	RendererOwner->GetScene()->LightRenderProxyList[i]->Draw();
-	//}
+	LightingPassProgram.ViewMatrix.Set(RendererOwner->GetScene()->GetViewMatrix());
+	LightingPassProgram.ProjectionMatrix.Set(RendererOwner->GetScene()->GetProjectionMatrix());
 
 	Quad.Draw();
 

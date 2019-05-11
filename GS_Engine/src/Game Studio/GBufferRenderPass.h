@@ -4,7 +4,7 @@
 
 #include "RenderPass.h"
 
-#include "Program.h"
+#include "GBufferProgram.h"
 #include "Uniform.h"
 
 #include "FBO.h"
@@ -25,11 +25,7 @@ public:
 	const FBO & GetGBuffer() const { return GBuffer; }
 
 private:
-	Program GBufferPassProgram;
-
-	Uniform ViewMatrix;
-	Uniform ProjMatrix;
-	Uniform ModelMatrix;
+	GBufferProgram GBufferPassProgram;
 
 	FBO GBuffer;
 	

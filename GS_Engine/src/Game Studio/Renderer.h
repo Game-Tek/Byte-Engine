@@ -23,7 +23,7 @@ public:
 
 	void OnUpdate() override;
 
-	Scene * GetScene() { return &ActiveScene; }
+	const Scene & GetScene() const { return ActiveScene; }
 
 	GBufferRenderPass * GetGBufferPass() const { return GBufferPass; }
 
@@ -38,7 +38,5 @@ protected:
 
 private:
 	uint32 DrawCalls = 0;
-
-	Window * WindowInstanceRef;
 };
 

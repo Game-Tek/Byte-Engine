@@ -2,8 +2,6 @@
 
 #include "Logger.h"
 
-#include "Windows.h"
-
 GS::Application * GS::Application::ApplicationInstance;
 
 namespace GS

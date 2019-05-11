@@ -216,13 +216,17 @@
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
-    <ClInclude Include="src\Game Studio\LightRenderProxy.h" />
     <ClInclude Include="src\Game Studio\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\FBO.h" />
+    <ClInclude Include="src\Game Studio\PointLight.h" />
+    <ClInclude Include="src\Game Studio\PointLightRenderProxy.h" />
+    <ClInclude Include="src\Game Studio\LightingProgram.h" />
+    <ClInclude Include="src\Game Studio\GBufferProgram.h" />
+    <ClInclude Include="src\Game Studio\PointLightProgram.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\VAO.cpp">
@@ -292,12 +296,16 @@
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
-    <ClCompile Include="src\Game Studio\LightRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RenderPass.cpp" />
     <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
     <ClCompile Include="src\Game Studio\FBO.cpp" />
+    <ClCompile Include="src\Game Studio\PointLight.cpp" />
+    <ClCompile Include="src\Game Studio\PointLightRenderProxy.cpp" />
+    <ClCompile Include="src\Game Studio\LightingProgram.cpp" />
+    <ClCompile Include="src\Game Studio\GBufferProgram.cpp" />
+    <ClCompile Include="src\Game Studio\PointLightProgram.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
@@ -309,5 +317,7 @@
     </None>
     <None Include="src\Game Studio\LightingFS.fshader" />
     <None Include="src\Game Studio\LightingVS.vshader" />
+    <None Include="src\Game Studio\PointLight.fshader" />
+    <None Include="src\Game Studio\PointLight.vshader" />
   </ItemGroup>
 </Project>

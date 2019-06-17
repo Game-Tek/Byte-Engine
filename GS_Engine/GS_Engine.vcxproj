@@ -48,7 +48,7 @@
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
     <IncludePath>$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+    <LibraryPath>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
@@ -68,8 +68,8 @@
       <ShowIncludes>false</ShowIncludes>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy "$(SolutionDir)bin\$(ProjectName)\Debug-x64\GS_Engine.dll" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
@@ -97,28 +97,18 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\PointLightProgram.h" />
-    <ClInclude Include="src\Game Studio\GBufferProgram.h" />
-    <ClInclude Include="src\Game Studio\LightingProgram.h" />
+    <ClInclude Include="src\Game Studio\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
-    <ClInclude Include="src\Game Studio\PointLightRenderProxy.h" />
-    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
-    <ClInclude Include="src\Game Studio\LightRenderPass.h" />
     <ClInclude Include="src\Game Studio\Array.hpp" />
-    <ClInclude Include="src\Game Studio\GBufferRenderPass.h" />
-    <ClInclude Include="src\Game Studio\FBO.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
-    <ClInclude Include="src\Game Studio\MeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\Octree.h" />
-    <ClInclude Include="src\Game Studio\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\GameInstance.h" />
-    <ClInclude Include="src\Game Studio\RenderProxy.h" />
     <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
@@ -135,11 +125,7 @@
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
     <ClInclude Include="src\Game Studio\Event.h" />
-    <ClInclude Include="src\Game Studio\Shader.h" />
     <ClInclude Include="src\Game Studio\Logger.h" />
-    <ClInclude Include="src\Game Studio\Program.h" />
-    <ClInclude Include="src\Game Studio\RendererObject.h" />
-    <ClInclude Include="src\Game Studio\IBO.h" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
     <ClInclude Include="src\Game Studio\EntryPoint.h" />
@@ -150,11 +136,10 @@
     <ClInclude Include="src\Game Studio\Renderer.h" />
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
+    <ClInclude Include="src\Game Studio\VulkanDevice.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.h" />
     <ClInclude Include="src\GameStudio.h" />
-    <ClInclude Include="src\Game Studio\VAO.h" />
-    <ClInclude Include="src\Game Studio\VBO.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
     <ClInclude Include="src\Game Studio\Vector2.h" />
     <ClInclude Include="src\Game Studio\WorldObject.h" />
@@ -166,39 +151,23 @@
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
-    <ClInclude Include="src\Game Studio\Uniform.h" />
     <ClInclude Include="src\Game Studio\World.h" />
-    <ClInclude Include="src\Game Studio\StaticMeshRenderProxy.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\PointLightProgram.cpp" />
-    <ClCompile Include="src\Game Studio\GBufferProgram.cpp" />
-    <ClCompile Include="src\Game Studio\LightingProgram.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
-    <ClCompile Include="src\Game Studio\PointLightRenderProxy.cpp" />
-    <ClCompile Include="src\Game Studio\ScreenQuad.cpp" />
-    <ClCompile Include="src\Game Studio\LightRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\GBufferRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\FBO.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
-    <ClCompile Include="src\Game Studio\MeshRenderProxy.cpp" />
-    <ClCompile Include="src\Game Studio\RenderPass.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\GameInstance.cpp" />
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
-    <ClCompile Include="src\Game Studio\RenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
-    <ClCompile Include="src\Game Studio\Shader.cpp" />
-    <ClCompile Include="src\Game Studio\Program.cpp" />
-    <ClCompile Include="src\Game Studio\IBO.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application.cpp" />
     <ClCompile Include="src\Game Studio\Renderer.cpp" />
@@ -206,12 +175,7 @@
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\String.cpp" />
     <ClCompile Include="src\Game Studio\Window.cpp" />
-    <ClCompile Include="src\Game Studio\VAO.cpp" />
-    <ClCompile Include="src\Game Studio\VBO.cpp" />
-    <ClCompile Include="src\Game Studio\Texture.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
-    <ClCompile Include="src\Game Studio\Uniform.cpp" />
-    <ClCompile Include="src\Game Studio\StaticMeshRenderProxy.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />

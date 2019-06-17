@@ -4,33 +4,25 @@
 
 #include "EngineSystem.h"
 
-struct ImageSize;
-struct GLFWwindow;
+#include "ImageSize.h"
 
 GS_CLASS Window : public ESystem
 {
 public:
-	Window(uint16 WindowWidth, uint16 WindowHeight, const char * WindowName);
+	Window(const ImageSize& _WindowSize, const char * WindowName);
 	~Window();
 
 	void OnUpdate() override;
 
-	//Enable or disable V-Sync.
-	void SetVsync(const bool Enable) const;
+	INLINE ImageSize GetWindowSize() const { return WindowSize; }
+	INLINE uint16 GetWindowWidth() const { return WindowSize.Width; }
+	INLINE uint16 GetWindowHeight() const { return WindowSize.Height; }
 
-	INLINE GLFWwindow * GetGLFWWindow() const { return GLWindow; }
+	INLINE float GetAspectRatio() const { return static_cast<float>(WindowSize.Width) / static_cast<float>(WindowSize.Height); }
 
-	ImageSize GetWindowSize() const;
-	INLINE uint16 GetWindowWidth() const { return WindowWidth; }
-	INLINE uint16 GetWindowHeight() const { return WindowHeight; }
-
-	INLINE float GetAspectRatio() const { return static_cast<float>(WindowWidth) / static_cast<float>(WindowHeight); }
-
-	void ResizeWindow(uint16 WWidth, uint16 WHeight);
+	void ResizeWindow(const uint16 WWidth, const uint16 WHeight);
+	void ResizeWindow(const ImageSize & _WindowSize);
 
 protected:
-	GLFWwindow * GLWindow;
-
-	uint16 WindowWidth;
-	uint16 WindowHeight;
+	ImageSize WindowSize;
 };

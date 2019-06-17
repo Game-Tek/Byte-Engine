@@ -2,8 +2,6 @@
 
 #include "Core.h"
 
-#include "FVector.hpp"
-
 template<class T>
 GS_STRUCT SingleLinkListNode
 {
@@ -27,8 +25,31 @@ public:
 	explicit SingleLinkList(const size_t Length);
 
 	SingleLinkListNode<T> & operator[](const size_t Index);
+
+	void PushBack();
+
+	int32 Find(const T& _Obj)
+	{
+		SingleLinkListNode* l_Next;
+		uint32 i = 0;
+
+		while (l_Next->GetChild() != nullptr)
+		{
+			if (*l_Next == _Obj)
+			{
+				return i;
+			}
+
+			l_Next = l_Next->GetChild();
+			i++;
+		}
+
+		return -1;
+	}
 protected:
 	SingleLinkListNode<T> Root;
+
+	uint32 m_Length = 0;
 };
 
 template <class T>

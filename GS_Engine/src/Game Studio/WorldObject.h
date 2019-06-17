@@ -28,8 +28,6 @@ public:
 
 	void AddDeltaPosition(const Vector3 & Delta) { Transform.Position += Delta; }
 
-	virtual RenderProxy * GetRenderProxy() { return nullptr; }
-
 protected:
 	Transform3 Transform;
 

@@ -13,7 +13,7 @@ public:
 	//Constructs an String from a C-String.
 	explicit String(const char * In);
 
-	explicit String(const String & Other);
+	String(const String & Other);
 
 	//Constructs a String from a non null terminated character array.
 	String(const char * In, size_t Length);

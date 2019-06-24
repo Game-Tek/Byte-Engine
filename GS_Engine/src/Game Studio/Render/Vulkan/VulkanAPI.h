@@ -1,32 +1,10 @@
 #pragma once
 
 #include "Core.h"
-#include <stdexcept>
 
-#ifdef GS_PLATFORM_WIN
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_win32.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
-#endif // GS_PLATFORM_WIN
+#include "Vulkan.h"
 
 #include "FVector.hpp"
-
-#define ALLOCATOR nullptr
-
-#ifdef GS_DEBUG
-#define GS_VK_CHECK(func, text)\
-{\
-if (func != VK_SUCCESS)\
-{\
-	throw std::runtime_error(text);\
-}\
-}
-#elif
-#define GS_VK_CHECK(func, text) func
-#endif // GS_DEBUG
 
 class Window;
 
@@ -411,11 +389,8 @@ public:
 		SCcreateInfo.presentMode = PresentationMode;
 		SCcreateInfo.clipped = VK_TRUE;
 		SCcreateInfo.oldSwapchain = VK_NULL_HANDLE;
-	
-		if (vkCreateSwapchainKHR(_Device.Device, &SCcreateInfo, ALLOCATOR, &Swapchain) != VK_SUCCESS)
-		{
-			throw std::runtime_error("Failed to create swap chain!");
-		}
+		
+		GS_VK_CHECK(vkCreateSwapchainKHR(_Device.Device, &SCcreateInfo, ALLOCATOR, &Swapchain), "Failed to create swap chain!")
 
 		uint32_t ImageCount = 0;
 		vkGetSwapchainImagesKHR(_Device.Device, Swapchain, &ImageCount, nullptr);
@@ -431,6 +406,20 @@ public:
 	~VulkanSwapchain()
 	{
 		vkDestroySwapchainKHR(DEVICE, Swapchain, ALLOCATOR);
+	}
+
+	uint32 AcquireNextImage(const VulkanSemaphore & _Semaphore)
+	{
+		uint32_t ImageIndex;
+
+		vkAcquireNextImageKHR(DEVICE, Swapchain, std::numeric_limits<uint64_t>::max(), _Semaphore.Semaphore, VK_NULL_HANDLE, &ImageIndex);
+
+		return ImageIndex;
+	}
+
+	void Present(const Vulkan_Queue & _Queue)
+	{
+		vkQueuePresentKHR(_Queue.Queue, &PresentInfo);
 	}
 };
 
@@ -555,6 +544,7 @@ public:
 	}
 };
 
+/*
 GS_CLASS VulkanGraphicsPipeline
 {
 public:
@@ -587,7 +577,9 @@ public:
 		vkDestroyPipeline(DEVICE, &GraphicsPipeline, ALLOCATOR);
 	}
 };
+*/
 
+/*
 GS_CLASS VulkanFrameBuffer
 {
 public:
@@ -611,6 +603,7 @@ public:
 		vkDestroyFramebuffer(DEVICE, Framebuffer, ALLOCATOR);
 	}
 };
+*/
 
 GS_CLASS VulkanCommandPool
 {
@@ -631,3 +624,163 @@ public:
 		vkDestroyCommandPool(DEVICE, CommandPool, ALLOCATOR);
 	}
 };
+
+GS_CLASS VulkanCommandBuffer
+{
+public:
+	VkCommandBuffer CommandBuffer = nullptr;
+
+	VulkanCommandBuffer(const VulkanCommandPool & _CommandPool)
+	{
+		VkCommandBufferAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+		allocInfo.commandPool = _CommandPool.CommandPool;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
+
+		GS_VK_CHECK(vkAllocateCommandBuffers(DEVICE, &allocInfo, &CommandBuffer), "Failed to Allocate Command Buffer!")
+	}
+
+	void Begin()
+	{
+		VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		BeginInfo.pInheritanceInfo = nullptr; // Optional
+
+		GS_VK_CHECK(vkBeginCommandBuffer(CommandBuffer, &BeginInfo), "Failed to begin Command Buffer!")
+	}
+
+	void End()
+	{
+		GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer), "Failed to end Command Buffer!")
+	}
+};
+
+//Ask for how to get extent
+GS_CLASS VulkanRenderPass
+{
+public:
+	VkRenderPass RenderPass = nullptr;
+
+	VkRenderPassBeginInfo RenderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+
+	VulkanRenderPass(const VulkanFrameBuffer & _FB, const VulkanSwapchain & _Swapchain)
+	{
+		RenderPassInfo.renderPass = RenderPass;
+		RenderPassInfo.framebuffer = _FB.Framebuffer;
+		RenderPassInfo.renderArea.offset = { 0, 0 };
+		RenderPassInfo.renderArea.extent = _Swapchain.Extent;
+
+		VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+		RenderPassInfo.clearValueCount = 1;
+		RenderPassInfo.pClearValues = &clearColor;
+	}
+
+	void Begin(const VulkanCommandBuffer & _CommandBuffer)
+	{
+		vkCmdBeginRenderPass(_CommandBuffer.CommandBuffer, &RenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+	}
+
+	void End(const VulkanCommandBuffer& _CommandBuffer)
+	{
+		vkCmdEndRenderPass(_CommandBuffer.CommandBuffer);
+	}
+};
+
+/*
+GS_CLASS VulkanSemaphore
+{
+public:
+	VkSemaphore Semaphore = nullptr;
+
+	VulkanSemaphore()
+	{
+		VkSemaphoreCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+
+		GS_VK_CHECK(vkCreateSemaphore(DEVICE, &CreateInfo, ALLOCATOR, &Semaphore), "Failed to create Semaphore!")
+	}
+
+	~VulkanSemaphore()
+	{
+		vkDestroySemaphore(DEVICE, Semaphore, ALLOCATOR);
+	}
+};
+*/
+
+enum class BufferType : uint8
+{
+	BUFFER_VERTEX,
+	BUFFER_INDEX,
+	BUFFER_UNIFORM
+};
+
+/*
+GS_CLASS VulkanBuffer
+{
+	static VkBufferUsageFlagBits BufferTypeToVkBufferUsageFlagBits(BufferType _Type)
+	{
+		switch (_Type)
+		{
+		case BufferType::BUFFER_VERTEX: return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		case BufferType::BUFFER_INDEX: return VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		case BufferType::BUFFER_UNIFORM: return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		default:	break;
+		}
+	}
+	
+	static uint32_t FindMemoryType(Vulkan_Physical_Device _PD, uint32 _TypeFilter, VkMemoryPropertyFlags _Properties)
+	{
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(_PD.PhysicalDevice, &memProperties);
+
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+		{
+			if ((_TypeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & _Properties) == _Properties)
+			{
+				return i;
+			}
+		}
+	}
+
+	void Allocate(Vulkan_Physical_Device _PD)
+	{
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(DEVICE, Buffer, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = FindMemoryType(_PD, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		GS_VK_CHECK(vkAllocateMemory(DEVICE, &AllocateInfo, ALLOCATOR, &Memory), "Failed to allocate memory!")
+
+		vkBindBufferMemory(DEVICE, Buffer, Memory, 0);
+	}
+
+	void FillBuffer(const void * _Data, size_t _Size)
+	{
+		void* Data;
+		vkMapMemory(DEVICE, Memory, 0, _Size, 0, &Data);
+		memcpy(Data, _Data, _Size);
+		vkUnmapMemory(DEVICE, Memory);
+	}
+
+public:
+	VkBuffer Buffer = nullptr;
+	VkDeviceMemory Memory = nullptr;
+
+	VulkanBuffer(BufferType _Type, size_t _Size)
+	{
+		VkBufferCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		CreateInfo.size = _Size;
+		CreateInfo.usage = BufferTypeToVkBufferUsageFlagBits(_Type);
+		CreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		GS_VK_CHECK(vkCreateBuffer(DEVICE, &CreateInfo, ALLOCATOR, &Buffer), "Failed to allocate Buffer!")
+	}
+
+	~VulkanBuffer()
+	{
+		vkDestroyBuffer(DEVICE, Buffer, ALLOCATOR);
+		vkFreeMemory(DEVICE, Memory, ALLOCATOR);
+	}
+}
+*/

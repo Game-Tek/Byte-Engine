@@ -40,3 +40,7 @@ typedef long long int_64;
 #else
 	#define GS_ASSERT(func) func;
 #endif
+
+//  CASTS
+
+#define DCAST(from, to) dynamic_cast<to*>(from)

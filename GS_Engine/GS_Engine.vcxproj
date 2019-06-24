@@ -111,17 +111,18 @@
     <ClInclude Include="src\Game Studio\Render\Fence.h" />
     <ClInclude Include="src\Game Studio\Render\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Mesh.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
     <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Render\Pipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Semaphore.h" />
     <ClInclude Include="src\Game Studio\Render\Shader.h" />
-    <ClInclude Include="src\Game Studio\Render\Swapchain.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vulkan.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBase.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanSync.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
@@ -185,6 +186,7 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanSync.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />

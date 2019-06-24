@@ -28,3 +28,8 @@ enum class PixelFormat : uint8
 	//RGBA
 	RGBA_F16, RGBA_F32, RGBA_F64,
 };
+
+enum class ColorSpace : uint8
+{
+	NONLINEAR_SRGB, HDR10
+};

@@ -281,6 +281,7 @@ public:
 	}
 };
 
+/*
 GS_CLASS VulkanSurface
 {
 	static VkSurfaceFormatKHR PickBestFormat(const Vulkan_Physical_Device& _PhysicalDevice, const VulkanSurface& _Surface)
@@ -328,6 +329,7 @@ public:
 		vkDestroySurfaceKHR(_Instance.Instance, Surface, ALLOCATOR);
 	}
 };
+*/
 
 GS_CLASS VulkanSwapchain
 {

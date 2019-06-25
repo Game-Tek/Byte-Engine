@@ -14,4 +14,6 @@ public:
 	VulkanObject(VkDevice _Device) : m_Device(_Device)
 	{
 	}
+
+	INLINE VkDevice GetVkDevice() const { return m_Device; }
 };

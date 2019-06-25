@@ -121,5 +121,3 @@ VkSurfaceFormatKHR Vulkan_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfac
 		return SurfaceFormats[i];
 	}
 }
-
-VkColorSpaceKHR

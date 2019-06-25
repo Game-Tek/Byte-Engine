@@ -8,6 +8,7 @@
 
 class Window;
 
+/*
 GS_STRUCT Vulkan_Physical_Device
 {
 	static uint8 GetDeviceTypeScore(VkPhysicalDeviceType _Type)
@@ -63,7 +64,9 @@ public:
 		PhysicalDevice = PhysicalDevices[i];	//Set the VulkanDevice's physical device as the one which resulted a winner from the sort.
 	}
 };
+*/
 
+/*
 GS_STRUCT Vulkan_Queue
 {
 public:
@@ -102,113 +105,9 @@ public:
 		vkGetDeviceQueue(_Device.Device, QueueCreateInfo.queueFamilyIndex, 0, &Queue);
 	}
 };
+*/
 
-GS_STRUCT Vulkan_Vertex_Input
-{
-public:
-	VkPipelineVertexInputStateCreateInfo VertexInputInfo = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-
-	Vulkan_Vertex_Input()
-	{
-		VertexInputInfo.vertexBindingDescriptionCount = 0;
-		VertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-		VertexInputInfo.vertexAttributeDescriptionCount = 0;
-		VertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
-	}
-};
-
-GS_STRUCT Vulkan_Pipeline_Viewport
-{
-public:
-	VkPipelineViewportStateCreateInfo viewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-
-	Vulkan_Pipeline_Viewport()
-	{
-		VkViewport Viewport = {};
-		Viewport.x = 0.0f;
-		Viewport.y = 0.0f;
-		Viewport.width = (float)swapChainExtent.width;
-		Viewport.height = (float)swapChainExtent.height;
-		Viewport.minDepth = 0.0f;
-		Viewport.maxDepth = 1.0f;
-
-		VkRect2D Scissor = {};
-		Scissor.offset = { 0, 0 };
-		Scissor.extent = swapChainExtent;
-
-		viewportState.viewportCount = 1;
-		viewportState.pViewports = &Viewport;
-		viewportState.scissorCount = 1;
-		viewportState.pScissors = &Scissor;
-	}
-};
-
-GS_STRUCT Vulkan_Pipeline_Rasterization
-{
-	VkPipelineRasterizationStateCreateInfo RasterizationState = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-
-	Vulkan_Pipeline_Rasterization(bool ClampDepth = false)
-	{
-		RasterizationState.depthClampEnable = ClampDepth;
-		RasterizationState.rasterizerDiscardEnable = VK_FALSE;
-		RasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
-
-		//The lineWidth member describes the thickness of lines in terms of number of fragments.
-		//The maximum line width that is supported depends on the hardware and any line thicker than 1.0f
-		//requires you to enable the wideLines GPU feature.
-		RasterizationState.lineWidth = 1.0f;
-		RasterizationState.cullMode = VK_CULL_MODE_BACK_BIT;
-		RasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
-		RasterizationState.depthBiasEnable = VK_FALSE;
-		RasterizationState.depthBiasConstantFactor = 0.0f; // Optional
-		RasterizationState.depthBiasClamp = 0.0f; // Optional
-		RasterizationState.depthBiasSlopeFactor = 0.0f; // Optional
-	}
-};
-
-GS_STRUCT Vulkan_Pipeline_ColorBlend
-{
-	VkPipelineColorBlendAttachmentState ColorBlendAttachment = {};
-	VkPipelineColorBlendStateCreateInfo colorBlending = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-
-
-	Vulkan_Pipeline_ColorBlend(bool _Blend = false)
-	{
-		ColorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-		ColorBlendAttachment.blendEnable = _Blend;
-		ColorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-		ColorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-		ColorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
-		ColorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-		ColorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-		ColorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
-
-		colorBlending.logicOpEnable = VK_FALSE;
-		colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
-		colorBlending.attachmentCount = 1;
-		colorBlending.pAttachments = &ColorBlendAttachment;
-		colorBlending.blendConstants[0] = 0.0f; // Optional
-		colorBlending.blendConstants[1] = 0.0f; // Optional
-		colorBlending.blendConstants[2] = 0.0f; // Optional
-		colorBlending.blendConstants[3] = 0.0f; // Optional
-	}
-};
-
-GS_STRUCT Vulkan_Pipeline_Dynamic_State
-{
-	VkPipelineDynamicStateCreateInfo DynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-	
-	Vulkan_Pipeline_Dynamic_State()
-	{
-		VkDynamicState DynamicStates[] = {
-			VK_DYNAMIC_STATE_VIEWPORT,
-		};
-
-		DynamicState.dynamicStateCount = 1;
-		DynamicState.pDynamicStates = DynamicStates;
-	}
-};
-
+/*
 GS_CLASS VulkanInstance
 {
 public:
@@ -240,7 +139,9 @@ public:
 		vkDestroyInstance(Instance, ALLOCATOR);
 	}
 };
+*/
 
+/*
 GS_CLASS VulkanDevice
 {
 public:
@@ -280,6 +181,7 @@ public:
 		vkDestroyDevice(Device, ALLOCATOR);
 	}
 };
+*/
 
 /*
 GS_CLASS VulkanSurface
@@ -331,6 +233,7 @@ public:
 };
 */
 
+/*
 GS_CLASS VulkanSwapchain
 {
 	static uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
@@ -424,6 +327,7 @@ public:
 		vkQueuePresentKHR(_Queue.Queue, &PresentInfo);
 	}
 };
+*/
 
 GS_CLASS VulkanImageView
 {
@@ -504,6 +408,7 @@ public:
 	}
 };
 
+/*
 GS_CLASS VulkanRenderPass
 {
 public:
@@ -545,6 +450,7 @@ public:
 		vkDestroyRenderPass(DEVICE, &RenderPass, ALLOCATOR);
 	}
 };
+*/
 
 /*
 GS_CLASS VulkanGraphicsPipeline
@@ -627,6 +533,7 @@ public:
 	}
 };
 
+/*
 GS_CLASS VulkanCommandBuffer
 {
 public:
@@ -656,8 +563,8 @@ public:
 		GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer), "Failed to end Command Buffer!")
 	}
 };
+*/
 
-//Ask for how to get extent
 GS_CLASS VulkanRenderPass
 {
 public:

@@ -216,6 +216,7 @@
     <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
     <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -270,6 +271,7 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

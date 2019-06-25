@@ -119,6 +119,7 @@
     <ClInclude Include="src\Game Studio\Render\Shader.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vulkan.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBase.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.h" />
@@ -183,6 +184,7 @@
     <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.cpp" />

@@ -27,10 +27,16 @@ public:
 	INLINE VkInstance GetVkInstance() const { return Instance; }
 };
 
+MAKE_VK_HANDLE(VkQueue)
+struct VkDeviceQueueCreateInfo;
+struct QueueInfo;
+
 GS_CLASS Vulkan_Device final : public VulkanObject
 {
 	Vulkan__Physical__Device PhysicalDevice;
-	Vulkan__Queue Queue;
+
+	static void CreateQueueInfo(QueueInfo& _DQCI, VkPhysicalDevice _PD);
+
 public:
 	Vulkan_Device(VkInstance _Instance);
 
@@ -46,44 +52,4 @@ public:
 	Vulkan__Physical__Device(VkInstance _Instance);
 
 	INLINE VkPhysicalDevice GetVkPhysicalDevice() const { return PhysicalDevice; }
-};
-
-MAKE_VK_HANDLE(VkQueue)
-
-GS_STRUCT Vulkan__Queue
-{
-	VkQueue Queue = nullptr;
-public:
-	Vulkan__Queue() = default;
-
-	Vulkan__Queue(VkDevice _Device, VkPhysicalDevice _PD, VkQueueFlagBits _QueueType)
-	{
-		VkDeviceQueueCreateInfo QueueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
-
-		uint32_t QueueFamiliesCount = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, nullptr);	//Get the amount of queue families there are in the physical device.
-
-		FVector<VkQueueFamilyProperties> queueFamilies(QueueFamiliesCount);
-		vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, queueFamilies.data());
-
-		uint8 i = 0;
-		while (true)
-		{
-			if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & _QueueType)
-			{
-				break;
-			}
-
-			i++;
-		}
-
-		QueueCreateInfo.queueFamilyIndex = i;
-		QueueCreateInfo.queueCount = 1;
-		float queuePriority = 1.0f;
-		QueueCreateInfo.pQueuePriorities = &queuePriority;
-
-		vkGetDeviceQueue(_Device, QueueCreateInfo.queueFamilyIndex, 0, &Queue);
-	}
-
-	INLINE VkQueue GetVkQueue() const { return Queue; }
 };

@@ -1,6 +1,12 @@
+#include "Vulkan.h"
 #include "VulkanRenderer.h"
 
-#include "Vulkan.h"
+struct QueueInfo
+{
+	VkDeviceQueueCreateInfo DeviceQueueCreateInfo;
+	VkQueueFlagBits QueueFlagBits;
+	float QueuePriority;
+};
 
 VulkanRenderer::VulkanRenderer()
 {
@@ -48,20 +54,24 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance) : PhysicalDevice(_Instance)
 
 	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
-	Vulkan_Queue l_Queue(PhysicalDevice, VK_QUEUE_GRAPHICS_BIT);
+	FVector<QueueInfo> QueueInfos(1);
+
+	QueueInfos[1].QueueFlagBits = VK_QUEUE_GRAPHICS_BIT;
+	QueueInfos[1].QueuePriority = 1.0f;
+
+	for (uint8 i = 0; i < QueueInfos.length(); i++)
+	{
+		CreateQueueInfo(QueueInfos[i], PhysicalDevice.GetVkPhysicalDevice());
+	}
 
 	VkDeviceCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-	CreateInfo.pQueueCreateInfos = &l_Queue.QueueCreateInfo;
-	CreateInfo.queueCreateInfoCount = 1;
+	CreateInfo.pQueueCreateInfos = &QueueInfos.data()->DeviceQueueCreateInfo;
+	CreateInfo.queueCreateInfoCount = QueueInfos.length();
 	CreateInfo.pEnabledFeatures = &deviceFeatures;
 	CreateInfo.enabledExtensionCount = 1;
 	CreateInfo.ppEnabledExtensionNames = DeviceExtensions;
 
 	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &CreateInfo, ALLOCATOR, &m_Device), "Failed to create logical device!")
-
-	Queue = l_Queue;
-
-	Queue.SetFromDevice(*this);
 }
 
 Vulkan_Device::~Vulkan_Device()
@@ -69,6 +79,30 @@ Vulkan_Device::~Vulkan_Device()
 	vkDestroyDevice(m_Device, ALLOCATOR);
 }
 
+void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)
+{
+	_QI.DeviceQueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+
+	uint32_t QueueFamiliesCount = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, nullptr);	//Get the amount of queue families there are in the physical device.
+	FVector<VkQueueFamilyProperties> queueFamilies(QueueFamiliesCount);
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, queueFamilies.data());
+
+	uint8 i = 0;
+	while (true)
+	{
+		if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & _QI.QueueFlagBits)
+		{
+			break;
+		}
+
+		i++;
+	}
+
+	_QI.DeviceQueueCreateInfo.queueFamilyIndex = i;
+	_QI.DeviceQueueCreateInfo.queueCount = 1;
+	_QI.DeviceQueueCreateInfo.pQueuePriorities = &_QI.QueuePriority;
+}
 
 uint8 Vulkan__Physical__Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
 {
@@ -120,3 +154,30 @@ Vulkan__Physical__Device::Vulkan__Physical__Device(VkInstance _Instance)
 
 	PhysicalDevice = PhysicalDevices[i];	//Set the VulkanDevice's physical device as the one which resulted a winner from the sort.
 }
+
+vulkanQueue::vulkanQueue(VkDevice _Device, VkPhysicalDevice _PD, VkQueueFlagBits _QueueType, float * _QP)
+{
+	VkDeviceQueueCreateInfo QueueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
+
+	uint32_t QueueFamiliesCount = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, nullptr);	//Get the amount of queue families there are in the physical device.
+
+	FVector<VkQueueFamilyProperties> queueFamilies(QueueFamiliesCount);
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, queueFamilies.data());
+
+	uint8 i = 0;
+	while (true)
+	{
+		if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & _QueueType)
+		{
+			break;
+		}
+
+		i++;
+	}
+
+	QueueCreateInfo.queueFamilyIndex = i;
+	QueueCreateInfo.queueCount = 1;
+	QueueCreateInfo.pQueuePriorities = QP;
+}
+

@@ -12,11 +12,6 @@ VulkanCommandBuffer::VulkanCommandBuffer(VkDevice _Device, VkCommandPool _CP) : 
 	GS_VK_CHECK(vkAllocateCommandBuffers(m_Device, &CommandBufferAllocateInfo, &CommandBuffer), "Failed to Allocate Command Buffer!")
 }
 
-VulkanCommandBuffer::~VulkanCommandBuffer()
-{
-
-}
-
 void VulkanCommandBuffer::BeginRecording()
 {
 	VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };

@@ -7,7 +7,7 @@
 #include "KeyPressedEvent.h"
 #include "MouseMovedEvent.h"
 
-#include "Vector2.h"
+#include "Math\Vector2.h"
 
 GS_CLASS InputManager : public Object
 {

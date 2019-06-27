@@ -4,7 +4,7 @@
 
 #include "Event.h"
 
-#include "Vector2.h"
+#include "Math\Vector2.h"
 
 GS_STRUCT MouseMovedEvent : public Event
 {

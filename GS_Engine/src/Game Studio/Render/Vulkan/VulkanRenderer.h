@@ -8,6 +8,8 @@
 
 GS_CLASS VulkanRenderer final : public Renderer
 {
+	Vulkan_Instance Instance;
+	Vulkan_Device Device;
 public:
 	VulkanRenderer();
 	~VulkanRenderer();
@@ -21,7 +23,7 @@ GS_CLASS Vulkan_Instance
 {
 	VkInstance Instance = nullptr;
 public:
-	Vulkan_Instance(const FVector<const char*> & _Extensions);
+	Vulkan_Instance(const char* _AppName, const FVector<const char*> & _Extensions);
 	~Vulkan_Instance();
 
 	INLINE VkInstance GetVkInstance() const { return Instance; }
@@ -31,25 +33,19 @@ MAKE_VK_HANDLE(VkQueue)
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 
-GS_CLASS Vulkan_Device final : public VulkanObject
+GS_CLASS Vulkan_Device
 {
-	Vulkan__Physical__Device PhysicalDevice;
-
-	static void CreateQueueInfo(QueueInfo& _DQCI, VkPhysicalDevice _PD);
-
-public:
-	Vulkan_Device(VkInstance _Instance);
-
-	~Vulkan_Device();
-};
-
-GS_STRUCT Vulkan__Physical__Device
-{
+	VkDevice Device = nullptr;
+	FVector<VkQueue> Queues;
 	VkPhysicalDevice PhysicalDevice = nullptr;
 
+	static void CreateQueueInfo(QueueInfo& _DQCI, VkPhysicalDevice _PD);
+	static void CreatePhysicalDevice(VkPhysicalDevice& _PD, VkInstance _Instance);
 	static uint8 GetDeviceTypeScore(VkPhysicalDeviceType _Type);
 public:
-	Vulkan__Physical__Device(VkInstance _Instance);
+	Vulkan_Device(VkInstance _Instance);
+	~Vulkan_Device();
 
+	INLINE VkDevice GetVkDevice() const { return Device; }
 	INLINE VkPhysicalDevice GetVkPhysicalDevice() const { return PhysicalDevice; }
 };

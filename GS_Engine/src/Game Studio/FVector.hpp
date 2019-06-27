@@ -5,29 +5,39 @@
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
 
-template <typename T>
+template <typename T, typename LT = size_t>
 GS_CLASS FVector
 {
 private:
-	size_t Length = 0;
-	size_t Capacity = 0;
+	LT Length = 0;
+	LT Capacity = 0;
 
 	T * Data = nullptr;
 
 public:
 
-	//Constructs a new FVector and allocates some previsional space.
-	FVector() : Capacity(DEF_VEC_SIZE), Data(allocate(this->Capacity))
+	const T* begin()
+	{
+		return this->Data[0];
+	}
+
+	const T* end()
+	{
+		return this->Data[Length];
+	}
+
+	//Constructs a new FVector.
+	FVector()
 	{
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(const size_t length) : Capacity(length + EXTRA), Data(allocate(this->Capacity))
+	explicit FVector(const size_t length) : Capacity(length), Data(allocate(this->Capacity))
 	{
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	FVector(T Array[], const size_t length) : Capacity(length + EXTRA), Length(length), Data(allocate(this->Capacity))
+	FVector(T Array[], const size_t length) : Capacity(length), Length(length), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
@@ -202,7 +212,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	T & operator[](const size_t index)
+	INLINE T & operator[](const size_t index)
 	{
 #ifdef GS_DEBUG
 		if (index > this->Length)
@@ -215,7 +225,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	const T & operator[](const size_t index) const
+	INLINE const T & operator[](const size_t index) const
 	{
 #ifdef GS_DEBUG
 		if (index > this->Length)
@@ -228,19 +238,19 @@ public:
 	}
 
 	//Retuns the ocuppied elements count.
-	size_t length() const
+	INLINE size_t length() const
 	{
 		return this->Length;
 	}
 
 	//Returns a pointer to the allocated array.
-	T * data()
+	INLINE T * data()
 	{
 		return this->Data;
 	}
 
 	//Returns a pointer to the allocated array.
-	const T * data() const
+	INLINE const T * data() const
 	{
 		return this->Data;
 	}

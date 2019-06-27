@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "Vector3.h"
+#include "Math\Vector3.h"
 #include "RGB.h"
 #include "TextureCoordinates.h"
 

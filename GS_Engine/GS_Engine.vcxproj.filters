@@ -84,22 +84,10 @@
     <ClInclude Include="src\Game Studio\Object.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Vector2.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Rotator.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Transform2.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Transform3.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Vector3.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\RGBA.h">
@@ -117,16 +105,7 @@
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\GSM.hpp">
-      <Filter>Misc\Math</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Line.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Matrix4.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Vector4.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\ResourceManager.h">
@@ -178,9 +157,6 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\Octree.h" />
-    <ClInclude Include="src\Game Studio\Quaternion.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\String.h">
@@ -217,6 +193,30 @@
     <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\Math\GSM.hpp">
+      <Filter>Misc\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Matrix4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Vector2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Vector3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Vector4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Transform2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Transform3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Quaternion.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -281,9 +281,5 @@
     <None Include="src\Game Studio\GBufferFS.fshader">
       <Filter>Engine\Render\Shaders\GLSL Code</Filter>
     </None>
-    <None Include="src\Game Studio\LightingFS.fshader" />
-    <None Include="src\Game Studio\LightingVS.vshader" />
-    <None Include="src\Game Studio\PointLight.fshader" />
-    <None Include="src\Game Studio\PointLight.vshader" />
   </ItemGroup>
 </Project>

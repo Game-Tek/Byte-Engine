@@ -8,6 +8,9 @@ struct QueueInfo
 	float QueuePriority;
 };
 
+
+//  VULKAN RENDERER
+
 VulkanRenderer::VulkanRenderer()
 {
 }
@@ -17,17 +20,23 @@ VulkanRenderer::~VulkanRenderer()
 {
 }
 
-Vulkan_Instance::Vulkan_Instance(const FVector<const char*>& _Extensions)
+
+//  VULKAN INSTANCE
+
+Vulkan_Instance::Vulkan_Instance(const char * _AppName, const FVector<const char*>& _Extensions)
 {
 	VkApplicationInfo AppInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	AppInfo.apiVersion = VK_API_VERSION_1_1;	//Should check if version is available vi vkEnumerateInstanceVersion().
 	AppInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	AppInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	AppInfo.pApplicationName = "Hello Triangle!";
+	AppInfo.pApplicationName = _AppName;
 	AppInfo.pEngineName = "Game Studio";
-	AppInfo.pNext = nullptr;
 
+#ifdef GS_DEBUG
 	const char* InstanceLayers[] = { "VK_LAYER_LUNARG_standard_validation" };
+#else
+	const char* InstanceLayers[];
+#endif // GS_DEBUG
 
 	VkInstanceCreateInfo InstanceCreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 	InstanceCreateInfo.pApplicationInfo = &AppInfo;
@@ -44,7 +53,10 @@ Vulkan_Instance::~Vulkan_Instance()
 	vkDestroyInstance(Instance, ALLOCATOR);
 }
 
-Vulkan_Device::Vulkan_Device(VkInstance _Instance) : PhysicalDevice(_Instance)
+
+//  VULKAN DEVICE
+
+Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 {
 	////////////////////////////////////////
 	//      DEVICE CREATION/SELECTION     //
@@ -61,17 +73,19 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance) : PhysicalDevice(_Instance)
 
 	for (uint8 i = 0; i < QueueInfos.length(); i++)
 	{
-		CreateQueueInfo(QueueInfos[i], PhysicalDevice.GetVkPhysicalDevice());
+		CreateQueueInfo(QueueInfos[i], PhysicalDevice);
 	}
 
-	VkDeviceCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-	CreateInfo.pQueueCreateInfos = &QueueInfos.data()->DeviceQueueCreateInfo;
-	CreateInfo.queueCreateInfoCount = QueueInfos.length();
-	CreateInfo.pEnabledFeatures = &deviceFeatures;
-	CreateInfo.enabledExtensionCount = 1;
-	CreateInfo.ppEnabledExtensionNames = DeviceExtensions;
+	CreatePhysicalDevice(PhysicalDevice, _Instance);
 
-	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &CreateInfo, ALLOCATOR, &m_Device), "Failed to create logical device!")
+	VkDeviceCreateInfo DeviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+	DeviceCreateInfo.pQueueCreateInfos = &QueueInfos.data()->DeviceQueueCreateInfo;
+	DeviceCreateInfo.queueCreateInfoCount = QueueInfos.length();
+	DeviceCreateInfo.pEnabledFeatures = &deviceFeatures;
+	DeviceCreateInfo.enabledExtensionCount = 1;
+	DeviceCreateInfo.ppEnabledExtensionNames = DeviceExtensions;
+
+	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create logical device!")
 }
 
 Vulkan_Device::~Vulkan_Device()
@@ -104,26 +118,10 @@ void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)
 	_QI.DeviceQueueCreateInfo.pQueuePriorities = &_QI.QueuePriority;
 }
 
-uint8 Vulkan__Physical__Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
+void Vulkan_Device::CreatePhysicalDevice(VkPhysicalDevice& _PD, VkInstance _Instance)
 {
-	switch (_Type)
-	{
-	case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 255;
-	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 254;
-	case VK_PHYSICAL_DEVICE_TYPE_CPU: return 253;
-	default: return 0;
-	}
-}
-
-Vulkan__Physical__Device::Vulkan__Physical__Device(VkInstance _Instance)
-{
-	////////////////////////////////////////
-	// PHYSICAL DEVICE CREATION/SELECTION //
-	////////////////////////////////////////
-
 	uint32_t DeviceCount = 0;
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, nullptr);	//Get the amount of physical devices(GPUs) there are.
-
 	FVector<VkPhysicalDevice> PhysicalDevices(DeviceCount);
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, PhysicalDevices.data());	//Fill the array with VkPhysicalDevice handles to every physical device (GPU) there is.
 
@@ -133,7 +131,6 @@ Vulkan__Physical__Device::Vulkan__Physical__Device(VkInstance _Instance)
 	{
 		vkGetPhysicalDeviceProperties(PhysicalDevices[i], &PhysicalDevicesProperties[i]);
 	}
-
 
 	uint16 BestPhysicalDeviceIndex = 0;	//Variable to hold the index into the physical devices properties vector of the current winner of the GPU sorting processes.
 	uint16 i = 0;
@@ -152,32 +149,16 @@ Vulkan__Physical__Device::Vulkan__Physical__Device(VkInstance _Instance)
 		i++;
 	}
 
-	PhysicalDevice = PhysicalDevices[i];	//Set the VulkanDevice's physical device as the one which resulted a winner from the sort.
+	_PD = PhysicalDevices[i];
 }
 
-vulkanQueue::vulkanQueue(VkDevice _Device, VkPhysicalDevice _PD, VkQueueFlagBits _QueueType, float * _QP)
+uint8 Vulkan_Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
 {
-	VkDeviceQueueCreateInfo QueueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
-
-	uint32_t QueueFamiliesCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, nullptr);	//Get the amount of queue families there are in the physical device.
-
-	FVector<VkQueueFamilyProperties> queueFamilies(QueueFamiliesCount);
-	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, queueFamilies.data());
-
-	uint8 i = 0;
-	while (true)
+	switch (_Type)
 	{
-		if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & _QueueType)
-		{
-			break;
-		}
-
-		i++;
+	case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 255;
+	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 254;
+	case VK_PHYSICAL_DEVICE_TYPE_CPU: return 253;
+	default: return 0;
 	}
-
-	QueueCreateInfo.queueFamilyIndex = i;
-	QueueCreateInfo.queueCount = 1;
-	QueueCreateInfo.pQueuePriorities = QP;
 }
-

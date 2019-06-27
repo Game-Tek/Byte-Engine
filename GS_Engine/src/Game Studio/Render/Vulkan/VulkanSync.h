@@ -20,9 +20,10 @@ public:
 
 GS_CLASS VulkanSemaphore final : public Semaphore, public VulkanObject
 {
-public:
 	VkSemaphore Semaphore;
-
+public:
 	VulkanSemaphore(VkDevice _Device);
 	~VulkanSemaphore();
+
+	INLINE VkSemaphore GetVkSemaphore() const { return Semaphore; }
 };

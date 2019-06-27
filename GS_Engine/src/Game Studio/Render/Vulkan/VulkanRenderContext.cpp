@@ -1,7 +1,61 @@
-#include "VulkanRenderContext.h"
-
 #include "Vulkan.h"
 
+#include "VulkanRenderContext.h"
+
+HWND mm;
+
+//  VULKAN RENDER CONTEXT
+
+VulkanRenderContext::VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, VkQueue _PresentationQueue) : 
+	Surface(_Device, _Instance, _PD, mm),
+	Swapchain(_Device, _PD, Surface.GetVkSurface(), Surface.GetVkSurfaceFormat(), Surface.GetVkColorSpaceKHR(), Surface.GetVkExtent2D()),
+	PresentationQueue(_PresentationQueue),
+	ImageAvailable(_Device),
+	RenderFinished(_Device)
+{
+}
+
+void VulkanRenderContext::Present()
+{
+	/* Initialize semaphores */
+	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	VkSemaphore WaitSemaphores[] = { ImageAvailable.GetVkSemaphore() };
+	VkSemaphore SignalSemaphores[] = { RenderFinished.GetVkSemaphore() };
+
+	/* Submit signal semaphore to graphics queue */
+	VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	{
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pWaitSemaphores = WaitSemaphores;
+		submitInfo.pWaitDstStageMask = WaitStages;
+		submitInfo.commandBufferCount = 0;
+		submitInfo.pCommandBuffers = nullptr;
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = SignalSemaphores;
+	}
+	
+	GS_VK_CHECK(vkQueueSubmit(PresentationQueue, 1, &submitInfo, VK_NULL_HANDLE), "Failed to Submit!")
+
+	/* Present result on screen */
+	VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
+
+	uint32 ImageIndex = Swapchain.AcquireNextImage(ImageAvailable.GetVkSemaphore());
+
+	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+	{
+		PresentInfo.waitSemaphoreCount = 1;
+		PresentInfo.pWaitSemaphores = WaitSemaphores;
+		PresentInfo.swapchainCount = 1;
+		PresentInfo.pSwapchains = Swapchains;
+		PresentInfo.pImageIndices = &ImageIndex;
+		PresentInfo.pResults = nullptr;
+	}
+
+	GS_VK_CHECK(vkQueuePresentKHR(PresentationQueue, &PresentInfo), "Failed to present Vulkan graphics queue!")
+}
+
+
+//  VULKAN SWAPCHAIN
 
 Vulkan_Swapchain::Vulkan_Swapchain(VkDevice _Device, VkPhysicalDevice _PD, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent) : VulkanObject(_Device)
 {
@@ -24,36 +78,23 @@ Vulkan_Swapchain::~Vulkan_Swapchain()
 	delete[] SwapchainImages;
 }
 
-uint8 Vulkan_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
+void Vulkan_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent)
 {
-	switch (_PresentMode)
-	{
-	case VK_PRESENT_MODE_MAILBOX_KHR:	return 255;
-	case VK_PRESENT_MODE_FIFO_KHR:		return 254;
-	default:							return 0;
-	}
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo;
+	CreateSwapchainCreateInfo(SwapchainCreateInfo, _Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, Swapchain);
+
+	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!")
+
+	uint32_t ImageCount = 0;
+	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
+	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, SwapchainImages);
 }
 
-void Vulkan_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+uint32 Vulkan_Swapchain::AcquireNextImage(VkSemaphore _ImageAvailable)
 {
-	uint32_t PresentModesCount = 0;
-	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, nullptr);
-	FVector<VkPresentModeKHR> PresentModes(PresentModesCount);
-	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, PresentModes.data());
-
-	uint8 BestScore = 0;
-	uint8 BestPresentModeIndex = 0;
-	for (uint8 i = 0; i < PresentModesCount; i++)
-	{
-		if (ScorePresentMode(PresentModes[i]) > BestScore)
-		{
-			BestScore = ScorePresentMode(PresentModes[i]);
-
-			BestPresentModeIndex = i;
-		}
-	}
-
-	_PM = PresentModes[BestPresentModeIndex];
+	uint32 ImageIndex = 0;
+	vkAcquireNextImageKHR(m_Device, Swapchain, 0xffffffffffffffff, _ImageAvailable, VK_NULL_HANDLE, &ImageIndex);
+	return ImageIndex;
 }
 
 void Vulkan_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCIK, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
@@ -79,18 +120,39 @@ void Vulkan_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCI
 	_SCIK.clipped = VK_TRUE;
 	_SCIK.oldSwapchain = _OldSwapchain;
 }
-
-void Vulkan_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent)
+uint8 Vulkan_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
 {
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo;
-	CreateSwapchainCreateInfo(SwapchainCreateInfo, _Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, Swapchain);
-
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!")
-
-	uint32_t ImageCount = 0;
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, SwapchainImages);
+	switch (_PresentMode)
+	{
+	case VK_PRESENT_MODE_MAILBOX_KHR:	return 255;
+	case VK_PRESENT_MODE_FIFO_KHR:		return 254;
+	default:							return 0;
+	}
 }
+void Vulkan_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+{
+	uint32_t PresentModesCount = 0;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, nullptr);
+	FVector<VkPresentModeKHR> PresentModes(PresentModesCount);
+	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, PresentModes.data());
+
+	uint8 BestScore = 0;
+	uint8 BestPresentModeIndex = 0;
+	for (uint8 i = 0; i < PresentModesCount; i++)
+	{
+		if (ScorePresentMode(PresentModes[i]) > BestScore)
+		{
+			BestScore = ScorePresentMode(PresentModes[i]);
+
+			BestPresentModeIndex = i;
+		}
+	}
+
+	_PM = PresentModes[BestPresentModeIndex];
+}
+
+
+// VULKAN SURFACE
 
 Vulkan_Surface::Vulkan_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, HWND _HWND) : VulkanObject(_Device), m_Instance(_Instance)
 {
@@ -108,7 +170,7 @@ Vulkan_Surface::~Vulkan_Surface()
 	vkDestroySurfaceKHR(m_Instance, Surface, ALLOCATOR);
 }
 
-VkSurfaceFormatKHR Vulkan_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+VkFormat Vulkan_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
@@ -118,6 +180,6 @@ VkSurfaceFormatKHR Vulkan_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfac
 	uint8 i = 0;
 	if (SurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && SurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
 	{
-		return SurfaceFormats[i];
+		return SurfaceFormats[i].format;
 	}
 }

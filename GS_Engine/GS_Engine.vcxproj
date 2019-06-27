@@ -66,6 +66,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
       <ShowIncludes>false</ShowIncludes>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -85,6 +86,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>GS_RAPI_VULKAN;GS_PLATFORM_WIN;GS_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -138,8 +140,8 @@
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Game Studio\ImageSize.h" />
     <ClInclude Include="src\Game Studio\Line.h" />
-    <ClInclude Include="src\Game Studio\Matrix4.h" />
-    <ClInclude Include="src\Game Studio\Quaternion.h" />
+    <ClInclude Include="src\Game Studio\Math\Matrix4.h" />
+    <ClInclude Include="src\Game Studio\Math\Quaternion.h" />
     <ClInclude Include="src\Game Studio\RGB.h" />
     <ClInclude Include="src\Game Studio\RGBA.h" />
     <ClInclude Include="src\Game Studio\Rotator.h" />
@@ -148,7 +150,7 @@
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
     <ClInclude Include="src\Game Studio\EntryPoint.h" />
-    <ClInclude Include="src\Game Studio\GSM.hpp" />
+    <ClInclude Include="src\Game Studio\Math\GSM.hpp" />
     <ClInclude Include="src\Game Studio\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
@@ -160,15 +162,15 @@
     <ClInclude Include="src\Game Studio\String.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
-    <ClInclude Include="src\Game Studio\Vector2.h" />
+    <ClInclude Include="src\Game Studio\Math\Vector2.h" />
     <ClInclude Include="src\Game Studio\WorldObject.h" />
-    <ClInclude Include="src\Game Studio\Transform2.h" />
-    <ClInclude Include="src\Game Studio\Transform3.h" />
-    <ClInclude Include="src\Game Studio\Vector3.h" />
+    <ClInclude Include="src\Game Studio\Math\Transform2.h" />
+    <ClInclude Include="src\Game Studio\Math\Transform3.h" />
+    <ClInclude Include="src\Game Studio\Math\Vector3.h" />
     <ClInclude Include="src\Game Studio\Texture.h" />
     <ClInclude Include="src\Game Studio\TextureCoordinates.h" />
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
-    <ClInclude Include="src\Game Studio\Vector4.h" />
+    <ClInclude Include="src\Game Studio\Math\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
     <ClInclude Include="src\Game Studio\World.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
@@ -215,23 +217,9 @@
   <ItemGroup>
     <None Include="cpp.hint" />
     <None Include="src\Game Studio\GBufferFS.fshader" />
-    <None Include="src\Game Studio\LightingFS.fshader" />
-    <None Include="src\Game Studio\PointLight.fshader" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\Game Studio\GBufferVS.vshader">
-      <FileType>Document</FileType>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="src\Game Studio\LightingVS.vshader">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-      </ExcludedFromBuild>
-      <FileType>Document</FileType>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="src\Game Studio\PointLight.vshader">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

@@ -65,3 +65,48 @@ VkFormat ColorFormatToVkFormat(ColorFormat _PF)
 
 	GS_ASSERT(false);
 }
+VkFormat DepthStencilFormatToVkFormat(DepthStencilFormat _DSF)
+{
+	switch (_DSF)
+	{
+	case DepthStencilFormat::DEPTH16:			return VK_FORMAT_D16_UNORM;
+	case DepthStencilFormat::DEPTH32:			return VK_FORMAT_D32_SFLOAT;
+	case DepthStencilFormat::DEPTH16_STENCIL8:	return VK_FORMAT_D16_UNORM_S8_UINT;
+	case DepthStencilFormat::DEPTH24_STENCIL8:	return VK_FORMAT_D24_UNORM_S8_UINT;
+	case DepthStencilFormat::DEPTH32_STENCIL8:	return VK_FORMAT_D32_SFLOAT_S8_UINT;
+	default:									return VK_FORMAT_UNDEFINED;
+	}
+}
+VkAttachmentLoadOp LoadOperationsToVkAttachmentLoadOp(LoadOperations _LOp)
+{
+	switch (_LOp)
+	{
+	case LoadOperations::UNDEFINED:	return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	case LoadOperations::LOAD:		return VK_ATTACHMENT_LOAD_OP_LOAD;
+	case LoadOperations::CLEAR:		return VK_ATTACHMENT_LOAD_OP_CLEAR;
+	default:						return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
+	}
+}
+VkAttachmentStoreOp StoreOperationsToVkAttachmentStoreOp(StoreOperations _SOp)
+{
+	switch (_SOp)
+	{
+	case StoreOperations::UNDEFINED:	return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	case StoreOperations::STORE:		return VK_ATTACHMENT_STORE_OP_STORE;
+	default:							return VK_ATTACHMENT_STORE_OP_MAX_ENUM;
+	}
+}
+VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
+{
+	switch (_IL)
+	{
+	case ImageLayout::GENERAL:					return VK_IMAGE_LAYOUT_GENERAL;
+	case ImageLayout::COLOR_ATTACHMENT:			return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	case ImageLayout::DEPTH_STENCIL_ATTACHMENT:	return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	case ImageLayout::DEPTH_STENCIL_READ_ONLY:	return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+	case ImageLayout::TRANSFER_SOURCE:			return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	case ImageLayout::TRANSFER_DESTINATION:		return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	case ImageLayout::PREINITIALIZED:			return VK_IMAGE_LAYOUT_PREINITIALIZED;
+	default:									return VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+}

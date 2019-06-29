@@ -2,9 +2,7 @@
 
 #include "Vulkan.h"
 
-#include "VulkanSwapchain.h"
-
-VulkanRenderPass::VulkanRenderPass(VkDevice _Device, VulkanSwapchain * _VS) : VulkanObject(_Device)
+VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : VulkanObject(_Device)
 {
 	VkAttachmentDescription colorAttachment = {};
 	colorAttachment.format = swapChainImageFormat;

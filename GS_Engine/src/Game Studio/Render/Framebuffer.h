@@ -2,10 +2,24 @@
 
 #include "Core.h"
 
+#include "FVector.hpp"
+#include "Extent.h"
+
+class ColorRenderTarget;
+class DepthStencilRenderTarget;
+
 GS_CLASS Framebuffer
 {
-public:
-	virtual ~Framebuffer();
+	FVector<ColorRenderTarget *>		ColorRenderTargets;
+	FVector<DepthStencilRenderTarget *> DepthStencilRenderTargets;
 
-	virtual void AddImage() = 0;
+	Extent2D Extent;
+public:
+	Framebuffer(ColorRenderTarget** _CRT, uint8 _CRTCount, DepthStencilRenderTarget** _DSRT, uint8 _DSRTCount, Extent2D _Extent) :
+		ColorRenderTargets(_CRT, _CRTCount),
+		DepthStencilRenderTargets(_DSRT, _DSRTCount),
+		Extent(_Extent)
+	{
+	}
+	virtual ~Framebuffer();
 };

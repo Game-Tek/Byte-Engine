@@ -217,6 +217,8 @@
     <ClInclude Include="src\Game Studio\Math\Quaternion.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Extent.h" />
+    <ClInclude Include="VulkanRenderTargets.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -272,6 +274,7 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
+    <ClCompile Include="VulkanRenderTargets.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

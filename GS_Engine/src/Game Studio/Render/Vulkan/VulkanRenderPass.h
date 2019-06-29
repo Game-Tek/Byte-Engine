@@ -11,7 +11,7 @@ GS_CLASS VulkanRenderPass final : public RenderPass, public VulkanObject
 {
 	VkRenderPass RenderPass;
 public:
-	VulkanRenderPass(VkDevice _Device, VulkanSwapchain* _VS);
+	VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor & _RPD);
 	~VulkanRenderPass();
 
 	void AddSubPass() override final;

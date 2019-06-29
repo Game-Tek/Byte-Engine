@@ -2,6 +2,19 @@
 
 #include "Core.h"
 
+//Specifies all available image layouts.
+enum class ImageLayout : uint8
+{
+	GENERAL,
+	COLOR_ATTACHMENT,
+	DEPTH_STENCIL_ATTACHMENT,
+	DEPTH_STENCIL_READ_ONLY,
+	TRANSFER_SOURCE,
+	TRANSFER_DESTINATION,
+	PREINITIALIZED,
+};
+
+//Specifies all available color formats.
 enum class ColorFormat : uint8
 {
 	//INTEGER
@@ -52,4 +65,24 @@ enum class ColorSpace : uint8
 	NONLINEAR_SRGB,
 	//The HDR10 represents a 10 bit color space which allows for more color information / depth. Use this when you are developing an HDR application.
 	HDR10
+};
+
+//Describes all possible operations a renderer can perform when loading a render target onto a render pass.
+enum class LoadOperations : uint8
+{
+	//We don't care about the previous content of the render target. Behavior is unknown.
+	UNDEFINED,
+	//We want to load the previous content of the render target.
+	LOAD,
+	//We want the render target to be cleared to black for color attachments and to 0 for depth/stencil attachments.
+	CLEAR
+};
+
+//Describes all possible operations a renderer can perform when saving to a render target from a render pass.
+enum class StoreOperations : uint8
+{
+	//We don't care about the outcome of the render target.
+	UNDEFINED,
+	//We want to store the result of the render pass to this render attachment.
+	STORE
 };

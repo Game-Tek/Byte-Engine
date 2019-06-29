@@ -9,6 +9,8 @@ public:
 	explicit Id(const char * Text);
 	~Id() = default;
 
+	INLINE uint32 GetID() { return HashedString; }
+	INLINE uint32 GetID() const { return HashedString; }
 private:
 	uint32 HashedString;
 

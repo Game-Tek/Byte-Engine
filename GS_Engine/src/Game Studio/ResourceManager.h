@@ -4,9 +4,9 @@
 
 #include "Resource.h"
 
-#include "String.h"
+#include "Id.h"
 
-#include "FVector.hpp"
+#include "HashMap.hpp"
 
 #include "Logger.h"
 
@@ -35,17 +35,22 @@ public:
 	}
 
 protected:
-	FVector<StaticMeshResource *> LoadedResources;
+	HashMap<Resource *> LoadedResources;
 
 
-	StaticMeshResource * LoadAsset(const String & Path)
+	Resource * LoadAsset(const Id & Path)
 	{
-		StaticMeshResource * ptr = new StaticMeshResource(Path);
+		if (LoadedResources.Find(, Path.GetID()))
+		{
+			return LoadedResources.Get();
+		}
+		else
+		{
+			Resource* ptr = new StaticMeshResource(Path);
+			LoadedResources.Insert(ptr, Path.GetID());
+			return ptr;
+		}
 
-		GS_LOG_MESSAGE("PushBack")
-		LoadedResources.push_back(ptr);
-
-		return ptr;
 	}
 };
 

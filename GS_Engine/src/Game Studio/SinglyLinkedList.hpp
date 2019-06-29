@@ -6,12 +6,15 @@ template<class T>
 GS_STRUCT SingleLinkListNode
 {
 	SingleLinkListNode();
+	SingleLinkListNode(const T& _Obj) : Element(_Obj)
+	{
+	}
 
 	SingleLinkListNode * GetChild() { return Child; }
 	T & GetElement() { return Element; }
 
 protected:
-	SingleLinkListNode<T> * Child;
+	SingleLinkListNode<T> * Child = nullptr;
 
 	T Element;
 };
@@ -22,11 +25,36 @@ GS_CLASS SingleLinkList
 public:
 	SingleLinkList();
 
-	explicit SingleLinkList(const size_t Length);
+	//Preallocate
+	explicit SingleLinkList(const size_t _Length) : m_Length(_Length)
+	{
+	}
 
-	SingleLinkListNode<T> & operator[](const size_t Index);
+	SingleLinkListNode<T> & operator[](const size_t Index)
+	{
+		SingleLinkListNode<T>* Result = &Root;
 
-	void PushBack();
+		for (size_t i = 0; i < Index; i++)
+		{
+			Result = Result->GetChild();
+		}
+
+		return *Result;
+	}
+
+	void PushBack(const T & _Obj)
+	{
+		SingleLinkListNode<T>* Next = &Root;
+
+		uint32 i = 0;
+		while (Next->GetChild() != nullptr)
+		{
+			Next = Next->GetChild();
+			i++;
+		}
+
+		Next->Child = new SingleLinkListNode<T>(_Obj);
+	}
 
 	int32 Find(const T& _Obj)
 	{
@@ -46,31 +74,10 @@ public:
 
 		return -1;
 	}
+
+	INLINE uint32 Length() const { return m_Length; }
 protected:
 	SingleLinkListNode<T> Root;
 
 	uint32 m_Length = 0;
 };
-
-template <class T>
-SingleLinkList<T>::SingleLinkList()
-{
-}
-
-template <class T>
-SingleLinkList<T>::SingleLinkList(const size_t Length)
-{
-}
-
-template <class T>
-SingleLinkListNode<T> & SingleLinkList<T>::operator[](const size_t Index)
-{
-	SingleLinkListNode<T> * Result = &Root;
-
-	for (size_t i = 0; i < Index; i++)
-	{
-		Result = Result->GetChild();
-	}
-
-	return *Result;
-}

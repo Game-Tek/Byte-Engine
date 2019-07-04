@@ -2,25 +2,37 @@
 
 #include "Core.h"
 
-class CommandBuffer;
-class Semaphore;
-class Swapchain;
-class Surface;
-class Fence;
-class Mesh;
+#include "Vulkan\Vulkan.h"
+
+#include "RenderContext.h"
+#include "Shader.h"
+#include "Buffer.h"
+#include "CommandBuffer.h"
+#include "Pipelines.h"
+#include "RenderPass.h"
+
+enum class RAPI : uint8
+{
+	NONE, VULKAN
+};
 
 GS_CLASS Renderer
 {
-public:
-	virtual ~Renderer();
-
+	static RAPI RenderAPI;
+	static Renderer* RendererInstance;
+	
 	static Renderer* CreateRenderer();
+public:
+	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
+	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
-	virtual CommandBuffer* CreateCommandBuffer() = 0;
-	virtual Semaphore* CreteSemaphore() = 0;
-	virtual Swapchain* CreateSwapchain() = 0;
-	virtual Surface* CreateSurface() = 0;
-	virtual Fence* CreteFence() = 0;
-	virtual Mesh* CreateMesh() = 0;
+	virtual RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCI) = 0;
+	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
+	virtual Buffer* CreateBuffer(const BufferCreateInfo& _BCI) = 0;
+	virtual CommandBuffer* CreateCommandBuffer(const CommandBufferCreateInfo& _CBCI) = 0;
+	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
+	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
+	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;
+	virtual Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) = 0;
 };
 

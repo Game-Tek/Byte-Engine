@@ -17,12 +17,6 @@ typedef long long int_64;
 	#define INLINE __forceinline
 #endif
 
-//Class setup simplification.
-
-#define GS_CLASS class GS_API
-
-#define GS_STRUCT struct GS_API
-
 //Library import/export.
 
 #ifdef GS_PLATFORM_WIN
@@ -32,6 +26,12 @@ typedef long long int_64;
 		#define GS_API __declspec(dllimport)
 	#endif
 #endif
+
+//Class setup simplification.
+
+#define GS_CLASS class GS_API
+
+#define GS_STRUCT struct GS_API
 
 //Assert
 #ifdef GS_DEBUG
@@ -43,4 +43,7 @@ typedef long long int_64;
 
 //  CASTS
 
-#define DCAST(from, to) dynamic_cast<to*>(from)
+#define DCAST(to, from) dynamic_cast<to>(from)
+#define SCAST(to, from) static_cast<to>(from)
+#define RCAST(to, from) reinterpret_cast<to>(from)
+#define CCAST(to, from) const_cast<to>(from)

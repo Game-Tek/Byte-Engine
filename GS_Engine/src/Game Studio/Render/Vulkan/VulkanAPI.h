@@ -366,6 +366,7 @@ public:
 	}
 };
 
+/*
 GS_CLASS VulkanShader
 {
 public:
@@ -386,7 +387,9 @@ public:
 		vkDestroyShaderModule(DEVICE, ShaderModule, ALLOCATOR);
 	}
 };
+*/
 
+/*
 GS_CLASS VulkanPipelineLayout
 {
 public:
@@ -407,6 +410,7 @@ public:
 		vkDestroyPipelineLayout(DEVICE, PipelineLayout, ALLOCATOR);
 	}
 };
+*/
 
 /*
 GS_CLASS VulkanRenderPass
@@ -513,6 +517,7 @@ public:
 };
 */
 
+/*
 GS_CLASS VulkanCommandPool
 {
 public:
@@ -532,6 +537,7 @@ public:
 		vkDestroyCommandPool(DEVICE, CommandPool, ALLOCATOR);
 	}
 };
+*/
 
 /*
 GS_CLASS VulkanCommandBuffer
@@ -565,6 +571,7 @@ public:
 };
 */
 
+/*
 GS_CLASS VulkanRenderPass
 {
 public:
@@ -594,6 +601,7 @@ public:
 		vkCmdEndRenderPass(_CommandBuffer.CommandBuffer);
 	}
 };
+*/
 
 /*
 GS_CLASS VulkanSemaphore
@@ -614,13 +622,6 @@ public:
 	}
 };
 */
-
-enum class BufferType : uint8
-{
-	BUFFER_VERTEX,
-	BUFFER_INDEX,
-	BUFFER_UNIFORM
-};
 
 /*
 GS_CLASS VulkanBuffer

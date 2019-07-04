@@ -70,8 +70,11 @@ GS_STRUCT RenderPassDescriptor : public PassDescriptor
 
 	SubPassDescriptor SubPasses[8];
 	uint8 SubPassesCount = 1;
-protected:
+};
 
+GS_STRUCT RenderPassCreateInfo
+{
+	RenderPassDescriptor RPDescriptor;
 };
 
 GS_CLASS RenderPass

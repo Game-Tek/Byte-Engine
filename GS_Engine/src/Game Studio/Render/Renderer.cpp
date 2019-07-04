@@ -1,14 +1,16 @@
 #include "Renderer.h"
 
-#ifdef GS_RAPI_VULKAN
+#include "Vulkan\Vulkan.h"
 #include "Vulkan\VulkanRenderer.h"
-#endif // GS_RAPI_VULKAN
+
+RAPI Renderer::RenderAPI = RAPI::NONE;
+Renderer* Renderer::RendererInstance = CreateRenderer();
 
 Renderer* Renderer::CreateRenderer()
 {
-#ifdef GS_RAPI_VULKAN
-	return new VulkanRenderer();
-#endif // GS_RAPI_VULKAN
-
-	return nullptr;
+	switch (RenderAPI)
+	{
+	case RAPI::NONE:		return nullptr;
+	case RAPI::VULKAN:		return new VulkanRenderer();
+	}
 }

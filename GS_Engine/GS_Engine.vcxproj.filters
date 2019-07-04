@@ -219,6 +219,9 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="VulkanRenderTargets.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanShader.h" />
+    <ClInclude Include="src\Game Studio\Tuple.h" />
+    <ClInclude Include="src\Game Studio\Render\Buffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -275,6 +278,7 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
     <ClCompile Include="VulkanRenderTargets.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanShader.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -9,12 +9,20 @@ class VulkanSwapchain;
 
 GS_CLASS VulkanRenderPass final : public RenderPass, public VulkanObject
 {
-	VkRenderPass RenderPass;
+	Vk_RenderPass RenderPass;
 public:
 	VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor & _RPD);
 	~VulkanRenderPass();
 
-	void AddSubPass() override final;
+	INLINE const Vk_RenderPass& GetVk_RenderPass() const { return RenderPass; }
+};
+
+class Vk_RenderPass : public VulkanObject
+{
+	VkRenderPass RenderPass = nullptr;
+public:
+	Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD);
+	~Vk_RenderPass();
 
 	INLINE VkRenderPass GetVkRenderPass() const { return RenderPass; }
 };

@@ -2,12 +2,33 @@
 
 #include "Core.h"
 
+#include "Extent.h"
+
 class Mesh;
 class VertexBuffer;
 class IndexBuffer;
 class RenderPass;
 class GraphicsPipeline;
 class ComputePipeline;
+class Framebuffer;
+
+GS_STRUCT CommandBufferCreateInfo
+{
+
+};
+
+GS_STRUCT DrawInfo
+{
+	uint16 IndexCount = 0;
+	uint16 InstanceCount = 1;
+};
+
+GS_STRUCT RenderPassBeginInfo
+{
+	RenderPass* RenderPass = nullptr;
+	Framebuffer* Framebuffer = nullptr;
+	Extent2D RenderArea;
+};
 
 GS_CLASS CommandBuffer
 {
@@ -28,6 +49,8 @@ public:
 	//  BIND COMMANDS
 	//    BIND BUFFER COMMANDS
 
+
+	virtual void BindMesh(Mesh* _Mesh) = 0;
 	//Adds a BindVertexBuffer command to the buffer.
 	virtual void BindVertexBuffer(VertexBuffer * _VB) = 0;
 	//Adds a BindIndexBuffer command to the buffer.
@@ -44,7 +67,7 @@ public:
 	//  DRAW COMMANDS
 
 	//Adds a DrawIndexed command to the buffer.
-	virtual void DrawIndexed(uint16 _IndexCount) = 0;
+	virtual void DrawIndexed(const DrawInfo & _DI) = 0;
 	//Adds a DrawIndexedInstanced command to the buffer.
 	virtual void DrawIndexedInstanced(uint16 _IndexCount) = 0;
 
@@ -56,7 +79,7 @@ public:
 	//  RENDER PASS COMMANDS
 
 	//Adds a BeginRenderPass command to the buffer.
-	virtual void BeginRenderPass(RenderPass * _RP) = 0;
+	virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
 	//Adds a EndRenderPass command to the buffer.
 	virtual void EndRenderPass(RenderPass* _RP) = 0;
 };

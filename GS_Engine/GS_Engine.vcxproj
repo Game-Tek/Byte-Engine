@@ -100,6 +100,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Extent.h" />
+    <ClInclude Include="src\Game Studio\Render\Buffer.h" />
     <ClInclude Include="src\Game Studio\Render\CommandBuffer.h" />
     <ClInclude Include="src\Game Studio\FrameGraph.h" />
     <ClInclude Include="src\Game Studio\HashMap.hpp" />
@@ -127,6 +128,7 @@
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanShader.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanSync.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
@@ -159,6 +161,7 @@
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanAPI.h" />
+    <ClInclude Include="src\Game Studio\Tuple.h" />
     <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.h" />
     <ClInclude Include="src\GameStudio.h" />
@@ -193,6 +196,7 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanShader.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanSync.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />

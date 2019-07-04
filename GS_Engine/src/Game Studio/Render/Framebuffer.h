@@ -8,6 +8,12 @@
 class ColorRenderTarget;
 class DepthStencilRenderTarget;
 
+GS_STRUCT FramebufferCreateInfo
+{
+	RenderPass* RenderPass;
+	Extent2D Extent;
+};
+
 GS_CLASS Framebuffer
 {
 	FVector<ColorRenderTarget *>		ColorRenderTargets;

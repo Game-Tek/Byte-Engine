@@ -2,17 +2,19 @@
 
 #include "Vulkan.h"
 
-VulkanFramebuffer::VulkanFramebuffer(VkDevice _Device) : VulkanObject(_Device)
-{
-	VkFramebufferCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-	CreateInfo.renderPass = renderPass;
-	CreateInfo.attachmentCount = 1;
-	CreateInfo.pAttachments = attachments;
-	CreateInfo.width = swapChainExtent.width;
-	CreateInfo.height = swapChainExtent.height;
-	CreateInfo.layers = 1;
+#include "VulkanRenderPass.h"
 
-	GS_VK_CHECK(vkCreateFramebuffer(m_Device, &CreateInfo, ALLOCATOR, &Framebuffer), "Failed to create Frambuffer!")
+VulkanFramebuffer::VulkanFramebuffer(VkDevice _Device, RenderPass* _RP, Extent2D _Extent) : VulkanObject(_Device)
+{
+	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+	FramebufferCreateInfo.renderPass = SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass().GetVkRenderPass();
+	FramebufferCreateInfo.attachmentCount = 1;
+	FramebufferCreateInfo.pAttachments = attachments;
+	FramebufferCreateInfo.width = _Extent.Width;
+	FramebufferCreateInfo.height = _Extent.Height;
+	FramebufferCreateInfo.layers = 1;
+
+	GS_VK_CHECK(vkCreateFramebuffer(m_Device, &FramebufferCreateInfo, ALLOCATOR, &Framebuffer), "Failed to create Framebuffer!")
 }
 
 VulkanFramebuffer::~VulkanFramebuffer()

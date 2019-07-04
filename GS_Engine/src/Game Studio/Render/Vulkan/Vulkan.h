@@ -110,3 +110,13 @@ VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 	default:									return VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 }
+VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
+{
+	switch (_ST)
+	{
+	case ShaderType::VERTEX_SHADER:		return VK_SHADER_STAGE_VERTEX_BIT;
+	case ShaderType::FRAGMENT_SHADER:	return VK_SHADER_STAGE_FRAGMENT_BIT;
+	case ShaderType::COMPUTE_SHADER:	return VK_SHADER_STAGE_COMPUTE_BIT;
+	default:							return VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
+	}
+}

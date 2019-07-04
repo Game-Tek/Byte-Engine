@@ -1,6 +1,12 @@
 #include "Vulkan.h"
 #include "VulkanRenderer.h"
 
+#include "VulkanShader.h"
+#include "VulkanRenderContext.h"
+#include "VulkanBuffers.h"
+#include "VulkanPipelines.h"
+#include "VulkanRenderPass.h"
+
 struct QueueInfo
 {
 	VkDeviceQueueCreateInfo DeviceQueueCreateInfo;
@@ -11,19 +17,43 @@ struct QueueInfo
 
 //  VULKAN RENDERER
 
-VulkanRenderer::VulkanRenderer()
+VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance())
 {
 }
-
 
 VulkanRenderer::~VulkanRenderer()
 {
 }
 
 
+Shader* VulkanRenderer::CreateShader(const ShaderCreateInfo& _SI)
+{
+	return new VulkanShader(Device.GetVkDevice(), _SI.ShaderName, _SI.Type);
+}
+
+RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCI)
+{
+	return new VulkanRenderContext(Device.GetVkDevice(), Instance.GetVkInstance(), Device.GetVkPhysicalDevice(), Device);
+}
+
+Buffer* VulkanRenderer::CreateBuffer(const BufferCreateInfo& _BCI)
+{
+	return new VulkanBuffer();
+}
+
+GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
+{
+	return new VulkanGraphicsPipeline(Device.GetVkDevice(), _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.StagesInfo);
+}
+
+RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
+{
+	return new VulkanRenderPass(Device.GetVkDevice(), _RPCI.RPDescriptor);
+}
+
 //  VULKAN INSTANCE
 
-Vulkan_Instance::Vulkan_Instance(const char * _AppName, const FVector<const char*>& _Extensions)
+Vulkan_Instance::Vulkan_Instance(const char * _AppName)
 {
 	VkApplicationInfo AppInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	AppInfo.apiVersion = VK_API_VERSION_1_1;	//Should check if version is available vi vkEnumerateInstanceVersion().
@@ -42,8 +72,8 @@ Vulkan_Instance::Vulkan_Instance(const char * _AppName, const FVector<const char
 	InstanceCreateInfo.pApplicationInfo = &AppInfo;
 	InstanceCreateInfo.enabledLayerCount = 1;
 	InstanceCreateInfo.ppEnabledLayerNames = InstanceLayers;
-	InstanceCreateInfo.enabledExtensionCount = _Extensions.length();
-	InstanceCreateInfo.ppEnabledExtensionNames = _Extensions.data();
+	InstanceCreateInfo.enabledExtensionCount = 0;
+	InstanceCreateInfo.ppEnabledExtensionNames = nullptr;
 
 	GS_VK_CHECK(vkCreateInstance(&InstanceCreateInfo, ALLOCATOR, &Instance), "Failed to create Instance!")
 }
@@ -66,10 +96,14 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 
 	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
-	FVector<QueueInfo> QueueInfos(1);
+	FVector<QueueInfo> QueueInfos(3);
 
-	QueueInfos[1].QueueFlagBits = VK_QUEUE_GRAPHICS_BIT;
+	QueueInfos[0].QueueFlagBits = VK_QUEUE_GRAPHICS_BIT;
+	QueueInfos[0].QueuePriority = 1.0f;
+	QueueInfos[1].QueueFlagBits = VK_QUEUE_COMPUTE_BIT;
 	QueueInfos[1].QueuePriority = 1.0f;
+	QueueInfos[2].QueueFlagBits = VK_QUEUE_TRANSFER_BIT;
+	QueueInfos[2].QueuePriority = 1.0f;
 
 	for (uint8 i = 0; i < QueueInfos.length(); i++)
 	{
@@ -86,11 +120,15 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 	DeviceCreateInfo.ppEnabledExtensionNames = DeviceExtensions;
 
 	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create logical device!")
+
+	vkGetDeviceQueue(Device, QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex, 0, &GraphicsQueue);
+	vkGetDeviceQueue(Device, QueueInfos[1].DeviceQueueCreateInfo.queueFamilyIndex, 0, &ComputeQueue);
+	vkGetDeviceQueue(Device, QueueInfos[2].DeviceQueueCreateInfo.queueFamilyIndex, 0, &TransferQueue);
 }
 
 Vulkan_Device::~Vulkan_Device()
 {
-	vkDestroyDevice(m_Device, ALLOCATOR);
+	vkDestroyDevice(Device, ALLOCATOR);
 }
 
 void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)
@@ -160,5 +198,19 @@ uint8 Vulkan_Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
 	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 254;
 	case VK_PHYSICAL_DEVICE_TYPE_CPU: return 253;
 	default: return 0;
+	}
+}
+
+uint32 Vulkan_Device::FindMemoryType(uint32 _TypeFilter, VkMemoryPropertyFlags _Properties)
+{
+	VkPhysicalDeviceMemoryProperties MemoryProperties;
+	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
+
+	for (uint32 i = 0; i < MemoryProperties.memoryTypeCount; i++)
+	{
+		if ((_TypeFilter & (1 << i)) && (MemoryProperties.memoryTypes[i].propertyFlags & _Properties) == _Properties)
+		{
+			return i;
+		}
 	}
 }

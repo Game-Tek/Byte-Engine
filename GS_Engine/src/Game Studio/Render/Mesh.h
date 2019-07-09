@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "FVector.hpp"
-#include "String.h"
+#include "FString.h"
 
 GS_STRUCT DataType
 {

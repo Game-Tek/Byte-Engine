@@ -42,7 +42,7 @@ MAKE_VK_HANDLE(VkPhysicalDevice)
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
-enum VkMemoryPropertyFlags;
+enum VkMemoryPropertyFlagBits;
 
 GS_CLASS Vulkan_Device
 {

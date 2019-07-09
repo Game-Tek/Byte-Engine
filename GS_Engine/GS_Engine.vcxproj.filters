@@ -108,9 +108,6 @@
     <ClInclude Include="src\Game Studio\Line.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\ResourceManager.h">
-      <Filter>Engine\Resource Manager</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Functor.h">
       <Filter>Misc</Filter>
     </ClInclude>
@@ -156,9 +153,6 @@
     <ClInclude Include="src\Game Studio\Octree.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
-    <ClInclude Include="src\Game Studio\String.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
@@ -219,6 +213,9 @@
     <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Window.h" />
+    <ClInclude Include="src\Game Studio\FString.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -226,9 +223,6 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine\Clock</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\ResourceManager.cpp">
-      <Filter>Engine\Resource Manager</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>

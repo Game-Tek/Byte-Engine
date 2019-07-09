@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "String.h"
+#include "FString.h"
 
 //Base class representation of all types of resources that can be loaded into the engine.
 GS_CLASS Resource

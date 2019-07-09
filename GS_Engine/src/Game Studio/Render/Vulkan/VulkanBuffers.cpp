@@ -5,6 +5,8 @@
 #include "..\Renderer.h"
 #include "VulkanRenderer.h"
 
+#include <cstring>
+
 // BASE BUFFER
 
 VulkanBuffer::VulkanBuffer(VkDevice _Device, const Vulkan_Device& _VKD, void* _Data, size_t _BufferSize, VkBufferUsageFlagBits _BufferFlag) : VulkanObject(_Device)

@@ -2,7 +2,7 @@
 
 #include "Logger.h"
 
-#include "String.h"
+#include "FString.h"
 
 #include <assimp/scene.h>
 #include <assimp/Importer.hpp>

@@ -1,6 +1,6 @@
 #include "Id.h"
 
-#include "String.h"
+#include "FString.h"
 
 Id::Id(const char * Text): HashedString(HashString(Text))
 {

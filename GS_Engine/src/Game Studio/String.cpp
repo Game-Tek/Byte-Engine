@@ -1,4 +1,4 @@
-#include "String.h"
+#include "FString.h"
 
 String::String() : Array(10)
 {
@@ -15,11 +15,6 @@ String::String(const char * In, const size_t Length) : Array(const_cast<char *>(
 
 String::String(const String & Other) : Array(Other.Array)
 {
-}
-
-String::String(const char _In[]) : Array(CCAST(char*, _In), StringLength(_In))
-{
-
 }
 
 String & String::operator=(const char * In)

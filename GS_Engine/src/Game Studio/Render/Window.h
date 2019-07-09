@@ -3,11 +3,11 @@
 #include "Core.h"
 
 #include "Extent.h"
-#include "String.h"
+#include "FString.h"
 
 #include "..\Math\Vector2.h"
 
-#include "..\..\..\InputEnums.h"
+#include "..\InputEnums.h"
 
 enum class WindowFit : uint8
 {

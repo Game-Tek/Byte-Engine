@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "Clock.h"
-#include "Window.h"
+#include "Render\Window.h"
 #include "Render\Renderer.h"
 #include "InputManager.h"
 #include "ResourceManager.h"

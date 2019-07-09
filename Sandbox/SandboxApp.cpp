@@ -6,7 +6,7 @@ public:
 	Sandbox()
 	{
 		WindowCreateInfo WCI;
-		Renderer::GetRenderer()->CreateWindow();
+		auto Window = Renderer::GetRenderer()->CreateWindow(WCI);
 
 		RenderContextCreateInfo RCCI;
 		RCCI.Extent = Extent2D(1280, 720);
@@ -28,10 +28,6 @@ public:
 		GPCI.StagesInfo.Shader[1] = FS;
 		GPCI.SwapchainSize = RCCI.Extent;
 		Renderer::GetRenderer()->CreateGraphicsPipeline(GPCI);
-
-		CommandBufferCreateInfo CBCI;
-		CBCI;
-		Renderer::GetRenderer()->CreateCommandBuffer(CBCI);
 	}
 
 	~Sandbox()

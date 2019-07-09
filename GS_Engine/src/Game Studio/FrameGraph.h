@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FVector.hpp"
-#include "String.h"
+#include "FString.h"
 
 enum class PassType : uint8
 {

@@ -12,7 +12,6 @@ public:
 
 	//Constructs an String from a C-String.
 	explicit String(const char * In);
-	explicit String(const char _In[]);
 
 	String(const String & Other);
 

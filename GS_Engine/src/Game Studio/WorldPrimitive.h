@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "Transform3.h"
+#include "Math\Transform3.h"
 
 GS_CLASS WorldPrimitive
 {

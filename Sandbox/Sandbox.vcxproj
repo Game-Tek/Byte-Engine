@@ -86,11 +86,9 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Character.cpp" />
     <ClCompile Include="SandboxApp.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Character.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

@@ -6,7 +6,7 @@
 
 #include "StaticMeshResource.h"
 
-#include "String.h"
+#include "FString.h"
 
 Vertex Vertices[] = { { { 50.0f, -100.f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }
 					, { { -50.0f, -50.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }

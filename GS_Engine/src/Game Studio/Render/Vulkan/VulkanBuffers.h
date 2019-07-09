@@ -12,7 +12,7 @@ MAKE_VK_HANDLE(VkDeviceMemory)
 
 class Vulkan_Device;
 
-GS_CLASS VulkanBuffer : public Buffer
+GS_CLASS VulkanBuffer : public Buffer, public VulkanObject
 {
 	VkBuffer Buffer = nullptr;
 	VkDeviceMemory Memory = nullptr;

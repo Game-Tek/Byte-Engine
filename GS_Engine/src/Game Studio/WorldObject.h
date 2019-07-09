@@ -4,7 +4,7 @@
 
 #include "Object.h"
 
-#include "Transform3.h"
+#include "Math\Transform3.h"
 
 class GameInstance;
 class RenderProxy;

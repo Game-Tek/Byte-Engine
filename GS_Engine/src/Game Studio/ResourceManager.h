@@ -20,7 +20,7 @@ public:
 
 	StaticMeshResource * GetResource(const String & Path)
 	{
-		for (uint16 i = 0; i < LoadedResources.length(); i++)
+		for (uint16 i = 0; i < LoadedResources.Length(); i++)
 		{
 			if (LoadedResources[i]->GetPath() == Path)
 			{

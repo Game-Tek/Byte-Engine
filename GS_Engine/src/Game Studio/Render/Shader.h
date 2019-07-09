@@ -4,13 +4,6 @@
 
 #include "RenderCore.h"
 
-enum class ShaderType : uint8
-{
-	VERTEX_SHADER,
-	FRAGMENT_SHADER,
-	COMPUTE_SHADER
-};
-
 GS_STRUCT ShaderCreateInfo
 {
 	ShaderType Type;

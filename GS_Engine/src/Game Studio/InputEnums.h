@@ -1,6 +1,15 @@
 #pragma once
 
-enum KeyboardKeys
+#include "Core.h"
+
+enum class KeyState : uint8
+{
+	PRESSED, RELEASED
+};
+
+#define MAX_KEYBOARD_KEYS 58
+
+enum class KeyboardKeys : uint8
 {
 	Q,
 	W,
@@ -50,7 +59,8 @@ enum KeyboardKeys
 	RShift,
 	LShift,
 
-	Control,
+	RControl,
+	LControl,
 
 	Alt,
 	AltGr,
@@ -70,7 +80,7 @@ enum KeyboardKeys
 	Numpad6,
 	Numpad7,
 	Numpad8,
-	Numpad9
+	Numpad9,
 };
 
 enum JoystickButtons

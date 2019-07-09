@@ -86,3 +86,10 @@ enum class StoreOperations : uint8
 	//We want to store the result of the render pass to this render attachment.
 	STORE
 };
+
+enum class ShaderType : uint8
+{
+	VERTEX_SHADER,
+	FRAGMENT_SHADER,
+	COMPUTE_SHADER
+};

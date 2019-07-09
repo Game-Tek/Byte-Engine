@@ -17,6 +17,11 @@ String::String(const String & Other) : Array(Other.Array)
 {
 }
 
+String::String(const char _In[]) : Array(CCAST(char*, _In), StringLength(_In))
+{
+
+}
+
 String & String::operator=(const char * In)
 {
 	Array.recreate(const_cast<char *>(In), StringLength(In));

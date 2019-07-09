@@ -1,17 +1,23 @@
 #include "Vulkan.h"
 
 #include "VulkanRenderContext.h"
+#include "VulkanRenderPass.h"
+#include "VulkanFramebuffer.h"
+#include "VulkanPipelines.h"
 
-HWND mm;
+#include "..\Window.h"
+#include "..\Platform\Windows\WindowsWindow.h"
 
 //  VULKAN RENDER CONTEXT
 
-VulkanRenderContext::VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, VkQueue _PresentationQueue) : 
-	Surface(_Device, _Instance, _PD, mm),
+VulkanRenderContext::VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window,VkQueue _PresentationQueue, uint32 _PresentationQueueIndex) : 
+	Surface(_Device, _Instance, _PD, _Window),
 	Swapchain(_Device, _PD, Surface.GetVkSurface(), Surface.GetVkSurfaceFormat(), Surface.GetVkColorSpaceKHR(), Surface.GetVkExtent2D()),
 	PresentationQueue(_PresentationQueue),
 	ImageAvailable(_Device),
-	RenderFinished(_Device)
+	RenderFinished(_Device),
+	CommandPool(_Device, _PresentationQueueIndex),
+	CommandBuffer{ { _Device, CommandPool.GetVkCommandPool() }, { _Device, CommandPool.GetVkCommandPool() }, { _Device, CommandPool.GetVkCommandPool() } }
 {
 }
 
@@ -52,12 +58,64 @@ void VulkanRenderContext::Present()
 	}
 
 	GS_VK_CHECK(vkQueuePresentKHR(PresentationQueue, &PresentInfo), "Failed to present Vulkan graphics queue!")
+
+	CurrentCommandBufferIndex = (CurrentCommandBufferIndex + 1) % Swapchain.GetImages().length();
+}
+
+void VulkanRenderContext::BeginRecording()
+{
+	VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+	//Hint to primary buffer if this is secondary.
+	BeginInfo.pInheritanceInfo = nullptr;
+
+	GS_VK_CHECK(vkBeginCommandBuffer(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), &BeginInfo), "Failed to begin Command Buffer!")
+}
+
+void VulkanRenderContext::EndRecording()
+{
+	GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer()), "Failed to end Command Buffer!")
+}
+
+void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
+{
+	VkClearValue ClearColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVk_RenderPass().GetVkRenderPass();
+	RenderPassBeginInfo.pClearValues = &ClearColor;
+	RenderPassBeginInfo.clearValueCount = 1;
+	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVk_Framebuffer().GetVkFramebuffer();
+	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(_RPBI.RenderArea);
+	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
+
+	vkCmdBeginRenderPass(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
+{
+	vkCmdEndRenderPass(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer());
+}
+
+void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
+{
+	vkCmdBindPipeline(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetVkGraphicsPipeline());
+}
+
+void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
+{
+	vkCmdBindPipeline(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetVkPipeline());
+}
+
+void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
+{
+	vkCmdDrawIndexed(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
 }
 
 
 //  VULKAN SWAPCHAIN
 
-Vulkan_Swapchain::Vulkan_Swapchain(VkDevice _Device, VkPhysicalDevice _PD, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent) : VulkanObject(_Device)
+Vk_Swapchain::Vk_Swapchain(VkDevice _Device, VkPhysicalDevice _PD, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent) : VulkanObject(_Device)
 {
 	FindPresentMode(PresentMode, _PD, _Surface);
 
@@ -68,17 +126,16 @@ Vulkan_Swapchain::Vulkan_Swapchain(VkDevice _Device, VkPhysicalDevice _PD, VkSur
 
 	uint32_t ImageCount = 0;
 	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
-	SwapchainImages = new VkImage[ImageCount];
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, SwapchainImages);
+	Images.resize(ImageCount);
+	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, Images.data());
 }
 
-Vulkan_Swapchain::~Vulkan_Swapchain()
+Vk_Swapchain::~Vk_Swapchain()
 {
 	vkDestroySwapchainKHR(m_Device, Swapchain, ALLOCATOR);
-	delete[] SwapchainImages;
 }
 
-void Vulkan_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent)
+void Vk_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent)
 {
 	VkSwapchainCreateInfoKHR SwapchainCreateInfo;
 	CreateSwapchainCreateInfo(SwapchainCreateInfo, _Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, Swapchain);
@@ -87,17 +144,18 @@ void Vulkan_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, 
 
 	uint32_t ImageCount = 0;
 	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, SwapchainImages);
+	Images.resize(ImageCount);
+	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, Images.data());
 }
 
-uint32 Vulkan_Swapchain::AcquireNextImage(VkSemaphore _ImageAvailable)
+uint32 Vk_Swapchain::AcquireNextImage(VkSemaphore _ImageAvailable)
 {
 	uint32 ImageIndex = 0;
 	vkAcquireNextImageKHR(m_Device, Swapchain, 0xffffffffffffffff, _ImageAvailable, VK_NULL_HANDLE, &ImageIndex);
 	return ImageIndex;
 }
 
-void Vulkan_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCIK, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
+void Vk_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCIK, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
 {
 	_SCIK.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 	_SCIK.surface = _Surface;
@@ -120,7 +178,7 @@ void Vulkan_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCI
 	_SCIK.clipped = VK_TRUE;
 	_SCIK.oldSwapchain = _OldSwapchain;
 }
-uint8 Vulkan_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
+uint8 Vk_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
 {
 	switch (_PresentMode)
 	{
@@ -129,7 +187,7 @@ uint8 Vulkan_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
 	default:							return 0;
 	}
 }
-void Vulkan_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+void Vk_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t PresentModesCount = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, nullptr);
@@ -154,23 +212,23 @@ void Vulkan_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _
 
 // VULKAN SURFACE
 
-Vulkan_Surface::Vulkan_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, HWND _HWND) : VulkanObject(_Device), m_Instance(_Instance)
+Vk_Surface::Vk_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : VulkanObject(_Device), m_Instance(_Instance)
 {
-	VkWin32SurfaceCreateInfoKHR WcreateInfo = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
-	WcreateInfo.hwnd = _HWND;
-	WcreateInfo.hinstance = GetModuleHandle(nullptr);
+	VkWin32SurfaceCreateInfoKHR WCreateInfo = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+	WCreateInfo.hwnd = SCAST(WindowsWindow*, _Window)->GetWindowObject();
+	WCreateInfo.hinstance = GetModuleHandle(nullptr);
 
-	GS_VK_CHECK(vkCreateWin32SurfaceKHR(m_Instance, &WcreateInfo, ALLOCATOR, &Surface), "Failed to create Windows Surface!")
+	GS_VK_CHECK(vkCreateWin32SurfaceKHR(m_Instance, &WCreateInfo, ALLOCATOR, &Surface), "Failed to create Windows Surface!")
 
 	Format = PickBestFormat(_PD, Surface);
 }
 
-Vulkan_Surface::~Vulkan_Surface()
+Vk_Surface::~Vk_Surface()
 {
 	vkDestroySurfaceKHR(m_Instance, Surface, ALLOCATOR);
 }
 
-VkFormat Vulkan_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+VkFormat Vk_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);

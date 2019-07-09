@@ -101,7 +101,6 @@
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\Render\Buffer.h" />
-    <ClInclude Include="src\Game Studio\Render\CommandBuffer.h" />
     <ClInclude Include="src\Game Studio\FrameGraph.h" />
     <ClInclude Include="src\Game Studio\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
@@ -115,6 +114,7 @@
     <ClInclude Include="src\Game Studio\Render\Fence.h" />
     <ClInclude Include="src\Game Studio\Render\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Mesh.h" />
+    <ClInclude Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
     <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
@@ -123,13 +123,13 @@
     <ClInclude Include="src\Game Studio\Render\Shader.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vulkan.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBase.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanShader.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanSync.h" />
+    <ClInclude Include="src\Game Studio\Render\Window.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\GameInstance.h" />
@@ -162,7 +162,6 @@
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanAPI.h" />
     <ClInclude Include="src\Game Studio\Tuple.h" />
-    <ClInclude Include="src\Game Studio\Window.h" />
     <ClInclude Include="src\Game Studio\String.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
@@ -180,7 +179,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBuffers.h" />
-    <ClInclude Include="VulkanRenderTargets.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\FrameGraph.cpp" />
@@ -191,7 +190,7 @@
     <ClCompile Include="src\Game Studio\Id.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.cpp" />
@@ -210,7 +209,6 @@
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\String.cpp" />
-    <ClCompile Include="src\Game Studio\Window.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="src\Game Studio\World.cpp" />
@@ -219,7 +217,7 @@
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanBuffers.cpp" />
-    <ClCompile Include="VulkanRenderTargets.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

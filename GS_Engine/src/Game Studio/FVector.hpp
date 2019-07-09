@@ -79,6 +79,17 @@ public:
 		delete[] this->Data;
 	}
 
+	void resize(LT _Count)
+	{
+		if (_Count > this->Capacity)
+		{
+			delete[] this->Data;
+			allocate(_Count);
+		}
+
+		return;
+	}
+
 	//Places the passed in element at the end of the array.
 	void push_back(const T & obj)
 	{
@@ -237,7 +248,7 @@ public:
 		return this->Data[index];
 	}
 
-	//Retuns the ocuppied elements count.
+	//Returns the occupied elements count.
 	INLINE size_t length() const
 	{
 		return this->Length;

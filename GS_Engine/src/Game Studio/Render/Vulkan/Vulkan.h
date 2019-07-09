@@ -3,10 +3,6 @@
 #ifdef GS_PLATFORM_WIN
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
 #endif // GS_PLATFORM_WIN
 
 #ifdef GS_DEBUG
@@ -119,4 +115,9 @@ VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
 	case ShaderType::COMPUTE_SHADER:	return VK_SHADER_STAGE_COMPUTE_BIT;
 	default:							return VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
 	}
+}
+
+VkExtent2D Extent2DToVkExtent2D(Extent2D _Extent)
+{
+	return { _Extent.Width, _Extent.Height };
 }

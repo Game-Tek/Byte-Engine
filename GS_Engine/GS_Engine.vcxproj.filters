@@ -135,9 +135,6 @@
     <ClInclude Include="src\Game Studio\Texture.h">
       <Filter>Engine\Render\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Window.h">
-      <Filter>Engine\Render\Window</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Logger.h">
       <Filter>Engine\Log</Filter>
     </ClInclude>
@@ -174,7 +171,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanAPI.h" />
-    <ClInclude Include="src\Game Studio\Render\CommandBuffer.h" />
     <ClInclude Include="src\Game Studio\Render\Mesh.h" />
     <ClInclude Include="src\Game Studio\Render\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
@@ -190,9 +186,7 @@
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\Math\GSM.hpp">
       <Filter>Misc\Math</Filter>
     </ClInclude>
@@ -218,10 +212,13 @@
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Extent.h" />
-    <ClInclude Include="VulkanRenderTargets.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanShader.h" />
     <ClInclude Include="src\Game Studio\Tuple.h" />
     <ClInclude Include="src\Game Studio\Render\Buffer.h" />
+    <ClInclude Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\Render\Window.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application.cpp">
@@ -241,9 +238,6 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp">
       <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\Window.cpp">
-      <Filter>Engine\Render\Window</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Logger.cpp">
       <Filter>Engine\Log</Filter>
@@ -276,9 +270,9 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanCommandBuffer.cpp" />
-    <ClCompile Include="VulkanRenderTargets.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanShader.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

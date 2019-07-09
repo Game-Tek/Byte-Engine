@@ -24,6 +24,8 @@ struct VkPipelineColorBlendStateCreateInfo;
 struct VkPipelineDynamicStateCreateInfo;
 struct VkExtent2D;
 
+MAKE_VK_HANDLE(VkPipelineLayout)
+
 class VulkanShader;
 struct VulkanStageInfo;
 
@@ -34,20 +36,21 @@ GS_CLASS VulkanGraphicsPipeline final : public GraphicsPipeline
 public:
 	VulkanGraphicsPipeline(VkDevice _Device, RenderPass * _RP, Extent2D _SwapchainSize, const StageInfo& Stages);
 	~VulkanGraphicsPipeline();
+
+	INLINE const Vk_GraphicsPipeline& GetVk_GraphicsPipeline() const { return Pipeline; }
 };
 
-GS_CLASS VulkanComputePipeline final : public ComputePipeline, public VulkanObject
+GS_CLASS VulkanComputePipeline final : public ComputePipeline
 {
-	VkPipeline ComputePipeline = nullptr;
+	Vk_ComputePipeline ComputePipeline;
 public:
 	VulkanComputePipeline(VkDevice _Device);
 	~VulkanComputePipeline();
 
-	INLINE VkPipeline GetVkComputePipeline() const { return ComputePipeline; }
+	INLINE const Vk_ComputePipeline& GetVk_ComputePipeline() const { return ComputePipeline; }
 
 };
 
-MAKE_VK_HANDLE(VkPipelineLayout)
 
 GS_CLASS Vk_GraphicsPipeline : public VulkanObject
 {
@@ -67,6 +70,16 @@ public:
 	~Vk_GraphicsPipeline();
 
 	INLINE VkPipeline GetVkGraphicsPipeline() const { return GraphicsPipeline; }
+};
+
+GS_CLASS Vk_ComputePipeline : public VulkanObject
+{
+	VkPipeline ComputePipeline = nullptr;
+public:
+	Vk_ComputePipeline();
+	~Vk_ComputePipeline();
+
+	INLINE VkPipeline GetVkPipeline() const { return ComputePipeline; }
 };
 
 GS_CLASS Vk_PipelineLayout : public VulkanObject

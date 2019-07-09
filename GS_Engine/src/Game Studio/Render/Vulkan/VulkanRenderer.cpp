@@ -33,12 +33,16 @@ Shader* VulkanRenderer::CreateShader(const ShaderCreateInfo& _SI)
 
 RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCI)
 {
-	return new VulkanRenderContext(Device.GetVkDevice(), Instance.GetVkInstance(), Device.GetVkPhysicalDevice(), Device);
+	return new VulkanRenderContext(Device.GetVkDevice(),
+									Instance.GetVkInstance(),
+									Device.GetVkPhysicalDevice(),
+									_RCI.Window, Device.GetGraphicsQueue(),
+									Device.GetGraphicsQueueIndex());
 }
 
 Buffer* VulkanRenderer::CreateBuffer(const BufferCreateInfo& _BCI)
 {
-	return new VulkanBuffer();
+	//return new VulkanBuffer();
 }
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
@@ -121,6 +125,7 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 
 	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create logical device!")
 
+	GraphicsQueueIndex = QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex;
 	vkGetDeviceQueue(Device, QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex, 0, &GraphicsQueue);
 	vkGetDeviceQueue(Device, QueueInfos[1].DeviceQueueCreateInfo.queueFamilyIndex, 0, &ComputeQueue);
 	vkGetDeviceQueue(Device, QueueInfos[2].DeviceQueueCreateInfo.queueFamilyIndex, 0, &TransferQueue);
@@ -201,7 +206,7 @@ uint8 Vulkan_Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
 	}
 }
 
-uint32 Vulkan_Device::FindMemoryType(uint32 _TypeFilter, VkMemoryPropertyFlags _Properties)
+uint32 Vulkan_Device::FindMemoryType(uint32 _TypeFilter, VkMemoryPropertyFlags _Properties) const
 {
 	VkPhysicalDeviceMemoryProperties MemoryProperties;
 	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);

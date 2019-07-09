@@ -2,14 +2,13 @@
 
 #include "Core.h"
 
-#include "Vulkan\Vulkan.h"
-
 #include "RenderContext.h"
 #include "Shader.h"
 #include "Buffer.h"
-#include "CommandBuffer.h"
 #include "Pipelines.h"
 #include "RenderPass.h"
+#include "Framebuffer.h"
+#include "Window.h"
 
 enum class RAPI : uint8
 {
@@ -26,10 +25,11 @@ public:
 	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
+	Window* CreateWindow(const WindowCreateInfo& _WCI);
+
 	virtual RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCI) = 0;
 	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
 	virtual Buffer* CreateBuffer(const BufferCreateInfo& _BCI) = 0;
-	virtual CommandBuffer* CreateCommandBuffer(const CommandBufferCreateInfo& _CBCI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
 	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;

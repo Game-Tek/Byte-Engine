@@ -11,7 +11,7 @@ GS_CLASS VulkanObject
 protected:
 	VkDevice m_Device = nullptr;
 public:
-	VulkanObject(VkDevice _Device) : m_Device(_Device)
+	explicit VulkanObject(VkDevice _Device) : m_Device(_Device)
 	{
 	}
 

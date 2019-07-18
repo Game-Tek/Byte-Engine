@@ -25,24 +25,14 @@ VulkanRenderer::~VulkanRenderer()
 {
 }
 
-
 Shader* VulkanRenderer::CreateShader(const ShaderCreateInfo& _SI)
 {
 	return new VulkanShader(Device.GetVkDevice(), _SI.ShaderName, _SI.Type);
 }
 
-RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCI)
-{
-	return new VulkanRenderContext(Device.GetVkDevice(),
-									Instance.GetVkInstance(),
-									Device.GetVkPhysicalDevice(),
-									_RCI.Window, Device.GetGraphicsQueue(),
-									Device.GetGraphicsQueueIndex());
-}
-
 Buffer* VulkanRenderer::CreateBuffer(const BufferCreateInfo& _BCI)
 {
-	//return new VulkanBuffer();
+	return new VulkanBuffer(Device.GetVkDevice(), _BCI.Data, _BCI.Size, _BCI.Type, Device.GetTransferQueue(), Context.GetTransientCommandPool(), Device);
 }
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
@@ -53,6 +43,25 @@ GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineC
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
 {
 	return new VulkanRenderPass(Device.GetVkDevice(), _RPCI.RPDescriptor);
+}
+
+ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
+{
+	return new ComputePipeline();
+}
+
+uint8 VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
+{
+	VulkanFramebuffer FB(Device.GetVkDevice(), _FCI.RenderPass, _FCI.Extent, _FCI.Attachments);
+	Framebuffers.push_back(FB);
+	return Framebuffers.length() - 1;
+}
+
+void VulkanRenderer::DestroyFramebuffer(uint8 _Handle)
+{
+	Framebuffers.erase(_Handle);
+
+	return;
 }
 
 //  VULKAN INSTANCE
@@ -129,6 +138,8 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 	vkGetDeviceQueue(Device, QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex, 0, &GraphicsQueue);
 	vkGetDeviceQueue(Device, QueueInfos[1].DeviceQueueCreateInfo.queueFamilyIndex, 0, &ComputeQueue);
 	vkGetDeviceQueue(Device, QueueInfos[2].DeviceQueueCreateInfo.queueFamilyIndex, 0, &TransferQueue);
+
+	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
 }
 
 Vulkan_Device::~Vulkan_Device()
@@ -141,7 +152,7 @@ void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)
 	_QI.DeviceQueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 
 	uint32_t QueueFamiliesCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, nullptr);	//Get the amount of queue families there are in the physical device.
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, VK_NULL_HANDLE);	//Get the amount of queue families there are in the physical device.
 	FVector<VkQueueFamilyProperties> queueFamilies(QueueFamiliesCount);
 	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, queueFamilies.data());
 
@@ -161,10 +172,10 @@ void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)
 	_QI.DeviceQueueCreateInfo.pQueuePriorities = &_QI.QueuePriority;
 }
 
-void Vulkan_Device::CreatePhysicalDevice(VkPhysicalDevice& _PD, VkInstance _Instance)
+void Vulkan_Device::CreatePhysicalDevice(VkPhysicalDevice _PD, VkInstance _Instance)
 {
 	uint32_t DeviceCount = 0;
-	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, nullptr);	//Get the amount of physical devices(GPUs) there are.
+	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, VK_NULL_HANDLE);	//Get the amount of physical devices(GPUs) there are.
 	FVector<VkPhysicalDevice> PhysicalDevices(DeviceCount);
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, PhysicalDevices.data());	//Fill the array with VkPhysicalDevice handles to every physical device (GPU) there is.
 
@@ -199,18 +210,15 @@ uint8 Vulkan_Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
 {
 	switch (_Type)
 	{
-	case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 255;
-	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 254;
-	case VK_PHYSICAL_DEVICE_TYPE_CPU: return 253;
-	default: return 0;
+	case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:		return 255;
+	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:	return 254;
+	case VK_PHYSICAL_DEVICE_TYPE_CPU:				return 253;
+	default:										return 0;
 	}
 }
 
-uint32 Vulkan_Device::FindMemoryType(uint32 _TypeFilter, VkMemoryPropertyFlags _Properties) const
+uint32 Vulkan_Device::FindMemoryType(uint32 _TypeFilter, uint32 _Properties) const
 {
-	VkPhysicalDeviceMemoryProperties MemoryProperties;
-	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
-
 	for (uint32 i = 0; i < MemoryProperties.memoryTypeCount; i++)
 	{
 		if ((_TypeFilter & (1 << i)) && (MemoryProperties.memoryTypes[i].propertyFlags & _Properties) == _Properties)

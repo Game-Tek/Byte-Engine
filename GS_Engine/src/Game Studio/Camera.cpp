@@ -1,5 +1,5 @@
 #include "Camera.h"
-#include "GSM.hpp"
+#include "Math/GSM.hpp"
 
 Camera::Camera(const float FOV) : FOV(FOV)
 {

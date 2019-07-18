@@ -4,6 +4,8 @@
 
 GS_STRUCT Extent2D
 {
+	Extent2D() = default;
+
 	Extent2D(const uint16 _Width, const uint16 _Height) : Width(_Width), Height(_Height)
 	{
 	}

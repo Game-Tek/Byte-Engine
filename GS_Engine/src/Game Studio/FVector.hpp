@@ -2,6 +2,9 @@
 
 #include "Core.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
 
@@ -76,32 +79,33 @@ public:
 
 	~FVector()
 	{
-		delete[] this->Data;
+		free(this->Data);
 	}
 
 	void resize(LT _Count)
 	{
 		if (_Count > this->Capacity)
 		{
-			delete[] this->Data;
-			allocate(_Count);
+			this->Data = realloc(this->Data, _Count * sizeof(T));
 		}
 
 		return;
 	}
 
 	//Places the passed in element at the end of the array.
-	void push_back(const T & obj)
+	LT push_back(const T & obj)
 	{
 		checkfornew(1);
 
 		this->Data[Length] = obj;
 
 		this->Length += 1;
+
+		return Length - 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	void push_back(T arr[], size_t length)
+	LT push_back(T arr[], size_t length)
 	{
 		checkfornew(length);
 
@@ -111,10 +115,12 @@ public:
 		}
 
 		this->Length += length;
+
+		return Length - 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	void push_back(const FVector & other)
+	LT push_back(const FVector & other)
 	{
 		checkfornew(other.Length);
 
@@ -124,6 +130,8 @@ public:
 		}
 
 		this->Length += other.Length;
+
+		return Length - 1;
 	}
 
 	//Deletes the array's last element.
@@ -268,18 +276,15 @@ public:
 
 private:
 	//Allocates a new a array of type T with enough space to hold elementcount elements.
-	T * allocate(const size_t elementcount)
+	static T* allocate(const size_t elementcount)
 	{
-		return new T[elementcount];
+		return SCAST(T*, malloc(elementcount * sizeof(T)));
 	}
 
 	//Fills array to with from.
 	void copyarray(T * from, T * to)
 	{
-		for (size_t i = 0; i < this->Length; i++)
-		{
-			to[i] = from[i];
-		}
+		memcpy(static_cast<void*>(to), static_cast<void*>(from), this->Length * sizeof(T));
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.
@@ -289,13 +294,7 @@ private:
 		{
 			this->Capacity = (this->Length * 2) + additionalelements;
 
-			T * buffer = allocate(this->Capacity);
-
-			copyarray(this->Data, buffer);
-
-			delete[] this->Data;
-
-			this->Data = buffer;
+			this->Data = SCAST(T*, realloc(this->Data, sizeof(T) * this->Capacity));
 		}
 	}
 };

@@ -16,7 +16,6 @@ Renderer* Renderer::CreateRenderer()
 	}
 }
 
-Window* Renderer::CreateWindow(const WindowCreateInfo& _WCI)
+void Renderer::Update()
 {
-	return new WindowsWindow(_WCI.Extent, _WCI.Name);
 }

@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "RenderCore.h"
+#include "FString.h"
 
 GS_STRUCT ShaderCreateInfo
 {

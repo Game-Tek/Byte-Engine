@@ -7,12 +7,7 @@
 #include "VulkanRenderPass.h"
 #include "VulkanShader.h"
 
-GS_STRUCT VulkanStageInfo
-{
-	VkShaderModule Shaders[MAX_SHADER_STAGES];
-	VkShaderStageFlagBits ShaderTypes[MAX_SHADER_STAGES];
-	uint8 ShaderCount = 2;
-};
+
 
 VulkanStageInfo StageInfoToVulkanStageInfo(const StageInfo& _SI)
 {
@@ -39,19 +34,12 @@ VulkanGraphicsPipeline::~VulkanGraphicsPipeline()
 {
 }
 
-VulkanComputePipeline::VulkanComputePipeline(VkDevice _Device) : VulkanObject(_Device)
+VulkanComputePipeline::VulkanComputePipeline(VkDevice _Device) : ComputePipeline(_Device)
 {
-	VkComputePipelineCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-	CreateInfo.stage;
-	CreateInfo.basePipelineHandle = VK_NULL_HANDLE;
-	CreateInfo.basePipelineIndex = -1;
-
-	GS_VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &CreateInfo, ALLOCATOR, &ComputePipeline), "Failed to create Compute Pipeline!")
 }
 
 VulkanComputePipeline::~VulkanComputePipeline()
 {
-	vkDestroyPipeline(m_Device, ComputePipeline, ALLOCATOR);
 }
 
 
@@ -234,6 +222,21 @@ Vk_GraphicsPipeline::Vk_GraphicsPipeline(VkDevice _Device, VkRenderPass _RP, VkE
 Vk_GraphicsPipeline::~Vk_GraphicsPipeline()
 {
 	vkDestroyPipeline(m_Device, GraphicsPipeline, ALLOCATOR);
+}
+
+Vk_ComputePipeline::Vk_ComputePipeline(VkDevice _Device) : VulkanObject(_Device)
+{
+	VkComputePipelineCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+	CreateInfo.stage;
+	CreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+	CreateInfo.basePipelineIndex = -1;
+
+	GS_VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &CreateInfo, ALLOCATOR, &ComputePipeline), "Failed to create Compute Pipeline!")
+}
+
+Vk_ComputePipeline::~Vk_ComputePipeline()
+{
+	vkDestroyPipeline(m_Device, ComputePipeline, ALLOCATOR);
 }
 
 

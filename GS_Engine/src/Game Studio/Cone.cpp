@@ -1,6 +1,6 @@
 #include "Cone.h"
 
-#include "GSM.hpp"
+#include "Math\GSM.hpp"
 
 Cone::Cone(const float Radius, const float Length) : Radius(Radius), Length(Length)
 {

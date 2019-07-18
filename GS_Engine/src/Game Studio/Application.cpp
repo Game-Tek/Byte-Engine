@@ -13,10 +13,7 @@ namespace GS
 		ApplicationInstance = this;
 
 		ClockInstance = new Clock();
-		WindowInstance = new Window(1280, 720, "Game Studio");
-		RendererInstance = new Renderer(WindowInstance);
 		InputManagerInstance = new InputManager();
-		ResourceManagerInstance = new ResourceManager();
 		GameInstanceInstance = new GameInstance();
 	}
 
@@ -26,7 +23,6 @@ namespace GS
 		delete WindowInstance;
 		delete RendererInstance;
 		delete InputManagerInstance;
-		delete ResourceManagerInstance;
 		delete GameInstanceInstance;
 	}
 
@@ -35,8 +31,6 @@ namespace GS
 		while (true/*!ShouldClose()*/)
 		{
 			ClockInstance->OnUpdate();
-			RendererInstance->OnUpdate();
-			WindowInstance->OnUpdate();
 			GameInstanceInstance->OnUpdate();
 
 			//Sleep(100);

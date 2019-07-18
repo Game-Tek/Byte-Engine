@@ -16,7 +16,7 @@ GS_STRUCT GraphicsPipelineCreateInfo
 {
 	StageInfo StagesInfo;
 	Extent2D SwapchainSize;
-	RenderPass* RenderPass;
+	RenderPass* RenderPass = nullptr;
 };
 
 GS_CLASS GraphicsPipeline

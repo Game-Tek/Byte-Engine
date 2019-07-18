@@ -1,17 +1,13 @@
 #include <GameStudio.h>
 
+#include "Game Studio/Render/RenderContext.h"
+
 class Sandbox : public GS::Application
 {
 public:
 	Sandbox()
 	{
-		WindowCreateInfo WCI;
-		auto Window = Renderer::GetRenderer()->CreateWindow(WCI);
-
 		RenderContextCreateInfo RCCI;
-		RCCI.Extent = Extent2D(1280, 720);
-		RCCI.Window = Window;
-		Renderer::GetRenderer()->CreateRenderContext(RCCI);
 
 		ShaderCreateInfo SCIvs;
 		SCIvs.ShaderName = "VertexShader.vert";
@@ -26,6 +22,7 @@ public:
 		GraphicsPipelineCreateInfo GPCI;
 		GPCI.StagesInfo.Shader[0] = VS;
 		GPCI.StagesInfo.Shader[1] = FS;
+		GPCI.StagesInfo.ShaderCount = 2;
 		GPCI.SwapchainSize = RCCI.Extent;
 		Renderer::GetRenderer()->CreateGraphicsPipeline(GPCI);
 	}

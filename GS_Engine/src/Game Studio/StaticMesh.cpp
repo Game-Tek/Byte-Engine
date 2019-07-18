@@ -1,7 +1,5 @@
 #include "StaticMesh.h"
 
-#include "ResourceManager.h"
-
 #include "Application.h"
 
 #include "StaticMeshResource.h"
@@ -18,7 +16,7 @@ StaticMesh::StaticMesh()
 {
 }
 
-StaticMesh::StaticMesh(const String & StaticMeshAsset) : MeshResource(GS::Application::Get()->GetResourceManagerInstance()->GetResource(StaticMeshAsset))
+StaticMesh::StaticMesh(const String & StaticMeshAsset) : MeshResource()
 {
 }
 

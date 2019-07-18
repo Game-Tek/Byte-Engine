@@ -1,6 +1,6 @@
 #include "ConeWithFalloff.h"
 
-#include "GSM.hpp"
+#include "Math\GSM.hpp"
 
 ConeWithFalloff::ConeWithFalloff(const float Radius, const float Length) : Cone(Radius, Length)
 {

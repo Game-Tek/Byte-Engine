@@ -2,30 +2,39 @@
 
 #include "Core.h"
 
-#include "FVector.hpp"
 #include "Extent.h"
 
-class ColorRenderTarget;
-class DepthStencilRenderTarget;
+class Image;
+class RenderPass;
+
+GS_STRUCT FramebufferAttachments
+{
+	Format ColorAttachmentsFormat[8];
+	uint8 ColorAttachmentsCount;
+
+	Format DepthStencilFormat;
+
+	Image* 
+		Images = nullptr;
+};
 
 GS_STRUCT FramebufferCreateInfo
 {
-	RenderPass* RenderPass;
+	RenderPass* RenderPass = nullptr;
 	Extent2D Extent;
+	FramebufferAttachments Attachments;
 };
 
 GS_CLASS Framebuffer
 {
-	FVector<ColorRenderTarget *>		ColorRenderTargets;
-	FVector<DepthStencilRenderTarget *> DepthStencilRenderTargets;
-
 	Extent2D Extent;
 public:
-	Framebuffer(ColorRenderTarget** _CRT, uint8 _CRTCount, DepthStencilRenderTarget** _DSRT, uint8 _DSRTCount, Extent2D _Extent) :
-		ColorRenderTargets(_CRT, _CRTCount),
-		DepthStencilRenderTargets(_DSRT, _DSRTCount),
+	Framebuffer(Extent2D _Extent) :
 		Extent(_Extent)
 	{
 	}
+
 	virtual ~Framebuffer();
+
+	[[nodiscard]] const Extent2D& GetExtent() const { return Extent; }
 };

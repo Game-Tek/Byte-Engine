@@ -9,13 +9,16 @@ enum class ImageLayout : uint8
 	COLOR_ATTACHMENT,
 	DEPTH_STENCIL_ATTACHMENT,
 	DEPTH_STENCIL_READ_ONLY,
+	SHADER_READ,
 	TRANSFER_SOURCE,
 	TRANSFER_DESTINATION,
 	PREINITIALIZED,
+	PRESENTATION
 };
 
-//Specifies all available color formats.
-enum class ColorFormat : uint8
+//Specifies all available color formats and depth/stencil formats.
+//Usually you'll use the DEPTH16_STENCIL8 since it is sufficient form most use cases. If that is not precise enough use the DEPTH24_STENCIL8.
+enum class Format : uint8
 {
 	//INTEGER
 
@@ -40,12 +43,10 @@ enum class ColorFormat : uint8
 	RGB_F16, RGB_F32, RGB_F64,
 	//RGBA
 	RGBA_F16, RGBA_F32, RGBA_F64,
-};
 
-//Specifies all available depth/stencil formats.
-//Usually you'll use the DEPTH16_STENCIL8 since it is sufficient form most use cases. If that is not precise enough use the DEPTH24_STENCIL8.
-enum class DepthStencilFormat : uint8
-{
+
+	//  DEPTH STENCIL
+
 	//A depth-only format with a 16 bit (2 byte) size.
 	DEPTH16,
 	//A depth-only format with a 32 (4 byte) bit size.
@@ -92,4 +93,33 @@ enum class ShaderType : uint8
 	VERTEX_SHADER,
 	FRAGMENT_SHADER,
 	COMPUTE_SHADER
+};
+
+enum class ImageDimensions : uint8
+{
+	IMAGE_1D, IMAGE_2D, IMAGE_3D
+};
+
+enum class ImageType : uint8
+{
+	COLOR, DEPTH, STENCIL, DEPTH_STENCIL
+};
+
+enum class ImageUse : uint8
+{
+	TRANSFER_SOURCE,
+	TRANSFER_DESTINATION,
+	SAMPLE,
+	STORAGE,
+	COLOR_ATTACHMENT,
+	DEPTH_STENCIL_ATTACHMENT,
+	TRANSIENT_ATTACHMENT,
+	INPUT_ATTACHMENT
+};
+
+enum class BufferType : uint8
+{
+	BUFFER_VERTEX,
+	BUFFER_INDEX,
+	BUFFER_UNIFORM
 };

@@ -21,18 +21,24 @@ GS_CLASS Renderer
 	static Renderer* RendererInstance;
 	
 	static Renderer* CreateRenderer();
+
+	Window* Window = nullptr;
+	RenderContext* m_RenderContext = nullptr;
 public:
+	virtual ~Renderer() = default;
 	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
-	Window* CreateWindow(const WindowCreateInfo& _WCI);
+	void Update();
 
-	virtual RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCI) = 0;
+	[[nodiscard]] RenderContext* GetRenderContext() const { return m_RenderContext; }
+
 	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
 	virtual Buffer* CreateBuffer(const BufferCreateInfo& _BCI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
 	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;
-	virtual Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) = 0;
+	virtual uint8 CreateFramebuffer(const FramebufferCreateInfo& _FCI) = 0;
+	virtual void DestroyFramebuffer(uint8 _Handle) = 0;
 };
 

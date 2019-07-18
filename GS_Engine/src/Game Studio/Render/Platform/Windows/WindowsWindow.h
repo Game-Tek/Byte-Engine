@@ -4,11 +4,11 @@
 
 #include "..\..\Window.h"
 
-#include <windef.h>
+#include <Windows.h>
 
 class GLFWwindow;
 
-class WindowsWindow final : public Window
+GS_CLASS WindowsWindow final : public Window
 {
 	HWND WindowObject = nullptr;
 	

@@ -12,11 +12,19 @@ MAKE_VK_HANDLE(VkDeviceMemory)
 
 class Vulkan_Device;
 
-GS_CLASS VulkanBuffer : public Buffer, public VulkanObject
+GS_CLASS Vk_Buffer final : public VulkanObject
 {
 	VkBuffer Buffer = nullptr;
 	VkDeviceMemory Memory = nullptr;
 public:
-	VulkanBuffer(VkDevice _Device, const Vulkan_Device& _VKD, void* _Data, size_t _BufferSize, VkBufferUsageFlagBits _BufferFlag);
+	Vk_Buffer(VkDevice _Device, void* _Data, size_t _BufferSize, VkBufferUsageFlagBits _BufferFlag, VkQueue _Queue, VkCommandPool _CP, const Vulkan_Device& _VD);
+	~Vk_Buffer();
+};
+
+GS_CLASS VulkanBuffer final : public Buffer
+{
+	Vk_Buffer Buffer;
+public:
+	VulkanBuffer(VkDevice _Device, void* _Data, size_t _BufferSize, BufferType _BufferType, VkQueue _Queue, VkCommandPool _CP, const Vulkan_Device& _VD);
 	~VulkanBuffer();
 };

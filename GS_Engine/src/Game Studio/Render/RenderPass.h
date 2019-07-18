@@ -15,30 +15,10 @@ GS_STRUCT AttachmentDescriptor
 	LoadOperations LoadOperation = LoadOperations::UNDEFINED;
 	//Defines the operation that should be run when the attachment is done being rendered to.
 	StoreOperations StoreOperation = StoreOperations::STORE;
-};
 
-//Describes a color attachment.
-GS_STRUCT ColorAttachmentDescriptor : public AttachmentDescriptor
-{
-	ColorAttachmentDescriptor() = default;
-	ColorAttachmentDescriptor(LoadOperations _LOp, StoreOperations _SOp, ColorFormat _CF) : AttachmentDescriptor(_LOp, _SOp), Format(_CF)
-	{
-	}
+	ImageLayout Layout = ImageLayout::GENERAL;
 
-	//Defines the format of this color attachment.
-	ColorFormat Format = ColorFormat::BGRA_I8;
-};
-
-//Describes a depth attachment.
-GS_STRUCT DepthAttachmentDescriptor : public AttachmentDescriptor
-{
-	DepthAttachmentDescriptor() = default;
-	DepthAttachmentDescriptor(LoadOperations _LOp, StoreOperations _SOp, DepthStencilFormat _DSF) : AttachmentDescriptor(_LOp, _SOp), Format(_DSF)
-	{
-	}
-
-	//Defines the format of this depth stencil attachment.
-	DepthStencilFormat Format = DepthStencilFormat::DEPTH16_STENCIL8;
+	Format AttachmentFormat;
 };
 
 //Describes the reference to a render pass attachment for a sub pass.
@@ -55,7 +35,7 @@ GS_STRUCT PassDescriptor
 };
 
 //Describes a subpass.
-GS_STRUCT SubPassDescriptor : public PassDescriptor
+GS_STRUCT SubPassDescriptor : PassDescriptor
 {
 	AttachmentReference ReadColorAttachments[8];
 	uint32 PreserveAttachments[8];
@@ -63,10 +43,10 @@ GS_STRUCT SubPassDescriptor : public PassDescriptor
 };
 
 //Describes a render pass.
-GS_STRUCT RenderPassDescriptor : public PassDescriptor
+GS_STRUCT RenderPassDescriptor : PassDescriptor
 {
-	ColorAttachmentDescriptor ColorAttachments[8];
-	DepthAttachmentDescriptor DepthStencilAttachment;
+	AttachmentDescriptor ColorAttachments[8];
+	AttachmentDescriptor DepthStencilAttachment;
 
 	SubPassDescriptor SubPasses[8];
 	uint8 SubPassesCount = 1;
@@ -80,6 +60,6 @@ GS_STRUCT RenderPassCreateInfo
 GS_CLASS RenderPass
 {
 public:
-	RenderPass(const RenderPassDescriptor& _RPD);
+	RenderPass();
 	virtual ~RenderPass();
 };

@@ -2,11 +2,15 @@
 
 #include "Core.h"
 
+
 #include "..\RenderContext.h"
 #include "VulkanBase.h"
 
 #include "Vk_CommandBuffer.h"
 #include "VulkanSync.h"
+
+#include "VulkanFramebuffer.h"
+#include "FVector.hpp"
 
 enum VkPresentModeKHR;
 enum VkColorSpaceKHR;
@@ -22,38 +26,6 @@ MAKE_VK_HANDLE(VkSurfaceKHR)
 MAKE_VK_HANDLE(VkPhysicalDevice)
 MAKE_VK_HANDLE(VkImage)
 MAKE_VK_HANDLE(VkInstance)
-
-GS_CLASS VulkanRenderContext final : public RenderContext
-{
-	Vk_Surface Surface;
-	Vk_Swapchain Swapchain;
-	VulkanSemaphore ImageAvailable;
-	VulkanSemaphore RenderFinished;
-
-	Vk_CommandPool CommandPool;
-	Vk_CommandBuffer CommandBuffer[3];
-
-	VkQueue PresentationQueue = nullptr;
-
-	uint8 CurrentCommandBufferIndex = 0;
-public:
-	VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window,VkQueue _PresentationQueue, uint32 _PresentationQueueIndex);
-
-	void Present() final override;
-	void Flush() final override;
-	void BeginRecording() final override;
-	void EndRecording() final override;
-	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;
-	void EndRenderPass(RenderPass* _RP) final override;
-	void BindVertexBuffer(VertexBuffer* _VB) final override;
-	void BindIndexBuffer(IndexBuffer* _IB) final override;
-	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
-	void BindComputePipeline(ComputePipeline* _CP) final override;
-	void DrawIndexed(const DrawInfo& _DI) final override;
-	void DrawIndexedInstanced(uint16 _IndexCount) final override;
-	void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) final override;
-
-};
 
 GS_CLASS Vk_Swapchain final : public VulkanObject
 {
@@ -94,4 +66,35 @@ public:
 	INLINE VkFormat GetVkSurfaceFormat()				const { return Format; }
 	INLINE VkColorSpaceKHR GetVkColorSpaceKHR()			const { return ColorSpace; }
 	INLINE VkExtent2D GetVkExtent2D()					const { return Extent; }
+};
+
+GS_CLASS VulkanRenderContext final : public RenderContext
+{
+	Vk_Surface Surface;
+	Vk_Swapchain Swapchain;
+	VulkanSemaphore ImageAvailable;
+	VulkanSemaphore RenderFinished;
+
+	Vk_CommandPool CommandPool;
+	Vk_CommandBuffer CommandBuffer[3];
+
+	VkQueue PresentationQueue = nullptr;
+
+	uint8 CurrentCommandBufferIndex = 0;
+public:
+	VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window,VkQueue _PresentationQueue, uint32 _PresentationQueueIndex);
+
+	void Present() final override;
+	void Flush() final override;
+	void BeginRecording() final override;
+	void EndRecording() final override;
+	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;
+	void EndRenderPass(RenderPass* _RP) final override;
+	void BindVertexBuffer(VertexBuffer* _VB) final override;
+	void BindIndexBuffer(IndexBuffer* _IB) final override;
+	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
+	void BindComputePipeline(ComputePipeline* _CP) final override;
+	void DrawIndexed(const DrawInfo& _DI) final override;
+	void DrawIndexedInstanced(uint16 _IndexCount) final override;
+	void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) final override;
 };

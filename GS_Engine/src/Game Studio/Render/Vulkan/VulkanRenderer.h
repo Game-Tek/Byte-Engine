@@ -2,28 +2,13 @@
 
 #include "Core.h"
 
-#include "..\Renderer.h"
+#include "../Renderer.h"
 
 #include "VulkanBase.h"
 
-GS_CLASS VulkanRenderer final : public Renderer
-{
-	Vulkan_Instance Instance;
-	Vulkan_Device Device;
-public:
-	VulkanRenderer();
-	~VulkanRenderer();
+#include "FVector.hpp"
 
-	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCI) final override;
-	Shader* CreateShader(const ShaderCreateInfo& _SI) final override;
-	Buffer* CreateBuffer(const BufferCreateInfo& _BCI) final override;
-	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) final override;
-	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) final override;
-	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) final override;
-	Framebuffer* CreateFramebuffer();
-
-	INLINE const Vulkan_Device& GetVulkanDevice() const { return Device; }
-};
+#include "VulkanFramebuffer.h"
 
 MAKE_VK_HANDLE(VkInstance)
 
@@ -42,7 +27,7 @@ MAKE_VK_HANDLE(VkPhysicalDevice)
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
-enum VkMemoryPropertyFlagBits;
+struct VkPhysicalDeviceMemoryProperties;
 
 GS_CLASS Vulkan_Device
 {
@@ -53,14 +38,16 @@ GS_CLASS Vulkan_Device
 	VkQueue TransferQueue;
 	VkPhysicalDevice PhysicalDevice = nullptr;
 
+	VkPhysicalDeviceMemoryProperties MemoryProperties = {};
+
 	static void CreateQueueInfo(QueueInfo& _DQCI, VkPhysicalDevice _PD);
-	static void CreatePhysicalDevice(VkPhysicalDevice& _PD, VkInstance _Instance);
+	static void CreatePhysicalDevice(VkPhysicalDevice _PD, VkInstance _Instance);
 	static uint8 GetDeviceTypeScore(VkPhysicalDeviceType _Type);
 public:
 	Vulkan_Device(VkInstance _Instance);
 	~Vulkan_Device();
 
-	uint32 FindMemoryType(uint32 _TypeFilter, VkMemoryPropertyFlags _Properties) const;
+	uint32 FindMemoryType(uint32 _TypeFilter, uint32 _Properties) const;
 	INLINE VkDevice GetVkDevice() const { return Device; }
 	INLINE VkPhysicalDevice GetVkPhysicalDevice() const { return PhysicalDevice; }
 	INLINE VkQueue GetGraphicsQueue() const { return GraphicsQueue; }
@@ -68,3 +55,27 @@ public:
 	INLINE VkQueue GetComputeQueue() const { return ComputeQueue; }
 	INLINE VkQueue GetTransferQueue() const { return TransferQueue; }
 };
+
+GS_CLASS VulkanRenderer final : public Renderer
+{
+	Vulkan_Instance Instance;
+	Vulkan_Device Device;
+
+	FVector<VulkanFramebuffer> Framebuffers;
+public:
+	VulkanRenderer();
+	~VulkanRenderer();
+
+	Shader* CreateShader(const ShaderCreateInfo& _SI) final override;
+	Buffer* CreateBuffer(const BufferCreateInfo& _BCI) final override;
+	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) final override;
+	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) final override;
+	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) final override;
+	uint8 CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
+	void DestroyFramebuffer(uint8 _Handle) final override;
+
+	INLINE const Vulkan_Device& GetVulkanDevice() const { return Device; }
+	INLINE VkDevice GetVkDevice() const { return Device.GetVkDevice(); }
+};
+
+#define VKRAPI SCAST(VulkanRenderer*, Renderer::GetRenderer())

@@ -99,6 +99,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Array.h" />
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\Render\Buffer.h" />
     <ClInclude Include="src\Game Studio\HashMap.hpp" />

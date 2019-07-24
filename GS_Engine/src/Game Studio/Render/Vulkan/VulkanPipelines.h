@@ -43,26 +43,30 @@ public:
 	~Vk_PipelineLayout();
 
 	INLINE VkPipelineLayout GetVkPipelineLayout() { return Layout; }
+
+	INLINE operator VkPipelineLayout() const { return Layout; }
 };
 
 GS_CLASS Vk_GraphicsPipeline final : public VulkanObject
 {
 	VkPipeline GraphicsPipeline = nullptr;
 
-	static void CreateVertexInputState(VkPipelineVertexInputStateCreateInfo& _PVISCI);
-	static void CreateInputAssemblyState(VkPipelineInputAssemblyStateCreateInfo& _PIASCI);
-	static void CreateTessellationState(VkPipelineTessellationStateCreateInfo& _PTSCI);
-	static void CreateViewportState(VkPipelineViewportStateCreateInfo& _PVSCI, VkExtent2D _SwapchainSize);
-	static void CreateRasterizationState(VkPipelineRasterizationStateCreateInfo& _PRSCI);
-	static void CreateMultisampleState(VkPipelineMultisampleStateCreateInfo& _PMSCI);
-	static void CreateDepthStencilState(VkPipelineDepthStencilStateCreateInfo& _PDSSCI);
-	static void CreateColorBlendState(VkPipelineColorBlendStateCreateInfo& _PCBSCI);
-	static void CreateDynamicState(VkPipelineDynamicStateCreateInfo& _PDSCI);
+	static VkPipelineVertexInputStateCreateInfo CreateVertexInputState();
+	static VkPipelineInputAssemblyStateCreateInfo CreateInputAssemblyState();
+	static VkPipelineTessellationStateCreateInfo CreateTessellationState();
+	static VkPipelineViewportStateCreateInfo CreateViewportState(VkExtent2D _SwapchainSize);
+	static VkPipelineRasterizationStateCreateInfo CreateRasterizationState();
+	static VkPipelineMultisampleStateCreateInfo CreateMultisampleState();
+	static VkPipelineDepthStencilStateCreateInfo CreateDepthStencilState();
+	static VkPipelineColorBlendStateCreateInfo CreateColorBlendState();
+	static VkPipelineDynamicStateCreateInfo CreateDynamicState();
 public:
 	Vk_GraphicsPipeline(VkDevice _Device, VkRenderPass _RP, VkExtent2D _SwapchainSize, VkPipelineLayout _PL, const VulkanStageInfo& _SI);
 	~Vk_GraphicsPipeline();
 
 	INLINE VkPipeline GetVkGraphicsPipeline() const { return GraphicsPipeline; }
+
+	INLINE operator VkPipeline() const { return GraphicsPipeline; }
 };
 
 GS_CLASS Vk_ComputePipeline final : public VulkanObject
@@ -79,9 +83,10 @@ GS_CLASS VulkanGraphicsPipeline final : public GraphicsPipeline
 {
 	Vk_PipelineLayout Layout;
 	Vk_GraphicsPipeline Pipeline;
+
 public:
 	VulkanGraphicsPipeline(VkDevice _Device, RenderPass * _RP, Extent2D _SwapchainSize, const StageInfo& Stages);
-	~VulkanGraphicsPipeline();
+	~VulkanGraphicsPipeline() = default;
 
 	INLINE const Vk_GraphicsPipeline& GetVk_GraphicsPipeline() const { return Pipeline; }
 };
@@ -89,10 +94,10 @@ public:
 GS_CLASS VulkanComputePipeline final : public ComputePipeline
 {
 	Vk_ComputePipeline ComputePipeline;
+
 public:
 	VulkanComputePipeline(VkDevice _Device);
-	~VulkanComputePipeline();
+	~VulkanComputePipeline() = default;
 
 	INLINE const Vk_ComputePipeline& GetVk_ComputePipeline() const { return ComputePipeline; }
-
 };

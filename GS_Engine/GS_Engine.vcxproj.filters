@@ -72,9 +72,6 @@
     <ClInclude Include="src\Game Studio\Vertex.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Application.h">
-      <Filter>Engine\Application</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Clock.h">
       <Filter>Engine\Clock</Filter>
     </ClInclude>
@@ -128,9 +125,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Logger.h">
       <Filter>Engine\Log</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\EntryPoint.h">
-      <Filter>Engine\Application</Filter>
     </ClInclude>
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Core.h">
@@ -209,11 +203,14 @@
     <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_Queue.h" />
     <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
+    <ClInclude Include="src\Game Studio\Application\Application.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Application\EntryPoint.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Application.cpp">
-      <Filter>Engine\Application</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine\Clock</Filter>
     </ClCompile>
@@ -260,6 +257,9 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanImage.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_Queue.cpp" />
     <ClCompile Include="src\Game Studio\Render\Window.cpp" />
+    <ClCompile Include="src\Game Studio\Application\Application.cpp">
+      <Filter>Engine\Application</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

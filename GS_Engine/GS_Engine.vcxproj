@@ -150,9 +150,9 @@
     <ClInclude Include="src\Game Studio\Logger.h" />
     <ClInclude Include="src\Game Studio\Clock.h" />
     <ClInclude Include="src\Game Studio\EngineSystem.h" />
-    <ClInclude Include="src\Game Studio\EntryPoint.h" />
+    <ClInclude Include="src\Game Studio\Application\EntryPoint.h" />
     <ClInclude Include="src\Game Studio\Math\GSM.hpp" />
-    <ClInclude Include="src\Game Studio\Application.h" />
+    <ClInclude Include="src\Game Studio\Application\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
@@ -200,7 +200,7 @@
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
-    <ClCompile Include="src\Game Studio\Application.cpp" />
+    <ClCompile Include="src\Game Studio\Application\Application.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />

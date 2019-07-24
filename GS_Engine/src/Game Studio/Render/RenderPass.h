@@ -28,24 +28,20 @@ GS_STRUCT AttachmentReference
 	ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;
 };
 
-//Base class that describes a pass (render pass).
-GS_STRUCT PassDescriptor
-{
-	uint8 ColorAttachmentsCount = 0;
-};
-
 //Describes a subpass.
-GS_STRUCT SubPassDescriptor : PassDescriptor
+GS_STRUCT SubPassDescriptor
 {
 	AttachmentReference ReadColorAttachments[8];
+	uint8 ColorAttachmentsCount = 0;
 	uint32 PreserveAttachments[8];
 	uint8 PreserveAttachmentsCount = 0;
 };
 
 //Describes a render pass.
-GS_STRUCT RenderPassDescriptor : PassDescriptor
+GS_STRUCT RenderPassDescriptor
 {
 	AttachmentDescriptor ColorAttachments[8];
+	uint8 ColorAttachmentsCount = 0;
 	AttachmentDescriptor DepthStencilAttachment;
 
 	SubPassDescriptor SubPasses[8];
@@ -60,6 +56,6 @@ GS_STRUCT RenderPassCreateInfo
 GS_CLASS RenderPass
 {
 public:
-	RenderPass();
-	virtual ~RenderPass();
+	RenderPass() = default;
+	~RenderPass() = default;
 };

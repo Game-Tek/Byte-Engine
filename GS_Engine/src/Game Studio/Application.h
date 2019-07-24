@@ -6,7 +6,6 @@
 #include "Render\Window.h"
 #include "Render\Renderer.h"
 #include "InputManager.h"
-#include "GameInstance.h"
 
 namespace GS
 {
@@ -25,14 +24,12 @@ namespace GS
 		Renderer * GetRendererInstance() const { return RendererInstance; }
 		Clock * GetClockInstance() const { return ClockInstance; }
 		InputManager * GetInputManagerInstance() const { return InputManagerInstance; }
-		GameInstance * GetGameInstanceInstance() const { return GameInstanceInstance; }
 
 	private:
 		Clock * ClockInstance = nullptr;
 		Window * WindowInstance = nullptr;
 		Renderer * RendererInstance = nullptr;
 		InputManager * InputManagerInstance = nullptr;
-		GameInstance * GameInstanceInstance = nullptr;
 
 		static Application * ApplicationInstance;
 

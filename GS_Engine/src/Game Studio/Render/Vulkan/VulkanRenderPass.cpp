@@ -9,14 +9,9 @@ VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor&
 {
 }
 
-VulkanRenderPass::~VulkanRenderPass()
-{
-}
-
 Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : VulkanObject(_Device)
 {
 	FVector<VkAttachmentDescription> Attachments(1 + _RPD.ColorAttachmentsCount);	//Take into account depth/stencil attachment
-
 	//Set color attachments.
 	for(uint8 i = 0; i < Attachments.length() - 1; i++) //Loop through all color attachments(skip extra element for depth/stencil)
 	{
@@ -44,12 +39,12 @@ Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD)
 	FVector<FVector<VkAttachmentReference>> SubpassesReferences(_RPD.SubPassesCount);
 	for(uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
 	{
-		FVector<VkAttachmentReference> f(_RPD.SubPasses[SUBPASS].ColorAttachmentsCount + uint8(1));
+		FVector<VkAttachmentReference> f(_RPD.SubPasses[SUBPASS].ColorAttachmentsCount + uint8(1)); //Add element for depth stencil
 		SubpassesReferences.push_back(f);
 	}
 	for(uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
 	{
-		for (uint8 COLOR_ATTACHMENT = 0; COLOR_ATTACHMENT < SubpassesReferences[SUBPASS].length() - 1; COLOR_ATTACHMENT++)
+		for (uint8 COLOR_ATTACHMENT = 0; COLOR_ATTACHMENT < SubpassesReferences[SUBPASS].length(); COLOR_ATTACHMENT++)
 		{
 			SubpassesReferences[SUBPASS][COLOR_ATTACHMENT].attachment = _RPD.SubPasses[SUBPASS].ReadColorAttachments[COLOR_ATTACHMENT].Index;
 			SubpassesReferences[SUBPASS][COLOR_ATTACHMENT].layout = ImageLayoutToVkImageLayout(_RPD.SubPasses[SUBPASS].ReadColorAttachments[COLOR_ATTACHMENT].Layout);
@@ -73,7 +68,7 @@ Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD)
 	RenderPassCreateInfo.subpassCount = Subpasses.length();
 	RenderPassCreateInfo.pSubpasses = Subpasses.data();
 
-	GS_VK_CHECK(vkCreateRenderPass(VKRAPI->GetVkDevice(), &RenderPassCreateInfo, ALLOCATOR, &RenderPass), "Failed to create RenderPass!")
+	GS_VK_CHECK(vkCreateRenderPass(m_Device, &RenderPassCreateInfo, ALLOCATOR, &RenderPass), "Failed to create RenderPass!")
 }
 
 Vk_RenderPass::~Vk_RenderPass()

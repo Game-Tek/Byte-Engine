@@ -140,7 +140,7 @@ INLINE VkImageType ImageDimensionsToVkImageType(ImageDimensions _ID)
 	}
 }
 
-INLINE uint16 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
+INLINE uint32 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
 {
 	switch (_IT)
 	{

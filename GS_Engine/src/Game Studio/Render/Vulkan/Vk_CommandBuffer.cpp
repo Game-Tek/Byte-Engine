@@ -19,13 +19,14 @@ void Vk_CommandBuffer::Free(VkCommandPool _CP)
 	vkFreeCommandBuffers(m_Device, _CP, 1, &CommandBuffer);
 }
 
-void Vk_CommandBuffer::Submit(VkQueue _Queue, VkFence _Fence)
+void Vk_CommandBuffer::Begin(VkCommandBufferBeginInfo* _CBBI)
 {
-	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	SubmitInfo.commandBufferCount = 1;
-	SubmitInfo.pCommandBuffers = &CommandBuffer;
+	GS_VK_CHECK(vkBeginCommandBuffer(CommandBuffer, _CBBI), "Failed to begin Command Buffer!")
+}
 
-	vkQueueSubmit(_Queue, 1, &SubmitInfo, _Fence);
+void Vk_CommandBuffer::End()
+{
+	GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer), "Failed to end Command Buffer!")
 }
 
 

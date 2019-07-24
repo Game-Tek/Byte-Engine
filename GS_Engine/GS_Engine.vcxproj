@@ -99,12 +99,11 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\Array.h" />
+    <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\Render\Buffer.h" />
     <ClInclude Include="src\Game Studio\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
-    <ClInclude Include="src\Game Studio\Array.hpp" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Id.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
@@ -118,10 +117,11 @@
     <ClInclude Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
     <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Render\Pipelines.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
     <ClInclude Include="src\Game Studio\Render\Semaphore.h" />
     <ClInclude Include="src\Game Studio\Render\Shader.h" />
+    <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_Queue.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\Vulkan.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBase.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
@@ -134,7 +134,6 @@
     <ClInclude Include="src\Game Studio\Render\Window.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
-    <ClInclude Include="src\Game Studio\GameInstance.h" />
     <ClInclude Include="src\Game Studio\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
@@ -173,7 +172,6 @@
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Math\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
-    <ClInclude Include="src\Game Studio\World.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBuffers.h" />
@@ -188,6 +186,7 @@
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_Queue.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanImage.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
@@ -195,9 +194,9 @@
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanShader.cpp" />
     <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanSync.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Window.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
-    <ClCompile Include="src\Game Studio\GameInstance.cpp" />
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
@@ -208,7 +207,6 @@
     <ClCompile Include="src\Game Studio\String.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
-    <ClCompile Include="src\Game Studio\World.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />

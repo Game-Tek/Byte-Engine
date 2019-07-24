@@ -6,6 +6,8 @@
 
 #include "Shader.h"
 
+class RenderPass;
+
 GS_STRUCT StageInfo
 {
 	Shader* Shader[MAX_SHADER_STAGES];

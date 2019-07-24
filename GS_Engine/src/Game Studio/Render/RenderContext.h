@@ -32,13 +32,13 @@ GS_STRUCT RenderPassBeginInfo
 
 GS_STRUCT RenderContextCreateInfo
 {
-	Extent2D Extent;
 	Window* Window = nullptr;
 };
 
 GS_CLASS RenderContext
 {
 public:
+	virtual ~RenderContext() {};
 
 	virtual void OnResize() = 0;
 
@@ -76,8 +76,6 @@ public:
 	
 	//Adds a DrawIndexed command to the buffer.
 	virtual void DrawIndexed(const DrawInfo& _DI) = 0;
-	//Adds a DrawIndexedInstanced command to the buffer.
-	virtual void DrawIndexedInstanced(uint16 _IndexCount) = 0;
 	
 	//  COMPUTE COMMANDS
 	

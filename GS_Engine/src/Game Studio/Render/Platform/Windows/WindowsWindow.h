@@ -3,7 +3,6 @@
 #include "Core.h"
 
 #include "..\..\Window.h"
-
 #include <Windows.h>
 
 class GLFWwindow;
@@ -11,6 +10,7 @@ class GLFWwindow;
 GS_CLASS WindowsWindow final : public Window
 {
 	HWND WindowObject = nullptr;
+	HINSTANCE WindowInstance = nullptr;
 	
 	GLFWwindow* GLFWWindow = nullptr;
 
@@ -21,6 +21,7 @@ public:
 	~WindowsWindow();
 
 	INLINE HWND GetWindowObject() const { return WindowObject; }
+	INLINE HINSTANCE GetHInstance() const { return WindowInstance; }
 
 	virtual void Update();
 };

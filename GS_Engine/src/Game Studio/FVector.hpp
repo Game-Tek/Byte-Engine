@@ -86,7 +86,7 @@ public:
 	{
 		if (_Count > this->Capacity)
 		{
-			this->Data = realloc(this->Data, _Count * sizeof(T));
+			this->Data = SCAST(T*, realloc(this->Data, _Count * sizeof(T)));
 		}
 
 		return;

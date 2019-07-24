@@ -9,6 +9,8 @@ MAKE_VK_HANDLE(VkCommandBuffer)
 MAKE_VK_HANDLE(VkQueue)
 MAKE_VK_HANDLE(VkFence)
 
+struct VkCommandBufferBeginInfo;
+
 GS_CLASS Vk_CommandBuffer final : public VulkanObject
 {
 	VkCommandBuffer CommandBuffer = nullptr;
@@ -17,9 +19,20 @@ public:
 	~Vk_CommandBuffer() = default;
 
 	void Free(VkCommandPool _CP);
-	void Submit(VkQueue _Queue, VkFence _Fence = nullptr);
+	void Begin(VkCommandBufferBeginInfo* _CBBI);
+	void End();
 
 	INLINE VkCommandBuffer GetVkCommandBuffer() const { return CommandBuffer; }
+
+	INLINE operator VkCommandBuffer() const
+	{
+		return CommandBuffer;
+	}
+
+	INLINE operator const VkCommandBuffer*() const
+	{
+		return &CommandBuffer;
+	}
 };
 
 
@@ -33,4 +46,9 @@ public:
 	~Vk_CommandPool();
 
 	INLINE VkCommandPool GetVkCommandPool() const { return CommandPool; }
+
+	INLINE operator VkCommandPool() const
+	{
+		return CommandPool;
+	}
 };

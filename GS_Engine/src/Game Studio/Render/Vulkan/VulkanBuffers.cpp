@@ -7,11 +7,11 @@
 #include <cstring>
 #include "Vk_CommandBuffer.h"
 
-#include "VulkanRenderer.h"
+#include "Vk_Queue.h"
 
 // BASE BUFFER
 
-Vk_Buffer::Vk_Buffer(VkDevice _Device, void* _Data, size_t _BufferSize, VkBufferUsageFlagBits _BufferFlag, VkQueue _Queue, VkCommandPool _CP, const Vulkan_Device& _VD) : VulkanObject(_Device)
+Vk_Buffer::Vk_Buffer(VkDevice _Device, void* _Data, size_t _BufferSize, VkBufferUsageFlagBits _BufferFlag, const Vk_Queue& _Queue, VkCommandPool _CP, const Vulkan_Device& _VD) : VulkanObject(_Device)
 {
 	//  CREATE STAGING MEMORY
 	//FIND BUFFER MEMORY REQUIREMENTS
@@ -63,7 +63,7 @@ Vk_Buffer::Vk_Buffer(VkDevice _Device, void* _Data, size_t _BufferSize, VkBuffer
 	VkCommandBufferBeginInfo CommandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 	CommandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-	vkBeginCommandBuffer(CommandBuffer.GetVkCommandBuffer(), &CommandBufferBeginInfo);
+	CommandBuffer.Begin(&CommandBufferBeginInfo);
 
 	VkBufferCopy MemoryCopyInfo = {};
 	MemoryCopyInfo.srcOffset = 0; // Optional
@@ -71,9 +71,12 @@ Vk_Buffer::Vk_Buffer(VkDevice _Device, void* _Data, size_t _BufferSize, VkBuffer
 	MemoryCopyInfo.size = _BufferSize;
 	vkCmdCopyBuffer(CommandBuffer.GetVkCommandBuffer(), StagingBuffer, Buffer, 1, &MemoryCopyInfo);
 
-	vkEndCommandBuffer(CommandBuffer.GetVkCommandBuffer());
+	CommandBuffer.End();
 
-	CommandBuffer.Submit(_Queue);
+	VkSubmitInfo SubmitInfo = {};
+	SubmitInfo.commandBufferCount = 1;
+	SubmitInfo.pCommandBuffers = CommandBuffer;
+	_Queue.Submit(&SubmitInfo, VK_NULL_HANDLE);
 
 	CommandBuffer.Free(_CP);
 
@@ -99,8 +102,7 @@ VkBufferUsageFlagBits BufferTypeToVkBufferUsageFlagBits(BufferType _BT)
 	}
 }
 
-VulkanBuffer::VulkanBuffer(VkDevice _Device, void* _Data, size_t _BufferSize, BufferType _BufferType, VkQueue _Queue,
-	VkCommandPool _CP, const Vulkan_Device& _VD): Buffer(_Device, _Data, _BufferSize, BufferTypeToVkBufferUsageFlagBits(_BufferType), _Queue, _CP, _VD)
+VulkanBuffer::VulkanBuffer(VkDevice _Device, void* _Data, size_t _BufferSize, BufferType _BufferType, const Vk_Queue& _Queue, VkCommandPool _CP, const Vulkan_Device& _VD): Buffer(_Device, _Data, _BufferSize, BufferTypeToVkBufferUsageFlagBits(_BufferType), _Queue, _CP, _VD)
 {
 }
 

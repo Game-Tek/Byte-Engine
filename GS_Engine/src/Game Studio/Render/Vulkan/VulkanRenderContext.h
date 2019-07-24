@@ -2,20 +2,17 @@
 
 #include "Core.h"
 
-
-#include "..\RenderContext.h"
+#include "../RenderContext.h"
 #include "VulkanBase.h"
 
 #include "Vk_CommandBuffer.h"
 #include "VulkanSync.h"
 
-#include "VulkanFramebuffer.h"
 #include "FVector.hpp"
 
 enum VkPresentModeKHR;
 enum VkColorSpaceKHR;
 enum VkFormat;
-struct VkExtent2D;
 
 class Window;
 
@@ -56,7 +53,6 @@ GS_CLASS Vk_Surface final : public VulkanObject
 	VkSurfaceKHR Surface = nullptr;
 	VkFormat Format = {};
 	VkColorSpaceKHR ColorSpace = {};
-	VkExtent2D Extent = {};
 public:
 
 	Vk_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window);
@@ -65,8 +61,9 @@ public:
 	INLINE VkSurfaceKHR GetVkSurface()					const { return Surface; }
 	INLINE VkFormat GetVkSurfaceFormat()				const { return Format; }
 	INLINE VkColorSpaceKHR GetVkColorSpaceKHR()			const { return ColorSpace; }
-	INLINE VkExtent2D GetVkExtent2D()					const { return Extent; }
 };
+
+class Vulkan_Device;
 
 GS_CLASS VulkanRenderContext final : public RenderContext
 {
@@ -76,13 +73,18 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 	VulkanSemaphore RenderFinished;
 
 	Vk_CommandPool CommandPool;
-	Vk_CommandBuffer CommandBuffer[3];
 
-	VkQueue PresentationQueue = nullptr;
+	Vk_Queue PresentationQueue;
 
-	uint8 CurrentCommandBufferIndex = 0;
+	uint8 CurrentImage = 0;
+	uint8 MaxFramesInFlight = 0;
+
+	FVector<Vk_CommandBuffer> CommandBuffers;
 public:
-	VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window,VkQueue _PresentationQueue, uint32 _PresentationQueueIndex);
+	VulkanRenderContext(const Vulkan_Device& _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window);
+	~VulkanRenderContext() = default;
+
+	void OnResize() final  override;
 
 	void Present() final override;
 	void Flush() final override;
@@ -95,6 +97,5 @@ public:
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
 	void BindComputePipeline(ComputePipeline* _CP) final override;
 	void DrawIndexed(const DrawInfo& _DI) final override;
-	void DrawIndexedInstanced(uint16 _IndexCount) final override;
 	void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) final override;
 };

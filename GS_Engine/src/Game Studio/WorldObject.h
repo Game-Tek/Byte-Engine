@@ -30,6 +30,4 @@ public:
 
 protected:
 	Transform3 Transform;
-
-	GameInstance * GetGameInstance();
 };

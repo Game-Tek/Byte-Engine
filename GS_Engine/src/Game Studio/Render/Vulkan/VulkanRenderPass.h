@@ -1,14 +1,12 @@
 #pragma once
 
-#include "../RenderPass.h"
 #include "VulkanBase.h"
+#include "Render/RenderPass.h"
+
 
 MAKE_VK_HANDLE(VkRenderPass)
 
-class VulkanSwapchain;
-
-
-GS_CLASS Vk_RenderPass : public VulkanObject
+GS_CLASS Vk_RenderPass final : public VulkanObject
 {
 	VkRenderPass RenderPass = nullptr;
 public:
@@ -16,6 +14,8 @@ public:
 	~Vk_RenderPass();
 
 	INLINE VkRenderPass GetVkRenderPass() const { return RenderPass; }
+
+	INLINE operator VkRenderPass() const { return RenderPass; }
 };
 
 GS_CLASS VulkanRenderPass final : public RenderPass
@@ -23,7 +23,7 @@ GS_CLASS VulkanRenderPass final : public RenderPass
 	Vk_RenderPass RenderPass;
 public:
 	VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor & _RPD);
-	~VulkanRenderPass();
+	~VulkanRenderPass() = default;
 
 	INLINE const Vk_RenderPass& GetVk_RenderPass() const { return RenderPass; }
 };

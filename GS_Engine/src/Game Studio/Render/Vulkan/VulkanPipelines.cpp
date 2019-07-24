@@ -242,7 +242,8 @@ Vk_ComputePipeline::~Vk_ComputePipeline()
 
 //  VK PIPELINE LAYOUT
 
-Vk_PipelineLayout::Vk_PipelineLayout(VkDevice _Device) : VulkanObject(_Device)
+Vk_PipelineLayout::Vk_PipelineLayout(VkDevice _Device)
+: VulkanObject(_Device)
 {
 	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	PipelineLayoutCreateInfo.setLayoutCount = 0; // Optional

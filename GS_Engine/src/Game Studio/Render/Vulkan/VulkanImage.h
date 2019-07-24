@@ -28,9 +28,12 @@ enum VkFormat;
 GS_CLASS Vk_ImageView final : public VulkanObject
 {
 	VkImageView ImageView = nullptr;
+
 public:
 	Vk_ImageView(VkDevice _Device, VkImage _Image, VkImageViewType _IVT, VkFormat _Format, VkImageAspectFlagBits _IAFB);
 	~Vk_ImageView();
+
+	INLINE VkImageView GetVkImageView() const { return ImageView; }
 };
 
 GS_CLASS VulkanImage final : public Image
@@ -39,4 +42,6 @@ GS_CLASS VulkanImage final : public Image
 
 public:
 	VulkanImage();
+
+	INLINE VkImageView GetVkImageView() const { return ImageView.GetVkImageView(); }
 };

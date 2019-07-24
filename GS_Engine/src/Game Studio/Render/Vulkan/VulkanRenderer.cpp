@@ -7,6 +7,8 @@
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
 
+#include "Render/Window.h"
+
 struct QueueInfo
 {
 	VkDeviceQueueCreateInfo DeviceQueueCreateInfo;
@@ -17,7 +19,7 @@ struct QueueInfo
 
 //  VULKAN RENDERER
 
-VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance())
+VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance()), TransientCommandPool(Device, Device.GetTransferQueue().GetQueueIndex(), VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)
 {
 }
 
@@ -27,22 +29,22 @@ VulkanRenderer::~VulkanRenderer()
 
 Shader* VulkanRenderer::CreateShader(const ShaderCreateInfo& _SI)
 {
-	return new VulkanShader(Device.GetVkDevice(), _SI.ShaderName, _SI.Type);
+	return new VulkanShader(Device, _SI.ShaderName, _SI.Type);
 }
 
 Buffer* VulkanRenderer::CreateBuffer(const BufferCreateInfo& _BCI)
 {
-	return new VulkanBuffer(Device.GetVkDevice(), _BCI.Data, _BCI.Size, _BCI.Type, Device.GetTransferQueue(), Context.GetTransientCommandPool(), Device);
+	return new VulkanBuffer(Device.GetVkDevice(), _BCI.Data, _BCI.Size, _BCI.Type, Device.GetTransferQueue(), TransientCommandPool, Device);
 }
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
-	return new VulkanGraphicsPipeline(Device.GetVkDevice(), _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.StagesInfo);
+	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.StagesInfo);
 }
 
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
 {
-	return new VulkanRenderPass(Device.GetVkDevice(), _RPCI.RPDescriptor);
+	return new VulkanRenderPass(Device, _RPCI.RPDescriptor);
 }
 
 ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
@@ -50,18 +52,14 @@ ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCrea
 	return new ComputePipeline();
 }
 
-uint8 VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
+Framebuffer* VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 {
-	VulkanFramebuffer FB(Device.GetVkDevice(), _FCI.RenderPass, _FCI.Extent, _FCI.Attachments);
-	Framebuffers.push_back(FB);
-	return Framebuffers.length() - 1;
+	return new VulkanFramebuffer(Device, _FCI.RenderPass, _FCI.Extent, _FCI.Images, _FCI.ImagesCount);
 }
 
-void VulkanRenderer::DestroyFramebuffer(uint8 _Handle)
+RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
-	Framebuffers.erase(_Handle);
-
-	return;
+	return new VulkanRenderContext(Device, Instance.GetVkInstance(), Device.GetVkPhysicalDevice(), _RCCI.Window);
 }
 
 //  VULKAN INSTANCE
@@ -99,6 +97,9 @@ Vulkan_Instance::~Vulkan_Instance()
 
 //  VULKAN DEVICE
 
+
+VkPhysicalDeviceMemoryProperties MemoryProperties = {};
+
 Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 {
 	////////////////////////////////////////
@@ -134,10 +135,9 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 
 	GS_VK_CHECK(vkCreateDevice(PhysicalDevice, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create logical device!")
 
-	GraphicsQueueIndex = QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex;
-	vkGetDeviceQueue(Device, QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex, 0, &GraphicsQueue);
-	vkGetDeviceQueue(Device, QueueInfos[1].DeviceQueueCreateInfo.queueFamilyIndex, 0, &ComputeQueue);
-	vkGetDeviceQueue(Device, QueueInfos[2].DeviceQueueCreateInfo.queueFamilyIndex, 0, &TransferQueue);
+	SetVk_Queue(GraphicsQueue, QueueInfos[0].DeviceQueueCreateInfo.queueFamilyIndex);
+	SetVk_Queue(ComputeQueue, QueueInfos[1].DeviceQueueCreateInfo.queueFamilyIndex);
+	SetVk_Queue(TransferQueue, QueueInfos[2].DeviceQueueCreateInfo.queueFamilyIndex);
 
 	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
 }
@@ -145,6 +145,11 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 Vulkan_Device::~Vulkan_Device()
 {
 	vkDestroyDevice(Device, ALLOCATOR);
+}
+
+void Vulkan_Device::SetVk_Queue(Vk_Queue& _Queue, const uint32 _QueueFamilyIndex)
+{
+	vkGetDeviceQueue(Device, _QueueFamilyIndex, 0, &_Queue.GetVkQueue());
 }
 
 void Vulkan_Device::CreateQueueInfo(QueueInfo& _QI, VkPhysicalDevice _PD)

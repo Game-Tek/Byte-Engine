@@ -2,13 +2,13 @@
 
 #include "Core.h"
 
-#include "../Renderer.h"
+#include "Render/Renderer.h"
 
 #include "VulkanBase.h"
 
-#include "FVector.hpp"
-
 #include "VulkanFramebuffer.h"
+#include "Vk_Queue.h"
+#include "VulkanRenderContext.h"
 
 MAKE_VK_HANDLE(VkInstance)
 
@@ -20,6 +20,11 @@ public:
 	~Vulkan_Instance();
 
 	INLINE VkInstance GetVkInstance() const { return Instance; }
+
+	INLINE operator VkInstance() const
+	{
+		return Instance;
+	}
 };
 
 MAKE_VK_HANDLE(VkQueue)
@@ -27,18 +32,17 @@ MAKE_VK_HANDLE(VkPhysicalDevice)
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
-struct VkPhysicalDeviceMemoryProperties;
 
 GS_CLASS Vulkan_Device
 {
 	VkDevice Device = nullptr;
-	VkQueue GraphicsQueue;
-	uint32 GraphicsQueueIndex;
-	VkQueue ComputeQueue;
-	VkQueue TransferQueue;
 	VkPhysicalDevice PhysicalDevice = nullptr;
 
-	VkPhysicalDeviceMemoryProperties MemoryProperties = {};
+	Vk_Queue GraphicsQueue;
+	Vk_Queue ComputeQueue;
+	Vk_Queue TransferQueue;
+
+	void SetVk_Queue(Vk_Queue& _Queue, const uint32 _QueueFamilyIndex);
 
 	static void CreateQueueInfo(QueueInfo& _DQCI, VkPhysicalDevice _PD);
 	static void CreatePhysicalDevice(VkPhysicalDevice _PD, VkInstance _Instance);
@@ -50,10 +54,15 @@ public:
 	uint32 FindMemoryType(uint32 _TypeFilter, uint32 _Properties) const;
 	INLINE VkDevice GetVkDevice() const { return Device; }
 	INLINE VkPhysicalDevice GetVkPhysicalDevice() const { return PhysicalDevice; }
-	INLINE VkQueue GetGraphicsQueue() const { return GraphicsQueue; }
-	INLINE uint32 GetGraphicsQueueIndex() const { return GraphicsQueueIndex; }
-	INLINE VkQueue GetComputeQueue() const { return ComputeQueue; }
-	INLINE VkQueue GetTransferQueue() const { return TransferQueue; }
+
+	INLINE const Vk_Queue& GetGraphicsQueue() const { return GraphicsQueue; }
+	INLINE const Vk_Queue& GetComputeQueue() const { return ComputeQueue; }
+	INLINE const Vk_Queue& GetTransferQueue() const { return TransferQueue; }
+
+	INLINE operator VkDevice() const
+	{
+		return Device;
+	}
 };
 
 GS_CLASS VulkanRenderer final : public Renderer
@@ -61,7 +70,7 @@ GS_CLASS VulkanRenderer final : public Renderer
 	Vulkan_Instance Instance;
 	Vulkan_Device Device;
 
-	FVector<VulkanFramebuffer> Framebuffers;
+	Vk_CommandPool TransientCommandPool;
 public:
 	VulkanRenderer();
 	~VulkanRenderer();
@@ -71,8 +80,8 @@ public:
 	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) final override;
 	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) final override;
 	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) final override;
-	uint8 CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
-	void DestroyFramebuffer(uint8 _Handle) final override;
+	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
+	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) final override;
 
 	INLINE const Vulkan_Device& GetVulkanDevice() const { return Device; }
 	INLINE VkDevice GetVkDevice() const { return Device.GetVkDevice(); }

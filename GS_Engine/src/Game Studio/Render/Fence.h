@@ -5,5 +5,6 @@
 GS_CLASS Fence
 {
 public:
-	virtual ~Fence();
+	Fence() = default;
+	~Fence() = default;
 };

@@ -2,11 +2,12 @@
 
 #include "Vulkan.h"
 
-VulkanFence::VulkanFence(VkDevice _Device) : VulkanObject(_Device)
+VulkanFence::VulkanFence(VkDevice _Device, bool _StateInitialized) : VulkanObject(_Device)
 {
-	VkFenceCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	VkFenceCreateInfo FenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	FenceCreateInfo.flags = _StateInitialized;
 	
-	GS_VK_CHECK(vkCreateFence(m_Device, &CreateInfo, ALLOCATOR, &Fence), "Failed to create Fence!")
+	GS_VK_CHECK(vkCreateFence(m_Device, &FenceCreateInfo, ALLOCATOR, &Fence), "Failed to create Fence!")
 }
 
 VulkanFence::~VulkanFence()

@@ -7,7 +7,15 @@ class Sandbox : public GS::Application
 public:
 	Sandbox()
 	{
+		WindowCreateInfo WCI;
+		WCI.Extent = { 1280, 720 };
+		WCI.Name = "Game Studio!";
+		WCI.WindowType = WindowFit::NORMAL;
+		Window* mWindow = Window::CreateGSWindow(WCI);
+
 		RenderContextCreateInfo RCCI;
+		RCCI.Window = mWindow;
+		auto RC = Renderer::GetRenderer()->CreateRenderContext(RCCI);
 
 		ShaderCreateInfo SCIvs;
 		SCIvs.ShaderName = "VertexShader.vert";
@@ -23,7 +31,7 @@ public:
 		GPCI.StagesInfo.Shader[0] = VS;
 		GPCI.StagesInfo.Shader[1] = FS;
 		GPCI.StagesInfo.ShaderCount = 2;
-		GPCI.SwapchainSize = RCCI.Extent;
+		GPCI.SwapchainSize = WCI.Extent;
 		Renderer::GetRenderer()->CreateGraphicsPipeline(GPCI);
 	}
 

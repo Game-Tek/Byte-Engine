@@ -1,51 +1,48 @@
 #include "Vulkan.h"
 
+#include "VulkanRenderer.h"
+
 #include "VulkanRenderContext.h"
 #include "VulkanRenderPass.h"
 #include "VulkanFramebuffer.h"
 #include "VulkanPipelines.h"
 
-#include "..\Window.h"
-#include "..\Platform\Windows\WindowsWindow.h"
+#include "Render/Window.h"
+#include "Render/Platform/Windows/WindowsWindow.h"
+#include "VulkanBuffers.h"
 
 //  VULKAN RENDER CONTEXT
 
-VulkanRenderContext::VulkanRenderContext(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window,VkQueue _PresentationQueue, uint32 _PresentationQueueIndex) : 
+VulkanRenderContext::VulkanRenderContext(const Vulkan_Device& _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : 
 	Surface(_Device, _Instance, _PD, _Window),
-	Swapchain(_Device, _PD, Surface.GetVkSurface(), Surface.GetVkSurfaceFormat(), Surface.GetVkColorSpaceKHR(), Surface.GetVkExtent2D()),
-	PresentationQueue(_PresentationQueue),
+	Swapchain(_Device, _PD, Surface.GetVkSurface(), Surface.GetVkSurfaceFormat(), Surface.GetVkColorSpaceKHR(), Extent2DToVkExtent2D(_Window->GetWindowExtent())),
 	ImageAvailable(_Device),
 	RenderFinished(_Device),
-	CommandPool(_Device, _PresentationQueueIndex),
-	CommandBuffer{ { _Device, CommandPool.GetVkCommandPool() }, { _Device, CommandPool.GetVkCommandPool() }, { _Device, CommandPool.GetVkCommandPool() } }
+	PresentationQueue(_Device.GetGraphicsQueue()),
+	CommandPool(_Device, _Device.GetGraphicsQueue().GetQueueIndex()),
+	MaxFramesInFlight(Swapchain.GetImages().length()),
+	CommandBuffers(MaxFramesInFlight)
+{
+	for (uint8 i = 0; i < MaxFramesInFlight; i++)
+	{
+		Vk_CommandBuffer CB(_Device.GetVkDevice(), CommandPool.GetVkCommandPool());
+		CommandBuffers.push_back(CB);
+	}
+}
+
+void VulkanRenderContext::OnResize()
 {
 }
 
 void VulkanRenderContext::Present()
 {
-	/* Initialize semaphores */
-	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	VkSemaphore WaitSemaphores[] = { ImageAvailable.GetVkSemaphore() };
-	VkSemaphore SignalSemaphores[] = { RenderFinished.GetVkSemaphore() };
-
-	/* Submit signal semaphore to graphics queue */
-	VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	{
-		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = WaitSemaphores;
-		submitInfo.pWaitDstStageMask = WaitStages;
-		submitInfo.commandBufferCount = 0;
-		submitInfo.pCommandBuffers = nullptr;
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = SignalSemaphores;
-	}
-	
-	GS_VK_CHECK(vkQueueSubmit(PresentationQueue, 1, &submitInfo, VK_NULL_HANDLE), "Failed to Submit!")
 
 	/* Present result on screen */
-	VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
+	const VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
 
-	uint32 ImageIndex = Swapchain.AcquireNextImage(ImageAvailable.GetVkSemaphore());
+	const uint32 ImageIndex = Swapchain.AcquireNextImage(ImageAvailable.GetVkSemaphore());
+	CurrentImage = ImageIndex;
 
 	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	{
@@ -57,9 +54,29 @@ void VulkanRenderContext::Present()
 		PresentInfo.pResults = nullptr;
 	}
 
-	GS_VK_CHECK(vkQueuePresentKHR(PresentationQueue, &PresentInfo), "Failed to present Vulkan graphics queue!")
+	PresentationQueue.Present(&PresentInfo);
+}
 
-	CurrentCommandBufferIndex = (CurrentCommandBufferIndex + 1) % Swapchain.GetImages().length();
+void VulkanRenderContext::Flush()
+{
+	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	VkSemaphore WaitSemaphores[] = { ImageAvailable.GetVkSemaphore() };
+	VkSemaphore SignalSemaphores[] = { RenderFinished.GetVkSemaphore() };
+	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[CurrentImage] };
+
+	//Each entry in the WaitStages array corresponds to the semaphore with the same index in WaitSemaphores.
+
+	/* Submit signal semaphore to graphics queue */
+	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	SubmitInfo.waitSemaphoreCount = 1;
+	SubmitInfo.pWaitSemaphores = WaitSemaphores;
+	SubmitInfo.pWaitDstStageMask = WaitStages;
+	SubmitInfo.commandBufferCount = 1;
+	SubmitInfo.pCommandBuffers = lCommandBuffers;
+	SubmitInfo.signalSemaphoreCount = 1;
+	SubmitInfo.pSignalSemaphores = SignalSemaphores;
+
+	PresentationQueue.Submit(&SubmitInfo, VK_NULL_HANDLE);
 }
 
 void VulkanRenderContext::BeginRecording()
@@ -69,12 +86,12 @@ void VulkanRenderContext::BeginRecording()
 	//Hint to primary buffer if this is secondary.
 	BeginInfo.pInheritanceInfo = nullptr;
 
-	GS_VK_CHECK(vkBeginCommandBuffer(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), &BeginInfo), "Failed to begin Command Buffer!")
+	CommandBuffers[CurrentImage].Begin(&BeginInfo);
 }
 
 void VulkanRenderContext::EndRecording()
 {
-	GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer()), "Failed to end Command Buffer!")
+	CommandBuffers[CurrentImage].End();
 }
 
 void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
@@ -89,27 +106,39 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(_RPBI.RenderArea);
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
 
-	vkCmdBeginRenderPass(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBeginRenderPass(CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
 {
-	vkCmdEndRenderPass(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer());
+	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
+}
+
+void VulkanRenderContext::BindVertexBuffer(VertexBuffer* _VB)
+{
+}
+
+void VulkanRenderContext::BindIndexBuffer(IndexBuffer* _IB)
+{
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 {
-	vkCmdBindPipeline(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetVkGraphicsPipeline());
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetVkGraphicsPipeline());
 }
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 {
-	vkCmdBindPipeline(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetVkPipeline());
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetVkPipeline());
 }
 
 void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
 {
-	vkCmdDrawIndexed(CommandBuffer[CurrentCommandBufferIndex].GetVkCommandBuffer(), _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
+	vkCmdDrawIndexed(CommandBuffers[CurrentImage], _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
+}
+
+void VulkanRenderContext::Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ)
+{
 }
 
 
@@ -216,7 +245,7 @@ Vk_Surface::Vk_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice 
 {
 	VkWin32SurfaceCreateInfoKHR WCreateInfo = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	WCreateInfo.hwnd = SCAST(WindowsWindow*, _Window)->GetWindowObject();
-	WCreateInfo.hinstance = GetModuleHandle(nullptr);
+	WCreateInfo.hinstance = SCAST(WindowsWindow*, _Window)->GetHInstance();
 
 	GS_VK_CHECK(vkCreateWin32SurfaceKHR(m_Instance, &WCreateInfo, ALLOCATOR, &Surface), "Failed to create Windows Surface!")
 

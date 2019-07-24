@@ -5,6 +5,6 @@
 GS_CLASS Semaphore
 {
 public:
-	Semaphore();
-	~Semaphore();
+	Semaphore() = default;
+	~Semaphore() = default;
 };

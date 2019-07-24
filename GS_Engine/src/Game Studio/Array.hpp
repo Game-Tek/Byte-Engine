@@ -2,42 +2,60 @@
 
 #include "Core.h"
 
-template<typename T, uint32 L, typename S = uint32>
+template <typename T, size_t Size, typename LT = size_t>
 GS_CLASS Array
 {
+	T Data[Size];
+	LT Length = 0;
+
 public:
-	Array()
+	Array() = default;
+
+	Array(T _Data[], const LT _Length) : Data(_Data), Length(_Length)
 	{
 	}
 
-	S GetLength() const
+	T& operator[](const LT i)
 	{
-		return this->Length;
+		return Data[i];
 	}
 
-	T * GetData()
+	const T& operator[](const LT i) const
 	{
-		return this->Data;
+		return Data[i];
 	}
 
-	const T * GetData() const
+	T* data()
 	{
-		return this->Data;
+		return  &Data;
 	}
 
-	void PushBack(const T & Obj)
+	const T* data() const
 	{
-		this->Data[Length] = Obj;
-
-		this->Length += 1;
+		return  &Data;
 	}
 
-	void PopBack()
+	LT push_back(const T& _obj)
 	{
-		this->Length -= 1;
+		Data[Length] = _obj;
+
+		return Length++;
 	}
 
-private:
-	S Length;
-	T Data[L];
+	LT push_back(const T* _obj)
+	{
+		Data[Length] = *_obj;
+
+		return Length++;
+	}
+
+	LT length() const
+	{
+		return Length;
+	}
+
+	LT capacity() const
+	{
+		return Size;
+	}
 };

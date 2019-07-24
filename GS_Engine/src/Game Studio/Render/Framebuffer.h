@@ -14,15 +14,15 @@ GS_STRUCT FramebufferAttachments
 
 	Format DepthStencilFormat;
 
-	Image* 
-		Images = nullptr;
+	Image* Images = nullptr;
 };
 
 GS_STRUCT FramebufferCreateInfo
 {
 	RenderPass* RenderPass = nullptr;
 	Extent2D Extent;
-	FramebufferAttachments Attachments;
+	Image* Images;
+	uint8 ImagesCount = 0;
 };
 
 GS_CLASS Framebuffer
@@ -34,7 +34,7 @@ public:
 	{
 	}
 
-	virtual ~Framebuffer();
+	virtual ~Framebuffer() {};
 
 	[[nodiscard]] const Extent2D& GetExtent() const { return Extent; }
 };

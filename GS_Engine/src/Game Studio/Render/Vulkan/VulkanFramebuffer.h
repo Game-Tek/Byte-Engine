@@ -7,6 +7,7 @@
 
 #include "Extent.h"
 
+class VulkanImage;
 class RenderPass;
 
 MAKE_VK_HANDLE(VkFramebuffer)
@@ -20,7 +21,7 @@ GS_CLASS Vk_Framebuffer final : public VulkanObject
 	VkFramebuffer Framebuffer = nullptr;
 
 public:
-	Vk_Framebuffer(VkDevice _Device, VkRenderPass _RP, VkExtent2D _Extent, VkImageView* _ImageViews, uint8 _AttachmentCount);
+	Vk_Framebuffer(VkDevice _Device, VkRenderPass _RP, VkExtent2D _Extent, VulkanImage* _ImageViews, uint8 _AttachmentCount);
 	~Vk_Framebuffer();
 
 	INLINE VkFramebuffer GetVkFramebuffer() const { return Framebuffer; }
@@ -32,7 +33,7 @@ GS_CLASS VulkanFramebuffer final : public Framebuffer
 
 	
 public:
-	VulkanFramebuffer(VkDevice _Device, RenderPass* _RP, Extent2D _Extent, const FramebufferAttachments& _FA);
+	VulkanFramebuffer(VkDevice _Device, RenderPass* _RP, Extent2D _Extent, Image* _Images, uint8 _ImagesCount);
 	~VulkanFramebuffer();
 
 	INLINE const Vk_Framebuffer& GetVk_Framebuffer() const { return m_Framebuffer; }

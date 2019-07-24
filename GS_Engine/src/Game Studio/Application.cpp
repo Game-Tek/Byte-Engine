@@ -14,7 +14,6 @@ namespace GS
 
 		ClockInstance = new Clock();
 		InputManagerInstance = new InputManager();
-		GameInstanceInstance = new GameInstance();
 	}
 
 	Application::~Application()
@@ -23,7 +22,6 @@ namespace GS
 		delete WindowInstance;
 		delete RendererInstance;
 		delete InputManagerInstance;
-		delete GameInstanceInstance;
 	}
 
 	void Application::Run()
@@ -31,7 +29,6 @@ namespace GS
 		while (true/*!ShouldClose()*/)
 		{
 			ClockInstance->OnUpdate();
-			GameInstanceInstance->OnUpdate();
 
 			//Sleep(100);
 		}	

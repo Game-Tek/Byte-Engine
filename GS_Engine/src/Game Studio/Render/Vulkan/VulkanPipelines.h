@@ -77,8 +77,8 @@ public:
 
 GS_CLASS VulkanGraphicsPipeline final : public GraphicsPipeline
 {
-	Vk_GraphicsPipeline Pipeline;
 	Vk_PipelineLayout Layout;
+	Vk_GraphicsPipeline Pipeline;
 public:
 	VulkanGraphicsPipeline(VkDevice _Device, RenderPass * _RP, Extent2D _SwapchainSize, const StageInfo& Stages);
 	~VulkanGraphicsPipeline();

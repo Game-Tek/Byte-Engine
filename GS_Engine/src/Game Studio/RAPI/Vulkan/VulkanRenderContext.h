@@ -8,7 +8,7 @@
 #include "Vk_CommandBuffer.h"
 #include "VulkanSync.h"
 
-#include "FVector.hpp"
+#include "Containers/FVector.hpp"
 
 enum VkPresentModeKHR;
 enum VkColorSpaceKHR;

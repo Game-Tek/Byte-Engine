@@ -8,8 +8,6 @@ namespace GS
 {
 	Application::Application()
 	{
-		GS_LOG_SUCCESS("Started Game Studio Engine!")
-
 		ApplicationInstance = this;
 
 		ClockInstance = new Clock();
@@ -19,8 +17,6 @@ namespace GS
 	Application::~Application()
 	{
 		delete ClockInstance;
-		delete WindowInstance;
-		delete RendererInstance;
 		delete InputManagerInstance;
 	}
 

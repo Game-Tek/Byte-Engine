@@ -7,19 +7,21 @@
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
 
-#include "Render/Window.h"
+#include "RAPI/Window.h"
 
 struct QueueInfo
 {
-	VkDeviceQueueCreateInfo DeviceQueueCreateInfo;
-	VkQueueFlagBits QueueFlagBits;
-	float QueuePriority;
+	VkDeviceQueueCreateInfo DeviceQueueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
+	VkQueueFlagBits QueueFlagBits = {};
+	float QueuePriority = 1.0f;
 };
 
 
 //  VULKAN RENDERER
 
-VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance()), TransientCommandPool(Device, Device.GetTransferQueue().GetQueueIndex(), VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)
+VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance()),
+                                   TransientCommandPool(Device, Device.GetTransferQueue().GetQueueIndex(),
+                                                        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)
 {
 }
 
@@ -110,6 +112,8 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 
 	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
+	CreatePhysicalDevice(PhysicalDevice, _Instance);
+
 	FVector<QueueInfo> QueueInfos(3);
 
 	QueueInfos[0].QueueFlagBits = VK_QUEUE_GRAPHICS_BIT;
@@ -124,7 +128,6 @@ Vulkan_Device::Vulkan_Device(VkInstance _Instance)
 		CreateQueueInfo(QueueInfos[i], PhysicalDevice);
 	}
 
-	CreatePhysicalDevice(PhysicalDevice, _Instance);
 
 	VkDeviceCreateInfo DeviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 	DeviceCreateInfo.pQueueCreateInfos = &QueueInfos.data()->DeviceQueueCreateInfo;
@@ -184,7 +187,7 @@ void Vulkan_Device::CreatePhysicalDevice(VkPhysicalDevice _PD, VkInstance _Insta
 	FVector<VkPhysicalDevice> PhysicalDevices(DeviceCount);
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, PhysicalDevices.data());	//Fill the array with VkPhysicalDevice handles to every physical device (GPU) there is.
 
-	FVector<VkPhysicalDeviceProperties> PhysicalDevicesProperties;	//Create a vector to store the physical device properties associated with every physical device we queried before.
+	FVector<VkPhysicalDeviceProperties> PhysicalDevicesProperties(DeviceCount);	//Create a vector to store the physical device properties associated with every physical device we queried before.
 	//Loop through every physical device there is while getting/querying the physical device properties of each one and storing them in the vector.
 	for (size_t i = 0; i < DeviceCount; i++)
 	{

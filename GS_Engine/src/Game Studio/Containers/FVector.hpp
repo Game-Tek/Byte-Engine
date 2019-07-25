@@ -2,9 +2,6 @@
 
 #include "Core.h"
 
-#include <cstdlib>
-#include <cstring>
-
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
 
@@ -15,7 +12,7 @@ private:
 	LT Length = 0;
 	LT Capacity = 0;
 
-	T * Data = nullptr;
+	T* Data = nullptr;
 
 public:
 
@@ -35,7 +32,7 @@ public:
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(const size_t length) : Capacity(length), Data(allocate(this->Capacity))
+	explicit FVector(const size_t length) : Capacity(length), Length(length), Data(allocate(this->Capacity))
 	{
 	}
 
@@ -46,13 +43,13 @@ public:
 	}
 
 	//Constructs a new FVector from another FVector.
-	FVector(const FVector & Other) : Length(Other.Length), Capacity(Other.Capacity), Data(allocate(this->Capacity))
+	FVector(const FVector& Other) : Length(Other.Length), Capacity(Other.Capacity), Data(allocate(this->Capacity))
 	{
 		copyarray(Other.Data, this->Data);
 	}
 
 	//Assigns the internal array the contents of the passed in array.
-	FVector & operator=(T Other[])
+	FVector& operator=(T Other[])
 	{
 		const size_t length = (sizeof(*Other) / sizeof(T));
 
@@ -79,33 +76,32 @@ public:
 
 	~FVector()
 	{
-		free(this->Data);
+		delete[] this->Data;
 	}
 
 	void resize(LT _Count)
 	{
 		if (_Count > this->Capacity)
 		{
-			this->Data = SCAST(T*, realloc(this->Data, _Count * sizeof(T)));
+			delete[] this->Data;
+			allocate(_Count);
 		}
 
 		return;
 	}
 
 	//Places the passed in element at the end of the array.
-	LT push_back(const T & obj)
+	void push_back(const T & obj)
 	{
 		checkfornew(1);
 
 		this->Data[Length] = obj;
 
 		this->Length += 1;
-
-		return Length - 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	LT push_back(T arr[], size_t length)
+	void push_back(T arr[], size_t length)
 	{
 		checkfornew(length);
 
@@ -115,12 +111,10 @@ public:
 		}
 
 		this->Length += length;
-
-		return Length - 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	LT push_back(const FVector & other)
+	void push_back(const FVector & other)
 	{
 		checkfornew(other.Length);
 
@@ -130,8 +124,6 @@ public:
 		}
 
 		this->Length += other.Length;
-
-		return Length - 1;
 	}
 
 	//Deletes the array's last element.
@@ -231,7 +223,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	INLINE T & operator[](const size_t index)
+	INLINE T& operator[](const size_t index)
 	{
 #ifdef GS_DEBUG
 		if (index > this->Length)
@@ -244,7 +236,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	INLINE const T & operator[](const size_t index) const
+	INLINE const T& operator[](const size_t index) const
 	{
 #ifdef GS_DEBUG
 		if (index > this->Length)
@@ -263,28 +255,31 @@ public:
 	}
 
 	//Returns a pointer to the allocated array.
-	INLINE T * data()
+	INLINE T* data()
 	{
 		return this->Data;
 	}
 
 	//Returns a pointer to the allocated array.
-	INLINE const T * data() const
+	INLINE const T* data() const
 	{
 		return this->Data;
 	}
 
 private:
 	//Allocates a new a array of type T with enough space to hold elementcount elements.
-	static T* allocate(const size_t elementcount)
+	T* allocate(const size_t elementcount)
 	{
-		return SCAST(T*, malloc(elementcount * sizeof(T)));
+		return new T[elementcount];
 	}
 
 	//Fills array to with from.
 	void copyarray(T * from, T * to)
 	{
-		memcpy(static_cast<void*>(to), static_cast<void*>(from), this->Length * sizeof(T));
+		for (size_t i = 0; i < this->Length; i++)
+		{
+			to[i] = from[i];
+		}
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.
@@ -294,7 +289,13 @@ private:
 		{
 			this->Capacity = (this->Length * 2) + additionalelements;
 
-			this->Data = SCAST(T*, realloc(this->Data, sizeof(T) * this->Capacity));
+			T* buffer = allocate(this->Capacity);
+
+			copyarray(this->Data, buffer);
+
+			delete[] this->Data;
+
+			this->Data = buffer;
 		}
 	}
 };

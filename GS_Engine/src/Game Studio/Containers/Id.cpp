@@ -8,7 +8,7 @@ Id::Id(const char * Text): HashedString(HashString(Text))
 
 uint32 Id::HashString(const char * Text)
 {
-	const uint32 Length = String::StringLength(Text);
+	const uint32 Length = FString::StringLength(Text);
 
 	uint32 Hash = 0;
 

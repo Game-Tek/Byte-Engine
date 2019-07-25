@@ -3,15 +3,15 @@
 #include "Core.h"
 
 #include "WorldObject.h"
+#include "Containers/FString.h"
 
-class String;
 class StaticMeshResource;
 
 GS_CLASS StaticMesh : public WorldObject
 {
 public:
 	StaticMesh();
-	explicit StaticMesh(const String & StaticMeshAsset);
+	explicit StaticMesh(const FString & StaticMeshAsset);
 	~StaticMesh();
 
 	//Returns a const pointer to the static mesh resource.

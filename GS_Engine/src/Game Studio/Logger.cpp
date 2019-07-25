@@ -1,12 +1,10 @@
 #include "Logger.h"
 
-#include "stdio.h"
+#include <cstdio>
 
-#include "windows.h"
+#include <windows.h>
 
-#include "GLAD/glad.h"
-
-#include "Application.h"
+#include "Application/Application.h"
 
 void Logger::SetLogTextColor(LogColors Color)
 {
@@ -39,7 +37,7 @@ void Logger::PrintLog(const char * Text, ...)
 {
 	//SetLogTextColor(Color);
 
-	const Time LogTime = Clock::GetTime();
+	const Time LogTime = GS::Application::Get()->GetClockInstance()->GetTime();
 
 	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 
@@ -51,29 +49,4 @@ void Logger::PrintLog(const char * Text, ...)
 	printf("\n");
 
 	SetLogTextColor(White);
-}
-
-void Logger::GetglGetError(const char * Details, int32 Line)
-{
-	switch (glGetError())
-	{
-	default:
-		break;
-	case GL_NO_ERROR:
-		break;
-	case GL_INVALID_ENUM:
-		GS_LOG_ERROR("Invalid enum, %s, %d", Details, Line);
-		break;
-	case GL_INVALID_VALUE:
-		GS_LOG_ERROR("Inavlid Value, %s, %d", Details, Line);
-		break;
-	case GL_INVALID_OPERATION:
-		GS_LOG_ERROR("Invalid Operation, %s, %d", Details, Line);
-		break;
-	case GL_OUT_OF_MEMORY:
-		GS_LOG_ERROR("Out of Memory, %s, %d", Details, Line);
-		break;
-	}
-
-	return;
 }

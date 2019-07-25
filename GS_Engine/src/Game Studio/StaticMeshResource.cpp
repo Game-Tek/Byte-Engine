@@ -2,13 +2,13 @@
 
 #include "Logger.h"
 
-#include "FString.h"
+#include "Containers/FString.h"
 
 #include <assimp/scene.h>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
-StaticMeshResource::StaticMeshResource(const String & Path) : Resource(Path)
+StaticMeshResource::StaticMeshResource(const FString & Path) : Resource(Path)
 {
 	Data = Load(FilePath);
 }
@@ -18,7 +18,7 @@ StaticMeshResource::~StaticMeshResource()
 	delete static_cast<Mesh *>(Data);
 }
 
-Mesh * StaticMeshResource::Load(const String & Path)
+Mesh * StaticMeshResource::Load(const FString & Path)
 {
 	//Create Importer.
 

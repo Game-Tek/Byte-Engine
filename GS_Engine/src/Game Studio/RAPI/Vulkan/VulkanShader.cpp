@@ -2,15 +2,15 @@
 
 #include "VulkanShader.h"
 
-#include "FString.h"
+#include "Containers/FString.h"
 
 #include <fstream>
 
-VulkanShader::VulkanShader(VkDevice _Device, const String& _Name, ShaderType _ShaderType) : Shader(_ShaderType), ShaderModule(_Device, GetShaderCode(_Name))
+VulkanShader::VulkanShader(VkDevice _Device, const FString& _Name, ShaderType _ShaderType) : Shader(_ShaderType), ShaderModule(_Device, GetShaderCode(_Name))
 {
 }
 
-Tuple<std::vector<char>, size_t> VulkanShader::GetShaderCode(const String& _Name)
+Tuple<std::vector<char>, size_t> VulkanShader::GetShaderCode(const FString& _Name)
 {
 	Tuple<std::vector<char>, size_t> Result;
 

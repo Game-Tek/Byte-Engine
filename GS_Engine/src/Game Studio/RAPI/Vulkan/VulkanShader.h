@@ -2,13 +2,13 @@
 
 #include "Core.h"
 
-#include "..\Shader.h"
+#include "RAPI/Shader.h"
 #include "VulkanBase.h"
 
-#include "Tuple.h"
+#include "Containers/Tuple.h"
 
 #include <vector>
-#include "FString.h"
+#include "Containers/FString.h"
 
 MAKE_VK_HANDLE(VkShaderModule)
 
@@ -25,11 +25,11 @@ public:
 
 GS_CLASS VulkanShader final : public Shader
 {
-	static Tuple<std::vector<char>, size_t> GetShaderCode(const String& _Name);
+	static Tuple<std::vector<char>, size_t> GetShaderCode(const FString& _Name);
 
 	Vk_Shader ShaderModule;
 public:
-	VulkanShader(VkDevice _Device, const String& _Name, ShaderType _ShaderType);
+	VulkanShader(VkDevice _Device, const FString& _Name, ShaderType _ShaderType);
 
 	INLINE const Vk_Shader& GetVk_Shader() const { return ShaderModule; }
 };

@@ -3,17 +3,18 @@
 #include "Core.h"
 
 #include "RenderCore.h"
-#include "FString.h"
+#include "Containers/FString.h"
 
 GS_STRUCT ShaderCreateInfo
 {
 	ShaderType Type;
-	String ShaderName;
+	FString ShaderName;
 };
 
 GS_CLASS Shader
 {
 	ShaderType Type;
+
 public:
 	Shader(ShaderType _Type) : Type(_Type)
 	{
@@ -21,5 +22,5 @@ public:
 
 	INLINE ShaderType GetShaderType() const { return Type; }
 
-	virtual ~Shader() {};
+	virtual ~Shader() = default;
 };

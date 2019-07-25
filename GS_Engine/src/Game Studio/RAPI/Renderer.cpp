@@ -1,10 +1,8 @@
 #include "Renderer.h"
 
-#include "Vulkan\VulkanRenderer.h"
+#include "Vulkan/VulkanRenderer.h"
 
-#include "Platform\Windows\WindowsWindow.h"
-
-RAPI Renderer::RenderAPI = RAPI::NONE;
+RAPI Renderer::RenderAPI = GetRAPI();
 Renderer* Renderer::RendererInstance = CreateRenderer();
 
 Renderer* Renderer::CreateRenderer()
@@ -16,6 +14,9 @@ Renderer* Renderer::CreateRenderer()
 	}
 }
 
-void Renderer::Update()
+RAPI Renderer::GetRAPI()
 {
+#ifdef GS_RAPI_VULKAN
+	return RAPI::VULKAN;
+#endif
 }

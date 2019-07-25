@@ -20,7 +20,7 @@ struct Mesh
 	uint32 IndexCount = 0;
 };
 
-class String;
+class FString;
 
 struct aiNode;
 struct aiMesh;
@@ -29,7 +29,7 @@ struct aiScene;
 GS_CLASS StaticMeshResource : public Resource
 {
 public:
-	explicit StaticMeshResource(const String & Path);
+	explicit StaticMeshResource(const FString & Path);
 	~StaticMeshResource();
 
 	Vertex * GetVertexArray() const { return Data->VertexArray; }
@@ -46,7 +46,7 @@ public:
 private:
 	Mesh * Data;
 
-	Mesh * Load(const String & Path);
+	Mesh * Load(const FString & Path);
 	Mesh * LoadFallbackResource() const;
 	Mesh * ProcessNode(aiNode * Node, const aiScene * Scene);
 	Mesh ProcessMesh(aiMesh * Mesh);

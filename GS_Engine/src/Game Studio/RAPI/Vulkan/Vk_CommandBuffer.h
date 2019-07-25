@@ -15,6 +15,10 @@ GS_CLASS Vk_CommandBuffer final : public VulkanObject
 {
 	VkCommandBuffer CommandBuffer = nullptr;
 public:
+	Vk_CommandBuffer() : VulkanObject(nullptr)
+	{
+	}
+
 	Vk_CommandBuffer(VkDevice _Device, VkCommandPool _CP);
 	~Vk_CommandBuffer() = default;
 

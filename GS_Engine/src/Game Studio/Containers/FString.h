@@ -1,0 +1,54 @@
+#pragma once
+
+#include "Core.h"
+
+#include "FVector.hpp"
+
+GS_CLASS FString
+{
+public:
+	//Constructs an empty FString.
+	FString();
+
+	//Constructs an FString from a C-FString.
+	explicit FString(const char * In);
+
+	FString(const FString & Other) = default;
+
+	//Constructs a FString from a non null terminated character array.
+	FString(const char * In, size_t Length);
+
+	~FString() = default;
+
+	FString & operator=(const char *);
+	FString & operator=(const FString & Other) = default;
+	FString & operator+(const char * Other);
+	FString & operator+(const FString & Other);
+
+	bool operator==(const FString & Other) const;
+
+	//Returns the contents of this FString as a C-FString.
+	char * c_str();
+
+	//Returns the contents of this FString as a C-FString.
+	[[nodiscard]] const char * c_str() const;
+
+	//Return the length of this FString. Does not take into account the null terminator character.
+	INLINE size_t GetLength() const { return Array.length() - 1; }
+	//Returns whether this FString is empty.
+	INLINE bool IsEmpty() const { return Array.length() == 0; }
+
+	//Places a the C-FString after this FString with a space in the middle.
+	void Append(const char * In);
+	//Places the FString after this FString with a space in the middle.
+	void Append(const FString & In);
+
+	//Places the passed in FString at the specified Index.
+	void Insert(const char * In, size_t Index);
+
+	//Returns the length of the In FString accounting for the null terminator character. FString MUST BE NULL TERMINATED.
+	static size_t StringLength(const char * In);
+
+private:
+	FVector<char> Array;
+};

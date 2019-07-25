@@ -1,8 +1,8 @@
 #include "VulkanRenderPass.h"
 
 #include "Vulkan.h"
-#include "FVector.hpp"
-#include "Render/Renderer.h"
+#include "Containers/FVector.hpp"
+#include "RAPI/Renderer.h"
 #include "VulkanRenderer.h"
 
 VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : RenderPass(_Device, _RPD)

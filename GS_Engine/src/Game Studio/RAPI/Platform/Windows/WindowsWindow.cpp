@@ -7,7 +7,7 @@
 #include <GLFW/glfw3native.h>
 #endif // GS_PLATFORM_WIN
 
-WindowsWindow::WindowsWindow(Extent2D _Extent, const String& _Name) : Window(_Extent)
+WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _Name) : Window(_Extent, _Fit)
 {
 	/* Initialize the library */
 	if (!glfwInit())
@@ -35,15 +35,15 @@ void WindowsWindow::Update()
 	{
 		int32 X, Y;
 		glfwGetWindowSize(GLFWWindow, &X, &Y);
-		Extent.Width = X;
-		Extent.Height = Y;
+		Extent.Width = SCAST(uint16, X);
+		Extent.Height = SCAST(uint16, Y);
 	}
 
 	{
 		double X, Y;
 		glfwGetCursorPos(GLFWWindow, &X, &Y);
-		MousePosition.X = X;
-		MousePosition.Y = Y;
+		MousePosition.X = SCAST(float, X);
+		MousePosition.Y = SCAST(float, Y);
 	}
 
 	ShouldClose = glfwWindowShouldClose(GLFWWindow);

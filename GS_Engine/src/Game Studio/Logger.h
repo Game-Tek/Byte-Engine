@@ -2,8 +2,6 @@
 
 #include "Core.h"
 
-#include "stdarg.h"
-
 enum LogColors
 {
 	Red,
@@ -11,8 +9,6 @@ enum LogColors
 	Green,
 	White
 };
-
-
 
 GS_CLASS Logger
 {
@@ -38,7 +34,6 @@ GS_CLASS Logger
 
 public:
 	static void PrintLog(const char * Text, ...);
-	static void GetglGetError(const char * Details, int32 Line);
 	static void SetLogTextColor(LogColors Color);
 private:
 

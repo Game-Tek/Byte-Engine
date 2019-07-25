@@ -47,13 +47,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)src\Game Studio;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -99,42 +99,42 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\Array.hpp" />
+    <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Extent.h" />
-    <ClInclude Include="src\Game Studio\Render\Buffer.h" />
-    <ClInclude Include="src\Game Studio\HashMap.hpp" />
+    <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
+    <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
-    <ClInclude Include="src\Game Studio\Id.h" />
+    <ClInclude Include="src\Game Studio\Containers\Id.h" />
     <ClInclude Include="src\Game Studio\Cone.h" />
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
-    <ClInclude Include="src\Game Studio\Octree.h" />
-    <ClInclude Include="src\Game Studio\Render\Fence.h" />
-    <ClInclude Include="src\Game Studio\Render\Framebuffer.h" />
-    <ClInclude Include="src\Game Studio\Render\Image.h" />
-    <ClInclude Include="src\Game Studio\Render\Mesh.h" />
-    <ClInclude Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderContext.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderCore.h" />
-    <ClInclude Include="src\Game Studio\Render\Pipelines.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderPass.h" />
-    <ClInclude Include="src\Game Studio\Render\Semaphore.h" />
-    <ClInclude Include="src\Game Studio\Render\Shader.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_Queue.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\Vulkan.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBase.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanImage.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanPipelines.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanShader.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanSync.h" />
-    <ClInclude Include="src\Game Studio\Render\Window.h" />
+    <ClInclude Include="src\Game Studio\Containers\Octree.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Fence.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Image.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Pipelines.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Semaphore.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Shader.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Vk_Queue.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Vulkan.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBase.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanImage.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanShader.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSync.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Window.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
-    <ClInclude Include="src\Game Studio\FVector.hpp" />
+    <ClInclude Include="src\Game Studio\Containers\FVector.hpp" />
     <ClInclude Include="src\Game Studio\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
     <ClInclude Include="src\Game Studio\Resource.h" />
@@ -155,11 +155,11 @@
     <ClInclude Include="src\Game Studio\Application\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
-    <ClInclude Include="src\Game Studio\Render\Renderer.h" />
-    <ClInclude Include="src\Game Studio\SinglyLinkedList.hpp" />
+    <ClInclude Include="src\Game Studio\RAPI\Renderer.h" />
+    <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
-    <ClInclude Include="src\Game Studio\Tuple.h" />
-    <ClInclude Include="src\Game Studio\FString.h" />
+    <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
+    <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
     <ClInclude Include="src\Game Studio\Math\Vector2.h" />
@@ -173,46 +173,46 @@
     <ClInclude Include="src\Game Studio\Math\Vector4.h" />
     <ClInclude Include="src\Game Studio\TextureResource.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanRenderer.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\VulkanBuffers.h" />
-    <ClInclude Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBuffers.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Vk_CommandBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\Game Studio\Id.cpp" />
+    <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
-    <ClCompile Include="src\Game Studio\Render\Platform\Windows\WindowsWindow.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_Queue.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanFramebuffer.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanImage.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanPipelines.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderContext.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanShader.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanSync.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Window.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Vk_Queue.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanImage.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanShader.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSync.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
-    <ClCompile Include="src\Game Studio\String.cpp" />
+    <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanRenderer.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\VulkanBuffers.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Vulkan\Vk_CommandBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanBuffers.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Vk_CommandBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

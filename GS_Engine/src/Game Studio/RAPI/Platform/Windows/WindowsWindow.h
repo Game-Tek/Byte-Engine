@@ -17,7 +17,7 @@ GS_CLASS WindowsWindow final : public Window
 	static int32 KeyboardKeysToGLFWKeys(KeyboardKeys _IE);
 	static KeyState GLFWKeyStateToKeyState(int32 _KS);
 public:
-	WindowsWindow(Extent2D _Extent, const String& _Name);
+	WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _Name);
 	~WindowsWindow();
 
 	INLINE HWND GetWindowObject() const { return WindowObject; }

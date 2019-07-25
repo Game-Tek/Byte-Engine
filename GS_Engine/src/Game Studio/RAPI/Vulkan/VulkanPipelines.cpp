@@ -2,7 +2,7 @@
 
 #include "VulkanPipelines.h"
 
-#include "..\RenderPass.h"
+#include "RAPI/RenderPass.h"
 
 #include "VulkanRenderPass.h"
 #include "VulkanShader.h"
@@ -138,7 +138,6 @@ VkPipelineColorBlendStateCreateInfo Vk_GraphicsPipeline::CreateColorBlendState()
 	ColorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
 
 	VkPipelineColorBlendStateCreateInfo ColorBlendState = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-	ColorBlendState.sType = ;
 	ColorBlendState.logicOpEnable = VK_FALSE;
 	ColorBlendState.logicOp = VK_LOGIC_OP_COPY; // Optional
 	ColorBlendState.attachmentCount = 1;
@@ -208,7 +207,7 @@ Vk_GraphicsPipeline::Vk_GraphicsPipeline(VkDevice _Device, VkRenderPass _RP, VkE
 	CreateInfo.pDepthStencilState = &PipelineDepthStencilStateCreateInfo; // Optional
 	//pColorBlendState is a pointer to an instance of the VkPipelineColorBlendStateCreateInfo structure, and is ignored if the pipeline has rasterization disabled or if the subpass of the render pass the pipeline is created against does not use any color attachments.
 	CreateInfo.pColorBlendState = &PipelineColorBlendStateCreateInfo;
-	//pDynamicState is a pointer to VkPipelineDynamicStateCreateInfoand is used to indicate which properties of the pipeline state object are dynamic and can be changed independently of the pipeline state.This can be NULL, which means no state in the pipeline is considered dynamic.
+	//pDynamicState is a pointer to VkPipelineDynamicStateCreateInfo and is used to indicate which properties of the pipeline state object are dynamic and can be changed independently of the pipeline state.This can be NULL, which means no state in the pipeline is considered dynamic.
 	CreateInfo.pDynamicState = &PipelineDynamicStateCreateInfo; // Optional
 	//layout is the description of binding locations used by both the pipeline and descriptor sets used with the pipeline.
 	CreateInfo.layout = _PL;

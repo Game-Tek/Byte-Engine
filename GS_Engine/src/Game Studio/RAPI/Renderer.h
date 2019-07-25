@@ -8,16 +8,10 @@
 #include "Pipelines.h"
 #include "RenderPass.h"
 #include "Framebuffer.h"
-class Window;
 
 enum class RAPI : uint8
 {
 	NONE, VULKAN
-};
-
-GS_STRUCT RAPICreateInfo
-{
-	Window * Window = nullptr;
 };
 
 GS_CLASS Renderer
@@ -26,12 +20,13 @@ GS_CLASS Renderer
 	static Renderer* RendererInstance;
 	
 	static Renderer* CreateRenderer();
-public:
+	static RAPI GetRAPI();
+protected:
+	Renderer() = default;
 	virtual ~Renderer() = default;
+public:
 	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
-
-	void Update();
 
 	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
 	virtual Buffer* CreateBuffer(const BufferCreateInfo& _BCI) = 0;
@@ -41,4 +36,3 @@ public:
 	virtual Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) = 0;
 	virtual RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) = 0;
 };
-

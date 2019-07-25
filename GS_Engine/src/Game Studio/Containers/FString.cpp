@@ -1,51 +1,40 @@
 #include "FString.h"
 
-String::String() : Array(10)
+FString::FString() : Array(10)
 {
 }
 
-String::String(const char * In) : Array(const_cast<char *>(In), StringLength(In))
+FString::FString(const char * In) : Array(const_cast<char *>(In), StringLength(In))
 {
 }
 
-String::String(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length + 1)
+FString::FString(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length + 1)
 {
 	Array.push_back('\0');
 }
 
-String::String(const String & Other) : Array(Other.Array)
-{
-}
-
-String & String::operator=(const char * In)
+FString & FString::operator=(const char * In)
 {
 	Array.recreate(const_cast<char *>(In), StringLength(In));
 
 	return *this;
 }
 
-String & String::operator=(const String & Other)
-{
-	Array = Other.Array;
-
-	return *this;
-}
-
-String & String::operator+(const char * Other)
+FString & FString::operator+(const char * Other)
 {
 	Array.push_back(const_cast<char *>(Other), StringLength(Other));
 
 	return *this;
 }
 
-String & String::operator+(const String & Other)
+FString & FString::operator+(const FString & Other)
 {
 	Array.push_back(Other.Array);
 
 	return *this;
 }
 
-bool String::operator==(const String & Other) const
+bool FString::operator==(const FString & Other) const
 {
 	for (size_t i = 0; i < (Array.length() < Other.Array.length() ? Array.length() : Other.Array.length()); i++)
 	{
@@ -58,17 +47,17 @@ bool String::operator==(const String & Other) const
 	return true;
 }
 
-char * String::c_str()
+char * FString::c_str()
 {
 	return Array.data();
 }
 
-const char * String::c_str() const
+const char * FString::c_str() const
 {
 	return Array.data();
 }
 
-void String::Append(const char * In)
+void FString::Append(const char * In)
 {
 	Array.push_back(' ');
 
@@ -77,7 +66,7 @@ void String::Append(const char * In)
 	return;
 }
 
-void String::Append(const String & In)
+void FString::Append(const FString & In)
 {
 	Array.push_back(' ');
 
@@ -86,14 +75,14 @@ void String::Append(const String & In)
 	return;
 }
 
-void String::Insert(const char * In, const size_t Index)
+void FString::Insert(const char * In, const size_t Index)
 {
 	Array.insert(Index, const_cast<char *>(In), StringLength(In));
 
 	return;
 }
 
-size_t String::StringLength(const char * In)
+size_t FString::StringLength(const char * In)
 {
 	size_t Length = 0;
 

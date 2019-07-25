@@ -3,7 +3,7 @@
 //FOR USE BY GAME STUDIO APPLICATIONS
 
 //Application
-#include "Game Studio/Application.h"
+#include "Game Studio/Application/Application.h"
 
 //EntryPoint
-#include "Game Studio/EntryPoint.h"
+#include "Game Studio/Application/EntryPoint.h"

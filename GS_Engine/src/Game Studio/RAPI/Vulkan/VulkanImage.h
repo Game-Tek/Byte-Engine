@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "VulkanBase.h"
-#include "Render/Image.h"
+#include "RAPI/Image.h"
 
 MAKE_VK_HANDLE(VkImage)
 MAKE_VK_HANDLE(VkImageView)

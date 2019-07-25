@@ -1,6 +1,7 @@
 #include <GameStudio.h>
 
-#include "Game Studio/Render/RenderContext.h"
+#include <Game Studio/RAPI/Window.h>
+#include <Game Studio/RAPI/Renderer.h>
 
 class Sandbox : public GS::Application
 {
@@ -11,7 +12,7 @@ public:
 		WCI.Extent = { 1280, 720 };
 		WCI.Name = "Game Studio!";
 		WCI.WindowType = WindowFit::NORMAL;
-		Window* mWindow = Window::CreateGSWindow(WCI);
+		auto mWindow = Window::CreateGSWindow(WCI);
 
 		RenderContextCreateInfo RCCI;
 		RCCI.Window = mWindow;

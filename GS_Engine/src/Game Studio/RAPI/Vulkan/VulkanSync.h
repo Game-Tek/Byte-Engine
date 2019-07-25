@@ -2,8 +2,8 @@
 
 #include "Core.h"
 
-#include "Render/Fence.h"
-#include "Render/Semaphore.h"
+#include "RAPI/Fence.h"
+#include "RAPI/Semaphore.h"
 #include "VulkanBase.h"
 
 MAKE_VK_HANDLE(VkFence)

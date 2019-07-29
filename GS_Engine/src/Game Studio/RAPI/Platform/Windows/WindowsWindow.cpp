@@ -7,13 +7,27 @@
 #include <GLFW/glfw3native.h>
 #endif // GS_PLATFORM_WIN
 
+void error(int c, const char* t)
+{
+	
+}
+
 WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _Name) : Window(_Extent, _Fit)
 {
 	/* Initialize the library */
 	if (!glfwInit())
 
+	glfwSetErrorCallback(error);
+
+	uint32 count = 0;
+	auto r = glfwGetRequiredInstanceExtensions(&count);
+
+	auto t = r[2];
+
 	/* Create a windowed mode window and its OpenGL context */
-	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
+		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+		GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
+
 	if (!GLFWWindow)
 	{
 		glfwTerminate();

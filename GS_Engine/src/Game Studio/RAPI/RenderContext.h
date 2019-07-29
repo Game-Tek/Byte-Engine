@@ -59,10 +59,8 @@ public:
 	//    BIND BUFFER COMMANDS
 	
 	
-	//Adds a BindVertexBuffer command to the buffer.
-	virtual void BindVertexBuffer(VertexBuffer* _VB) = 0;
-	//Adds a BindIndexBuffer command to the buffer.
-	virtual void BindIndexBuffer(IndexBuffer* _IB) = 0;
+	//Adds a BindMesh command to the buffer.
+	virtual void BindMesh(Mesh* _Mesh) = 0;
 	
 	//    BIND PIPELINE COMMANDS
 	

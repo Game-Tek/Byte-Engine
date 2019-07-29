@@ -123,3 +123,21 @@ enum class BufferType : uint8
 	BUFFER_INDEX,
 	BUFFER_UNIFORM
 };
+
+enum class ShaderDataTypes : uint8
+{
+	FLOAT,
+	FLOAT2,
+	FLOAT3,
+	FLOAT4,
+
+	INT,
+	INT2,
+	INT3,
+	INT4,
+
+	BOOL,
+
+	MAT3,
+	MAT4
+};

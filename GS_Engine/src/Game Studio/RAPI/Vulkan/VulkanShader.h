@@ -10,19 +10,6 @@
 #include <vector>
 #include "Containers/FString.h"
 
-MAKE_VK_HANDLE(VkShaderModule)
-
-GS_CLASS Vk_Shader final : public VulkanObject
-{
-	VkShaderModule Shader = nullptr;
-
-public:
-	Vk_Shader(VkDevice _Device, Tuple<std::vector<char>, size_t> _Data);
-	~Vk_Shader();
-
-	INLINE VkShaderModule GetVkShaderModule() const { return Shader; }
-};
-
 GS_CLASS VulkanShader final : public Shader
 {
 	static Tuple<std::vector<char>, size_t> GetShaderCode(const FString& _Name);

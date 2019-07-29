@@ -1,4 +1,4 @@
-#include "Vulkan.h"
+#include "RAPI/Vulkan/Vulkan.h"
 
 #include "Vk_CommandBuffer.h"
 
@@ -27,20 +27,4 @@ void Vk_CommandBuffer::Begin(VkCommandBufferBeginInfo* _CBBI)
 void Vk_CommandBuffer::End()
 {
 	GS_VK_CHECK(vkEndCommandBuffer(CommandBuffer), "Failed to end Command Buffer!")
-}
-
-
-//  VK_COMMANDPOOL
-Vk_CommandPool::Vk_CommandPool(VkDevice _Device, uint32 _QueueIndex, VkCommandPoolCreateFlagBits _CPF) : VulkanObject(_Device)
-{
-	VkCommandPoolCreateInfo CommandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-	CommandPoolCreateInfo.queueFamilyIndex = _QueueIndex;
-	CommandPoolCreateInfo.flags = _CPF;
-
-	GS_VK_CHECK(vkCreateCommandPool(_Device, &CommandPoolCreateInfo, ALLOCATOR, &CommandPool), "Failed to create Command Pool!")
-}
-
-Vk_CommandPool::~Vk_CommandPool()
-{
-	vkDestroyCommandPool(m_Device, CommandPool, ALLOCATOR);
 }

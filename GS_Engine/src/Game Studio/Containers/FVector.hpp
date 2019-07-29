@@ -32,7 +32,7 @@ public:
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(const size_t length) : Capacity(length), Length(length), Data(allocate(this->Capacity))
+	explicit FVector(const size_t length) : Capacity(length), Data(allocate(this->Capacity))
 	{
 	}
 
@@ -226,7 +226,7 @@ public:
 	INLINE T& operator[](const size_t index)
 	{
 #ifdef GS_DEBUG
-		if (index > this->Length)
+		if (index > this->Capacity)
 		{
 			throw("Out of bounds!");
 		}
@@ -239,7 +239,7 @@ public:
 	INLINE const T& operator[](const size_t index) const
 	{
 #ifdef GS_DEBUG
-		if (index > this->Length)
+		if (index > this->Capacity)
 		{
 			throw("Out of bounds!");
 		}

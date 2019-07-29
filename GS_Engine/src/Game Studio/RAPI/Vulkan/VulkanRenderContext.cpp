@@ -9,10 +9,11 @@
 
 #include "RAPI/Window.h"
 #include "RAPI/Platform/Windows/WindowsWindow.h"
+#include "VulkanMesh.h"
 
 //  VULKAN RENDER CONTEXT
 
-VulkanRenderContext::VulkanRenderContext(const Vulkan_Device& _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : 
+VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : 
 	Surface(_Device, _Instance, _PD, _Window),
 	Swapchain(_Device, _PD, Surface.GetVkSurface(), Surface.GetVkSurfaceFormat(), Surface.GetVkColorSpaceKHR(), Extent2DToVkExtent2D(_Window->GetWindowExtent())),
 	ImageAvailable(_Device),
@@ -27,6 +28,7 @@ VulkanRenderContext::VulkanRenderContext(const Vulkan_Device& _Device, VkInstanc
 		Vk_CommandBuffer CB(_Device.GetVkDevice(), CommandPool.GetVkCommandPool());
 		CommandBuffers.push_back(CB);
 	}
+
 }
 
 void VulkanRenderContext::OnResize()
@@ -113,12 +115,11 @@ void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
 	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
 }
 
-void VulkanRenderContext::BindVertexBuffer(VertexBuffer* _VB)
+void VulkanRenderContext::BindMesh(Mesh* _Mesh)
 {
-}
-
-void VulkanRenderContext::BindIndexBuffer(IndexBuffer* _IB)
-{
+	const auto l_Mesh = SCAST(VulkanMesh*, _Mesh);
+	vkCmdBindVertexBuffers(CommandBuffers[CurrentImage], 0, 1, l_Mesh->GetVertexBuffer(), 0);
+	vkCmdBindIndexBuffer(CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
@@ -147,10 +148,9 @@ Vk_Swapchain::Vk_Swapchain(VkDevice _Device, VkPhysicalDevice _PD, VkSurfaceKHR 
 {
 	FindPresentMode(PresentMode, _PD, _Surface);
 
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo;
-	CreateSwapchainCreateInfo(SwapchainCreateInfo, _Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, VK_NULL_HANDLE);
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, VK_NULL_HANDLE);
 
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!")
+	auto SwapResult = vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain);
 
 	uint32_t ImageCount = 0;
 	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
@@ -165,8 +165,9 @@ Vk_Swapchain::~Vk_Swapchain()
 
 void Vk_Swapchain::Recreate(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent)
 {
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo;
-	CreateSwapchainCreateInfo(SwapchainCreateInfo, _Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, Swapchain);
+	vkDestroySwapchainKHR(m_Device, Swapchain, ALLOCATOR);
+
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, PresentMode, Swapchain);
 
 	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!")
 
@@ -183,29 +184,33 @@ uint32 Vk_Swapchain::AcquireNextImage(VkSemaphore _ImageAvailable)
 	return ImageIndex;
 }
 
-void Vk_Swapchain::CreateSwapchainCreateInfo(VkSwapchainCreateInfoKHR & _SCIK, VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
+VkSwapchainCreateInfoKHR Vk_Swapchain::CreateSwapchainCreateInfo(VkSurfaceKHR _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
 {
-	_SCIK.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-	_SCIK.surface = _Surface;
-	_SCIK.minImageCount = 3;
-	_SCIK.imageFormat = _SurfaceFormat;
-	_SCIK.imageColorSpace = _SurfaceColorSpace;
-	_SCIK.imageExtent = _SurfaceExtent;
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+
+	SwapchainCreateInfo.surface = _Surface;
+	SwapchainCreateInfo.minImageCount = 2;
+	SwapchainCreateInfo.imageFormat = _SurfaceFormat;
+	SwapchainCreateInfo.imageColorSpace = _SurfaceColorSpace;
+	SwapchainCreateInfo.imageExtent = _SurfaceExtent;
 	//The imageArrayLayers specifies the amount of layers each image consists of. This is always 1 unless you are developing a stereoscopic 3D application.
-	_SCIK.imageArrayLayers = 1;
+	SwapchainCreateInfo.imageArrayLayers = 1;
 	//Should be VK_IMAGE_USAGE_TRANSFER_DST_BIT
-	_SCIK.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	_SCIK.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	_SCIK.queueFamilyIndexCount = 1; // Optional
-	_SCIK.pQueueFamilyIndices = nullptr;
-	_SCIK.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	SwapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	SwapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	SwapchainCreateInfo.queueFamilyIndexCount = 0; // Optional
+	SwapchainCreateInfo.pQueueFamilyIndices = nullptr;
+	SwapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	//The compositeAlpha field specifies if the alpha channel should be used for blending with other windows in the window system.
 	//You'll almost always want to simply ignore the alpha channel, hence VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR.
-	_SCIK.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	_SCIK.presentMode = _PresentMode;
-	_SCIK.clipped = VK_TRUE;
-	_SCIK.oldSwapchain = _OldSwapchain;
+	SwapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	SwapchainCreateInfo.presentMode = _PresentMode;
+	SwapchainCreateInfo.clipped = VK_TRUE;
+	SwapchainCreateInfo.oldSwapchain = _OldSwapchain;
+
+	return SwapchainCreateInfo;
 }
+
 uint8 Vk_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
 {
 	switch (_PresentMode)
@@ -215,6 +220,7 @@ uint8 Vk_Swapchain::ScorePresentMode(VkPresentModeKHR _PresentMode)
 	default:							return 0;
 	}
 }
+
 void Vk_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t PresentModesCount = 0;
@@ -240,7 +246,7 @@ void Vk_Swapchain::FindPresentMode(VkPresentModeKHR& _PM, VkPhysicalDevice _PD, 
 
 // VULKAN SURFACE
 
-Vk_Surface::Vk_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : VulkanObject(_Device), m_Instance(_Instance)
+Vk_Surface::Vk_Surface(const Vk_Device& _Device, VkInstance _Instance, VkPhysicalDevice _PD, Window* _Window) : VulkanObject(_Device), m_Instance(_Instance)
 {
 	VkWin32SurfaceCreateInfoKHR WCreateInfo = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	WCreateInfo.hwnd = SCAST(WindowsWindow*, _Window)->GetWindowObject();
@@ -248,7 +254,15 @@ Vk_Surface::Vk_Surface(VkDevice _Device, VkInstance _Instance, VkPhysicalDevice 
 
 	GS_VK_CHECK(vkCreateWin32SurfaceKHR(m_Instance, &WCreateInfo, ALLOCATOR, &Surface), "Failed to create Windows Surface!")
 
-	Format = PickBestFormat(_PD, Surface);
+	VkSurfaceCapabilitiesKHR Capabilities;
+	auto CapResult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, Surface, &Capabilities);
+
+	VkBool32 Supports = 0;
+	auto SupResult = vkGetPhysicalDeviceSurfaceSupportKHR(_PD, _Device.GetGraphicsQueue().GetQueueIndex(), Surface, &Supports);
+
+	VkSurfaceFormatKHR SF = PickBestFormat(_PD, Surface);
+	SurfaceFormat = SF.format;
+	SurfaceColorSpace = SF.colorSpace;
 }
 
 Vk_Surface::~Vk_Surface()
@@ -256,16 +270,18 @@ Vk_Surface::~Vk_Surface()
 	vkDestroySurfaceKHR(m_Instance, Surface, ALLOCATOR);
 }
 
-VkFormat Vk_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
+VkSurfaceFormatKHR Vk_Surface::PickBestFormat(VkPhysicalDevice _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
 	FVector<VkSurfaceFormatKHR> SurfaceFormats(FormatsCount);
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, SurfaceFormats.data());
 
-	uint8 i = 0;
-	if (SurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && SurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
-	{
-		return SurfaceFormats[i].format;
-	}
+	//uint8 i = 0;
+	//if (SurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && SurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
+	//{
+	//	return SurfaceFormats[i].format;
+	//}
+
+	return SurfaceFormats[0];
 }

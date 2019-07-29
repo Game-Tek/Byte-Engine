@@ -7,13 +7,9 @@
 
 VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : RenderPass(_Device, _RPD)
 {
-}
-
-Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : VulkanObject(_Device)
-{
 	FVector<VkAttachmentDescription> Attachments(1 + _RPD.ColorAttachmentsCount);	//Take into account depth/stencil attachment
-	//Set color attachments.
-	for(uint8 i = 0; i < Attachments.length() - 1; i++) //Loop through all color attachments(skip extra element for depth/stencil)
+//Set color attachments.
+	for (uint8 i = 0; i < Attachments.length() - 1; i++) //Loop through all color attachments(skip extra element for depth/stencil)
 	{
 		Attachments[i].format = FormatToVkFormat(_RPD.ColorAttachments[0].AttachmentFormat);
 		Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;	//Should match that of the SwapChain images.
@@ -37,12 +33,12 @@ Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD)
 
 
 	FVector<FVector<VkAttachmentReference>> SubpassesReferences(_RPD.SubPassesCount);
-	for(uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
+	for (uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
 	{
 		FVector<VkAttachmentReference> f(_RPD.SubPasses[SUBPASS].ColorAttachmentsCount + uint8(1)); //Add element for depth stencil
 		SubpassesReferences.push_back(f);
 	}
-	for(uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
+	for (uint8 SUBPASS = 0; SUBPASS < SubpassesReferences.length(); SUBPASS++)
 	{
 		for (uint8 COLOR_ATTACHMENT = 0; COLOR_ATTACHMENT < SubpassesReferences[SUBPASS].length(); COLOR_ATTACHMENT++)
 		{
@@ -62,16 +58,5 @@ Vk_RenderPass::Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD)
 	}
 
 
-	VkRenderPassCreateInfo RenderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-	RenderPassCreateInfo.attachmentCount = Attachments.length();
-	RenderPassCreateInfo.pAttachments = Attachments.data();
-	RenderPassCreateInfo.subpassCount = Subpasses.length();
-	RenderPassCreateInfo.pSubpasses = Subpasses.data();
 
-	GS_VK_CHECK(vkCreateRenderPass(m_Device, &RenderPassCreateInfo, ALLOCATOR, &RenderPass), "Failed to create RenderPass!")
-}
-
-Vk_RenderPass::~Vk_RenderPass()
-{
-	vkDestroyRenderPass(m_Device, RenderPass, ALLOCATOR);
 }

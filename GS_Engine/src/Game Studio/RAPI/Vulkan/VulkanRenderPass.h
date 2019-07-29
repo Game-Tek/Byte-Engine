@@ -2,21 +2,7 @@
 
 #include "VulkanBase.h"
 #include "RAPI/RenderPass.h"
-
-
-MAKE_VK_HANDLE(VkRenderPass)
-
-GS_CLASS Vk_RenderPass final : public VulkanObject
-{
-	VkRenderPass RenderPass = nullptr;
-public:
-	Vk_RenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD);
-	~Vk_RenderPass();
-
-	INLINE VkRenderPass GetVkRenderPass() const { return RenderPass; }
-
-	INLINE operator VkRenderPass() const { return RenderPass; }
-};
+#include "Native/Vk_RenderPass.h"
 
 GS_CLASS VulkanRenderPass final : public RenderPass
 {

@@ -4,7 +4,7 @@
 
 #include "RenderContext.h"
 #include "Shader.h"
-#include "Buffer.h"
+#include "Mesh.h"
 #include "Pipelines.h"
 #include "RenderPass.h"
 #include "Framebuffer.h"
@@ -29,7 +29,7 @@ public:
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
 	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
-	virtual Buffer* CreateBuffer(const BufferCreateInfo& _BCI) = 0;
+	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
 	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;

@@ -1,10 +1,13 @@
+#include "Vk_CommandBuffer.h"
+
 #include "RAPI/Vulkan/Vulkan.h"
 
-#include "Vk_CommandBuffer.h"
+#include "Vk_Device.h"
+#include "Vk_CommandPool.h"
 
 //  VK_COMMANDBUFFER
 
-Vk_CommandBuffer::Vk_CommandBuffer(VkDevice _Device, VkCommandPool _CP) : VulkanObject(_Device)
+Vk_CommandBuffer::Vk_CommandBuffer(const Vk_Device& _Device, const Vk_CommandPool& _CP) : VulkanObject(_Device)
 {
 	VkCommandBufferAllocateInfo CommandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 	CommandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -14,7 +17,7 @@ Vk_CommandBuffer::Vk_CommandBuffer(VkDevice _Device, VkCommandPool _CP) : Vulkan
 	GS_VK_CHECK(vkAllocateCommandBuffers(m_Device, &CommandBufferAllocateInfo, &CommandBuffer), "Failed to allocate Command Buffer!")
 }
 
-void Vk_CommandBuffer::Free(VkCommandPool _CP)
+void Vk_CommandBuffer::Free(const Vk_CommandPool& _CP)
 {
 	vkFreeCommandBuffers(m_Device, _CP, 1, &CommandBuffer);
 }

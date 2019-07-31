@@ -2,10 +2,10 @@
 
 #include "Core.h"
 
-#include "..\..\Window.h"
+#include <RAPI/Window.h>
 #include <Windows.h>
 
-class GLFWwindow;
+struct GLFWwindow;
 
 GS_CLASS WindowsWindow final : public Window
 {

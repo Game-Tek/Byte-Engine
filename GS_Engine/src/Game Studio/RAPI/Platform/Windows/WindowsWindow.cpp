@@ -25,8 +25,8 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 	auto t = r[2];
 
 	/* Create a windowed mode window and its OpenGL context */
-		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
 
 	if (!GLFWWindow)
 	{

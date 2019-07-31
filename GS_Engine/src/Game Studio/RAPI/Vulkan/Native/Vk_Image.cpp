@@ -2,7 +2,9 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
-Vk_Image::Vk_Image(const Vk_Device& _Device, VkExtent2D _Extent, VkImageType _Type, VkFormat _Format, VkImageUsageFlags _IUF)
+#include "Vk_Device.h"
+
+Vk_Image::Vk_Image(const Vk_Device& _Device, VkExtent2D _Extent, VkImageType _Type, VkFormat _Format, VkImageUsageFlags _IUF) : VulkanObject(_Device)
 {
 	VkImageCreateInfo ImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	ImageCreateInfo.imageType = _Type;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Core.h"
+#include <cstring>
+#include <cstdlib>
 
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
@@ -8,6 +10,8 @@
 template <typename T, typename LT = size_t>
 GS_CLASS FVector
 {
+	typedef T* iterator;
+
 private:
 	LT Length = 0;
 	LT Capacity = 0;
@@ -16,14 +20,34 @@ private:
 
 public:
 
-	const T* begin()
+	[[nodiscard]] iterator begin() const
+	{
+		return &(this->Data[0]);
+	}
+
+	[[nodiscard]] iterator end() const
+	{
+		return &(this->Data[Length]);
+	}
+
+	[[nodiscard]] const T& front() const
 	{
 		return this->Data[0];
 	}
 
-	const T* end()
+	T& front()
 	{
-		return this->Data[Length];
+		return this->Data[0];
+	}
+
+	[[nodiscard]] const T& back() const
+	{
+		return this->Data[this->Length];
+	}
+
+	T& back()
+	{
+		return this->Data[this->Length];
 	}
 
 	//Constructs a new FVector.
@@ -34,6 +58,14 @@ public:
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
 	explicit FVector(const size_t length) : Capacity(length), Data(allocate(this->Capacity))
 	{
+	}
+
+	FVector(const size_t _Length, const T& _obj) : Capacity(_Length), Data(allocate(this->Capacity))
+	{
+		for (size_t i = 0; i < this->Length; i++)
+		{
+			memcpy(&this->Data[i], &_obj, sizeof(T));
+		}
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
@@ -76,14 +108,14 @@ public:
 
 	~FVector()
 	{
-		delete[] this->Data;
+		freearray();
 	}
 
 	void resize(LT _Count)
 	{
 		if (_Count > this->Capacity)
 		{
-			delete[] this->Data;
+			freearray();
 			allocate(_Count);
 		}
 
@@ -270,16 +302,19 @@ private:
 	//Allocates a new a array of type T with enough space to hold elementcount elements.
 	T* allocate(const size_t elementcount)
 	{
-		return new T[elementcount];
+		return SCAST(T*, malloc(elementcount * sizeof(T)));
+		//return new T[elementcount];
+	}
+
+	void freearray()
+	{
+		free(this->Data);
 	}
 
 	//Fills array to with from.
 	void copyarray(T * from, T * to)
 	{
-		for (size_t i = 0; i < this->Length; i++)
-		{
-			to[i] = from[i];
-		}
+		memcpy(to, from, this->Length * sizeof(T));
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.
@@ -293,7 +328,7 @@ private:
 
 			copyarray(this->Data, buffer);
 
-			delete[] this->Data;
+			freearray();
 
 			this->Data = buffer;
 		}

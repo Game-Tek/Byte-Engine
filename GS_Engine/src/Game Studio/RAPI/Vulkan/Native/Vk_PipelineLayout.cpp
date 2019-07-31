@@ -2,6 +2,8 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+#include "Vk_Device.h"
+
 Vk_PipelineLayout::Vk_PipelineLayout(const Vk_Device& _Device) : VulkanObject(_Device)
 {
 	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };

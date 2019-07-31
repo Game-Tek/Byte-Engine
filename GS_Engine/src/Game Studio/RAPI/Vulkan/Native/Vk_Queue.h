@@ -2,8 +2,9 @@
 
 #include "Core.h"
 
-#include "VulkanBase.h"
+#include "RAPI/Vulkan/VulkanBase.h"
 
+class Vk_Fence;
 MAKE_VK_HANDLE(VkQueue)
 MAKE_VK_HANDLE(VkFence)
 struct VkSubmitInfo;

@@ -1,6 +1,7 @@
 #include "Vk_Device.h"
 
 #include "RAPI/Vulkan/Vulkan.h"
+#include "Vk_PhysicalDevice.h"
 
 struct QueueInfo
 {
@@ -10,17 +11,11 @@ struct QueueInfo
 
 VkPhysicalDeviceMemoryProperties MemoryProperties = {};
 
-Vk_Device::Vk_Device(VkInstance _Instance)
+Vk_Device::Vk_Device(const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD)
 {
-	////////////////////////////////////////
-	//      DEVICE CREATION/SELECTION     //
-	////////////////////////////////////////
-
 	VkPhysicalDeviceFeatures deviceFeatures = {};	//COME BACK TO
 
 	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-
-	PhysicalDevice = CreatePhysicalDevice(_Instance);
 
 	QueueInfo GraphicsQueueInfo;
 	QueueInfo ComputeQueueInfo;
@@ -35,7 +30,7 @@ Vk_Device::Vk_Device(VkInstance _Instance)
 
 	QueueInfo QueueInfos[] = { GraphicsQueueInfo, ComputeQueueInfo, TransferQueueInfo };
 
-	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos = CreateQueueInfos(QueueInfos, 3, PhysicalDevice);
+	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos = CreateQueueInfos(QueueInfos, 3, _PD);
 
 	VkDeviceCreateInfo DeviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 	DeviceCreateInfo.queueCreateInfoCount = QueueCreateInfos.length();
@@ -44,13 +39,13 @@ Vk_Device::Vk_Device(VkInstance _Instance)
 	DeviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 	DeviceCreateInfo.ppEnabledExtensionNames = DeviceExtensions;
 
-	auto ff = vkCreateDevice(PhysicalDevice, &DeviceCreateInfo, ALLOCATOR, &Device);
+	auto ff = vkCreateDevice(_PD, &DeviceCreateInfo, ALLOCATOR, &Device);
 
 	Vk_Queue* Queues[] = { &GraphicsQueue, &ComputeQueue, &TransferQueue };
 
 	SetVk_Queues(Queues, QueueCreateInfos);
 
-	vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
+	vkGetPhysicalDeviceMemoryProperties(_PD, &MemoryProperties);
 }
 
 Vk_Device::~Vk_Device()
@@ -70,7 +65,7 @@ void Vk_Device::SetVk_Queues(Vk_Queue* _Queue[], const FVector<VkDeviceQueueCrea
 	}
 }
 
-FVector<VkDeviceQueueCreateInfo> Vk_Device::CreateQueueInfos(QueueInfo * _QI, uint8 _QueueCount, VkPhysicalDevice _PD)
+FVector<VkDeviceQueueCreateInfo> Vk_Device::CreateQueueInfos(QueueInfo* _QI, uint8 _QueueCount, const Vk_PhysicalDevice& _PD)
 {
 	uint32_t QueueFamiliesCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, VK_NULL_HANDLE);	//Get the amount of queue families there are in the physical device.
@@ -116,16 +111,6 @@ FVector<VkDeviceQueueCreateInfo> Vk_Device::CreateQueueInfos(QueueInfo * _QI, ui
 	return QueueCreateInfos;
 }
 
-VkPhysicalDevice Vk_Device::CreatePhysicalDevice(VkInstance _Instance)
-{
-
-}
-
-uint8 Vk_Device::GetDeviceTypeScore(VkPhysicalDeviceType _Type)
-{
-
-}
-
 uint32 Vk_Device::FindMemoryType(uint32 _TypeFilter, uint32 _Properties) const
 {
 	for (uint32 i = 0; i < MemoryProperties.memoryTypeCount; i++)
@@ -135,4 +120,6 @@ uint32 Vk_Device::FindMemoryType(uint32 _TypeFilter, uint32 _Properties) const
 			return i;
 		}
 	}
+
+	return 0;
 }

@@ -2,6 +2,8 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+#include "Vk_Device.h"
+
 Vk_ImageView::Vk_ImageView(const Vk_Device& _Device, const Vk_Image& _Image, VkImageViewType _IVT, VkFormat _Format, VkImageAspectFlags _IAF) : VulkanObject(_Device)
 {
 	VkImageViewCreateInfo ImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };

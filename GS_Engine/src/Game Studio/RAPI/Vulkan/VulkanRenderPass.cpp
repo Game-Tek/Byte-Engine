@@ -3,22 +3,21 @@
 #include "Vulkan.h"
 #include "Containers/FVector.hpp"
 #include "RAPI/Renderer.h"
-#include "VulkanRenderer.h"
 
-VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor& _RPD) : RenderPass(_Device, _RPD)
+Tuple<FVector<VkAttachmentDescription>, FVector<VkSubpassDescription>> VulkanRenderPass::CreateInfo(const RenderPassDescriptor& _RPD)
 {
 	FVector<VkAttachmentDescription> Attachments(1 + _RPD.ColorAttachmentsCount);	//Take into account depth/stencil attachment
-//Set color attachments.
+	//Set color attachments.
 	for (uint8 i = 0; i < Attachments.length() - 1; i++) //Loop through all color attachments(skip extra element for depth/stencil)
 	{
-		Attachments[i].format = FormatToVkFormat(_RPD.ColorAttachments[0].AttachmentFormat);
+		Attachments[i].format = FormatToVkFormat(_RPD.ColorAttachments[i].AttachmentFormat);
 		Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;	//Should match that of the SwapChain images.
 		Attachments[i].loadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.ColorAttachments[i].LoadOperation);
 		Attachments[i].storeOp = StoreOperationsToVkAttachmentStoreOp(_RPD.ColorAttachments[i].StoreOperation);
 		Attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		Attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		Attachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		Attachments[i].finalLayout = ImageLayoutToVkImageLayout(_RPD.ColorAttachments[0].Layout);
+		Attachments[i].finalLayout = ImageLayoutToVkImageLayout(_RPD.ColorAttachments[i].Layout);
 	}
 
 	//Set depth/stencil element.
@@ -30,6 +29,7 @@ VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor&
 	Attachments[Attachments.length()].stencilStoreOp = StoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
 	Attachments[Attachments.length()].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	Attachments[Attachments.length()].finalLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.Layout);
+
 
 
 	FVector<FVector<VkAttachmentReference>> SubpassesReferences(_RPD.SubPassesCount);
@@ -56,6 +56,12 @@ VulkanRenderPass::VulkanRenderPass(VkDevice _Device, const RenderPassDescriptor&
 		Subpasses[SUBPASS].pColorAttachments = SubpassesReferences[SUBPASS].data();
 		Subpasses[SUBPASS].pDepthStencilAttachment = &SubpassesReferences[SUBPASS][SubpassesReferences[SUBPASS].length()];
 	}
+
+	return Tuple<FVector<VkAttachmentDescription>, FVector<VkSubpassDescription>>(Attachments, Subpasses);
+}
+
+VulkanRenderPass::VulkanRenderPass(const Vk_Device& _Device, const RenderPassDescriptor& _RPD) : RenderPass(_Device, CreateInfo(_RPD))
+{
 
 
 

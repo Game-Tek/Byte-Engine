@@ -2,11 +2,9 @@
 
 #include "Core.h"
 
-#include "Native/Vk_Device.h"
-
 #define MAKE_VK_HANDLE(object) typedef struct object##_T* object;
 
-MAKE_VK_HANDLE(VkDevice)
+class Vk_Device;
 
 GS_CLASS VulkanObject
 {

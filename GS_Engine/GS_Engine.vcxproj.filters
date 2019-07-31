@@ -189,7 +189,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanShader.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Fence.h" />
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
@@ -267,7 +266,6 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanShader.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Renderer.cpp">
       <Filter>Engine\Render\Renderer</Filter>
     </ClCompile>
@@ -292,6 +290,8 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PipelineLayout.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ComputePipeline.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_GraphicsPipeline.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

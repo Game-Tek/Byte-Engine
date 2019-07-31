@@ -6,14 +6,12 @@
 
 MAKE_VK_HANDLE(VkSurfaceKHR)
 
+class Vk_Instance;
+class Vk_PhysicalDevice;
 class Window;
-
-enum VkSurfaceFormatKHR;
 
 GS_CLASS Vk_Surface final : public VulkanObject
 {
-	static VkSurfaceFormatKHR PickBestFormat(const Vk_PhysicalDevice& _PD, const Vk_Surface& _Surface);
-
 	const Vk_Instance& m_Instance;
 	VkSurfaceKHR Surface = nullptr;
 

@@ -151,14 +151,3 @@ INLINE uint32 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
 	default:						return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
 	}
 }
-
-VkBufferUsageFlagBits BufferTypeToVkBufferUsageFlagBits(BufferType _BT)
-{
-	switch (_BT)
-	{
-	case BufferType::BUFFER_VERTEX:		return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	case BufferType::BUFFER_INDEX:		return VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-	case BufferType::BUFFER_UNIFORM:	return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-	default:							return VK_BUFFER_USAGE_FLAG_BITS_MAX_ENUM;
-	}
-}

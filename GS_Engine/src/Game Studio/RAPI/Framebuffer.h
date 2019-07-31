@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "Extent.h"
+#include "RenderCore.h"
 
 class Image;
 class RenderPass;

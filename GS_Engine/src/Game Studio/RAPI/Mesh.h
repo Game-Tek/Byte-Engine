@@ -36,7 +36,7 @@ public:
 			case ShaderDataTypes::BOOL:		return 4;
 			case ShaderDataTypes::MAT3:		return 4 * 3 * 3;
 			case ShaderDataTypes::MAT4:		return 4 * 4 * 4;
-		
+			default:						return 0;
 		}
 	}
 
@@ -88,5 +88,4 @@ GS_STRUCT MeshCreateInfo
 GS_CLASS Mesh
 {
 public:
-	virtual ~Mesh();
 };

@@ -2,6 +2,8 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+#include "Vk_Device.h"
+
 Vk_ShaderModule::Vk_ShaderModule(const Vk_Device& _Device, uint32* _Data, size_t _Size) : VulkanObject(_Device)
 {
 	VkShaderModuleCreateInfo ShaderCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };

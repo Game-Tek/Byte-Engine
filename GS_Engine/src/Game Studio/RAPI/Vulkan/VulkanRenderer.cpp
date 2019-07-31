@@ -1,7 +1,6 @@
 #include "Vulkan.h"
 #include "VulkanRenderer.h"
 
-#include "VulkanShader.h"
 #include "VulkanRenderContext.h"
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
@@ -10,9 +9,10 @@
 
 //  VULKAN RENDERER
 
-VulkanRenderer::VulkanRenderer() : Instance("Game Studio"), Device(Instance.GetVkInstance()),
-                                   TransientCommandPool(Device, Device.GetTransferQueue().GetQueueIndex(),
-                                                        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)
+VulkanRenderer::VulkanRenderer() : Instance("Game Studio"),
+	PhysicalDevice(Instance),
+	Device(Instance, PhysicalDevice),
+	TransientCommandPool(Device, Device.GetTransferQueue(),VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)
 {
 }
 
@@ -20,14 +20,9 @@ VulkanRenderer::~VulkanRenderer()
 {
 }
 
-Shader* VulkanRenderer::CreateShader(const ShaderCreateInfo& _SI)
-{
-	return new VulkanShader(Device, _SI.ShaderName, _SI.Type);
-}
-
 Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 {
-	return new VulkanMesh(Device);
+	return new VulkanMesh(Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout.GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
@@ -47,10 +42,10 @@ ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCrea
 
 Framebuffer* VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 {
-	return new VulkanFramebuffer(Device, _FCI.RenderPass, _FCI.Extent, _FCI.Images, _FCI.ImagesCount);
+	return new VulkanFramebuffer(Device, SCAST(VulkanRenderPass*, _FCI.RenderPass), _FCI.Extent, _FCI.Images, _FCI.ImagesCount);
 }
 
 RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
-	return new VulkanRenderContext(Device, Instance.GetVkInstance(), Device.GetVkPhysicalDevice(), _RCCI.Window);
+	return new VulkanRenderContext(Device, Instance, PhysicalDevice, *_RCCI.Window);
 }

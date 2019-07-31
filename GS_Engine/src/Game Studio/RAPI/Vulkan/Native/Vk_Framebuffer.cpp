@@ -2,7 +2,11 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
-Vk_Framebuffer::Vk_Framebuffer(const Vk_Device& _Device, Extent2D _Extent, const Vk_RenderPass& _RP, const FVector<Vk_ImageView>& _Images) : VulkanObject(_Device)
+#include "Vk_Device.h"
+#include "Vk_ImageView.h"
+#include "Vk_RenderPass.h"
+
+Vk_Framebuffer::Vk_Framebuffer(const Vk_Device& _Device, Extent2D _Extent, const Vk_RenderPass& _RP, const FVector<VkImageView>& _Images) : VulkanObject(_Device)
 {
 	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 	FramebufferCreateInfo.renderPass = _RP;

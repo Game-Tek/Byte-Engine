@@ -2,8 +2,8 @@
 
 #include "Core.h"
 
-#include "VulkanBase.h"
 #include "RAPI/Image.h"
+
 #include "Native/Vk_ImageView.h"
 
 GS_CLASS VulkanImage final : public Image
@@ -13,5 +13,5 @@ GS_CLASS VulkanImage final : public Image
 public:
 	VulkanImage();
 
-	INLINE VkImageView GetVkImageView() const { return ImageView.GetVkImageView(); }
+	INLINE VkImageView GetVkImageView() const { return ImageView; }
 };

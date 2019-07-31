@@ -2,6 +2,8 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+#include "Vk_Device.h"
+
 #include "Vk_PipelineLayout.h"
 #include "Vk_RenderPass.h"
 

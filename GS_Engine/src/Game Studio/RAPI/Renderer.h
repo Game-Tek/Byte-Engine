@@ -3,7 +3,6 @@
 #include "Core.h"
 
 #include "RenderContext.h"
-#include "Shader.h"
 #include "Mesh.h"
 #include "Pipelines.h"
 #include "RenderPass.h"
@@ -28,7 +27,6 @@ public:
 	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
-	virtual Shader* CreateShader(const ShaderCreateInfo& _SI) = 0;
 	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;

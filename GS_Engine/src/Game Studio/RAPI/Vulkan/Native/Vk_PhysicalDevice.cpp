@@ -5,7 +5,7 @@
 
 #include "Containers/FVector.hpp"
 
-Vk_PhysicalDevice::Vk_PhysicalDevice(const Vk_Device& _Device, const Vk_Instance& _Instance) : VulkanObject(_Device)
+Vk_PhysicalDevice::Vk_PhysicalDevice(const Vk_Instance& _Instance)
 {
 	uint32_t DeviceCount = 0;
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, VK_NULL_HANDLE);	//Get the amount of physical devices(GPUs) there are.

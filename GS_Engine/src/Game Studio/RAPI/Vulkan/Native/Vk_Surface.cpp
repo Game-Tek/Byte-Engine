@@ -13,7 +13,7 @@ Vk_Surface::Vk_Surface(const Vk_Device& _Device, const Vk_Instance& _Instance, c
 	WCreateInfo.hwnd = SCAST(WindowsWindow&, CCAST(Window&, _Window)).GetWindowObject();
 	WCreateInfo.hinstance = SCAST(WindowsWindow&, CCAST(Window&, _Window)).GetHInstance();
 
-	GS_VK_CHECK(vkCreateWin32SurfaceKHR(m_Instance, &WCreateInfo, ALLOCATOR, &Surface), "Failed to create Windows Surface!")
+	auto t = vkCreateWin32SurfaceKHR(m_Instance, &WCreateInfo, ALLOCATOR, &Surface);
 
 	VkSurfaceCapabilitiesKHR Capabilities;
 	auto CapResult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, Surface, &Capabilities);

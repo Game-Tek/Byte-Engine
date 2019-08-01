@@ -50,7 +50,7 @@ VkSwapchainCreateInfoKHR Vk_Swapchain::CreateSwapchainCreateInfo(const Vk_Surfac
 	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 
 	SwapchainCreateInfo.surface = _Surface;
-	SwapchainCreateInfo.minImageCount = 2;
+	SwapchainCreateInfo.minImageCount = 4;
 	SwapchainCreateInfo.imageFormat = _SurfaceFormat;
 	SwapchainCreateInfo.imageColorSpace = _SurfaceColorSpace;
 	SwapchainCreateInfo.imageExtent = _SurfaceExtent;
@@ -59,7 +59,7 @@ VkSwapchainCreateInfoKHR Vk_Swapchain::CreateSwapchainCreateInfo(const Vk_Surfac
 	//Should be VK_IMAGE_USAGE_TRANSFER_DST_BIT
 	SwapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	SwapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	SwapchainCreateInfo.queueFamilyIndexCount = 0; // Optional
+	SwapchainCreateInfo.queueFamilyIndexCount = 0;
 	SwapchainCreateInfo.pQueueFamilyIndices = nullptr;
 	SwapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	//The compositeAlpha field specifies if the alpha channel should be used for blending with other windows in the window system.

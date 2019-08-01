@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Core.h"
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
@@ -116,7 +116,7 @@ public:
 		if (_Count > this->Capacity)
 		{
 			freearray();
-			allocate(_Count);
+			this->Data = allocate(_Count);
 		}
 
 		return;
@@ -209,9 +209,11 @@ public:
 	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
 	void recreate(T arr[], const size_t length)
 	{
-		overlay(0, arr, length);
+		checkfornew(length - this->Length);
 
 		this->Length = length;
+		
+		copyarray(arr, this->Data);
 
 		return;
 	}
@@ -227,7 +229,7 @@ public:
 		}
 	}
 
-	//Deletes all elements between index and index + length and shifts the entiry array backwards to fill the empty space.
+	//Deletes all elements between index and index + length and shifts the entire array backwards to fill the empty space.
 	void erase(const size_t index, const size_t length)
 	{
 		this->Length -= length;

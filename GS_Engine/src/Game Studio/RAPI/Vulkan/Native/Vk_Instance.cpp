@@ -2,9 +2,19 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+#include <iostream>
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL Callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,	VkDebugUtilsMessageTypeFlagsEXT messageType,	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,	void* pUserData)
+{
+	std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+
+	return VK_FALSE;
+}
+
 Vk_Instance::Vk_Instance(const char* _AppName)
 {
 	VkApplicationInfo AppInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+	AppInfo.pNext = nullptr;
 	AppInfo.apiVersion = VK_API_VERSION_1_1;	//Should check if version is available vi vkEnumerateInstanceVersion().
 	AppInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	AppInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);

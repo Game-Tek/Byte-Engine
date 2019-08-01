@@ -25,7 +25,6 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 	auto t = r[2];
 
 	/* Create a windowed mode window and its OpenGL context */
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
 
@@ -39,6 +38,8 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 
 	WindowObject = glfwGetWin32Window(GLFWWindow);
 	WindowInstance = GetModuleHandle(NULL);
+
+	//SetWindowFit(_Fit);
 }
 
 WindowsWindow::~WindowsWindow()
@@ -70,6 +71,28 @@ void WindowsWindow::Update()
 	{
 		Keys[i] = GLFWKeyStateToKeyState(glfwGetKey(GLFWWindow, KeyboardKeysToGLFWKeys(SCAST(KeyboardKeys, i))));
 	}
+}
+
+void WindowsWindow::SetWindowFit(WindowFit _Fit)
+{
+	const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+
+	switch (_Fit)
+	{
+	case WindowFit::NORMAL:		glfwRestoreWindow(GLFWWindow);
+	case WindowFit::MAXIMIZED:	glfwMaximizeWindow(GLFWWindow);
+	case WindowFit::FULLSCREEN: glfwSetWindowMonitor(GLFWWindow, glfwGetPrimaryMonitor(), 0, 0, mode->width, mode->height, mode->refreshRate);
+	default: ;
+	}
+}
+
+void WindowsWindow::MinimizeWindow()
+{
+	glfwIconifyWindow(GLFWWindow);
+}
+
+void WindowsWindow::NotifyWindow()
+{
 }
 
 int32 WindowsWindow::KeyboardKeysToGLFWKeys(KeyboardKeys _IE)

@@ -8,14 +8,8 @@ class Sandbox : public GS::Application
 public:
 	Sandbox()
 	{
-		WindowCreateInfo WCI;
-		WCI.Extent = { 1280, 720 };
-		WCI.Name = "Game Studio!";
-		WCI.WindowType = WindowFit::NORMAL;
-		auto mWindow = Window::CreateGSWindow(WCI);
-
 		RenderContextCreateInfo RCCI;
-		RCCI.Window = mWindow;
+		RCCI.Window = GetWindow();
 		auto RC = Renderer::GetRenderer()->CreateRenderContext(RCCI);
 	}
 

@@ -24,4 +24,8 @@ public:
 	INLINE HINSTANCE GetHInstance() const { return WindowInstance; }
 
 	virtual void Update();
+
+	void SetWindowFit(WindowFit _Fit) override;
+	void MinimizeWindow() override;
+	void NotifyWindow() override;
 };

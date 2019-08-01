@@ -4,6 +4,7 @@
 
 #include "../Clock.h"
 #include "../InputManager.h"
+#include "RAPI/Window.h"
 
 namespace GS
 {
@@ -21,14 +22,16 @@ namespace GS
 
 		Clock * GetClockInstance() const { return ClockInstance; }
 		InputManager * GetInputManagerInstance() const { return InputManagerInstance; }
+		Window* GetWindow() const { return WindowInstance; }
 
 	private:
 		Clock * ClockInstance = nullptr;
 		InputManager * InputManagerInstance = nullptr;
+		Window* WindowInstance = nullptr;
 
 		static Application * ApplicationInstance;
 
-		/*int ShouldClose();*/
+		bool ShouldClose();
 	};
 
 	Application * CreateApplication();

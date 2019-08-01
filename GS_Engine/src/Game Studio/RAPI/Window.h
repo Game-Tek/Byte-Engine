@@ -40,6 +40,10 @@ public:
 
 	virtual void Update() {};
 
+	virtual void SetWindowFit(WindowFit _Fit) = 0;
+	virtual void MinimizeWindow() = 0;
+	virtual void NotifyWindow() = 0;
+
 	[[nodiscard]] const Extent2D& GetWindowExtent() const { return Extent; }
 	[[nodiscard]] const Vector2& GetMousePosition() const { return MousePosition; }
 	INLINE bool GetShouldClose() const { return ShouldClose; }

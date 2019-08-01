@@ -82,6 +82,16 @@ void FString::Insert(const char * In, const size_t Index)
 	return;
 }
 
+int64 FString::FindLast(char _Char) const
+{
+	for (int32 i = Array.length(); i > 0; --i)
+	{
+		if (Array[i] == _Char) return i;
+	}
+
+	return -1;
+}
+
 size_t FString::StringLength(const char * In)
 {
 	size_t Length = 0;

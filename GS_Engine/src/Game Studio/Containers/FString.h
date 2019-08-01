@@ -46,6 +46,9 @@ public:
 	//Places the passed in FString at the specified Index.
 	void Insert(const char * In, size_t Index);
 
+	//Returns the index to the last character in the string that is equal to _Char, if no matching character is found -1 is returned.
+	[[nodiscard]] int64 FindLast(char _Char) const;
+
 	//Returns the length of the In FString accounting for the null terminator character. FString MUST BE NULL TERMINATED.
 	static size_t StringLength(const char * In);
 

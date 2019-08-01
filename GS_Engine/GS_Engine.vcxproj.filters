@@ -202,7 +202,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Semaphore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Shader.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandBuffer.h" />

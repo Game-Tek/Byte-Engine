@@ -3,6 +3,7 @@
 #include "VulkanPipelines.h"
 
 #include "RAPI/RenderPass.h"
+#include "RAPI/Vulkan/Native/Vk_ShaderModule.h"
 
 #include "VulkanRenderPass.h"
 
@@ -35,24 +36,56 @@ Tuple<std::vector<char>, size_t> GetShaderCode(const FString& _Name)
 	return Result;
 }
 
-VulkanStageInfo StageInfoToVulkanStageInfo(const StageInfo& _SI)
+FVector<VkPipelineShaderStageCreateInfo> VulkanGraphicsPipeline::StageInfoToVulkanStageInfo(const ShaderStages& _SI, const Vk_Device& _Device)
 {
-	VulkanStageInfo Result;
+	FVector<VkPipelineShaderStageCreateInfo> Result (2);
 
-	for (uint8 i = 0; i < _SI.ShaderCount; i++)
+	if(_SI.VertexShader)
 	{
-		//Result.Shaders[i] = SCAST(VulkanShader*, _SI.Shader[i])->GetVk_ShaderModule();
-		Result.ShaderTypes[i] = ShaderTypeToVkShaderStageFlagBits(_SI.Shader[i]->GetShaderType());
+		VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+		VS.stage = ShaderTypeToVkShaderStageFlagBits(_SI.VertexShader->Type);
+		VS.module = Vk_ShaderModule(_Device, _SI.VertexShader->ShaderCode, VS.stage);
+		VS.pName = "main";
+
+		Result.push_back(VS);
 	}
 
-	Result.ShaderCount = _SI.ShaderCount;
+	if(_SI.TessellationShader)
+	{
+		VkPipelineShaderStageCreateInfo TS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+		TS.stage = ShaderTypeToVkShaderStageFlagBits(_SI.TessellationShader->Type);
+		TS.module = Vk_ShaderModule(_Device, _SI.TessellationShader->ShaderCode, TS.stage);
+		TS.pName = "main";
+
+		Result.push_back(TS);
+	}
+
+	if (_SI.GeometryShader)
+	{
+		VkPipelineShaderStageCreateInfo GS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+		GS.stage = ShaderTypeToVkShaderStageFlagBits(_SI.GeometryShader->Type);
+		GS.module = Vk_ShaderModule(_Device, _SI.GeometryShader->ShaderCode, GS.stage);
+		GS.pName = "main";
+
+		Result.push_back(GS);
+	}
+
+	if (_SI.FragmentShader)
+	{
+		VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+		FS.stage = ShaderTypeToVkShaderStageFlagBits(_SI.FragmentShader->Type);
+		FS.module = Vk_ShaderModule(_Device, _SI.FragmentShader->ShaderCode, FS.stage);
+		FS.pName = "main";
+
+		Result.push_back(FS);
+	}
 
 	return Result;
 }
 
-VulkanGraphicsPipeline::VulkanGraphicsPipeline(const Vk_Device& _Device, RenderPass * _RP, Extent2D _SwapchainSize, const StageInfo& _SI) :
+VulkanGraphicsPipeline::VulkanGraphicsPipeline(const Vk_Device& _Device, RenderPass* _RP, Extent2D _SwapchainSize, const ShaderStages& _SI) :
 	Layout(_Device),
-	Pipeline(_Device, SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass(), Extent2DToVkExtent2D(_SwapchainSize), Layout, StageInfoToVulkanStageInfo(_SI))
+	Pipeline(_Device, SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass(), Extent2DToVkExtent2D(_SwapchainSize), Layout, StageInfoToVulkanStageInfo(_SI, _Device))
 {
 }
 

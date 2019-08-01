@@ -134,7 +134,7 @@ VkPipelineDynamicStateCreateInfo Vk_GraphicsPipeline::CreateDynamicState()
 	return DynamicState;
 }
 
-Vk_GraphicsPipeline::Vk_GraphicsPipeline(const Vk_Device& _Device, const Vk_RenderPass& _RP, VkExtent2D _SwapchainSize, const Vk_PipelineLayout& _PL, const VulkanStageInfo& _VSI) : VulkanObject(_Device)
+Vk_GraphicsPipeline::Vk_GraphicsPipeline(const Vk_Device& _Device, const Vk_RenderPass& _RP, VkExtent2D _SwapchainSize, const Vk_PipelineLayout& _PL, const FVector<VkPipelineShaderStageCreateInfo>& _SI) : VulkanObject(_Device)
 {
 	auto PipelineVertexInputStateCreateInfo = CreateVertexInputState();
 	auto PipelineInputAssemblyStateCreateInfo = CreateInputAssemblyState();
@@ -146,21 +146,11 @@ Vk_GraphicsPipeline::Vk_GraphicsPipeline(const Vk_Device& _Device, const Vk_Rend
 	auto PipelineColorBlendStateCreateInfo = CreateColorBlendState();
 	auto PipelineDynamicStateCreateInfo = CreateDynamicState();
 
-
-	VkPipelineShaderStageCreateInfo ShaderStages[6];
-	for (uint8 i = 0; i < _VSI.ShaderCount; i++)
-	{
-		ShaderStages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-		ShaderStages[i].stage = _VSI.ShaderTypes[i];
-		ShaderStages[i].module = _VSI.Shaders[i];
-		ShaderStages[i].pName = "main";
-	}
-
 	VkGraphicsPipelineCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-	CreateInfo.stageCount = _VSI.ShaderCount;
+	CreateInfo.stageCount = _SI.length();
 	//pStages is an array of size stageCount structures of type VkPipelineShaderStageCreateInfo
 	//describing the set of the shader stages to be included in the graphics pipeline.
-	CreateInfo.pStages = ShaderStages;
+	CreateInfo.pStages = _SI.data();
 	//pVertexInputState is a pointer to an instance of the VkPipelineVertexInputStateCreateInfo structure.
 	CreateInfo.pVertexInputState = &PipelineVertexInputStateCreateInfo;
 	//pInputAssemblyState is a pointer to an instance of the VkPipelineInputAssemblyStateCreateInfo structure which determines input assembly behavior, as described in Drawing Commands.

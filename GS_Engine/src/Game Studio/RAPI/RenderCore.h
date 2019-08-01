@@ -91,7 +91,10 @@ enum class StoreOperations : uint8
 enum class ShaderType : uint8
 {
 	VERTEX_SHADER,
+	TESSELLATION_SHADER,
+	GEOMETRY_SHADER,
 	FRAGMENT_SHADER,
+
 	COMPUTE_SHADER
 };
 

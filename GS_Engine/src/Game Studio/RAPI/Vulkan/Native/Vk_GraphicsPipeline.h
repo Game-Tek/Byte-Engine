@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RAPI/Vulkan/VulkanBase.h"
+#include "Containers/FVector.hpp"
 
 class Vk_PipelineLayout;
 class Vk_RenderPass;
@@ -17,15 +18,9 @@ struct VkPipelineColorBlendStateCreateInfo;
 struct VkPipelineDynamicStateCreateInfo;
 struct VkExtent2D;
 
-MAKE_VK_HANDLE(VkShaderModule)
-enum VkShaderStageFlagBits;
+struct VkPipelineShaderStageCreateInfo;
 
-GS_STRUCT VulkanStageInfo
-{
-	VkShaderModule Shaders[6];
-	VkShaderStageFlagBits ShaderTypes[6];
-	uint8 ShaderCount = 2;
-};
+MAKE_VK_HANDLE(VkShaderModule)
 
 GS_CLASS Vk_GraphicsPipeline final : public VulkanObject
 {
@@ -41,7 +36,7 @@ GS_CLASS Vk_GraphicsPipeline final : public VulkanObject
 	static VkPipelineColorBlendStateCreateInfo CreateColorBlendState();
 	static VkPipelineDynamicStateCreateInfo CreateDynamicState();
 public:
-	Vk_GraphicsPipeline(const Vk_Device& _Device, const Vk_RenderPass& _RP, VkExtent2D _SwapchainSize, const Vk_PipelineLayout& _PL, const VulkanStageInfo& _SI);
+	Vk_GraphicsPipeline(const Vk_Device& _Device, const Vk_RenderPass& _RP, VkExtent2D _SwapchainSize, const Vk_PipelineLayout& _PL, const FVector<VkPipelineShaderStageCreateInfo>& _SI);
 	~Vk_GraphicsPipeline();
 
 	INLINE VkPipeline GetVkGraphicsPipeline() const { return GraphicsPipeline; }

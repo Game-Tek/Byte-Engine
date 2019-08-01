@@ -120,7 +120,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Pipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Semaphore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Shader.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Buffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandPool.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ComputePipeline.h" />

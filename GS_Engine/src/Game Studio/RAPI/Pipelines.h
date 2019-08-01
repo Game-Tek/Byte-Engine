@@ -1,22 +1,30 @@
 #pragma once
 
 #include "Core.h"
+#include "Containers/FString.h"
 
-#define MAX_SHADER_STAGES 6
+#include "RenderCore.h"
 
-#include "Shader.h"
+
+GS_STRUCT ShaderInfo
+{
+	ShaderType Type;
+	FString ShaderCode;
+};
+
+GS_STRUCT ShaderStages
+{
+	ShaderInfo* VertexShader		= nullptr;
+	ShaderInfo* TessellationShader	= nullptr;
+	ShaderInfo* GeometryShader		= nullptr;
+	ShaderInfo* FragmentShader		= nullptr;
+};
 
 class RenderPass;
 
-GS_STRUCT StageInfo
-{
-	Shader* Shader[MAX_SHADER_STAGES];
-	uint8 ShaderCount = 2;
-};
-
 GS_STRUCT GraphicsPipelineCreateInfo
 {
-	StageInfo StagesInfo;
+	ShaderStages Stages;
 	Extent2D SwapchainSize;
 	RenderPass* RenderPass = nullptr;
 };

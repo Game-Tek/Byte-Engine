@@ -1,7 +1,5 @@
 #include "StaticMeshResource.h"
 
-#include "Logger.h"
-
 #include "Containers/FString.h"
 
 #include <assimp/scene.h>
@@ -29,7 +27,6 @@ Mesh * StaticMeshResource::Load(const FString & Path)
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
-		GS_LOG_WARNING("Failed to load StaticMesh: %s", FilePath.c_str());
 		return LoadFallbackResource();
 	}
 

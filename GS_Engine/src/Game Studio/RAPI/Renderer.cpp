@@ -11,6 +11,7 @@ Renderer* Renderer::CreateRenderer()
 	{
 	case RAPI::NONE:		return nullptr;
 	case RAPI::VULKAN:		return new VulkanRenderer();
+	default:				return nullptr;
 	}
 }
 

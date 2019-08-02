@@ -10,6 +10,7 @@
 #include "Native/Vk_CommandPool.h"
 #include "Native/Vk_CommandBuffer.h"
 #include "Native/Vk_Semaphore.h"
+#include "Native/Vk_Fence.h"
 #include "Native/Vk_Queue.h"
 
 class Vk_Device;
@@ -34,15 +35,16 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 	VkPresentModeKHR PresentMode;
 
 	Vk_Swapchain Swapchain;
-	Vk_Semaphore ImageAvailable;
-	Vk_Semaphore RenderFinished;
+	const uint8 MaxFramesInFlight = 0;
+	FVector<Vk_Semaphore> ImagesAvailable;
+	FVector<Vk_Semaphore> RendersFinished;
+	FVector<Vk_Fence> InFlightFences;
 
 	Vk_Queue PresentationQueue;
 
 	Vk_CommandPool CommandPool;
 
 	uint8 CurrentImage = 0;
-	const uint8 MaxFramesInFlight = 0;
 
 	FVector<Vk_CommandBuffer> CommandBuffers;
 
@@ -54,8 +56,8 @@ public:
 
 	void OnResize() final  override;
 
-	void Present() final override;
 	void Flush() final override;
+	void Present() final override;
 	void BeginRecording() final override;
 	void EndRecording() final override;
 	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;

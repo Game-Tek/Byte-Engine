@@ -42,8 +42,6 @@ public:
 
 	virtual void OnResize() = 0;
 
-	virtual void Present() = 0;
-
 	//Starts recording of commands.
 	virtual void BeginRecording() = 0;
 	//Ends recording of commands.
@@ -51,7 +49,9 @@ public:
 	
 	//Sends all commands to the GPU.
 	virtual void Flush() = 0;
-	
+
+	//Swaps buffers and send new image to the screen.
+	virtual void Present() = 0;
 	
 	// COMMANDS
 	

@@ -17,6 +17,18 @@ Vk_Fence::~Vk_Fence()
 	vkDestroyFence(m_Device, Fence, ALLOCATOR);
 }
 
+void Vk_Fence::WaitForFences(uint8 _Count, Vk_Fence* _Fences, bool _WaitForAll)
+{
+	FVector<VkFence> Fences(1);
+	vkWaitForFences(_Fences->m_Device, _Count, Fences.data(), _WaitForAll, 0xffffffffffffffff);
+}
+
+void Vk_Fence::ResetFences(uint8 _Count, Vk_Fence* _Fences)
+{
+	FVector<VkFence> Fences(1);
+	vkResetFences(_Fences->m_Device, _Count, Fences.data());
+}
+
 bool Vk_Fence::GetStatus() const
 {
 	const VkResult Result = vkGetFenceStatus(m_Device, Fence);

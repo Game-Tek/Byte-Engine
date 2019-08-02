@@ -67,11 +67,12 @@ VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, const Vk_Inst
 	Format(FindFormat(_PD, Surface)),
 	PresentMode(FindPresentMode(_PD, Surface)),
 	Swapchain(_Device, Surface, Format.format, Format.colorSpace, Extent2DToVkExtent2D(_Window.GetWindowExtent()), PresentMode),
-	ImageAvailable(_Device),
-	RenderFinished(_Device),
+	MaxFramesInFlight(Swapchain.GetImages().length()),
+	ImagesAvailable(MaxFramesInFlight, Vk_Semaphore(_Device)),
+	RendersFinished(MaxFramesInFlight, Vk_Semaphore(_Device)),
+	InFlightFences(MaxFramesInFlight, Vk_Fence(_Device, true)),
 	PresentationQueue(_Device.GetGraphicsQueue()),
 	CommandPool(_Device, _Device.GetGraphicsQueue()),
-	MaxFramesInFlight(Swapchain.GetImages().length()),
 	CommandBuffers(MaxFramesInFlight, Vk_CommandBuffer(_Device, CommandPool))
 {
 }
@@ -80,34 +81,11 @@ void VulkanRenderContext::OnResize()
 {
 }
 
-void VulkanRenderContext::Present()
-{
-	VkSemaphore WaitSemaphores[] = { ImageAvailable };
-
-	/* Present result on screen */
-	const VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
-
-	const uint32 ImageIndex = Swapchain.AcquireNextImage(ImageAvailable);
-	CurrentImage = ImageIndex;
-
-	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-	{
-		PresentInfo.waitSemaphoreCount = 1;
-		PresentInfo.pWaitSemaphores = WaitSemaphores;
-		PresentInfo.swapchainCount = 1;
-		PresentInfo.pSwapchains = Swapchains;
-		PresentInfo.pImageIndices = &ImageIndex;
-		PresentInfo.pResults = nullptr;
-	}
-
-	PresentationQueue.Present(&PresentInfo);
-}
-
 void VulkanRenderContext::Flush()
 {
 	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	VkSemaphore WaitSemaphores[] = { ImageAvailable };
-	VkSemaphore SignalSemaphores[] = { RenderFinished };
+	VkSemaphore WaitSemaphores[] = { ImagesAvailable[CurrentImage] };
+	VkSemaphore SignalSemaphores[] = { RendersFinished[CurrentImage] };
 	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[CurrentImage] };
 
 	//Each entry in the WaitStages array corresponds to the semaphore with the same index in WaitSemaphores.
@@ -123,6 +101,33 @@ void VulkanRenderContext::Flush()
 	SubmitInfo.pSignalSemaphores = SignalSemaphores;
 
 	PresentationQueue.Submit(&SubmitInfo, VK_NULL_HANDLE);
+}
+
+void VulkanRenderContext::Present()
+{
+	Vk_Fence::WaitForFences(1, &InFlightFences[CurrentImage], true);
+	Vk_Fence::ResetFences(1, &InFlightFences[CurrentImage]);
+
+	VkSemaphore WaitSemaphores[] = { ImagesAvailable[CurrentImage] };
+
+	/* Present result on screen */
+	const VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
+
+	const uint32 ImageIndex = Swapchain.AcquireNextImage(ImagesAvailable[CurrentImage]);
+
+	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+	{
+		PresentInfo.waitSemaphoreCount = 1;
+		PresentInfo.pWaitSemaphores = WaitSemaphores;
+		PresentInfo.swapchainCount = 1;
+		PresentInfo.pSwapchains = Swapchains;
+		PresentInfo.pImageIndices = &ImageIndex;
+		PresentInfo.pResults = nullptr;
+	}
+
+	PresentationQueue.Present(&PresentInfo);
+	
+	CurrentImage = ImageIndex;
 }
 
 void VulkanRenderContext::BeginRecording()

@@ -27,7 +27,7 @@ Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
-	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.StagesInfo);
+	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.Stages);
 }
 
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)

@@ -13,8 +13,6 @@ enum VkShaderStageFlagBits;
 GS_CLASS Vk_ShaderModule final : public VulkanObject
 {
 	VkShaderModule ShaderModule = nullptr;
-
-	static VkShaderModuleCreateInfo CreateShaderModuleCreateInfo(const FString& _Code, VkShaderStageFlagBits _Stage);
 public:
 	Vk_ShaderModule(const Vk_Device& _Device, uint32* _Data, size_t _Size);
 	Vk_ShaderModule(const Vk_Device& _Device, const FString& _Code, VkShaderStageFlagBits _Stage);

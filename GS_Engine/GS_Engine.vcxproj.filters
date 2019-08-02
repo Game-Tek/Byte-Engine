@@ -291,6 +291,8 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_GraphicsPipeline.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.cpp" />
+    <ClCompile Include="vendor\vulkan\glslang\MachineIndependent\ShaderLang.cpp" />
+    <ClCompile Include="vendor\vulkan\glslang\glslang\MachineIndependent\ShaderLang.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

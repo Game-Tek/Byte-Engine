@@ -2,8 +2,6 @@
 
 #include "stb image/stb_image.h"
 
-#include "Logger.h"
-
 TextureResource::TextureResource(const char * FilePath)
 {
 	Data = Load(FilePath);
@@ -22,8 +20,6 @@ RGB * TextureResource::Load(const char * FilePath)
 	//Error checking.
 	if (!ImageData)
 	{
-		GS_LOG_WARNING("Failed to load texture: %s", FilePath)
-
 		return LoadFallbackResource();
 	}
 

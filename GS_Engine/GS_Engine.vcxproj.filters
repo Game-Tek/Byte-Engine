@@ -224,6 +224,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PipelineLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">

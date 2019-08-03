@@ -27,6 +27,19 @@ if ((func) != VK_SUCCESS)\
 
 #include "Extent.h"
 
+GS_STRUCT PipelineState
+{
+	VkPipelineVertexInputStateCreateInfo*		PipelineVertexInputState;
+	VkPipelineInputAssemblyStateCreateInfo*		PipelineInputAssemblyState;
+	VkPipelineTessellationStateCreateInfo*		PipelineTessellationState;
+	VkPipelineViewportStateCreateInfo*			PipelineViewportState;
+	VkPipelineRasterizationStateCreateInfo*		PipelineRasterizationState;
+	VkPipelineMultisampleStateCreateInfo*		PipelineMultisampleState;
+	VkPipelineDepthStencilStateCreateInfo*		PipelineDepthStencilState;
+	VkPipelineColorBlendStateCreateInfo*		PipelineColorBlendState;
+	VkPipelineDynamicStateCreateInfo*			PipelineDynamicState;
+};
+
 INLINE VkFormat FormatToVkFormat(Format _PF)
 {
 	switch (_PF)
@@ -151,5 +164,24 @@ INLINE uint32 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
 	case ImageType::STENCIL:		return VK_IMAGE_ASPECT_STENCIL_BIT;
 	case ImageType::DEPTH_STENCIL:	return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 	default:						return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
+	}
+}
+
+INLINE VkFormat ShaderDataTypesToVkFormat(ShaderDataTypes _SDT)
+{
+	switch (_SDT)
+	{
+	case ShaderDataTypes::FLOAT:	return VK_FORMAT_R32_SFLOAT;
+	case ShaderDataTypes::FLOAT2:	return VK_FORMAT_R32G32_SFLOAT;
+	case ShaderDataTypes::FLOAT3:	return VK_FORMAT_R32G32B32_SFLOAT;
+	case ShaderDataTypes::FLOAT4:	return VK_FORMAT_R32G32B32A32_SFLOAT;
+	case ShaderDataTypes::INT:		return VK_FORMAT_R32_SINT;
+	case ShaderDataTypes::INT2:		return VK_FORMAT_R32G32_SINT;
+	case ShaderDataTypes::INT3:		return VK_FORMAT_R32G32B32_SINT;
+	case ShaderDataTypes::INT4:		return VK_FORMAT_R32G32B32A32_SINT;
+	case ShaderDataTypes::BOOL:		return VK_FORMAT_R32_SINT;
+	case ShaderDataTypes::MAT3:		return ;
+	case ShaderDataTypes::MAT4:		return ;
+	default:						return VK_FORMAT_UNDEFINED;
 	}
 }

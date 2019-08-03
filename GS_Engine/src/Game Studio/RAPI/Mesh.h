@@ -12,14 +12,6 @@ GS_CLASS VertexDescriptor
 
 	//Size in bytes this vertex takes up.
 	uint8 Size = 0;
-public:
-	VertexDescriptor(const FVector<ShaderDataTypes>& _Elements) : Elements(_Elements)
-	{
-		for(uint8 i = 0; i < Elements.length(); ++i)
-		{
-			Size += ShaderDataTypesSize(Elements[i]);
-		}
-	}
 
 	INLINE static uint8 ShaderDataTypesSize(ShaderDataTypes _SDT)
 	{
@@ -39,10 +31,19 @@ public:
 			default:						return 0;
 		}
 	}
+public:
+	VertexDescriptor(const FVector<ShaderDataTypes>& _Elements) : Elements(_Elements)
+	{
+		for(uint8 i = 0; i < Elements.length(); ++i)
+		{
+			Size += ShaderDataTypesSize(Elements[i]);
+		}
+	}
+
 
 	void AddElement(const ShaderDataTypes & _Element);
 
-	uint8 GetOffsetToMember(uint8 _Index)
+	[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const 
 	{
 		uint8 Offset = 0;
 
@@ -54,8 +55,11 @@ public:
 		return Offset;
 	}
 
+	[[nodiscard]] ShaderDataTypes GetAttribute(uint8 _I) const { return Elements[_I]; }
+
 	//Returns the size in bytes this vertex takes up.
 	[[nodiscard]] uint8 GetSize() const { return Size; }
+	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.length(); }
 };
 
 struct Vertex;

@@ -5,6 +5,7 @@
 #include "RenderCore.h"
 #include "Extent.h"
 
+//Represents a resource utilized by the rendering API for storing and referencing attachments. Which are images which hold some information which the GPU writes info to.
 GS_CLASS Image
 {
 	Extent2D ImageExtent;

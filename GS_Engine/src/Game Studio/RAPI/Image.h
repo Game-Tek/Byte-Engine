@@ -9,13 +9,20 @@
 GS_CLASS Image
 {
 	Extent2D ImageExtent;
-	ImageDimensions m_ImageDimensions;
 	Format ImageFormat;
 	ImageType m_ImageType;
 
-	Image(const Extent2D _ImgExtent, const ImageDimensions _ID, const Format _ImgFormat, const ImageType _ImgType) :
+	//Defines the operation that should be run when the attachment is loaded for rendering.
+	LoadOperations LoadOperation = LoadOperations::UNDEFINED;
+	//Defines the operation that should be run when the attachment is done being rendered to.
+	StoreOperations StoreOperation = StoreOperations::STORE;
+	//Layout of the attachment when first used in the render pass.
+	ImageLayout	InitialLayout = ImageLayout::GENERAL;
+	//Layout of the attachment after use in the render pass.
+	ImageLayout	FinalLayout = ImageLayout::GENERAL;
+
+	Image(const Extent2D _ImgExtent, const Format _ImgFormat, const ImageType _ImgType) :
 		ImageExtent(_ImgExtent),
-		m_ImageDimensions(_ID),
 		ImageFormat(_ImgFormat),
 		m_ImageType(_ImgType)
 	{

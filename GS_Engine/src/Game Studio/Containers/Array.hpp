@@ -30,7 +30,7 @@ public:
 		return  &Data;
 	}
 
-	const T* data() const
+	[[nodiscard]] const T* data() const
 	{
 		return  &Data;
 	}
@@ -54,7 +54,7 @@ public:
 		return Length;
 	}
 
-	LT capacity() const
+	[[nodiscard]] LT capacity() const
 	{
 		return Size;
 	}

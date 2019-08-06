@@ -12,6 +12,11 @@ typedef unsigned long uint64;
 typedef long int64;
 typedef unsigned long long uint_64;
 typedef long long int_64;
+#ifndef GS_PRECISION_DOUBLE
+typedef float real;
+#else
+typedef double real;
+#endif
 
 #ifdef GS_PLATFORM_WIN
 	#define INLINE __forceinline

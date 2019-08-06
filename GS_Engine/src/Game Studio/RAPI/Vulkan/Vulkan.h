@@ -180,8 +180,22 @@ INLINE VkFormat ShaderDataTypesToVkFormat(ShaderDataTypes _SDT)
 	case ShaderDataTypes::INT3:		return VK_FORMAT_R32G32B32_SINT;
 	case ShaderDataTypes::INT4:		return VK_FORMAT_R32G32B32A32_SINT;
 	case ShaderDataTypes::BOOL:		return VK_FORMAT_R32_SINT;
-	case ShaderDataTypes::MAT3:		return ;
-	case ShaderDataTypes::MAT4:		return ;
 	default:						return VK_FORMAT_UNDEFINED;
+	}
+}
+
+INLINE VkImageUsageFlagBits ImageUseToVkImageUsageFlagBits(ImageUse _IU)
+{
+	switch(_IU)
+	{
+	case ImageUse::TRANSFER_SOURCE:				return VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	case ImageUse::TRANSFER_DESTINATION:		return VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	case ImageUse::SAMPLE:						return VK_IMAGE_USAGE_SAMPLED_BIT;
+	case ImageUse::STORAGE:						return VK_IMAGE_USAGE_STORAGE_BIT;
+	case ImageUse::COLOR_ATTACHMENT:			return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	case ImageUse::DEPTH_STENCIL_ATTACHMENT:	return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	case ImageUse::TRANSIENT_ATTACHMENT:		return VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+	case ImageUse::INPUT_ATTACHMENT:			return VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+	default:									return VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM;
 	}
 }

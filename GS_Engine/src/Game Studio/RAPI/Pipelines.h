@@ -4,6 +4,7 @@
 #include "Containers/FString.h"
 
 #include "RenderCore.h"
+#include "Mesh.h"
 
 
 GS_STRUCT ShaderInfo
@@ -27,6 +28,7 @@ GS_STRUCT GraphicsPipelineCreateInfo
 	ShaderStages Stages;
 	Extent2D SwapchainSize;
 	RenderPass* RenderPass = nullptr;
+	VertexDescriptor* VDescriptor = nullptr;
 };
 
 GS_CLASS GraphicsPipeline

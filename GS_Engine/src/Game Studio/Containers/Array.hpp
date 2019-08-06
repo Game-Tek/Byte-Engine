@@ -25,6 +25,8 @@ public:
 		return Data[i];
 	}
 
+	void setLength(const LT _length) { Length = _length; }
+
 	T* data()
 	{
 		return  &Data;

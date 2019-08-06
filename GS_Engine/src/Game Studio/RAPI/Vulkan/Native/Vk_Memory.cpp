@@ -7,12 +7,12 @@
 #include "Vk_CommandPool.h"
 #include "Vk_CommandBuffer.h"
 #include "Vk_Queue.h"
+#include "Vk_Image.h"
 
 #include "RAPI/Vulkan/Vulkan.h"
 
-Vk_Memory::Vk_Memory(const Vk_Device& _Device, const Vk_Buffer& _Buffer) : VulkanObject(_Device)
+Vk_Memory::Vk_Memory(const Vk_Device& _Device) : VulkanObject(_Device)
 {
-	vkBindBufferMemory(m_Device, _Buffer, Memory, 0);
 }
 
 void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstBuffer, const Vk_CommandPool& _CP, const Vk_Queue& _Queue, size_t _Size)
@@ -36,6 +36,16 @@ void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstB
 	_Queue.Submit(&SubmitInfo, VK_NULL_HANDLE);
 
 	CommandBuffer.Free(_CP);
+}
+
+void Vk_Memory::BindBufferMemory(const Vk_Buffer& _Buffer) const
+{
+	vkBindBufferMemory(m_Device, _Buffer, Memory, 0);
+}
+
+void Vk_Memory::BindImageMemory(const Vk_Image& _Image) const
+{
+	vkBindImageMemory(m_Device, _Image, Memory, 0);
 }
 
 Vk_Memory::~Vk_Memory()

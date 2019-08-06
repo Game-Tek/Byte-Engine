@@ -28,6 +28,7 @@ public:
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
 	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
+	virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
 	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;

@@ -134,7 +134,7 @@ PipelineState VulkanGraphicsPipeline::CreatePipelineState(const Extent2D& _Exten
 	Viewport.minDepth = 0.0f;
 	Viewport.maxDepth = 1.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, { _SwapchainSize } };
+	VkRect2D Scissor = { { 0, 0 }, { Extent2DToVkExtent2D(_Extent) } };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;

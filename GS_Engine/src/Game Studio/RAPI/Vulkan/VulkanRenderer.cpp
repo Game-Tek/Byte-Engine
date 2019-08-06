@@ -5,6 +5,7 @@
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
 #include "VulkanMesh.h"
+#include "VulkanImage.h"
 
 
 //  VULKAN RENDERER
@@ -25,9 +26,14 @@ Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 	return new VulkanMesh(Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout.GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }
 
+Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)
+{
+	return new VulkanImage(Device, _ICI.Extent, _ICI.ImageFormat, _ICI.Dimensions, _ICI.Type, _ICI.Use, _ICI.LoadOperation, _ICI.StoreOperation, _ICI.InitialLayout, _ICI.FinalLayout);
+}
+
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
-	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.Stages);
+	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.Stages, *_GPCI.VDescriptor);
 }
 
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)

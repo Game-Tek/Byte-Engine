@@ -12,11 +12,6 @@ class GraphicsPipeline;
 class ComputePipeline;
 class Framebuffer;
 
-GS_STRUCT CommandBufferCreateInfo
-{
-
-};
-
 GS_STRUCT DrawInfo
 {
 	uint16 IndexCount = 0;

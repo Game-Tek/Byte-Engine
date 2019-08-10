@@ -21,7 +21,7 @@ GS_CLASS VulkanFramebuffer final : public Framebuffer
 
 public:
 	VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass* _RP, Extent2D _Extent, Image* _Images, uint8 _ImagesCount);
-	~VulkanFramebuffer();
+	~VulkanFramebuffer() = default;
 
 	INLINE const Vk_Framebuffer& GetVk_Framebuffer() const { return m_Framebuffer; }
 };

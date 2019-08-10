@@ -10,10 +10,10 @@ class RenderPass;
 
 GS_STRUCT FramebufferAttachments
 {
-	Format ColorAttachmentsFormat[8];
-	uint8 ColorAttachmentsCount;
+	Format ColorAttachmentsFormat[8] = {};
+	uint8 ColorAttachmentsCount = 0;
 
-	Format DepthStencilFormat;
+	Format DepthStencilFormat = Format::DEPTH16_STENCIL8;
 
 	Image* Images = nullptr;
 };
@@ -21,8 +21,8 @@ GS_STRUCT FramebufferAttachments
 GS_STRUCT FramebufferCreateInfo
 {
 	RenderPass* RenderPass = nullptr;
-	Extent2D Extent;
-	Image* Images;
+	Extent2D Extent = { 1280, 720 };
+	Image* Images = nullptr;
 	uint8 ImagesCount = 0;
 };
 

@@ -225,6 +225,9 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.h" />
     <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
+    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
+    <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">
@@ -247,7 +250,6 @@
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
-    <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
@@ -292,6 +294,8 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_GraphicsPipeline.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
+    <ClCompile Include="src\Game Studio\Vertex.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -100,6 +100,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
+    <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
@@ -174,6 +175,7 @@
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\RAPI\Renderer.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
+    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
@@ -192,6 +194,7 @@
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
@@ -228,7 +231,6 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
-    <ClCompile Include="src\Game Studio\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
@@ -239,12 +241,14 @@
     <ClCompile Include="src\Game Studio\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
+    <ClCompile Include="src\Game Studio\Vertex.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

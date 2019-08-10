@@ -12,6 +12,8 @@
 #include "Native/Vk_Semaphore.h"
 #include "Native/Vk_Fence.h"
 #include "Native/Vk_Queue.h"
+#include "VulkanPipelines.h"
+#include "VulkanSwapchainImage.h"
 
 class Vk_Device;
 
@@ -29,13 +31,17 @@ class Window;
 
 GS_CLASS VulkanRenderContext final : public RenderContext
 {
+	Extent2D RenderExtent;
+
 	Vk_Surface Surface;
 
 	SurfaceFormat Format;
 	VkPresentModeKHR PresentMode;
 
+
 	Vk_Swapchain Swapchain;
-	const uint8 MaxFramesInFlight = 0;
+	FVector<VkImage> SwapchainImages;
+	FVector<VulkanSwapchainImage> Images;
 	FVector<Vk_Semaphore> ImagesAvailable;
 	FVector<Vk_Semaphore> RendersFinished;
 	FVector<Vk_Fence> InFlightFences;
@@ -43,8 +49,6 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 	Vk_Queue PresentationQueue;
 
 	Vk_CommandPool CommandPool;
-
-	uint8 CurrentImage = 0;
 
 	FVector<Vk_CommandBuffer> CommandBuffers;
 
@@ -67,4 +71,7 @@ public:
 	void BindComputePipeline(ComputePipeline* _CP) final override;
 	void DrawIndexed(const DrawInfo& _DI) final override;
 	void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) final override;
+	void Dispatch(const Extent3D& _WorkGroups) final override;
+
+	[[nodiscard]] FVector<Image*> GetSwapchainImages() const final override;
 };

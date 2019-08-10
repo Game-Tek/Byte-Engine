@@ -11,6 +11,7 @@
 #include "RAPI/Window.h"
 #include "Native/Vk_PhysicalDevice.h"
 
+
 //  VULKAN RENDER CONTEXT
 
 uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
@@ -63,18 +64,26 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const Vk_PhysicalDevice& _
 }
 
 VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD, const Window& _Window) :
+	RenderExtent(_Window.GetWindowExtent()),
 	Surface(_Device, _Instance, _PD, _Window),
 	Format(FindFormat(_PD, Surface)),
 	PresentMode(FindPresentMode(_PD, Surface)),
-	Swapchain(_Device, Surface, Format.format, Format.colorSpace, Extent2DToVkExtent2D(_Window.GetWindowExtent()), PresentMode),
-	MaxFramesInFlight(Swapchain.GetImages().length()),
-	ImagesAvailable(MaxFramesInFlight, Vk_Semaphore(_Device)),
-	RendersFinished(MaxFramesInFlight, Vk_Semaphore(_Device)),
-	InFlightFences(MaxFramesInFlight, Vk_Fence(_Device, true)),
+	Swapchain(_Device, Surface, Format.format, Format.colorSpace, Extent2DToVkExtent2D(RenderExtent), PresentMode),
+	SwapchainImages(Swapchain.GetImages()),
+	Images(SwapchainImages.length()),
+	ImagesAvailable(SwapchainImages.length(), Vk_Semaphore(_Device)),
+	RendersFinished(SwapchainImages.length(), Vk_Semaphore(_Device)),
+	InFlightFences(SwapchainImages.length(), Vk_Fence(_Device, true)),
 	PresentationQueue(_Device.GetGraphicsQueue()),
 	CommandPool(_Device, _Device.GetGraphicsQueue()),
-	CommandBuffers(MaxFramesInFlight, Vk_CommandBuffer(_Device, CommandPool))
+	CommandBuffers(SwapchainImages.length(), Vk_CommandBuffer(_Device, CommandPool))
 {
+	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.length());
+
+	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		Images.push_back(VulkanSwapchainImage(_Device, SwapchainImages[i], Format.format));
+	}
 }
 
 void VulkanRenderContext::OnResize()
@@ -153,8 +162,8 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVk_RenderPass();
 	RenderPassBeginInfo.pClearValues = &ClearColor;
 	RenderPassBeginInfo.clearValueCount = 1;
-	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVk_Framebuffer();
-	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(_RPBI.RenderArea);
+	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffers[CurrentImage])->GetVk_Framebuffer();
+	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
 
 	vkCmdBeginRenderPass(CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -189,4 +198,22 @@ void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
 
 void VulkanRenderContext::Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ)
 {
+	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroupsX, _WorkGroupsY, _WorkGroupsZ);
+}
+
+void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)
+{
+	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroups.Width, _WorkGroups.Height, _WorkGroups.Depth);
+}
+
+FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
+{
+	//FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
+	//for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	//{
+	//	l_Images.push_back(SCAST(Image*, CCAST(VulkanSwapchainImage*, &Images[i])));
+	//}
+
+	//return l_Images;
+	return FVector<Image*>(1);
 }

@@ -11,31 +11,6 @@
 #include <vector>
 #include <fstream>
 
-Tuple<std::vector<char>, size_t> GetShaderCode(const FString& _Name)
-{
-	Tuple<std::vector<char>, size_t> Result;
-
-	std::ifstream file(_Name.c_str(), std::ios::ate | std::ios::binary);
-
-	if (!file.is_open())
-	{
-		throw std::runtime_error("failed to open file!");
-	}
-
-	const size_t fileSize = size_t(file.tellg());
-	std::vector<char> buffer(fileSize);
-
-	file.seekg(0);
-	file.read(buffer.data(), fileSize);
-
-	file.close();
-
-	Result.First = buffer;
-	Result.Second = fileSize;
-
-	return Result;
-}
-
 FVector<VkPipelineShaderStageCreateInfo> VulkanGraphicsPipeline::StageInfoToVulkanStageInfo(const ShaderStages& _SI, const Vk_Device& _Device)
 {
 	FVector<VkPipelineShaderStageCreateInfo> Result (2);

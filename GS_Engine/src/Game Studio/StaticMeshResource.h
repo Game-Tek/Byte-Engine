@@ -7,7 +7,7 @@
 #include "Vertex.h"
 
 //Used to specify a single mesh. Contains a pointer to an array of vertices, and a pointer to an array of indices.
-struct Mesh
+struct Model
 {
 	//Pointer to Vertex Array.
 	Vertex * VertexArray = nullptr;
@@ -44,10 +44,10 @@ public:
 	uint32 GetMeshVertexCount(uint8 MeshIndex) const { return Data->VertexCount; }
 
 private:
-	Mesh * Data;
+	Model * Data;
 
-	Mesh * Load(const FString & Path);
-	Mesh * LoadFallbackResource() const;
-	Mesh * ProcessNode(aiNode * Node, const aiScene * Scene);
-	Mesh ProcessMesh(aiMesh * Mesh);
+	Model * Load(const FString & Path);
+	Model * LoadFallbackResource() const;
+	Model * ProcessNode(aiNode * Node, const aiScene * Scene);
+	Model ProcessMesh(aiMesh * Mesh);
 };

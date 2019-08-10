@@ -23,7 +23,7 @@ template <class T>
 GS_CLASS SingleLinkList
 {
 public:
-	SingleLinkList();
+	SingleLinkList() = default;
 
 	//Preallocate
 	explicit SingleLinkList(const size_t _Length) : m_Length(_Length)
@@ -58,7 +58,7 @@ public:
 
 	int32 Find(const T& _Obj)
 	{
-		SingleLinkListNode* l_Next;
+		SingleLinkListNode<T>* l_Next;
 		uint32 i = 0;
 
 		while (l_Next->GetChild() != nullptr)

@@ -30,11 +30,13 @@ protected:
 	Vector2 MousePosition;
 	bool ShouldClose = false;
 
-	KeyState Keys[MAX_KEYBOARD_KEYS];
+	KeyState Keys[MAX_KEYBOARD_KEYS] = {};
 public:
 	Window(Extent2D _Extent, WindowFit _Fit) : Extent(_Extent), Fit(_Fit)
 	{
 	}
+
+	virtual ~Window() {};
 
 	static Window* CreateGSWindow(const WindowCreateInfo& _WCI);
 

@@ -2,6 +2,8 @@
 
 #include "Core.h"
 #include "Extent.h"
+#include "Image.h"
+#include "Containers/FVector.hpp"
 
 class Window;
 class Mesh;
@@ -20,9 +22,8 @@ GS_STRUCT DrawInfo
 
 GS_STRUCT RenderPassBeginInfo
 {
-	RenderPass * RenderPass = nullptr;
-	Framebuffer* Framebuffer = nullptr;
-	Extent2D RenderArea;
+	RenderPass* RenderPass = nullptr;
+	Framebuffer** Framebuffers = nullptr;
 };
 
 GS_STRUCT RenderContextCreateInfo
@@ -32,6 +33,10 @@ GS_STRUCT RenderContextCreateInfo
 
 GS_CLASS RenderContext
 {
+protected:
+	uint8 CurrentImage = 0;
+	uint8 MAX_FRAMES_IN_FLIGHT = 0;
+
 public:
 	virtual ~RenderContext() {};
 
@@ -74,11 +79,17 @@ public:
 	
 	//Adds a Dispatch command to the buffer.
 	virtual void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) = 0;
-	
+	virtual void Dispatch(const Extent3D& _WorkGroups) = 0;
+
 	//  RENDER PASS COMMANDS
 	
 	//Adds a BeginRenderPass command to the buffer.
 	virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
 	//Adds a EndRenderPass command to the buffer.
 	virtual void EndRenderPass(RenderPass* _RP) = 0;
+
+	[[nodiscard]] virtual FVector<Image*> GetSwapchainImages() const = 0;
+
+	[[nodiscard]] uint8 GetCurrentImage() const { return CurrentImage; }
+	uint8 GetMaxFramesInFlight() const { return MAX_FRAMES_IN_FLIGHT; }
 };

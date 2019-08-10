@@ -27,6 +27,6 @@ public:
 protected:
 	//Determines the intensity of the light in lumens.
 	float Lumens = 1000.0f;
-	RGB Color;
+	RGB Color = { 0.0f , 0.0f , 0.0f };
 };
 

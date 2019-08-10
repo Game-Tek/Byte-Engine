@@ -16,6 +16,8 @@ namespace GS
 
 		void Run();
 
+		virtual void Update() = 0;
+
 		static Application * Get() { return ApplicationInstance; }
 
 		//TO-DO: CHECK CONST FOR POINTERS.

@@ -86,7 +86,7 @@ FVector<VkDeviceQueueCreateInfo> Vk_Device::CreateQueueInfos(QueueInfo* _QI, uin
 		{
 			if (QueueFamilies[f].queueCount > 0 && QueueFamilies[f].queueFlags & _QI[q].QueueFlag)
 			{
-				if (UsedFamilies[f] == true)
+				if (UsedFamilies[f])
 				{
 					QueueCreateInfos[f].queueCount++;
 					break;
@@ -103,9 +103,9 @@ FVector<VkDeviceQueueCreateInfo> Vk_Device::CreateQueueInfos(QueueInfo* _QI, uin
 		QueueCreateInfos[q].pQueuePriorities = &_QI[q].QueuePriority;
 	}
 
-	for (uint8 i = 0; i < QueueCreateInfos.length(); ++i)
+	for (auto& QueueCreateInfo : QueueCreateInfos)
 	{
-		QueueCreateInfos[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		QueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 	}
 
 	return QueueCreateInfos;

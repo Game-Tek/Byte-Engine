@@ -23,7 +23,7 @@ VulkanRenderer::~VulkanRenderer()
 
 Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 {
-	return new VulkanMesh(Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout.GetSize(), _MCI.IndexData, _MCI.IndexCount);
+	return new VulkanMesh(Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }
 
 Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)

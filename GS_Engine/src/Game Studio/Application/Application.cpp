@@ -1,7 +1,5 @@
 #include "Application.h"
 
-#include "Logger.h"
-
 GS::Application * GS::Application::ApplicationInstance;
 
 namespace GS
@@ -33,6 +31,8 @@ namespace GS
 		{
 			ClockInstance->OnUpdate();
 			WindowInstance->Update();
+
+			Update();
 
 			//Sleep(100);
 		}	

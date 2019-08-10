@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "SinglyLinkedList.hpp"
+#include "FVector.hpp"
 
 template <typename V, typename K = uint32>
 GS_CLASS HashMapBucket

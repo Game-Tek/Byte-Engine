@@ -34,9 +34,9 @@ GS_CLASS VertexDescriptor
 public:
 	VertexDescriptor(const FVector<ShaderDataTypes>& _Elements) : Elements(_Elements)
 	{
-		for(uint8 i = 0; i < Elements.length(); ++i)
+		for (auto& Element : Elements)
 		{
-			Size += ShaderDataTypesSize(Elements[i]);
+			Size += ShaderDataTypesSize(Element);
 		}
 	}
 
@@ -59,7 +59,7 @@ public:
 
 	//Returns the size in bytes this vertex takes up.
 	[[nodiscard]] uint8 GetSize() const { return Size; }
-	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.length(); }
+	[[nodiscard]] uint8 GetAttributeCount() const { return 8; }
 };
 
 struct Vertex;
@@ -78,7 +78,7 @@ struct Vertex;
 GS_STRUCT MeshCreateInfo
 {
 	//Pointer to an array holding the vertices that describe the mesh.
-	Vertex* VertexData = nullptr;
+	void* VertexData = nullptr;
 	//Total number of vertices found in the VertexData array.
 	uint16 VertexCount = 0;
 	//Pointer to an array holding the indices that describe the mesh.
@@ -86,7 +86,7 @@ GS_STRUCT MeshCreateInfo
 	//Total number of indices found in the IndexData array.
 	uint16 IndexCount = 0;
 	//A vertex descriptor that defines the layout of the vertices found in VertexData.
-	const VertexDescriptor& VertexLayout;
+	VertexDescriptor* VertexLayout = nullptr;
 };
 
 GS_CLASS Mesh

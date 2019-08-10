@@ -7,11 +7,11 @@
 
 GS_STRUCT ImageCreateInfo
 {
-	Extent2D Extent;
-	Format ImageFormat;
-	ImageType Type;
-	ImageDimensions Dimensions;
-	ImageUse Use;
+	Extent2D Extent = {1280, 720 };
+	Format ImageFormat = Format::RGBA_I8;
+	ImageType Type = ImageType::COLOR;
+	ImageDimensions Dimensions = ImageDimensions::IMAGE_2D;
+	ImageUse Use = ImageUse::COLOR_ATTACHMENT;
 
 	//Defines the operation that should be run when the attachment is loaded for rendering.
 	LoadOperations LoadOperation = LoadOperations::UNDEFINED;
@@ -26,11 +26,12 @@ GS_STRUCT ImageCreateInfo
 //Represents a resource utilized by the rendering API for storing and referencing attachments. Which are images which hold some information which the GPU writes info to.
 GS_CLASS Image
 {
-	Extent2D ImageExtent;
-	Format ImageFormat;
-	ImageType m_ImageType;
-	ImageDimensions Dimensions;
-	ImageUse Use;
+protected:
+	Extent2D ImageExtent = { 1280, 720 };
+	Format ImageFormat = Format::RGB_F32;
+	ImageType m_ImageType = ImageType::COLOR;
+	ImageDimensions Dimensions = ImageDimensions::IMAGE_2D;
+	ImageUse Use = ImageUse::COLOR_ATTACHMENT;
 
 	//Defines the operation that should be run when the attachment is loaded for rendering.
 	LoadOperations LoadOperation = LoadOperations::UNDEFINED;
@@ -54,6 +55,8 @@ public:
 		FinalLayout(_IL)
 	{
 	}
+
+	Image() = default;
 
 	INLINE Extent2D GetExtent() const { return ImageExtent; }
 	INLINE Format GetImageFormat() const { return ImageFormat; }

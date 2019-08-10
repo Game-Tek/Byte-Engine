@@ -9,8 +9,8 @@
 
 GS_STRUCT ShaderInfo
 {
-	ShaderType Type;
-	FString ShaderCode;
+	ShaderType Type = ShaderType::VERTEX_SHADER;
+	FString ShaderCode = FString("NO CODE");
 };
 
 GS_STRUCT ShaderStages
@@ -26,7 +26,7 @@ class RenderPass;
 GS_STRUCT GraphicsPipelineCreateInfo
 {
 	ShaderStages Stages;
-	Extent2D SwapchainSize;
+	Extent2D SwapchainSize = {1280, 720 };
 	RenderPass* RenderPass = nullptr;
 	VertexDescriptor* VDescriptor = nullptr;
 };

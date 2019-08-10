@@ -5,7 +5,7 @@
 template <typename T, size_t Size, typename LT = size_t>
 GS_CLASS Array
 {
-	T Data[Size];
+	T Data[Size] = {};
 	LT Length = 0;
 
 public:

@@ -13,17 +13,17 @@ StaticMeshResource::StaticMeshResource(const FString & Path) : Resource(Path)
 
 StaticMeshResource::~StaticMeshResource()
 {
-	delete static_cast<Mesh *>(Data);
+	delete static_cast<Model *>(Data);
 }
 
-Mesh * StaticMeshResource::Load(const FString & Path)
+Model * StaticMeshResource::Load(const FString & Path)
 {
 	//Create Importer.
 
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs |	aiProcess_JoinIdenticalVertices);
+	const aiScene * Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
@@ -31,7 +31,7 @@ Mesh * StaticMeshResource::Load(const FString & Path)
 	}
 
 	//Create pointer for return.
-	Mesh * Result = new Mesh[Scene->mNumMeshes];	//Create new array of meshes.
+	Model * Result = new Model[Scene->mNumMeshes];	//Create new array of meshes.
 
 	for (uint32 i = 0; i < Scene->mNumMeshes; i++)
 	{
@@ -41,10 +41,10 @@ Mesh * StaticMeshResource::Load(const FString & Path)
 	return Result;
 }
 
-Mesh * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
+Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 {
 	//Store inside MeshData a new Array of meshes.
-	Mesh * MeshData = new Mesh[Node->mNumMeshes];
+	Model * MeshData = new Model[Node->mNumMeshes];
 
 	// Loop through each of the node's meshes (if any)
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)
@@ -60,10 +60,10 @@ Mesh * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 	return MeshData;
 }
 
-Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
+Model StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 {
 	//Create a mesh object to hold the mesh currently being processed.
-	Mesh Result;
+	Model Result;
 
 	//------------MESH SETUP------------
 
@@ -133,7 +133,7 @@ Mesh StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 	return Result;
 }
 
-Mesh * StaticMeshResource::LoadFallbackResource() const
+Model * StaticMeshResource::LoadFallbackResource() const
 {
-	return new Mesh;
+	return new Model;
 }

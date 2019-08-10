@@ -2,9 +2,8 @@
 
 #include "Core.h"
 
-#include "Vector3.h"
-
-#include "GSM.hpp"
+#include "Math/GSM.hpp"
+#include "Math/Vector3.h"
 
 GS_CLASS Line3
 {
@@ -14,12 +13,12 @@ public:
 
 	inline float Length() const
 	{
-		return Segment().Length();
+		return GSM::VectorLength(Segment());
 	}
 
 	inline float LengthSquared() const
 	{
-		return Segment().LengthSquared();
+		return GSM::VectorLengthSquared(Segment());
 	}
 
 private:

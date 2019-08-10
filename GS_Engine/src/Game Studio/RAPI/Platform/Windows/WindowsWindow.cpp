@@ -170,4 +170,6 @@ KeyState WindowsWindow::GLFWKeyStateToKeyState(int32 _KS)
 	case GLFW_RELEASE:	return KeyState::RELEASED;
 	default:			break;
 	}
+
+	return {};
 }

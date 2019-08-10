@@ -13,7 +13,7 @@ FVector<VkImageView> ToVkImage(Image* _Images, uint8 _ImagesCount)
 	for (uint8 i = 0; i < Result.length(); ++i)
 	{
 		Image* f = &_Images[i];
-		Result[i] = SCAST(VulkanImage*, f)->GetVkImageView();
+		Result.push_back(SCAST(VulkanImage*, f)->GetVkImageView());
 	}
 
 	return Result;
@@ -23,8 +23,4 @@ VulkanFramebuffer::VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass*
 	m_Framebuffer(_Device, _Extent, _RP->GetVk_RenderPass(), ToVkImage(_Images, _ImagesCount))
 {
 
-}
-
-VulkanFramebuffer::~VulkanFramebuffer()
-{
 }

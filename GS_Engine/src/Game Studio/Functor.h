@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Object.h"
-
 #include "Event.h"
 
 template<class C, typename ET>
@@ -12,7 +10,7 @@ struct Functor
 	
 	Functor() = default;
 
-	Functor(C * Obj, void (C::*MFPTR)(const ET * Ev)) : Obj(Obj), Fptr(MFPTR)
+	Functor(C * Obj, void (C::*MFPTR)(const ET * Ev)) : Obj(Obj), MFPTR(MFPTR)
 	{
 	}
 

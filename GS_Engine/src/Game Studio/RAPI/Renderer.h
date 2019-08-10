@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "RenderContext.h"
+#include "Image.h"
 #include "Mesh.h"
 #include "Pipelines.h"
 #include "RenderPass.h"

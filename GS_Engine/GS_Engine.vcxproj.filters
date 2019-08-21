@@ -249,7 +249,6 @@
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />

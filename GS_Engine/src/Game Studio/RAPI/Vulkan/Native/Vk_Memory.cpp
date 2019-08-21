@@ -10,12 +10,13 @@
 #include "Vk_Image.h"
 
 #include "RAPI/Vulkan/Vulkan.h"
+#include "Vk_Fence.h"
 
 Vk_Memory::Vk_Memory(const Vk_Device& _Device) : VulkanObject(_Device)
 {
 }
 
-void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstBuffer, const Vk_CommandPool& _CP, const Vk_Queue& _Queue, size_t _Size)
+void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstBuffer, const Vk_CommandPool& _CP, const Vk_Queue& _Queue, size_t _Size) const
 {
 	Vk_CommandBuffer CommandBuffer(m_Device, _CP);
 
@@ -30,12 +31,19 @@ void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstB
 
 	CommandBuffer.End();
 
-	VkSubmitInfo SubmitInfo = {};
+	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	SubmitInfo.commandBufferCount = 1;
 	SubmitInfo.pCommandBuffers = CommandBuffer;
-	_Queue.Submit(&SubmitInfo, VK_NULL_HANDLE);
+
+	Vk_Fence WaitFence(m_Device, false);
+
+	_Queue.Submit(&SubmitInfo, WaitFence);
+
+	WaitFence.Wait();
 
 	CommandBuffer.Free(_CP);
+
+	_CP.Reset();
 }
 
 void Vk_Memory::BindBufferMemory(const Vk_Buffer& _Buffer) const
@@ -53,11 +61,11 @@ Vk_Memory::~Vk_Memory()
 	vkFreeMemory(m_Device, Memory, ALLOCATOR);
 }
 
-void Vk_Memory::AllocateDeviceMemory(VkMemoryRequirements* _MR)
+void Vk_Memory::AllocateDeviceMemory(const VkMemoryRequirements& _MR, unsigned _MemProps)
 {
 	VkMemoryAllocateInfo MemoryAllocateInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-	MemoryAllocateInfo.allocationSize = _MR->size;
-	MemoryAllocateInfo.memoryTypeIndex = m_Device.FindMemoryType(_MR->memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	MemoryAllocateInfo.allocationSize = _MR.size;
+	MemoryAllocateInfo.memoryTypeIndex = m_Device.FindMemoryType(_MR.memoryTypeBits, _MemProps);
 
 	GS_VK_CHECK(vkAllocateMemory(m_Device, &MemoryAllocateInfo, ALLOCATOR, &Memory), "Failed to allocate memory!")
 }

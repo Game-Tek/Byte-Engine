@@ -34,9 +34,9 @@ public:
 	[[nodiscard]] const char * c_str() const;
 
 	//Return the length of this FString. Does not take into account the null terminator character.
-	INLINE size_t GetLength() const { return Array.length() - 1; }
+	INLINE size_t GetLength() const { return Data.length() - 1; }
 	//Returns whether this FString is empty.
-	INLINE bool IsEmpty() const { return Array.length() == 0; }
+	INLINE bool IsEmpty() const { return Data.length() == 0; }
 
 	//Places a the C-FString after this FString with a space in the middle.
 	void Append(const char * In);
@@ -53,5 +53,5 @@ public:
 	static size_t StringLength(const char * In);
 
 private:
-	FVector<char> Array;
+	FVector<char> Data;
 };

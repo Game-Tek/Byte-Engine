@@ -243,7 +243,6 @@
     <ClCompile Include="src\Game Studio\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Vertex.cpp" />
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
-    <ClCompile Include="vendor\GLAD\glad.c" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.cpp" />

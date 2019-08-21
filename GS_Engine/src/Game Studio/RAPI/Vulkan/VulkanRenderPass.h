@@ -8,7 +8,7 @@ GS_CLASS VulkanRenderPass final : public RenderPass
 {
 	Vk_RenderPass RenderPass;
 
-	static Tuple<FVector<VkAttachmentDescription>, FVector<VkSubpassDescription>> CreateInfo(const RenderPassDescriptor& _RPD);
+	static Vk_RenderPassCreateInfo CreateInfo(const Vk_Device& _Device, const RenderPassDescriptor& _RPD);
 public:
 	VulkanRenderPass(const Vk_Device& _Device, const RenderPassDescriptor & _RPD);
 	~VulkanRenderPass() = default;

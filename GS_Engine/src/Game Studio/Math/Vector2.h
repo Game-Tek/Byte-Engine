@@ -14,7 +14,7 @@ public:
 
 	Vector2() = default;
 
-	Vector2(float X, float Y) : X(X), Y(Y)
+	constexpr Vector2(float X, float Y) : X(X), Y(Y)
 	{
 	}
 

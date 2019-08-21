@@ -17,6 +17,7 @@ public:
 	~Vk_CommandBuffer() = default;
 
 	void Free(const Vk_CommandPool& _CP);
+	void Reset() const;
 	void Begin(VkCommandBufferBeginInfo* _CBBI);
 	void End();
 

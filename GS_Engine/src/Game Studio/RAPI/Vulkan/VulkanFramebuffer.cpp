@@ -2,25 +2,25 @@
 
 #include "VulkanRenderPass.h"
 #include "RAPI/Image.h"
+
 #include "VulkanImage.h"
 
 #include "Native/Vk_RenderPass.h"
 
-FVector<VkImageView> ToVkImage(Image* _Images, uint8 _ImagesCount)
+FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*>& _Images)
 {
-	FVector<VkImageView> Result(_ImagesCount);
+	FVector<VkImageView> Result(_Images.length());
 
-	for (uint8 i = 0; i < Result.length(); ++i)
+	for (uint8 i = 0; i < Result.capacity(); ++i)
 	{
-		Image* f = &_Images[i];
-		Result.push_back(SCAST(VulkanImage*, f)->GetVkImageView());
+		Result.push_back(SCAST(VulkanImageBase*, _Images[i])->GetVk_ImageView());
 	}
 
 	return Result;
 }
 
-VulkanFramebuffer::VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass* _RP, Extent2D _Extent, Image* _Images, uint8 _ImagesCount) : Framebuffer(_Extent),
-	m_Framebuffer(_Device, _Extent, _RP->GetVk_RenderPass(), ToVkImage(_Images, _ImagesCount))
+VulkanFramebuffer::VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
+	m_Framebuffer(_Device, _Extent, _RP->GetVk_RenderPass(), ImagesToVkImageViews(_Images))
 {
 
 }

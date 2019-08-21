@@ -18,9 +18,9 @@ GS_STRUCT Cone
 	float GetInnerAngle() const;
 
 	//Sets Radius as NewRadius.
-	void SetRadius(const float NewRadius);
+	void SetRadius(float NewRadius);
 	//Sets Length as NewLength.
-	void SetLength(const float NewLength);
+	void SetLength(float NewLength);
 
 protected:
 	//Specifies the radius of the cone.

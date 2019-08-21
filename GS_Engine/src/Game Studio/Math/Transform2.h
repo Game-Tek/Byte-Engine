@@ -9,6 +9,6 @@ GS_CLASS Transform2
 {
 public:
 	Vector2 Position;
-	float Rotation;
+	float Rotation = 0.0f;
 	Vector2 Scale;
 };

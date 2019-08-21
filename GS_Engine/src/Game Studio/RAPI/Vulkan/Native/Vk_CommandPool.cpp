@@ -18,3 +18,8 @@ Vk_CommandPool::~Vk_CommandPool()
 {
 	vkDestroyCommandPool(m_Device, CommandPool, ALLOCATOR);
 }
+
+void Vk_CommandPool::Reset() const
+{
+	vkResetCommandPool(m_Device, CommandPool, 0);
+}

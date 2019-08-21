@@ -1,44 +1,44 @@
 #include "FString.h"
 
-FString::FString() : Array(10)
+FString::FString() : Data(10)
 {
 }
 
-FString::FString(const char * In) : Array(const_cast<char *>(In), StringLength(In))
+FString::FString(const char * In) : Data(const_cast<char *>(In), StringLength(In))
 {
 }
 
-FString::FString(const char * In, const size_t Length) : Array(const_cast<char *>(In), Length + 1)
+FString::FString(const char * In, const size_t Length) : Data(const_cast<char *>(In), Length + 1)
 {
-	Array.push_back('\0');
+	Data.push_back('\0');
 }
 
 FString & FString::operator=(const char * In)
 {
-	Array.recreate(const_cast<char *>(In), StringLength(In));
+	Data.recreate(const_cast<char *>(In), StringLength(In));
 
 	return *this;
 }
 
 FString & FString::operator+(const char * Other)
 {
-	Array.push_back(const_cast<char *>(Other), StringLength(Other));
+	Data.push_back(const_cast<char *>(Other), StringLength(Other));
 
 	return *this;
 }
 
 FString & FString::operator+(const FString & Other)
 {
-	Array.push_back(Other.Array);
+	Data.push_back(Other.Data);
 
 	return *this;
 }
 
 bool FString::operator==(const FString & Other) const
 {
-	for (size_t i = 0; i < (Array.length() < Other.Array.length() ? Array.length() : Other.Array.length()); i++)
+	for (size_t i = 0; i < (Data.length() < Other.Data.length() ? Data.length() : Other.Data.length()); i++)
 	{
-		if(Array[i] != Other.Array[i])
+		if(Data[i] != Other.Data[i])
 		{
 			return false;
 		}
@@ -49,44 +49,44 @@ bool FString::operator==(const FString & Other) const
 
 char * FString::c_str()
 {
-	return Array.data();
+	return Data.data();
 }
 
 const char * FString::c_str() const
 {
-	return Array.data();
+	return Data.data();
 }
 
 void FString::Append(const char * In)
 {
-	Array.push_back(' ');
+	Data.push_back(' ');
 
-	Array.push_back(const_cast<char *>(In), StringLength(In));
+	Data.push_back(const_cast<char *>(In), StringLength(In));
 
 	return;
 }
 
 void FString::Append(const FString & In)
 {
-	Array.push_back(' ');
+	Data.push_back(' ');
 
-	Array.push_back(In.Array);
+	Data.push_back(In.Data);
 
 	return;
 }
 
 void FString::Insert(const char * In, const size_t Index)
 {
-	Array.insert(Index, const_cast<char *>(In), StringLength(In));
+	Data.insert(Index, const_cast<char *>(In), StringLength(In));
 
 	return;
 }
 
 int64 FString::FindLast(char _Char) const
 {
-	for (int32 i = Array.length(); i > 0; --i)
+	for (int32 i = Data.length(); i > 0; --i)
 	{
-		if (Array[i] == _Char) return i;
+		if (Data[i] == _Char) return i;
 	}
 
 	return -1;

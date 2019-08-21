@@ -12,7 +12,7 @@ GS_STRUCT OctreeNode
 	explicit OctreeNode(OctreeNode * Parent);
 
 	//Deletes this node instance and all of it's children.
-	//Remember the deletetion will propagate down the branch, effectively "killing" all the branches and nodes below it.
+	//Remember the deletion will propagate down the branch, effectively "killing" all the branches and nodes below it.
 	~OctreeNode();
 
 	//Fills all of the branches with newly allocated nodes.

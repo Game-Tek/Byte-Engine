@@ -4,7 +4,14 @@
 
 #define MAKE_VK_HANDLE(object) typedef struct object##_T* object;
 
+#define VK_NULL_HANDLE 0
+
 class Vk_Device;
+
+GS_STRUCT VulkanObjectCreateInfo
+{
+	const Vk_Device& m_Device;
+};
 
 GS_CLASS VulkanObject
 {

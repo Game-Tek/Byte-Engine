@@ -16,6 +16,8 @@ public:
 	Vk_CommandPool(const Vk_Device& _Device, const Vk_Queue& _Queue, unsigned _CPF = 0);
 	~Vk_CommandPool();
 
+	void Reset() const;
+
 	INLINE VkCommandPool GetVkCommandPool() const { return CommandPool; }
 
 	INLINE operator VkCommandPool() const {	return CommandPool;	}

@@ -1,6 +1,6 @@
 #pragma once
 
-extern GS::Application * GS::CreateApplication();	//Is defined in another translation unit.
+extern GS::Application* GS::CreateApplication();	//Is defined in another translation unit.
 
 int main(int argc, char ** argv)
 {

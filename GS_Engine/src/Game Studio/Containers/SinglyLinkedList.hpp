@@ -5,7 +5,8 @@
 template<class T>
 GS_STRUCT SingleLinkListNode
 {
-	SingleLinkListNode();
+	SingleLinkListNode() = default;
+
 	SingleLinkListNode(const T& _Obj) : Element(_Obj)
 	{
 	}

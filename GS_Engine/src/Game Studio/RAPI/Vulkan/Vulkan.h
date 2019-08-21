@@ -27,18 +27,68 @@ if ((func) != VK_SUCCESS)\
 
 #include "Extent.h"
 
+#include "Containers/FVector.hpp"
+
 GS_STRUCT PipelineState
 {
-	VkPipelineVertexInputStateCreateInfo*		PipelineVertexInputState;
-	VkPipelineInputAssemblyStateCreateInfo*		PipelineInputAssemblyState;
-	VkPipelineTessellationStateCreateInfo*		PipelineTessellationState;
-	VkPipelineViewportStateCreateInfo*			PipelineViewportState;
-	VkPipelineRasterizationStateCreateInfo*		PipelineRasterizationState;
-	VkPipelineMultisampleStateCreateInfo*		PipelineMultisampleState;
-	VkPipelineDepthStencilStateCreateInfo*		PipelineDepthStencilState;
-	VkPipelineColorBlendStateCreateInfo*		PipelineColorBlendState;
-	VkPipelineDynamicStateCreateInfo*			PipelineDynamicState;
+	VkPipelineVertexInputStateCreateInfo		PipelineVertexInputState = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	FVector<VkVertexInputAttributeDescription> VertexElements;
+	FVector<VkVertexInputBindingDescription> BindingDescription;
+	VkPipelineInputAssemblyStateCreateInfo		PipelineInputAssemblyState;
+	VkPipelineTessellationStateCreateInfo		PipelineTessellationState;
+	VkViewport Viewport;
+	VkRect2D Scissor;
+	VkPipelineViewportStateCreateInfo			PipelineViewportState;
+	VkPipelineRasterizationStateCreateInfo		PipelineRasterizationState;
+	VkPipelineMultisampleStateCreateInfo		PipelineMultisampleState;
+	VkPipelineDepthStencilStateCreateInfo		PipelineDepthStencilState;
+	VkPipelineColorBlendAttachmentState ColorBlendAttachment = {};
+	VkPipelineColorBlendStateCreateInfo			PipelineColorBlendState;
+	VkPipelineDynamicStateCreateInfo			PipelineDynamicState;
 };
+
+INLINE Format VkFormatToFormat(VkFormat _Format)
+{
+	switch (_Format)
+	{
+	case VK_FORMAT_R8_UNORM:					return Format::R_I8;
+	case VK_FORMAT_R16_UNORM:					return Format::R_I16;
+	case VK_FORMAT_R32_UINT:					return Format::R_I32;
+	case VK_FORMAT_R64_UINT:					return Format::R_I64;
+	case VK_FORMAT_R8G8_UNORM:					return Format::RG_I8;
+	case VK_FORMAT_R16G16_UNORM:				return Format::RG_I16;
+	case VK_FORMAT_R32G32_UINT:					return Format::RG_I32;
+	case VK_FORMAT_R64G64_UINT:					return Format::RG_I64;
+	case VK_FORMAT_R8G8B8_UNORM:				return Format::RGB_I8;
+	case VK_FORMAT_R16G16B16_UNORM:				return Format::RGB_I16;
+	case VK_FORMAT_R32G32B32_UINT:				return Format::RGB_I32;
+	case VK_FORMAT_R64G64B64_UINT:				return Format::RGB_I64;
+	case VK_FORMAT_R8G8B8A8_UNORM:				return Format::RGBA_I8;
+	case VK_FORMAT_R16G16B16A16_UNORM:			return Format::RGBA_I16;
+	case VK_FORMAT_R32G32B32A32_UINT:			return Format::RGBA_I32;
+	case VK_FORMAT_R64G64B64A64_UINT:			return Format::RGBA_I64;
+	case VK_FORMAT_B8G8R8_UNORM:				return Format::BGR_I8;
+	case VK_FORMAT_B8G8R8A8_UNORM:				return Format::BGRA_I8;
+	case VK_FORMAT_R16_SFLOAT:					return Format::R_F16;
+	case VK_FORMAT_R32_SFLOAT:					return Format::R_F32;
+	case VK_FORMAT_R64_SFLOAT:					return Format::R_F64;
+	case VK_FORMAT_R16G16_SFLOAT:				return Format::RG_F16;
+	case VK_FORMAT_R32G32_SFLOAT:				return Format::RG_F32;
+	case VK_FORMAT_R64G64_SFLOAT:				return Format::RG_F64;
+	case VK_FORMAT_R16G16B16_SFLOAT:			return Format::RGB_F16;
+	case VK_FORMAT_R32G32B32_SFLOAT:			return Format::RGB_F32;
+	case VK_FORMAT_R64G64B64_SFLOAT:			return Format::RGB_F64;
+	case VK_FORMAT_R16G16B16A16_SFLOAT:			return Format::RGBA_F16;
+	case VK_FORMAT_R32G32B32A32_SFLOAT:			return Format::RGBA_F32;
+	case VK_FORMAT_R64G64B64A64_SFLOAT:			return Format::RGBA_F64;
+	case VK_FORMAT_D16_UNORM:					return Format::DEPTH16;
+	case VK_FORMAT_D32_SFLOAT:					return Format::DEPTH32;
+	case VK_FORMAT_D16_UNORM_S8_UINT:			return Format::DEPTH16_STENCIL8;
+	case VK_FORMAT_D24_UNORM_S8_UINT:			return Format::DEPTH24_STENCIL8;
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:			return Format::DEPTH32_STENCIL8;
+	default:									return Format::R_I8;
+	}
+}
 
 INLINE VkFormat FormatToVkFormat(Format _PF)
 {
@@ -60,7 +110,8 @@ INLINE VkFormat FormatToVkFormat(Format _PF)
 	case Format::RGBA_I16:			return VK_FORMAT_R16G16B16A16_UNORM;
 	case Format::RGBA_I32:			return VK_FORMAT_R32G32B32A32_UINT;
 	case Format::RGBA_I64:			return VK_FORMAT_R64G64B64A64_UINT;
-	case Format::BGRA_I8:			return VK_FORMAT_B8G8R8_UNORM;
+	case Format::BGRA_I8:			return VK_FORMAT_B8G8R8A8_UNORM;
+	case Format::BGR_I8:			return VK_FORMAT_B8G8R8_UNORM;
 	case Format::R_F16:				return VK_FORMAT_R16_SFLOAT;
 	case Format::R_F32:				return VK_FORMAT_R32_SFLOAT;
 	case Format::R_F64:				return VK_FORMAT_R64_SFLOAT;
@@ -105,6 +156,8 @@ INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 {
 	switch (_IL)
 	{
+	case ImageLayout::UNDEFINED:				return VK_IMAGE_LAYOUT_UNDEFINED;
+	case ImageLayout::SHADER_READ:				return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	case ImageLayout::GENERAL:					return VK_IMAGE_LAYOUT_GENERAL;
 	case ImageLayout::COLOR_ATTACHMENT:			return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	case ImageLayout::DEPTH_STENCIL_ATTACHMENT:	return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -112,6 +165,7 @@ INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 	case ImageLayout::TRANSFER_SOURCE:			return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 	case ImageLayout::TRANSFER_DESTINATION:		return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	case ImageLayout::PREINITIALIZED:			return VK_IMAGE_LAYOUT_PREINITIALIZED;
+	case ImageLayout::PRESENTATION:				return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 	default:									return VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 }

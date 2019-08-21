@@ -5,6 +5,8 @@
 #include "Extent.h"
 #include "RenderCore.h"
 
+#include "Containers/DArray.hpp"
+
 class Image;
 class RenderPass;
 
@@ -22,20 +24,19 @@ GS_STRUCT FramebufferCreateInfo
 {
 	RenderPass* RenderPass = nullptr;
 	Extent2D Extent = { 1280, 720 };
-	Image* Images = nullptr;
-	uint8 ImagesCount = 0;
+	DArray<Image*> Images;
 };
 
 GS_CLASS Framebuffer
 {
 	Extent2D Extent;
 public:
-	Framebuffer(Extent2D _Extent) :
+	explicit Framebuffer(Extent2D _Extent) :
 		Extent(_Extent)
 	{
 	}
 
-	virtual ~Framebuffer() {};
+	virtual ~Framebuffer() = default;
 
 	[[nodiscard]] const Extent2D& GetExtent() const { return Extent; }
 };

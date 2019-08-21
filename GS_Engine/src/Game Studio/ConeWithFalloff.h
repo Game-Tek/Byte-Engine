@@ -7,8 +7,8 @@
 GS_STRUCT ConeWithFalloff : public Cone
 {
 	ConeWithFalloff() = default;
-	ConeWithFalloff(const float Radius, const float Length);
-	ConeWithFalloff(const float Radius, const float Length, const float ExtraRadius);
+	ConeWithFalloff(float Radius, float Length);
+	ConeWithFalloff(float Radius, float Length, float ExtraRadius);
 
 	~ConeWithFalloff() = default;
 

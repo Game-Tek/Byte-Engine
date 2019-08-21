@@ -33,8 +33,6 @@ namespace GS
 			WindowInstance->Update();
 
 			Update();
-
-			//Sleep(100);
 		}	
 	}
 

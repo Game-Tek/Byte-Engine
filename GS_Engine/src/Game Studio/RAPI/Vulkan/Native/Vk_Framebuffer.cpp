@@ -10,7 +10,7 @@ Vk_Framebuffer::Vk_Framebuffer(const Vk_Device& _Device, Extent2D _Extent, const
 {
 	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 	FramebufferCreateInfo.renderPass = _RP;
-	FramebufferCreateInfo.attachmentCount = _Images.length();
+	FramebufferCreateInfo.attachmentCount = _Images.capacity();
 	FramebufferCreateInfo.pAttachments = _Images.data();
 	FramebufferCreateInfo.width = _Extent.Width;
 	FramebufferCreateInfo.height = _Extent.Height;

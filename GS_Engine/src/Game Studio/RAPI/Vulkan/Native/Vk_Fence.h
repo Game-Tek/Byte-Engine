@@ -14,6 +14,9 @@ public:
 	Vk_Fence(const Vk_Device& _Device, bool _InitSignaled);
 	~Vk_Fence();
 
+	void Wait();
+	void Reset();
+
 	static void WaitForFences(uint8 _Count, Vk_Fence* _Fences, bool _WaitForAll);
 	static void ResetFences(uint8 _Count, Vk_Fence* _Fences);
 

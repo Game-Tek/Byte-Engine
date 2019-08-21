@@ -22,6 +22,11 @@ void Vk_CommandBuffer::Free(const Vk_CommandPool& _CP)
 	vkFreeCommandBuffers(m_Device, _CP, 1, &CommandBuffer);
 }
 
+void Vk_CommandBuffer::Reset() const
+{
+	vkResetCommandBuffer(CommandBuffer, 0);
+}
+
 void Vk_CommandBuffer::Begin(VkCommandBufferBeginInfo* _CBBI)
 {
 	GS_VK_CHECK(vkBeginCommandBuffer(CommandBuffer, _CBBI), "Failed to begin Command Buffer!")

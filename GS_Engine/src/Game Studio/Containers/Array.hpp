@@ -3,7 +3,7 @@
 #include "Core.h"
 
 template <typename T, size_t Size, typename LT = size_t>
-GS_CLASS Array
+class GS_EXPORT_ONLY Array
 {
 	T Data[Size] = {};
 	LT Length = 0;

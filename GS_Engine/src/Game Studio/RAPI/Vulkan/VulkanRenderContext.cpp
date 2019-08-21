@@ -71,18 +71,35 @@ VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, const Vk_Inst
 	Swapchain(_Device, Surface, Format.format, Format.colorSpace, Extent2DToVkExtent2D(RenderExtent), PresentMode),
 	SwapchainImages(Swapchain.GetImages()),
 	Images(SwapchainImages.length()),
-	ImagesAvailable(SwapchainImages.length(), Vk_Semaphore(_Device)),
-	RendersFinished(SwapchainImages.length(), Vk_Semaphore(_Device)),
-	InFlightFences(SwapchainImages.length(), Vk_Fence(_Device, true)),
+	ImagesAvailable(SwapchainImages.length()),
+	RendersFinished(SwapchainImages.length()),
+	InFlightFences(SwapchainImages.length()),
 	PresentationQueue(_Device.GetGraphicsQueue()),
-	CommandPool(_Device, _Device.GetGraphicsQueue()),
-	CommandBuffers(SwapchainImages.length(), Vk_CommandBuffer(_Device, CommandPool))
+	CommandPool(_Device, _Device.GetGraphicsQueue(), VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT),
+	CommandBuffers(SwapchainImages.length())
 {
 	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.length());
 
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		Images.push_back(VulkanSwapchainImage(_Device, SwapchainImages[i], Format.format));
+		ImagesAvailable.push_back(new Vk_Semaphore(_Device));
+		RendersFinished.push_back(new Vk_Semaphore(_Device));
+		InFlightFences.push_back(new Vk_Fence(_Device, true));
+		CommandBuffers.push_back(new Vk_CommandBuffer(_Device, CommandPool));
+
+		Images.push_back(new VulkanSwapchainImage(_Device, SwapchainImages[i], VkFormatToFormat(Format.format)));
+	}
+}
+
+VulkanRenderContext::~VulkanRenderContext()
+{
+	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		delete ImagesAvailable[i];
+		delete RendersFinished[i];
+		delete InFlightFences[i];
+		delete CommandBuffers[i];
+		delete Images[i];
 	}
 }
 
@@ -90,39 +107,50 @@ void VulkanRenderContext::OnResize()
 {
 }
 
+void VulkanRenderContext::AcquireNextImage()
+{
+	const auto lImageIndex = Swapchain.AcquireNextImage(*ImagesAvailable[CurrentImage]); //This signals the semaphore when the image becomes available
+	ImageIndex = lImageIndex;
+}
+
 void VulkanRenderContext::Flush()
 {
-	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	VkSemaphore WaitSemaphores[] = { ImagesAvailable[CurrentImage] };
-	VkSemaphore SignalSemaphores[] = { RendersFinished[CurrentImage] };
-	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[CurrentImage] };
+	InFlightFences[CurrentImage]->Wait();	//Get current's frame fences and wait for it.
+	InFlightFences[CurrentImage]->Reset();	//Then reset it.
 
-	//Each entry in the WaitStages array corresponds to the semaphore with the same index in WaitSemaphores.
+	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
+	VkSemaphore WaitSemaphores[] = { *ImagesAvailable[CurrentImage] };		//Set current's frame ImageAvaiable semaphore as the semaphore to wait for to start rendering to.
+	VkSemaphore SignalSemaphores[] = { *RendersFinished[CurrentImage] };	//Set current's frame RenderFinished semaphore as the semaphore to signal once rendering has finished.
+	VkCommandBuffer lCommandBuffers[] = { *CommandBuffers[CurrentImage] };	
 
 	/* Submit signal semaphore to graphics queue */
 	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	SubmitInfo.waitSemaphoreCount = 1;
-	SubmitInfo.pWaitSemaphores = WaitSemaphores;
-	SubmitInfo.pWaitDstStageMask = WaitStages;
-	SubmitInfo.commandBufferCount = 1;
-	SubmitInfo.pCommandBuffers = lCommandBuffers;
-	SubmitInfo.signalSemaphoreCount = 1;
-	SubmitInfo.pSignalSemaphores = SignalSemaphores;
+	{
+		SubmitInfo.waitSemaphoreCount = 1;
+		SubmitInfo.pWaitSemaphores = WaitSemaphores;
+		SubmitInfo.commandBufferCount = 1;
+		SubmitInfo.pCommandBuffers = lCommandBuffers;
+		SubmitInfo.signalSemaphoreCount = 1;
+		SubmitInfo.pSignalSemaphores = SignalSemaphores;
 
-	PresentationQueue.Submit(&SubmitInfo, VK_NULL_HANDLE);
+		SubmitInfo.pWaitDstStageMask = WaitStages;
+	}
+
+	PresentationQueue.Submit(&SubmitInfo, *InFlightFences[CurrentImage]);	//Signal fence when execution of this queue has finished.
+
+	InFlightFences[CurrentImage]->Wait();
+	CommandBuffers[CurrentImage]->Reset();
 }
 
 void VulkanRenderContext::Present()
 {
-	Vk_Fence::WaitForFences(1, &InFlightFences[CurrentImage], true);
-	Vk_Fence::ResetFences(1, &InFlightFences[CurrentImage]);
-
-	VkSemaphore WaitSemaphores[] = { ImagesAvailable[CurrentImage] };
+	VkSemaphore WaitSemaphores[] = { *RendersFinished[CurrentImage] };
 
 	/* Present result on screen */
-	const VkSwapchainKHR Swapchains[] = { Swapchain.GetVkSwapchain() };
+	const VkSwapchainKHR Swapchains[] = { Swapchain };
 
-	const uint32 ImageIndex = Swapchain.AcquireNextImage(ImagesAvailable[CurrentImage]);
+	uint32 lImageIndex = ImageIndex;
 
 	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	{
@@ -130,13 +158,13 @@ void VulkanRenderContext::Present()
 		PresentInfo.pWaitSemaphores = WaitSemaphores;
 		PresentInfo.swapchainCount = 1;
 		PresentInfo.pSwapchains = Swapchains;
-		PresentInfo.pImageIndices = &ImageIndex;
+		PresentInfo.pImageIndices = &lImageIndex;
 		PresentInfo.pResults = nullptr;
 	}
 
 	PresentationQueue.Present(&PresentInfo);
 	
-	CurrentImage = ImageIndex;
+	CurrentImage = (CurrentImage + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanRenderContext::BeginRecording()
@@ -146,12 +174,12 @@ void VulkanRenderContext::BeginRecording()
 	//Hint to primary buffer if this is secondary.
 	BeginInfo.pInheritanceInfo = nullptr;
 
-	CommandBuffers[CurrentImage].Begin(&BeginInfo);
+	CommandBuffers[CurrentImage]->Begin(&BeginInfo);
 }
 
 void VulkanRenderContext::EndRecording()
 {
-	CommandBuffers[CurrentImage].End();
+	CommandBuffers[CurrentImage]->End();
 }
 
 void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
@@ -166,54 +194,54 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
 
-	vkCmdBeginRenderPass(CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBeginRenderPass(*CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
 {
-	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
+	vkCmdEndRenderPass(*CommandBuffers[CurrentImage]);
 }
 
 void VulkanRenderContext::BindMesh(Mesh* _Mesh)
 {
 	const auto l_Mesh = SCAST(VulkanMesh*, _Mesh);
-	vkCmdBindVertexBuffers(CommandBuffers[CurrentImage], 0, 1, l_Mesh->GetVertexBuffer(), 0);
-	vkCmdBindIndexBuffer(CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+	VkDeviceSize Offset = 0;
+	vkCmdBindVertexBuffers(*CommandBuffers[CurrentImage], 0, 1, l_Mesh->GetVertexBuffer(), &Offset);
+	vkCmdBindIndexBuffer(*CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 {
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetVkGraphicsPipeline());
+	vkCmdBindPipeline(*CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline());
 }
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 {
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetVkPipeline());
+	vkCmdBindPipeline(*CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline());
 }
 
 void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
 {
-	vkCmdDrawIndexed(CommandBuffers[CurrentImage], _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
+	vkCmdDrawIndexed(*CommandBuffers[CurrentImage], _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
 }
 
 void VulkanRenderContext::Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ)
 {
-	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroupsX, _WorkGroupsY, _WorkGroupsZ);
+	vkCmdDispatch(*CommandBuffers[CurrentImage], _WorkGroupsX, _WorkGroupsY, _WorkGroupsZ);
 }
 
 void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)
 {
-	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroups.Width, _WorkGroups.Height, _WorkGroups.Depth);
+	vkCmdDispatch(*CommandBuffers[CurrentImage], _WorkGroups.Width, _WorkGroups.Height, _WorkGroups.Depth);
 }
 
 FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
 {
-	//FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
-	//for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-	//{
-	//	l_Images.push_back(SCAST(Image*, CCAST(VulkanSwapchainImage*, &Images[i])));
-	//}
+	FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
+	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		l_Images.push_back(Images[i]);
+	}
 
-	//return l_Images;
-	return FVector<Image*>(1);
+	return l_Images;
 }

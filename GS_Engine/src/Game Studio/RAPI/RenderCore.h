@@ -5,6 +5,7 @@
 //Specifies all available image layouts.
 enum class ImageLayout : uint8
 {
+	UNDEFINED,
 	GENERAL,
 	COLOR_ATTACHMENT,
 	DEPTH_STENCIL_ATTACHMENT,
@@ -32,6 +33,8 @@ enum class Format : uint8
 	RGBA_I8, RGBA_I16, RGBA_I32, RGBA_I64,
 	//RGBA
 	BGRA_I8,
+
+	BGR_I8,
 
 	//FLOATING POINT
 

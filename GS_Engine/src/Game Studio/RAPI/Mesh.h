@@ -59,7 +59,7 @@ public:
 
 	//Returns the size in bytes this vertex takes up.
 	[[nodiscard]] uint8 GetSize() const { return Size; }
-	[[nodiscard]] uint8 GetAttributeCount() const { return 8; }
+	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.capacity(); }
 };
 
 struct Vertex;

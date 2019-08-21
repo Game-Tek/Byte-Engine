@@ -7,7 +7,6 @@
 Vk_ComputePipeline::Vk_ComputePipeline(const Vk_Device& _Device) : VulkanObject(_Device)
 {
 	VkComputePipelineCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-	CreateInfo.stage;
 	CreateInfo.basePipelineHandle = VK_NULL_HANDLE;
 	CreateInfo.basePipelineIndex = -1;
 

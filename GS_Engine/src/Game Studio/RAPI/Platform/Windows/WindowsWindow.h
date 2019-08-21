@@ -23,7 +23,7 @@ public:
 	INLINE HWND GetWindowObject() const { return WindowObject; }
 	INLINE HINSTANCE GetHInstance() const { return WindowInstance; }
 
-	virtual void Update();
+	void Update() override;
 
 	void SetWindowFit(WindowFit _Fit) override;
 	void MinimizeWindow() override;

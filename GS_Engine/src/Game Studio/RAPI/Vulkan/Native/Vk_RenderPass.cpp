@@ -4,15 +4,15 @@
 
 #include "Vk_Device.h"
 
-Vk_RenderPass::Vk_RenderPass(const Vk_Device& _Device, const Tuple<FVector<VkAttachmentDescription>, FVector<VkSubpassDescription>>& _Info) : VulkanObject(_Device)
+Vk_RenderPassCreateInfo Vk_RenderPass::CreateVk_RenderPassCreateInfo(const Vk_Device& _Device, const VkRenderPassCreateInfo* _VkRPCI)
 {
-	VkRenderPassCreateInfo RenderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-	RenderPassCreateInfo.attachmentCount = _Info.First.length();
-	RenderPassCreateInfo.pAttachments = _Info.First.data();
-	RenderPassCreateInfo.subpassCount = _Info.Second.length();
-	RenderPassCreateInfo.pSubpasses = _Info.Second.data();
+	VkRenderPass RenderPass = VK_NULL_HANDLE;
+	GS_VK_CHECK(vkCreateRenderPass(_Device, _VkRPCI, ALLOCATOR, &RenderPass), "Failed to create RenderPass!");
+	return { _Device, RenderPass };
+}
 
-	GS_VK_CHECK(vkCreateRenderPass(m_Device, &RenderPassCreateInfo, ALLOCATOR, &RenderPass), "Failed to create RenderPass!")
+Vk_RenderPass::Vk_RenderPass(const Vk_RenderPassCreateInfo& _Vk_RenderPassCreateInfo) : VulkanObject(_Vk_RenderPassCreateInfo.m_Device), RenderPass(_Vk_RenderPassCreateInfo.RenderPass)
+{
 }
 
 Vk_RenderPass::~Vk_RenderPass()

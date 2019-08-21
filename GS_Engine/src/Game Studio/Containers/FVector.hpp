@@ -8,7 +8,7 @@
 #define EXTRA 5
 
 template <typename T, typename LT = size_t>
-GS_CLASS FVector
+class GS_EXPORT_ONLY FVector
 {
 	typedef T* iterator;
 
@@ -60,7 +60,7 @@ public:
 	{
 	}
 
-	FVector(const size_t _Length, const T& _obj) : Capacity(_Length), Data(allocate(this->Capacity))
+	FVector(const size_t _Length, const T& _obj) : Capacity(_Length), Length(_Length), Data(allocate(this->Capacity))
 	{
 		for (size_t i = 0; i < this->Length; i++)
 		{
@@ -80,28 +80,11 @@ public:
 		copyarray(Other.Data, this->Data);
 	}
 
-	//Assigns the internal array the contents of the passed in array.
-	FVector& operator=(T Other[])
-	{
-		const size_t length = (sizeof(*Other) / sizeof(T));
-
-		checkfornew(length - this->Length);
-
-		Length = length;
-
-		copyarray(Other, this->Data);
-
-		return *this;
-	}
-
 	//Assigns this object the data of the passed in FVector.
 	FVector & operator=(const FVector & Other)
 	{
-		this->Length = Other.Length;
-
-		this->Data = allocate(this->Length);
-
-		this->Capacity = Other.Capacity;
+		checkfornew(Other.Length - this->Length);
+		copyarray(Other.Data, this->Data);
 
 		return *this;
 	}
@@ -117,7 +100,10 @@ public:
 		{
 			freearray();
 			this->Data = allocate(_Count);
+			this->Capacity = _Count;
 		}
+
+		this->Length = _Count;
 
 		return;
 	}
@@ -127,7 +113,7 @@ public:
 	{
 		checkfornew(1);
 
-		this->Data[Length] = obj;
+		memcpy(&this->Data[Length], &obj, sizeof(T));
 
 		this->Length += 1;
 	}
@@ -256,6 +242,8 @@ public:
 		this->Length -= 1;
 	}
 
+	iterator getElement(const size_t _i) { return &this->Data[_i]; }
+
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE T& operator[](const size_t index)
 	{
@@ -275,7 +263,7 @@ public:
 #ifdef GS_DEBUG
 		if (index > this->Capacity)
 		{
-			throw("Out of bounds!");
+			throw "Out of bounds!";
 		}
 #endif
 
@@ -287,6 +275,8 @@ public:
 	{
 		return this->Length;
 	}
+
+	INLINE size_t capacity() const { return this->Capacity; }
 
 	//Returns a pointer to the allocated array.
 	INLINE T* data()
@@ -305,18 +295,18 @@ private:
 	T* allocate(const size_t elementcount)
 	{
 		return SCAST(T*, malloc(elementcount * sizeof(T)));
-		//return new T[elementcount];
 	}
 
 	void freearray()
 	{
 		free(this->Data);
+		this->Data = nullptr;
 	}
 
 	//Fills array to with from.
 	void copyarray(T * from, T * to)
 	{
-		memcpy(to, from, this->Length * sizeof(T));
+		memcpy(to, from, this->Capacity * sizeof(T));
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.

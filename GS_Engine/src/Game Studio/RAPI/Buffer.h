@@ -5,7 +5,7 @@
 
 GS_STRUCT BufferCreateInfo
 {
-	BufferType Type;
+	BufferType Type = BufferType::BUFFER_VERTEX;
 	void* Data = nullptr;
 	size_t Size = 0;
 };

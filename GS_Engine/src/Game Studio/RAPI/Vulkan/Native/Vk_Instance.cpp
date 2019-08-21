@@ -4,13 +4,6 @@
 
 #include <iostream>
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL Callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,	VkDebugUtilsMessageTypeFlagsEXT messageType,	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,	void* pUserData)
-{
-	std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
-
-	return VK_FALSE;
-}
-
 Vk_Instance::Vk_Instance(const char* _AppName)
 {
 	VkApplicationInfo AppInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };

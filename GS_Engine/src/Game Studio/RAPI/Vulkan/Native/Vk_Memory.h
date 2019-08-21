@@ -18,9 +18,9 @@ GS_CLASS Vk_Memory final : public VulkanObject
 public:
 	Vk_Memory(const Vk_Device& _Device);
 	~Vk_Memory();
-	void AllocateDeviceMemory(VkMemoryRequirements* _MR);
+	void AllocateDeviceMemory(const VkMemoryRequirements& _MR, unsigned _MemProps);
 	void* CopyToMappedMemory(void* _Data, size_t _Size);
-	void CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstBuffer, const Vk_CommandPool& _CP, const Vk_Queue& _Queue, size_t _Size);
+	void CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstBuffer, const Vk_CommandPool& _CP, const Vk_Queue& _Queue, size_t _Size) const;
 
 	void BindBufferMemory(const Vk_Buffer& _Buffer) const;
 	void BindImageMemory(const Vk_Image& _Image) const;

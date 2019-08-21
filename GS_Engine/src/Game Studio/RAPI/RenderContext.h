@@ -46,7 +46,9 @@ public:
 	virtual void BeginRecording() = 0;
 	//Ends recording of commands.
 	virtual void EndRecording() = 0;
-	
+
+	virtual void AcquireNextImage() = 0;
+
 	//Sends all commands to the GPU.
 	virtual void Flush() = 0;
 
@@ -91,5 +93,5 @@ public:
 	[[nodiscard]] virtual FVector<Image*> GetSwapchainImages() const = 0;
 
 	[[nodiscard]] uint8 GetCurrentImage() const { return CurrentImage; }
-	uint8 GetMaxFramesInFlight() const { return MAX_FRAMES_IN_FLIGHT; }
+	[[nodiscard]] uint8 GetMaxFramesInFlight() const { return MAX_FRAMES_IN_FLIGHT; }
 };

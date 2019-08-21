@@ -17,6 +17,16 @@ Vk_Fence::~Vk_Fence()
 	vkDestroyFence(m_Device, Fence, ALLOCATOR);
 }
 
+void Vk_Fence::Wait()
+{
+	vkWaitForFences(m_Device, 1, &Fence, true, 0xffffffffffffffff);
+}
+
+void Vk_Fence::Reset()
+{
+	vkResetFences(m_Device, 1, &Fence);
+}
+
 void Vk_Fence::WaitForFences(uint8 _Count, Vk_Fence* _Fences, bool _WaitForAll)
 {
 	FVector<VkFence> Fences(1);

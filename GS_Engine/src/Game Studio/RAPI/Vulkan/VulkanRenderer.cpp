@@ -28,7 +28,7 @@ Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 
 Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)
 {
-	return new VulkanImage(Device, _ICI.Extent, _ICI.ImageFormat, _ICI.Dimensions, _ICI.Type, _ICI.Use, _ICI.LoadOperation, _ICI.StoreOperation, _ICI.InitialLayout, _ICI.FinalLayout);
+	return new VulkanImage(Device, _ICI.Extent, _ICI.ImageFormat, _ICI.Dimensions, _ICI.Type, _ICI.Use);
 }
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
@@ -38,7 +38,7 @@ GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineC
 
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
 {
-	return new VulkanRenderPass(Device, _RPCI.RPDescriptor);
+	return new VulkanRenderPass(Device, _RPCI.Descriptor);
 }
 
 ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
@@ -48,7 +48,7 @@ ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCrea
 
 Framebuffer* VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 {
-	return new VulkanFramebuffer(Device, SCAST(VulkanRenderPass*, _FCI.RenderPass), _FCI.Extent, _FCI.Images, _FCI.ImagesCount);
+	return new VulkanFramebuffer(Device, SCAST(VulkanRenderPass*, _FCI.RenderPass), _FCI.Extent, _FCI.Images);
 }
 
 RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCCI)

@@ -39,7 +39,7 @@ Vk_Device::Vk_Device(const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD)
 	DeviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 	DeviceCreateInfo.ppEnabledExtensionNames = DeviceExtensions;
 
-	auto ff = vkCreateDevice(_PD, &DeviceCreateInfo, ALLOCATOR, &Device);
+	GS_VK_CHECK(vkCreateDevice(_PD, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create Device!");
 
 	Vk_Queue* Queues[] = { &GraphicsQueue, &ComputeQueue, &TransferQueue };
 

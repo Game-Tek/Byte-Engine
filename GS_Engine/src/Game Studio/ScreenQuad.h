@@ -6,13 +6,15 @@
 
 GS_STRUCT ScreenQuad
 {
-	inline static Vertex2D Vertices[] = { { {  1.0f,  1.0f }, { 1.0f, 1.0f } },
+	ScreenQuad() = default;
+
+	Vertex2D Vertices[4] = { { {  1.0f,  1.0f }, { 1.0f, 1.0f } },
 										  { {  1.0f, -1.0f }, { 1.0f, 0.0f } },
 										  { { -1.0f, -1.0f }, { 0.0f, 0.0f } },
 										  { { -1.0f,  1.0f }, { 0.0f, 1.0f } } };
 
-	inline static Index Indices[] = { 0, 1, 2, 2, 3, 0 };
+	Index Indices[6] = { 0, 1, 2, 2, 3, 0 };
 
-	inline static uint8 VertexCount = 4;
-	inline static uint8 IndexCount = 6;
+	uint8 VertexCount = 4;
+	uint8 IndexCount = 6;
 };

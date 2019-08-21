@@ -10,7 +10,7 @@ Vk_Swapchain::Vk_Swapchain(const Vk_Device& _Device, const Vk_Surface& _Surface,
 {
 	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, _PresentMode, VK_NULL_HANDLE);
 
-	auto SwapResult = vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain);
+	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!");
 }
 
 Vk_Swapchain::~Vk_Swapchain()

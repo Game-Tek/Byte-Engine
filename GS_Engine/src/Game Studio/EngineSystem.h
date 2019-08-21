@@ -5,5 +5,6 @@
 GS_CLASS ESystem
 {
 public:
-	virtual void OnUpdate() {} ;
+	virtual void OnUpdate() {};
+	virtual ~ESystem() {};
 };

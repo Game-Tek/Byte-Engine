@@ -41,25 +41,28 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 
 	Vk_Swapchain Swapchain;
 	FVector<VkImage> SwapchainImages;
-	FVector<VulkanSwapchainImage> Images;
-	FVector<Vk_Semaphore> ImagesAvailable;
-	FVector<Vk_Semaphore> RendersFinished;
-	FVector<Vk_Fence> InFlightFences;
+	mutable FVector<VulkanSwapchainImage*> Images;
+	FVector<Vk_Semaphore*> ImagesAvailable;
+	FVector<Vk_Semaphore*> RendersFinished;
+	FVector<Vk_Fence*> InFlightFences;
 
 	Vk_Queue PresentationQueue;
 
 	Vk_CommandPool CommandPool;
 
-	FVector<Vk_CommandBuffer> CommandBuffers;
+	FVector<Vk_CommandBuffer*> CommandBuffers;
+
+	uint8 ImageIndex = 0;
 
 	static SurfaceFormat FindFormat(const Vk_PhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	static VkPresentModeKHR FindPresentMode(const Vk_PhysicalDevice& _PD, const Vk_Surface& _Surface);
 public:
 	VulkanRenderContext(const Vk_Device& _Device, const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD, const Window& _Window);
-	~VulkanRenderContext() = default;
+	~VulkanRenderContext();
 
 	void OnResize() final  override;
 
+	void AcquireNextImage() override;
 	void Flush() final override;
 	void Present() final override;
 	void BeginRecording() final override;

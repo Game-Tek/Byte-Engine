@@ -32,6 +32,14 @@ typedef double real;
 	#endif
 #endif
 
+#ifdef GS_PLATFORM_WIN
+#ifdef GS_BUILD
+#define GS_EXPORT_ONLY __declspec(dllexport)
+#else
+#define GS_EXPORT_ONLY
+#endif
+#endif
+
 //Class setup simplification.
 
 #define GS_CLASS class GS_API
@@ -52,3 +60,5 @@ typedef double real;
 #define SCAST(to, from) static_cast<to>(from)
 #define RCAST(to, from) reinterpret_cast<to>(from)
 #define CCAST(to, from) const_cast<to>(from)
+
+#define MAX 0xffffffffffffffff

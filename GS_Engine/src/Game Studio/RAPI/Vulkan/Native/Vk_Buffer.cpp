@@ -30,3 +30,10 @@ Vk_Buffer::~Vk_Buffer()
 {
 	vkDestroyBuffer(m_Device, Buffer, ALLOCATOR);
 }
+
+VkMemoryRequirements Vk_Buffer::GetRequirements() const
+{
+	VkMemoryRequirements MR = {};
+	vkGetBufferMemoryRequirements(m_Device, Buffer, &MR);
+	return MR;
+}

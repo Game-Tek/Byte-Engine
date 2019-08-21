@@ -19,11 +19,6 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 
 	glfwSetErrorCallback(error);
 
-	uint32 count = 0;
-	auto r = glfwGetRequiredInstanceExtensions(&count);
-
-	auto t = r[2];
-
 	/* Create a windowed mode window and its OpenGL context */
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _Name.c_str(), NULL, NULL);
@@ -31,7 +26,6 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 	if (!GLFWWindow)
 	{
 		glfwTerminate();
-		GS_ASSERT(false);
 	}
 
 	glfwMakeContextCurrent(GLFWWindow);

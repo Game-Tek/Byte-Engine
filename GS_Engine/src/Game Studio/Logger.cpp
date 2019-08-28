@@ -6,47 +6,53 @@
 
 #include "Application/Application.h"
 
-void Logger::SetLogTextColor(LogColors Color)
+LogLevel Logger::MinLogLevel;
+
+void Logger::PrintLog(LogLevel _Level, const char* Text, ...)
 {
-	switch (Color)
+	if(_Level >= MinLogLevel)
 	{
-	default:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
-			break;
+		SetTextColorOnLogLevel(_Level);
 
-		case Red:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
-			break;
+		const Time LogTime = GS::Application::Get()->GetClock().GetTime();
 
-		case Yellow:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 6);
-			break;
+		printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
 
-		case Green:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
-			break;
+		va_list args;
+		va_start(args, Text);
+		vprintf(Text, args);
+		va_end(args);
 
-		case White:
-			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
-			break;
+		printf("\n");
 	}
-	return;
 }
 
-void Logger::PrintLog(const char * Text, ...)
+void Logger::SetTextColorOnLogLevel(LogLevel _Level)
 {
-	//SetLogTextColor(Color);
+	switch (_Level)
+	{
+	default:
+		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
+		break;
 
-	const Time LogTime = GS::Application::Get()->GetClockInstance()->GetTime();
+	case LogLevel::MESSAGE:
+		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
+		break;
 
-	printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
+	case LogLevel::SUCCESS:
+		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+		break;
 
-	va_list args;
-	va_start(args, Text);
-	vprintf(Text, args);
-	va_end(args);
+	case LogLevel::WARNING:
+		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_GREEN);
+		break;
 
-	printf("\n");
+	#undef ERROR
 
-	SetLogTextColor(White);
+	case LogLevel::ERROR:
+		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY);
+		break;
+
+	}
+	return;
 }

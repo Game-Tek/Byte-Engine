@@ -3,7 +3,7 @@
 #include "../Core.h"
 
 #include "../Clock.h"
-#include "../InputManager.h"
+#include "InputManager.h"
 #include "RAPI/Window.h"
 
 namespace GS
@@ -20,20 +20,30 @@ namespace GS
 
 		static Application * Get() { return ApplicationInstance; }
 
-		//TO-DO: CHECK CONST FOR POINTERS.
+		//Updates the window the application gets it's context information from.
+		void SetActiveWindow(Window* _NewWindow);
 
-		Clock * GetClockInstance() const { return ClockInstance; }
-		InputManager * GetInputManagerInstance() const { return InputManagerInstance; }
-		Window* GetWindow() const { return WindowInstance; }
+		//Fires a delegate to signal that the application has been requested to close.
+		void PromptClose();
+
+		//Flags the application to close on the next update.
+		void Close() { FlaggedForClose = true; }
+
+		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
+		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
+		[[nodiscard]] const Window* GetActiveWindow() const { return ActiveWindow; }
 
 	private:
-		Clock * ClockInstance = nullptr;
-		InputManager * InputManagerInstance = nullptr;
-		Window* WindowInstance = nullptr;
+		Clock ClockInstance;
+		InputManager InputManagerInstance;
+
+		Window* ActiveWindow = nullptr;
 
 		static Application * ApplicationInstance;
 
-		bool ShouldClose();
+		bool FlaggedForClose = false;
+
+		[[nodiscard]] bool ShouldClose() const;
 	};
 
 	Application * CreateApplication();

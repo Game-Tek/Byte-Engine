@@ -21,7 +21,7 @@ private:
 
 	void copyLength(const LT _elements, void* _from)
 	{
-		auto i = memcpy(this->Data, _from, sizeof(T) * _elements);
+		memcpy(this->Data, _from, sizeof(T) * _elements);
 	}
 
 	void freeArray()
@@ -109,5 +109,10 @@ public:
 	[[nodiscard]] LT length() const
 	{
 		return this->Length;
+	}
+
+	[[nodiscard]] LT capacity() const
+	{
+		return this->Capacity;
 	}
 };

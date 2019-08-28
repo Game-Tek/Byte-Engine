@@ -33,7 +33,7 @@ Vk_Buffer::~Vk_Buffer()
 
 VkMemoryRequirements Vk_Buffer::GetRequirements() const
 {
-	VkMemoryRequirements MR = {};
+	VkMemoryRequirements MR;
 	vkGetBufferMemoryRequirements(m_Device, Buffer, &MR);
 	return MR;
 }

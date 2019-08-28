@@ -102,6 +102,9 @@
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Extent.h" />
+    <ClInclude Include="src\Game Studio\FlipFlop.h" />
+    <ClInclude Include="src\Game Studio\JoystickState.h" />
+    <ClInclude Include="src\Game Studio\MouseState.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
@@ -153,7 +156,7 @@
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\Containers\FVector.hpp" />
-    <ClInclude Include="src\Game Studio\InputManager.h" />
+    <ClInclude Include="src\Game Studio\Application\InputManager.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
     <ClInclude Include="src\Game Studio\Resource.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
@@ -232,7 +235,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
-    <ClCompile Include="src\Game Studio\InputManager.cpp" />
+    <ClCompile Include="src\Game Studio\Application\InputManager.cpp" />
     <ClCompile Include="src\Game Studio\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp" />

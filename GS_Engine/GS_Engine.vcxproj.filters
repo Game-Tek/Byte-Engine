@@ -108,9 +108,6 @@
     <ClInclude Include="src\Game Studio\Functor.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\InputManager.h">
-      <Filter>Engine\InputManager</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\TextureResource.h">
       <Filter>Engine\Resource Manager\Resources</Filter>
     </ClInclude>
@@ -228,13 +225,16 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
+    <ClInclude Include="src\Game Studio\Application\InputManager.h">
+      <Filter>Engine\InputManager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\MouseState.h" />
+    <ClInclude Include="src\Game Studio\JoystickState.h" />
+    <ClInclude Include="src\Game Studio\FlipFlop.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine\Clock</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\InputManager.cpp">
-      <Filter>Engine\InputManager</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\TextureResource.cpp">
       <Filter>Engine\Resource Manager\Resources</Filter>
@@ -295,6 +295,9 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
     <ClCompile Include="src\Game Studio\Vertex.cpp" />
+    <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
+      <Filter>Engine\InputManager</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

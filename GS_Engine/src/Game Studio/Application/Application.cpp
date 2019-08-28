@@ -7,37 +7,37 @@ namespace GS
 	Application::Application()
 	{
 		ApplicationInstance = this;
-
-		ClockInstance = new Clock();
-		InputManagerInstance = new InputManager();
-
-		WindowCreateInfo WCI;
-		WCI.Extent = { 1280, 720 };
-		WCI.Name = "Game Studio!";
-		WCI.WindowType = WindowFit::NORMAL;
-		WindowInstance = Window::CreateGSWindow(WCI);
 	}
 
 	Application::~Application()
 	{
-		delete ClockInstance;
-		delete InputManagerInstance;
-		delete WindowInstance;
 	}
 
 	void Application::Run()
 	{
 		while (!ShouldClose())
 		{
-			ClockInstance->OnUpdate();
-			WindowInstance->Update();
+			ClockInstance.OnUpdate();
+			InputManagerInstance.OnUpdate();
+
+			ActiveWindow->Update();
 
 			Update();
-		}	
+		}
 	}
 
-	bool Application::ShouldClose()
+	void Application::SetActiveWindow(Window* _NewWindow)
 	{
-		return WindowInstance->GetShouldClose();
+		ActiveWindow = _NewWindow;
+		InputManagerInstance.SetActiveWindow(ActiveWindow);
+	}
+
+	void Application::PromptClose()
+	{
+	}
+
+	bool Application::ShouldClose() const
+	{
+		return ActiveWindow->GetShouldClose() || FlaggedForClose;
 	}
 }

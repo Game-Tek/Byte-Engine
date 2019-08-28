@@ -2,6 +2,8 @@
 
 #include "Core.h"
 
+// IMAGE
+
 //Specifies all available image layouts.
 enum class ImageLayout : uint8
 {
@@ -15,6 +17,28 @@ enum class ImageLayout : uint8
 	TRANSFER_DESTINATION,
 	PREINITIALIZED,
 	PRESENTATION
+};
+
+enum class ImageDimensions : uint8
+{
+	IMAGE_1D, IMAGE_2D, IMAGE_3D
+};
+
+enum class ImageType : uint8
+{
+	COLOR, DEPTH, STENCIL, DEPTH_STENCIL
+};
+
+enum class ImageUse : uint8
+{
+	TRANSFER_SOURCE,
+	TRANSFER_DESTINATION,
+	SAMPLE,
+	STORAGE,
+	COLOR_ATTACHMENT,
+	DEPTH_STENCIL_ATTACHMENT,
+	TRANSIENT_ATTACHMENT,
+	INPUT_ATTACHMENT
 };
 
 //Specifies all available color formats and depth/stencil formats.
@@ -71,6 +95,9 @@ enum class ColorSpace : uint8
 	HDR10
 };
 
+
+// ATTACHMENTS
+
 //Describes all possible operations a renderer can perform when loading a render target onto a render pass.
 enum class LoadOperations : uint8
 {
@@ -91,43 +118,28 @@ enum class StoreOperations : uint8
 	STORE
 };
 
+enum class SampleCount : uint8
+{
+	SAMPLE_COUNT_1,
+	SAMPLE_COUNT_2,
+	SAMPLE_COUNT_4,
+	SAMPLE_COUNT_8,
+	SAMPLE_COUNT_16,
+	SAMPLE_COUNT_32,
+	SAMPLE_COUNT_64
+};
+
+// SHADERS
+
 enum class ShaderType : uint8
 {
 	VERTEX_SHADER,
-	TESSELLATION_SHADER,
+	TESSELLATION_CONTROL_SHADER,
+	TESSELLATION_EVALUATION_SHADER,
 	GEOMETRY_SHADER,
 	FRAGMENT_SHADER,
 
 	COMPUTE_SHADER
-};
-
-enum class ImageDimensions : uint8
-{
-	IMAGE_1D, IMAGE_2D, IMAGE_3D
-};
-
-enum class ImageType : uint8
-{
-	COLOR, DEPTH, STENCIL, DEPTH_STENCIL
-};
-
-enum class ImageUse : uint8
-{
-	TRANSFER_SOURCE,
-	TRANSFER_DESTINATION,
-	SAMPLE,
-	STORAGE,
-	COLOR_ATTACHMENT,
-	DEPTH_STENCIL_ATTACHMENT,
-	TRANSIENT_ATTACHMENT,
-	INPUT_ATTACHMENT
-};
-
-enum class BufferType : uint8
-{
-	BUFFER_VERTEX,
-	BUFFER_INDEX,
-	BUFFER_UNIFORM
 };
 
 enum class ShaderDataTypes : uint8
@@ -146,4 +158,46 @@ enum class ShaderDataTypes : uint8
 
 	MAT3,
 	MAT4
+};
+
+
+// BUFFERS
+
+enum class BufferType : uint8
+{
+	BUFFER_VERTEX,
+	BUFFER_INDEX,
+	BUFFER_UNIFORM
+};
+
+
+// PIPELINE
+
+enum class CullMode : uint8
+{
+	CULL_NONE,
+	CULL_FRONT,
+	CULL_BACK
+};
+
+enum class BlendOperation : uint8
+{
+	ADD, SUBTRACT, REVERSE_SUBTRACT, MIN, MAX
+};
+
+enum class CompareOperation : uint8
+{
+	NEVER,
+	LESS,
+	EQUAL,
+	LESS_OR_EQUAL,
+	GREATER,
+	NOT_EQUAL,
+	GREATER_OR_EQUAL,
+	ALWAYS
+};
+
+enum class StencilCompareOperation : uint8
+{
+	KEEP, ZERO, REPLACE, INCREMENT_AND_CLAMP, DECREMENT_AND_CLAMP, INVERT, INCREMENT_AND_WRAP, DECREMENT_AND_WRAP
 };

@@ -4,7 +4,7 @@
 
 enum class KeyState : uint8
 {
-	PRESSED, RELEASED
+	PRESSED, RELEASED, NONE
 };
 
 #define MAX_KEYBOARD_KEYS 58

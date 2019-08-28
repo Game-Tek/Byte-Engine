@@ -34,6 +34,11 @@ WindowsWindow::WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _N
 	WindowInstance = GetModuleHandle(NULL);
 
 	//SetWindowFit(_Fit);
+
+	for (uint8 i = 0; i < 4; ++i)
+	{
+		JoystickCount += glfwJoystickPresent(i);
+	}
 }
 
 WindowsWindow::~WindowsWindow()
@@ -55,15 +60,58 @@ void WindowsWindow::Update()
 	{
 		double X, Y;
 		glfwGetCursorPos(GLFWWindow, &X, &Y);
-		MousePosition.X = SCAST(float, X);
-		MousePosition.Y = SCAST(float, Y);
+		WindowMouseState.MousePosition.X = SCAST(float, X);
+		WindowMouseState.MousePosition.Y = SCAST(float, Y);
+	}
+
+	{
+		const auto RightMouseButtonState = glfwGetMouseButton(GLFWWindow, GLFW_MOUSE_BUTTON_RIGHT);
+		const auto LeftMouseButtonState = glfwGetMouseButton(GLFWWindow, GLFW_MOUSE_BUTTON_LEFT);
+		const auto MiddleMouseButtonState = glfwGetMouseButton(GLFWWindow, GLFW_MOUSE_BUTTON_MIDDLE);
+
+		WindowMouseState.IsRightButtonPressed = RightMouseButtonState;
+		WindowMouseState.IsLeftButtonPressed = LeftMouseButtonState;
+		WindowMouseState.IsMouseWheelPressed = MiddleMouseButtonState;
 	}
 
 	ShouldClose = glfwWindowShouldClose(GLFWWindow);
 
-	for (uint8 i = 0; i < MAX_KEYBOARD_KEYS; i++)
+	for (uint8 i = 0; i < MAX_KEYBOARD_KEYS; ++i)
 	{
-		Keys[i] = GLFWKeyStateToKeyState(glfwGetKey(GLFWWindow, KeyboardKeysToGLFWKeys(SCAST(KeyboardKeys, i))));
+		Keys[i] = glfwGetKey(GLFWWindow, KeyboardKeysToGLFWKeys(SCAST(KeyboardKeys, i)));
+	}
+
+	for (uint8 i = 0; i < JoystickCount; ++i)
+	{
+		GLFWgamepadstate GamepadState;
+
+		glfwGetGamepadState(i, &GamepadState);
+
+		JoystickStates[i].RightJoystickPosition.X = GamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
+		JoystickStates[i].RightJoystickPosition.Y = GamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
+		JoystickStates[i].LeftJoystickPosition.X = GamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+		JoystickStates[i].LeftJoystickPosition.Y = GamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+		JoystickStates[i].RightTriggerDepth = GamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER];
+		JoystickStates[i].LeftTriggerDepth = GamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER];
+
+		JoystickStates[i].IsRightBumperPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER];
+		JoystickStates[i].IsLeftBumperPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER];
+
+		JoystickStates[i].IsUpFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_Y];
+		JoystickStates[i].IsRightFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_B];
+		JoystickStates[i].IsBottomFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_A];
+		JoystickStates[i].IsLeftFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_X];
+
+		JoystickStates[i].IsUpDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP];
+		JoystickStates[i].IsRightDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT];
+		JoystickStates[i].IsBottomDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN];
+		JoystickStates[i].IsLeftDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT];
+
+		JoystickStates[i].IsRightStickPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_THUMB];
+		JoystickStates[i].IsLeftStickPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_LEFT_THUMB];
+
+		JoystickStates[i].IsRightHomeButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_START];
+		JoystickStates[i].IsLeftHomeButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_BACK];
 	}
 }
 
@@ -87,6 +135,12 @@ void WindowsWindow::MinimizeWindow()
 
 void WindowsWindow::NotifyWindow()
 {
+	glfwRequestWindowAttention(GLFWWindow);
+}
+
+void WindowsWindow::SetWindowTitle(const char* _Title)
+{
+	glfwSetWindowTitle(GLFWWindow, _Title);
 }
 
 int32 WindowsWindow::KeyboardKeysToGLFWKeys(KeyboardKeys _IE)

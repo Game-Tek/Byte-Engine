@@ -35,15 +35,10 @@ void Vk_Memory::CopyToDevice(const Vk_Buffer& _SrcBuffer, const Vk_Buffer& _DstB
 	SubmitInfo.commandBufferCount = 1;
 	SubmitInfo.pCommandBuffers = CommandBuffer;
 
-	Vk_Fence WaitFence(m_Device, false);
-
-	_Queue.Submit(&SubmitInfo, WaitFence);
-
-	WaitFence.Wait();
+	_Queue.Submit(&SubmitInfo, VK_NULL_HANDLE);
+	_Queue.Wait();
 
 	CommandBuffer.Free(_CP);
-
-	_CP.Reset();
 }
 
 void Vk_Memory::BindBufferMemory(const Vk_Buffer& _Buffer) const

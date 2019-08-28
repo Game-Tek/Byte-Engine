@@ -28,4 +28,5 @@ public:
 	void SetWindowFit(WindowFit _Fit) override;
 	void MinimizeWindow() override;
 	void NotifyWindow() override;
+	void SetWindowTitle(const char* _Title) override;
 };

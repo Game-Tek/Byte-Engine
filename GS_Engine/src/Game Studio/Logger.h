@@ -2,39 +2,43 @@
 
 #include "Core.h"
 
-enum LogColors
+enum class LogLevel : uint8
 {
-	Red,
-	Yellow,
-	Green,
-	White
+	MESSAGE,
+	SUCCESS,
+	WARNING,
+	ERROR
 };
 
 GS_CLASS Logger
 {
-	#ifdef GS_DEBUG
-#define GS_LOG_SUCCESS(Text, ...)	Logger::SetLogTextColor(Green);\
-									Logger::PrintLog(Text, __VA_ARGS__);\
+	static LogLevel MinLogLevel;
 
-#define GS_LOG_MESSAGE(Text, ...)	Logger::SetLogTextColor(White);\
-									Logger::PrintLog(Text, __VA_ARGS__);\
-
-#define GS_LOG_WARNING(Text, ...)	Logger::SetLogTextColor(Yellow);\
-									Logger::PrintLog(Text, __VA_ARGS__);\
-
-#define GS_LOG_ERROR(Text, ...)		Logger::SetLogTextColor(Red);\
-									Logger::PrintLog(Text, __VA_ARGS__);\
-									
-#else
-	#define GS_LOG_SUCCESS(Text, ...)
-	#define GS_LOG_MESSAGE(Text, ...)
-	#define GS_LOG_WARNING(Text, ...)
-	#define GS_LOG_ERROR(Text, ...)
-#endif
-
+	static void SetTextColorOnLogLevel(LogLevel _Level);
 public:
-	static void PrintLog(const char * Text, ...);
-	static void SetLogTextColor(LogColors Color);
-private:
+	static void PrintLog(LogLevel _Level, const char * Text, ...);
+	static void SetMinLogLevel(LogLevel _Level) { MinLogLevel = _Level; }
 
+#ifdef GS_DEBUG
+
+#define GS_LOG_SUCCESS(Text, ...)	Logger::PrintLog(LogLevel::SUCCESS, Text, __VA_ARGS__);\
+
+#define GS_LOG_MESSAGE(Text, ...)	Logger::PrintLog(LogLevel::MESSAGE, Text, __VA_ARGS__);\
+
+#define GS_LOG_WARNING(Text, ...)	Logger::PrintLog(LogLevel::WARNING, Text, __VA_ARGS__);\
+
+#define GS_LOG_ERROR(Text, ...)		Logger::PrintLog(LogLevel::ERROR, Text, __VA_ARGS__);\
+
+#define GS_LOG_LEVEL(_Level)		Logger::SetMinLogLevel(_Level);
+
+#else
+
+#define GS_LOG_SUCCESS(Text, ...)
+#define GS_LOG_MESSAGE(Text, ...)
+#define GS_LOG_WARNING(Text, ...)
+#define GS_LOG_ERROR(Text, ...)
+#define GS_LOG_LEVEL(_Level)
+
+#endif
 };
+

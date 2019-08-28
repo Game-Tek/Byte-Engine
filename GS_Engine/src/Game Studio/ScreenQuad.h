@@ -8,10 +8,7 @@ GS_STRUCT ScreenQuad
 {
 	ScreenQuad() = default;
 
-	Vertex2D Vertices[4] = { { {  1.0f,  1.0f }, { 1.0f, 1.0f } },
-										  { {  1.0f, -1.0f }, { 1.0f, 0.0f } },
-										  { { -1.0f, -1.0f }, { 0.0f, 0.0f } },
-										  { { -1.0f,  1.0f }, { 0.0f, 1.0f } } };
+	Vertex2D Vertices[4] = { { {-0.5f, -0.5f}, { 1.0f, 1.0f } }, { {0.5f, -0.5f}, { 1.0f, 0.0f } }, { {0.5f, 0.5f}, { 0.0f, 0.0f } }, { {-0.5f, 0.5f}, { 0.0f, 1.0f } } };
 
 	Index Indices[6] = { 0, 1, 2, 2, 3, 0 };
 

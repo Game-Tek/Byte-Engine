@@ -10,6 +10,10 @@ class Vk_Device;
 
 GS_STRUCT VulkanObjectCreateInfo
 {
+	VulkanObjectCreateInfo(const Vk_Device& _Device) : m_Device(_Device)
+	{
+	}
+
 	const Vk_Device& m_Device;
 };
 

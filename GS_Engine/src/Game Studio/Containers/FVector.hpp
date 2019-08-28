@@ -20,6 +20,15 @@ private:
 
 public:
 
+	static void DestroyFVectorOfPointers(const FVector<T>& _Vector)
+	{
+		for (LT i = 0; i < _Vector.Length; ++i)
+		{
+			delete _Vector.Data[i];
+		}
+	}
+
+
 	[[nodiscard]] iterator begin() const
 	{
 		return &(this->Data[0]);

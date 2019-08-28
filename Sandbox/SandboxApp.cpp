@@ -5,6 +5,8 @@
 #include <Game Studio/Containers/FVector.hpp>
 #include <Game Studio/ScreenQuad.h>
 #include <string>
+#include <iostream>
+#include <Game Studio/Logger.h>
 
 class Framebuffer;
 
@@ -13,8 +15,16 @@ class Sandbox final : public GS::Application
 public:
 	Sandbox()
 	{
+		WindowCreateInfo WCI;
+		WCI.Extent = {1280, 720 };
+		WCI.Name = "Game Studio!";
+		WCI.WindowType = WindowFit::NORMAL;
+		Win = Window::CreateGSWindow(WCI);
+
+		SetActiveWindow(Win);
+
 		RenderContextCreateInfo RCCI;
-		RCCI.Window = GS::Application::GetWindow();
+		RCCI.Window = Win;
 		RC = Renderer::GetRenderer()->CreateRenderContext(RCCI);
 		
 		auto SCImages = RC->GetSwapchainImages(); 
@@ -37,12 +47,11 @@ public:
 		SubPassDescriptor SPD;
 		AttachmentReference SubPassWriteAttachmentReference;
 		AttachmentReference SubPassReadAttachmentReference;
-		AttachmentReference SubPassPreserveAttachmentReference;
 
 		SIAD.AttachmentImage = SCImages[0];
 		SIAD.InitialLayout = ImageLayout::UNDEFINED;
 		SIAD.FinalLayout = ImageLayout::PRESENTATION;
-		SIAD.StoreOperation = StoreOperations::UNDEFINED;
+		SIAD.StoreOperation = StoreOperations::STORE;
 		SIAD.LoadOperation = LoadOperations::CLEAR;
 
 		SubPassWriteAttachmentReference.Layout = ImageLayout::COLOR_ATTACHMENT;
@@ -74,7 +83,7 @@ public:
 		void main()
 		{
 			tPos = vec4(inPos, 0.0, 1.0);
-			gl_Position = vec4(inPos, 0.0, 1.0);
+			gl_Position = vec4(inPos.x, -inPos.y, 0.0, 1.0);
 		})";
 		FString VSC(VertexShaderCode);
 		VS.ShaderCode = VSC;
@@ -98,9 +107,9 @@ public:
 		
 		GraphicsPipelineCreateInfo GPCI;
 		GPCI.RenderPass = RP;
-		GPCI.Stages.VertexShader = &VS;
-		GPCI.Stages.FragmentShader = &FS;
-		GPCI.SwapchainSize = GetWindow()->GetWindowExtent();
+		GPCI.PipelineDescriptor.Stages.VertexShader = &VS;
+		GPCI.PipelineDescriptor.Stages.FragmentShader = &FS;
+		GPCI.SwapchainSize = Win->GetWindowExtent();
 		GPCI.VDescriptor = &Vertex2D::Descriptor;
 		GP = Renderer::GetRenderer()->CreateGraphicsPipeline(GPCI);
 		
@@ -109,7 +118,7 @@ public:
 		{
 			FramebufferCreateInfo FBCI;
 			FBCI.RenderPass = RP;
-			FBCI.Extent = GetWindow()->GetWindowExtent();
+			FBCI.Extent = Win->GetWindowExtent();
 			FBCI.Images = DArray<Image*>(&SCImages[i], 1);
 			Framebuffers[i] = Renderer::GetRenderer()->CreateFramebuffer(FBCI);
 		}
@@ -122,7 +131,9 @@ public:
 		MCI.VertexLayout = &Vertex2D::Descriptor;
 		M = Renderer::GetRenderer()->CreateMesh(MCI);
 
-
+		GS_LOG_SUCCESS("Worked. Time: %d", GetClock().GetGameTicks())
+		GS_LOG_WARNING("Shit!")
+		GS_LOG_ERROR("Oh no!")
 	}
 
 	void Update() final override
@@ -141,7 +152,6 @@ public:
 		DrawInfo DI;
 		DI.IndexCount = MyQuad.IndexCount;
 		DI.InstanceCount = 1;
-		
 		RC->DrawIndexed(DI);
 		
 		RC->EndRenderPass(RP);
@@ -151,6 +161,10 @@ public:
 		RC->AcquireNextImage();
 		RC->Flush();
 		RC->Present();
+
+		//GS_LOG_MESSAGE("FPS: %d", Clock::SecondsToFPS(GetClock().GetDeltaTime()))
+
+		GS_LOG_MESSAGE("%d", GetInputManager().GetJoystickState(0).IsRightHomeButtonPressed)
 	}
 
 	~Sandbox()
@@ -167,6 +181,7 @@ public:
 	Mesh* M;
 	FVector<Framebuffer*> Framebuffers;
 	ScreenQuad MyQuad = {};
+	Window* Win = nullptr;
 };
 
 GS::Application	* GS::CreateApplication()

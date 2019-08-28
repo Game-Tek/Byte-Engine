@@ -33,7 +33,7 @@ Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)
 
 GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
-	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.Stages, *_GPCI.VDescriptor);
+	return new VulkanGraphicsPipeline(Device, _GPCI.RenderPass, _GPCI.SwapchainSize, _GPCI.PipelineDescriptor, *_GPCI.VDescriptor);
 }
 
 RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)

@@ -80,13 +80,14 @@ public:
 	//  COMPUTE COMMANDS
 	
 	//Adds a Dispatch command to the buffer.
-	virtual void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) = 0;
 	virtual void Dispatch(const Extent3D& _WorkGroups) = 0;
 
 	//  RENDER PASS COMMANDS
 	
 	//Adds a BeginRenderPass command to the buffer.
 	virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
+	//Adds a AdvanceSubPass command to the command buffer.
+	virtual void AdvanceSubPass() = 0;
 	//Adds a EndRenderPass command to the buffer.
 	virtual void EndRenderPass(RenderPass* _RP) = 0;
 

@@ -50,13 +50,12 @@ VkSwapchainCreateInfoKHR Vk_Swapchain::CreateSwapchainCreateInfo(const Vk_Surfac
 	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 
 	SwapchainCreateInfo.surface = _Surface;
-	SwapchainCreateInfo.minImageCount = 4;
+	SwapchainCreateInfo.minImageCount = 2;
 	SwapchainCreateInfo.imageFormat = _SurfaceFormat;
 	SwapchainCreateInfo.imageColorSpace = _SurfaceColorSpace;
 	SwapchainCreateInfo.imageExtent = _SurfaceExtent;
 	//The imageArrayLayers specifies the amount of layers each image consists of. This is always 1 unless you are developing a stereoscopic 3D application.
 	SwapchainCreateInfo.imageArrayLayers = 1;
-	//Should be VK_IMAGE_USAGE_TRANSFER_DST_BIT
 	SwapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	SwapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	SwapchainCreateInfo.queueFamilyIndexCount = 0;

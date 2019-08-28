@@ -29,14 +29,8 @@ SurfaceFormat VulkanRenderContext::FindFormat(const Vk_PhysicalDevice& _PD, VkSu
 {
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
-	FVector<VkSurfaceFormatKHR> SurfaceFormats(FormatsCount);
+	DArray<VkSurfaceFormatKHR> SurfaceFormats(FormatsCount);
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, SurfaceFormats.data());
-
-	//uint8 i = 0;
-	//if (SurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && SurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
-	//{
-	//	return SurfaceFormats[i].format;
-	//}
 
 	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
 }
@@ -45,12 +39,12 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const Vk_PhysicalDevice& _
 {
 	uint32_t PresentModesCount = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, nullptr);
-	FVector<VkPresentModeKHR> PresentModes(PresentModesCount);
+	DArray<VkPresentModeKHR> PresentModes(PresentModesCount);
 	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, PresentModes.data());
 
 	uint8 BestScore = 0;
 	uint8 BestPresentModeIndex = 0;
-	for (uint8 i = 0; i < PresentModesCount; i++)
+	for (uint8 i = 0; i < PresentModes.length(); i++)
 	{
 		if (ScorePresentMode(PresentModes[i]) > BestScore)
 		{
@@ -99,8 +93,9 @@ VulkanRenderContext::~VulkanRenderContext()
 		delete RendersFinished[i];
 		delete InFlightFences[i];
 		delete CommandBuffers[i];
-		delete Images[i];
 	}
+
+	FVector<VulkanSwapchainImage*>::DestroyFVectorOfPointers(Images);
 }
 
 void VulkanRenderContext::OnResize()
@@ -184,7 +179,7 @@ void VulkanRenderContext::EndRecording()
 
 void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 {
-	VkClearValue ClearColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+	VkClearValue ClearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVk_RenderPass();
@@ -195,6 +190,11 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
 
 	vkCmdBeginRenderPass(*CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VulkanRenderContext::AdvanceSubPass()
+{
+	vkCmdNextSubpass(*CommandBuffers[CurrentImage], VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
@@ -223,11 +223,6 @@ void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
 {
 	vkCmdDrawIndexed(*CommandBuffers[CurrentImage], _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
-}
-
-void VulkanRenderContext::Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ)
-{
-	vkCmdDispatch(*CommandBuffers[CurrentImage], _WorkGroupsX, _WorkGroupsY, _WorkGroupsZ);
 }
 
 void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)

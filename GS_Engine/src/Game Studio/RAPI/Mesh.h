@@ -2,13 +2,18 @@
 
 #include "Core.h"
 
-#include "Containers/FVector.hpp"
-
 #include "RenderCore.h"
+#include "Containers/DArray.hpp"
+
+GS_STRUCT VertexElement
+{
+	ShaderDataTypes DataType;
+	uint8 Size;
+};
 
 GS_CLASS VertexDescriptor
 {
-	FVector<ShaderDataTypes> Elements;
+	DArray<VertexElement> Elements;
 
 	//Size in bytes this vertex takes up.
 	uint8 Size = 0;
@@ -32,16 +37,15 @@ GS_CLASS VertexDescriptor
 		}
 	}
 public:
-	VertexDescriptor(const FVector<ShaderDataTypes>& _Elements) : Elements(_Elements)
+	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.length())
 	{
-		for (auto& Element : Elements)
+		for (uint8 i = 0; i < Elements.length(); ++i)
 		{
-			Size += ShaderDataTypesSize(Element);
+			Elements[i].Size = ShaderDataTypesSize(_Elements[i]);
+			Elements[i].DataType = _Elements[i];
+			Size += Elements[i].Size;
 		}
 	}
-
-
-	void AddElement(const ShaderDataTypes & _Element);
 
 	[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const 
 	{
@@ -49,13 +53,13 @@ public:
 
 		for (uint8 i = 0; i < _Index; ++i)
 		{
-			Offset += ShaderDataTypesSize(Elements[i]);
+			Offset += Elements[i].Size;
 		}
 
 		return Offset;
 	}
 
-	[[nodiscard]] ShaderDataTypes GetAttribute(uint8 _I) const { return Elements[_I]; }
+	[[nodiscard]] ShaderDataTypes GetAttribute(uint8 _I) const { return Elements[_I].DataType; }
 
 	//Returns the size in bytes this vertex takes up.
 	[[nodiscard]] uint8 GetSize() const { return Size; }

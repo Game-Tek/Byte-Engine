@@ -4,7 +4,6 @@
 
 #include "RenderCore.h"
 #include "Image.h"
-#include "Containers/DArray.hpp"
 #include "Containers/Array.hpp"
 
 #define ATTACHMENT_UNUSED 255

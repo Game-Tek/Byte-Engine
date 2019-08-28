@@ -53,12 +53,14 @@ void Clock::OnUpdate()
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	SystemTicks = WinProcessorTicks.QuadPart;
 
-	//Update elpased time counter.
+	//Update elapsed time counter.
 	ElapsedTime += DeltaTime;
 
 	//Update elapsed game time counter.
 	ElapsedGameTime += GetGameDeltaTime();
 #endif
+
+	++GameTicks;
 
 	return;
 }
@@ -75,12 +77,12 @@ float Clock::GetGameDeltaTime() const
 	return DeltaTime * TimeDivisor * ShouldUpdateGameTime;
 }
 
-float Clock::GetElapsedTime() const
+double Clock::GetElapsedTime() const
 {
-	return (SystemTicks - StartSystemTicks) / static_cast<float>(ProcessorFrequency);
+	return (SystemTicks - StartSystemTicks) / static_cast<double>(ProcessorFrequency);
 }
 
-float Clock::GetElapsedGameTime() const
+double Clock::GetElapsedGameTime() const
 {
 	return ElapsedGameTime;
 }
@@ -127,7 +129,7 @@ Days Clock::GetDayOfWeek()
 
 	GetLocalTime(& WinTimeStructure);
 
-	return (WinTimeStructure.wDayOfWeek == 0) ? Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
+	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
 #endif
 }
 
@@ -140,20 +142,4 @@ Time Clock::GetTime()
 	
 	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
 #endif
-}
-
-//CLOCK FUNCTIONALITY
-
-void Clock::SetTimeDilation(const float Dilation)
-{
-	TimeDivisor = Dilation;
-
-	return;
-}
-
-void Clock::SetIsPaused(const bool IsPaused)
-{
-	ShouldUpdateGameTime = IsPaused;
-	
-	return;
 }

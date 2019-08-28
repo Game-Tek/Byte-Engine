@@ -61,4 +61,4 @@ typedef double real;
 #define RCAST(to, from) reinterpret_cast<to>(from)
 #define CCAST(to, from) const_cast<to>(from)
 
-#define MAX 0xffffffffffffffff
+#define uint64MAX 0xffffffffffffffff

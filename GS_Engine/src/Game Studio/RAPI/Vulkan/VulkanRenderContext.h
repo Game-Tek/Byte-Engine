@@ -68,12 +68,12 @@ public:
 	void BeginRecording() final override;
 	void EndRecording() final override;
 	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;
+	void AdvanceSubPass() override;
 	void EndRenderPass(RenderPass* _RP) final override;
 	void BindMesh(Mesh* _Mesh) final override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
 	void BindComputePipeline(ComputePipeline* _CP) final override;
 	void DrawIndexed(const DrawInfo& _DI) final override;
-	void Dispatch(uint32 _WorkGroupsX, uint32 _WorkGroupsY, uint32 _WorkGroupsZ) final override;
 	void Dispatch(const Extent3D& _WorkGroups) final override;
 
 	[[nodiscard]] FVector<Image*> GetSwapchainImages() const final override;

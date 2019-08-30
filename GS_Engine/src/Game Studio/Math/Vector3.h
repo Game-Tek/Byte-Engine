@@ -2,10 +2,11 @@
 
 #include "Core.h"
 
+#include "Object.h"
+
 //Used to specify a location in 3D space with floating point precision.
-GS_CLASS Vector3
+GS_STRUCT Vector3
 {
-public:
 	//X component of this vector.
 	float X = 0.0f;
 
@@ -21,9 +22,7 @@ public:
 	{
 	}
 
-	Vector3(const Vector3 & Other) : X(Other.X), Y(Other.Y), Z(Other.Z)
-	{
-	}
+	Vector3(const Vector3& _Other) = default;
 
 	~Vector3() = default;
 

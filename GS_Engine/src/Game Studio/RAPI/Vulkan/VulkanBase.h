@@ -6,23 +6,32 @@
 
 #define VK_NULL_HANDLE 0
 
-class Vk_Device;
+class VKDevice;
 
-GS_STRUCT VulkanObjectCreateInfo
+template<typename T>
+GS_STRUCT VKObjectCreator
 {
-	VulkanObjectCreateInfo(const Vk_Device& _Device) : m_Device(_Device)
+	VKObjectCreator(const VKDevice& _Device) : m_Device(_Device)
 	{
 	}
 
-	const Vk_Device& m_Device;
+	const VKDevice& m_Device;
+	T Handle = VK_NULL_HANDLE;
 };
 
-GS_CLASS VulkanObject
+template <typename T>
+GS_CLASS VKObject
 {
 protected:
-	const Vk_Device& m_Device;
+	const VKDevice& m_Device;
+	T Handle = VK_NULL_HANDLE;
+
 public:
-	explicit VulkanObject(const Vk_Device& _Device) : m_Device(_Device)
+	explicit VKObject(const VKObjectCreator<T>& _VKOC) : m_Device(_VKOC), Handle(_VKOC.Handle)
 	{
 	}
+
+	INLINE T GetHandle() const { return Handle; }
+
+	INLINE operator T() { return Handle; }
 };

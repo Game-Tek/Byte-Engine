@@ -5,10 +5,10 @@
 #include "Object.h"
 
 #include "Math\Vector2.h"
-#include "InputEnums.h"
 #include "Containers/Array.hpp"
 #include "JoystickState.h"
-#include "MouseState.h"
+#include "Input/MouseState.h"
+#include "Input/InputEnums.h"
 
 class Window;
 
@@ -45,5 +45,6 @@ public:
 
 	void OnUpdate() override;
 
+	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
 };
 

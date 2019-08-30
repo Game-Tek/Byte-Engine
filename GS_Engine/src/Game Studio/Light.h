@@ -9,8 +9,8 @@
 GS_CLASS Light : public WorldObject
 {
 public:
-	Light();
-	~Light();
+	Light() = default;
+	~Light() = default;
 
 	//Returns the value of lumens for this light.
 	float GetLumens() const { return Lumens; }

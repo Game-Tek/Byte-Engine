@@ -8,10 +8,10 @@
 
 #include "VulkanFramebuffer.h"
 #include "VulkanRenderContext.h"
-#include "Native/Vk_Instance.h"
-#include "Native/Vk_Device.h"
-#include "Native/Vk_CommandPool.h"
-#include "Native/Vk_PhysicalDevice.h"
+#include "Native/VKInstance.h"
+#include "Native/VKDevice.h"
+#include "Native/VKCommandPool.h"
+#include "Native/vkPhysicalDevice.h"
 
 MAKE_VK_HANDLE(VkPhysicalDevice)
 struct VkDeviceQueueCreateInfo;
@@ -20,11 +20,11 @@ enum VkPhysicalDeviceType;
 
 GS_CLASS VulkanRenderer final : public Renderer
 {
-	Vk_Instance Instance;
-	Vk_PhysicalDevice PhysicalDevice;
-	Vk_Device Device;
+	VKInstance Instance;
+	vkPhysicalDevice PhysicalDevice;
+	VKDevice Device;
 
-	Vk_CommandPool TransientCommandPool;
+	VKCommandPool TransientCommandPool;
 public:
 	VulkanRenderer();
 	~VulkanRenderer();
@@ -37,7 +37,7 @@ public:
 	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) final override;
 
-	INLINE const Vk_Device& GetVulkanDevice() const { return Device; }
+	INLINE const VKDevice& GetVulkanDevice() const { return Device; }
 };
 
 #define VKRAPI SCAST(VulkanRenderer*, Renderer::GetRenderer())

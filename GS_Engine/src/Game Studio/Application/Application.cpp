@@ -22,7 +22,7 @@ namespace GS
 
 			ActiveWindow->Update();
 
-			Update();
+			OnUpdate();
 		}
 	}
 

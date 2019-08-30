@@ -11,6 +11,7 @@ template <typename T, typename LT = size_t>
 class GS_EXPORT_ONLY FVector
 {
 	typedef T* iterator;
+	typedef const T* const_iterator;
 
 private:
 	LT Length = 0;
@@ -75,6 +76,11 @@ public:
 		{
 			memcpy(&this->Data[i], &_obj, sizeof(T));
 		}
+	}
+
+	FVector(const_iterator _start, const_iterator _end) : Capacity(_end - _start), Length(_end - _start), Data(allocate(this->Capacity))
+	{
+		copyarray(_start, this->Data);
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.

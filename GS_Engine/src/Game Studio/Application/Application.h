@@ -8,7 +8,7 @@
 
 namespace GS
 {
-	GS_CLASS Application
+	GS_CLASS Application : public Object
 	{
 	public:
 		Application();
@@ -16,7 +16,7 @@ namespace GS
 
 		void Run();
 
-		virtual void Update() = 0;
+		const char* GetName() const override { return "Application"; }
 
 		static Application * Get() { return ApplicationInstance; }
 

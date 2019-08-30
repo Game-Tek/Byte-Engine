@@ -7,8 +7,8 @@
 
 #include "Math/Vector2.h"
 
-#include "../InputEnums.h"
-#include "MouseState.h"
+#include "Application/Input/InputEnums.h"
+#include "Application/Input/MouseState.h"
 #include "Containers/Array.hpp"
 #include "JoystickState.h"
 

@@ -1,10 +1,16 @@
 #include "FString.h"
+#include <cstdio>
+#include <stdarg.h>
 
 FString::FString() : Data(10)
 {
 }
 
 FString::FString(const char * In) : Data(const_cast<char *>(In), StringLength(In))
+{
+}
+
+FString::FString(size_t _Length) : Data(_Length)
 {
 }
 
@@ -103,4 +109,16 @@ size_t FString::StringLength(const char * In)
 
 	//We return Length + 1 to take into account for the null terminator character.
 	return Length + 1;
+}
+
+FString FString::MakeString(const char* _Text, ...)
+{
+	FString Return;
+
+	va_list vaargs;
+	va_start(vaargs, _Text);
+	snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs);
+	va_end(vaargs);
+
+	return Return;
 }

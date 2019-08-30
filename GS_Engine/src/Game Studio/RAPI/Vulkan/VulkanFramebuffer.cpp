@@ -5,7 +5,7 @@
 
 #include "VulkanImage.h"
 
-#include "Native/Vk_RenderPass.h"
+#include "Native/VKRenderPass.h"
 
 FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*>& _Images)
 {
@@ -19,7 +19,7 @@ FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*
 	return Result;
 }
 
-VulkanFramebuffer::VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
+VulkanFramebuffer::VulkanFramebuffer(const VKDevice& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
 	m_Framebuffer(_Device, _Extent, _RP->GetVk_RenderPass(), ImagesToVkImageViews(_Images))
 {
 

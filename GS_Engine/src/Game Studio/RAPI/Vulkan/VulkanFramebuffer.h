@@ -5,7 +5,7 @@
 #include "RAPI/Framebuffer.h"
 
 #include "Extent.h"
-#include "Native/Vk_Framebuffer.h"
+#include "Native/VKFramebuffer.h"
 #include "Containers/DArray.hpp"
 
 class VulkanRenderPass;
@@ -18,12 +18,12 @@ struct VkSubpassDescription;
 
 GS_CLASS VulkanFramebuffer final : public Framebuffer
 {
-	Vk_Framebuffer m_Framebuffer;
+	VKFramebuffer m_Framebuffer;
 
 	static FVector<VkImageView> ImagesToVkImageViews(const DArray<Image*>& _Images);
 public:
-	VulkanFramebuffer(const Vk_Device& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images);
+	VulkanFramebuffer(const VKDevice& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images);
 	~VulkanFramebuffer() = default;
 
-	INLINE const Vk_Framebuffer& GetVk_Framebuffer() const { return m_Framebuffer; }
+	INLINE const VKFramebuffer& GetVk_Framebuffer() const { return m_Framebuffer; }
 };

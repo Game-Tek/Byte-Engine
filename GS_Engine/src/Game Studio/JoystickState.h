@@ -11,7 +11,7 @@ GS_STRUCT JoystickState
 
 	bool IsUpFaceButtonPressed = false;
 	bool IsRightFaceButtonPressed = false;
-	bool IsBottomFaceButtonPressed = false;
+	bool IsDownFaceButtonPressed = false;
 	bool IsLeftFaceButtonPressed = false;
 
 	float RightTriggerDepth = 0.0f;
@@ -21,9 +21,9 @@ GS_STRUCT JoystickState
 
 	bool IsUpDPadButtonPressed = false;
 	bool IsRightDPadButtonPressed = false;
-	bool IsBottomDPadButtonPressed = false;
+	bool IsDownDPadButtonPressed = false;
 	bool IsLeftDPadButtonPressed = false;
 
-	bool IsRightHomeButtonPressed = false;
-	bool IsLeftHomeButtonPressed = false;
+	bool IsRightMenuButtonPressed = false;
+	bool IsLeftMenuButtonPressed = false;
 };

@@ -9,7 +9,7 @@
 #include "VulkanMesh.h"
 
 #include "RAPI/Window.h"
-#include "Native/Vk_PhysicalDevice.h"
+#include "Native/vkPhysicalDevice.h"
 
 
 //  VULKAN RENDER CONTEXT
@@ -25,7 +25,7 @@ uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 }
 
 
-SurfaceFormat VulkanRenderContext::FindFormat(const Vk_PhysicalDevice& _PD, VkSurfaceKHR _Surface)
+SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface)
 {
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
@@ -35,7 +35,7 @@ SurfaceFormat VulkanRenderContext::FindFormat(const Vk_PhysicalDevice& _PD, VkSu
 	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
 }
 
-VkPresentModeKHR VulkanRenderContext::FindPresentMode(const Vk_PhysicalDevice& _PD, const Vk_Surface& _Surface)
+VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface)
 {
 	uint32_t PresentModesCount = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface, &PresentModesCount, nullptr);
@@ -57,7 +57,7 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const Vk_PhysicalDevice& _
 	return PresentModes[BestPresentModeIndex];
 }
 
-VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD, const Window& _Window) :
+VulkanRenderContext::VulkanRenderContext(const VKDevice& _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window) :
 	RenderExtent(_Window.GetWindowExtent()),
 	Surface(_Device, _Instance, _PD, _Window),
 	Format(FindFormat(_PD, Surface)),
@@ -76,10 +76,10 @@ VulkanRenderContext::VulkanRenderContext(const Vk_Device& _Device, const Vk_Inst
 
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		ImagesAvailable.push_back(new Vk_Semaphore(_Device));
-		RendersFinished.push_back(new Vk_Semaphore(_Device));
-		InFlightFences.push_back(new Vk_Fence(_Device, true));
-		CommandBuffers.push_back(new Vk_CommandBuffer(_Device, CommandPool));
+		ImagesAvailable.push_back(new VKSemaphore(_Device));
+		RendersFinished.push_back(new VKSemaphore(_Device));
+		InFlightFences.push_back(new VKFence(_Device, true));
+		CommandBuffers.push_back(new VKCommandBuffer(_Device, CommandPool));
 
 		Images.push_back(new VulkanSwapchainImage(_Device, SwapchainImages[i], VkFormatToFormat(Format.format)));
 	}

@@ -7,8 +7,8 @@
 GS_CLASS PointLight : public Light
 {
 public:
-	PointLight();
-	~PointLight();
+	PointLight() = default;
+	~PointLight() = default;
 protected:
 };
 

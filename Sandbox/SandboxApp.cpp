@@ -7,6 +7,7 @@
 #include <string>
 #include <iostream>
 #include <Game Studio/Logger.h>
+#include <Game Studio/Delegate.h>
 
 class Framebuffer;
 
@@ -130,13 +131,9 @@ public:
 		MCI.IndexData = MyQuad.Indices;
 		MCI.VertexLayout = &Vertex2D::Descriptor;
 		M = Renderer::GetRenderer()->CreateMesh(MCI);
-
-		GS_LOG_SUCCESS("Worked. Time: %d", GetClock().GetGameTicks())
-		GS_LOG_WARNING("Shit!")
-		GS_LOG_ERROR("Oh no!")
 	}
 
-	void Update() final override
+	void OnUpdate() final override
 	{
 		RC->BeginRecording();
 		
@@ -161,10 +158,6 @@ public:
 		RC->AcquireNextImage();
 		RC->Flush();
 		RC->Present();
-
-		//GS_LOG_MESSAGE("FPS: %d", Clock::SecondsToFPS(GetClock().GetDeltaTime()))
-
-		GS_LOG_MESSAGE("%d", GetInputManager().GetJoystickState(0).IsRightHomeButtonPressed)
 	}
 
 	~Sandbox()

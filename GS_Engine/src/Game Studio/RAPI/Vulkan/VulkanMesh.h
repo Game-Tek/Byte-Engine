@@ -4,21 +4,21 @@
 
 #include "RAPI/Mesh.h"
 
-#include "Native/Vk_Buffer.h"
-#include "Native/Vk_Memory.h"
+#include "Native/VKBuffer.h"
+#include "Native/VKMemory.h"
 
-class Vk_Device;
+class VKDevice;
 
 GS_CLASS VulkanMesh final : public Mesh
 {
-	Vk_Buffer VertexBuffer;
-	Vk_Memory VBMemory;
-	Vk_Buffer IndexBuffer;
-	Vk_Memory IBMemory;
+	VKBuffer VertexBuffer;
+	VKMemory VBMemory;
+	VKBuffer IndexBuffer;
+	VKMemory IBMemory;
 public:
-	VulkanMesh(const Vk_Device& _Device, const Vk_CommandPool& _CP, void* _VertexData, size_t _VertexDataSize, uint16* _IndexData, uint16 _IndexCount);
+	VulkanMesh(const VKDevice& _Device, const VKCommandPool& _CP, void* _VertexData, size_t _VertexDataSize, uint16* _IndexData, uint16 _IndexCount);
 	~VulkanMesh() = default;
 
-	INLINE const Vk_Buffer& GetVertexBuffer() const { return VertexBuffer; }
-	INLINE const Vk_Buffer& GetIndexBuffer() const { return IndexBuffer; }
+	INLINE const VKBuffer& GetVertexBuffer() const { return VertexBuffer; }
+	INLINE const VKBuffer& GetIndexBuffer() const { return IndexBuffer; }
 };

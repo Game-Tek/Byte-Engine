@@ -5,17 +5,17 @@
 #include "RAPI/RenderContext.h"
 
 #include "Containers/FVector.hpp"
-#include "Native/Vk_Surface.h"
-#include "Native/Vk_Swapchain.h"
-#include "Native/Vk_CommandPool.h"
-#include "Native/Vk_CommandBuffer.h"
-#include "Native/Vk_Semaphore.h"
-#include "Native/Vk_Fence.h"
-#include "Native/Vk_Queue.h"
+#include "Native/VKSurface.h"
+#include "Native/VKSwapchain.h"
+#include "Native/VKCommandPool.h"
+#include "Native/VKCommandBuffer.h"
+#include "Native/VKSemaphore.h"
+#include "Native/VKFence.h"
+#include "Native/vkQueue.h"
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
 
-class Vk_Device;
+class VKDevice;
 
 enum VkPresentModeKHR;
 enum VkFormat;
@@ -33,31 +33,31 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 {
 	Extent2D RenderExtent;
 
-	Vk_Surface Surface;
+	VKSurface Surface;
 
 	SurfaceFormat Format;
 	VkPresentModeKHR PresentMode;
 
 
-	Vk_Swapchain Swapchain;
+	VKSwapchain Swapchain;
 	FVector<VkImage> SwapchainImages;
 	mutable FVector<VulkanSwapchainImage*> Images;
-	FVector<Vk_Semaphore*> ImagesAvailable;
-	FVector<Vk_Semaphore*> RendersFinished;
-	FVector<Vk_Fence*> InFlightFences;
+	FVector<VKSemaphore*> ImagesAvailable;
+	FVector<VKSemaphore*> RendersFinished;
+	FVector<VKFence*> InFlightFences;
 
-	Vk_Queue PresentationQueue;
+	vkQueue PresentationQueue;
 
-	Vk_CommandPool CommandPool;
+	VKCommandPool CommandPool;
 
-	FVector<Vk_CommandBuffer*> CommandBuffers;
+	FVector<VKCommandBuffer*> CommandBuffers;
 
 	uint8 ImageIndex = 0;
 
-	static SurfaceFormat FindFormat(const Vk_PhysicalDevice& _PD, VkSurfaceKHR _Surface);
-	static VkPresentModeKHR FindPresentMode(const Vk_PhysicalDevice& _PD, const Vk_Surface& _Surface);
+	static SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
+	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 public:
-	VulkanRenderContext(const Vk_Device& _Device, const Vk_Instance& _Instance, const Vk_PhysicalDevice& _PD, const Window& _Window);
+	VulkanRenderContext(const VKDevice& _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window);
 	~VulkanRenderContext();
 
 	void OnResize() final  override;

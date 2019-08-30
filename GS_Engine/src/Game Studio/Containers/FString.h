@@ -13,10 +13,12 @@ public:
 	//Constructs an FString from a C-FString.
 	explicit FString(const char * In);
 
-	FString(const FString & Other) = default;
+	explicit FString(size_t _Length);
 
 	//Constructs a FString from a non null terminated character array.
 	FString(const char * In, size_t Length);
+
+	FString(const FString & Other) = default;
 
 	~FString() = default;
 
@@ -54,4 +56,6 @@ public:
 
 private:
 	FVector<char> Data;
+
+	static FString MakeString(const char* _Text, ...);
 };

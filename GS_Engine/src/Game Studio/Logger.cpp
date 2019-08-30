@@ -8,15 +8,16 @@
 
 LogLevel Logger::MinLogLevel;
 
-void Logger::PrintLog(LogLevel _Level, const char* Text, ...)
+void Logger::PrintObjectLog(Object* _Obj, LogLevel _Level, const char* Text, ...)
 {
 	if(_Level >= MinLogLevel)
 	{
 		SetTextColorOnLogLevel(_Level);
 
-		const Time LogTime = GS::Application::Get()->GetClock().GetTime();
+		const Time LogTime = Clock::GetTime();
 
 		printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
+		printf("%s: ", _Obj->GetName());
 
 		va_list args;
 		va_start(args, Text);
@@ -55,4 +56,23 @@ void Logger::SetTextColorOnLogLevel(LogLevel _Level)
 
 	}
 	return;
+}
+
+void Logger::PrintBasicLog(LogLevel _Level, const char* Text, ...)
+{
+	if (_Level >= MinLogLevel)
+	{
+		SetTextColorOnLogLevel(_Level);
+
+		const Time LogTime = Clock::GetTime();
+
+		printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
+
+		va_list args;
+		va_start(args, Text);
+		vprintf(Text, args);
+		va_end(args);
+
+		printf("\n");
+	}
 }

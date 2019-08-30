@@ -9,9 +9,12 @@
 template <typename T, typename LT = uint8>
 class GS_EXPORT_ONLY DArray
 {
-	T* Data = nullptr;
+	typedef T* iterator;
+	typedef const T* const_iterator;
+
 	LT Capacity = 0;
 	LT Length = 0;
+	T* Data = nullptr;
 
 private:
 	static T* allocate(const LT _elements)
@@ -22,6 +25,11 @@ private:
 	void copyLength(const LT _elements, void* _from)
 	{
 		memcpy(this->Data, _from, sizeof(T) * _elements);
+	}
+
+	void copyToData(void* _from, size_t _size)
+	{
+		memcpy(this->Data, _from, _size);
 	}
 
 	void freeArray()
@@ -46,6 +54,11 @@ public:
 	DArray(T _Data[], const LT _Length) : Data(allocate(_Length)), Capacity(_Length), Length(_Length)
 	{
 		copyLength(_Length, _Data);
+	}
+
+	DArray(const_iterator _Start, const_iterator _End) : Capacity((_End - _Start) / sizeof(T)), Length(this->Capacity), Data(allocate(this->Capacity))
+	{
+		copyToData(_Start, _End - _Start);
 	}
 
 	DArray(const DArray<T>& _Other)

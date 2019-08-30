@@ -99,19 +99,19 @@ void WindowsWindow::Update()
 
 		JoystickStates[i].IsUpFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_Y];
 		JoystickStates[i].IsRightFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_B];
-		JoystickStates[i].IsBottomFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_A];
+		JoystickStates[i].IsDownFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_A];
 		JoystickStates[i].IsLeftFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_X];
 
 		JoystickStates[i].IsUpDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP];
 		JoystickStates[i].IsRightDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT];
-		JoystickStates[i].IsBottomDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN];
+		JoystickStates[i].IsDownDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN];
 		JoystickStates[i].IsLeftDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT];
 
 		JoystickStates[i].IsRightStickPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_THUMB];
 		JoystickStates[i].IsLeftStickPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_LEFT_THUMB];
 
-		JoystickStates[i].IsRightHomeButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_START];
-		JoystickStates[i].IsLeftHomeButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_BACK];
+		JoystickStates[i].IsRightMenuButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_START];
+		JoystickStates[i].IsLeftMenuButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_BACK];
 	}
 }
 

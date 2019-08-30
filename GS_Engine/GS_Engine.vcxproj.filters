@@ -108,12 +108,6 @@
     <ClInclude Include="src\Game Studio\Functor.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\TextureResource.h">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\StaticMeshResource.h">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Texture.h">
       <Filter>Engine\Render\Objects</Filter>
     </ClInclude>
@@ -125,7 +119,6 @@
       <Filter>Engine</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Camera.h" />
-    <ClInclude Include="src\Game Studio\Resource.h" />
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
@@ -187,7 +180,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Fence.h" />
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
     <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
@@ -198,29 +190,8 @@
       <Filter>Engine\Render\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Semaphore.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandBuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Queue.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandPool.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Device.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Instance.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Buffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Memory.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PhysicalDevice.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Fence.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Semaphore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ShaderModule.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Framebuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ImageView.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_RenderPass.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Image.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_GraphicsPipeline.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ComputePipeline.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PipelineLayout.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.h" />
     <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
@@ -228,19 +199,43 @@
     <ClInclude Include="src\Game Studio\Application\InputManager.h">
       <Filter>Engine\InputManager</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\MouseState.h" />
-    <ClInclude Include="src\Game Studio\JoystickState.h" />
     <ClInclude Include="src\Game Studio\FlipFlop.h" />
+    <ClInclude Include="src\Game Studio\Resources\Resource.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Resources\TextureResource.h">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
+    <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
+    <ClInclude Include="src\Game Studio\Delegate.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDespcriptorSet.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDevice.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\vkQueue.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKImage.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKSwapchain.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKSurface.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKShaderModule.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKFence.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKSemaphore.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKRenderPass.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKPipelineLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\vkPhysicalDevice.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKMemory.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKInstance.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKImageView.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKGraphicsPipeline.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKFramebuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKComputePipeline.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">
       <Filter>Engine\Clock</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\TextureResource.cpp">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\StaticMeshResource.cpp">
-      <Filter>Engine\Resource Manager\Resources</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Logger.cpp">
       <Filter>Engine\Log</Filter>
@@ -250,7 +245,6 @@
     <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
-    <ClCompile Include="src\Game Studio\InputEnums.h" />
     <ClCompile Include="src\Game Studio\Actor.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />
     <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
@@ -273,31 +267,38 @@
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandBuffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Queue.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_CommandPool.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Device.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Instance.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Buffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Memory.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PhysicalDevice.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Fence.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Semaphore.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ShaderModule.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Framebuffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_RenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Image.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ImageView.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_PipelineLayout.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_ComputePipeline.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_GraphicsPipeline.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Surface.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\Vk_Swapchain.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
     <ClCompile Include="src\Game Studio\Vertex.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Application\Input\InputEnums.h" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDevice.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\vkQueue.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKImage.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKSwapchain.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKSurface.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKShaderModule.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKFence.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKSemaphore.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKRenderPass.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKPipelineLayout.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\vkPhysicalDevice.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKMemory.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKInstance.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKImageView.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKGraphicsPipeline.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKFramebuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKComputePipeline.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

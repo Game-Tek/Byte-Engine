@@ -138,7 +138,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI;
 
-	//if (_SI.VertexShader)
+	//if (_PD.Stages.VertexShader)
 	//{
 	VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
 	VS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.VertexShader->Type);
@@ -146,7 +146,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
 
 	VkShaderModuleCreateInfo VkVertexShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-	VkVertexShaderModuleCreateInfo.codeSize = VertexShaderCode.size() * sizeof(uint32);
+	VkVertexShaderModuleCreateInfo.codeSize = VertexShaderCode.size();
 	VkVertexShaderModuleCreateInfo.pCode = VertexShaderCode.data();
 
 	auto vs = VKShaderModule(VKShaderModuleCreator(_Device, &VkVertexShaderModuleCreateInfo));
@@ -157,23 +157,23 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	PSSCI.push_back(VS);
 	//}
 
-	//if (_SI.FragmentShader)
+	//if (_PD.Stages.FragmentShader)
 	//{
-	VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-	FS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.FragmentShader->Type);
+		VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+		FS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.FragmentShader->Type);
 
-	auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
+		auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkShaderModuleCreateInfo VkFragmentShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-	VkFragmentShaderModuleCreateInfo.codeSize = FragmentShaderCode.size() * sizeof(uint32);
-	VkFragmentShaderModuleCreateInfo.pCode = FragmentShaderCode.data();
+		VkShaderModuleCreateInfo VkFragmentShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+		VkFragmentShaderModuleCreateInfo.codeSize = FragmentShaderCode.size();
+		VkFragmentShaderModuleCreateInfo.pCode = FragmentShaderCode.data();
 
-	auto fs = VKShaderModule(VKShaderModuleCreator(_Device, &VkFragmentShaderModuleCreateInfo));
+		auto fs = VKShaderModule(VKShaderModuleCreator(_Device, &VkFragmentShaderModuleCreateInfo));
 
-	FS.module = fs.GetHandle();
-	FS.pName = "main";
+		FS.module = fs.GetHandle();
+		FS.pName = "main";
 
-	PSSCI.push_back(FS);
+		PSSCI.push_back(FS);
 	//}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -61,7 +61,8 @@ public:
 
 	DArray(const_iterator _Start, const_iterator _End) : Capacity(_End - _Start), Length(this->Capacity), Data(allocate(this->Capacity))
 	{
-		copyToData(_Start, _End - _Start);
+		auto size = _End - _Start;
+		copyToData(_Start, (_End - _Start) * sizeof(T));
 	}
 
 	DArray(const DArray<T>& _Other)
@@ -134,4 +135,6 @@ public:
 
 	//Returns the size in bytes the currently allocated array takes up.
 	[[nodiscard]] size_t size() const { return this->Capacity * sizeof(T); }
+	//Returns the size in bytes the current length of the array takes up.
+	[[nodiscard]] size_t lengthSize() const { return this->Length * sizeof(T); }
 };

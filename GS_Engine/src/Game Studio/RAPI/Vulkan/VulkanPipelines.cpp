@@ -6,8 +6,9 @@
 #include "RAPI/Vulkan/Native/VKShaderModule.h"
 
 #include "VulkanRenderPass.h"
+#include "Logger.h"
 
-VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(const VKDevice& _Device, const VKPipelineLayout& _PL, const VKRenderPass& _RP, const Extent2D& _Extent, const VertexDescriptor& _VD, const PipelineDescriptor& _PD, VkPipeline _OldPipeline)
+VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const VKPipelineLayout& _PL, const VKRenderPass& _RP, const Extent2D& _Extent, const VertexDescriptor& _VD, const PipelineDescriptor& _PD, VkPipeline _OldPipeline)
 {
 	//  VERTEX INPUT STATE
 
@@ -141,39 +142,35 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	//{
 	VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
 	VS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.VertexShader->Type);
-	VKShaderModule VSSM(_Device, _PD.Stages.VertexShader->ShaderCode, VS.stage);
-	VS.module = VSSM;
+
+	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
+
+	VkShaderModuleCreateInfo VkVertexShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+	VkVertexShaderModuleCreateInfo.codeSize = VertexShaderCode.size() * sizeof(uint32);
+	VkVertexShaderModuleCreateInfo.pCode = VertexShaderCode.data();
+
+	auto vs = VKShaderModule(VKShaderModuleCreator(_Device, &VkVertexShaderModuleCreateInfo));
+
+	VS.module = vs.GetHandle();
 	VS.pName = "main";
 
 	PSSCI.push_back(VS);
 	//}
 
-	if (_PD.Stages.TessellationControlShader)
-	{
-		VkPipelineShaderStageCreateInfo TS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-		TS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.TessellationControlShader->Type);
-		TS.module = VKShaderModule(_Device, _PD.Stages.TessellationControlShader->ShaderCode, TS.stage);
-		TS.pName = "main";
-
-		PSSCI.push_back(TS);
-	}
-
-	if (_PD.Stages.GeometryShader)
-	{
-		VkPipelineShaderStageCreateInfo GS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-		GS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.GeometryShader->Type);
-		GS.module = VKShaderModule(_Device, _PD.Stages.GeometryShader->ShaderCode, GS.stage);
-		GS.pName = "main";
-
-		PSSCI.push_back(GS);
-	}
-
 	//if (_SI.FragmentShader)
 	//{
 	VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
 	FS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.FragmentShader->Type);
-	VKShaderModule FSSM(_Device, _PD.Stages.FragmentShader->ShaderCode, FS.stage);
-	FS.module = FSSM;
+
+	auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
+
+	VkShaderModuleCreateInfo VkFragmentShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+	VkFragmentShaderModuleCreateInfo.codeSize = FragmentShaderCode.size() * sizeof(uint32);
+	VkFragmentShaderModuleCreateInfo.pCode = FragmentShaderCode.data();
+
+	auto fs = VKShaderModule(VKShaderModuleCreator(_Device, &VkFragmentShaderModuleCreateInfo));
+
+	FS.module = fs.GetHandle();
 	FS.pName = "main";
 
 	PSSCI.push_back(FS);
@@ -194,8 +191,8 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	CreateInfo.pDepthStencilState = &DepthStencilState;
 	CreateInfo.pColorBlendState = &ColorBlendState;
 	CreateInfo.pDynamicState = nullptr;//&DynamicState;
-	CreateInfo.layout = _PL;
-	CreateInfo.renderPass = _RP;
+	CreateInfo.layout = _PL.GetHandle();
+	CreateInfo.renderPass = _RP.GetHandle();
 	CreateInfo.subpass = 0;
 	CreateInfo.basePipelineHandle = _OldPipeline; // Optional
 	CreateInfo.basePipelineIndex = _OldPipeline ? 0 : -1;
@@ -203,12 +200,14 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	return VKGraphicsPipelineCreator(_Device, &CreateInfo);
 }
 
-VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VKDevice& _Device, RenderPass* _RP, Extent2D _SwapchainSize, const PipelineDescriptor& _PD, const VertexDescriptor& _VD) :
-	Layout(_Device),
-	Pipeline(CreateVk_GraphicsPipelineCreator(_Device, Layout, SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass(), _SwapchainSize, _VD, _PD))
+VKPipelineLayoutCreator VulkanGraphicsPipeline::CreatePipelineLayout(VKDevice* _Device)
 {
+	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	return VKPipelineLayoutCreator(_Device, &PipelineLayoutCreateInfo);
 }
 
-VulkanComputePipeline::VulkanComputePipeline(const VKDevice& _Device) : ComputePipeline(_Device)
+VulkanGraphicsPipeline::VulkanGraphicsPipeline(VKDevice* _Device, RenderPass* _RP, Extent2D _SwapchainSize, const PipelineDescriptor& _PD, const VertexDescriptor& _VD) :
+	Layout(CreatePipelineLayout(_Device)),
+	Pipeline(CreateVk_GraphicsPipelineCreator(_Device, Layout, SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass(), _SwapchainSize, _VD, _PD))
 {
 }

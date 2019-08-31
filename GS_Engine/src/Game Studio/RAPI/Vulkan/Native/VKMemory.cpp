@@ -11,6 +11,10 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
+VKMemoryCreator::VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo* _VkMAI) : VKObjectCreator<VkDeviceMemory>(_Device)
+{
+	GS_VK_CHECK(vkAllocateMemory(m_Device->GetVkDevice(), _VkMAI, ALLOCATOR, &Handle), "Failed to allocate memory!")
+}
 
 void VKMemory::CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP, const vkQueue& _Queue, size_t _Size) const
 {
@@ -41,29 +45,24 @@ void VKMemory::CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuff
 
 void VKMemory::BindBufferMemory(const VKBuffer& _Buffer) const
 {
-	vkBindBufferMemory(m_Device, _Buffer.GetHandle(), Handle, 0);
+	vkBindBufferMemory(m_Device->GetVkDevice(), _Buffer.GetHandle(), Handle, 0);
 }
 
 void VKMemory::BindImageMemory(const VKImage& _Image) const
 {
-	vkBindImageMemory(m_Device, _Image.GetHandle(), Handle, 0);
-}
-
-VKMemoryCreator::VKMemoryCreator(const VKDevice& _Device, const VkMemoryAllocateInfo* _VkMAI) : VKObjectCreator<VkDeviceMemory>(_Device)
-{
-	GS_VK_CHECK(vkAllocateMemory(m_Device, _VkMAI, ALLOCATOR, &Handle), "Failed to allocate memory!")
+	vkBindImageMemory(m_Device->GetVkDevice(), _Image.GetHandle(), Handle, 0);
 }
 
 VKMemory::~VKMemory()
 {
-	vkFreeMemory(m_Device, Handle, ALLOCATOR);
+	vkFreeMemory(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
 void* VKMemory::CopyToMappedMemory(void* _Data, size_t _Size) const
 {
 	void* data = nullptr;
-	vkMapMemory(m_Device, Handle, 0, _Size, 0, &data);
+	vkMapMemory(m_Device->GetVkDevice(), Handle, 0, _Size, 0, &data);
 	memcpy(data, _Data, _Size);
-	vkUnmapMemory(m_Device, Handle);
+	vkUnmapMemory(m_Device->GetVkDevice(), Handle);
 	return data;
 }

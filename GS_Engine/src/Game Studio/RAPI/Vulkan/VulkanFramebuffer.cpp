@@ -1,11 +1,12 @@
 #include "VulkanFramebuffer.h"
 
+#include "Vulkan.h"
+
 #include "VulkanRenderPass.h"
+
 #include "RAPI/Image.h"
 
 #include "VulkanImage.h"
-
-#include "Native/VKRenderPass.h"
 
 FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*>& _Images)
 {
@@ -13,14 +14,29 @@ FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*
 
 	for (uint8 i = 0; i < Result.capacity(); ++i)
 	{
-		Result.push_back(SCAST(VulkanImageBase*, _Images[i])->GetVk_ImageView());
+		Result.push_back(SCAST(VulkanImageBase*, _Images[i])->GetVKImageView().GetHandle());
 	}
 
 	return Result;
 }
 
-VulkanFramebuffer::VulkanFramebuffer(const VKDevice& _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
-	m_Framebuffer(_Device, _Extent, _RP->GetVk_RenderPass(), ImagesToVkImageViews(_Images))
+VKFramebufferCreator VulkanFramebuffer::CreateFramebufferCreator(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images)
+{
+	auto t = ImagesToVkImageViews(_Images);
+
+	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+	FramebufferCreateInfo.attachmentCount = _Images.length();
+	FramebufferCreateInfo.width = _Extent.Width;
+	FramebufferCreateInfo.height = _Extent.Height;
+	FramebufferCreateInfo.layers = 1;
+	FramebufferCreateInfo.renderPass = _RP->GetVk_RenderPass().GetHandle();
+	FramebufferCreateInfo.pAttachments = t.data();
+
+	return VKFramebufferCreator(_Device, &FramebufferCreateInfo);
+}
+
+VulkanFramebuffer::VulkanFramebuffer(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
+	m_Framebuffer(CreateFramebufferCreator(_Device, _RP, _Extent, _Images))
 {
 
 }

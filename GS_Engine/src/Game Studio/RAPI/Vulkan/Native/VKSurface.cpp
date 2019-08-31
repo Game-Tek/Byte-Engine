@@ -6,7 +6,7 @@
 
 #include "VKDevice.h"
 
-VKSurfaceCreator::VKSurfaceCreator(const VKDevice& _Device, const VKInstance& _Instance, const Window& _Window) : VKObjectCreator<VkSurfaceKHR>(_Device), m_Instance(_Instance)
+VKSurfaceCreator::VKSurfaceCreator(VKDevice* _Device, const VKInstance& _Instance, const Window& _Window) : VKObjectCreator<VkSurfaceKHR>(_Device), m_Instance(_Instance)
 {
 	VkWin32SurfaceCreateInfoKHR WCreateInfo = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	WCreateInfo.hwnd = SCAST(WindowsWindow&, CCAST(Window&, _Window)).GetWindowObject();

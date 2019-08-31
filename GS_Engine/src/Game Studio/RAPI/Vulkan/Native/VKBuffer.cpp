@@ -4,9 +4,9 @@
 
 #include "VKDevice.h"
 
-VKBufferCreator::VKBufferCreator(const VKDevice& _Device, const VkBufferCreateInfo* _VkBCI) : VKObjectCreator(_Device)
+VKBufferCreator::VKBufferCreator(VKDevice* _Device, const VkBufferCreateInfo* _VkBCI) : VKObjectCreator(_Device)
 {
-	GS_VK_CHECK(vkCreateBuffer(m_Device, _VkBCI, ALLOCATOR, &Handle), "Failed to allocate Buffer!")
+	GS_VK_CHECK(vkCreateBuffer(m_Device->GetVkDevice(), _VkBCI, ALLOCATOR, &Handle), "Failed to allocate Buffer!")
 }
 
 unsigned VKBuffer::BufferTypeToVkBufferUsageFlagBits(BufferType _BT)
@@ -23,12 +23,12 @@ unsigned VKBuffer::BufferTypeToVkBufferUsageFlagBits(BufferType _BT)
 
 VKBuffer::~VKBuffer()
 {
-	vkDestroyBuffer(m_Device, Handle, ALLOCATOR);
+	vkDestroyBuffer(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
 VkMemoryRequirements VKBuffer::GetMemoryRequirements() const
 {
 	VkMemoryRequirements MR;
-	vkGetBufferMemoryRequirements(m_Device, Handle, &MR);
+	vkGetBufferMemoryRequirements(m_Device->GetVkDevice(), Handle, &MR);
 	return MR;
 }

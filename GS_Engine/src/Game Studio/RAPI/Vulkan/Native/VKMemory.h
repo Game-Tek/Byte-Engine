@@ -15,7 +15,7 @@ struct VkMemoryAllocateInfo;
 
 GS_STRUCT VKMemoryCreator final : VKObjectCreator<VkDeviceMemory>
 {
-	VKMemoryCreator(const VKDevice & _Device, const VkMemoryAllocateInfo * _VkMAI);
+	VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo * _VkMAI);
 };
 
 GS_CLASS VKMemory final : public VKObject<VkDeviceMemory>

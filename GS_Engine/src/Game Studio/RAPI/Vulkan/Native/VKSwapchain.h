@@ -19,13 +19,11 @@ enum VkPresentModeKHR;
 
 GS_STRUCT VKSwapchainCreator final : VKObjectCreator<VkSwapchainKHR>
 {
-	VKSwapchainCreator(const VKDevice & _Device, const VkSwapchainCreateInfoKHR * _VkSCIKHR);
+	VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR * _VkSCIKHR);
 };
 
 GS_CLASS VKSwapchain final : public VKObject<VkSwapchainKHR>
 {
-	VkSwapchainKHR Swapchain = nullptr;
-
 	static VkSwapchainCreateInfoKHR CreateSwapchainCreateInfo(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain);
 public:
 	VKSwapchain(const VKSwapchainCreator& _VKSC) : VKObject<VkSwapchainKHR>(_VKSC)

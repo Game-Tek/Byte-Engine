@@ -3,6 +3,7 @@
 #include "Core.h"
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 
 #define DEF_VEC_SIZE 15
 #define EXTRA 5
@@ -129,6 +130,16 @@ public:
 		checkfornew(1);
 
 		memcpy(&this->Data[Length], &obj, sizeof(T));
+
+		this->Length += 1;
+	}
+
+	template<typename... Args>
+	void emplace_back(Args&&... _args)
+	{
+		checkfornew(1);
+
+		new (this->Data + this->Length) T(std::forward<Args>(_args) ...);
 
 		this->Length += 1;
 	}

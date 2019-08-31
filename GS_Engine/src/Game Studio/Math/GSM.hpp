@@ -91,6 +91,11 @@ private:
 	85.07289005, 85.11479743, 85.15599962, 85.19651424, 85.23635831 // ArcTan of 12
 	};
 
+	inline static uint8 RandUseCount = 0;
+	static constexpr uint32 RandTable[] = { 542909189, 241292975, 485392319, 280587594, 22564577, 131346666, 540115444, 163133756, 7684350, 906455780 };
+	inline static uint8 FloatRandUseCount = 0;
+	static constexpr float FloatRandTable[] = { 0.7406606394, 0.8370865161, 0.3390759540, 0.4997499184, 0.0598975500, 0.1089056913, 0.3401726208, 0.2333399466, 0.3234475486, 0.2359271793 };
+
 	INLINE static float Sin(const float Degrees)
 	{
 		const uint8 a = Floor(Degrees);
@@ -147,6 +152,33 @@ private:
 public:
 	static constexpr float PI = 3.1415926535f;
 	static constexpr float e = 2.718281828459045235360;
+
+	INLINE static int64 Random()
+	{
+		int64 ret = RandTable[RandUseCount];
+
+		ret = RandUseCount % 1 == 1 ? ret * -1 : ret;
+
+		RandUseCount = (RandUseCount + 1) % 10;
+
+		return ret;
+	}
+
+	INLINE static int64 Random(int64 _Min, int64 _Max)
+	{
+		return (Random() % _Min) % _Max;
+	}
+
+	INLINE static float fRandom()
+	{
+		float ret = FloatRandTable[FloatRandUseCount];
+
+		ret = FloatRandUseCount % 1 == 1 ? ret * -1 : ret;
+
+		RandUseCount = (RandUseCount + 1) % 10;
+
+		return ret;
+	}
 
 	//INLINE STATIC	
 

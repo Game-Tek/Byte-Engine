@@ -11,7 +11,7 @@ struct VkGraphicsPipelineCreateInfo;
 
 GS_STRUCT VKGraphicsPipelineCreator : VKObjectCreator<VkPipeline>
 {
-	VKGraphicsPipelineCreator(const VKDevice & _Device, const VkGraphicsPipelineCreateInfo * _VGPCI);
+	VKGraphicsPipelineCreator(VKDevice* _Device, const VkGraphicsPipelineCreateInfo * _VGPCI);
 };
 
 GS_CLASS VKGraphicsPipeline final : public VKObject<VkPipeline>

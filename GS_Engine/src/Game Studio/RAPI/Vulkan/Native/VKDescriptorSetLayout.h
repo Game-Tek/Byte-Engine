@@ -10,7 +10,7 @@ struct VkDescriptorSetLayoutCreateInfo;
 
 GS_STRUCT VKDescriptorSetLayoutCreator : VKObjectCreator<VkDescriptorSetLayout>
 {
-	VKDescriptorSetLayoutCreator(const VKDevice & _Device, const VkDescriptorSetLayoutCreateInfo * _VkDSLCI);
+	VKDescriptorSetLayoutCreator(VKDevice* _Device, const VkDescriptorSetLayoutCreateInfo * _VkDSLCI);
 };
 
 GS_CLASS VKDescriptorSetLayout final : public VKObject<VkDescriptorSetLayout>

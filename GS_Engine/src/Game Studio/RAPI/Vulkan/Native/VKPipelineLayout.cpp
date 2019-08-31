@@ -4,12 +4,12 @@
 
 #include "VKDevice.h"
 
-VKPipelineLayoutCreator::VKPipelineLayoutCreator(const VKDevice& _Device, const VkPipelineLayoutCreateInfo* _VkPLCI) : VKObjectCreator<VkPipelineLayout>(_Device)
+VKPipelineLayoutCreator::VKPipelineLayoutCreator(VKDevice* _Device, const VkPipelineLayoutCreateInfo* _VkPLCI) : VKObjectCreator<VkPipelineLayout>(_Device)
 {
-	GS_VK_CHECK(vkCreatePipelineLayout(m_Device, _VkPLCI, ALLOCATOR, &Handle), "Failed to create Pieline Layout!")
+	GS_VK_CHECK(vkCreatePipelineLayout(m_Device->GetVkDevice(), _VkPLCI, ALLOCATOR, &Handle), "Failed to create Pieline Layout!")
 }
 
 VKPipelineLayout::~VKPipelineLayout()
 {
-	vkDestroyPipelineLayout(m_Device, Handle, ALLOCATOR);
+	vkDestroyPipelineLayout(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }

@@ -28,7 +28,7 @@ public:
 		RCCI.Window = Win;
 		RC = Renderer::GetRenderer()->CreateRenderContext(RCCI);
 		
-		auto SCImages = RC->GetSwapchainImages(); 
+		auto SCImages = RC->GetSwapchainImages();
 		
 		//ImageCreateInfo CACI;
 		//CACI.Extent = GetWindow()->GetWindowExtent();
@@ -49,7 +49,7 @@ public:
 		AttachmentReference SubPassWriteAttachmentReference;
 		AttachmentReference SubPassReadAttachmentReference;
 
-		SIAD.AttachmentImage = SCImages[0];
+		SIAD.AttachmentImage = SCImages[0]; //Only first because it gets only properties, doesn't access actual data.
 		SIAD.InitialLayout = ImageLayout::UNDEFINED;
 		SIAD.FinalLayout = ImageLayout::PRESENTATION;
 		SIAD.StoreOperation = StoreOperations::STORE;

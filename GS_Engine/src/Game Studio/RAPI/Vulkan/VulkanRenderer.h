@@ -4,8 +4,6 @@
 
 #include "RAPI/Renderer.h"
 
-#include "VulkanBase.h"
-
 #include "VulkanFramebuffer.h"
 #include "VulkanRenderContext.h"
 #include "Native/VKInstance.h"
@@ -13,7 +11,6 @@
 #include "Native/VKCommandPool.h"
 #include "Native/vkPhysicalDevice.h"
 
-MAKE_VK_HANDLE(VkPhysicalDevice)
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
@@ -25,6 +22,8 @@ GS_CLASS VulkanRenderer final : public Renderer
 	VKDevice Device;
 
 	VKCommandPool TransientCommandPool;
+
+	VKCommandPoolCreator CreateCommandPool();
 public:
 	VulkanRenderer();
 	~VulkanRenderer();
@@ -39,5 +38,3 @@ public:
 
 	INLINE const VKDevice& GetVulkanDevice() const { return Device; }
 };
-
-#define VKRAPI SCAST(VulkanRenderer*, Renderer::GetRenderer())

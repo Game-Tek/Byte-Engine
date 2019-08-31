@@ -10,7 +10,7 @@ struct VkCommandPoolCreateInfo;
 
 GS_STRUCT VKCommandPoolCreator final : public VKObject<VkCommandPool>
 {
-	VKCommandPoolCreator(const VKDevice & _Device, const VkCommandPoolCreateInfo* _VkCPCI);
+	VKCommandPoolCreator(VKDevice* _Device, const VkCommandPoolCreateInfo* _VkCPCI);
 };
 
 struct VKCommandBufferCreator;
@@ -24,7 +24,7 @@ public:
 
 	~VKCommandPool();
 
-	VKCommandBufferCreator CreateCommandBuffer() const;
+	[[nodiscard]] VKCommandBufferCreator CreateCommandBuffer() const;
 
 	void Reset() const;
 };

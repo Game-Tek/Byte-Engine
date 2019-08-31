@@ -6,13 +6,15 @@
 #include "Containers/FString.h"
 #include "Containers/DArray.hpp"
 
+#include <vector>
+
 MAKE_VK_HANDLE(VkShaderModule)
 
 struct VkShaderModuleCreateInfo;
 
 GS_STRUCT VKShaderModuleCreator final : public VKObjectCreator<VkShaderModule>
 {
-	VKShaderModuleCreator(const VKDevice & _Device, const VkShaderModuleCreateInfo * _VkSMCI);
+	VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo * _VkSMCI);
 };
 
 GS_CLASS VKShaderModule final : public VKObject<VkShaderModule>
@@ -24,5 +26,5 @@ public:
 
 	~VKShaderModule();
 
-	static DArray<uint32> CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB);
+	static std::vector<uint32> CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB);
 };

@@ -299,6 +299,8 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKComputePipeline.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSet.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

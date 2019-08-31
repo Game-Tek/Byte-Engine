@@ -19,7 +19,9 @@ class GS_EXPORT_ONLY DArray
 private:
 	static T* allocate(const LT _elements)
 	{
+		//auto align = alignof(T);
 		return SCAST(T*, malloc(sizeof(T) * _elements));
+		//return SCAST(T*, _aligned_malloc(_elements * sizeof(T), alignof(T)));
 	}
 
 	void copyLength(const LT _elements, void* _from)
@@ -27,7 +29,7 @@ private:
 		memcpy(this->Data, _from, sizeof(T) * _elements);
 	}
 
-	void copyToData(void* _from, size_t _size)
+	void copyToData(const void* _from, size_t _size)
 	{
 		memcpy(this->Data, _from, _size);
 	}
@@ -35,6 +37,7 @@ private:
 	void freeArray()
 	{
 		free(this->Data);
+		//_aligned_free(this->Data);
 		this->Data = nullptr;
 		return;
 	}
@@ -56,7 +59,7 @@ public:
 		copyLength(_Length, _Data);
 	}
 
-	DArray(const_iterator _Start, const_iterator _End) : Capacity((_End - _Start) / sizeof(T)), Length(this->Capacity), Data(allocate(this->Capacity))
+	DArray(const_iterator _Start, const_iterator _End) : Capacity(_End - _Start), Length(this->Capacity), Data(allocate(this->Capacity))
 	{
 		copyToData(_Start, _End - _Start);
 	}
@@ -128,4 +131,7 @@ public:
 	{
 		return this->Capacity;
 	}
+
+	//Returns the size in bytes the currently allocated array takes up.
+	[[nodiscard]] size_t size() const { return this->Capacity * sizeof(T); }
 };

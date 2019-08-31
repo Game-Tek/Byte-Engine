@@ -10,17 +10,17 @@
 #include <vulkan/shaderc/shaderc.hpp>
 #include "Logger.h"
 
-VKShaderModuleCreator::VKShaderModuleCreator(const VKDevice& _Device, const VkShaderModuleCreateInfo* _VkSMCI) : VKObjectCreator<VkShaderModule>(_Device)
+VKShaderModuleCreator::VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo* _VkSMCI) : VKObjectCreator<VkShaderModule>(_Device)
 {
-	GS_VK_CHECK(vkCreateShaderModule(m_Device, _VkSMCI, ALLOCATOR, &Handle), "Failed to create Shader!")
+	GS_VK_CHECK(vkCreateShaderModule(m_Device->GetVkDevice(), _VkSMCI, ALLOCATOR, &Handle), "Failed to create Shader!")
 }
 
 VKShaderModule::~VKShaderModule()
 {
-	vkDestroyShaderModule(m_Device, Handle, ALLOCATOR);
+	vkDestroyShaderModule(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
-DArray<uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB)
+std::vector<uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB)
 {
 	shaderc_shader_kind Stage;
 
@@ -48,5 +48,5 @@ DArray<uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, const FS
 		GS_BASIC_LOG_ERROR("Failed to compile shader: %s. Errors: %s", _ShaderName.c_str(), Module.GetErrorMessage().c_str())
 	}
 
-	return DArray<uint32>(Module.cbegin(), Module.cend());
+	return std::vector<uint32>(Module.cbegin(), Module.cend());
 }

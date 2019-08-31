@@ -38,26 +38,29 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 	SurfaceFormat Format;
 	VkPresentModeKHR PresentMode;
 
-
 	VKSwapchain Swapchain;
 	FVector<VkImage> SwapchainImages;
 	mutable FVector<VulkanSwapchainImage*> Images;
-	FVector<VKSemaphore*> ImagesAvailable;
-	FVector<VKSemaphore*> RendersFinished;
-	FVector<VKFence*> InFlightFences;
+	FVector<VKSemaphore> ImagesAvailable;
+	FVector<VKSemaphore> RendersFinished;
+	FVector<VKFence> InFlightFences;
 
 	vkQueue PresentationQueue;
 
 	VKCommandPool CommandPool;
 
-	FVector<VKCommandBuffer*> CommandBuffers;
+	FVector<VKCommandBuffer> CommandBuffers;
 
 	uint8 ImageIndex = 0;
+
+	static VKSurfaceCreator CreateSurface(VKDevice* _Device, const VKInstance& _Instance, const Window& _Window);
+	VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
+	VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
 
 	static SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 public:
-	VulkanRenderContext(const VKDevice& _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window);
+	VulkanRenderContext(VKDevice* _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window);
 	~VulkanRenderContext();
 
 	void OnResize() final  override;

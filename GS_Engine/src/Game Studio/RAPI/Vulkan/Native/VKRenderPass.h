@@ -10,7 +10,7 @@ struct VkRenderPassCreateInfo;
 
 GS_STRUCT VKRenderPassCreator : VKObjectCreator<VkRenderPass>
 {
-	VKRenderPassCreator(const VKDevice& _Device, const VkRenderPassCreateInfo* _VkRPCI);
+	VKRenderPassCreator(VKDevice* _Device, const VkRenderPassCreateInfo* _VkRPCI);
 };
 
 GS_CLASS VKRenderPass final : public VKObject<VkRenderPass>

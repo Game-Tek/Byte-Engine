@@ -14,7 +14,7 @@ GS_STRUCT VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
 {
 	const VKInstance & m_Instance;
 
-	VKSurfaceCreator(const VKDevice & _Device, const VKInstance & _Instance, const Window & _Window);
+	VKSurfaceCreator(VKDevice* _Device, const VKInstance & _Instance, const Window & _Window);
 };
 
 GS_CLASS VKSurface final : public VKObject<VkSurfaceKHR>

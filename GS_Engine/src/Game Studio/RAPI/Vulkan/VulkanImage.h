@@ -6,12 +6,13 @@
 
 #include "Native/VKImageView.h"
 #include "Native/VKMemory.h"
+#include "Native/VKImage.h"
 
 GS_CLASS VulkanImageBase : public Image
 {
 public:
 	VulkanImageBase(const Extent2D _ImgExtent, const Format _ImgFormat, const ImageType _ImgType, const ImageDimensions _ID);
-	[[nodiscard]] virtual const VKImageView& GetVk_ImageView() const = 0;
+	[[nodiscard]] virtual const VKImageView& GetVKImageView() const = 0;
 };
 
 GS_CLASS VulkanImage final : public VulkanImageBase
@@ -20,10 +21,11 @@ GS_CLASS VulkanImage final : public VulkanImageBase
 	VKMemory ImageMemory;
 	VKImageView ImageView;
 
+	static VKImageCreator CreateVKImageCreator(VKDevice* _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse);
+	static VKMemoryCreator CreateVKMemoryCreator(VKDevice* _Device, const VKImage& _Image);
+	static VKImageViewCreator CreateVKImageViewCreator(VKDevice* _Device, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, const VKImage& _Image);
 public:
-	VulkanImage(const VKDevice& _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse);
+	VulkanImage(VKDevice* _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse);
 
-	INLINE VkImageView GetVkImageView() const { return ImageView; }
-
-	const VKImageView& GetVk_ImageView() const override { return ImageView; }
+	const VKImageView& GetVKImageView() const override { return ImageView; }
 };

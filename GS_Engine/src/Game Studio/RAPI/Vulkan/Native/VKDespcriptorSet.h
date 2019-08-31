@@ -10,7 +10,7 @@ struct VkDescriptorSetCreateInfo;
 
 GS_STRUCT VKDescriptorSetCreator : VKObjectCreator<VkDescriptorSet>
 {
-	VKDescriptorSetCreator(const VKDevice& _Device, const VkDescriptorSetCreateInfo* _VkDSCI);
+	VKDescriptorSetCreator(VKDevice* _Device, const VkDescriptorSetCreateInfo* _VkDSCI);
 };
 
 GS_CLASS VKDescriptorSet final : public VKObject<VkDescriptorSet>

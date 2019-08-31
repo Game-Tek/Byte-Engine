@@ -11,11 +11,11 @@ class VKDevice;
 template<typename T>
 GS_STRUCT VKObjectCreator
 {
-	VKObjectCreator(const VKDevice& _Device) : m_Device(_Device)
+	VKObjectCreator(VKDevice* _Device) : m_Device(_Device)
 	{
 	}
 
-	const VKDevice& m_Device;
+	VKDevice* m_Device;
 	T Handle = VK_NULL_HANDLE;
 };
 
@@ -23,15 +23,17 @@ template <typename T>
 GS_CLASS VKObject
 {
 protected:
-	const VKDevice& m_Device;
+	VKDevice* m_Device;
 	T Handle = VK_NULL_HANDLE;
 
 public:
-	explicit VKObject(const VKObjectCreator<T>& _VKOC) : m_Device(_VKOC), Handle(_VKOC.Handle)
+	explicit VKObject(const VKObjectCreator<T>& _VKOC) : m_Device(_VKOC.m_Device), Handle(_VKOC.Handle)
 	{
 	}
 
 	INLINE T GetHandle() const { return Handle; }
+
+	VKObject& operator=(const VKObject<T>& _Other) = default;
 
 	INLINE operator T() { return Handle; }
 };

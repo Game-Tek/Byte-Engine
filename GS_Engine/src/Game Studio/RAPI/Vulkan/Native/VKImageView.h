@@ -10,7 +10,7 @@ struct VkImageViewCreateInfo;
 
 GS_STRUCT VKImageViewCreator final : VKObjectCreator<VkImageView>
 {
-	VKImageViewCreator(const VKDevice & _Device, const VkImageViewCreateInfo * _VkIVCI);
+	VKImageViewCreator(VKDevice* _Device, const VkImageViewCreateInfo * _VkIVCI);
 };
 
 GS_CLASS VKImageView final : public VKObject<VkImageView>

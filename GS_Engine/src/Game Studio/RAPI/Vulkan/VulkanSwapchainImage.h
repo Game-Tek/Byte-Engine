@@ -10,11 +10,11 @@ GS_CLASS VulkanSwapchainImage final : public VulkanImageBase
 {
 	VKImageView ImageView;
 
+	static VKImageViewCreator CreateImageView(VKDevice* _Device, VkImage _Image, const Format _Format);
 public:
-	VulkanSwapchainImage(const VKDevice& _Device, VkImage _Image, Format _Format);
+	VulkanSwapchainImage(VKDevice* _Device, VkImage _Image, Format _Format);
 	~VulkanSwapchainImage() = default;
-	VulkanSwapchainImage& operator=(const VulkanSwapchainImage& _) { ImageView = _.ImageView; return *this; }
 
-	[[nodiscard]] const VKImageView& GetVk_ImageView() const override { return ImageView; };
+	[[nodiscard]] const VKImageView& GetVKImageView() const override { return ImageView; };
 };
 

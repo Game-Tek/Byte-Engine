@@ -6,40 +6,40 @@
 #include "VKSemaphore.h"
 #include "VKSurface.h"
 
-VKSwapchainCreator::VKSwapchainCreator(const VKDevice& _Device, const VkSwapchainCreateInfoKHR* _VkSCIKHR) : VKObjectCreator<VkSwapchainKHR>(_Device)
+VKSwapchainCreator::VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR* _VkSCIKHR) : VKObjectCreator<VkSwapchainKHR>(_Device)
 {
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, _VkSCIKHR, ALLOCATOR, &Handle), "Failed to create Swapchain!");
+	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle), "Failed to create Swapchain!");
 }
 
 VKSwapchain::~VKSwapchain()
 {
-	vkDestroySwapchainKHR(m_Device, Swapchain, ALLOCATOR);
+	vkDestroySwapchainKHR(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
 FVector<VkImage> VKSwapchain::GetImages() const
 {
 	FVector<VkImage> Images(3);
 	uint32_t ImageCount = 0;
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, nullptr);
+	vkGetSwapchainImagesKHR(m_Device->GetVkDevice(), Handle, &ImageCount, nullptr);
 	Images.resize(ImageCount);
-	vkGetSwapchainImagesKHR(m_Device, Swapchain, &ImageCount, Images.data());
+	vkGetSwapchainImagesKHR(m_Device->GetVkDevice(), Handle, &ImageCount, Images.data());
 
 	return Images;
 }
 
 void VKSwapchain::Recreate(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode)
 {
-	vkDestroySwapchainKHR(m_Device, Swapchain, ALLOCATOR);
+	vkDestroySwapchainKHR(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, _PresentMode, Swapchain);
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, _PresentMode, Handle);
 
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device, &SwapchainCreateInfo, ALLOCATOR, &Swapchain), "Failed to create Swapchain!")
+	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), &SwapchainCreateInfo, ALLOCATOR, &Handle), "Failed to create Swapchain!")
 }
 
 uint32 VKSwapchain::AcquireNextImage(const VKSemaphore& _ImageAvailable) const
 {
 	uint32 ImageIndex = 0;
-	vkAcquireNextImageKHR(m_Device, Swapchain, 0xffffffffffffffff, _ImageAvailable.GetHandle(), VK_NULL_HANDLE, &ImageIndex);
+	vkAcquireNextImageKHR(m_Device->GetVkDevice(), Handle, 0xffffffffffffffff, _ImageAvailable.GetHandle(), VK_NULL_HANDLE, &ImageIndex);
 	return ImageIndex;
 }
 

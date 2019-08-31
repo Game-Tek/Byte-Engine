@@ -6,7 +6,6 @@
 #include "RAPI/Vulkan/Native/VKShaderModule.h"
 
 #include "VulkanRenderPass.h"
-#include "Logger.h"
 
 VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const VKPipelineLayout& _PL, const VKRenderPass& _RP, const Extent2D& _Extent, const VertexDescriptor& _VD, const PipelineDescriptor& _PD, VkPipeline _OldPipeline)
 {

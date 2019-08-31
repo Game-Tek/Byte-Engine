@@ -106,6 +106,7 @@
     <ClInclude Include="src\Game Studio\FlipFlop.h" />
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
+    <ClInclude Include="src\Game Studio\JoystickState.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
@@ -124,6 +125,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Pipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDespcriptorSet.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKBuffer.h" />
@@ -212,6 +214,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKComputePipeline.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSet.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDevice.cpp" />

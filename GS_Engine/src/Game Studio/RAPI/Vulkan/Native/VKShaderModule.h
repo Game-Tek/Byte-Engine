@@ -6,8 +6,6 @@
 #include "Containers/FString.h"
 #include "Containers/DArray.hpp"
 
-#include <vector>
-
 MAKE_VK_HANDLE(VkShaderModule)
 
 struct VkShaderModuleCreateInfo;

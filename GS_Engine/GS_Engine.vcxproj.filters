@@ -232,6 +232,8 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.h" />
+    <ClInclude Include="src\Game Studio\JoystickState.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">
@@ -301,6 +303,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSet.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

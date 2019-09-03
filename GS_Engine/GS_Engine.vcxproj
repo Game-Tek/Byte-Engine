@@ -107,6 +107,7 @@
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
     <ClInclude Include="src\Game Studio\JoystickState.h" />
+    <ClInclude Include="src\Game Studio\Math\Vectors\SIMDfloat4.h" />
     <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
@@ -116,13 +117,15 @@
     <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Actor.h" />
     <ClInclude Include="src\Game Studio\Containers\Octree.h" />
+    <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
     <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
+    <ClInclude Include="src\Game Studio\RAPI\PipelineLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Pipelines.h" />
+    <ClInclude Include="src\Game Studio\RAPI\GraphicsPipeline.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.h" />
@@ -152,6 +155,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanImage.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelineLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />

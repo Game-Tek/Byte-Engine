@@ -11,7 +11,7 @@ GS_STRUCT JoystickState
 
 	bool IsUpFaceButtonPressed = false;
 	bool IsRightFaceButtonPressed = false;
-	bool IsDownFaceButtonPressed = false;
+	bool IsBottomFaceButtonPressed = false;
 	bool IsLeftFaceButtonPressed = false;
 
 	float RightTriggerDepth = 0.0f;

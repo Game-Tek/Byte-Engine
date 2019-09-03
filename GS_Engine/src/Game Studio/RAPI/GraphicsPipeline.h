@@ -7,7 +7,7 @@
 #include "Mesh.h"
 
 
-struct StencilState
+GS_STRUCT StencilState
 {
 	StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
 	StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
@@ -15,7 +15,7 @@ struct StencilState
 	CompareOperation CompareOperation = CompareOperation::NEVER;
 };
 
-struct StencilOperations
+GS_STRUCT StencilOperations
 {
 	StencilState Front;
 	StencilState Back;
@@ -59,16 +59,6 @@ GS_STRUCT GraphicsPipelineCreateInfo
 };
 
 GS_CLASS GraphicsPipeline
-{
-public:
-};
-
-GS_STRUCT ComputePipelineCreateInfo
-{
-
-};
-
-GS_CLASS ComputePipeline
 {
 public:
 };

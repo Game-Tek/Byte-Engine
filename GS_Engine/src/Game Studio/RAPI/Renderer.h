@@ -5,7 +5,8 @@
 #include "RenderContext.h"
 #include "Image.h"
 #include "Mesh.h"
-#include "Pipelines.h"
+#include "GraphicsPipeline.h"
+#include "ComputePipeline.h"
 #include "RenderPass.h"
 #include "Framebuffer.h"
 

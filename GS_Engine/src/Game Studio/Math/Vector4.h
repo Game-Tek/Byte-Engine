@@ -30,12 +30,12 @@ public:
 		return { X + Other, Y + Other, Z + Other, W + Other };
 	}
 
-	Vector4 operator+ (const Vector4 & Other) const
+	Vector4 operator+ (const Vector4& Other) const
 	{
 		return { X + Other.X, Y + Other.Y, Z + Other.Z, W + Other.W };
 	}
 
-	Vector4 & operator+= (float Other)
+	Vector4& operator+= (float Other)
 	{
 		X += Other;
 		Y += Other;
@@ -45,7 +45,7 @@ public:
 		return *this;
 	}
 
-	Vector4 & operator+= (const Vector4 & Other)
+	Vector4& operator+= (const Vector4& Other)
 	{
 		X += Other.X;
 		Y += Other.Y;
@@ -60,12 +60,12 @@ public:
 		return { X - Other, Y - Other, Z - Other, W - Other };
 	}
 
-	Vector4 operator- (const Vector4 & Other) const
+	Vector4 operator- (const Vector4& Other) const
 	{
 		return { X - Other.X, Y - Other.Y, Z - Other.Z, W - Other.W };
 	}
 
-	Vector4 & operator-= (float Other)
+	Vector4& operator-= (float Other)
 	{
 		X -= Other;
 		Y -= Other;
@@ -75,7 +75,7 @@ public:
 		return *this;
 	}
 
-	Vector4 & operator-= (const Vector4 & Other)
+	Vector4& operator-= (const Vector4& Other)
 	{
 		X -= Other.X;
 		Y -= Other.Y;
@@ -90,7 +90,7 @@ public:
 		return { X * Other, Y * Other, Z * Other, W * Other };
 	}
 
-	Vector4 & operator*= (float Other)
+	Vector4& operator*= (float Other)
 	{
 		X *= Other;
 		Y *= Other;
@@ -105,7 +105,7 @@ public:
 		return { X / Other, Y / Other, Z / Other, W / Other };
 	}
 
-	Vector4 & operator/= (float Other)
+	Vector4& operator/= (float Other)
 	{
 		X /= Other;
 		Y /= Other;
@@ -115,12 +115,12 @@ public:
 		return *this;
 	}
 
-	inline bool operator== (const Vector4 & Other)
+	inline bool operator== (const Vector4& Other)
 	{
 		return X == Other.X && Y == Other.Y && Z == Other.Z && W == Other.W;
 	}
 
-	inline bool operator!= (const Vector4 & Other)
+	inline bool operator!= (const Vector4& Other)
 	{
 		return X != Other.X || Y != Other.Y || Z != Other.Z || W != Other.W;
 	}

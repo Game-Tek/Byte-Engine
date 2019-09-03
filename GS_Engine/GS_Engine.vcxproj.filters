@@ -183,7 +183,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
     <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Pipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
     <ClInclude Include="src\Game Studio\RAPI\Renderer.h">
@@ -234,6 +233,11 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.h" />
     <ClInclude Include="src\Game Studio\JoystickState.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.h" />
+    <ClInclude Include="src\Game Studio\RAPI\PipelineLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
+    <ClInclude Include="src\Game Studio\RAPI\GraphicsPipeline.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelineLayout.h" />
+    <ClInclude Include="src\Game Studio\Math\Vectors\SIMDfloat4.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">

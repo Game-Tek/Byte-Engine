@@ -2,6 +2,8 @@
 
 #include "Core.h"
 
+#define MAX_DESCRIPTORS_PER_SET 8
+
 // IMAGE
 
 //Specifies all available image layouts.
@@ -133,6 +135,8 @@ enum class SampleCount : uint8
 
 enum class ShaderType : uint8
 {
+	ALL_STAGES,
+
 	VERTEX_SHADER,
 	TESSELLATION_CONTROL_SHADER,
 	TESSELLATION_EVALUATION_SHADER,

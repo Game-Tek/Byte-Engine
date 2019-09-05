@@ -15,7 +15,7 @@ GS_STRUCT VKObjectCreator
 	{
 	}
 
-	VKDevice* m_Device;
+	VKDevice* m_Device = nullptr;
 	T Handle = VK_NULL_HANDLE;
 };
 
@@ -23,7 +23,7 @@ template <typename T>
 GS_CLASS VKObject
 {
 protected:
-	VKDevice* m_Device;
+	VKDevice* m_Device = nullptr;
 	T Handle = VK_NULL_HANDLE;
 
 public:

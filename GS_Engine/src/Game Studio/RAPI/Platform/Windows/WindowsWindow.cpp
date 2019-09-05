@@ -99,7 +99,7 @@ void WindowsWindow::Update()
 
 		JoystickStates[i].IsUpFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_Y];
 		JoystickStates[i].IsRightFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_B];
-		JoystickStates[i].IsDownFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_A];
+		JoystickStates[i].IsBottomFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_A];
 		JoystickStates[i].IsLeftFaceButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_X];
 
 		JoystickStates[i].IsUpDPadButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP];

@@ -5,6 +5,7 @@
 #include "Image.h"
 #include "Containers/FVector.hpp"
 
+class UniformLayout;
 class Window;
 class Mesh;
 class VertexBuffer;
@@ -52,7 +53,7 @@ public:
 	//Sends all commands to the GPU.
 	virtual void Flush() = 0;
 
-	//Swaps buffers and send new image to the screen.
+	//Swaps buffers and sends new image to the screen.
 	virtual void Present() = 0;
 	
 	// COMMANDS
@@ -61,34 +62,36 @@ public:
 	//    BIND BUFFER COMMANDS
 	
 	
-	//Adds a BindMesh command to the buffer.
+	//Adds a BindMesh command to the command queue.
 	virtual void BindMesh(Mesh* _Mesh) = 0;
 	
 	//    BIND PIPELINE COMMANDS
-	
-	//Adds a BindGraphicsPipeline command to the buffer.
+
+	//Adds a BindUniformLayout to the command queue.
+	virtual void BindUniformLayout(UniformLayout* _UL) = 0;
+	//Adds a BindGraphicsPipeline command to the command queue.
 	virtual void BindGraphicsPipeline(GraphicsPipeline* _GP) = 0;
-	//Adds a BindComputePipeline to the buffer.
+	//Adds a BindComputePipeline to the command queue.
 	virtual void BindComputePipeline(ComputePipeline* _CP) = 0;
 	
 	
 	//  DRAW COMMANDS
 	
-	//Adds a DrawIndexed command to the buffer.
+	//Adds a DrawIndexed command to the command queue.
 	virtual void DrawIndexed(const DrawInfo& _DI) = 0;
 	
 	//  COMPUTE COMMANDS
 	
-	//Adds a Dispatch command to the buffer.
+	//Adds a Dispatch command to the command queue.
 	virtual void Dispatch(const Extent3D& _WorkGroups) = 0;
 
 	//  RENDER PASS COMMANDS
 	
-	//Adds a BeginRenderPass command to the buffer.
+	//Adds a BeginRenderPass command to the command queue.
 	virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
 	//Adds a AdvanceSubPass command to the command buffer.
 	virtual void AdvanceSubPass() = 0;
-	//Adds a EndRenderPass command to the buffer.
+	//Adds a EndRenderPass command to the command queue.
 	virtual void EndRenderPass(RenderPass* _RP) = 0;
 
 	[[nodiscard]] virtual FVector<Image*> GetSwapchainImages() const = 0;

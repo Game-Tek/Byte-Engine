@@ -121,7 +121,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
     <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
-    <ClInclude Include="src\Game Studio\RAPI\PipelineLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\UniformLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
@@ -155,10 +155,12 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanImage.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelineLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
     <ClInclude Include="src\Game Studio\Scene.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
@@ -243,6 +245,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp" />

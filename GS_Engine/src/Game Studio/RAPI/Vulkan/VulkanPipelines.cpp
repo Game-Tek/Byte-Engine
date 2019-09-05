@@ -2,27 +2,27 @@
 
 #include "VulkanPipelines.h"
 
-#include "RAPI/RenderPass.h"
 #include "RAPI/Vulkan/Native/VKShaderModule.h"
 
 #include "VulkanRenderPass.h"
+#include "VulkanUniformLayout.h"
 
-VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const VKPipelineLayout& _PL, const VKRenderPass& _RP, const Extent2D& _Extent, const VertexDescriptor& _VD, const PipelineDescriptor& _PD, VkPipeline _OldPipeline)
+VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI, VkPipeline _OldPipeline)
 {
 	//  VERTEX INPUT STATE
 
 	Array<VkVertexInputBindingDescription, 4> BindingDescriptions(1);
 	BindingDescriptions[0].binding = 0;
-	BindingDescriptions[0].stride = _VD.GetSize();
+	BindingDescriptions[0].stride = _GPCI.VDescriptor->GetSize();
 	BindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-	Array<VkVertexInputAttributeDescription, 8>	VertexElements(_VD.GetAttributeCount());
+	Array<VkVertexInputAttributeDescription, 8>	VertexElements(_GPCI.VDescriptor->GetAttributeCount());
 	for (uint8 i = 0; i < VertexElements.length(); ++i)
 	{
 		VertexElements[i].binding = 0;
 		VertexElements[i].location = i;
-		VertexElements[i].format = ShaderDataTypesToVkFormat(_VD.GetAttribute(i));
-		VertexElements[i].offset = _VD.GetOffsetToMember(i);
+		VertexElements[i].format = ShaderDataTypesToVkFormat(_GPCI.VDescriptor->GetAttribute(i));
+		VertexElements[i].offset = _GPCI.VDescriptor->GetOffsetToMember(i);
 	}
 
 	VkPipelineVertexInputStateCreateInfo VertexInputState = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
@@ -49,12 +49,12 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkViewport Viewport;
 	Viewport.x = 0.0f;
 	Viewport.y = 0.0f;
-	Viewport.width = _Extent.Width;
-	Viewport.height = _Extent.Height;
+	Viewport.width = _GPCI.SwapchainSize.Width;
+	Viewport.height = _GPCI.SwapchainSize.Height;
 	Viewport.minDepth = 0.0f;
 	Viewport.maxDepth = 1.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, Extent2DToVkExtent2D(_Extent) };
+	VkRect2D Scissor = { { 0, 0 }, Extent2DToVkExtent2D(_GPCI.SwapchainSize) };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;
@@ -140,9 +140,9 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	//if (_PD.Stages.VertexShader)
 	//{
 	VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-	VS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.VertexShader->Type);
+	VS.stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages.VertexShader->Type);
 
-	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
+	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_GPCI.PipelineDescriptor.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
 
 	VkShaderModuleCreateInfo VkVertexShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 	VkVertexShaderModuleCreateInfo.codeSize = VertexShaderCode.size();
@@ -159,9 +159,9 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	//if (_PD.Stages.FragmentShader)
 	//{
 		VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-		FS.stage = ShaderTypeToVkShaderStageFlagBits(_PD.Stages.FragmentShader->Type);
+		FS.stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages.FragmentShader->Type);
 
-		auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_PD.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
+		auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_GPCI.PipelineDescriptor.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
 
 		VkShaderModuleCreateInfo VkFragmentShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 		VkFragmentShaderModuleCreateInfo.codeSize = FragmentShaderCode.size();
@@ -190,8 +190,8 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	CreateInfo.pDepthStencilState = &DepthStencilState;
 	CreateInfo.pColorBlendState = &ColorBlendState;
 	CreateInfo.pDynamicState = nullptr;//&DynamicState;
-	CreateInfo.layout = _PL.GetHandle();
-	CreateInfo.renderPass = _RP.GetHandle();
+	CreateInfo.layout = SCAST(VulkanUniformLayout*, _GPCI.UniformLayout)->GetVKPipelineLayout().GetHandle();
+	CreateInfo.renderPass = SCAST(VulkanRenderPass*, _GPCI.RenderPass)->GetVk_RenderPass().GetHandle();
 	CreateInfo.subpass = 0;
 	CreateInfo.basePipelineHandle = _OldPipeline; // Optional
 	CreateInfo.basePipelineIndex = _OldPipeline ? 0 : -1;
@@ -199,14 +199,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	return VKGraphicsPipelineCreator(_Device, &CreateInfo);
 }
 
-VKPipelineLayoutCreator VulkanGraphicsPipeline::CreatePipelineLayout(VKDevice* _Device)
-{
-	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	return VKPipelineLayoutCreator(_Device, &PipelineLayoutCreateInfo);
-}
-
-VulkanGraphicsPipeline::VulkanGraphicsPipeline(VKDevice* _Device, RenderPass* _RP, Extent2D _SwapchainSize, const PipelineDescriptor& _PD, const VertexDescriptor& _VD) :
-	Layout(CreatePipelineLayout(_Device)),
-	Pipeline(CreateVk_GraphicsPipelineCreator(_Device, Layout, SCAST(VulkanRenderPass*, _RP)->GetVk_RenderPass(), _SwapchainSize, _VD, _PD))
+VulkanGraphicsPipeline::VulkanGraphicsPipeline(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI) :
+	Pipeline(CreateVk_GraphicsPipelineCreator(_Device, _GPCI))
 {
 }

@@ -2,12 +2,13 @@
 
 #include "Core.h"
 
-#include "RAPI/Pipelines.h"
 #include "Extent.h"
 #include "Native/VKPipelineLayout.h"
 #include "Native/VKGraphicsPipeline.h"
 #include "Native/VKComputePipeline.h"
 #include "RAPI/Mesh.h"
+#include "RAPI/GraphicsPipeline.h"
+#include "RAPI/ComputePipeline.h"
 
 class VKRenderPass;
 class RenderPass;
@@ -16,13 +17,11 @@ MAKE_VK_HANDLE(VkPipelineLayout)
 
 GS_CLASS VulkanGraphicsPipeline final : public GraphicsPipeline
 {
-	VKPipelineLayout Layout;
 	VKGraphicsPipeline Pipeline;
 
-	static VKGraphicsPipelineCreator CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const VKPipelineLayout& _PL, const VKRenderPass& _RP, const Extent2D& _Extent, const VertexDescriptor& _VD, const PipelineDescriptor& _Stages, VkPipeline _OldPipeline = VK_NULL_HANDLE);
-	static VKPipelineLayoutCreator CreatePipelineLayout(VKDevice* _Device);
+	static VKGraphicsPipelineCreator CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI, VkPipeline _OldPipeline = VK_NULL_HANDLE);
 public:
-	VulkanGraphicsPipeline(VKDevice* _Device, RenderPass* _RP, Extent2D _SwapchainSize, const PipelineDescriptor& _PD, const VertexDescriptor& _VD);
+	VulkanGraphicsPipeline(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI);
 	~VulkanGraphicsPipeline() = default;
 
 	INLINE const VKGraphicsPipeline& GetVk_GraphicsPipeline() const { return Pipeline; }

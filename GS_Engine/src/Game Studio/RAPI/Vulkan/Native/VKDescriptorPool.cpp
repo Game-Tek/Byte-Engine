@@ -13,3 +13,8 @@ VKDescriptorPool::~VKDescriptorPool()
 {
 	vkDestroyDescriptorPool(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
+
+void VKDescriptorPool::AllocateDescriptorSets(const VkDescriptorSetAllocateInfo* _VkDSAI, VkDescriptorSet* _DescriptorSets) const
+{
+	vkAllocateDescriptorSets(m_Device->GetVkDevice(), _VkDSAI, _DescriptorSets);
+}

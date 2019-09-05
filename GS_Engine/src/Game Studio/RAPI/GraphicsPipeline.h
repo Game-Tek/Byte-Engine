@@ -49,6 +49,12 @@ GS_STRUCT PipelineDescriptor
 };
 
 class RenderPass;
+class UniformLayout;
+
+GS_CLASS GraphicsPipeline
+{
+public:
+};
 
 GS_STRUCT GraphicsPipelineCreateInfo
 {
@@ -56,9 +62,6 @@ GS_STRUCT GraphicsPipelineCreateInfo
 	RenderPass* RenderPass = nullptr;
 	VertexDescriptor* VDescriptor = nullptr;
 	PipelineDescriptor PipelineDescriptor;
-};
-
-GS_CLASS GraphicsPipeline
-{
-public:
+	UniformLayout* UniformLayout = nullptr;
+	GraphicsPipeline* ParentPipeline = nullptr;
 };

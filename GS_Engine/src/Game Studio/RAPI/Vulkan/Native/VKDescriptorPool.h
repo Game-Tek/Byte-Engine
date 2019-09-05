@@ -4,6 +4,8 @@
 
 #include "RAPI/Vulkan/VulkanBase.h"
 
+#include "VKDespcriptorSet.h"
+
 MAKE_VK_HANDLE(VkDescriptorPool)
 
 struct VkDescriptorPoolCreateInfo;
@@ -13,7 +15,9 @@ GS_STRUCT VKDescriptorPoolCreator final : VKObjectCreator<VkDescriptorPool>
 	VKDescriptorPoolCreator(VKDevice* _Device, const VkDescriptorPoolCreateInfo* _VkDPCI);
 };
 
-GS_CLASS VKDescriptorPool final : VKObject<VkDescriptorPool>
+struct VkDescriptorSetAllocateInfo;
+
+GS_CLASS VKDescriptorPool final : public VKObject<VkDescriptorPool>
 {
 public:
 	VKDescriptorPool(const VKDescriptorPoolCreator& _VKDPC) : VKObject<VkDescriptorPool>(_VKDPC)
@@ -21,4 +25,6 @@ public:
 	}
 
 	~VKDescriptorPool();
+
+	void AllocateDescriptorSets(const VkDescriptorSetAllocateInfo* _VkDSAI, VkDescriptorSet* _DescriptorSets) const;
 };

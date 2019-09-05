@@ -10,6 +10,7 @@
 
 #include "RAPI/Window.h"
 #include "Native/vkPhysicalDevice.h"
+#include "VulkanUniformLayout.h"
 
 
 //  VULKAN RENDER CONTEXT
@@ -248,6 +249,12 @@ void VulkanRenderContext::BindMesh(Mesh* _Mesh)
 
 	vkCmdBindVertexBuffers(CommandBuffers[CurrentImage], 0, 1, &pVertexBuffers, &Offset);
 	vkCmdBindIndexBuffer(CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer().GetHandle(), 0, VK_INDEX_TYPE_UINT16);
+}
+
+void VulkanRenderContext::BindUniformLayout(UniformLayout* _UL)
+{
+	const auto VKUL = SCAST(VulkanUniformLayout*, _UL);
+	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVKPipelineLayout().GetHandle(), 0, 1, VKUL->GetVkDescriptorSets().data(), 0, nullptr);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)

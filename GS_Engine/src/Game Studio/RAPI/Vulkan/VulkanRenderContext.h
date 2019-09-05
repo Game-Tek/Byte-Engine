@@ -74,6 +74,7 @@ public:
 	void AdvanceSubPass() override;
 	void EndRenderPass(RenderPass* _RP) final override;
 	void BindMesh(Mesh* _Mesh) final override;
+	void BindUniformLayout(UniformLayout* _UL) override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
 	void BindComputePipeline(ComputePipeline* _CP) final override;
 	void DrawIndexed(const DrawInfo& _DI) final override;

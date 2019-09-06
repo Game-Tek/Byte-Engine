@@ -29,7 +29,9 @@ public:
 	~VulkanRenderer();
 
 	Mesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
-	Image* CreateImage(const ImageCreateInfo& _ICI) override;
+	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;
+	UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) final override;
+	Image* CreateImage(const ImageCreateInfo& _ICI) final override;
 	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) final override;
 	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) final override;
 	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) final override;

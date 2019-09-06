@@ -6,7 +6,8 @@
 #include "VulkanRenderPass.h"
 #include "VulkanMesh.h"
 #include "VulkanImage.h"
-
+#include "VulkanUniformBuffer.h"
+#include "VulkanUniformLayout.h"
 
 //  VULKAN RENDERER
 
@@ -32,6 +33,16 @@ VulkanRenderer::~VulkanRenderer()
 Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
 {
 	return new VulkanMesh(&Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
+}
+
+UniformBuffer* VulkanRenderer::CreateUniformBuffer(const UniformBufferCreateInfo& _BCI)
+{
+	return new VulkanUniformBuffer(&Device, _BCI);
+}
+
+UniformLayout* VulkanRenderer::CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI)
+{
+	return new VulkanUniformLayout(&Device, _ULCI);
 }
 
 Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)

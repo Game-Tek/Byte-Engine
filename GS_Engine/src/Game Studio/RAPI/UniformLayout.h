@@ -15,7 +15,7 @@ GS_STRUCT UniformSet
 	ShaderType ShaderStage = ShaderType::ALL_STAGES;
 };
 
-GS_STRUCT PipelineLayoutCreateInfo
+GS_STRUCT UniformLayoutCreateInfo
 {
 	Array<UniformSet, MAX_DESCRIPTORS_PER_SET> PipelineUniformSets;
 	RenderContext* RenderContext = nullptr;

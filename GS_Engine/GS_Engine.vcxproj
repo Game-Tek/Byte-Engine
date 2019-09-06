@@ -107,8 +107,8 @@
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
     <ClInclude Include="src\Game Studio\JoystickState.h" />
-    <ClInclude Include="src\Game Studio\Math\Vectors\SIMDfloat4.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Buffer.h" />
+    <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
+    <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
@@ -156,7 +156,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanImage.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
@@ -246,6 +245,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp" />

@@ -40,8 +40,8 @@ VulkanMesh::VulkanMesh(VKDevice* _Device, const VKCommandPool& _CP, void* _Verte
 	StagingVBMemory.BindBufferMemory(StagingVB);
 	StagingIBMemory.BindBufferMemory(StagingIB);
 	
-	StagingVBMemory.CopyToMappedMemory(_VertexData, _VertexDataSize);
-	StagingIBMemory.CopyToMappedMemory(_IndexData, _IndexCount * sizeof(uint16));
+	StagingVBMemory.SingleCopyToMappedMemory(_VertexData, _VertexDataSize);
+	StagingIBMemory.SingleCopyToMappedMemory(_IndexData, _IndexCount * sizeof(uint16));
 	
 	
 	VBMemory.CopyToDevice(StagingVB, VertexBuffer, _CP, _Device->GetTransferQueue(), _VertexDataSize);

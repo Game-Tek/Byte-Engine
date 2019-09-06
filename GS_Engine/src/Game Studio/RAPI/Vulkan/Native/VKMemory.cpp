@@ -58,11 +58,28 @@ VKMemory::~VKMemory()
 	vkFreeMemory(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
-void* VKMemory::CopyToMappedMemory(void* _Data, size_t _Size) const
+void* VKMemory::SingleCopyToMappedMemory(void* _Data, size_t _Size) const
 {
 	void* data = nullptr;
 	vkMapMemory(m_Device->GetVkDevice(), Handle, 0, _Size, 0, &data);
 	memcpy(data, _Data, _Size);
 	vkUnmapMemory(m_Device->GetVkDevice(), Handle);
 	return data;
+}
+
+void* VKMemory::MapMemory(size_t _Offset, size_t _Size) const
+{
+	void* data = nullptr;
+	vkMapMemory(m_Device->GetVkDevice(), Handle, _Offset, _Size, 0, &data);
+	return data;
+}
+
+void VKMemory::CopyToMappedMemory(void* _Src, void* _Dst, size_t _Size) const
+{
+	memcpy(_Dst, _Src, _Size);
+}
+
+void VKMemory::UnmapMemory() const
+{
+	vkUnmapMemory(m_Device->GetVkDevice(), Handle);
 }

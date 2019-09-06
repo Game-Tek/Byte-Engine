@@ -9,6 +9,8 @@
 #include "ComputePipeline.h"
 #include "RenderPass.h"
 #include "Framebuffer.h"
+#include "UniformBuffer.h"
+#include "UniformLayout.h"
 
 enum class RAPI : uint8
 {
@@ -30,6 +32,8 @@ public:
 	static INLINE Renderer* GetRenderer() { return RendererInstance; }
 
 	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
+	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
+	virtual UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) = 0;
 	virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;

@@ -7,16 +7,15 @@
 #include "RAPI/RenderContext.h"
 #include "Native/VKDevice.h"
 #include "VulkanImage.h"
-#include "RAPI/Buffer.h"
 #include "VulkanUniformBuffer.h"
 
-VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDevice* _Device,	const PipelineLayoutCreateInfo& _PLCI)
+VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
 {
 	VkDescriptorSetLayoutCreateInfo DescriptorSetLayoutCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
 
 	Array<VkDescriptorSetLayoutBinding, MAX_DESCRIPTORS_PER_SET> DescriptorBindings;
 	{
-		for(uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
+		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
 		{
 			DescriptorBindings[i].binding = i;
 			DescriptorBindings[i].descriptorCount = _PLCI.PipelineUniformSets[i].UniformSetUniformsCount;
@@ -25,22 +24,26 @@ VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDe
 		}
 	}
 
+	DescriptorBindings.setLength(_PLCI.PipelineUniformSets.length());
+
 	DescriptorSetLayoutCreateInfo.bindingCount = DescriptorBindings.length();
 	DescriptorSetLayoutCreateInfo.pBindings = DescriptorBindings.data();
 
 	return VKDescriptorSetLayoutCreator(_Device, &DescriptorSetLayoutCreateInfo);
 }
 
-VKDescriptorPoolCreator VulkanUniformLayout::CreateDescriptorPool(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI)
+VKDescriptorPoolCreator VulkanUniformLayout::CreateDescriptorPool(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
 {
 	Array<VkDescriptorPoolSize, MAX_DESCRIPTORS_PER_SET> PoolSizes;
 	{
-		for(uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
+		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
 		{
 			PoolSizes[i].descriptorCount = _PLCI.RenderContext->GetMaxFramesInFlight();
 			PoolSizes[i].type = UniformTypeToVkDescriptorType(_PLCI.PipelineUniformSets[i].UniformSetType);
 		}
 	}
+
+	PoolSizes.setLength(_PLCI.PipelineUniformSets.length());
 
 	VkDescriptorPoolCreateInfo DescriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 	DescriptorPoolCreateInfo.maxSets = _PLCI.RenderContext->GetMaxFramesInFlight();
@@ -50,15 +53,15 @@ VKDescriptorPoolCreator VulkanUniformLayout::CreateDescriptorPool(VKDevice* _Dev
 	return VKDescriptorPoolCreator(_Device, &DescriptorPoolCreateInfo);
 }
 
-void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI)
+void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
 {
 	VkDescriptorSetAllocateInfo DescriptorSetAllocateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
 	DescriptorSetAllocateInfo.descriptorPool = DescriptorPool.GetHandle();
 	DescriptorSetAllocateInfo.descriptorSetCount = _PLCI.RenderContext->GetMaxFramesInFlight();
 
-	VkDescriptorSetLayout pSetLayouts = DescriptorSetLayout.GetHandle();
+	FVector<VkDescriptorSetLayout> SetLayouts(_PLCI.RenderContext->GetMaxFramesInFlight(), DescriptorSetLayout.GetHandle());
 
-	DescriptorSetAllocateInfo.pSetLayouts = &pSetLayouts;
+	DescriptorSetAllocateInfo.pSetLayouts = SetLayouts.data();
 
 	DescriptorPool.AllocateDescriptorSets(&DescriptorSetAllocateInfo, DescriptorSets.data());
 
@@ -66,7 +69,7 @@ void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const PipelineL
 }
 
 
-VKPipelineLayoutCreator VulkanUniformLayout::CreatePipelineLayout(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI) const
+VKPipelineLayoutCreator VulkanUniformLayout::CreatePipelineLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI) const
 {
 	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	PipelineLayoutCreateInfo.setLayoutCount = 1;
@@ -78,19 +81,19 @@ VKPipelineLayoutCreator VulkanUniformLayout::CreatePipelineLayout(VKDevice* _Dev
 	return VKPipelineLayoutCreator(_Device, &PipelineLayoutCreateInfo);
 }
 
-VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI) : 
-DescriptorSetLayout(CreateDescriptorSetLayout(_Device, _PLCI)), 
-DescriptorPool(CreateDescriptorPool(_Device, _PLCI)),
-DescriptorSets(_PLCI.RenderContext->GetMaxFramesInFlight()),
-PipelineLayout(CreatePipelineLayout(_Device, _PLCI))
+VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI) :
+	DescriptorSetLayout(CreateDescriptorSetLayout(_Device, _PLCI)),
+	DescriptorPool(CreateDescriptorPool(_Device, _PLCI)),
+	DescriptorSets(_PLCI.RenderContext->GetMaxFramesInFlight()),
+	PipelineLayout(CreatePipelineLayout(_Device, _PLCI))
 {
 	CreateDescriptorSet(_Device, _PLCI);
 }
 
-void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI)
+void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
 {
-	DArray<VkWriteDescriptorSet> WriteDescriptors(DescriptorSets.length());
-	for (uint8 i = 0; i < DescriptorSets.length(); ++i)
+	DArray<VkWriteDescriptorSet> WriteDescriptors(_PLCI.PipelineUniformSets.length());
+	for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
 	{
 		switch (_PLCI.PipelineUniformSets[i].UniformSetType)
 		{

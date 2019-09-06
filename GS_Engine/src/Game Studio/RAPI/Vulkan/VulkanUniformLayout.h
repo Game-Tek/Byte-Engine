@@ -19,17 +19,18 @@ GS_CLASS VulkanUniformLayout final : public UniformLayout
 	DArray<VkDescriptorSet> DescriptorSets;
 	VKPipelineLayout PipelineLayout;
 
-	static VKDescriptorSetLayoutCreator CreateDescriptorSetLayout(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI);
+	static VKDescriptorSetLayoutCreator CreateDescriptorSetLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 
-	static VKDescriptorPoolCreator CreateDescriptorPool(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI);
-	VKPipelineLayoutCreator CreatePipelineLayout(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI) const;
+	static VKDescriptorPoolCreator CreateDescriptorPool(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
+	VKPipelineLayoutCreator CreatePipelineLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI) const;
 
-	void CreateDescriptorSet(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI);
+	void CreateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
+
 public:
-	VulkanUniformLayout(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI);
+	VulkanUniformLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 	~VulkanUniformLayout() = default;
 
-	void UpdateDescriptorSet(VKDevice* _Device, const PipelineLayoutCreateInfo& _PLCI);
+	void UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 
 	[[nodiscard]] const auto& GetVkDescriptorSets() const { return DescriptorSets; }
 	[[nodiscard]] const VKDescriptorSetLayout& GetVKDescriptorSetLayout() const { return DescriptorSetLayout; }

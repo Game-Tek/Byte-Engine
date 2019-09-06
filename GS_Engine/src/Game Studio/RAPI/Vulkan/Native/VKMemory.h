@@ -27,7 +27,12 @@ public:
 
 	~VKMemory();
 
-	void* CopyToMappedMemory(void* _Data, size_t _Size) const;
+	void* SingleCopyToMappedMemory(void* _Data, size_t _Size) const;
+
+	[[nodiscard]] void* MapMemory(size_t _Offset, size_t _Size) const;
+	void CopyToMappedMemory(void* _Src, void* _Dst, size_t _Size) const;
+	void UnmapMemory() const;
+
 	void CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP, const vkQueue& _Queue, size_t _Size) const;
 
 	void BindBufferMemory(const VKBuffer& _Buffer) const;

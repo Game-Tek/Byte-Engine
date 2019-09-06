@@ -4,10 +4,10 @@
 #include <Game Studio/RAPI/Renderer.h>
 #include <Game Studio/Containers/FVector.hpp>
 #include <Game Studio/ScreenQuad.h>
+#include <Game Studio/Math/Vector4.h>
 #include <string>
 #include <iostream>
 #include <Game Studio/Logger.h>
-#include <Game Studio/Delegate.h>
 
 class Framebuffer;
 
@@ -75,6 +75,10 @@ public:
 		const char* VertexShaderCode =
 		R"(
 		#version 450
+		
+		layout(binding = 0)uniform inObjPos {
+			vec4 AddPos;
+		} UBO;
 
 		layout(location = 0)in vec2 inPos;
 		layout(location = 1)in vec2 inTexCoords;
@@ -83,8 +87,8 @@ public:
 
 		void main()
 		{
-			tPos = vec4(inPos, 0.0, 1.0);
-			gl_Position = vec4(inPos.x, -inPos.y, 0.0, 1.0);
+			tPos = vec4(inPos, 0.0, 1.0) + UBO.AddPos;
+			gl_Position = vec4(inPos.x, -inPos.y, 0.0, 1.0) + UBO.AddPos;
 		})";
 		FString VSC(VertexShaderCode);
 		VS.ShaderCode = VSC;
@@ -105,12 +109,27 @@ public:
 		})";
 		FString FSC(FragmentShaderCode);
 		FS.ShaderCode = FSC;
-		
+
+		UniformBufferCreateInfo UBCI;
+		UBCI.Data = &VEC;
+		UBCI.Size = sizeof(Vector4);
+		UB = Renderer::GetRenderer()->CreateUniformBuffer(UBCI);
+
+		UniformLayoutCreateInfo ULCI;
+		ULCI.RenderContext = RC;
+		ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
+		ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
+		ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
+		ULCI.PipelineUniformSets[0].UniformData = UB;
+		ULCI.PipelineUniformSets.setLength(1);
+		UL = Renderer::GetRenderer()->CreateUniformLayout(ULCI);
+
 		GraphicsPipelineCreateInfo GPCI;
 		GPCI.RenderPass = RP;
 		GPCI.PipelineDescriptor.Stages.VertexShader = &VS;
 		GPCI.PipelineDescriptor.Stages.FragmentShader = &FS;
 		GPCI.SwapchainSize = Win->GetWindowExtent();
+		GPCI.UniformLayout = UL;
 		GPCI.VDescriptor = &Vertex2D::Descriptor;
 		GP = Renderer::GetRenderer()->CreateGraphicsPipeline(GPCI);
 		
@@ -135,6 +154,14 @@ public:
 
 	void OnUpdate() final override
 	{
+		VEC.X = GetInputManager().GetJoystickState(0).LeftJoystickPosition.X;
+		VEC.Y = GetInputManager().GetJoystickState(0).LeftJoystickPosition.Y;
+
+		UniformBufferUpdateInfo UBUI;
+		UBUI.Data = &VEC;
+		UBUI.Size = sizeof(Vector4);
+		UB->UpdateBuffer(UBUI);
+
 		RC->BeginRecording();
 		
 		RenderPassBeginInfo RPBI;
@@ -144,6 +171,7 @@ public:
 		RC->BeginRenderPass(RPBI);
 		
 		RC->BindGraphicsPipeline(GP);
+		RC->BindUniformLayout(UL);
 		RC->BindMesh(M);
 		
 		DrawInfo DI;
@@ -170,11 +198,14 @@ public:
 
 	RenderContext* RC;
 	RenderPass* RP;
+	UniformBuffer* UB;
+	UniformLayout* UL;
 	GraphicsPipeline* GP;
 	Mesh* M;
 	FVector<Framebuffer*> Framebuffers;
 	ScreenQuad MyQuad = {};
 	Window* Win = nullptr;
+	Vector4 VEC = { 0.0f, 0.0f, 0.0f, 0.0f };
 };
 
 GS::Application	* GS::CreateApplication()

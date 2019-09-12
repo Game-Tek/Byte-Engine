@@ -113,11 +113,17 @@ size_t FString::StringLength(const char * In)
 
 FString FString::MakeString(const char* _Text, ...)
 {
-	FString Return;
+	FString Return(FSTRING_MAKESTRING_DEFAULT_SIZE);
 
 	va_list vaargs;
 	va_start(vaargs, _Text);
-	snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs);
+    auto Count = snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs) + 1; //Take into account null terminator.
+	if(Count > Return.Data.length())
+    {
+        Return.Data.resize(Count);
+
+        snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs);
+    }
 	va_end(vaargs);
 
 	return Return;

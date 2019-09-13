@@ -45,12 +45,12 @@ private:
 public:
 	DArray() = default;
 
-	DArray(const std::initializer_list<T>& _List) : Capacity(_List.size()), Length(_List.size()), Data(allocate(_List.size()))
+	explicit DArray(const std::initializer_list<T>& _List) : Capacity(_List.size()), Length(_List.size()), Data(allocate(_List.size()))
 	{
 		copyLength(this->Length, CCAST(T*, _List.begin()));
 	}
 
-	DArray(LT _Length) : Capacity(_Length), Length(_Length), Data(allocate(_Length))
+	explicit DArray(const LT _Length) : Capacity(_Length), Length(_Length), Data(allocate(_Length))
 	{
 	}
 
@@ -61,7 +61,6 @@ public:
 
 	DArray(const_iterator _Start, const_iterator _End) : Capacity(_End - _Start), Length(this->Capacity), Data(allocate(this->Capacity))
 	{
-		auto size = _End - _Start;
 		copyToData(_Start, (_End - _Start) * sizeof(T));
 	}
 

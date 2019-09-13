@@ -505,7 +505,7 @@ public:
 	{
 		int64 ret = RandTable[RandUseCount];
 
-		ret = RandUseCount % 1 == 1 ? ret * -1 : ret;
+		ret = RandUseCount % 2 == 1 ? ret * -1 : ret;
 
 		RandUseCount = (RandUseCount + 1) % 10;
 
@@ -521,7 +521,7 @@ public:
 	{
 		float ret = FloatRandTable[FloatRandUseCount];
 
-		ret = FloatRandUseCount % 1 == 1 ? ret * -1 : ret;
+		ret = FloatRandUseCount % 2 == 1 ? ret * -1 : ret;
 
 		RandUseCount = (RandUseCount + 1) % 10;
 

@@ -27,26 +27,6 @@ if ((func) != VK_SUCCESS)\
 
 #include "Extent.h"
 
-#include "Containers/FVector.hpp"
-
-GS_STRUCT PipelineState
-{
-	VkPipelineVertexInputStateCreateInfo		PipelineVertexInputState = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-	FVector<VkVertexInputAttributeDescription> VertexElements;
-	FVector<VkVertexInputBindingDescription> BindingDescription;
-	VkPipelineInputAssemblyStateCreateInfo		PipelineInputAssemblyState;
-	VkPipelineTessellationStateCreateInfo		PipelineTessellationState;
-	VkViewport Viewport;
-	VkRect2D Scissor;
-	VkPipelineViewportStateCreateInfo			PipelineViewportState;
-	VkPipelineRasterizationStateCreateInfo		PipelineRasterizationState;
-	VkPipelineMultisampleStateCreateInfo		PipelineMultisampleState;
-	VkPipelineDepthStencilStateCreateInfo		PipelineDepthStencilState;
-	VkPipelineColorBlendAttachmentState ColorBlendAttachment = {};
-	VkPipelineColorBlendStateCreateInfo			PipelineColorBlendState;
-	VkPipelineDynamicStateCreateInfo			PipelineDynamicState;
-};
-
 INLINE Format VkFormatToFormat(VkFormat _Format)
 {
 	switch (_Format)

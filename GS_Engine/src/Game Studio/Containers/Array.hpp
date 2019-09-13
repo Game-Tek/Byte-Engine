@@ -23,12 +23,12 @@ class GS_EXPORT_ONLY Array
 public:
 	Array() = default;
 
-	Array(const std::initializer_list<T> _InitList) : Length(_InitList.size())
+	explicit Array(const std::initializer_list<T> _InitList) : Length(_InitList.size())
 	{
 		CopyToData(_InitList.begin());
 	}
 
-	Array(const LT _Length) : Length(_Length)
+	explicit Array(const LT _Length) : Length(_Length)
 	{
 	}
 

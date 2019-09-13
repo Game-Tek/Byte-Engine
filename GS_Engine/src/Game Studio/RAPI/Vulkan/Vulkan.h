@@ -17,7 +17,7 @@ if ((func) != VK_SUCCESS)\
 	throw std::runtime_error(text);\
 }\
 }
-#elif
+#else
 #define GS_VK_CHECK(func, text) func
 #endif // GS_DEBUG
 

@@ -34,7 +34,11 @@ public:
 	FString & operator+(const char * Other);
 	FString & operator+(const FString & Other);
 
+	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString & Other) const;
+
+	//Returns true if the two FString's contents are the same. Comparison is case insensitive.
+	[[nodiscard]] bool NonSensitiveComp(const FString& _Other) const;
 
 	//Returns the contents of this FString as a C-FString.
 	char * c_str();
@@ -65,4 +69,6 @@ private:
 	FVector<char> Data;
 
 	static FString MakeString(const char* _Text, ...);
+	static char ToLowerCase(char _Char);
+	static char ToUpperCase(char _Char);
 };

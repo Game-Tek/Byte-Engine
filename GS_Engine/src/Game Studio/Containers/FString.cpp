@@ -44,17 +44,38 @@ FString & FString::operator+(const FString & Other)
 	return *this;
 }
 
-bool FString::operator==(const FString & Other) const
+bool FString::operator==(const FString & _Other) const
 {
-	for (size_t i = 0; i < (Data.length() < Other.Data.length() ? Data.length() : Other.Data.length()); i++)
+	if (Data.length() != _Other.Data.length())
 	{
-		if(Data[i] != Other.Data[i])
+		return false;
+	}
+
+	for (size_t i = 0; i < Data.length(); i++)
+	{
+		if(Data[i] != _Other.Data[i])
 		{
 			return false;
 		}
 	}
 
 	return true;
+}
+
+bool FString::NonSensitiveComp(const FString& _Other) const
+{
+	if (Data.length() != _Other.Data.length())
+	{
+		return false;
+	}
+
+	for (size_t i = 0; i < Data.length(); i++)
+	{
+		if (Data[i] != ((ToLowerCase(_Other.Data[i]) | ToUpperCase(_Other.Data[i])) != 0))
+		{
+			return false;
+		}
+	}
 }
 
 char * FString::c_str()
@@ -133,4 +154,18 @@ FString FString::MakeString(const char* _Text, ...)
 	va_end(vaargs);
 
 	return Return;
+}
+
+char FString::ToLowerCase(char _Char)
+{
+	if ('A' <= _Char && _Char <= 'Z')
+		return _Char += ('a' - 'A');
+	return 0;
+}
+
+char FString::ToUpperCase(char _Char)
+{
+	if ('a' <= _Char && _Char <= 'z')
+		return _Char += ('a' - 'A');
+	return 0;
 }

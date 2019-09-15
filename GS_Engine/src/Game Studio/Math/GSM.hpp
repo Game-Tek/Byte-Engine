@@ -978,26 +978,26 @@ public:
         return _A.X * _B.X + _A.Y * _B.Y + _A.Z * _B.Z + _A.Q * _B.Q;
     }
 
-	INLINE static float QuaternionLength(const Quaternion& _A)
+	INLINE static float Length(const Quaternion& _A)
 	{
 		return SquareRoot(Dot(_A, _A));
 	}
 
 	INLINE static Quaternion Normalized(const Quaternion & Quat)
 	{
-		const float Length = QuaternionLength(Quat);
+		const float lLength = Length(Quat);
 
-		return Quaternion(Quat.X / Length, Quat.Y / Length, Quat.Z / Length, Quat.Q / Length);
+		return Quaternion(Quat.X / lLength, Quat.Y / lLength, Quat.Z / lLength, Quat.Q / lLength);
 	}
 
 	INLINE static void Normalize(Quaternion & Quat)
 	{
-		const float Length = QuaternionLength(Quat);
+		const float lLength = Length(Quat);
 
-		Quat.X = Quat.X / Length;
-		Quat.Y = Quat.Y / Length;
-		Quat.Z = Quat.Z / Length;
-		Quat.Q = Quat.Q / Length;
+		Quat.X = Quat.X / lLength;
+		Quat.Y = Quat.Y / lLength;
+		Quat.Z = Quat.Z / lLength;
+		Quat.Q = Quat.Q / lLength;
 	}
 
 	INLINE static Quaternion Conjugated(const Quaternion & Quat)

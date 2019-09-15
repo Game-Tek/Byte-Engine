@@ -33,10 +33,16 @@ public:
 
 	operator __m128() const { return Data; }
 
-	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into memory.
-	void CopyToData(float* _Dst) const
+	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into unaligned memory.
+	void CopyToUnalignedData(float* _Dst) const
 	{
 		_mm_storeu_ps(_Dst, Data);
+	}
+
+	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into aligned memory.
+	void CopyToAlignedData(float* _Dst) const
+	{
+		_mm_store_ps(_Dst, Data);
 	}
 
 	//Shuffle single-precision (32-bit) floating-point elements in a using the control in imm8, and store the results in dst.
@@ -82,22 +88,22 @@ public:
 
 	INLINE float GetY() const
 	{
-		float Array[4];
-		_mm_storeu_ps(Array, Data);
+		alignas(16) float Array[4];
+		_mm_store_ps(Array, Data);
 		return Array[1];
 	}
 
 	INLINE float GetZ() const
 	{
-		float Array[4];
-		_mm_storeu_ps(Array, Data);
+		alignas(16) float Array[4];
+		_mm_store_ps(Array, Data);
 		return Array[2];
 	}
 
 	INLINE float GetW() const
 	{
-		float Array[4];
-		_mm_storeu_ps(Array, Data);
+		alignas(16) float Array[4];
+		_mm_store_ps(Array, Data);
 		return Array[3];
 	}
 

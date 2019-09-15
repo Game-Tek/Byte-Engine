@@ -10,6 +10,13 @@ public:
 	//Constructs an empty FString.
 	FString();
 
+	template<size_t N>
+	FString(const char(&_Literal)[N]) : Data(_Literal, N)
+	{
+	}
+
+	explicit FString(char* const _In);
+
 	//Constructs an FString from a C-FString.
 	explicit FString(const char * In);
 

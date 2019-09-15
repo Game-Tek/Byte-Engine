@@ -26,12 +26,12 @@ public:
 
 	~Quaternion() = default;
 
-	Quaternion operator+(const float Other)
+	Quaternion operator+(const float Other) const
 	{
 		return Quaternion(X + Other, Y + Other, Z + Other, Q + Other);
 	}
 
-	Quaternion operator+(const Quaternion & Other)
+	Quaternion operator+(const Quaternion & Other) const
 	{
 		return Quaternion(X + Other.X, Y + Other.Y, Z + Other.Y, Q + Other.Z);
 	}
@@ -56,12 +56,17 @@ public:
 		return *this;
 	}
 
-	Quaternion operator-(const float Other)
+	Quaternion operator-(void) const
+	{
+		return Quaternion(-X, -Y, -Z, -Q);
+	}
+
+	Quaternion operator-(const float Other) const
 	{
 		return Quaternion(X - Other, Y - Other, Z - Other, Q - Other);
 	}
 
-	Quaternion operator-(const Quaternion & Other)
+	Quaternion operator-(const Quaternion & Other) const
 	{
 		return Quaternion(X - Other.X, Y - Other.Y, Z - Other.Y, Q - Other.Z);
 	}

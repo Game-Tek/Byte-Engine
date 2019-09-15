@@ -101,6 +101,7 @@
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
+    <ClInclude Include="src\Game Studio\Debug\Timer.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\FlipFlop.h" />
@@ -208,6 +209,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Cone.cpp" />

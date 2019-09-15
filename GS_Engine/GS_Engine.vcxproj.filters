@@ -239,6 +239,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
+    <ClInclude Include="src\Game Studio\Debug\Timer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Clock.cpp">
@@ -311,6 +312,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
+    <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

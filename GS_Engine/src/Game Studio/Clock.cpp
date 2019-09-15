@@ -89,6 +89,15 @@ double Clock::GetElapsedGameTime() const
 
 //UTILITY GETTERS
 
+Nanoseconds Clock::GetCurrentNanoseconds() const
+{
+	LARGE_INTEGER WinProcessorTicks;
+
+	QueryPerformanceCounter(&WinProcessorTicks);
+
+	return WinProcessorTicks.QuadPart / ProcessorFrequency;
+}
+
 uint16 Clock::GetYear()
 {
 #ifdef GS_PLATFORM_WIN

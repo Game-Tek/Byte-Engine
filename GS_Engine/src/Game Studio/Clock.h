@@ -4,6 +4,8 @@
 
 #include "EngineSystem.h"
 
+using Nanoseconds = uint_64;
+
 //Used to specify time(Hour, Minute, Second).
 struct Time
 {
@@ -64,6 +66,8 @@ public:
 	[[nodiscard]] double GetElapsedGameTime() const;
 
 	[[nodiscard]] uint_64 GetGameTicks() const { return GameTicks; }
+
+	[[nodiscard]] Nanoseconds GetCurrentNanoseconds() const;
 
 
 	//UTILITY GETTERS

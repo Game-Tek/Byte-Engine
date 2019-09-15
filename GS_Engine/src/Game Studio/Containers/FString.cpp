@@ -10,6 +10,10 @@ FString::FString(const char * In) : Data(const_cast<char *>(In), StringLength(In
 {
 }
 
+FString::FString(char* const _In) : Data(CCAST(char*, _In), StringLength(_In))
+{
+}
+
 FString::FString(size_t _Length) : Data(_Length)
 {
 }
@@ -110,6 +114,8 @@ size_t FString::StringLength(const char * In)
 	//We return Length + 1 to take into account for the null terminator character.
 	return Length + 1;
 }
+
+#define FSTRING_MAKESTRING_DEFAULT_SIZE 256
 
 FString FString::MakeString(const char* _Text, ...)
 {

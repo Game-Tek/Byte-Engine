@@ -1,8 +1,10 @@
-#include "../Clock.h"
+#include "Core.h"
 
-#include "FString.h"
+#include "Clock.h"
 
-class Timer
+#include "Containers/FString.h"
+
+GS_CLASS Timer
 {
     Nanoseconds StartingTime = 0;
     FString Name = "No name!";

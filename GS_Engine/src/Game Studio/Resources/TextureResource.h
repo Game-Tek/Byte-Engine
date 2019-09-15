@@ -4,10 +4,8 @@
 
 #include "Resource.h"
 
-#include "RGB.h"
-
-#include "ImageSize.h"
 #include "RAPI/RenderCore.h"
+#include "Utility/Extent.h"
 
 GS_CLASS TextureResource : public Resource
 {
@@ -19,7 +17,7 @@ public:
 
 protected:
 	//Used to hold the texture's dimensions once it's been loaded.
-	ImageSize TextureDimensions;
+	Extent2D TextureDimensions;
 
 	//Used to hold the number of channels this texture has.
 	Format TextureFormat;

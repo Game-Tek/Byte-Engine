@@ -1,5 +1,7 @@
 #pragma once
+
 #include "Core.h"
+
 /*
 
 	Copyright (C) 2017 by Sergey A Kryukov: derived work
@@ -63,6 +65,7 @@ GS_CLASS Functor<RET(PARAMS...)> final : FunctorBase<RET(PARAMS...)>
 	typename FunctorBase<RET(PARAMS...)>::InvocationElement invocation;
 
 public:
+
 	Functor() = default;
 
 	[[nodiscard]] bool isNull() const
@@ -98,7 +101,7 @@ public:
 	}
 
 	template <typename LAMBDA> // template instantiation is not needed, will be deduced (inferred):
-	Functor& operator =(const LAMBDA& instance)
+	Functor& operator=(const LAMBDA& instance)
 	{
 		assign((void*)(&instance), lambda_stub<LAMBDA>);
 		return *this;
@@ -112,16 +115,6 @@ public:
 	bool operator != (const Functor& another) const
 	{
 		return invocation != another.invocation;
-	}
-
-	bool operator ==(const multicast_delegate<RET(PARAMS...)>& another) const
-	{
-		return another == (*this);
-	}
-
-	bool operator !=(const multicast_delegate<RET(PARAMS...)>& another) const
-	{
-		return another != (*this);
 	}
 
 	template <class T, RET(T::* TMethod)(PARAMS...)>

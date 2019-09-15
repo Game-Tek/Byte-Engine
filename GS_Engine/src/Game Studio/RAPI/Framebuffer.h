@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "Extent.h"
+#include "Utility/Extent.h"
 #include "RenderCore.h"
 
 #include "Containers/DArray.hpp"

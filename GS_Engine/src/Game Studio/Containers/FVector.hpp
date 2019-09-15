@@ -11,9 +11,6 @@
 template <typename T, typename LT = size_t>
 class GS_EXPORT_ONLY FVector
 {
-	typedef T* iterator;
-	typedef const T* const_iterator;
-
 private:
 	LT Length = 0;
 	LT Capacity = 0;
@@ -30,6 +27,8 @@ public:
 		}
 	}
 
+	typedef T* iterator;
+	typedef const T* const_iterator;
 
 	[[nodiscard]] iterator begin() const
 	{

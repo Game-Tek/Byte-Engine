@@ -66,53 +66,20 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\EngineSystem.h">
-      <Filter>Engine</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Vertex.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Clock.h">
-      <Filter>Engine\Clock</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Event.h">
-      <Filter>Engine\Events</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Object.h">
-      <Filter>Game Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Rotator.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\RGBA.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\RGB.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\TextureCoordinates.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\ImageSize.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Line.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Functor.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Texture.h">
       <Filter>Engine\Render\Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Logger.h">
-      <Filter>Engine\Log</Filter>
     </ClInclude>
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Core.h">
@@ -120,11 +87,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\StaticMesh.h" />
-    <ClInclude Include="src\Game Studio\Scene.h" />
-    <ClInclude Include="src\Game Studio\WorldPrimitive.h" />
-    <ClInclude Include="src\Game Studio\Actor.h" />
-    <ClInclude Include="src\Game Studio\Cone.h" />
-    <ClInclude Include="src\Game Studio\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
     <ClInclude Include="src\Game Studio\Math\GSM.hpp">
@@ -151,7 +113,6 @@
     <ClInclude Include="src\Game Studio\Math\Quaternion.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Extent.h" />
     <ClInclude Include="src\Game Studio\Application\Application.h">
       <Filter>Engine\Application</Filter>
     </ClInclude>
@@ -197,7 +158,6 @@
     <ClInclude Include="src\Game Studio\Application\InputManager.h">
       <Filter>Engine\InputManager</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\FlipFlop.h" />
     <ClInclude Include="src\Game Studio\Resources\Resource.h" />
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
       <Filter>Engine\Resource Manager\Resources</Filter>
@@ -207,7 +167,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
-    <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDespcriptorSet.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDevice.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\vkQueue.h" />
@@ -230,7 +189,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandPool.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorSetLayout.h" />
-    <ClInclude Include="src\Game Studio\JoystickState.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKDescriptorPool.h" />
     <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
     <ClInclude Include="src\Game Studio\RAPI\GraphicsPipeline.h" />
@@ -240,22 +198,39 @@
     <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
+    <ClInclude Include="src\Game Studio\Application\Clock.h">
+      <Filter>Engine\Clock</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Debug\Logger.h">
+      <Filter>Engine\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Render\Scene.h" />
+    <ClInclude Include="src\Game Studio\Math\Line.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
+    <ClInclude Include="src\Game Studio\Game\WorldObject.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Game\Actor.h" />
+    <ClInclude Include="src\Game Studio\Utility\RGB.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Utility\RGBA.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Utility\Functor.h" />
+    <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Utility\Shapes\Cone.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.h" />
+    <ClInclude Include="src\Game Studio\Utility\Extent.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Clock.cpp">
-      <Filter>Engine\Clock</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\Logger.cpp">
-      <Filter>Engine\Log</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
-    <ClCompile Include="src\Game Studio\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\Game Studio\WorldPrimitive.cpp" />
-    <ClCompile Include="src\Game Studio\Actor.cpp" />
-    <ClCompile Include="src\Game Studio\Cone.cpp" />
-    <ClCompile Include="src\Game Studio\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp">
@@ -313,6 +288,16 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
+    <ClCompile Include="src\Game Studio\Application\Clock.cpp">
+      <Filter>Engine\Clock</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Debug\Logger.cpp">
+      <Filter>Engine\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />
+    <ClCompile Include="src\Game Studio\Game\Actor.cpp" />
+    <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
+    <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

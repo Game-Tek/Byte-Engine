@@ -6,9 +6,9 @@
 
 #include "Math\Vector2.h"
 #include "Containers/Array.hpp"
-#include "JoystickState.h"
 #include "Input/MouseState.h"
 #include "Input/InputEnums.h"
+#include "Input/JoystickState.h"
 
 class Window;
 

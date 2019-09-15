@@ -2,15 +2,15 @@
 
 #include "Core.h"
 
-#include "Extent.h"
+#include "Utility/Extent.h"
 #include "Containers/FString.h"
 
 #include "Math/Vector2.h"
 
 #include "Application/Input/InputEnums.h"
 #include "Application/Input/MouseState.h"
+#include "Application/Input/JoystickState.h"
 #include "Containers/Array.hpp"
-#include "JoystickState.h"
 
 enum class WindowFit : uint8
 {
@@ -23,6 +23,8 @@ GS_STRUCT WindowCreateInfo
 	FString Name;
 	WindowFit WindowType = WindowFit::NORMAL;
 };
+
+#undef CreateWindow
 
 GS_CLASS Window
 {
@@ -46,7 +48,7 @@ public:
 
 	virtual ~Window() {};
 
-	static Window* CreateGSWindow(const WindowCreateInfo& _WCI);
+	static Window* CreateWindow(const WindowCreateInfo& _WCI);
 
 	virtual void Update() = 0;
 

@@ -2,7 +2,7 @@
 
 #include "../Core.h"
 
-#include "../Clock.h"
+#include "Clock.h"
 #include "InputManager.h"
 #include "RAPI/Window.h"
 
@@ -10,13 +10,24 @@ namespace GS
 {
 	GS_CLASS Application : public Object
 	{
+		Clock ClockInstance;
+		InputManager InputManagerInstance;
+
+		Window* ActiveWindow = nullptr;
+
+		static Application* ApplicationInstance;
+
+		bool FlaggedForClose = false;
+
+		[[nodiscard]] bool ShouldClose() const;
+
 	public:
 		Application();
 		virtual ~Application();
 
 		void Run();
 
-		const char* GetName() const override { return "Application"; }
+		[[nodiscard]] const char* GetName() const override { return "Application"; }
 
 		static Application * Get() { return ApplicationInstance; }
 
@@ -32,18 +43,6 @@ namespace GS
 		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
 		[[nodiscard]] const Window* GetActiveWindow() const { return ActiveWindow; }
-
-	private:
-		Clock ClockInstance;
-		InputManager InputManagerInstance;
-
-		Window* ActiveWindow = nullptr;
-
-		static Application * ApplicationInstance;
-
-		bool FlaggedForClose = false;
-
-		[[nodiscard]] bool ShouldClose() const;
 	};
 
 	Application * CreateApplication();

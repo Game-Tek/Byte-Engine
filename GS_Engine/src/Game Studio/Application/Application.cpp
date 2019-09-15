@@ -1,6 +1,6 @@
 #include "Application.h"
 
-GS::Application * GS::Application::ApplicationInstance;
+GS::Application * GS::Application::ApplicationInstance = nullptr;
 
 namespace GS
 {

@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "RenderCore.h"
-#include "Extent.h"
+#include "Utility/Extent.h"
 
 GS_STRUCT ImageCreateInfo
 {

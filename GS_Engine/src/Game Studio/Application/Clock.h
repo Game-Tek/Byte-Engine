@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "EngineSystem.h"
+#include "Object.h"
 
 using Nanoseconds = uint_64;
 
@@ -43,13 +43,14 @@ enum class Months : uint8
 	December,
 };
 
-GS_CLASS Clock : public ESystem
+GS_CLASS Clock : public Object
 {
 public:
 	Clock();
 	~Clock();
 
 	void OnUpdate() override;
+	[[nodiscard]] const char* GetName() const override { return "Clock"; }
 
 	//CLOCK FUNCTIONALITY GETTERS
 

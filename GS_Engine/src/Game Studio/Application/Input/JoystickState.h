@@ -21,9 +21,9 @@ GS_STRUCT JoystickState
 
 	bool IsUpDPadButtonPressed = false;
 	bool IsRightDPadButtonPressed = false;
-	bool IsBottomDPadButtonPressed = false;
+	bool IsDownDPadButtonPressed = false;
 	bool IsLeftDPadButtonPressed = false;
 
-	bool IsRightHomeButtonPressed = false;
-	bool IsLeftHomeButtonPressed = false;
+	bool IsRightMenuButtonPressed = false;
+	bool IsLeftMenuButtonPressed = false;
 };

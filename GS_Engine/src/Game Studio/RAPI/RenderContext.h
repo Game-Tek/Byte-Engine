@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Core.h"
-#include "Extent.h"
+#include "Utility/Extent.h"
 #include "Image.h"
 #include "Containers/FVector.hpp"
 

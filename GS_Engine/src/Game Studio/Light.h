@@ -2,9 +2,8 @@
 
 #include "Core.h"
 
-#include "WorldObject.h"
-
-#include "RGB.h"
+#include "Game/WorldObject.h"
+#include "Utility/RGB.h"
 
 GS_CLASS Light : public WorldObject
 {

@@ -7,7 +7,7 @@
 #include <Game Studio/Math/Vector4.h>
 #include <string>
 #include <iostream>
-#include <Game Studio/Logger.h>
+#include <Game Studio/Debug/Logger.h>
 
 class Framebuffer;
 
@@ -20,7 +20,7 @@ public:
 		WCI.Extent = {1280, 720 };
 		WCI.Name = "Game Studio!";
 		WCI.WindowType = WindowFit::NORMAL;
-		Win = Window::CreateGSWindow(WCI);
+		Win = Window::CreateWindow(WCI);
 
 		SetActiveWindow(Win);
 
@@ -150,6 +150,9 @@ public:
 		MCI.IndexData = MyQuad.Indices;
 		MCI.VertexLayout = &Vertex2D::Descriptor;
 		M = Renderer::GetRenderer()->CreateMesh(MCI);
+
+		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
+		//GS_BASIC_LOG_MESSAGE("%f", D());
 	}
 
 	void OnUpdate() final override

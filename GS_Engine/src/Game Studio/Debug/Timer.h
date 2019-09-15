@@ -1,8 +1,7 @@
 #include "Core.h"
 
-#include "Clock.h"
-
 #include "Containers/FString.h"
+#include "Application/Clock.h"
 
 GS_CLASS Timer
 {

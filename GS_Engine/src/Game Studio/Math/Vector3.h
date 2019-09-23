@@ -5,7 +5,7 @@
 #include "Object.h"
 
 //Used to specify a location in 3D space with floating point precision.
-GS_STRUCT Vector3
+struct GS_API Vector3
 {
 	//X component of this vector.
 	float X = 0.0f;

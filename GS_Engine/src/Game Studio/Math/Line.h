@@ -5,7 +5,7 @@
 #include "GSM.hpp"
 #include "Vector3.h"
 
-GS_CLASS Line3
+class GS_API Line3
 {
 public:
 	Vector3 Start;

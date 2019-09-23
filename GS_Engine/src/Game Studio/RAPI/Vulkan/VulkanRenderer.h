@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "RAPI/Renderer.h"
+#include "RAPI/RAPI.h"
 
 #include "VulkanFramebuffer.h"
 #include "VulkanRenderContext.h"
@@ -15,7 +15,7 @@ struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
 
-GS_CLASS VulkanRenderer final : public Renderer
+class GS_API VulkanRAPI final : public RAPI
 {
 	VKInstance Instance;
 	vkPhysicalDevice PhysicalDevice;
@@ -25,8 +25,8 @@ GS_CLASS VulkanRenderer final : public Renderer
 
 	VKCommandPoolCreator CreateCommandPool();
 public:
-	VulkanRenderer();
-	~VulkanRenderer();
+	VulkanRAPI();
+	~VulkanRAPI();
 
 	Mesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;

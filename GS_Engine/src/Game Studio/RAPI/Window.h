@@ -17,16 +17,17 @@ enum class WindowFit : uint8
 	NORMAL, MAXIMIZED, FULLSCREEN
 };
 
-GS_STRUCT WindowCreateInfo
+struct GS_API WindowCreateInfo
 {
 	Extent2D Extent;
 	FString Name;
 	WindowFit WindowType = WindowFit::NORMAL;
+	bool IsDecorated = true;
 };
 
 #undef CreateWindow
 
-GS_CLASS Window
+class GS_API Window
 {
 protected:
 	Extent2D Extent;

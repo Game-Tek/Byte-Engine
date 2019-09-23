@@ -3,7 +3,7 @@
 #include "Core.h"
 
 //Used to specify a RGBA color with floating point precision.
-GS_CLASS RGBA
+class GS_API RGBA
 {
 public:
 	float R;

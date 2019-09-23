@@ -2,19 +2,19 @@
 
 #include "Core.h"
 
-GS_STRUCT UniformBufferCreateInfo
+struct GS_API UniformBufferCreateInfo
 {
 	void* Data = nullptr;
 	size_t Size = 0;
 };
 
-GS_STRUCT UniformBufferUpdateInfo
+struct GS_API UniformBufferUpdateInfo
 {
 	void* Data = nullptr;
 	size_t Size = 0;
 };
 
-GS_CLASS UniformBuffer
+class GS_API UniformBuffer
 {
 public:
 	virtual void UpdateBuffer(const UniformBufferUpdateInfo& _BUI) const = 0;

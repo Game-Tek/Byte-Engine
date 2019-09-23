@@ -20,24 +20,26 @@ typedef double real;
 
 #ifdef GS_PLATFORM_WIN
 	#define INLINE __forceinline
+#else
+	#define inline
 #endif
 
 //Library import/export.
 
 #ifdef GS_PLATFORM_WIN
 	#ifdef GS_BUILD
-		#define GS_API __declspec(dllexport)
+		#define GS_API 
 	#else
-		#define GS_API __declspec(dllimport)
+		#define GS_API 
 	#endif
 #endif
 
 #ifdef GS_PLATFORM_WIN
-#ifdef GS_BUILD
-#define GS_EXPORT_ONLY __declspec(dllexport)
-#else
-#define GS_EXPORT_ONLY
-#endif
+	#ifdef GS_BUILD
+		#define GS_EXPORT_ONLY __declspec(dllexport)
+	#else
+		#define GS_EXPORT_ONLY
+	#endif
 #endif
 
 //Class setup simplification.
@@ -48,10 +50,10 @@ typedef double real;
 
 //Assert
 #ifdef GS_DEBUG
-	#define GS_ASSERT(func) func;\
+	#define GS_ASSERT(func, ...) func;\
 							if (!(func)) __debugbreak()
 #else
-	#define GS_ASSERT(func) func;
+	#define GS_ASSERT(func, ...) func;
 #endif
 
 //  CASTS
@@ -61,4 +63,5 @@ typedef double real;
 #define RCAST(to, from) reinterpret_cast<to>(from)
 #define CCAST(to, from) const_cast<to>(from)
 
-#define uint64MAX 0xffffffffffffffff
+constexpr uint8 uint8MAX = 0xff;
+constexpr uint_64 uint_64MAX = 0xffffffffffffffff;

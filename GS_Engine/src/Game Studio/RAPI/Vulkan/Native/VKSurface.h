@@ -10,14 +10,14 @@ class VKInstance;
 class vkPhysicalDevice;
 class Window;
 
-GS_STRUCT VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
+struct GS_API VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
 {
 	const VKInstance & m_Instance;
 
 	VKSurfaceCreator(VKDevice* _Device, const VKInstance & _Instance, const Window & _Window);
 };
 
-GS_CLASS VKSurface final : public VKObject<VkSurfaceKHR>
+class GS_API VKSurface final : public VKObject<VkSurfaceKHR>
 {
 	const VKInstance& m_Instance;
 

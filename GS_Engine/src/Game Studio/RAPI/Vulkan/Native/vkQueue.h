@@ -10,7 +10,7 @@ MAKE_VK_HANDLE(VkFence)
 struct VkSubmitInfo;
 struct VkPresentInfoKHR;
 
-GS_CLASS vkQueue
+class GS_API vkQueue
 {
 	VkQueue Queue = nullptr;
 	uint32 QueueIndex = 0;

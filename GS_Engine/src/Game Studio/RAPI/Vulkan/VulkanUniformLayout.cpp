@@ -64,8 +64,6 @@ void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const UniformLa
 	DescriptorSetAllocateInfo.pSetLayouts = SetLayouts.data();
 
 	DescriptorPool.AllocateDescriptorSets(&DescriptorSetAllocateInfo, DescriptorSets.data());
-
-	UpdateDescriptorSet(_Device, _PLCI);
 }
 
 
@@ -90,17 +88,17 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 	CreateDescriptorSet(_Device, _PLCI);
 }
 
-void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
+void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutUpdateInfo& _ULUI)
 {
-	DArray<VkWriteDescriptorSet> WriteDescriptors(_PLCI.PipelineUniformSets.length());
-	for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
+	DArray<VkWriteDescriptorSet> WriteDescriptors(_ULUI.PipelineUniformSets.length());
+	for (uint8 i = 0; i < _ULUI.PipelineUniformSets.length(); ++i)
 	{
-		switch (_PLCI.PipelineUniformSets[i].UniformSetType)
+		switch (_ULUI.PipelineUniformSets[i].UniformSetType)
 		{
 		case UniformType::SAMPLER:
 
 			VkDescriptorImageInfo DescriptorImageInfo;
-			DescriptorImageInfo.imageView = SCAST(VulkanImageBase*, _PLCI.PipelineUniformSets[i].UniformData)->GetVKImageView().GetHandle();
+			DescriptorImageInfo.imageView = SCAST(VulkanImageBase*, _ULUI.PipelineUniformSets[i].UniformData)->GetVKImageView().GetHandle();
 			DescriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 			WriteDescriptors[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -108,8 +106,8 @@ void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLa
 			WriteDescriptors[i].dstSet = DescriptorSets[i];
 			WriteDescriptors[i].dstBinding = 0;
 			WriteDescriptors[i].dstArrayElement = 0;
-			WriteDescriptors[i].descriptorCount = _PLCI.PipelineUniformSets[i].UniformSetUniformsCount;
-			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_PLCI.PipelineUniformSets[i].UniformSetType);
+			WriteDescriptors[i].descriptorCount = _ULUI.PipelineUniformSets[i].UniformSetUniformsCount;
+			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_ULUI.PipelineUniformSets[i].UniformSetType);
 			WriteDescriptors[i].pImageInfo = &DescriptorImageInfo;
 			WriteDescriptors[i].pTexelBufferView = nullptr;
 			WriteDescriptors[i].pBufferInfo = nullptr;
@@ -125,8 +123,8 @@ void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLa
 			WriteDescriptors[i].dstSet = DescriptorSets[i];
 			WriteDescriptors[i].dstBinding = 0;
 			WriteDescriptors[i].dstArrayElement = 0;
-			WriteDescriptors[i].descriptorCount = _PLCI.PipelineUniformSets[i].UniformSetUniformsCount;
-			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_PLCI.PipelineUniformSets[i].UniformSetType);
+			WriteDescriptors[i].descriptorCount = _ULUI.PipelineUniformSets[i].UniformSetUniformsCount;
+			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_ULUI.PipelineUniformSets[i].UniformSetType);
 			WriteDescriptors[i].pImageInfo;
 			WriteDescriptors[i].pTexelBufferView = nullptr;
 			WriteDescriptors[i].pBufferInfo = nullptr;
@@ -142,7 +140,7 @@ void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLa
 		case UniformType::STORAGE_BUFFER:
 
 			VkDescriptorBufferInfo DescriptorBufferInfo;
-			DescriptorBufferInfo.buffer = SCAST(VulkanUniformBuffer*, _PLCI.PipelineUniformSets[i].UniformData)->GetVKBuffer().GetHandle();
+			DescriptorBufferInfo.buffer = SCAST(VulkanUniformBuffer*, _ULUI.PipelineUniformSets[i].UniformData)->GetVKBuffer().GetHandle();
 			DescriptorBufferInfo.offset = 0; //TODO: Get offset from buffer itself
 			DescriptorBufferInfo.range = VK_WHOLE_SIZE;
 
@@ -151,8 +149,8 @@ void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLa
 			WriteDescriptors[i].dstSet = DescriptorSets[i];
 			WriteDescriptors[i].dstBinding = 0;
 			WriteDescriptors[i].dstArrayElement = 0;
-			WriteDescriptors[i].descriptorCount = _PLCI.PipelineUniformSets[i].UniformSetUniformsCount;
-			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_PLCI.PipelineUniformSets[i].UniformSetType);
+			WriteDescriptors[i].descriptorCount = _ULUI.PipelineUniformSets[i].UniformSetUniformsCount;
+			WriteDescriptors[i].descriptorType = UniformTypeToVkDescriptorType(_ULUI.PipelineUniformSets[i].UniformSetType);
 			WriteDescriptors[i].pImageInfo = nullptr;
 			WriteDescriptors[i].pTexelBufferView = nullptr;
 			WriteDescriptors[i].pBufferInfo = &DescriptorBufferInfo;

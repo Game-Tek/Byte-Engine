@@ -9,7 +9,7 @@
 class VKDevice;
 
 template<typename T>
-GS_STRUCT VKObjectCreator
+struct GS_API VKObjectCreator
 {
 	VKObjectCreator(VKDevice* _Device) : m_Device(_Device)
 	{
@@ -20,7 +20,7 @@ GS_STRUCT VKObjectCreator
 };
 
 template <typename T>
-GS_CLASS VKObject
+class GS_API VKObject
 {
 protected:
 	VKDevice* m_Device = nullptr;

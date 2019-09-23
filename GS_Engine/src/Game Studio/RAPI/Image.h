@@ -5,7 +5,7 @@
 #include "RenderCore.h"
 #include "Utility/Extent.h"
 
-GS_STRUCT ImageCreateInfo
+struct GS_API ImageCreateInfo
 {
 	Extent2D Extent = {1280, 720 };
 	Format ImageFormat = Format::RGBA_I8;
@@ -15,7 +15,7 @@ GS_STRUCT ImageCreateInfo
 };
 
 //Represents a resource utilized by the rendering API for storing and referencing attachments. Which are images which hold some information which the GPU writes info to.
-GS_CLASS Image
+class GS_API Image
 {
 protected:
 	Extent2D ImageExtent = { 1280, 720 };

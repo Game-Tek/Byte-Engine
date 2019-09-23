@@ -8,14 +8,14 @@
 #include "Native/VKMemory.h"
 #include "Native/VKImage.h"
 
-GS_CLASS VulkanImageBase : public Image
+class GS_API VulkanImageBase : public Image
 {
 public:
 	VulkanImageBase(const Extent2D _ImgExtent, const Format _ImgFormat, const ImageType _ImgType, const ImageDimensions _ID);
 	[[nodiscard]] virtual const VKImageView& GetVKImageView() const = 0;
 };
 
-GS_CLASS VulkanImage final : public VulkanImageBase
+class GS_API VulkanImage final : public VulkanImageBase
 {
 	VKImage m_Image;
 	VKMemory ImageMemory;

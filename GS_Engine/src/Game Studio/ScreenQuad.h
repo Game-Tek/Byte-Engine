@@ -4,7 +4,7 @@
 
 #include "Vertex.h"
 
-GS_STRUCT ScreenQuad
+struct GS_API ScreenQuad
 {
 	ScreenQuad() = default;
 

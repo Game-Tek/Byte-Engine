@@ -4,14 +4,14 @@
 
 #include "FVector.hpp"
 
-GS_CLASS FString
+class GS_API FString
 {
 public:
 	//Constructs an empty FString.
 	FString();
 
 	template<size_t N>
-	FString(const char(&_Literal)[N]) : Data(_Literal, N)
+	FString(const char(&_Literal)[N]) : Data(N, *_Literal)
 	{
 	}
 
@@ -23,7 +23,7 @@ public:
 	explicit FString(size_t _Length);
 
 	//Constructs a FString from a non null terminated character array.
-	FString(const char * In, size_t Length);
+	FString(size_t Length, const char* In);
 
 	FString(const FString & Other) = default;
 
@@ -33,6 +33,9 @@ public:
 	FString & operator=(const FString & Other) = default;
 	FString & operator+(const char * Other);
 	FString & operator+(const FString & Other);
+
+	char operator[](size_t _Index);
+	char operator[](size_t _Index) const;
 
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString & Other) const;

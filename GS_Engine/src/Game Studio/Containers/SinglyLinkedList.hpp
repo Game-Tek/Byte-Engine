@@ -3,7 +3,7 @@
 #include "Core.h"
 
 template<class T>
-GS_STRUCT SingleLinkListNode
+struct GS_API SingleLinkListNode
 {
 	SingleLinkListNode() = default;
 
@@ -21,7 +21,7 @@ protected:
 };
 
 template <class T>
-GS_CLASS SingleLinkList
+class GS_API SingleLinkList
 {
 public:
 	SingleLinkList() = default;

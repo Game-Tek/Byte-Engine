@@ -18,7 +18,7 @@ struct VkExtent2D;
 struct VkAttachmentDescription;
 struct VkSubpassDescription;
 
-GS_CLASS VulkanFramebuffer final : public Framebuffer
+class GS_API VulkanFramebuffer final : public Framebuffer
 {
 	VKFramebuffer m_Framebuffer;
 

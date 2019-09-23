@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-GS_CLASS Object
+class GS_API Object
 {
 
 public:

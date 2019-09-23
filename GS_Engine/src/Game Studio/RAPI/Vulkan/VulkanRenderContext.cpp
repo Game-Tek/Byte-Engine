@@ -36,7 +36,7 @@ VKSwapchainCreator VulkanRenderContext::CreateSwapchain(VKDevice* _Device, VkSwa
 	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 
 	SwapchainCreateInfo.surface = Surface.GetHandle();
-	SwapchainCreateInfo.minImageCount = 2;
+	SwapchainCreateInfo.minImageCount = 3;
 	SwapchainCreateInfo.imageFormat = Format.format;
 	SwapchainCreateInfo.imageColorSpace = Format.colorSpace;
 	SwapchainCreateInfo.imageExtent = Extent2DToVkExtent2D(RenderExtent);
@@ -69,6 +69,14 @@ SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSur
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
 	DArray<VkSurfaceFormatKHR> SurfaceFormats(FormatsCount);
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, SurfaceFormats.data());
+
+	//NASTY, REMOVE
+	VkBool32 Supports = 0;
+	vkGetPhysicalDeviceSurfaceSupportKHR(_PD, PresentationQueue.GetQueueIndex(), _Surface, &Supports);
+	//NASTY, REMOVE
+
+	VkSurfaceCapabilitiesKHR SurfaceCapabilities = {};
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, _Surface, &SurfaceCapabilities);
 
 	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
 }
@@ -133,7 +141,10 @@ VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, const VKInstance& _I
 
 VulkanRenderContext::~VulkanRenderContext()
 {
-	FVector<VulkanSwapchainImage*>::DestroyFVectorOfPointers(Images);
+	for(auto& Image : Images)
+	{
+		delete Image;
+	}
 }
 
 void VulkanRenderContext::OnResize()
@@ -255,6 +266,11 @@ void VulkanRenderContext::BindUniformLayout(UniformLayout* _UL)
 {
 	const auto VKUL = SCAST(VulkanUniformLayout*, _UL);
 	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVKPipelineLayout().GetHandle(), 0, 1, VKUL->GetVkDescriptorSets().data(), 0, nullptr);
+}
+
+void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
+{
+	vkCmdPushConstants(CommandBuffers[CurrentImage], SCAST(VulkanUniformLayout*, _PCI.UniformLayout)->GetVKPipelineLayout().GetHandle(), VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)

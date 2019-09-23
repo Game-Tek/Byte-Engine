@@ -17,12 +17,12 @@ enum VkColorSpaceKHR;
 enum VkFormat;
 enum VkPresentModeKHR;
 
-GS_STRUCT VKSwapchainCreator final : VKObjectCreator<VkSwapchainKHR>
+struct GS_API VKSwapchainCreator final : VKObjectCreator<VkSwapchainKHR>
 {
 	VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR * _VkSCIKHR);
 };
 
-GS_CLASS VKSwapchain final : public VKObject<VkSwapchainKHR>
+class GS_API VKSwapchain final : public VKObject<VkSwapchainKHR>
 {
 	static VkSwapchainCreateInfoKHR CreateSwapchainCreateInfo(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain);
 public:

@@ -11,7 +11,7 @@
 //Index increases in row order.
 
 //Used to create 4x4 matrices with floating point precision.
-GS_CLASS Matrix4
+class GS_API Matrix4
 {
 public:
 	Matrix4() : Array{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }

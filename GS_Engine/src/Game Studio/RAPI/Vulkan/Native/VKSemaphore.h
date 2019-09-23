@@ -8,12 +8,12 @@ MAKE_VK_HANDLE(VkSemaphore)
 
 struct VkSemaphoreCreateInfo;
 
-GS_STRUCT VKSemaphoreCreator final : VKObjectCreator<VkSemaphore>
+struct GS_API VKSemaphoreCreator final : VKObjectCreator<VkSemaphore>
 {
 	VKSemaphoreCreator(VKDevice* _Device, const VkSemaphoreCreateInfo * _VkSCI);
 };
 
-GS_CLASS VKSemaphore final : public VKObject<VkSemaphore>
+class GS_API VKSemaphore final : public VKObject<VkSemaphore>
 {
 public:
 	VKSemaphore(const VKSemaphoreCreator& _VKSC) : VKObject<VkSemaphore>(_VKSC)

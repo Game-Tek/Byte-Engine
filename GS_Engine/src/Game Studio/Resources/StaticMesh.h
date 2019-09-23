@@ -26,11 +26,11 @@ struct aiNode;
 struct aiMesh;
 struct aiScene;
 
-GS_CLASS StaticMeshResource final : public Resource
+class GS_API StaticMesh final : public Resource
 {
 public:
-	explicit StaticMeshResource(const FString & Path);
-	~StaticMeshResource();
+	explicit StaticMesh(const FString & Path);
+	~StaticMesh();
 
 	[[nodiscard]] size_t GetDataSize() const override { return SCAST(Model*, Data)->IndexCount * sizeof(uint16) + SCAST(Model*, Data)->VertexCount * sizeof(Vertex); }
 	[[nodiscard]] Model* GetModel() const { return SCAST(Model*, Data); }

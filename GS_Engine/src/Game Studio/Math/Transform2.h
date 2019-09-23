@@ -5,7 +5,7 @@
 #include "Vector2.h"
 
 //Used to specify a transform in 2D space with floating point precision.
-GS_CLASS Transform2
+class GS_API Transform2
 {
 public:
 	Vector2 Position;

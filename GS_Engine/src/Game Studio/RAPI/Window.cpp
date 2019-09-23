@@ -7,6 +7,6 @@
 Window* Window::CreateWindow(const WindowCreateInfo& _WCI)
 {
 #ifdef GS_PLATFORM_WIN
-	return new WindowsWindow(_WCI.Extent, _WCI.WindowType, _WCI.Name);
+	return new WindowsWindow(_WCI);
 #endif
 }

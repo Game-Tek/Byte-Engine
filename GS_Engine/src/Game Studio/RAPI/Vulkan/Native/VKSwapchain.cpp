@@ -8,7 +8,8 @@
 
 VKSwapchainCreator::VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR* _VkSCIKHR) : VKObjectCreator<VkSwapchainKHR>(_Device)
 {
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle), "Failed to create Swapchain!");
+	auto ff = vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle);
+	//GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle), "Failed to create Swapchain!");
 }
 
 VKSwapchain::~VKSwapchain()

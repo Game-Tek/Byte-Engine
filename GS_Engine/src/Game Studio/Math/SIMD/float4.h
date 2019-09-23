@@ -4,7 +4,7 @@
 
 #include <immintrin.h>
 
-GS_CLASS float4
+class GS_API float4
 {
 	__m128 Data;
 

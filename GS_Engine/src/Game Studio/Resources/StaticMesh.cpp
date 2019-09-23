@@ -1,4 +1,4 @@
-#include "StaticMeshResource.h"
+#include "StaticMesh.h"
 
 #include "Containers/FString.h"
 
@@ -6,19 +6,19 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
-StaticMeshResource::StaticMeshResource(const FString & Path) : Resource(Path)
+StaticMesh::StaticMesh(const FString& Path) : Resource(Path)
 {
+	LoadResource();
 }
 
-StaticMeshResource::~StaticMeshResource()
+StaticMesh::~StaticMesh()
 {
 	delete static_cast<Model *>(Data);
 }
 
-bool StaticMeshResource::LoadResource()
+bool StaticMesh::LoadResource()
 {
 	//Create Importer.
-
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
@@ -40,11 +40,11 @@ bool StaticMeshResource::LoadResource()
 	return true;
 }
 
-void StaticMeshResource::LoadFallbackResource()
+void StaticMesh::LoadFallbackResource()
 {
 }
 
-Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
+Model * StaticMesh::ProcessNode(aiNode * Node, const aiScene * Scene)
 {
 	//Store inside MeshData a new Array of meshes.
 	Model * MeshData = new Model[Node->mNumMeshes];
@@ -63,7 +63,7 @@ Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 	return MeshData;
 }
 
-Model StaticMeshResource::ProcessMesh(aiMesh * InMesh)
+Model StaticMesh::ProcessMesh(aiMesh * InMesh)
 {
 	//Create a mesh object to hold the mesh currently being processed.
 	Model Result;

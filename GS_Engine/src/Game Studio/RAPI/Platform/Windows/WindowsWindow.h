@@ -7,7 +7,7 @@
 
 struct GLFWwindow;
 
-GS_CLASS WindowsWindow final : public Window
+class GS_API WindowsWindow final : public Window
 {
 	HWND WindowObject = nullptr;
 	HINSTANCE WindowInstance = nullptr;
@@ -17,7 +17,7 @@ GS_CLASS WindowsWindow final : public Window
 	static int32 KeyboardKeysToGLFWKeys(KeyboardKeys _IE);
 	static KeyState GLFWKeyStateToKeyState(int32 _KS);
 public:
-	WindowsWindow(Extent2D _Extent, WindowFit _Fit, const FString& _Name);
+	WindowsWindow(const WindowCreateInfo& _WCI);
 	~WindowsWindow();
 
 	INLINE HWND GetWindowObject() const { return WindowObject; }

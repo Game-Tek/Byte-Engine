@@ -6,20 +6,32 @@
 
 #include "Math\Transform3.h"
 
+class World;
 class GameInstance;
 class RenderProxy;
 
-GS_CLASS WorldObject : public Object
+using WorldObjectID = uint64;
+
+class RenderInfo;
+
+class GS_API WorldObject : public Object
 {
 public:
 	WorldObject() = default;
-	explicit WorldObject(const Transform3 & _Transform) : Transform(_Transform)
-	{
-	}
-
 	virtual ~WorldObject() = default;
 
+	void SetID(WorldObjectID _ID) { ID = _ID; }
+
+	[[nodiscard]] WorldObjectID GetID() const { return ID;}
+
+	void SetTransform(const Transform3& _NewTransform) { Transform = _NewTransform; }
 	[[nodiscard]] Transform3& GetTransform() { return Transform; }
+	void SetPosition(const Vector3& _Pos) { Transform.Position = _Pos; }
+	[[nodiscard]] const Vector3& GetPosition() const { return Transform.Position; }
+
+	static World* GetWorld();
 protected:
 	Transform3 Transform;
+
+	WorldObjectID ID = 0;
 };

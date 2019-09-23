@@ -6,11 +6,11 @@ FString::FString() : Data(10)
 {
 }
 
-FString::FString(const char * In) : Data(const_cast<char *>(In), StringLength(In))
+FString::FString(const char * In) : Data(StringLength(In), const_cast<char*>(In))
 {
 }
 
-FString::FString(char* const _In) : Data(CCAST(char*, _In), StringLength(_In))
+FString::FString(char* const _In) : Data(StringLength(_In), CCAST(char*, _In))
 {
 }
 
@@ -18,7 +18,7 @@ FString::FString(size_t _Length) : Data(_Length)
 {
 }
 
-FString::FString(const char * In, const size_t Length) : Data(const_cast<char *>(In), Length + 1)
+FString::FString(const size_t Length, const char* In) : Data(Length + 1, const_cast<char*>(In))
 {
 	Data.push_back('\0');
 }
@@ -32,7 +32,7 @@ FString & FString::operator=(const char * In)
 
 FString & FString::operator+(const char * Other)
 {
-	Data.push_back(const_cast<char *>(Other), StringLength(Other));
+	Data.push_back(StringLength(Other), const_cast<char*>(Other));
 
 	return *this;
 }
@@ -42,6 +42,16 @@ FString & FString::operator+(const FString & Other)
 	Data.push_back(Other.Data);
 
 	return *this;
+}
+
+char FString::operator[](size_t _Index)
+{
+	return Data[_Index];
+}
+
+char FString::operator[](size_t _Index) const
+{
+	return Data[_Index];
 }
 
 bool FString::operator==(const FString & _Other) const
@@ -92,7 +102,7 @@ void FString::Append(const char * In)
 {
 	Data.push_back(' ');
 
-	Data.push_back(const_cast<char *>(In), StringLength(In));
+	Data.push_back(StringLength(In), const_cast<char*>(In));
 
 	return;
 }
@@ -144,7 +154,7 @@ FString FString::MakeString(const char* _Text, ...)
 
 	va_list vaargs;
 	va_start(vaargs, _Text);
-    auto Count = snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs) + 1; //Take into account null terminator.
+	const auto Count = snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs) + 1; //Take into account null terminator.
 	if(Count > Return.Data.length())
     {
         Return.Data.resize(Count);

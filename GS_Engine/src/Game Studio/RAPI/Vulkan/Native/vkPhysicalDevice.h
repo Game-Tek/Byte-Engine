@@ -10,7 +10,7 @@ class VKInstance;
 
 enum VkPhysicalDeviceType;
 
-GS_CLASS vkPhysicalDevice
+class GS_API vkPhysicalDevice
 {
 	VkPhysicalDevice PhysicalDevice = nullptr;
 

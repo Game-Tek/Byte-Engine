@@ -2,21 +2,21 @@
 
 #include "Core.h"
 
-#include "WorldPrimitive.h"
+#include "Game/WorldObject.h"
 
-GS_CLASS Camera : public WorldPrimitive
+class GS_API Camera : public WorldObject
 {
 public:
 	Camera() = default;
 	explicit Camera(const float FOV);
 	~Camera() = default;
 
-	float GetAperture() const { return Aperture; }
-	float GetIrisHeightMultiplier() const { return IrisHeightMultiplier; }
-	float GetFOV() const { return FOV; }
-	float GetFocusDistance() const { return FocusDistance; }
-	uint16 GetWhiteBalance() const { return WhiteBalance; }
-	uint16 GetISO() const { return ISO; }
+	[[nodiscard]] float GetAperture() const { return Aperture; }
+	[[nodiscard]] float GetIrisHeightMultiplier() const { return IrisHeightMultiplier; }
+	[[nodiscard]] float GetFOV() const { return FOV; }
+	[[nodiscard]] float GetFocusDistance() const { return FocusDistance; }
+	[[nodiscard]] uint16 GetWhiteBalance() const { return WhiteBalance; }
+	[[nodiscard]] uint16 GetISO() const { return ISO; }
 
 	void SetAperture(const float NewAperture) { Aperture = NewAperture; }
 	void SetIrisHeightMultiplier(const float NewIrisHeightMultiplier) { IrisHeightMultiplier = NewIrisHeightMultiplier; }

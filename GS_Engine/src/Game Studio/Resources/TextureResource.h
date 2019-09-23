@@ -7,7 +7,7 @@
 #include "RAPI/RenderCore.h"
 #include "Utility/Extent.h"
 
-GS_CLASS TextureResource : public Resource
+class GS_API TextureResource : public Resource
 {
 public:
 	TextureResource(const FString& _FilePath);

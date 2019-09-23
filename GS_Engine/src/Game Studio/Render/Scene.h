@@ -4,41 +4,48 @@
 #include "Camera.h"
 #include "Containers/FVector.hpp"
 #include "Math/Matrix4.h"
-#include "EngineSystem.h"
+#include "Game/SubWorlds.h"
+#include "RenderComponent.h"
+
+#include "ScreenQuad.h"
+#include "RAPI/Window.h"
+#include "RAPI/Framebuffer.h"
+#include "RAPI/GraphicsPipeline.h"
+#include "RAPI/UniformBuffer.h"
+#include "RAPI/RenderContext.h"
+#include "RAPI/RenderPass.h"
 
 class StaticMesh;
 class RenderProxy;
 class PointLightRenderProxy;
 
-//Stores all the data necessary for the renderer to work. It's the renderers representation of the game world.
-GS_CLASS Scene : public ESystem
+//Stores all the data necessary for the RAPI to work. It's the RAPIs representation of the game world.
+class GS_API Scene : public SubWorld
 {
 public:
 	Scene();
-	virtual ~Scene() = default;
+	virtual ~Scene();
 
-	virtual void OnUpdate() override;
-
-	void AddObject(RenderProxy * Object);
-	void AddLight(PointLightRenderProxy * Light);
-	void RemoveLight(PointLightRenderProxy * Light);
-	void RemoveObject(RenderProxy * Object);
+	void OnUpdate() override;	
 
 	//Returns a pointer to the active camera.
-	Camera * GetActiveCamera() const { return ActiveCamera; }
-	const Matrix4 & GetViewMatrix() const { return ViewMatrix; }
-	const Matrix4 & GetProjectionMatrix() const { return ProjectionMatrix; }
-	const Matrix4 * GetVPMatrix() const { return &VPMatrix; }
+	[[nodiscard]] Camera* GetActiveCamera() const { return ActiveCamera; }
+	[[nodiscard]] const Matrix4& GetViewMatrix() const { return ViewMatrix; }
+	[[nodiscard]] const Matrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
+	[[nodiscard]] const Matrix4& GetVPMatrix() const { return VPMatrix; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
-	FVector<RenderProxy *> RenderProxyList;
-	FVector<PointLightRenderProxy *> PointLightRenderProxyList;
+	StaticMeshRenderComponent* CreateStaticMeshRenderComponent(WorldObject* _Owner) const;
 
+	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 protected:
+	//Scene elements
+	mutable FVector<StaticMeshRenderComponent*> StaticMeshes;
+
 	//Pointer to the active camera.
-	Camera * ActiveCamera = nullptr;
+	Camera* ActiveCamera = nullptr;
 
 	//Matrix necessary to represent the active camera's view position.
 	Matrix4 ViewMatrix;
@@ -48,6 +55,16 @@ protected:
 
 	//Matrix to represent the multiplication of the view and projection matrix.
 	Matrix4 VPMatrix;
+
+	//Render elements
+	Window* Win = nullptr;
+	FVector<Framebuffer*> Framebuffers;
+	ScreenQuad MyQuad = {};
+	RenderContext* RC = nullptr;
+	RenderPass* RP = nullptr;
+	GraphicsPipeline* GP = nullptr;
+	UniformBuffer* UB = nullptr;
+	UniformLayout* UL = nullptr;
 
 	//Updates the view matrix to follow the active's camera position.
 	void UpdateViewMatrix();

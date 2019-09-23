@@ -10,12 +10,12 @@ MAKE_VK_HANDLE(VkShaderModule)
 
 struct VkShaderModuleCreateInfo;
 
-GS_STRUCT VKShaderModuleCreator final : public VKObjectCreator<VkShaderModule>
+struct GS_API VKShaderModuleCreator final : public VKObjectCreator<VkShaderModule>
 {
 	VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo * _VkSMCI);
 };
 
-GS_CLASS VKShaderModule final : public VKObject<VkShaderModule>
+class GS_API VKShaderModule final : public VKObject<VkShaderModule>
 {
 public:
 	VKShaderModule(const VKShaderModuleCreator& _VKSMC) : VKObject<VkShaderModule>(_VKSMC)

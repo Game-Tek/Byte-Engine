@@ -12,7 +12,7 @@
 
 struct VkWriteDescriptorSet;
 
-GS_CLASS VulkanUniformLayout final : public UniformLayout
+class GS_API VulkanUniformLayout final : public UniformLayout
 {
 	VKDescriptorSetLayout DescriptorSetLayout;
 	VKDescriptorPool DescriptorPool;
@@ -30,7 +30,7 @@ public:
 	VulkanUniformLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 	~VulkanUniformLayout() = default;
 
-	void UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
+	void UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutUpdateInfo& _ULUI);
 
 	[[nodiscard]] const auto& GetVkDescriptorSets() const { return DescriptorSets; }
 	[[nodiscard]] const VKDescriptorSetLayout& GetVKDescriptorSetLayout() const { return DescriptorSetLayout; }

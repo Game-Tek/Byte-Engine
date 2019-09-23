@@ -4,8 +4,8 @@
 
 #include "WorldObject.h"
 
-//Actor is the base class for all objects that can be possesed by a controller.
-GS_CLASS Actor : public WorldObject
+//Actor is the base class for all objects that can be possessed by a controller.
+class GS_API Actor : public WorldObject
 {
 public:
 	Actor();

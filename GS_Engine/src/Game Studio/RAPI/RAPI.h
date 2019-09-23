@@ -12,24 +12,24 @@
 #include "UniformBuffer.h"
 #include "UniformLayout.h"
 
-enum class RAPI : uint8
+enum class RAPIs : uint8
 {
 	NONE, VULKAN
 };
 
-GS_CLASS Renderer
+class GS_API RAPI
 {
-	static RAPI RenderAPI;
-	static Renderer* RendererInstance;
+	static RAPIs RenderAPI;
+	static RAPI* RAPIInstance;
 	
-	static Renderer* CreateRenderer();
-	static RAPI GetRAPI();
+	static RAPI* CreateRAPI();
+	static RAPIs GetRAPIs();
 protected:
-	Renderer() = default;
-	virtual ~Renderer() = default;
+	RAPI() = default;
+	virtual ~RAPI() = default;
 public:
-	static INLINE RAPI GetRenderAPI() { return RenderAPI; }
-	static INLINE Renderer* GetRenderer() { return RendererInstance; }
+	static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
+	static INLINE RAPI* GetRAPI() { return RAPIInstance; }
 
 	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;

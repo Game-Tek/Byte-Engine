@@ -12,7 +12,7 @@
 
 class Window;
 
-GS_CLASS InputManager : public Object
+class GS_API InputManager : public Object
 {
 	Window * ActiveWindow = nullptr;
 

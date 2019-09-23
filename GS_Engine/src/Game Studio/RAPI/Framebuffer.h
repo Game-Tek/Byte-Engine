@@ -10,7 +10,7 @@
 class Image;
 class RenderPass;
 
-GS_STRUCT FramebufferAttachments
+struct GS_API FramebufferAttachments
 {
 	Format ColorAttachmentsFormat[8] = {};
 	uint8 ColorAttachmentsCount = 0;
@@ -20,14 +20,14 @@ GS_STRUCT FramebufferAttachments
 	Image* Images = nullptr;
 };
 
-GS_STRUCT FramebufferCreateInfo
+struct GS_API FramebufferCreateInfo
 {
 	RenderPass* RenderPass = nullptr;
 	Extent2D Extent = { 1280, 720 };
 	DArray<Image*> Images;
 };
 
-GS_CLASS Framebuffer
+class GS_API Framebuffer
 {
 	Extent2D Extent;
 public:

@@ -4,7 +4,7 @@
 
 #include "Native/VKRenderPass.h"
 
-GS_CLASS VulkanRenderPass final : public RenderPass
+class GS_API VulkanRenderPass final : public RenderPass
 {
 	VKRenderPass RenderPass;
 

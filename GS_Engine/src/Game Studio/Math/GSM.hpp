@@ -9,7 +9,9 @@
 #include "Quaternion.h"
 #include "Matrix4.h"
 
-GS_CLASS GSM
+#include "Transform3.h"
+
+class GS_API GSM
 {
 	// +  real
 	// += real
@@ -500,9 +502,9 @@ GS_CLASS GSM
 		return Lerp(AtanTable[a], AtanTable[a + 1], Degrees - a);
 	}
 
-	INLINE static float StraightRaise(const float A, const uint8 Times)
+	INLINE static real StraightRaise(const real A, const uint8 Times)
 	{
-		float Result = A;
+		real Result = A;
 
 		for (uint8 i = 0; i < Times - 1; i++)
 		{
@@ -532,9 +534,9 @@ public:
 		return (Random() % _Min) % _Max;
 	}
 
-	INLINE static float fRandom()
+	INLINE static real fRandom()
 	{
-		float ret = FloatRandTable[FloatRandUseCount];
+		auto ret = FloatRandTable[FloatRandUseCount];
 
 		ret = FloatRandUseCount % 2 == 1 ? ret * -1 : ret;
 
@@ -556,30 +558,30 @@ public:
 		return (C - Floor(C)) * B;
 	}
 
-	INLINE static float Power(const float Base, const int32 Exp)
-	{
-		if (Exp < 0)
-		{
-			if (Base == 0)
-			{
-				return -0; // Error!!
-			}
-
-			return 1 / (Base * Power(Base, (-Exp) - 1));
-		}
-
-		if (Exp == 0)
-		{
-			return 1;
-		}
-
-		if (Exp == 1)
-		{
-			return Base;
-		}
-
-		return Base * Power(Base, Exp - 1);
-	}
+	//INLINE static float Power(const float Base, const int32 Exp)
+	//{
+	//	if (Exp < 0)
+	//	{
+	//		if (Base == 0)
+	//		{
+	//			return -0; // Error!!
+	//		}
+	//
+	//		return 1 / (Base * Power(Base, (-Exp) - 1));
+	//	}
+	//
+	//	if (Exp == 0)
+	//	{
+	//		return 1;
+	//	}
+	//
+	//	if (Exp == 1)
+	//	{
+	//		return Base;
+	//	}
+	//
+	//	return Base * Power(Base, Exp - 1);
+	//}
 
 	INLINE static uint32 Fact(const int8 A)
 	{
@@ -596,20 +598,16 @@ public:
 	//Returns the sine of an angle.
 	INLINE static float Sine(const float Degrees)
 	{
-		float abs = Abs(Degrees);
-
-		float Result = 0.0f;
+		const float abs = Abs(Degrees);
 
 		if (Modulo(abs, 360.0f) > 180.0f)
 		{
-			Result = -Sin(Modulo(abs, 180.0f));
+			return -Sin(Modulo(abs, 180.0f));
 		}
 		else
 		{
-			Result = Sin(Modulo(abs, 180.0f));
+			return Sin(Modulo(abs, 180.0f));
 		}
-
-		return (Degrees > 0.0f) ? Result : -Result;
 	}
 
 	//Returns the cosine of an angle.
@@ -674,11 +672,11 @@ public:
 		return ArcTangent(Y / X);
 	}
 
-	INLINE static float Power(const float A, const float Times)
+	INLINE static real Power(const real _A, const real Times)
 	{
-		const float Timesplus = StraightRaise(A, Floor(Times));
+		const real Timesplus = StraightRaise(_A, Floor(Times));
 
-		return Lerp(Timesplus, Timesplus * Times, Times - Floor(Times));
+		return Lerp(Timesplus, Timesplus * _A, Times - Floor(Times));
 	}
 
 	//////////////////////////////////////////////////////////////
@@ -741,20 +739,22 @@ public:
 		return A / (InMax / OutMax);
 	}
 
-	INLINE static real SquareRoot(const real A)
+	INLINE static real SquareRoot(real _A)
 	{
-		//https://www.geeksforgeeks.org/square-root-of-a-perfect-square/
-		real X = A;
-		real Y = 1.0f;
-		real accuracy = 0.000001; /*e determines the level of accuracy*/
+		constexpr auto error = 0.00001; //define the precision of your result
+		double s = _A;
 
-		while (X - Y > accuracy)
+		while (s - _A / s > error) //loop until precision satisfied 
 		{
-			X = (X + Y) / 2.0f;
-			Y = A / X;
+			s = (s + _A / s) / 2.0;
 		}
 
-		return X;
+		return s;
+	}
+
+	INLINE static real Root(const real _A, const real _Root)
+	{
+		return Power(_A, 1.0 / _Root);
 	}
 
 	INLINE static uint32 Abs(const int32 A)
@@ -762,9 +762,9 @@ public:
 		return A > 0 ? A : -A;
 	}
 
-	INLINE static float Abs(const float A)
+	INLINE static float Abs(float _A)
 	{
-		return A > 0.0f ? A : -A;
+		return _A > 0.0f ? _A : -_A;
 	}
 
 	INLINE static int32 Min(const int32 A, const int32 B)
@@ -1142,4 +1142,17 @@ public:
 		return Result;
 	}
 
+	INLINE static Matrix4 Transformation(const Transform3& _A)
+	{
+		Matrix4 Return;
+		Translate(Return, _A.Position);
+		Return *= Rotation(_A.Rotation);
+		Return *= Scaling(_A.Scale);
+		return Return;
+	}
+
+	INLINE static float Clamp(float _A, float _Min, float _Max)
+	{
+		return _A > _Max ? _Max : _A < _Min ? _Min : _A;
+	}
 };

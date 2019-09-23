@@ -5,7 +5,7 @@
 #include "FVector.hpp"
 
 template <class T>
-GS_STRUCT OctreeNode
+struct GS_API OctreeNode
 {
 	OctreeNode();
 
@@ -147,7 +147,7 @@ OctreeNode<T>::~OctreeNode()
 }
 
 template <class T>
-GS_CLASS Octree
+class GS_API Octree
 {
 public:
 	Octree();

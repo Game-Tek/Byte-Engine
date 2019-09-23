@@ -6,7 +6,7 @@
 #include "FVector.hpp"
 
 template <typename V, typename K = uint32>
-GS_CLASS HashMapBucket
+class GS_API HashMapBucket
 {
 	V Value;
 	K Key;
@@ -25,7 +25,7 @@ public:
 };
 
 template <typename V, typename K = uint32>
-GS_CLASS HashMap
+class GS_API HashMap
 {
 	FVector<SingleLinkList<HashMapBucket<V, K>>> List;
 

@@ -29,7 +29,7 @@ struct SurfaceFormat
 
 class Window;
 
-GS_CLASS VulkanRenderContext final : public RenderContext
+class GS_API VulkanRenderContext final : public RenderContext
 {
 	Extent2D RenderExtent;
 
@@ -57,7 +57,7 @@ GS_CLASS VulkanRenderContext final : public RenderContext
 	VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
 	VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
 
-	static SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
+	SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 public:
 	VulkanRenderContext(VKDevice* _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window);
@@ -75,6 +75,7 @@ public:
 	void EndRenderPass(RenderPass* _RP) final override;
 	void BindMesh(Mesh* _Mesh) final override;
 	void BindUniformLayout(UniformLayout* _UL) override;
+	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
 	void BindComputePipeline(ComputePipeline* _CP) final override;
 	void DrawIndexed(const DrawInfo& _DI) final override;

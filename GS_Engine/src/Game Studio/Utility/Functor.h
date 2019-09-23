@@ -23,7 +23,7 @@ template<typename T>
 class FunctorBase;
 
 template<typename RET, typename ...PARAMS>
-GS_CLASS FunctorBase<RET(PARAMS...)>
+class GS_API FunctorBase<RET(PARAMS...)>
 {
 protected:
 	using FunctionPointerType = RET(*)(void* this_ptr, PARAMS...);
@@ -60,7 +60,7 @@ protected:
 template <typename T> class Functor;
 
 template<typename RET, typename... PARAMS>
-GS_CLASS Functor<RET(PARAMS...)> final : FunctorBase<RET(PARAMS...)>
+class GS_API Functor<RET(PARAMS...)> final : FunctorBase<RET(PARAMS...)>
 {
 	typename FunctorBase<RET(PARAMS...)>::InvocationElement invocation;
 

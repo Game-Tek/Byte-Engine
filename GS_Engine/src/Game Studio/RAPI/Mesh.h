@@ -5,13 +5,13 @@
 #include "RenderCore.h"
 #include "Containers/DArray.hpp"
 
-GS_STRUCT VertexElement
+struct GS_API VertexElement
 {
 	ShaderDataTypes DataType;
 	uint8 Size;
 };
 
-GS_CLASS VertexDescriptor
+class GS_API VertexDescriptor
 {
 	DArray<VertexElement> Elements;
 
@@ -79,7 +79,7 @@ struct Vertex;
 //        uint16 IndexCount;
 //    A vertex descriptor that defines the layout of the vertices found in VertexData.
 //        VertexDescriptor VertexLayout;
-GS_STRUCT MeshCreateInfo
+struct GS_API MeshCreateInfo
 {
 	//Pointer to an array holding the vertices that describe the mesh.
 	void* VertexData = nullptr;
@@ -93,7 +93,7 @@ GS_STRUCT MeshCreateInfo
 	VertexDescriptor* VertexLayout = nullptr;
 };
 
-GS_CLASS Mesh
+class GS_API Mesh
 {
 public:
 };

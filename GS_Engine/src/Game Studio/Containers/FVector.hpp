@@ -18,47 +18,8 @@ private:
 	T* Data = nullptr;
 
 public:
-
-	static void DestroyFVectorOfPointers(const FVector<T>& _Vector)
-	{
-		for (LT i = 0; i < _Vector.Length; ++i)
-		{
-			delete _Vector.Data[i];
-		}
-	}
-
 	typedef T* iterator;
 	typedef const T* const_iterator;
-
-	[[nodiscard]] iterator begin() const
-	{
-		return &(this->Data[0]);
-	}
-
-	[[nodiscard]] iterator end() const
-	{
-		return &(this->Data[Length]);
-	}
-
-	[[nodiscard]] const T& front() const
-	{
-		return this->Data[0];
-	}
-
-	T& front()
-	{
-		return this->Data[0];
-	}
-
-	[[nodiscard]] const T& back() const
-	{
-		return this->Data[this->Length];
-	}
-
-	T& back()
-	{
-		return this->Data[this->Length];
-	}
 
 	//Constructs a new FVector.
 	FVector()
@@ -84,7 +45,7 @@ public:
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	FVector(T Array[], const size_t length) : Capacity(length), Length(length), Data(allocate(this->Capacity))
+	FVector(const size_t length, T Array[]) : Capacity(length), Length(length), Data(allocate(this->Capacity))
 	{
 		copyarray(Array, this->Data);
 	}
@@ -98,7 +59,7 @@ public:
 	//Assigns this object the data of the passed in FVector.
 	FVector & operator=(const FVector & Other)
 	{
-		checkfornew(Other.Length - this->Length);
+		reallocIfExceeds(Other.Length - this->Length);
 		copyarray(Other.Data, this->Data);
 
 		return *this;
@@ -109,64 +70,78 @@ public:
 		freearray();
 	}
 
-	void resize(LT _Count)
+	[[nodiscard]] iterator begin() const
 	{
-		if (_Count > this->Capacity)
-		{
-			freearray();
-			this->Data = allocate(_Count);
-			this->Capacity = _Count;
-		}
+		return &(this->Data[0]);
+	}
 
-		this->Length = _Count;
+	[[nodiscard]] iterator end() const
+	{
+		return &(this->Data[Length]);
+	}
 
+	T& front()
+	{
+		return this->Data[0];
+	}
+
+	[[nodiscard]] const T& front() const
+	{
+		return this->Data[0];
+	}
+
+	T& back()
+	{
+		return this->Data[this->Length];
+	}
+
+	[[nodiscard]] const T& back() const
+	{
+		return this->Data[this->Length];
+	}
+
+	void resize(const LT _Count)
+	{
+		this->Capacity = _Count;
+		T* buffer = allocate(this->Capacity);
+		copyarray(this->Data, buffer, this->Length);
+		freearray();
+		this->Data = buffer;
 		return;
 	}
 
 	//Places the passed in element at the end of the array.
 	void push_back(const T & obj)
 	{
-		checkfornew(1);
-
-		memcpy(&this->Data[Length], &obj, sizeof(T));
-
+		reallocIfExceeds(1);
+		copyarray(&obj, &this->Data[Length], 1);
 		this->Length += 1;
+	}
+
+	//Places the passed in array at the end of the array.
+	void push_back(const size_t length, T arr[])
+	{
+		reallocIfExceeds(length);
+		copyarray(arr, &this->Data[this->Length]);
+		this->Length += length;
+	}
+
+	//Places the passed in FVector at the end of the array.
+	void push_back(const FVector& other)
+	{
+		reallocIfExceeds(other.Length);
+		copyarray(other.Data, &this->Data[this->Length]);
+		this->Length += other.Length;
 	}
 
 	template<typename... Args>
 	void emplace_back(Args&&... _args)
 	{
-		checkfornew(1);
+		reallocIfExceeds(1);
 
 		new (this->Data + this->Length) T(std::forward<Args>(_args) ...);
 
 		this->Length += 1;
-	}
-
-	//Places the passed in array at the end of the array.
-	void push_back(T arr[], size_t length)
-	{
-		checkfornew(length);
-
-		for (size_t i = 0; i < length; i++)
-		{
-			this->Data[Length + i] = arr[i];
-		}
-
-		this->Length += length;
-	}
-
-	//Places the passed in array at the end of the array.
-	void push_back(const FVector & other)
-	{
-		checkfornew(other.Length);
-
-		for (size_t i = 0; i < other.Length; i++)
-		{
-			this->Data[Length + i] = other[i];
-		}
-
-		this->Length += other.Length;
 	}
 
 	//Deletes the array's last element.
@@ -180,7 +155,7 @@ public:
 	{
 		this->Length += 1;
 
-		checkfornew(0);
+		reallocIfExceeds(0);
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -195,7 +170,7 @@ public:
 	{
 		this->Length += length;
 
-		checkfornew(0);
+		reallocIfExceeds(0);
 
 		for (size_t i = this->Length; i > index; i--)
 		{
@@ -220,7 +195,7 @@ public:
 	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
 	void recreate(T arr[], const size_t length)
 	{
-		checkfornew(length - this->Length);
+		reallocIfExceeds(length - this->Length);
 
 		this->Length = length;
 		
@@ -272,12 +247,12 @@ public:
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE T& operator[](const size_t index)
 	{
-#ifdef GS_DEBUG
+		#ifdef GS_DEBUG
 		if (index > this->Capacity)
 		{
 			throw("Out of bounds!");
 		}
-#endif
+		#endif
 
 		return this->Data[index];
 	}
@@ -285,12 +260,12 @@ public:
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE const T& operator[](const size_t index) const
 	{
-#ifdef GS_DEBUG
+		#ifdef GS_DEBUG
 		if (index > this->Capacity)
 		{
 			throw "Out of bounds!";
 		}
-#endif
+		#endif
 
 		return this->Data[index];
 	}
@@ -301,6 +276,7 @@ public:
 		return this->Length;
 	}
 
+	//Returns the total allocated elements count. 
 	INLINE size_t capacity() const { return this->Capacity; }
 
 	//Returns a pointer to the allocated array.
@@ -334,8 +310,26 @@ private:
 		memcpy(to, from, this->Capacity * sizeof(T));
 	}
 
+	//Fills array to with from.
+	void copyarray(const T* from, T* to)
+	{
+		memcpy(to, from, this->Capacity * sizeof(T));
+	}
+
+	//Fills array to with from.
+	void copyarray(T* from, T* to, size_t _ElementCount)
+	{
+		memcpy(to, from, _ElementCount * sizeof(T));
+	}
+
+	//Fills array to with from.
+	void copyarray(const T* from, T* to, size_t _ElementCount)
+	{
+		memcpy(to, from, _ElementCount * sizeof(T));
+	}
+
 	//Allocates a new array if Length + newelements exceeds the allocated space.
-	void checkfornew(const size_t additionalelements)
+	void reallocIfExceeds(const size_t additionalelements)
 	{
 		if (this->Length + additionalelements > this->Capacity)
 		{

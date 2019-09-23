@@ -3,7 +3,7 @@
 #include "Core.h"
 
 //Used to specify a location in 2D space with floating point precision.
-GS_CLASS Vector2
+class GS_API Vector2
 {
 public:
 	//X component of this vector.

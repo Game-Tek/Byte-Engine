@@ -15,24 +15,32 @@ class GraphicsPipeline;
 class ComputePipeline;
 class Framebuffer;
 
-GS_STRUCT DrawInfo
+struct GS_API DrawInfo
 {
 	uint16 IndexCount = 0;
 	uint16 InstanceCount = 1;
 };
 
-GS_STRUCT RenderPassBeginInfo
+struct GS_API RenderPassBeginInfo
 {
 	RenderPass* RenderPass = nullptr;
 	Framebuffer** Framebuffers = nullptr;
 };
 
-GS_STRUCT RenderContextCreateInfo
+struct GS_API PushConstantsInfo
+{
+	UniformLayout* UniformLayout = nullptr;
+	uint32 Offset = 0;
+	uint32 Size = 0;
+	void* Data = nullptr;
+};
+
+struct GS_API RenderContextCreateInfo
 {
 	Window* Window = nullptr;
 };
 
-GS_CLASS RenderContext
+class GS_API RenderContext
 {
 protected:
 	uint8 CurrentImage = 0;
@@ -69,6 +77,7 @@ public:
 
 	//Adds a BindUniformLayout to the command queue.
 	virtual void BindUniformLayout(UniformLayout* _UL) = 0;
+	virtual void UpdatePushConstant(const PushConstantsInfo& _PCI) = 0;
 	//Adds a BindGraphicsPipeline command to the command queue.
 	virtual void BindGraphicsPipeline(GraphicsPipeline* _GP) = 0;
 	//Adds a BindComputePipeline to the command queue.

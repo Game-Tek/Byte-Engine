@@ -3,7 +3,7 @@
 #include "Core.h"
 
 template<typename A, typename B>
-GS_CLASS Tuple
+class GS_API Tuple
 {
 public:
 	A First;

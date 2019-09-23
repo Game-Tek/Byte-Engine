@@ -6,11 +6,13 @@
 #include "Quaternion.h"
 
 //Used to specify a transform in 3D space with floating point precision.
-GS_STRUCT Transform3
+struct GS_API Transform3
 {
 	Vector3 Position;
 	Quaternion Rotation;
 	Vector3 Scale;
+
+	Transform3() = default;
 
 	Transform3(const Vector3 & _Pos, const Quaternion & _Quat, const Vector3 & _Scale) : Position(_Pos), Rotation(_Quat), Scale(_Scale)
 	{

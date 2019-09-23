@@ -7,7 +7,7 @@
 #include "Native/VKBuffer.h"
 #include "Native/VKMemory.h"
 
-GS_CLASS VulkanUniformBuffer : public UniformBuffer
+class GS_API VulkanUniformBuffer : public UniformBuffer
 {
 	VKBuffer Buffer;
 	VKMemory Memory;

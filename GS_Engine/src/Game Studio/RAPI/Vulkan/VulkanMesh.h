@@ -9,7 +9,7 @@
 
 class VKDevice;
 
-GS_CLASS VulkanMesh final : public Mesh
+class GS_API VulkanMesh final : public Mesh
 {
 	VKBuffer VertexBuffer;
 	VKMemory VBMemory;

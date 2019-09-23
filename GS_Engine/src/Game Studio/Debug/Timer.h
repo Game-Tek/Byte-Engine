@@ -3,7 +3,7 @@
 #include "Containers/FString.h"
 #include "Application/Clock.h"
 
-GS_CLASS Timer
+class GS_API Timer
 {
     Nanoseconds StartingTime = 0;
     FString Name = "No name!";

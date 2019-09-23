@@ -8,12 +8,12 @@ MAKE_VK_HANDLE(VkFramebuffer)
 
 struct VkFramebufferCreateInfo;
 
-GS_STRUCT VKFramebufferCreator final : VKObjectCreator<VkFramebuffer>
+struct GS_API VKFramebufferCreator final : VKObjectCreator<VkFramebuffer>
 {
 	VKFramebufferCreator(VKDevice* _Device, const VkFramebufferCreateInfo * _VkFCI);
 };
 
-GS_CLASS VKFramebuffer final : public VKObject<VkFramebuffer>
+class GS_API VKFramebuffer final : public VKObject<VkFramebuffer>
 {
 public:
 	VKFramebuffer(const VKFramebufferCreator& _VKFC) : VKObject<VkFramebuffer>(_VKFC)

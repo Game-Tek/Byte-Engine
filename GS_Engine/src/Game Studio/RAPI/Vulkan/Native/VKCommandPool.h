@@ -8,14 +8,14 @@ MAKE_VK_HANDLE(VkCommandPool)
 
 struct VkCommandPoolCreateInfo;
 
-GS_STRUCT VKCommandPoolCreator final : public VKObject<VkCommandPool>
+struct GS_API VKCommandPoolCreator final : public VKObject<VkCommandPool>
 {
 	VKCommandPoolCreator(VKDevice* _Device, const VkCommandPoolCreateInfo* _VkCPCI);
 };
 
 struct VKCommandBufferCreator;
 
-GS_CLASS VKCommandPool final : public VKObject<VkCommandPool>
+class GS_API VKCommandPool final : public VKObject<VkCommandPool>
 {
 public:
 	VKCommandPool(const VKCommandPoolCreator& _VKCPC) : VKObject<VkCommandPool>(_VKCPC)

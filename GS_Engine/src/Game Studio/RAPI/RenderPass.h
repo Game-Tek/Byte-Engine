@@ -9,7 +9,7 @@
 #define ATTACHMENT_UNUSED 255
 
 //Describes the reference to a render pass attachment for a sub pass.
-GS_STRUCT AttachmentReference
+struct GS_API AttachmentReference
 {
 	//Id of the attachment (Index into RenderpassDescriptor::RenderPassColorAttachments).
 	uint8 Index = ATTACHMENT_UNUSED;
@@ -17,7 +17,7 @@ GS_STRUCT AttachmentReference
 	ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;
 };
 
-GS_STRUCT AttachmentDescriptor
+struct GS_API AttachmentDescriptor
 {
 	//Pointer to the image this attachment refers to.
 	Image* AttachmentImage = nullptr;
@@ -32,7 +32,7 @@ GS_STRUCT AttachmentDescriptor
 };
 
 //Describes a subpass.
-GS_STRUCT SubPassDescriptor
+struct GS_API SubPassDescriptor
 {
 	//Array of AttachmentsReferences for attachments which the subpass reads from.
 	Array<AttachmentReference*, 8> ReadColorAttachments;
@@ -45,7 +45,7 @@ GS_STRUCT SubPassDescriptor
 };
 
 //Describes a render pass.
-GS_STRUCT RenderPassDescriptor
+struct GS_API RenderPassDescriptor
 {
 	//Array of pointer to images that will be used as attachments in the render pass.
 	Array<AttachmentDescriptor*, 8> RenderPassColorAttachments;
@@ -56,12 +56,12 @@ GS_STRUCT RenderPassDescriptor
 	Array<SubPassDescriptor*, 8> SubPasses;
 };
 
-GS_STRUCT RenderPassCreateInfo
+struct GS_API RenderPassCreateInfo
 {
 	RenderPassDescriptor Descriptor;
 };
 
-GS_CLASS RenderPass
+class GS_API RenderPass
 {
 public:
 	RenderPass() = default;

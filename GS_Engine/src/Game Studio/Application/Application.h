@@ -5,22 +5,24 @@
 #include "Clock.h"
 #include "InputManager.h"
 #include "RAPI/Window.h"
+#include "Game/World.h"
 
 namespace GS
 {
-	GS_CLASS Application : public Object
+	class GS_API Application : public Object
 	{
+		static Application* ApplicationInstance;
+
+	protected:
 		Clock ClockInstance;
 		InputManager InputManagerInstance;
 
+		World* ActiveWorld = nullptr;
 		Window* ActiveWindow = nullptr;
-
-		static Application* ApplicationInstance;
 
 		bool FlaggedForClose = false;
 
 		[[nodiscard]] bool ShouldClose() const;
-
 	public:
 		Application();
 		virtual ~Application();
@@ -43,6 +45,7 @@ namespace GS
 		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
 		[[nodiscard]] const Window* GetActiveWindow() const { return ActiveWindow; }
+		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
 	};
 
 	Application * CreateApplication();

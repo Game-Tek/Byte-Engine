@@ -100,7 +100,7 @@ enum class ColorSpace : uint8
 
 // ATTACHMENTS
 
-//Describes all possible operations a renderer can perform when loading a render target onto a render pass.
+//Describes all possible operations a RAPI can perform when loading a render target onto a render pass.
 enum class LoadOperations : uint8
 {
 	//We don't care about the previous content of the render target. Behavior is unknown.
@@ -111,7 +111,7 @@ enum class LoadOperations : uint8
 	CLEAR
 };
 
-//Describes all possible operations a renderer can perform when saving to a render target from a render pass.
+//Describes all possible operations a RAPI can perform when saving to a render target from a render pass.
 enum class StoreOperations : uint8
 {
 	//We don't care about the outcome of the render target.

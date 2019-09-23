@@ -15,7 +15,7 @@ class RenderPass;
 
 MAKE_VK_HANDLE(VkPipelineLayout)
 
-GS_CLASS VulkanGraphicsPipeline final : public GraphicsPipeline
+class GS_API VulkanGraphicsPipeline final : public GraphicsPipeline
 {
 	VKGraphicsPipeline Pipeline;
 
@@ -27,7 +27,7 @@ public:
 	INLINE const VKGraphicsPipeline& GetVk_GraphicsPipeline() const { return Pipeline; }
 };
 
-GS_CLASS VulkanComputePipeline final : public ComputePipeline
+class GS_API VulkanComputePipeline final : public ComputePipeline
 {
 	VKComputePipeline ComputePipeline;
 

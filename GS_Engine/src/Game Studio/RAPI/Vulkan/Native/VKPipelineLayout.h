@@ -8,13 +8,13 @@ MAKE_VK_HANDLE(VkPipelineLayout)
 
 struct VkPipelineLayoutCreateInfo;
 
-GS_STRUCT VKPipelineLayoutCreator final : VKObjectCreator<VkPipelineLayout>
+struct GS_API VKPipelineLayoutCreator final : VKObjectCreator<VkPipelineLayout>
 {
 	VKPipelineLayoutCreator(VKDevice* _Device, const VkPipelineLayoutCreateInfo * _VkPLCI);
 };
 
 
-GS_CLASS VKPipelineLayout final : public VKObject<VkPipelineLayout>
+class GS_API VKPipelineLayout final : public VKObject<VkPipelineLayout>
 {
 public:
 	VKPipelineLayout(const VKPipelineLayoutCreator& _VKPLC) : VKObject<VkPipelineLayout>(_VKPLC)

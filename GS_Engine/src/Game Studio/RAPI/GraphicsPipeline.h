@@ -7,7 +7,7 @@
 #include "Mesh.h"
 
 
-GS_STRUCT StencilState
+struct GS_API StencilState
 {
 	StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
 	StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
@@ -15,19 +15,19 @@ GS_STRUCT StencilState
 	CompareOperation CompareOperation = CompareOperation::NEVER;
 };
 
-GS_STRUCT StencilOperations
+struct GS_API StencilOperations
 {
 	StencilState Front;
 	StencilState Back;
 };
 
-GS_STRUCT ShaderInfo
+struct GS_API ShaderInfo
 {
 	ShaderType Type = ShaderType::VERTEX_SHADER;
 	FString ShaderCode = FString("NO CODE");
 };
 
-GS_STRUCT ShaderStages
+struct GS_API ShaderStages
 {
 	ShaderInfo* VertexShader = nullptr;
 	ShaderInfo* TessellationControlShader = nullptr;
@@ -36,7 +36,7 @@ GS_STRUCT ShaderStages
 	ShaderInfo* FragmentShader = nullptr;
 };
 
-GS_STRUCT PipelineDescriptor
+struct GS_API PipelineDescriptor
 {
 	ShaderStages Stages;
 	CullMode CullMode = CullMode::CULL_NONE;
@@ -51,12 +51,12 @@ GS_STRUCT PipelineDescriptor
 class RenderPass;
 class UniformLayout;
 
-GS_CLASS GraphicsPipeline
+class GS_API GraphicsPipeline
 {
 public:
 };
 
-GS_STRUCT GraphicsPipelineCreateInfo
+struct GS_API GraphicsPipelineCreateInfo
 {
 	Extent2D SwapchainSize = {1280, 720 };
 	RenderPass* RenderPass = nullptr;

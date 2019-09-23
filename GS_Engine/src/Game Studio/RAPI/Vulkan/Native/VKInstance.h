@@ -6,7 +6,7 @@
 
 MAKE_VK_HANDLE(VkInstance)
 
-GS_CLASS VKInstance
+class GS_API VKInstance
 {
 	VkInstance Instance = nullptr;
 

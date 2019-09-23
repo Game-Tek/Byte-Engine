@@ -6,7 +6,7 @@ MAKE_VK_HANDLE(VkBuffer)
 
 struct VkBufferCreateInfo;
 
-GS_STRUCT VKBufferCreator : VKObjectCreator<VkBuffer>
+struct GS_API VKBufferCreator : VKObjectCreator<VkBuffer>
 {
 	VKBufferCreator(VKDevice* _Device, const VkBufferCreateInfo * _VkBCI);
 };
@@ -15,7 +15,7 @@ struct VkMemoryRequirements;
 
 enum class BufferType : unsigned char;
 
-GS_CLASS VKBuffer final : public VKObject<VkBuffer>
+class GS_API VKBuffer final : public VKObject<VkBuffer>
 {
 	static unsigned BufferTypeToVkBufferUsageFlagBits(BufferType _BT);
 public:

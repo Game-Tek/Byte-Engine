@@ -2,4 +2,4 @@
 // such as names of functions and macros.
 // For more information see https://go.microsoft.com/fwlink/?linkid=865984
 
-#define GS_CLASS#define GS_STRUCT
+#define class GS_API#define struct GS_API

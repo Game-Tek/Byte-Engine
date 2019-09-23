@@ -15,7 +15,7 @@ class VKInstance;
 struct QueueInfo;
 struct VkDeviceQueueCreateInfo;
 
-GS_CLASS VKDevice
+class GS_API VKDevice
 {
 	VkDevice Device = nullptr;
 

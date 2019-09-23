@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-GS_STRUCT MouseState
+struct GS_API MouseState
 {
 	bool IsRightButtonPressed = false;
 	bool IsLeftButtonPressed = false;

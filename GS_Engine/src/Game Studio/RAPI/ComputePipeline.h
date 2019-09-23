@@ -2,11 +2,11 @@
 
 #include "Core.h"
 
-GS_STRUCT ComputePipelineCreateInfo
+struct GS_API ComputePipelineCreateInfo
 {
 };
 
-GS_CLASS ComputePipeline
+class GS_API ComputePipeline
 {
 public:
 };

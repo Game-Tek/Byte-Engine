@@ -7,20 +7,25 @@
 
 class RenderContext;
 
-GS_STRUCT UniformSet
+struct GS_API UniformSet
 {
 	uint8 UniformSetUniformsCount = 0;
 	UniformType UniformSetType = UniformType::UNIFORM_BUFFER;
-	void* UniformData = nullptr;
 	ShaderType ShaderStage = ShaderType::ALL_STAGES;
+	void* UniformData = nullptr;
 };
 
-GS_STRUCT UniformLayoutCreateInfo
+struct GS_API UniformLayoutCreateInfo
 {
 	Array<UniformSet, MAX_DESCRIPTORS_PER_SET> PipelineUniformSets;
 	RenderContext* RenderContext = nullptr;
 };
 
-GS_CLASS UniformLayout
+struct GS_API UniformLayoutUpdateInfo
+{
+	Array<UniformSet, MAX_DESCRIPTORS_PER_SET> PipelineUniformSets;
+};
+
+class GS_API UniformLayout
 {
 };

@@ -14,7 +14,7 @@ enum class LogLevel : uint8
 	ERROR
 };
 
-GS_CLASS Logger
+class GS_API Logger
 {
 	static LogLevel MinLogLevel;
 

@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-GS_STRUCT TextureCoordinates
+struct GS_API TextureCoordinates
 {
 	float U = 0;
 	float V = 0;

@@ -9,9 +9,9 @@
 #include "VulkanUniformBuffer.h"
 #include "VulkanUniformLayout.h"
 
-//  VULKAN RENDERER
+//  VULKAN RAPI
 
-VKCommandPoolCreator VulkanRenderer::CreateCommandPool()
+VKCommandPoolCreator VulkanRAPI::CreateCommandPool()
 {
 	VkCommandPoolCreateInfo CommandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	CommandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -19,58 +19,58 @@ VKCommandPoolCreator VulkanRenderer::CreateCommandPool()
 	return VKCommandPoolCreator(&Device, &CommandPoolCreateInfo);
 }
 
-VulkanRenderer::VulkanRenderer() : Instance("Game Studio"),
+VulkanRAPI::VulkanRAPI() : Instance("Game Studio"),
 	PhysicalDevice(Instance),
 	Device(Instance, PhysicalDevice),
 	TransientCommandPool(CreateCommandPool())
 {
 }
 
-VulkanRenderer::~VulkanRenderer()
+VulkanRAPI::~VulkanRAPI()
 {
 }
 
-Mesh* VulkanRenderer::CreateMesh(const MeshCreateInfo& _MCI)
+Mesh* VulkanRAPI::CreateMesh(const MeshCreateInfo& _MCI)
 {
 	return new VulkanMesh(&Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }
 
-UniformBuffer* VulkanRenderer::CreateUniformBuffer(const UniformBufferCreateInfo& _BCI)
+UniformBuffer* VulkanRAPI::CreateUniformBuffer(const UniformBufferCreateInfo& _BCI)
 {
 	return new VulkanUniformBuffer(&Device, _BCI);
 }
 
-UniformLayout* VulkanRenderer::CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI)
+UniformLayout* VulkanRAPI::CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI)
 {
 	return new VulkanUniformLayout(&Device, _ULCI);
 }
 
-Image* VulkanRenderer::CreateImage(const ImageCreateInfo& _ICI)
+Image* VulkanRAPI::CreateImage(const ImageCreateInfo& _ICI)
 {
 	return new VulkanImage(&Device, _ICI.Extent, _ICI.ImageFormat, _ICI.Dimensions, _ICI.Type, _ICI.Use);
 }
 
-GraphicsPipeline* VulkanRenderer::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
+GraphicsPipeline* VulkanRAPI::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
 	return new VulkanGraphicsPipeline(&Device, _GPCI);
 }
 
-RenderPass* VulkanRenderer::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
+RenderPass* VulkanRAPI::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
 {
 	return new VulkanRenderPass(&Device, _RPCI.Descriptor);
 }
 
-ComputePipeline* VulkanRenderer::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
+ComputePipeline* VulkanRAPI::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
 {
 	return new ComputePipeline();
 }
 
-Framebuffer* VulkanRenderer::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
+Framebuffer* VulkanRAPI::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 {
 	return new VulkanFramebuffer(&Device, SCAST(VulkanRenderPass*, _FCI.RenderPass), _FCI.Extent, _FCI.Images);
 }
 
-RenderContext* VulkanRenderer::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
+RenderContext* VulkanRAPI::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
 	return new VulkanRenderContext(&Device, Instance, PhysicalDevice, *_RCCI.Window);
 }

@@ -2,18 +2,24 @@
 
 #include "Core.h"
 
-GS_CLASS Id
+class FString;
+
+class GS_API Id
 {
 public:
+	using HashType = uint32;
+
 	Id() = default;
 	explicit Id(const char * Text);
+	explicit Id(const FString& _Text);
 	~Id() = default;
 
-	INLINE uint32 GetID() { return HashedString; }
-	INLINE uint32 GetID() const { return HashedString; }
+	INLINE HashType GetID() { return HashedString; }
+	INLINE HashType GetID() const { return HashedString; }
 private:
 	uint32 HashedString;
 
-	static uint32 HashString(const char * Text);
+	static HashType HashString(const char* Text);
+	static HashType HashString(const FString& _Text);
 };
 

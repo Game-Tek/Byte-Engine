@@ -3,7 +3,7 @@
 #include "Core.h"
 
 //Used to specify a rotation in 3D space with floating point precision.
-GS_CLASS Quaternion
+class GS_API Quaternion
 {
 public:
 	//X component of this quaternion.

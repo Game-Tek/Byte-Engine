@@ -20,13 +20,13 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v142</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -73,8 +73,12 @@
       <AdditionalDependencies>shaderc_shared.lib;vulkan-1.lib;assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>copy "$(SolutionDir)bin\$(ProjectName)\Debug-x64\GS_Engine.dll" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
+      <Command>
+      </Command>
     </PostBuildEvent>
+    <Lib>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;shaderc\shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+    </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -95,13 +99,27 @@
       <AdditionalDependencies>shaderc_shared.lib;assimp-vc140-mt.lib;glfw3.lib;opengl32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>copy "W:\Game Studio\bin\GS_Engine\Debug-x64\GS_Engine.dll" "W:\Game Studio\bin\Sandbox\Debug-x64"</Command>
+      <Command>
+      </Command>
     </PostBuildEvent>
+    <Lib>
+      <AdditionalDependencies>
+      </AdditionalDependencies>
+    </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
+    <ClInclude Include="src\Game Studio\Delegate.h" />
+    <ClInclude Include="src\Game Studio\Game\Component.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
+    <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
+    <ClInclude Include="src\Game Studio\Game\World.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RAPI.h" />
+    <ClInclude Include="src\Game Studio\Render\Renderer.h" />
+    <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
@@ -180,10 +198,9 @@
     <ClInclude Include="src\Game Studio\Application\Application.h" />
     <ClInclude Include="src\Game Studio\Core.h" />
     <ClInclude Include="src\Game Studio\Object.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Renderer.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\GameStudio.h" />
@@ -195,7 +212,6 @@
     <ClInclude Include="src\Game Studio\Math\Vector3.h" />
     <ClInclude Include="src\Game Studio\Texture.h" />
     <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h" />
-    <ClInclude Include="src\Game Studio\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Math\Vector4.h" />
     <ClInclude Include="src\Game Studio\Resources\TextureResource.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
@@ -204,8 +220,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
+    <ClCompile Include="src\Game Studio\Game\World.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
@@ -248,9 +266,8 @@
     <ClCompile Include="src\Game Studio\Debug\Logger.cpp" />
     <ClCompile Include="src\Game Studio\Application\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Renderer.cpp" />
-    <ClCompile Include="src\Game Studio\StaticMesh.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\RAPI.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Vertex.cpp" />

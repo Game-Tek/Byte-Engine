@@ -9,7 +9,7 @@
 
 using Index = uint16;
 
-GS_STRUCT Vertex2D
+struct GS_API Vertex2D
 {
 	Vector2 Position;
 	TextureCoordinates TextureCoordinates;
@@ -17,7 +17,7 @@ GS_STRUCT Vertex2D
 	static VertexDescriptor Descriptor;
 };
 
-GS_STRUCT Vertex
+struct GS_API Vertex
 {
 	Vector3				Position;
 	Vector3				Normal;

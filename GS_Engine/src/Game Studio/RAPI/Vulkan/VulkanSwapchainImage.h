@@ -6,7 +6,7 @@
 
 #include "VulkanImage.h"
 
-GS_CLASS VulkanSwapchainImage final : public VulkanImageBase
+class GS_API VulkanSwapchainImage final : public VulkanImageBase
 {
 	VKImageView ImageView;
 

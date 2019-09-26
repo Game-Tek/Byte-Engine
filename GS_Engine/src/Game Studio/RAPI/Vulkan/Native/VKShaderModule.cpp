@@ -7,7 +7,7 @@
 #include <iostream>
 #include <string>
 
-#include <vulkan/shaderc/shaderc.hpp>
+#include <shaderc/shaderc.hpp>
 #include "Debug/Logger.h"
 
 VKShaderModuleCreator::VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo* _VkSMCI) : VKObjectCreator<VkShaderModule>(_Device)

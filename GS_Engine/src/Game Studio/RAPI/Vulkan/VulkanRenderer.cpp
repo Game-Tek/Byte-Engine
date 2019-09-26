@@ -72,5 +72,5 @@ Framebuffer* VulkanRAPI::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 
 RenderContext* VulkanRAPI::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
-	return new VulkanRenderContext(&Device, Instance, PhysicalDevice, *_RCCI.Window);
+	return new VulkanRenderContext(&Device, &Instance, PhysicalDevice, _RCCI.Window);
 }

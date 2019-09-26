@@ -26,7 +26,13 @@ public:
 	void Update() override;
 
 	void SetWindowFit(WindowFit _Fit) override;
+	void SetWindowResolution(Extent2D _Res) override;
+	void SetWindowIcon(const WindowIconInfo& _WII) override;
 	void MinimizeWindow() override;
 	void NotifyWindow() override;
+	void FocusWindow() override;
 	void SetWindowTitle(const char* _Title) override;
+
+	Extent2D GetFramebufferSize() override;
+	Vector2 GetContentScale() override;
 };

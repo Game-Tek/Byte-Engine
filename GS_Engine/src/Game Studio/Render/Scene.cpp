@@ -6,14 +6,9 @@
 
 Scene::Scene()
 {
-	WindowCreateInfo WCI;
-	WCI.Extent = { 1280, 720 };
-	WCI.Name = "Game Studio!";
-	WCI.WindowType = WindowFit::NORMAL;
-	Win = Window::CreateWindow(WCI);
+	Win = GS::Application::Get()->GetActiveWindow();
 
-	GS::Application::Get()->SetActiveWindow(Win);
-
+	//GS::Application::Get()->SetActiveWindow(Win);
 
 	RenderContextCreateInfo RCCI;
 	RCCI.Window = Win;
@@ -70,7 +65,7 @@ Scene::Scene()
 		layout(push_constant) uniform PushConstant
 		{
 			mat4 ModelMatrix;
-		} PushConstant;
+		} callData;
 
 		layout(binding = 0)uniform inObjPos
 		{
@@ -84,11 +79,10 @@ Scene::Scene()
 
 		void main()
 		{
-			tPos = vec4(inPos, 0.0, 1.0) * PushConstant.ModelMatrix;
+			tPos = vec4(inPos, 0.0, 1.0) * callData.ModelMatrix;
 			gl_Position = tPos;
 		})";
-	FString VSC(VertexShaderCode);
-	VS.ShaderCode = VSC;
+	VS.ShaderCode = VertexShaderCode;
 
 	ShaderInfo FS;
 	FS.Type = ShaderType::FRAGMENT_SHADER;
@@ -104,8 +98,7 @@ Scene::Scene()
 		{
 			outColor = tPos;
 		})";
-	FString FSC(FragmentShaderCode);
-	FS.ShaderCode = FSC;
+	FS.ShaderCode = FragmentShaderCode;
 
 	UniformLayoutCreateInfo ULCI;
 	ULCI.RenderContext = RC;
@@ -113,6 +106,9 @@ Scene::Scene()
 	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
 	ULCI.PipelineUniformSets.setLength(1);
+	PushConstant MyPushConstant;
+	MyPushConstant.Size = sizeof(Matrix4);
+	ULCI.PushConstant = &MyPushConstant;
 	UL = RAPI::GetRAPI()->CreateUniformLayout(ULCI);
 
 	GraphicsPipelineCreateInfo GPCI;

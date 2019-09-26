@@ -25,7 +25,18 @@ public:
 	}
 
 	template<class T>
-	WorldObject* CreateWorldObject(const Vector3& _Pos)
+	T* CreateWorldObject()
+	{
+		WorldObject* Obj = new T();
+		WorldObjects.push_back(Obj);
+
+		Obj->SetID(WorldObjects.length());
+
+		return SCAST(T*, Obj);
+	}
+
+	template<class T>
+	T* CreateWorldObject(const Vector3& _Pos)
 	{
 		WorldObject* Obj = new T();
 		WorldObjects.push_back(Obj);
@@ -33,7 +44,7 @@ public:
 		Obj->SetID(WorldObjects.length());
 		Obj->SetPosition(_Pos);
 
-		return Obj;
+		return SCAST(T*, Obj);
 	}
 
 	void DestroyWorldObject(WorldObject* _Object)

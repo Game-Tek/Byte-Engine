@@ -21,6 +21,7 @@ namespace GS
 		Window* ActiveWindow = nullptr;
 
 		bool FlaggedForClose = false;
+		FString CloseReason = "none";
 
 		[[nodiscard]] bool ShouldClose() const;
 	public:
@@ -31,7 +32,7 @@ namespace GS
 
 		[[nodiscard]] const char* GetName() const override { return "Application"; }
 
-		static Application * Get() { return ApplicationInstance; }
+		static Application* Get() { return ApplicationInstance; }
 
 		//Updates the window the application gets it's context information from.
 		void SetActiveWindow(Window* _NewWindow);
@@ -40,11 +41,11 @@ namespace GS
 		void PromptClose();
 
 		//Flags the application to close on the next update.
-		void Close() { FlaggedForClose = true; }
+		void Close(const char* _Reason);
 
 		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
-		[[nodiscard]] const Window* GetActiveWindow() const { return ActiveWindow; }
+		[[nodiscard]] Window* GetActiveWindow() const { return ActiveWindow; }
 		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
 	};
 

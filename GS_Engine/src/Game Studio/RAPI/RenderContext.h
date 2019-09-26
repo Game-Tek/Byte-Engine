@@ -40,6 +40,11 @@ struct GS_API RenderContextCreateInfo
 	Window* Window = nullptr;
 };
 
+struct ResizeInfo
+{
+	Extent2D NewWindowSize;
+};
+
 class GS_API RenderContext
 {
 protected:
@@ -49,7 +54,7 @@ protected:
 public:
 	virtual ~RenderContext() {};
 
-	virtual void OnResize() = 0;
+	virtual void OnResize(const ResizeInfo& _RI) = 0;
 
 	//Starts recording of commands.
 	virtual void BeginRecording() = 0;

@@ -12,14 +12,14 @@ class Window;
 
 struct GS_API VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
 {
-	const VKInstance & m_Instance;
+	VKInstance* m_Instance = nullptr;
 
-	VKSurfaceCreator(VKDevice* _Device, const VKInstance & _Instance, const Window & _Window);
+	VKSurfaceCreator(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
 };
 
 class GS_API VKSurface final : public VKObject<VkSurfaceKHR>
 {
-	const VKInstance& m_Instance;
+	VKInstance* m_Instance = nullptr;
 
 public:
 	VKSurface(const VKSurfaceCreator& _VKSC) : VKObject<VkSurfaceKHR>(_VKSC), m_Instance(_VKSC.m_Instance)

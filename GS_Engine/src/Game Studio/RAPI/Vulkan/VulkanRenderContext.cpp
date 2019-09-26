@@ -11,6 +11,8 @@
 #include "RAPI/Window.h"
 #include "Native/vkPhysicalDevice.h"
 #include "VulkanUniformLayout.h"
+#include <GLFW/glfw3.h>
+#include "Debug/Logger.h"
 
 
 //  VULKAN RENDER CONTEXT
@@ -26,7 +28,7 @@ uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 }
 
 
-VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, const VKInstance& _Instance, const Window& _Window)
+VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window)
 {
 	return VKSurfaceCreator(_Device, _Instance, _Window);
 }
@@ -78,6 +80,11 @@ SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSur
 	VkSurfaceCapabilitiesKHR SurfaceCapabilities = {};
 	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, _Surface, &SurfaceCapabilities);
 
+	VkBool32 Supported = 0;
+	vkGetPhysicalDeviceSurfaceSupportKHR(_PD, PresentationQueue.GetQueueIndex(), _Surface, &Supported);
+
+	auto bb = vkGetPhysicalDeviceWin32PresentationSupportKHR(_PD, PresentationQueue.GetQueueIndex());
+
 	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
 }
 
@@ -103,25 +110,26 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 	return PresentModes[BestPresentModeIndex];
 }
 
-VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, const VKInstance& _Instance, const vkPhysicalDevice& _PD, const Window& _Window) :
-	RenderExtent(_Window.GetWindowExtent()),
+VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window) :
+	RenderExtent(_Window->GetWindowExtent()),
 	Surface(CreateSurface(_Device, _Instance, _Window)),
 	Format(FindFormat(_PD, Surface)),
 	PresentMode(FindPresentMode(_PD, Surface)),
 	Swapchain(CreateSwapchain(_Device, VK_NULL_HANDLE)),
 	SwapchainImages(Swapchain.GetImages()),
-	Images(SwapchainImages.length()),
-	ImagesAvailable(SwapchainImages.length()),
-	RendersFinished(SwapchainImages.length()),
-	InFlightFences(SwapchainImages.length()),
+	Images(SwapchainImages.capacity()),
+	ImagesAvailable(SwapchainImages.capacity()),
+	RendersFinished(SwapchainImages.capacity()),
+	InFlightFences(SwapchainImages.capacity()),
 	PresentationQueue(_Device->GetGraphicsQueue()),
 	CommandPool(CreateCommandPool(_Device)),
-	CommandBuffers(SwapchainImages.length())
+	CommandBuffers(SwapchainImages.capacity())
 {
-	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.length());
+	auto Result = glfwGetPhysicalDevicePresentationSupport(_Instance->GetVkInstance(), _PD, 0);
+	GS_BASIC_LOG_MESSAGE("glfwGetPhysicalDevicePresentationSupport: %d", Result)
 
-	VkBool32 Supported = 0;
-	vkGetPhysicalDeviceSurfaceSupportKHR(_PD, _Device->GetGraphicsQueue().GetQueueIndex(), Surface.GetHandle(), &Supported);
+
+	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.capacity());
 
 	VkSemaphoreCreateInfo SemaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 
@@ -147,8 +155,10 @@ VulkanRenderContext::~VulkanRenderContext()
 	}
 }
 
-void VulkanRenderContext::OnResize()
+void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 {
+	RenderExtent = _RI.NewWindowSize;
+	Swapchain.Recreate(Surface, Format.format, Format.colorSpace, Extent2DToVkExtent2D(_RI.NewWindowSize), PresentMode);
 }
 
 void VulkanRenderContext::AcquireNextImage()
@@ -276,6 +286,12 @@ void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 {
 	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetHandle());
+
+	VkViewport Viewport = {};
+	Viewport.maxDepth = 1.0f;
+	Viewport.width = RenderExtent.Width;
+	Viewport.height = RenderExtent.Height;
+	vkCmdSetViewport(CommandBuffers[CurrentImage], 0, 1, &Viewport);
 }
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)

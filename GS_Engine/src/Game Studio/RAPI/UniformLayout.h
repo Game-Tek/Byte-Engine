@@ -15,9 +15,15 @@ struct GS_API UniformSet
 	void* UniformData = nullptr;
 };
 
+struct PushConstant
+{
+	size_t Size = 0;
+};
+
 struct GS_API UniformLayoutCreateInfo
 {
 	Array<UniformSet, MAX_DESCRIPTORS_PER_SET> PipelineUniformSets;
+	PushConstant* PushConstant = nullptr;
 	RenderContext* RenderContext = nullptr;
 };
 

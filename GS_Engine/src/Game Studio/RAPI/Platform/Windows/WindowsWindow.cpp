@@ -1,4 +1,5 @@
 #include "WindowsWindow.h"
+#include "Debug/Logger.h"
 
 #ifdef GS_PLATFORM_WIN
 #define GLFW_INCLUDE_VULKAN
@@ -9,23 +10,37 @@
 
 WindowsWindow::WindowsWindow(const WindowCreateInfo& _WCI) : Window(_WCI.Extent, _WCI.WindowType)
 {
-	/* Initialize the library */
-	if (!glfwInit())
+	glfwInit();
 
 	/* Create a windowed mode window and its OpenGL context */
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_DECORATED, _WCI.IsDecorated);
-	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _WCI.Name.c_str(), NULL, NULL);
+	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _WCI.Name.c_str(), nullptr, nullptr);
+
+	auto VkSupport = glfwVulkanSupported();
+	GS_BASIC_LOG_MESSAGE("Vulkan support: %d", VkSupport)
+
+	//auto Result = glfwGetPhysicalDevicePresentationSupport();
 
 	if (!GLFWWindow)
 	{
+		const char* Error = nullptr;
+		glfwGetError(&Error);
 		glfwTerminate();
+		GS_BASIC_LOG_ERROR("Window creation failed, Reason: %s", Error)
 	}
 
-	glfwMakeContextCurrent(GLFWWindow);
+	uint32 Count = 0;
+	auto ff = glfwGetRequiredInstanceExtensions(&Count);
+
+	GS_BASIC_LOG_MESSAGE("GLFW required extensions:")
+	for (uint8 i = 0; i < Count; ++i)
+	{
+		GS_BASIC_LOG_MESSAGE("%d: %s", i, ff[i]);
+	}
 
 	WindowObject = glfwGetWin32Window(GLFWWindow);
-	WindowInstance = GetModuleHandle(NULL);
+	WindowInstance = GetModuleHandle(nullptr);
 
 	//SetWindowFit(_Fit);
 
@@ -122,6 +137,20 @@ void WindowsWindow::SetWindowFit(WindowFit _Fit)
 	}
 }
 
+void WindowsWindow::SetWindowResolution(Extent2D _Res)
+{
+	glfwSetWindowSize(GLFWWindow, _Res.Width, _Res.Height);
+}
+
+void WindowsWindow::SetWindowIcon(const WindowIconInfo& _WII)
+{
+	GLFWimage Image;
+	Image.width = _WII.Size.Width;
+	Image.height = _WII.Size.Height;
+	Image.pixels = SCAST(uint8*, _WII.Data);
+	glfwSetWindowIcon(GLFWWindow, 1, &Image);
+}
+
 void WindowsWindow::MinimizeWindow()
 {
 	glfwIconifyWindow(GLFWWindow);
@@ -132,9 +161,28 @@ void WindowsWindow::NotifyWindow()
 	glfwRequestWindowAttention(GLFWWindow);
 }
 
+void WindowsWindow::FocusWindow()
+{
+	glfwFocusWindow(GLFWWindow);
+}
+
 void WindowsWindow::SetWindowTitle(const char* _Title)
 {
 	glfwSetWindowTitle(GLFWWindow, _Title);
+}
+
+Extent2D WindowsWindow::GetFramebufferSize()
+{
+	int Width, Height;
+	glfwGetFramebufferSize(GLFWWindow, &Width, &Height);
+	return Extent2D(Width, Height);
+}
+
+Vector2 WindowsWindow::GetContentScale()
+{
+	Vector2 Return;
+	glfwGetWindowContentScale(GLFWWindow, &Return.X, &Return.Y);
+	return Return;
 }
 
 int32 WindowsWindow::KeyboardKeysToGLFWKeys(KeyboardKeys _IE)
@@ -200,7 +248,19 @@ int32 WindowsWindow::KeyboardKeysToGLFWKeys(KeyboardKeys _IE)
 	case KeyboardKeys::Numpad7:			return GLFW_KEY_KP_7;
 	case KeyboardKeys::Numpad8:			return GLFW_KEY_KP_8;
 	case KeyboardKeys::Numpad9:			return GLFW_KEY_KP_9;
-	default:							return 0;
+	case KeyboardKeys::F1:				return GLFW_KEY_F1;
+	case KeyboardKeys::F2:				return GLFW_KEY_F2;
+	case KeyboardKeys::F3:				return GLFW_KEY_F3;
+	case KeyboardKeys::F4:				return GLFW_KEY_F4;
+	case KeyboardKeys::F5:				return GLFW_KEY_F5;
+	case KeyboardKeys::F6:				return GLFW_KEY_F6;
+	case KeyboardKeys::F7:				return GLFW_KEY_F7;
+	case KeyboardKeys::F8:				return GLFW_KEY_F8;
+	case KeyboardKeys::F9:				return GLFW_KEY_F9;
+	case KeyboardKeys::F10:				return GLFW_KEY_F10;
+	case KeyboardKeys::F11:				return GLFW_KEY_F11;
+	case KeyboardKeys::F12:				return GLFW_KEY_F12;
+	default:							return GLFW_KEY_UNKNOWN;
 	}
 }
 
@@ -210,7 +270,7 @@ KeyState WindowsWindow::GLFWKeyStateToKeyState(int32 _KS)
 	{
 	case GLFW_PRESS:	return KeyState::PRESSED;
 	case GLFW_RELEASE:	return KeyState::RELEASED;
-	default:			break;
+	default:			return KeyState::NONE;
 	}
 
 	return {};

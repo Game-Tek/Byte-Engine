@@ -28,9 +28,9 @@ typedef double real;
 
 #ifdef GS_PLATFORM_WIN
 	#ifdef GS_BUILD
-		#define GS_API 
+		#define GS_API //__declspec(dllexport)
 	#else
-		#define GS_API 
+		#define GS_API //__declspec(dllimport)
 	#endif
 #endif
 
@@ -51,9 +51,15 @@ typedef double real;
 //Assert
 #ifdef GS_DEBUG
 	#define GS_ASSERT(func, ...) func;\
-							if (!(func)) __debugbreak()
+							if ((func)) __debugbreak()
 #else
 	#define GS_ASSERT(func, ...) func;
+#endif
+
+#ifdef GS_DEBUG
+#define GS_DEBUG_ONLY(...) __VA_ARGS__;
+#else
+#define GS_DEBUG_ONLY(...);
 #endif
 
 //  CASTS

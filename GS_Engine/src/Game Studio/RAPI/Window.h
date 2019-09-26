@@ -17,6 +17,12 @@ enum class WindowFit : uint8
 	NORMAL, MAXIMIZED, FULLSCREEN
 };
 
+struct WindowIconInfo
+{
+	Extent2D Size;
+	void* Data = nullptr;
+};
+
 struct GS_API WindowCreateInfo
 {
 	Extent2D Extent;
@@ -54,10 +60,16 @@ public:
 	virtual void Update() = 0;
 
 	virtual void SetWindowFit(WindowFit _Fit) = 0;
+	virtual void SetWindowResolution(Extent2D _Res) = 0;
+	virtual void SetWindowIcon(const WindowIconInfo& _WII) = 0;
 	virtual void MinimizeWindow() = 0;
 	virtual void NotifyWindow() = 0;
+	virtual void FocusWindow() = 0;
 
 	virtual void SetWindowTitle(const char* _Title) = 0;
+
+	virtual Extent2D GetFramebufferSize() = 0;
+	virtual Vector2 GetContentScale() = 0;
 
 	[[nodiscard]] const Extent2D& GetWindowExtent() const { return Extent; }
 	[[nodiscard]] const MouseState& GetMouseState() const { return WindowMouseState; }

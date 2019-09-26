@@ -72,8 +72,15 @@ VKPipelineLayoutCreator VulkanUniformLayout::CreatePipelineLayout(VKDevice* _Dev
 	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	PipelineLayoutCreateInfo.setLayoutCount = 1;
 
-	VkDescriptorSetLayout pDescriptorSetLayouts = DescriptorSetLayout.GetHandle();
+	VkPushConstantRange PushConstantRange = {};
+	PushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	PushConstantRange.size = _PLCI.PushConstant->Size;
+	PushConstantRange.offset = 0;
 
+	PipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+	PipelineLayoutCreateInfo.pPushConstantRanges = &PushConstantRange;
+
+	VkDescriptorSetLayout pDescriptorSetLayouts = DescriptorSetLayout.GetHandle();
 	PipelineLayoutCreateInfo.pSetLayouts = &pDescriptorSetLayouts;
 
 	return VKPipelineLayoutCreator(_Device, &PipelineLayoutCreateInfo);

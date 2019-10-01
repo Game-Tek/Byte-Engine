@@ -65,6 +65,7 @@ protected:
 	GraphicsPipeline* GP = nullptr;
 	UniformBuffer* UB = nullptr;
 	UniformLayout* UL = nullptr;
+	mutable Mesh* M = nullptr;
 
 	//Updates the view matrix to follow the active's camera position.
 	void UpdateViewMatrix();

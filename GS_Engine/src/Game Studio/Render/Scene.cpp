@@ -80,7 +80,7 @@ Scene::Scene() : StaticMeshes(10)
 
 		void main()
 		{
-			tPos = vec4(inPos, 1.0) * callData.ModelMatrix;
+			tPos = vec4(inPos, 1.0);// * callData.ModelMatrix;
 			gl_Position = tPos;
 		})";
 	VS.ShaderCode = VertexShaderCode;
@@ -97,7 +97,7 @@ Scene::Scene() : StaticMeshes(10)
 
 		void main()
 		{
-			outColor = tPos;
+			outColor = vec4(0.3, 0.1, 0.5, 0);//tPos;
 		})";
 	FS.ShaderCode = FragmentShaderCode;
 
@@ -130,7 +130,7 @@ Scene::Scene() : StaticMeshes(10)
 	GPCI.PipelineDescriptor.Stages.FragmentShader = &FS;
 	GPCI.SwapchainSize = Win->GetWindowExtent();
 	GPCI.UniformLayout = UL;
-	GPCI.VDescriptor = StaticMesh::GetVertexDescriptor();
+	GPCI.VDescriptor = &ScreenQuad::VD;//StaticMesh::GetVertexDescriptor();
 	GP = RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 
 	Framebuffers.resize(SCImages.length());
@@ -142,6 +142,16 @@ Scene::Scene() : StaticMeshes(10)
 		FBCI.Images = DArray<Image*>(&SCImages[i], 1);
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
+
+	ScreenQuad SQ;
+
+	MeshCreateInfo MCI;
+	MCI.IndexCount = SQ.IndexCount;
+	MCI.IndexData = SQ.Indices;
+	MCI.VertexCount = SQ.VertexCount;
+	MCI.VertexData = SQ.Vertices;
+	MCI.VertexLayout = &ScreenQuad::VD;
+	M = RenderDevice::Get()->CreateMesh(MCI);
 }
 
 Scene::~Scene()
@@ -158,6 +168,17 @@ Scene::~Scene()
 
 void Scene::OnUpdate()
 {
+	//if (!M)
+	//{
+	//	MeshCreateInfo MCI;
+	//	MCI.IndexCount = StaticMeshes[0]->GetStaticMesh()->GetModel()->IndexCount;
+	//	MCI.IndexData = StaticMeshes[0]->GetStaticMesh()->GetModel()->IndexArray;
+	//	MCI.VertexCount = StaticMeshes[0]->GetStaticMesh()->GetModel()->VertexCount;
+	//	MCI.VertexData = StaticMeshes[0]->GetStaticMesh()->GetModel()->VertexArray;
+	//	MCI.VertexLayout = StaticMesh::GetVertexDescriptor();
+	//	M = RenderDevice::Get()->CreateMesh(MCI);
+	//}
+
 	RC->BeginRecording();
 
 	RenderPassBeginInfo RPBI;
@@ -168,13 +189,14 @@ void Scene::OnUpdate()
 
 	RC->BindGraphicsPipeline(GP);
 	RC->BindUniformLayout(UL);
+	RC->BindMesh(M);
 
-	PushConstantsInfo PCI;
-	PCI.Size = sizeof(Matrix4);
-	auto ModelMat = GSM::Translation(StaticMeshes[0]->GetOwner()->GetPosition());
-	PCI.Data = &ModelMat;
-	PCI.UniformLayout = UL;
-	RC->UpdatePushConstant(PCI);
+	//PushConstantsInfo PCI;
+	//PCI.Size = sizeof(Matrix4);
+	//auto ModelMat = GSM::Translation(StaticMeshes[0]->GetOwner()->GetPosition());
+	//PCI.Data = &ModelMat;
+	//PCI.UniformLayout = UL;
+	//RC->UpdatePushConstant(PCI);
 
 	DrawInfo DI;
 	DI.IndexCount = MyQuad.IndexCount;

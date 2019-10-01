@@ -117,15 +117,7 @@ public:
 
 	void resize(const LT _Count)
 	{
-		if (_Count > this->Capacity)
-		{
-			this->Capacity = _Count;
-			T* buffer = allocate(this->Capacity);
-			copyArray(this->Data, buffer, this->Length);
-			freeData();
-			this->Data = buffer;
-		}
-
+		reallocIfExceeds(_Count - this->Length);
 		this->Length = _Count;
 		return;
 	}
@@ -280,5 +272,4 @@ public:
 
 	//Returns a pointer to the allocated array.
 	INLINE const T* data() const { return this->Data; }
-
 };

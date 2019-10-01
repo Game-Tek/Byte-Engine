@@ -22,6 +22,8 @@ public:
 		{
 			WorldObject->OnUpdate();
 		}
+
+		WorldScene.OnUpdate();
 	}
 
 	//template<class T>

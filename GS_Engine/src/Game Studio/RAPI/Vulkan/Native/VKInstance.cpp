@@ -64,7 +64,7 @@ VKInstance::VKInstance(const char* _AppName)
 
 	VkInstanceCreateInfo InstanceCreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 	InstanceCreateInfo.pApplicationInfo = &AppInfo;
-	InstanceCreateInfo.enabledLayerCount = 0;
+	InstanceCreateInfo.enabledLayerCount = 1;
 	InstanceCreateInfo.ppEnabledLayerNames = InstanceLayers;
 	InstanceCreateInfo.enabledExtensionCount = 3;
 	InstanceCreateInfo.ppEnabledExtensionNames = Extensions;

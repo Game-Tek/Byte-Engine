@@ -77,25 +77,28 @@ FVector<VkDeviceQueueCreateInfo> VKDevice::CreateQueueInfos(QueueInfo* _QI, uint
 	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos(QueueFamiliesCount);
 	FVector<bool> UsedFamilies(QueueFamiliesCount, false);
 
-	for (uint8 f = 0; f < QueueFamiliesCount; ++f)
+	for (uint8 q = 0; q < _QueueCount; ++q)
 	{
-		if (QueueFamilies[f].queueCount > 0 && QueueFamilies[f].queueFlags & _QI[f].QueueFlag)
+		for (uint8 f = 0; f < QueueFamiliesCount; ++f)
 		{
-			if (/*UsedFamilies[f]*/false)
+			if (QueueFamilies[f].queueCount > 0 && QueueFamilies[f].queueFlags & _QI[f].QueueFlag)
 			{
-				QueueCreateInfos[f].queueCount++;
+				if (UsedFamilies[f])
+				{
+					QueueCreateInfos[f].queueCount++;
+					break;
+				}
+
+				QueueCreateInfos.push_back(VkDeviceQueueCreateInfo());
+				QueueCreateInfos[f].queueCount = 1;
+				QueueCreateInfos[f].queueFamilyIndex = f;
+				//QueueCreateInfos[f].pQueuePriorities = &_QI[f].QueuePriority;
+				UsedFamilies[f] = true;
 				break;
 			}
-
-			QueueCreateInfos.push_back(VkDeviceQueueCreateInfo());
-			QueueCreateInfos[f].queueCount = 1;
-			QueueCreateInfos[f].queueFamilyIndex = f;
-			QueueCreateInfos[f].pQueuePriorities = &_QI[f].QueuePriority;
-			//UsedFamilies[f] = true;
-			break;
 		}
+		QueueCreateInfos[q].pQueuePriorities = &_QI[q].QueuePriority;
 	}
-	//QueueCreateInfos[q].pQueuePriorities = &_QI[q].QueuePriority;
 
 	for (auto& QueueCreateInfo : QueueCreateInfos)
 	{

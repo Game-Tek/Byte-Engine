@@ -14,4 +14,7 @@ struct GS_API ScreenQuad
 
 	uint8 VertexCount = 4;
 	uint8 IndexCount = 6;
+
+	inline static const DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT2 };
+	inline static VertexDescriptor VD = Elements;
 };

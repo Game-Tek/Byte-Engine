@@ -17,26 +17,12 @@ WindowsWindow::WindowsWindow(const WindowCreateInfo& _WCI) : Window(_WCI.Extent,
 	glfwWindowHint(GLFW_DECORATED, _WCI.IsDecorated);
 	GLFWWindow = glfwCreateWindow(Extent.Width, Extent.Height, _WCI.Name.c_str(), nullptr, nullptr);
 
-	auto VkSupport = glfwVulkanSupported();
-	GS_BASIC_LOG_MESSAGE("Vulkan support: %d", VkSupport)
-
-	//auto Result = glfwGetPhysicalDevicePresentationSupport();
-
 	if (!GLFWWindow)
 	{
 		const char* Error = nullptr;
 		glfwGetError(&Error);
 		glfwTerminate();
 		GS_BASIC_LOG_ERROR("Window creation failed, Reason: %s", Error)
-	}
-
-	uint32 Count = 0;
-	auto ff = glfwGetRequiredInstanceExtensions(&Count);
-
-	GS_BASIC_LOG_MESSAGE("GLFW required extensions:")
-	for (uint8 i = 0; i < Count; ++i)
-	{
-		GS_BASIC_LOG_MESSAGE("%d: %s", i, ff[i]);
 	}
 
 	WindowObject = glfwGetWin32Window(GLFWWindow);

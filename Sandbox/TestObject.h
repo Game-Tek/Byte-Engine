@@ -9,13 +9,13 @@
 
 class TestObject : public WorldObject
 {
-	StaticMeshRenderComponent* MeshRender = nullptr;
 	StaticMesh* MyStaticMesh = nullptr;
+	StaticMeshRenderComponent* MeshRender = nullptr;
 
 public:
-	TestObject() :  MeshRender(GetWorld()->GetScene().CreateStaticMeshRenderComponent(this)),
-					MyStaticMesh(StaticMeshResourceManager::Get().GetResource(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj")))
+	TestObject() : MyStaticMesh(StaticMeshResourceManager::Get().GetResource(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj")))
 	{
+		MeshRender = GetWorld()->GetScene().CreateStaticMeshRenderComponent(this);
 		MeshRender->SetStaticMesh(MyStaticMesh);
 	}
 

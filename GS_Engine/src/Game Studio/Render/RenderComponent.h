@@ -31,4 +31,5 @@ public:
 	const char* GetName() const override { return "StaticMeshRenderComponent"; }
 
 	void SetStaticMesh(StaticMesh* _NewStaticMesh) { m_StaticMesh = _NewStaticMesh; }
+	[[nodiscard]] StaticMesh* GetStaticMesh() const { return m_StaticMesh; }
 };

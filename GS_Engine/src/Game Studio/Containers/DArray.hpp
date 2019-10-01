@@ -16,7 +16,6 @@ class GS_EXPORT_ONLY DArray
 	LT Length = 0;
 	T* Data = nullptr;
 
-private:
 	static T* allocate(const LT _elements)
 	{
 		//auto align = alignof(T);
@@ -45,7 +44,7 @@ private:
 public:
 	DArray() = default;
 
-	explicit DArray(const std::initializer_list<T>& _List) : Capacity(_List.size()), Length(_List.size()), Data(allocate(_List.size()))
+	DArray(const std::initializer_list<T>& _List) : Capacity(_List.size()), Length(_List.size()), Data(allocate(_List.size()))
 	{
 		copyLength(this->Length, CCAST(T*, _List.begin()));
 	}

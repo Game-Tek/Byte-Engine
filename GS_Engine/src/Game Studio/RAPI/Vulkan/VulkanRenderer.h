@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "RAPI/RAPI.h"
+#include "RAPI/RenderDevice.h"
 
 #include "VulkanFramebuffer.h"
 #include "VulkanRenderContext.h"
@@ -15,7 +15,7 @@ struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
 
-class GS_API VulkanRAPI final : public RAPI
+class GS_API VulkanRenderDevice final : public RenderDevice
 {
 	VKInstance Instance;
 	vkPhysicalDevice PhysicalDevice;
@@ -25,8 +25,8 @@ class GS_API VulkanRAPI final : public RAPI
 
 	VKCommandPoolCreator CreateCommandPool();
 public:
-	VulkanRAPI();
-	~VulkanRAPI();
+	VulkanRenderDevice();
+	~VulkanRenderDevice();
 
 	Mesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;
@@ -38,5 +38,5 @@ public:
 	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) final override;
 
-	INLINE const VKDevice& GetVulkanDevice() const { return Device; }
+	INLINE const VKDevice& GetVKDevice() const { return Device; }
 };

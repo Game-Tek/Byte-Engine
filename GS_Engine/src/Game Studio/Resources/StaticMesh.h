@@ -26,6 +26,8 @@ struct aiNode;
 struct aiMesh;
 struct aiScene;
 
+class VertexDescriptor;
+
 class GS_API StaticMesh final : public Resource
 {
 public:
@@ -35,10 +37,13 @@ public:
 	[[nodiscard]] size_t GetDataSize() const override { return SCAST(Model*, Data)->IndexCount * sizeof(uint16) + SCAST(Model*, Data)->VertexCount * sizeof(Vertex); }
 	[[nodiscard]] Model* GetModel() const { return SCAST(Model*, Data); }
 
-private:
+	static VertexDescriptor* GetVertexDescriptor();
 	bool LoadResource() override;
+private:
 	void LoadFallbackResource() override;
 
 	Model * ProcessNode(aiNode * Node, const aiScene * Scene);
 	static Model ProcessMesh(aiMesh * Mesh);
+
+	static VertexDescriptor StaticMeshVertexTypeVertexDescriptor;
 };

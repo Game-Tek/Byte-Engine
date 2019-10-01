@@ -7,44 +7,44 @@
 #include "WorldObject.h"
 #include "Render/Scene.h"
 
-class GS_API World : public Object
+class World : public Object
 {
 	FVector<WorldObject*> WorldObjects;
 
 	Scene WorldScene;
 public:
-	World() = default;
+	World();
 	virtual ~World();
 
 	void OnUpdate() override
 	{
-		for (WorldObject* WorldObject : WorldObjects)
+		for (auto& WorldObject : WorldObjects)
 		{
 			WorldObject->OnUpdate();
 		}
 	}
 
-	template<class T>
-	T* CreateWorldObject()
-	{
-		WorldObject* Obj = new T();
-		WorldObjects.push_back(Obj);
-
-		Obj->SetID(WorldObjects.length());
-
-		return SCAST(T*, Obj);
-	}
+	//template<class T>
+	//T* CreateWorldObject()
+	//{
+	//	WorldObject* Obj = new T();
+	//	WorldObjects.push_back(Obj);
+	//
+	//	Obj->SetID(WorldObjects.length());
+	//
+	//	return SCAST(T*, Obj);
+	//}
 
 	template<class T>
 	T* CreateWorldObject(const Vector3& _Pos)
 	{
 		WorldObject* Obj = new T();
-		WorldObjects.push_back(Obj);
-
 		Obj->SetID(WorldObjects.length());
 		Obj->SetPosition(_Pos);
 
-		return SCAST(T*, Obj);
+		WorldObjects.push_back(Obj);
+
+		return static_cast<T*>(Obj);
 	}
 
 	void DestroyWorldObject(WorldObject* _Object)

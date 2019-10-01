@@ -8,6 +8,8 @@
 #include "Native/VKDevice.h"
 #include "VulkanImage.h"
 #include "VulkanUniformBuffer.h"
+#include "RAPI/RenderDevice.h"
+#include "VulkanRenderer.h"
 
 VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI)
 {
@@ -70,17 +72,25 @@ void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const UniformLa
 VKPipelineLayoutCreator VulkanUniformLayout::CreatePipelineLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI) const
 {
 	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	PipelineLayoutCreateInfo.setLayoutCount = 1;
 
 	VkPushConstantRange PushConstantRange = {};
-	PushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	PushConstantRange.size = _PLCI.PushConstant->Size;
-	PushConstantRange.offset = 0;
+	if (_PLCI.PushConstant)
+	{
+		PushConstantRange.size = _PLCI.PushConstant->Size;
+		PushConstantRange.offset = 0;
+		PushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	PipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	PipelineLayoutCreateInfo.pPushConstantRanges = &PushConstantRange;
+		PipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+		PipelineLayoutCreateInfo.pPushConstantRanges = &PushConstantRange;
+	}
+	else
+	{
+		PipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+		PipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+	}
 
 	VkDescriptorSetLayout pDescriptorSetLayouts = DescriptorSetLayout.GetHandle();
+	PipelineLayoutCreateInfo.setLayoutCount = 1;
 	PipelineLayoutCreateInfo.pSetLayouts = &pDescriptorSetLayouts;
 
 	return VKPipelineLayoutCreator(_Device, &PipelineLayoutCreateInfo);
@@ -95,7 +105,7 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 	CreateDescriptorSet(_Device, _PLCI);
 }
 
-void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutUpdateInfo& _ULUI)
+void VulkanUniformLayout::UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI)
 {
 	DArray<VkWriteDescriptorSet> WriteDescriptors(_ULUI.PipelineUniformSets.length());
 	for (uint8 i = 0; i < _ULUI.PipelineUniformSets.length(); ++i)
@@ -171,5 +181,5 @@ void VulkanUniformLayout::UpdateDescriptorSet(VKDevice* _Device, const UniformLa
 		}
 	}
 
-	vkUpdateDescriptorSets(_Device->GetVkDevice(), WriteDescriptors.length(), WriteDescriptors.data(), 0, nullptr);
+	vkUpdateDescriptorSets(SCAST(VulkanRenderDevice*, RenderDevice::Get())->GetVKDevice().GetVkDevice(), WriteDescriptors.length(), WriteDescriptors.data(), 0, nullptr);
 }

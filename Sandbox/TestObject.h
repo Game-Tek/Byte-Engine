@@ -14,7 +14,7 @@ class TestObject : public WorldObject
 
 public:
 	TestObject() :  MeshRender(GetWorld()->GetScene().CreateStaticMeshRenderComponent(this)),
-					MyStaticMesh(StaticMeshResourceManager::Get().GetResource("Sphere"))
+					MyStaticMesh(StaticMeshResourceManager::Get().GetResource(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj")))
 	{
 		MeshRender->SetStaticMesh(MyStaticMesh);
 	}

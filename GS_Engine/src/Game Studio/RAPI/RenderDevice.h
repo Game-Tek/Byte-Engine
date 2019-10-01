@@ -17,19 +17,19 @@ enum class RAPIs : uint8
 	NONE, VULKAN
 };
 
-class GS_API RAPI
+class GS_API RenderDevice
 {
 	static RAPIs RenderAPI;
-	static RAPI* RAPIInstance;
+	static RenderDevice* RenderDeviceInstance;
 	
-	static RAPI* CreateRAPI();
+	static RenderDevice* CreateRAPI();
 	static RAPIs GetRAPIs();
 protected:
-	RAPI() = default;
-	virtual ~RAPI() = default;
+	RenderDevice() = default;
+	virtual ~RenderDevice() = default;
 public:
 	static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
-	static INLINE RAPI* GetRAPI() { return RAPIInstance; }
+	static INLINE RenderDevice* Get() { return RenderDeviceInstance; }
 
 	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;

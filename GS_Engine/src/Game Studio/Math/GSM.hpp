@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Core.h"
 
@@ -10,6 +10,7 @@
 #include "Matrix4.h"
 
 #include "Transform3.h"
+#include "Plane.h"
 
 class GS_API GSM
 {
@@ -515,8 +516,8 @@ class GS_API GSM
 	}
 
 public:
-	static constexpr double PI = 3.14159265358979323846;
-	static constexpr double e =  2.71828182845904523536;
+	static constexpr double PI = 3.141592653589793238462643383279502884197169399375105820974944592307816406286;
+	static constexpr double e =  2.718281828459045235360287471352662497757247093699959574966967627724076630353;
 
 	INLINE static int64 Random()
 	{
@@ -1154,5 +1155,150 @@ public:
 	INLINE static float Clamp(float _A, float _Min, float _Max)
 	{
 		return _A > _Max ? _Max : _A < _Min ? _Min : _A;
+	}
+
+	INLINE static Vector3 ClosestPointOnPlane(const Vector3& _Point, const Plane& _Plane)
+	{
+		const float T = (Dot(_Plane.Normal, _Point) - _Plane.D) / Dot(_Plane.Normal, _Plane.Normal);
+		return _Point - _Plane.Normal * T;
+	}
+
+	INLINE static double DistanceFromPointToPlane(const Vector3& _Point, const Plane& _Plane)
+	{
+		// return Dot(q, p.n) - p.d; if plane equation normalized (||p.n||==1)
+		return (Dot(_Plane.Normal, _Point) - _Plane.D) / Dot(_Plane.Normal, _Plane.Normal);
+	}
+
+	INLINE static void ClosestPointOnLineSegmentToPoint(const Vector3& _C, const Vector3& _A, const Vector3& _B, double& _T, Vector3& _D)
+	{
+		Vector3 AB = _B - _A;
+		// Project c onto ab, computing parameterized position d(t) = a + t*(b – a)
+		_T = Dot(_C - _A, AB) / Dot(AB, AB);
+		// If outside segment, clamp t (and therefore d) to the closest endpoint
+		if (_T < 0.0) _T = 0.0;
+		if (_T > 1.0) _T = 1.0;
+		// Compute projected position from the clamped t
+		_D = _A + AB * _T;
+	}
+
+	INLINE static double SquaredDistancePointToSegment(const Vector3& _A, const Vector3& _B, const Vector3& _C)
+	{
+		Vector3 AB = _B - _A, AC = _C - _A, BC = _C - _B;
+		float E = Dot(AC, AB);
+		// Handle cases where c projects outside ab
+		if (E <= 0.0f) return Dot(AC, AC);
+		float f = Dot(AB, AB);
+		if (E >= f) return Dot(BC, BC);
+		// Handle cases where c projects onto ab
+		return Dot(AC, AC) - E * E / f;
+	}
+
+	INLINE static Vector3 ClosestPointOnTriangleToPoint(const Vector3& _A, const Vector3& _P1, const Vector3& _P2, const Vector3& _P3)
+	{
+		// Check if P in vertex region outside A
+		const Vector3 AP = _A - _P1;
+		const Vector3 AB = _P2 - _P1;
+		const Vector3 AC = _P3 - _P1;
+
+		const float D1 = Dot(AB, AP);
+		const float D2 = Dot(AC, AP);
+		if (D1 <= 0.0f && D2 <= 0.0f) return _P1; // barycentric coordinates (1,0,0)
+
+		// Check if P in vertex region outside B
+		const Vector3 BP = _A - _P2;
+		const float D3 = Dot(AB, BP);
+		const float D4 = Dot(AC, BP);
+		if (D3 >= 0.0f && D4 <= D3) return _P2; // barycentric coordinates (0,1,0)
+
+		// Check if P in edge region of AB, if so return projection of P onto AB
+		const float VC = D1 * D4 - D3 * D2;
+		if (VC <= 0.0f && D1 >= 0.0f && D3 <= 0.0f)
+		{
+			const float V = D1 / (D1 - D3);
+			return _P1 + AB * V; // barycentric coordinates (1-v,v,0)
+		}
+
+		// Check if P in vertex region outside C
+		const Vector3 CP = _A - _P3;
+		const float D5 = Dot(AB, CP);
+		const float D6 = Dot(AC, CP);
+		if (D6 >= 0.0f && D5 <= D6) return _P3; // barycentric coordinates (0,0,1)
+
+		// Check if P in edge region of AC, if so return projection of P onto AC
+		const float VB = D5 * D2 - D1 * D6;
+		if (VB <= 0.0f && D2 >= 0.0f && D6 <= 0.0f)
+		{
+			const float W = D2 / (D2 - D6);
+			return _P1 + AC * W; // barycentric coordinates (1-w,0,w)
+		}
+
+		// Check if P in edge region of BC, if so return projection of P onto BC
+		float VA = D3 * D6 - D5 * D4;
+		if (VA <= 0.0f && (D4 - D3) >= 0.0f && (D5 - D6) >= 0.0f)
+		{
+			const float W = (D4 - D3) / ((D4 - D3) + (D5 - D6));
+			return _P2 + (_P3 - _P2) * W; // barycentric coordinates (0,1-w,w)
+		}
+
+		// P inside face region. Compute Q through its barycentric coordinates (u,v,w)
+		const float Denom = 1.0f / (VA + VB + VC);
+		const float V = VB * Denom;
+		const float W = VC * Denom;
+		return _P1 + AB * V + AC * W; // = u*a + v*b + w*c, u = va * denom = 1.0f - v - w
+	}
+
+	INLINE static bool PointOutsideOfPlane(const Vector3& p, const Vector3& a, const Vector3& b, const Vector3& c)
+	{
+		return Dot(p - a, Cross(b - a, c - a)) >= 0.0f; // [AP AB AC] >= 0
+	}
+
+	INLINE static bool PointOutsideOfPlane(const Vector3& p, const Vector3& a, const Vector3& b, const Vector3& c, const Vector3& d)
+	{
+		const float signp = Dot(p - a, Cross(b - a, c - a)); // [AP AB AC]
+		const float signd = Dot(d - a, Cross(b - a, c - a)); // [AD AB AC]
+		// Points on opposite sides if expression signs are opposite
+		return signp * signd < 0.0f;
+	}
+
+	INLINE static Vector3 ClosestPtPointTetrahedron(const Vector3& p, const Vector3& a, const Vector3& b, const Vector3& c, const Vector3& d)
+	{
+		// Start out assuming point inside all halfspaces, so closest to itself
+		Vector3 ClosestPoint = p;
+		float BestSquaredDistance = 3.402823466e+38F;
+
+		// If point outside face abc then compute closest point on abc
+		if (PointOutsideOfPlane(p, a, b, c))
+		{
+			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, b, c);
+			const float sqDist = Dot(q - p, q - p);
+			// Update best closest point if (squared) distance is less than current best
+			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
+		}
+
+		// Repeat test for face acd
+		if (PointOutsideOfPlane(p, a, c, d))
+		{
+			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, c, d);
+			const float sqDist = Dot(q - p, q - p);
+			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
+		}
+
+		// Repeat test for face adb
+		if (PointOutsideOfPlane(p, a, d, b))
+		{
+			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, d, b);
+			const float sqDist = Dot(q - p, q - p);
+			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
+		}
+
+		// Repeat test for face bdc
+		if (PointOutsideOfPlane(p, b, d, c))
+		{
+			const Vector3 q = ClosestPointOnTriangleToPoint(p, b, d, c);
+			const float sqDist = Dot(q - p, q - p);
+			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
+		}
+
+		return ClosestPoint;
 	}
 };

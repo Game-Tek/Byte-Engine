@@ -26,6 +26,7 @@ public:
 	void DecrementReferences() { --References; }
 	uint16 GetReferenceCount() const { return References; }
 
+	virtual bool LoadResource() = 0;
 protected:
 	void* Data = nullptr;
 
@@ -34,6 +35,5 @@ protected:
 	//Resource identifier. Used to check if a resource has already been loaded.
 	FString FilePath;
 
-	virtual bool LoadResource() = 0;
 	virtual void LoadFallbackResource() = 0;
 };

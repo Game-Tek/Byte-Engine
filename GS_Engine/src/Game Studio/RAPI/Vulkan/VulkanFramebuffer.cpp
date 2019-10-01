@@ -29,7 +29,7 @@ VKFramebufferCreator VulkanFramebuffer::CreateFramebufferCreator(VKDevice* _Devi
 	FramebufferCreateInfo.width = _Extent.Width;
 	FramebufferCreateInfo.height = _Extent.Height;
 	FramebufferCreateInfo.layers = 1;
-	FramebufferCreateInfo.renderPass = _RP->GetVk_RenderPass().GetHandle();
+	FramebufferCreateInfo.renderPass = _RP->GetVKRenderPass().GetHandle();
 	FramebufferCreateInfo.pAttachments = t.data();
 
 	return VKFramebufferCreator(_Device, &FramebufferCreateInfo);

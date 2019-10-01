@@ -1,19 +1,28 @@
 #include "StaticMesh.h"
 
+#include "RAPI/Mesh.h"
+
 #include "Containers/FString.h"
 
 #include <assimp/scene.h>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
+static DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3 };
+VertexDescriptor StaticMesh::StaticMeshVertexTypeVertexDescriptor(Elements);
+
 StaticMesh::StaticMesh(const FString& Path) : Resource(Path)
 {
-	LoadResource();
 }
 
 StaticMesh::~StaticMesh()
 {
 	delete static_cast<Model *>(Data);
+}
+
+VertexDescriptor* StaticMesh::GetVertexDescriptor()
+{
+	return &StaticMeshVertexTypeVertexDescriptor;
 }
 
 bool StaticMesh::LoadResource()
@@ -26,6 +35,7 @@ bool StaticMesh::LoadResource()
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
+		auto Res = Importer.GetErrorString();
 		return false;
 	}
 

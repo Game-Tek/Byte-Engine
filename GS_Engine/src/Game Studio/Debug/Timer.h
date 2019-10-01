@@ -1,3 +1,5 @@
+#pragma once
+
 #include "Core.h"
 
 #include "Containers/FString.h"
@@ -6,7 +8,7 @@
 class GS_API Timer
 {
     Nanoseconds StartingTime = 0;
-    FString Name = "No name!";
+    FString Name = FString("No name!");
 public:
     Timer(const FString& _Name);
     ~Timer();

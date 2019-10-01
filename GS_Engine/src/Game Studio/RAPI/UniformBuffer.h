@@ -4,7 +4,6 @@
 
 struct GS_API UniformBufferCreateInfo
 {
-	void* Data = nullptr;
 	size_t Size = 0;
 };
 

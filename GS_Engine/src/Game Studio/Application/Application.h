@@ -21,7 +21,7 @@ namespace GS
 		Window* ActiveWindow = nullptr;
 
 		bool FlaggedForClose = false;
-		FString CloseReason = "none";
+		FString CloseReason = FString("none");
 
 		[[nodiscard]] bool ShouldClose() const;
 	public:
@@ -32,6 +32,10 @@ namespace GS
 
 		[[nodiscard]] const char* GetName() const override { return "Application"; }
 
+		virtual const char* GetApplicationName() = 0;
+		[[nodiscard]] static const char* GetEngineName() { return "Game Studio"; }
+		static const char* GetEngineVersion() { return "0.0.1"; }
+
 		static Application* Get() { return ApplicationInstance; }
 
 		//Updates the window the application gets it's context information from.
@@ -39,7 +43,6 @@ namespace GS
 
 		//Fires a delegate to signal that the application has been requested to close.
 		void PromptClose();
-
 		//Flags the application to close on the next update.
 		void Close(const char* _Reason);
 

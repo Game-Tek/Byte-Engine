@@ -2,7 +2,7 @@
 
 #include "Vulkan.h"
 #include "Containers/FVector.hpp"
-#include "RAPI/RAPI.h"
+#include "RAPI/RenderDevice.h"
 
 VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const RenderPassDescriptor& _RPD)
 {

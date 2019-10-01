@@ -1,18 +1,19 @@
 #include "Scene.h"
-#include "RAPI/RAPI.h"
+#include "RAPI/RenderDevice.h"
 
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
+#include <vector>
 
-Scene::Scene()
+Scene::Scene() : StaticMeshes(10)
 {
-	Win = GS::Application::Get()->GetActiveWindow();
+	std::vector<int> TT;
 
-	//GS::Application::Get()->SetActiveWindow(Win);
+	Win = GS::Application::Get()->GetActiveWindow();
 
 	RenderContextCreateInfo RCCI;
 	RCCI.Window = Win;
-	RC = RAPI::GetRAPI()->CreateRenderContext(RCCI);
+	RC = RenderDevice::Get()->CreateRenderContext(RCCI);
 
 	auto SCImages = RC->GetSwapchainImages();
 
@@ -54,7 +55,7 @@ Scene::Scene()
 	RPD.SubPasses.push_back(&SPD);
 
 	RPCI.Descriptor = RPD;
-	RP = RAPI::GetRAPI()->CreateRenderPass(RPCI);
+	RP = RenderDevice::Get()->CreateRenderPass(RPCI);
 
 	ShaderInfo VS;
 	VS.Type = ShaderType::VERTEX_SHADER;
@@ -72,14 +73,14 @@ Scene::Scene()
 			vec4 AddPos;
 		} UBO;
 
-		layout(location = 0)in vec2 inPos;
-		layout(location = 1)in vec2 inTexCoords;
+		layout(location = 0)in vec3 inPos;
+		layout(location = 1)in vec3 inTexCoords;
 
 		layout(location = 0)out vec4 tPos;
 
 		void main()
 		{
-			tPos = vec4(inPos, 0.0, 1.0) * callData.ModelMatrix;
+			tPos = vec4(inPos, 1.0) * callData.ModelMatrix;
 			gl_Position = tPos;
 		})";
 	VS.ShaderCode = VertexShaderCode;
@@ -109,7 +110,19 @@ Scene::Scene()
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(Matrix4);
 	ULCI.PushConstant = &MyPushConstant;
-	UL = RAPI::GetRAPI()->CreateUniformLayout(ULCI);
+	UL = RenderDevice::Get()->CreateUniformLayout(ULCI);
+
+	UniformBufferCreateInfo UBCI;
+	UBCI.Size = sizeof(Vector4);
+	UB = RenderDevice::Get()->CreateUniformBuffer(UBCI);
+
+	UniformLayoutUpdateInfo ULUI;
+	ULUI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
+	ULUI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
+	ULUI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
+	ULUI.PipelineUniformSets[0].UniformData = UB;
+	ULUI.PipelineUniformSets.setLength(1);
+	UL->UpdateUniformSet(ULUI);
 
 	GraphicsPipelineCreateInfo GPCI;
 	GPCI.RenderPass = RP;
@@ -117,8 +130,8 @@ Scene::Scene()
 	GPCI.PipelineDescriptor.Stages.FragmentShader = &FS;
 	GPCI.SwapchainSize = Win->GetWindowExtent();
 	GPCI.UniformLayout = UL;
-	GPCI.VDescriptor = &Vertex2D::Descriptor;
-	GP = RAPI::GetRAPI()->CreateGraphicsPipeline(GPCI);
+	GPCI.VDescriptor = StaticMesh::GetVertexDescriptor();
+	GP = RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 
 	Framebuffers.resize(SCImages.length());
 	for (uint8 i = 0; i < SCImages.length(); ++i)
@@ -127,7 +140,7 @@ Scene::Scene()
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
 		FBCI.Images = DArray<Image*>(&SCImages[i], 1);
-		Framebuffers[i] = RAPI::GetRAPI()->CreateFramebuffer(FBCI);
+		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
 }
 
@@ -154,7 +167,7 @@ void Scene::OnUpdate()
 	RC->BeginRenderPass(RPBI);
 
 	RC->BindGraphicsPipeline(GP);
-	//RC->BindUniformLayout(UL);
+	RC->BindUniformLayout(UL);
 
 	PushConstantsInfo PCI;
 	PCI.Size = sizeof(Matrix4);

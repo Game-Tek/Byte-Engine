@@ -10,8 +10,8 @@ class GS_API VulkanRenderPass final : public RenderPass
 
 	static VKRenderPassCreator CreateInfo(VKDevice* _Device, const RenderPassDescriptor& _RPD);
 public:
-	VulkanRenderPass(VKDevice* _Device, const RenderPassDescriptor & _RPD);
+	VulkanRenderPass(VKDevice* _Device, const RenderPassDescriptor& _RPD);
 	~VulkanRenderPass() = default;
 
-	INLINE const VKRenderPass& GetVk_RenderPass() const { return RenderPass; }
+	INLINE const VKRenderPass& GetVKRenderPass() const { return RenderPass; }
 };

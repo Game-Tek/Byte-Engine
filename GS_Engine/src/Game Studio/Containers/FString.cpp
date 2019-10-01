@@ -1,12 +1,12 @@
 #include "FString.h"
 #include <cstdio>
-#include <stdarg.h>
+#include <cstdarg>
 
 FString::FString() : Data(10)
 {
 }
 
-FString::FString(const char * In) : Data(StringLength(In), const_cast<char*>(In))
+FString::FString(const char* _In) : Data(StringLength(_In), CCAST(char*, _In))
 {
 }
 
@@ -18,52 +18,39 @@ FString::FString(size_t _Length) : Data(_Length)
 {
 }
 
-FString::FString(const size_t Length, const char* In) : Data(Length + 1, const_cast<char*>(In))
+FString::FString(const size_t _Length, const char* _In) : Data(_Length + 1, const_cast<char*>(_In))
 {
 	Data.push_back('\0');
 }
 
-FString & FString::operator=(const char * In)
+FString& FString::operator=(const char* _In)
 {
-	Data.recreate(const_cast<char *>(In), StringLength(In));
-
+	Data.recreate(StringLength(_In), const_cast<char*>(_In));
 	return *this;
 }
 
-FString & FString::operator+(const char * Other)
+FString& FString::operator+(const char* _In)
 {
-	Data.push_back(StringLength(Other), const_cast<char*>(Other));
-
+	Data.pop_back();
+	Data.push_back(StringLength(_In), const_cast<char*>(_In));
 	return *this;
 }
 
-FString & FString::operator+(const FString & Other)
+FString& FString::operator+(const FString& _Other)
 {
-	Data.push_back(Other.Data);
-
+	Data.pop_back();
+	Data.push_back(_Other.Data);
 	return *this;
-}
-
-char FString::operator[](size_t _Index)
-{
-	return Data[_Index];
-}
-
-char FString::operator[](size_t _Index) const
-{
-	return Data[_Index];
 }
 
 bool FString::operator==(const FString & _Other) const
 {
-	if (Data.length() != _Other.Data.length())
-	{
-		return false;
-	}
+	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
+	if (Data.length() != _Other.Data.length()) return false;
 
 	for (size_t i = 0; i < Data.length(); i++)
 	{
-		if(Data[i] != _Other.Data[i])
+		if (Data[i] != _Other.Data[i])
 		{
 			return false;
 		}
@@ -74,10 +61,8 @@ bool FString::operator==(const FString & _Other) const
 
 bool FString::NonSensitiveComp(const FString& _Other) const
 {
-	if (Data.length() != _Other.Data.length())
-	{
-		return false;
-	}
+	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
+	if (Data.length() != _Other.Data.length()) return false;
 
 	for (size_t i = 0; i < Data.length(); i++)
 	{
@@ -86,40 +71,29 @@ bool FString::NonSensitiveComp(const FString& _Other) const
 			return false;
 		}
 	}
+
+	return true;
 }
 
-char * FString::c_str()
+void FString::Append(const char* _In)
 {
-	return Data.data();
-}
-
-const char * FString::c_str() const
-{
-	return Data.data();
-}
-
-void FString::Append(const char * In)
-{
-	Data.push_back(' ');
-
-	Data.push_back(StringLength(In), const_cast<char*>(In));
-
+	Data.pop_back();											//Get rid of null terminator.
+	Data.push_back(' ');									//Push space.
+	Data.push_back(StringLength(_In), const_cast<char*>(_In));
 	return;
 }
 
-void FString::Append(const FString & In)
+void FString::Append(const FString& _In)
 {
-	Data.push_back(' ');
-
-	Data.push_back(In.Data);
-
+	Data.pop_back();			//Get rid of null terminator.
+	Data.push_back(' ');	//Push space.
+	Data.push_back(_In.Data);	//Push new string.
 	return;
 }
 
-void FString::Insert(const char * In, const size_t Index)
+void FString::Insert(const char* _In, const size_t _Index)
 {
-	Data.insert(Index, const_cast<char *>(In), StringLength(In));
-
+	Data.insert(_Index, const_cast<char*>(_In), StringLength(_In));
 	return;
 }
 
@@ -168,14 +142,12 @@ FString FString::MakeString(const char* _Text, ...)
 
 char FString::ToLowerCase(char _Char)
 {
-	if ('A' <= _Char && _Char <= 'Z')
-		return _Char += ('a' - 'A');
+	if ('A' <= _Char && _Char <= 'Z') return _Char += ('a' - 'A');
 	return 0;
 }
 
 char FString::ToUpperCase(char _Char)
 {
-	if ('a' <= _Char && _Char <= 'z')
-		return _Char += ('a' - 'A');
+	if ('a' <= _Char && _Char <= 'z') return _Char += ('a' - 'A');
 	return 0;
 }

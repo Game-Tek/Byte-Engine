@@ -30,7 +30,7 @@ public:
 	VulkanUniformLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 	~VulkanUniformLayout() = default;
 
-	void UpdateDescriptorSet(VKDevice* _Device, const UniformLayoutUpdateInfo& _ULUI);
+	void UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI) override;
 
 	[[nodiscard]] const auto& GetVkDescriptorSets() const { return DescriptorSets; }
 	[[nodiscard]] const VKDescriptorSetLayout& GetVKDescriptorSetLayout() const { return DescriptorSetLayout; }

@@ -44,7 +44,6 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkPipelineTessellationStateCreateInfo TessellationState = { VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
 
 
-
 	//  VIEWPORT STATE
 	VkViewport Viewport;
 	Viewport.x = 0.0f;
@@ -105,7 +104,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	//  COLOR BLEND STATE
 	VkPipelineColorBlendAttachmentState ColorBlendAttachment;
 	ColorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	ColorBlendAttachment.blendEnable = VK_FALSE;
+	ColorBlendAttachment.blendEnable = _GPCI.PipelineDescriptor.BlendEnable;
 	ColorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
 	ColorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
 	ColorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -142,6 +141,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
 	VS.stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages.VertexShader->Type);
 
+	//TODO: ask for shader name from outside
 	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_GPCI.PipelineDescriptor.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
 
 	VkShaderModuleCreateInfo VkVertexShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
@@ -187,11 +187,11 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	CreateInfo.pViewportState = &ViewportState;
 	CreateInfo.pRasterizationState = &RasterizationState;
 	CreateInfo.pMultisampleState = &MultisampleState;
-	CreateInfo.pDepthStencilState = &DepthStencilState;
+	CreateInfo.pDepthStencilState = nullptr;//&DepthStencilState;
 	CreateInfo.pColorBlendState = &ColorBlendState;
-	CreateInfo.pDynamicState = nullptr;//&DynamicState;
+	CreateInfo.pDynamicState = &DynamicState;
 	CreateInfo.layout = SCAST(VulkanUniformLayout*, _GPCI.UniformLayout)->GetVKPipelineLayout().GetHandle();
-	CreateInfo.renderPass = SCAST(VulkanRenderPass*, _GPCI.RenderPass)->GetVk_RenderPass().GetHandle();
+	CreateInfo.renderPass = SCAST(VulkanRenderPass*, _GPCI.RenderPass)->GetVKRenderPass().GetHandle();
 	CreateInfo.subpass = 0;
 	CreateInfo.basePipelineHandle = _OldPipeline; // Optional
 	CreateInfo.basePipelineIndex = _OldPipeline ? 0 : -1;

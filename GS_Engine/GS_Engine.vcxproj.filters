@@ -221,7 +221,6 @@
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RAPI.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
@@ -231,6 +230,8 @@
     <ClInclude Include="src\Game Studio\Resources\StaticMesh.h">
       <Filter>Engine\Resource Manager\Resources</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Math\Plane.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -252,7 +253,6 @@
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
-    <ClCompile Include="src\Game Studio\Vertex.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>
     </ClCompile>
@@ -296,13 +296,14 @@
     <ClCompile Include="src\Game Studio\Game\Actor.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\RAPI.cpp">
-      <Filter>Engine\Render\Renderer</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Game\World.cpp" />
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Resources\StaticMesh.cpp">
       <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Math\Plane.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp">
+      <Filter>Engine\Render\Renderer</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

@@ -11,9 +11,6 @@
 #include "RAPI/Window.h"
 #include "Native/vkPhysicalDevice.h"
 #include "VulkanUniformLayout.h"
-#include <GLFW/glfw3.h>
-#include "Debug/Logger.h"
-
 
 //  VULKAN RENDER CONTEXT
 
@@ -125,10 +122,6 @@ VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instanc
 	CommandPool(CreateCommandPool(_Device)),
 	CommandBuffers(SwapchainImages.capacity())
 {
-	auto Result = glfwGetPhysicalDevicePresentationSupport(_Instance->GetVkInstance(), _PD, 0);
-	GS_BASIC_LOG_MESSAGE("glfwGetPhysicalDevicePresentationSupport: %d", Result)
-
-
 	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.capacity());
 
 	VkSemaphoreCreateInfo SemaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
@@ -241,7 +234,7 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	VkClearValue ClearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVk_RenderPass().GetHandle();
+	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVKRenderPass().GetHandle();
 	RenderPassBeginInfo.pClearValues = &ClearColor;
 	RenderPassBeginInfo.clearValueCount = 1;
 	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffers[CurrentImage])->GetVk_Framebuffer().GetHandle();

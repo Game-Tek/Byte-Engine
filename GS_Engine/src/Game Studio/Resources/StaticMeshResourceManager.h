@@ -29,7 +29,20 @@ public:
 		//	return StaticMeshResourceHandle(&ResourceMap[HashedName.GetID()]);
 		//}
 
-		auto NewObject = new StaticMesh(GetBaseResourcePath() + "static meshes/" + _Name + ".obj");
+		//auto Path = GetBaseResourcePath() + "static meshes/" + _Name + ".obj";
+
+		auto NewObject = new StaticMesh(_Name);
+		auto Result = NewObject->LoadResource();
+
+		if (Result)
+		{
+			GS_LOG_SUCCESS("Loaded resource %s succesfully!", _Name.c_str())
+		}
+		else
+		{
+			GS_LOG_ERROR("Failed to load %s resource!", _Name.c_str())
+		}
+
 		NewObject->IncrementReferences();
 		return ResourceMap.emplace(NewObject, NewObject).first->second;
 

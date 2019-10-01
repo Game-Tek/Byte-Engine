@@ -6,18 +6,19 @@
 
 class GS_API FString
 {
+	using string_type = char;
 public:
 	//Constructs an empty FString.
 	FString();
 
-	template<size_t N>
-	FString(const char(&_Literal)[N]) : Data(N, *_Literal)
-	{
-	}
+	//template<size_t N>
+	//FString(const char(&_Literal)[N]) : Data(N, *_Literal)
+	//{
+	//}
 
 	explicit FString(char* const _In);
 
-	//Constructs an FString from a C-FString.
+	//Constructs an FString from a C-String.
 	explicit FString(const char * In);
 
 	explicit FString(size_t _Length);
@@ -29,13 +30,13 @@ public:
 
 	~FString() = default;
 
-	FString & operator=(const char *);
-	FString & operator=(const FString & Other) = default;
-	FString & operator+(const char * Other);
-	FString & operator+(const FString & Other);
+	FString& operator=(const char *);
+	FString& operator=(const FString & Other) = default;
+	FString& operator+(const char * Other);
+	FString& operator+(const FString & Other);
 
-	char operator[](size_t _Index);
-	char operator[](size_t _Index) const;
+	string_type operator[](size_t _Index) { return Data[_Index]; }
+	string_type operator[](size_t _Index) const { return Data[_Index]; }
 
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString & Other) const;
@@ -43,11 +44,11 @@ public:
 	//Returns true if the two FString's contents are the same. Comparison is case insensitive.
 	[[nodiscard]] bool NonSensitiveComp(const FString& _Other) const;
 
-	//Returns the contents of this FString as a C-FString.
-	char * c_str();
+	//Returns the contents of this FString as a C-String.
+	char* c_str() { return Data.data(); }
 
-	//Returns the contents of this FString as a C-FString.
-	[[nodiscard]] const char * c_str() const;
+	//Returns the contents of this FString as a C-String.
+	[[nodiscard]] const char* c_str() const { return Data.data(); }
 
 	//Return the length of this FString. Does not take into account the null terminator character.
 	INLINE size_t GetLength() const { return Data.length() - 1; }
@@ -57,7 +58,7 @@ public:
 	//Places a the C-FString after this FString with a space in the middle.
 	void Append(const char * In);
 	//Places the FString after this FString with a space in the middle.
-	void Append(const FString & In);
+	void Append(const FString& In);
 
 	//Places the passed in FString at the specified Index.
 	void Insert(const char * In, size_t Index);
@@ -65,11 +66,11 @@ public:
 	//Returns the index to the last character in the string that is equal to _Char, if no matching character is found -1 is returned.
 	[[nodiscard]] int64 FindLast(char _Char) const;
 
-	//Returns the length of the In FString accounting for the null terminator character. FString MUST BE NULL TERMINATED.
+	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
 	static size_t StringLength(const char * In);
 
 private:
-	FVector<char> Data;
+	FVector<string_type> Data;
 
 	static FString MakeString(const char* _Text, ...);
 	static char ToLowerCase(char _Char);

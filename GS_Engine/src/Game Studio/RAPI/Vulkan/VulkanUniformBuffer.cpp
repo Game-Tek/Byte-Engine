@@ -16,7 +16,7 @@ VKBufferCreator VulkanUniformBuffer::CreateBuffer(VKDevice* _Device, const Unifo
 
 VKMemoryCreator VulkanUniformBuffer::CreateMemory(VKDevice* _Device)
 {
-	auto MemReqs = Buffer.GetMemoryRequirements();
+	const auto MemReqs = Buffer.GetMemoryRequirements();
 
 	VkMemoryAllocateInfo MemoryAllocateInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
 	MemoryAllocateInfo.allocationSize = MemReqs.size;
@@ -29,7 +29,6 @@ VulkanUniformBuffer::VulkanUniformBuffer(VKDevice* _Device, const UniformBufferC
 {
 	Memory.BindBufferMemory(Buffer);
 	MappedMemoryPointer = Memory.MapMemory(0, _BCI.Size);
-	Memory.CopyToMappedMemory(_BCI.Data, MappedMemoryPointer, _BCI.Size);
 }
 
 VulkanUniformBuffer::~VulkanUniformBuffer()

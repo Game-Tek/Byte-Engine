@@ -8,7 +8,7 @@
 //#include <Game Studio/Utility/FlipFlop.h>
 #include "Game Studio/Game/World.h"
 #include "TestObject.h"
-#include "Game Studio/RAPI/RAPI.h"
+#include "Game Studio/RAPI/RenderDevice.h"
 
 class Framebuffer;
 
@@ -17,8 +17,6 @@ class Sandbox final : public GS::Application
 public:
 	Sandbox()
 	{
-		GS_LOG_SUCCESS("Here I am motherfucker!");
-
 		WindowCreateInfo WCI;
 		WCI.Extent = { 1280, 720 };
 		WCI.Name = "Game Studio!";
@@ -27,9 +25,13 @@ public:
 
 		Get()->SetActiveWindow(Win);
 
-		ActiveWorld = new World();
-		
-		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
+		MyWorld = new World();
+		ActiveWorld = MyWorld;
+
+		GS_ASSERT(!MyWorld);
+		GS_ASSERT(!MyWorld->GetName());
+
+ 		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
 
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}
@@ -46,6 +48,7 @@ public:
 	}
 
 	const char* GetName() const override { return "Sandbox"; }
+	const char* GetApplicationName() override { return "Sandbox"; }
 
 	World* MyWorld = nullptr;
 	TestObject* MyObject = nullptr;

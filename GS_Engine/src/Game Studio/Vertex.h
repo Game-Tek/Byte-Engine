@@ -13,8 +13,6 @@ struct GS_API Vertex2D
 {
 	Vector2 Position;
 	TextureCoordinates TextureCoordinates;
-
-	static VertexDescriptor Descriptor;
 };
 
 struct GS_API Vertex

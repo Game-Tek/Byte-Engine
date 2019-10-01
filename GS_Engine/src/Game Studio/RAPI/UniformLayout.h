@@ -34,4 +34,7 @@ struct GS_API UniformLayoutUpdateInfo
 
 class GS_API UniformLayout
 {
+public:
+	virtual ~UniformLayout() = default;
+	virtual void UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI) = 0;
 };

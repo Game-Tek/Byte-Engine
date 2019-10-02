@@ -3,12 +3,9 @@
 
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
-#include <vector>
 
 Scene::Scene() : StaticMeshes(10)
 {
-	std::vector<int> TT;
-
 	Win = GS::Application::Get()->GetActiveWindow();
 
 	RenderContextCreateInfo RCCI;
@@ -168,16 +165,11 @@ Scene::~Scene()
 
 void Scene::OnUpdate()
 {
-	//if (!M)
-	//{
-	//	MeshCreateInfo MCI;
-	//	MCI.IndexCount = StaticMeshes[0]->GetStaticMesh()->GetModel()->IndexCount;
-	//	MCI.IndexData = StaticMeshes[0]->GetStaticMesh()->GetModel()->IndexArray;
-	//	MCI.VertexCount = StaticMeshes[0]->GetStaticMesh()->GetModel()->VertexCount;
-	//	MCI.VertexData = StaticMeshes[0]->GetStaticMesh()->GetModel()->VertexArray;
-	//	MCI.VertexLayout = StaticMesh::GetVertexDescriptor();
-	//	M = RenderDevice::Get()->CreateMesh(MCI);
-	//}
+	for (uint32 Mat = 0; Mat < SceneMaterialManager.GetMaterialCount(); ++Mat)
+	{
+		
+	}
+
 
 	RC->BeginRecording();
 
@@ -191,13 +183,6 @@ void Scene::OnUpdate()
 	RC->BindUniformLayout(UL);
 	RC->BindMesh(M);
 
-	//PushConstantsInfo PCI;
-	//PCI.Size = sizeof(Matrix4);
-	//auto ModelMat = GSM::Translation(StaticMeshes[0]->GetOwner()->GetPosition());
-	//PCI.Data = &ModelMat;
-	//PCI.UniformLayout = UL;
-	//RC->UpdatePushConstant(PCI);
-
 	DrawInfo DI;
 	DI.IndexCount = MyQuad.IndexCount;
 	DI.InstanceCount = 1;
@@ -210,14 +195,6 @@ void Scene::OnUpdate()
 	RC->AcquireNextImage();
 	RC->Flush();
 	RC->Present();
-}
-
-StaticMeshRenderComponent* Scene::CreateStaticMeshRenderComponent(WorldObject* _Owner) const
-{
-	auto SMRC = new StaticMeshRenderComponent();
-	SMRC->SetOwner(_Owner);
-	StaticMeshes.push_back(SMRC);
-	return SMRC;
 }
 
 void Scene::UpdateViewMatrix()

@@ -15,6 +15,11 @@
 #include "RAPI/RenderContext.h"
 #include "RAPI/RenderPass.h"
 
+#include "StaticMeshRenderComponent.h"
+#include "MaterialManager.h"
+#include <unordered_map>
+#include "RenderableInstructions.h"
+
 class StaticMesh;
 class RenderProxy;
 class PointLightRenderProxy;
@@ -37,12 +42,26 @@ public:
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
-	StaticMeshRenderComponent* CreateStaticMeshRenderComponent(WorldObject* _Owner) const;
+	template<class T>
+	RenderComponent* CreateRenderComponent(WorldObject* _Owner) const
+	{
+		RenderComponent* NRC = new T();
+		RenderableInstructionsMap.try_emplace(Id(NRC->GetRenderableTypeName()), NRC->GetRenderableInstructions());
+		RenderComponents.emplace_back(NRC);
+		return NRC;
+	}
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
+
+
+	static MaterialManager& GetMaterialManager() { return SceneMaterialManager; }
 protected:
+	static MaterialManager SceneMaterialManager;
+
+	mutable std::unordered_map<Id, RenderableInstructions> RenderableInstructionsMap;
+
 	//Scene elements
-	mutable FVector<StaticMeshRenderComponent*> StaticMeshes;
+	mutable FVector<RenderComponent*> RenderComponents;
 
 	//Pointer to the active camera.
 	Camera* ActiveCamera = nullptr;

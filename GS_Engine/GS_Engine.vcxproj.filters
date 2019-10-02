@@ -232,6 +232,10 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
+    <ClInclude Include="src\Game Studio\Render\Material.h" />
+    <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
+    <ClInclude Include="src\Game Studio\Render\MaterialManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

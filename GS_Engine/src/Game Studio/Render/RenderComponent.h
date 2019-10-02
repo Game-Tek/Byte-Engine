@@ -4,32 +4,27 @@
 
 #include "Game/Component.h"
 
-#include "Resources/StaticMesh.h"
+struct RenderableInstructions;
 
 class GS_API RenderComponent : public Component
 {
 protected:
 	//Defines whether this render component updates it's properties during it's lifetime or if the settings found on creation are the ones that will be used for all it's lifetime.
 	//All other properties won't be updated during runtime if this flag is set to true, unless stated otherwise.
-	bool IsDynamic = false;
+	//bool IsDynamic = false;
 
-	//Determines whether this object will be drawn on this update. DOES NOT DEPEND ON IsDynamic.
-	bool Render = true;
-
-public:
-	bool GetIsDynamic() const { return IsDynamic; }
-	bool GetRender() const { return Render; }
-};
-
-class GS_API StaticMeshRenderComponent : public RenderComponent
-{
-	StaticMesh* m_StaticMesh = nullptr;
+	//Determines whether this object will be drawn on the current update. DOES NOT DEPEND ON IsDynamic.
+	bool ShouldRender = true;
 
 public:
-	StaticMeshRenderComponent() = default;
+	//bool GetIsDynamic() const { return IsDynamic; }
 
-	const char* GetName() const override { return "StaticMeshRenderComponent"; }
+	//Returns whether this render component should be rendered on the current update.
+	[[nodiscard]] bool GetShouldRender() const { return ShouldRender; }
 
-	void SetStaticMesh(StaticMesh* _NewStaticMesh) { m_StaticMesh = _NewStaticMesh; }
-	[[nodiscard]] StaticMesh* GetStaticMesh() const { return m_StaticMesh; }
+	//Returns a pointer to a static renderable instructions struct.
+	//This RenderableInstructions struct should have it's set of function filled out so as to be able to specify how to render this render component type.
+	[[nodiscard]] virtual RenderableInstructions GetRenderableInstructions() const = 0;
+
+	[[nodiscard]] virtual const char* GetRenderableTypeName() const = 0;
 };

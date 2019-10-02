@@ -113,11 +113,15 @@
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
+    <ClInclude Include="src\Game Studio\Render\MaterialManager.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
+    <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
+    <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />

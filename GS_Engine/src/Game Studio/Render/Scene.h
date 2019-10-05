@@ -16,11 +16,11 @@
 #include "RAPI/RenderPass.h"
 
 #include "StaticMeshRenderComponent.h"
-#include "MaterialManager.h"
-#include <unordered_map>
+#include "RenderResourcesManager.h"
+#include <map>
 #include "RenderableInstructions.h"
 
-class StaticMesh;
+class StaticMeshResource;
 class RenderProxy;
 class PointLightRenderProxy;
 
@@ -37,43 +37,39 @@ public:
 	[[nodiscard]] Camera* GetActiveCamera() const { return ActiveCamera; }
 	[[nodiscard]] const Matrix4& GetViewMatrix() const { return ViewMatrix; }
 	[[nodiscard]] const Matrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
-	[[nodiscard]] const Matrix4& GetVPMatrix() const { return VPMatrix; }
+	[[nodiscard]] const Matrix4& GetVPMatrix() const { return ViewProjectionMatrix; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
 
 	template<class T>
-	RenderComponent* CreateRenderComponent(WorldObject* _Owner) const
+	T* CreateRenderComponent(WorldObject* _Owner) const
 	{
 		RenderComponent* NRC = new T();
-		RenderableInstructionsMap.try_emplace(Id(NRC->GetRenderableTypeName()), NRC->GetRenderableInstructions());
+		RenderableInstructionsMap.try_emplace(Id(NRC->GetRenderableTypeName()).GetID(), NRC->GetRenderableInstructions());
 		RenderComponents.emplace_back(NRC);
-		return NRC;
+		return static_cast<T*>(NRC);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
+	RenderResourcesManager ResourcesManager;
 
-	static MaterialManager& GetMaterialManager() { return SceneMaterialManager; }
+	void DrawMesh(const DrawInfo& _DI);
 protected:
-	static MaterialManager SceneMaterialManager;
 
-	mutable std::unordered_map<Id, RenderableInstructions> RenderableInstructionsMap;
+	uint32 DrawCalls = 0;
+
+	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
+	mutable FVector<Material*> UsedMaterials;
+
+	FVector<RenderComponent*> RenderComponentsSortedForRendering;
 
 	//Scene elements
 	mutable FVector<RenderComponent*> RenderComponents;
 
 	//Pointer to the active camera.
 	Camera* ActiveCamera = nullptr;
-
-	//Matrix necessary to represent the active camera's view position.
-	Matrix4 ViewMatrix;
-
-	//Matrix necessary to represent the active camera's view angle.
-	Matrix4 ProjectionMatrix;
-
-	//Matrix to represent the multiplication of the view and projection matrix.
-	Matrix4 VPMatrix;
 
 	//Render elements
 	Window* Win = nullptr;
@@ -84,15 +80,15 @@ protected:
 	GraphicsPipeline* GP = nullptr;
 	UniformBuffer* UB = nullptr;
 	UniformLayout* UL = nullptr;
-	mutable Mesh* M = nullptr;
 
-	//Updates the view matrix to follow the active's camera position.
-	void UpdateViewMatrix();
+	//Matrix necessary to represent the active camera's view position.
+	Matrix4 ViewMatrix;
+	//Matrix necessary to represent the active camera's view angle.
+	Matrix4 ProjectionMatrix;
+	//Matrix to represent the multiplication of the view and projection matrix.
+	Matrix4 ViewProjectionMatrix;
 
-	//Updated the projection to keep up with window size changes and FOV changes.
-	void UpdateProjectionMatrix();
-
-	void UpdateVPMatrix();
+	void UpdateMatrices();
 
 	//Returns a symetric perspective frustrum.
 	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far);
@@ -100,10 +96,3 @@ protected:
 	//Returns a perspective frustrum.
 	static Matrix4 BuildPerspectiveFrustrum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
 };
-
-INLINE void Scene::UpdateVPMatrix()
-{
-	VPMatrix = ProjectionMatrix * ViewMatrix;
-
-	return;
-}

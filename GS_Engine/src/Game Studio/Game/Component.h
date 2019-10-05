@@ -1,7 +1,10 @@
 #pragma once
 
 #include "Core.h"
+
 #include "Object.h"
+
+class WorldObject;
 
 class GS_API Component : public Object
 {

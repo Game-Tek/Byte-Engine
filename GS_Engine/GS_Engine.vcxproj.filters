@@ -227,15 +227,17 @@
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMesh.h">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
     <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
-    <ClInclude Include="src\Game Studio\Render\MaterialManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Render\RenderResourcesManager.h" />
+    <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -302,13 +304,16 @@
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Game\World.cpp" />
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\StaticMesh.cpp">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Math\Plane.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp">
       <Filter>Engine\Render\Renderer</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp">
+      <Filter>Engine\Resource Manager\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
+    <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
+    <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

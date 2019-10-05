@@ -1,4 +1,4 @@
-#include "StaticMesh.h"
+#include "StaticMeshResource.h"
 
 #include "RAPI/Mesh.h"
 
@@ -9,23 +9,23 @@
 #include <assimp/postprocess.h>
 
 static DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3 };
-VertexDescriptor StaticMesh::StaticMeshVertexTypeVertexDescriptor(Elements);
+VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elements);
 
-StaticMesh::StaticMesh(const FString& Path) : Resource(Path)
+StaticMeshResource::StaticMeshResource(const FString& Path) : Resource(Path)
 {
 }
 
-StaticMesh::~StaticMesh()
+StaticMeshResource::~StaticMeshResource()
 {
 	delete static_cast<Model *>(Data);
 }
 
-VertexDescriptor* StaticMesh::GetVertexDescriptor()
+VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
 {
 	return &StaticMeshVertexTypeVertexDescriptor;
 }
 
-bool StaticMesh::LoadResource()
+bool StaticMeshResource::LoadResource()
 {
 	//Create Importer.
 	Assimp::Importer Importer;
@@ -50,11 +50,11 @@ bool StaticMesh::LoadResource()
 	return true;
 }
 
-void StaticMesh::LoadFallbackResource()
+void StaticMeshResource::LoadFallbackResource()
 {
 }
 
-Model * StaticMesh::ProcessNode(aiNode * Node, const aiScene * Scene)
+Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 {
 	//Store inside MeshData a new Array of meshes.
 	Model * MeshData = new Model[Node->mNumMeshes];
@@ -73,7 +73,7 @@ Model * StaticMesh::ProcessNode(aiNode * Node, const aiScene * Scene)
 	return MeshData;
 }
 
-Model StaticMesh::ProcessMesh(aiMesh * InMesh)
+Model StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 {
 	//Create a mesh object to hold the mesh currently being processed.
 	Model Result;

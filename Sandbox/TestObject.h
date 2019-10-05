@@ -5,23 +5,21 @@
 
 #include <Game Studio/Game/World.h>
 #include <Game Studio/Render/Scene.h>
-#include <Game Studio/Resources/StaticMeshResourceManager.h>
 
 class TestObject : public WorldObject
 {
-	StaticMesh* MyStaticMesh = nullptr;
+	StaticMesh MyStaticMesh;
 	StaticMeshRenderComponent* MeshRender = nullptr;
 
 public:
-	TestObject() : MyStaticMesh(StaticMeshResourceManager::Get().GetResource(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj")))
+	TestObject() : MyStaticMesh(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj"))
 	{
-		MeshRender = GetWorld()->GetScene().CreateStaticMeshRenderComponent(this);
-		MeshRender->SetStaticMesh(MyStaticMesh);
+		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(this);
+		MeshRender->SetStaticMesh(&MyStaticMesh);
 	}
 
 	~TestObject()
 	{
-		StaticMeshResourceManager::Get().ReleaseResource(MyStaticMesh);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "TestObject"; }

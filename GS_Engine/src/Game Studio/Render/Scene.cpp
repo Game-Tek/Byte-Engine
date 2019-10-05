@@ -4,7 +4,7 @@
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
 
-Scene::Scene() : StaticMeshes(10)
+Scene::Scene() : RenderComponents(10)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -141,19 +141,11 @@ Scene::Scene() : StaticMeshes(10)
 	}
 
 	ScreenQuad SQ;
-
-	MeshCreateInfo MCI;
-	MCI.IndexCount = SQ.IndexCount;
-	MCI.IndexData = SQ.Indices;
-	MCI.VertexCount = SQ.VertexCount;
-	MCI.VertexData = SQ.Vertices;
-	MCI.VertexLayout = &ScreenQuad::VD;
-	M = RenderDevice::Get()->CreateMesh(MCI);
 }
 
 Scene::~Scene()
 {
-	for (auto& Element : StaticMeshes)
+	for (auto& Element : RenderComponents)
 	{
 		delete Element;
 	}
@@ -165,7 +157,7 @@ Scene::~Scene()
 
 void Scene::OnUpdate()
 {
-	for (uint32 Mat = 0; Mat < SceneMaterialManager.GetMaterialCount(); ++Mat)
+	for (uint32 Mat = 0; Mat < UsedMaterials.length(); ++Mat)
 	{
 		
 	}
@@ -181,7 +173,6 @@ void Scene::OnUpdate()
 
 	RC->BindGraphicsPipeline(GP);
 	RC->BindUniformLayout(UL);
-	RC->BindMesh(M);
 
 	DrawInfo DI;
 	DI.IndexCount = MyQuad.IndexCount;
@@ -197,7 +188,13 @@ void Scene::OnUpdate()
 	RC->Present();
 }
 
-void Scene::UpdateViewMatrix()
+void Scene::DrawMesh(const DrawInfo& _DI)
+{
+	RC->DrawIndexed(_DI);
+	++DrawCalls;
+}
+
+void Scene::UpdateMatrices()
 {
 	//We get and store the camera's position so as to not access it several times.
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
@@ -206,11 +203,10 @@ void Scene::UpdateViewMatrix()
 	ViewMatrix[12] = CamPos.X;
 	ViewMatrix[13] = CamPos.Y;
 	ViewMatrix[14] = CamPos.Z;
-}
 
-void Scene::UpdateProjectionMatrix()
-{
 	ProjectionMatrix = BuildPerspectiveMatrix(GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 0.1f, 500.0f);
+
+	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }
 
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)

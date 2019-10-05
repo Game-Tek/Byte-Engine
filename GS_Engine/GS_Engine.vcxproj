@@ -112,8 +112,10 @@
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
+    <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
-    <ClInclude Include="src\Game Studio\Render\MaterialManager.h" />
+    <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderResourcesManager.h" />
     <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
@@ -204,7 +206,7 @@
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\GameStudio.h" />
@@ -224,11 +226,14 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
+    <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Game\World.cpp" />
     <ClCompile Include="src\Game Studio\Math\Plane.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
+    <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
+    <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
@@ -272,7 +277,7 @@
     <ClCompile Include="src\Game Studio\Application\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\StaticMesh.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />

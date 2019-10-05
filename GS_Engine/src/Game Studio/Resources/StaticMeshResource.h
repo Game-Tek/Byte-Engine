@@ -28,11 +28,11 @@ struct aiScene;
 
 class VertexDescriptor;
 
-class GS_API StaticMesh final : public Resource
+class GS_API StaticMeshResource final : public Resource
 {
 public:
-	explicit StaticMesh(const FString & Path);
-	~StaticMesh();
+	explicit StaticMeshResource(const FString & Path);
+	~StaticMeshResource();
 
 	[[nodiscard]] size_t GetDataSize() const override { return SCAST(Model*, Data)->IndexCount * sizeof(uint16) + SCAST(Model*, Data)->VertexCount * sizeof(Vertex); }
 	[[nodiscard]] Model* GetModel() const { return SCAST(Model*, Data); }

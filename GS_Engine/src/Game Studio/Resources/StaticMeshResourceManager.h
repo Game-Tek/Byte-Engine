@@ -4,13 +4,14 @@
 
 #include "ResourceManager.h"
 
-#include "StaticMesh.h"
+#include "StaticMeshResource.h"
 
 #include <unordered_map>
+#include "Debug/Logger.h"
 
-class GS_API StaticMeshResourceManager : public ResourceManager<StaticMesh>
+class GS_API StaticMeshResourceManager : public ResourceManager<StaticMeshResource>
 {
-	std::unordered_map<StaticMesh*, StaticMesh*> ResourceMap;
+	std::unordered_map<StaticMeshResource*, StaticMeshResource*> ResourceMap;
 
 	static StaticMeshResourceManager SMRM;
 public:
@@ -18,7 +19,7 @@ public:
 
 	const char* GetName() const override { return "StaticMeshResourceManager"; }
 
-	StaticMesh* GetResource(const FString& _Name) override
+	StaticMeshResource* GetResource(const FString& _Name) override
 	{
 		//auto HashedName = Id(_Name);
 		//
@@ -31,7 +32,7 @@ public:
 
 		//auto Path = GetBaseResourcePath() + "static meshes/" + _Name + ".obj";
 
-		auto NewObject = new StaticMesh(_Name);
+		auto NewObject = new StaticMeshResource(_Name);
 		auto Result = NewObject->LoadResource();
 
 		if (Result)
@@ -49,7 +50,7 @@ public:
 		//return nullptr;
 	}
 
-	void ReleaseResource(StaticMesh* _Resource) override
+	void ReleaseResource(StaticMeshResource* _Resource) override
 	{
 		_Resource->DecrementReferences();
 

@@ -4,7 +4,7 @@
 
 #include "Game/Component.h"
 
-struct RenderableInstructions;
+#include "RenderableInstructions.h"
 
 class GS_API RenderComponent : public Component
 {

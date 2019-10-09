@@ -19,4 +19,6 @@ public:
 
 	[[nodiscard]] Material* GetMaterial() const { return staticMeshMaterial; }
 	[[nodiscard]] Model* GetModel() const;
+
+	void SetMaterial(Material* _NewMaterial) { staticMeshMaterial = _NewMaterial; }
 };

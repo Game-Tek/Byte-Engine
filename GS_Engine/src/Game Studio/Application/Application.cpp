@@ -8,6 +8,8 @@ namespace GS
 	Application::Application()
 	{
 		ApplicationInstance = this;
+
+		ResourceManagerInstance = new ResourceManager();
 	}
 
 	Application::~Application()

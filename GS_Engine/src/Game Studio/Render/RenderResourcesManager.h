@@ -6,6 +6,7 @@
 #include "Containers/FVector.hpp"
 
 #include "Material.h"
+#include "Containers/Tuple.h"
 
 class GraphicsPipeline;
 class StaticMesh;
@@ -14,7 +15,7 @@ class Mesh;
 class RenderResourcesManager
 {
 	// MATERIALS
-	std::map<Id::HashType, Material*> Materials;
+	std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>> Materials;
 	FVector<GraphicsPipeline*> Pipelines;
 	// MATERIALS
 
@@ -24,13 +25,7 @@ class RenderResourcesManager
 	// MESHES
 
 public:
-	~RenderResourcesManager()
-	{
-		for (auto const& x : Materials)
-		{
-			delete x.second;
-		}
-	}
+	~RenderResourcesManager();
 
 	template<class T>
 	Material* CreateMaterial()
@@ -46,10 +41,10 @@ public:
 
 	Material* GetMaterial(const char* _MaterialName)
 	{
-		return Materials[Id(_MaterialName).GetID()];
+		return Materials[Id(_MaterialName).GetID()].First;
 	}
 
-	[[nodiscard]] uint32 GetMaterialCount() const { return Materials.size(); }
+	[[nodiscard]] const std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>>& GetMaterialMap() const { return Materials; }
 
 	Mesh* CreateMesh(StaticMesh* _SM);
 };

@@ -225,7 +225,6 @@
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
@@ -238,6 +237,7 @@
     <ClInclude Include="src\Game Studio\Render\RenderResourcesManager.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
+    <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -314,6 +314,8 @@
     <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

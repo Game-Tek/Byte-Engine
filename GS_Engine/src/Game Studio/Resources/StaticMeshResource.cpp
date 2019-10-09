@@ -11,13 +11,11 @@
 static DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3 };
 VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elements);
 
-StaticMeshResource::StaticMeshResource(const FString& Path) : Resource(Path)
-{
-}
-
 StaticMeshResource::~StaticMeshResource()
 {
-	delete static_cast<Model *>(Data);
+	delete SCAST(Model*, Data)->IndexArray;
+	delete SCAST(Model*, Data)->VertexArray;
+	delete SCAST(Model*, Data);
 }
 
 VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
@@ -25,7 +23,7 @@ VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
 	return &StaticMeshVertexTypeVertexDescriptor;
 }
 
-bool StaticMeshResource::LoadResource()
+bool StaticMeshResource::LoadResource(const FString& _Path)
 {
 	//Create Importer.
 	Assimp::Importer Importer;
@@ -50,14 +48,14 @@ bool StaticMeshResource::LoadResource()
 	return true;
 }
 
-void StaticMeshResource::LoadFallbackResource()
+void StaticMeshResource::LoadFallbackResource(const FString& _Path)
 {
 }
 
 Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 {
 	//Store inside MeshData a new Array of meshes.
-	Model * MeshData = new Model[Node->mNumMeshes];
+	auto MeshData = new Model[Node->mNumMeshes];
 
 	// Loop through each of the node's meshes (if any)
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)

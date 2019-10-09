@@ -4,8 +4,10 @@
 
 #include "Clock.h"
 #include "InputManager.h"
+#include "Resources/ResourceManager.h"
 #include "RAPI/Window.h"
 #include "Game/World.h"
+
 
 namespace GS
 {
@@ -16,6 +18,7 @@ namespace GS
 	protected:
 		Clock ClockInstance;
 		InputManager InputManagerInstance;
+		ResourceManager* ResourceManagerInstance = nullptr;
 
 		World* ActiveWorld = nullptr;
 		Window* ActiveWindow = nullptr;

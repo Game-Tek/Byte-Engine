@@ -2,21 +2,17 @@
 
 #include "stb image/stb_image.h"
 
-TextureResource::TextureResource(const FString& _FilePath) : Resource(_FilePath)
-{
-}
-
 TextureResource::~TextureResource()
 {
 	stbi_image_free(Data);
 }
 
-bool TextureResource::LoadResource()
+bool TextureResource::LoadResource(const FString& _Path)
 {
 	int32 X, Y, NofChannels;
 
 	//Load  the image.
-	Data = stbi_load(FilePath.c_str(), &X, &Y, &NofChannels, 0);
+	Data = stbi_load(_Path.c_str(), &X, &Y, &NofChannels, 0);
 
 	TextureDimensions.Width = X;
 	TextureDimensions.Height = Y;
@@ -26,7 +22,7 @@ bool TextureResource::LoadResource()
 	return Data != nullptr;
 }
 
-void TextureResource::LoadFallbackResource()
+void TextureResource::LoadFallbackResource(const FString& _Path)
 {
 	Data = new uint8[256 * 256 * 3];
 

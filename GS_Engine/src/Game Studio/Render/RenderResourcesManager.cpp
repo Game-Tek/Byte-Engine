@@ -2,6 +2,16 @@
 
 #include "RAPI/RenderDevice.h"
 
+#include "RAPI/GraphicsPipeline.h"
+
+RenderResourcesManager::~RenderResourcesManager()
+{
+	for (auto const& x : Materials)
+	{
+		delete x.second.Second;
+	}
+}
+
 Mesh* RenderResourcesManager::CreateMesh(StaticMesh* _SM)
 {
 	Mesh* NewMesh = nullptr;

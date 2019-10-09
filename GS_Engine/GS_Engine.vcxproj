@@ -124,8 +124,8 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
+    <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
@@ -234,6 +234,8 @@
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />

@@ -532,7 +532,7 @@ public:
 
 	INLINE static int64 Random(int64 _Min, int64 _Max)
 	{
-		return (Random() % _Min) % _Max;
+		return Random() % (_Max - _Min + 1) + _Min;
 	}
 
 	INLINE static real fRandom()

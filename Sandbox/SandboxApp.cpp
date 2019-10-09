@@ -1,14 +1,12 @@
 #include <GameStudio.h>
 
-#include <string>
-#include <iostream>
 #include <Game Studio/RAPI/Window.h>
 #include <Game Studio/Debug/Logger.h>
 
 //#include <Game Studio/Utility/FlipFlop.h>
 #include "Game Studio/Game/World.h"
 #include "TestObject.h"
-#include "Game Studio/RAPI/RenderDevice.h"
+#include "Game Studio/Resources/MaterialResource.h"
 
 class Framebuffer;
 
@@ -22,6 +20,8 @@ public:
 		WCI.Name = "Game Studio!";
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
+
+		ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](OutStream& _OS) {  });
 
 		Get()->SetActiveWindow(Win);
 

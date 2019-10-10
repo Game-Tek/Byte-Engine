@@ -685,20 +685,18 @@ public:
 	//////////////////////////////////////////////////////////////
 
 	//Returns 1 if A is bigger than 0. 0 if A is equal to 0. and -1 if A is less than 0.
-	INLINE static int8 Sign(const uint_64 _A)
+	INLINE static int8 Sign(const int_64 _A)
 	{
 		if (_A > 0)
 		{
 			return 1;
 		}
-		else if (_A < 0)
+		if (_A < 0)
 		{
 			return -1;
 		}
-		else
-		{
-			return 0;
-		}
+
+		return 0;
 	}
 
 	//Returns 1 if A is bigger than 0. 0 if A is equal to 0. and -1 if A is less than 0.
@@ -708,14 +706,12 @@ public:
 		{
 			return 1;
 		}
-		else if (A < 0.0)
+		if (A < 0.0)
 		{
 			return -1;
 		}
-		else
-		{
-			return 0;
-		}
+
+		return 0;
 	}
 
 	//Mixes A and B by the specified values, Where Alpha 0 returns A and Alpha 1 returns B.
@@ -815,99 +811,108 @@ public:
 	//////////////////////////////////////////////////////////////
 
 	//Calculates the length of a 2D vector.
-	INLINE static float VectorLength(const Vector2 & Vec1)
+	INLINE static float Length(const Vector2 & Vec1)
 	{
 		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y);
 	}
 
-	INLINE static float VectorLength(const Vector3 & Vec1)
+	INLINE static float Length(const Vector3 & Vec1)
 	{
 		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z);
 	}
 
-	INLINE static float VectorLength(const Vector4 & Vec1)
+	INLINE static float Length(const Vector4 & Vec1)
 	{
 		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z + Vec1.W * Vec1.W);
 	}
 
-	INLINE static float VectorLengthSquared(const Vector2 & Vec1)
-	{
-		return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
-	}
+	INLINE static float LengthSquared(const Vector2& _A);
+	//{
+	//	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
+	//}
 
-	INLINE static float VectorLengthSquared(const Vector3 & Vec1)
-	{
-		return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z;
-	}
+	INLINE static float LengthSquared(const Vector3& _A);
+	//{
+	//	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z;
+	//}
 
-	INLINE static Vector2 Normalized(const Vector2 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
-		return Vector2(Vec1.X / Length, Vec1.Y / Length);
-	}
+	INLINE static float LengthSquared(const Vector4& _A);
 
-	INLINE static void Normalize(Vector2 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
+	INLINE static Vector2 Normalized(const Vector2& _A);
+	//{
+	//	const float Length = VectorLength(Vec1);
+	//	return Vector2(Vec1.X / Length, Vec1.Y / Length);
+	//}
 
-		Vec1.X = Vec1.X / Length;
-		Vec1.Y = Vec1.Y / Length;
-	}
+	INLINE static void Normalize(Vector2& _A);
+		//{
+		//	const float Length = VectorLength(Vec1);
+		//
+		//	Vec1.X = Vec1.X / Length;
+		//	Vec1.Y = Vec1.Y / Length;
+		//}
 
-	INLINE static Vector3 Normalized(const Vector3 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
-		return Vector3(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length);
-	}
+	INLINE static Vector3 Normalized(const Vector3& _A);
+		//{
+		//	const float Length = VectorLength(Vec1);
+		//	return Vector3(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length);
+		//}
 
-	INLINE static void Normalize(Vector3 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
+	INLINE static void Normalize(Vector3& _A);
+		//{
+		//	const float Length = VectorLength(Vec1);
+		//
+		//	Vec1.X = Vec1.X / Length;
+		//	Vec1.Y = Vec1.Y / Length;
+		//	Vec1.Z = Vec1.Z / Length;
+		//}
 
-		Vec1.X = Vec1.X / Length;
-		Vec1.Y = Vec1.Y / Length;
-		Vec1.Z = Vec1.Z / Length;
-	}
+	INLINE static Vector4 Normalized(const Vector4& _A);
+		//{
+		//	const float Length = VectorLength(Vec1);
+		//	return Vector4(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length, Vec1.W / Length);
+		//}
 
-	INLINE static Vector4 Normalized(const Vector4 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
-		return Vector4(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length, Vec1.W / Length);
-	}
+	INLINE static void Normalize(Vector4& _A);
+	//{
+	//	const float Length = VectorLength(Vec1);
+	//
+	//	Vec1.X = Vec1.X / Length;
+	//	Vec1.Y = Vec1.Y / Length;
+	//	Vec1.Z = Vec1.Z / Length;
+	//	Vec1.W = Vec1.W / Length;
+	//}
 
-	INLINE static void Normalize(Vector4 & Vec1)
-	{
-		const float Length = VectorLength(Vec1);
+	INLINE static float Dot(const Vector2& _A, const Vector2& _B);
+		//{
+		//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y;
+		//}
 
-		Vec1.X = Vec1.X / Length;
-		Vec1.Y = Vec1.Y / Length;
-		Vec1.Z = Vec1.Z / Length;
-		Vec1.W = Vec1.W / Length;
-	}
+	INLINE static float Dot(const Vector3& _A, const Vector3& _B);
+	//{
+	//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
+	//}
 
-	INLINE static float Dot(const Vector2 & Vec1, const Vector2 & Vec2)
-	{
-		return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y;
-	}
+	INLINE static float Dot(const Vector4& _A, const Vector4& _B);
 
-	INLINE static float Dot(const Vector3 & Vec1, const Vector3 & Vec2)
-	{
-		return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
-	}
+	INLINE static Vector3 Cross(const Vector3& _A, const Vector3& _B);
+	//{
+	//	return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
+	//}
 
-	INLINE static Vector3 Cross(const Vector3 & Vec1, const Vector3 & Vec2)
-	{
-		return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
-	}
-
-	INLINE static Vector2 AbsVector(const Vector2 & Vec1)
+	INLINE static Vector2 AbsVector(const Vector2& Vec1)
 	{
 		return Vector2(Abs(Vec1.X), Abs(Vec1.Y));
 	}
 
-	INLINE static Vector3 AbsVector(const Vector3 & Vec1)
+	INLINE static Vector3 AbsVector(const Vector3& Vec1)
 	{
 		return Vector3(Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z));
+	}
+
+	INLINE static Vector4 Abs(const Vector4& _A)
+	{
+		return Vector4(Abs(_A.X), Abs(_A.Y), Abs(_A.Z), Abs(_A.Z));
 	}
 
 	INLINE static Vector2 Negated(const Vector2 & Vec)
@@ -974,32 +979,32 @@ public:
 	//						QUATERNION MATH						//
 	//////////////////////////////////////////////////////////////
 
-    INLINE static real Dot(const Quaternion& _A, const Quaternion& _B)
-    {
-        return _A.X * _B.X + _A.Y * _B.Y + _A.Z * _B.Z + _A.Q * _B.Q;
-    }
+	INLINE static real Dot(const Quaternion& _A, const Quaternion& _B);
+    //{
+    //    return _A.X * _B.X + _A.Y * _B.Y + _A.Z * _B.Z + _A.Q * _B.Q;
+    //}
 
 	INLINE static float Length(const Quaternion& _A)
 	{
 		return SquareRoot(Dot(_A, _A));
 	}
 
-	INLINE static Quaternion Normalized(const Quaternion & Quat)
-	{
-		const float lLength = Length(Quat);
+	INLINE static Quaternion Normalized(const Quaternion& _A);
+	//{
+	//	const float lLength = Length(Quat);
+	//
+	//	return Quaternion(Quat.X / lLength, Quat.Y / lLength, Quat.Z / lLength, Quat.Q / lLength);
+	//}
 
-		return Quaternion(Quat.X / lLength, Quat.Y / lLength, Quat.Z / lLength, Quat.Q / lLength);
-	}
-
-	INLINE static void Normalize(Quaternion & Quat)
-	{
-		const float lLength = Length(Quat);
-
-		Quat.X = Quat.X / lLength;
-		Quat.Y = Quat.Y / lLength;
-		Quat.Z = Quat.Z / lLength;
-		Quat.Q = Quat.Q / lLength;
-	}
+	INLINE static void Normalize(Quaternion& _A);
+	//{
+	//	const float lLength = Length(Quat);
+	//
+	//	Quat.X = Quat.X / lLength;
+	//	Quat.Y = Quat.Y / lLength;
+	//	Quat.Z = Quat.Z / lLength;
+	//	Quat.Q = Quat.Q / lLength;
+	//}
 
 	INLINE static Quaternion Conjugated(const Quaternion & Quat)
 	{
@@ -1147,9 +1152,16 @@ public:
 	{
 		Matrix4 Return;
 		Translate(Return, _A.Position);
-		Return *= Rotation(_A.Rotation);
-		Return *= Scaling(_A.Scale);
+		Rotate(Return, _A.Rotation);
+		Scale(Return, _A.Scale);
 		return Return;
+	}
+
+	INLINE static void Transform(Matrix4& _A, Transform3& _B)
+	{
+		Translate(_A, _B.Position);
+		Rotate(_A, _B.Rotation);
+		Scale(_A, _B.Scale);
 	}
 
 	INLINE static float Clamp(float _A, float _Min, float _Max)
@@ -1171,7 +1183,7 @@ public:
 
 	INLINE static void ClosestPointOnLineSegmentToPoint(const Vector3& _C, const Vector3& _A, const Vector3& _B, double& _T, Vector3& _D)
 	{
-		Vector3 AB = _B - _A;
+		const Vector3 AB = _B - _A;
 		// Project c onto ab, computing parameterized position d(t) = a + t*(b – a)
 		_T = Dot(_C - _A, AB) / Dot(AB, AB);
 		// If outside segment, clamp t (and therefore d) to the closest endpoint
@@ -1183,7 +1195,9 @@ public:
 
 	INLINE static double SquaredDistancePointToSegment(const Vector3& _A, const Vector3& _B, const Vector3& _C)
 	{
-		Vector3 AB = _B - _A, AC = _C - _A, BC = _C - _B;
+		const Vector3 AB = _B - _A;
+		const Vector3 AC = _C - _A;
+		const Vector3 BC = _C - _B;
 		float E = Dot(AC, AB);
 		// Handle cases where c projects outside ab
 		if (E <= 0.0f) return Dot(AC, AC);

@@ -2,6 +2,7 @@
 
 #include <ostream>
 #include <fstream>
+#include "Containers/DArray.hpp"
 
 void ResourceManager::ReleaseResource(Resource* _Resource)
 {
@@ -13,16 +14,22 @@ void ResourceManager::ReleaseResource(Resource* _Resource)
 	}
 }
 
-void ResourceManager::SaveFile(const FileDescriptor& _FD)
+void ResourceManager::SaveFile(const FString& _Path, void(* f)(ResourceManager::ResourcePush& _RP))
 {
-	std::ofstream outfile(_FD.DirectoryAndFileNameWithExtension.c_str());
+	std::ofstream Outfile(_Path.c_str());
 
-	outfile.close();
-}
+	ResourcePush RP;
+	f(RP);
 
-void ResourceManager::SaveFile(const FString& _Path, void(* f)(OutStream& _OS))
-{
-	std::ofstream outfile(_Path.c_str());
-	f(outfile);
-	outfile.close();
+	ResourceHeaderType HeaderCount = RP.GetElementCount();
+	Outfile.write(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));
+
+	for (uint64 i  = 0; i < HeaderCount; ++i)
+	{
+		uint64 SegmentSize = RP[i].Bytes;
+		Outfile.write(&reinterpret_cast<char&>(SegmentSize), sizeof(ResourceHeaderType));
+		Outfile.write(reinterpret_cast<char*>(RP[i].Data), sizeof(RP[i].Bytes));
+	}
+
+	Outfile.close();
 }

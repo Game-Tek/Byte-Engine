@@ -189,7 +189,6 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
-    <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
     <ClInclude Include="src\Game Studio\Application\Clock.h">
       <Filter>Engine\Clock</Filter>
@@ -238,6 +237,7 @@
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
+    <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -316,6 +316,8 @@
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
+    <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

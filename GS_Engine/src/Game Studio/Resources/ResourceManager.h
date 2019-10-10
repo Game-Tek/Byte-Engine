@@ -4,20 +4,40 @@
 
 #include "Object.h"
 
+#include "Resource.h"
+
+#include <unordered_map>
 #include "Containers/FString.h"
 #include "Containers/Id.h"
 
-#include <unordered_map>
-
 #include "Debug/Logger.h"
-
-#include "Resource.h"
 
 class ResourceManager : public Object
 {
+public:
+	class ResourcePush
+	{
+		FVector<FileElementDescriptor> FileElements;
+
+	public:
+		ResourcePush& operator+=(const FileElementDescriptor& _FED)
+		{
+			FileElements.push_back(_FED);
+			return *this;
+		}
+
+		const FileElementDescriptor& operator[](uint64 _I) const { return FileElements[_I]; }
+
+		[[nodiscard]] uint64 GetElementCount() const { return FileElements.length(); }
+	};
+
+private:
 	std::unordered_map<Resource*, Resource*> ResourceMap;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
+	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
+
+	using ResourceHeaderType = uint64;
 public:
 	template<class T>
 	T* GetResource(const FString& _ResourceName)
@@ -55,15 +75,13 @@ public:
 	}
 
 	template<class T>
-	void CreateResource(const FString& _Path, void (*f)(OutStream& _OS))
+	void CreateResource(const FString& _Path, void (*f)(ResourcePush& _OS))
 	{
 		SaveFile(_Path, f);
+		GetResource<T>(_Path);
 	}
 
 	void ReleaseResource(Resource* _Resource);
-
-	void SaveFile(const FileDescriptor& _FD);
-	void SaveFile(const FString& _Path, void (*f)(OutStream& _OS));
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 };

@@ -13,12 +13,12 @@ public:
 
 	[[nodiscard]] float Length() const
 	{
-		return GSM::VectorLength(Segment());
+		return GSM::Length(Segment());
 	}
 
 	[[nodiscard]] float LengthSquared() const
 	{
-		return GSM::VectorLengthSquared(Segment());
+		return GSM::LengthSquared(Segment());
 	}
 
 private:

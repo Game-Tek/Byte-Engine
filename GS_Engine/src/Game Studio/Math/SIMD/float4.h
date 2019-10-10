@@ -25,13 +25,19 @@ public:
 	{
 	}
 
-	float4(float* _Data) : Data(_mm_loadu_ps(_Data))
+	float4(const float* _Data) : Data(_mm_loadu_ps(_Data))
 	{
 	}
 
 	~float4() = default;
 
 	operator __m128() const { return Data; }
+
+	void SetAligned(const float* _Data) { Data = _mm_load_ps(_Data); }
+	void SetUnaligned(const float* _Data) { Data = _mm_loadu_ps(_Data); }
+
+	//Assumes aligned data.
+	float4& operator=(const float* _Data) { Data = _mm_load_ps(_Data); return *this; }
 
 	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into unaligned memory.
 	void CopyToUnalignedData(float* _Dst) const

@@ -21,7 +21,7 @@ public:
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
 
-		ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](OutStream& _OS) {  });
+		ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](ResourceManager::ResourcePush& _OS) { });
 
 		Get()->SetActiveWindow(Win);
 

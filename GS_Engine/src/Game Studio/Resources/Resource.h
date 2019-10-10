@@ -51,4 +51,5 @@ struct FileDescriptor
 struct FileElementDescriptor
 {
 	uint64 Bytes = 0;
+	void* Data = nullptr;
 };

@@ -35,17 +35,11 @@ protected:
 	uint16 References = 0;
 };
 
-struct ResourceData
+class ResourceData
 {
+public:
 	virtual ~ResourceData() = default;
-
 	virtual void* WriteTo(size_t _Index, size_t _Bytes) = 0;
-};
-
-struct FileDescriptor
-{
-	FString DirectoryAndFileNameWithExtension;
-	OutStream& OutStream;
 };
 
 struct FileElementDescriptor

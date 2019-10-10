@@ -4,11 +4,18 @@
 
 class MaterialResource : public Resource
 {
-	struct MaterialData : ResourceData
+	class MaterialData : ResourceData
 	{
 		char* VertexShaderCode = nullptr;
 		char* FragmentShaderCode = nullptr;
 		int32 ShaderDynamicParameters = 0;
+
+	public:
+		~MaterialData()
+		{
+			delete[] VertexShaderCode;
+			delete[] FragmentShaderCode;
+		}
 
 		void* WriteTo(size_t _Index, size_t _Bytes) override
 		{
@@ -29,8 +36,6 @@ public:
 
 	~MaterialResource()
 	{
-		delete[] SCAST(MaterialData*, Data)->VertexShaderCode;
-		delete[] SCAST(MaterialData*, Data)->FragmentShaderCode;
 		delete SCAST(MaterialData*, Data);
 	}
 

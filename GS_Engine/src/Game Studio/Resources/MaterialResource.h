@@ -4,7 +4,7 @@
 
 class MaterialResource : public Resource
 {
-	class MaterialData : ResourceData
+	class MaterialData : public ResourceData
 	{
 		char* VertexShaderCode = nullptr;
 		char* FragmentShaderCode = nullptr;

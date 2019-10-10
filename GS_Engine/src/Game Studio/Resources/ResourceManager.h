@@ -36,8 +36,6 @@ private:
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
-
-	using ResourceHeaderType = uint64;
 public:
 	template<class T>
 	T* GetResource(const FString& _ResourceName)

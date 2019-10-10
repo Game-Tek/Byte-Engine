@@ -16,13 +16,16 @@ bool MaterialResource::LoadResource(const FString& _Path)
 		Data = new MaterialData;	//Intantiate resource data
 
 		size_t HeaderCount = 0;
-		Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(uint64));	//Get header count from the first element in the file since it's supposed to be a header count variable of type uint64 as per the engine spec.
+		Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.
 
 		FileElementDescriptor CurrentFileElementHeader;
+		Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
+		Input.read(&reinterpret_cast<char&>(Data->GetResourceName() = new char[CurrentFileElementHeader.Bytes]), CurrentFileElementHeader.Bytes);
+
 		for(size_t i = 0; i < HeaderCount; ++i)		//For every header in the file
 		{
 			Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));	//Copy next section size from section header
-			Input.read(reinterpret_cast<char*>(SCAST(MaterialData*, Data)->WriteTo(i, CurrentFileElementHeader.Bytes)), CurrentFileElementHeader.Bytes);	//Copy section data from file to resource data
+			Input.read(reinterpret_cast<char*>(Data->WriteTo(i, CurrentFileElementHeader.Bytes)), CurrentFileElementHeader.Bytes);	//Copy section data from file to resource data
 		}
 
 		//Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));

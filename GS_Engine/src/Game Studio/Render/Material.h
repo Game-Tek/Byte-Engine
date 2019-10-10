@@ -4,16 +4,18 @@
 #include "Containers/DArray.hpp"
 
 class FString;
+class MaterialResource;
 
 class Material
 {
 	static const char* GetPositionAttributeName() { return "inPos"; }
 	static const char* GetTextureCoordinateAttributeName() { return "inTextCoord"; }
 
+	MaterialResource* materialMaterialResource = nullptr;
 public:
 	virtual ~Material() = default;
 
-	virtual const char* GetMaterialName() = 0;
+	[[nodiscard]] const char* GetMaterialName() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
 	virtual void GetRenderingCode(FString& _VertexCode, FString& _FragmentCode) = 0;  //TEMPORAL: manual for now, should then be automated.

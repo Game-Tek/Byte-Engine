@@ -318,6 +318,7 @@
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Material.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

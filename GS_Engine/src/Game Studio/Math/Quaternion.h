@@ -96,17 +96,17 @@ public:
 		return Quaternion(X * Other, Y * Other, Z * Other, Q * Other);
 	}
 
-	Quaternion operator*(const Quaternion & Other)
-	{
-		Quaternion Result;
-
-		Result.X = Q * Other.X + X * Other.Q + Y * Other.Z - Z * Other.Y;
-		Result.Y = Q * Other.Y - X * Other.Z + Y * Other.Q + Z * Other.X;
-		Result.Z = Q * Other.Z + X * Other.Y - Y * Other.X + Z * Other.Q;
-		Result.Q = Q * Other.Q - X * Other.X - Y * Other.Y - Z * Other.Z;
-
-		return Result;
-	}
+	Quaternion operator*(const Quaternion& Other) const;
+	//{
+	//	Quaternion Result;
+	//
+	//	Result.X = Q * Other.X + X * Other.Q + Y * Other.Z - Z * Other.Y;
+	//	Result.Y = Q * Other.Y - X * Other.Z + Y * Other.Q + Z * Other.X;
+	//	Result.Z = Q * Other.Z + X * Other.Y - Y * Other.X + Z * Other.Q;
+	//	Result.Q = Q * Other.Q - X * Other.X - Y * Other.Y - Z * Other.Z;
+	//
+	//	return Result;
+	//}
 
 	Quaternion & operator*=(const float Other)
 	{
@@ -118,15 +118,15 @@ public:
 		return *this;
 	}
 
-	Quaternion & operator*=(const Quaternion & Other)
-	{
-		X = Q * Other.X + X * Other.Q + Y * Other.Z - Z * Other.Y;
-		Y = Q * Other.Y - X * Other.Z + Y * Other.Q + Z * Other.X;
-		Z = Q * Other.Z + X * Other.Y - Y * Other.X + Z * Other.Q;
-		Q = Q * Other.Q - X * Other.X - Y * Other.Y - Z * Other.Z;
-
-		return *this;
-	}
+	Quaternion& operator*=(const Quaternion& _Other);
+	//{
+	//	X = Q * Other.X + X * Other.Q + Y * Other.Z - Z * Other.Y;
+	//	Y = Q * Other.Y - X * Other.Z + Y * Other.Q + Z * Other.X;
+	//	Z = Q * Other.Z + X * Other.Y - Y * Other.X + Z * Other.Q;
+	//	Q = Q * Other.Q - X * Other.X - Y * Other.Y - Z * Other.Z;
+	//
+	//	return *this;
+	//}
 
 	Quaternion operator/(const float Other)
 	{

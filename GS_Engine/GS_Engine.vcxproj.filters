@@ -319,6 +319,7 @@
     <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
+    <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

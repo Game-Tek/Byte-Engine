@@ -57,8 +57,13 @@ public:
 		return _mm_shuffle_ps(Data, _Other.Data, _MM_SHUFFLE(_a, _b, _c, _d));
 	}
 
+	INLINE float4 HorizontalAdd(const float4& _Other) const
+	{
+		return _mm_hadd_ps(Data, _Other);
+	}
+
 	//Horizontally add adjacent pairs of single - precision(32 - bit) floating - point elements in a and b, and pack the results in dst.
-	[[nodiscard]] INLINE float4 HorizontalAdd(const float4& _Other) const
+	[[nodiscard]] INLINE float4 HorizontalSub(const float4& _Other) const
 	{
 		return _mm_hsub_ps(Data, _Other.Data);
 	}

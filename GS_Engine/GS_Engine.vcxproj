@@ -231,6 +231,7 @@
     <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
     <ClCompile Include="src\Game Studio\Math\Plane.cpp" />
+    <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />

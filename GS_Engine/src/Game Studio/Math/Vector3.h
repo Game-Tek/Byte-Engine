@@ -5,8 +5,9 @@
 #include "Object.h"
 
 //Used to specify a location in 3D space with floating point precision.
-struct GS_API Vector3
+class GS_API Vector3
 {
+public:
 	//X component of this vector.
 	float X = 0.0f;
 
@@ -15,6 +16,7 @@ struct GS_API Vector3
 
 	//Z component of this vector.
 	float Z = 0.0f;
+
 
 	Vector3() = default;
 
@@ -26,97 +28,97 @@ struct GS_API Vector3
 
 	~Vector3() = default;
 
-	Vector3 operator+ (float Other) const
+	Vector3 operator+ (float _Other) const
 	{
-		return { X + Other, Y + Other, Z + Other };
+		return { X + _Other, Y + _Other, Z + _Other };
 	}
 
-	Vector3 operator+ (const Vector3 & Other) const
+	Vector3 operator+ (const Vector3 & _Other) const
 	{
-		return { X + Other.X, Y + Other.Y, Z + Other.Z };
+		return { X + _Other.X, Y + _Other.Y, Z + _Other.Z };
 	}
 
-	Vector3 & operator+= (float Other)
+	Vector3 & operator+= (float _Other)
 	{
-		X += Other;
-		Y += Other;
-		Z += Other;
+		X += _Other;
+		Y += _Other;
+		Z += _Other;
 
 		return *this;
 	}
 
-	Vector3 & operator+= (const Vector3 & Other)
+	Vector3 & operator+= (const Vector3 & _Other)
 	{
-		X += Other.X;
-		Y += Other.Y;
-		Z += Other.Z;
+		X += _Other.X;
+		Y += _Other.Y;
+		Z += _Other.Z;
 
 		return *this;
 	}
 
-	Vector3 operator- (float Other) const
+	Vector3 operator- (float _Other) const
 	{
-		return { X - Other, Y - Other, Z - Other };
+		return { X - _Other, Y - _Other, Z - _Other };
 	}
 
-	Vector3 operator- (const Vector3 & Other) const
+	Vector3 operator- (const Vector3 & _Other) const
 	{
-		return { X - Other.X, Y - Other.Y, Z - Other.Z };
+		return { X - _Other.X, Y - _Other.Y, Z - _Other.Z };
 	}
 
-	Vector3 & operator-= (float Other)
+	Vector3 & operator-= (float _Other)
 	{
-		X -= Other;
-		Y -= Other;
-		Z -= Other;
+		X -= _Other;
+		Y -= _Other;
+		Z -= _Other;
 
 		return *this;
 	}
 
-	Vector3 & operator-= (const Vector3 & Other)
+	Vector3 & operator-= (const Vector3 & _Other)
 	{
-		X -= Other.X;
-		Y -= Other.Y;
-		Z -= Other.Z;
+		X -= _Other.X;
+		Y -= _Other.Y;
+		Z -= _Other.Z;
 
 		return *this;
 	}
 
-	Vector3 operator* (float Other) const
+	Vector3 operator* (float _Other) const
 	{
-		return { X * Other, Y * Other, Z * Other };
+		return { X * _Other, Y * _Other, Z * _Other };
 	}
 
-	Vector3 & operator*= (float Other)
+	Vector3 & operator*= (float _Other)
 	{
-		X *= Other;
-		Y *= Other;
-		Z *= Other;
+		X *= _Other;
+		Y *= _Other;
+		Z *= _Other;
 
 		return *this;
 	}
 
-	Vector3 operator/ (float Other) const
+	Vector3 operator/ (float _Other) const
 	{
-		return { X / Other, Y / Other, Z / Other };
+		return { X / _Other, Y / _Other, Z / _Other };
 	}
 
-	Vector3 & operator/= (float Other)
+	Vector3 & operator/= (float _Other)
 	{
-		X /= Other;
-		Y /= Other;
-		Z /= Other;
+		X /= _Other;
+		Y /= _Other;
+		Z /= _Other;
 
 		return *this;
 	}
 
-	inline bool operator== (const Vector3 & Other)
+	inline bool operator== (const Vector3 & _Other)
 	{
-		return X == Other.X && Y == Other.Y && Z == Other.Z;
+		return X == _Other.X && Y == _Other.Y && Z == _Other.Z;
 	}
 
-	inline bool operator!= (const Vector3 & Other)
+	inline bool operator!= (const Vector3 & _Other)
 	{
-		return X != Other.X || Y != Other.Y || Z != Other.Z;
+		return X != _Other.X || Y != _Other.Y || Z != _Other.Z;
 	}
 };

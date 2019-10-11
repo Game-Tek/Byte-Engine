@@ -10,7 +10,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 
 	if (_Resource->GetReferenceCount() == 0)
 	{
-		//delete ResourceMap[_Resource];
+		delete ResourceMap[_Resource];
 	}
 }
 
@@ -24,7 +24,7 @@ void ResourceManager::SaveFile(const FString& _Path, void(* f)(ResourceManager::
 	ResourceHeaderType HeaderCount = RP.GetElementCount() + 1 /*File name header*/;
 	Outfile.write(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));
 
-	ResourceHeaderType SegmentSize = _Path.GetLength();
+	ResourceSegmentType SegmentSize = _Path.GetLength();
 
 	Outfile.write(reinterpret_cast<char*>(&SegmentSize), sizeof(ResourceSegmentType));
 	Outfile.write(_Path.c_str(), _Path.GetLength());

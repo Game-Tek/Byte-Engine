@@ -63,21 +63,21 @@ public:
 		return _mm_andnot_ps(_A.Data, float4(1.0f, 1.0f, 1.0f, 1.0f));
 	}
 
-	INLINE float4 HorizontalAdd(const float4& _Other) const
+	INLINE static float4 HorizontalAdd(const float4& _A, const float4& _B)
 	{
-		return _mm_hadd_ps(Data, _Other);
+		return _mm_hadd_ps(_A.Data, _A.Data);
 	}
 
 	//Horizontally add adjacent pairs of single - precision(32 - bit) floating - point elements in a and b, and pack the results in dst.
-	[[nodiscard]] INLINE float4 HorizontalSub(const float4& _Other) const
+	[[nodiscard]] INLINE static float4 HorizontalSub(const float4& _A, const float4& _B)
 	{
-		return _mm_hsub_ps(Data, _Other.Data);
+		return _mm_hsub_ps(_A.Data, _A.Data);
 	}
 
 	//Alternatively add and subtract packed single-precision (32-bit) floating-point elements in a to/from packed elements in b, and store the results in dst
-	[[nodiscard]] INLINE float4 Add13Sub02(const float4& _Other) const
+	[[nodiscard]] INLINE static float4 Add13Sub02(const float4& _A, const float4& _B)
 	{
-		return _mm_addsub_ps(Data, _Other.Data);
+		return _mm_addsub_ps(_A.Data, _B.Data);
 	}
 
 	//Conditionally multiply the packed single-precision (32-bit) floating-point elements in a and b using the high 4 bits in imm8, sum the four products, and conditionally store the sum in dst using the low 4 bits of imm8.

@@ -45,8 +45,6 @@ public:
 	bool LoadResource(const FString& _Path) override;
 	void LoadFallbackResource(const FString& _Path) override;
 
-	[[nodiscard]] size_t GetDataSize() const override;
-
 	[[nodiscard]] const char* GetName() const override { return "Material Resource"; }
 
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gsmat"; }

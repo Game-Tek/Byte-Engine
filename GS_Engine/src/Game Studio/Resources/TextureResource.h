@@ -28,8 +28,6 @@ public:
 	TextureResource() = default;
 	~TextureResource();
 
-	[[nodiscard]] size_t GetDataSize() const override { return TextureFormat == Format::RGBA_I8 ? 4 : 3 * (TextureDimensions.Width * TextureDimensions.Height); }
-
 	bool LoadResource(const FString& _Path) override;
 	void LoadFallbackResource(const FString& _Path) override;
 

@@ -33,9 +33,6 @@ public:
 
 	virtual ~Resource() = default;
 
-	//Returns the size of the data.
-	[[nodiscard]] virtual size_t GetDataSize() const = 0;
-
 	void IncrementReferences() { ++References; }
 	void DecrementReferences() { --References; }
 	[[nodiscard]] uint16 GetReferenceCount() const { return References; }

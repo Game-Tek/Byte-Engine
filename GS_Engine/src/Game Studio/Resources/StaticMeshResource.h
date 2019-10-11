@@ -59,7 +59,6 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Static Mesh Resource"; }
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gssma"; }
 
-	[[nodiscard]] size_t GetDataSize() const override { return SCAST(StaticMeshResourceData*, Data)->IndexCount * sizeof(uint16) + SCAST(StaticMeshResourceData*, Data)->VertexCount * sizeof(Vertex); }
 	[[nodiscard]] Model GetModel() const
 	{
 		return Model { SCAST(StaticMeshResourceData*, Data)->VertexArray, SCAST(StaticMeshResourceData*, Data)->IndexArray, SCAST(StaticMeshResourceData*, Data)->VertexCount, SCAST(StaticMeshResourceData*, Data)->IndexCount };

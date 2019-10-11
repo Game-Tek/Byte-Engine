@@ -20,7 +20,7 @@ class GS_API Logger
 
 	static void SetTextColorOnLogLevel(LogLevel _Level);
 public:
-	static void PrintObjectLog(Object* _Obj, LogLevel _Level, const char* Text, ...);
+	static void PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...);
 	static void PrintBasicLog(LogLevel _Level, const char* Text, ...);
 	static void SetMinLogLevel(LogLevel _Level) { MinLogLevel = _Level; }
 

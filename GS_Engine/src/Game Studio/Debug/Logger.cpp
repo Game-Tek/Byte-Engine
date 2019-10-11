@@ -8,7 +8,7 @@
 
 LogLevel Logger::MinLogLevel;
 
-void Logger::PrintObjectLog(Object* _Obj, LogLevel _Level, const char* Text, ...)
+void Logger::PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...)
 {
 	if(_Level >= MinLogLevel)
 	{

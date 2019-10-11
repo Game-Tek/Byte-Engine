@@ -18,7 +18,7 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Static Mesh"; }
 
 	[[nodiscard]] Material* GetMaterial() const { return staticMeshMaterial; }
-	[[nodiscard]] Model* GetModel() const;
+	[[nodiscard]] Model GetModel() const;
 
 	void SetMaterial(Material* _NewMaterial) { staticMeshMaterial = _NewMaterial; }
 };

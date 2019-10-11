@@ -32,7 +32,7 @@ public:
 	};
 
 private:
-	std::unordered_map<Resource*, Resource*> ResourceMap;
+	mutable std::unordered_map<Resource*, Resource*> ResourceMap;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
@@ -57,19 +57,19 @@ public:
 
 		if (Result)
 		{
-			GS_LOG_SUCCESS("Loaded resource %s succesfully!", _ResourceName.c_str())
+			//GS_LOG_SUCCESS("Loaded resource %s succesfully!", _ResourceName.c_str())
 		}
 		else
 		{
-			GS_LOG_ERROR("Failed to load %s resource of type %s!\nLoaded default resource.", _ResourceName.c_str(), resource->GetName())
+			//GS_LOG_ERROR("Failed to load %s resource of type %s!\nLoaded default resource.", _ResourceName.c_str(), resource->GetName())
 			resource->LoadFallbackResource(FullPath);
 		}
 
 		resource->IncrementReferences();
-		return ResourceMap.emplace(resource, resource).first->second;
+		ResourceMap.emplace(resource, resource);
 
 		//return nullptr;
-		return resource;
+		return SCAST(T*, resource);
 	}
 
 	template<class T>

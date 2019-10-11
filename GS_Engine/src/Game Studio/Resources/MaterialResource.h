@@ -47,6 +47,8 @@ public:
 
 	[[nodiscard]] size_t GetDataSize() const override;
 
+	[[nodiscard]] const char* GetName() const override { return "Material Resource"; }
+
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gsmat"; }
 protected:
 };

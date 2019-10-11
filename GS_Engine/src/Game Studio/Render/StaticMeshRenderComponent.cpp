@@ -27,7 +27,7 @@ void StaticMeshRenderComponent::BindTypeResources(BindTypeResourcesInfo& _BTRI)
 void StaticMeshRenderComponent::DrawInstance(DrawInstanceInfo& _DII)
 {
 	DrawInfo DI;
-	DI.IndexCount = SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->staticMesh->GetModel()->IndexCount;
+	DI.IndexCount = SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->staticMesh->GetModel().IndexCount;
 	DI.InstanceCount = 1;
 	_DII.Scene->DrawMesh(DI);
 }

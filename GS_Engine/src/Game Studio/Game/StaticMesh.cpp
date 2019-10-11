@@ -1,15 +1,15 @@
 #include "StaticMesh.h"
 
 #include "Resources/StaticMeshResource.h"
-#include "Resources/StaticMeshResourceManager.h"
+#include "Application/Application.h"
 
-StaticMesh::StaticMesh(const FString& _Name) : staticMeshResource(StaticMeshResourceManager::Get().GetResource(_Name))
+StaticMesh::StaticMesh(const FString& _Name) : staticMeshResource(GS::Application::Get()->GetResourceManager()->GetResource<StaticMeshResource>(_Name))
 {
 }
 
 StaticMesh::~StaticMesh()
 {
-	StaticMeshResourceManager::Get().ReleaseResource(staticMeshResource);
+	GS::Application::Get()->GetResourceManager()->ReleaseResource(staticMeshResource);
 }
 
-Model* StaticMesh::GetModel() const { return staticMeshResource->GetModel(); }
+Model* StaticMesh::GetModel() const { return staticMeshResource->GetData()->GetModel(); }

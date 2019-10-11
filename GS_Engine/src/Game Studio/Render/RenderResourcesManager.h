@@ -15,8 +15,7 @@ class Mesh;
 class RenderResourcesManager
 {
 	// MATERIALS
-	std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>> Materials;
-	FVector<GraphicsPipeline*> Pipelines;
+	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
 	// MATERIALS
 
 	// MESHES
@@ -24,27 +23,23 @@ class RenderResourcesManager
 	//FVector<Mesh*> Meshes;
 	// MESHES
 
+	void RegisterMaterial(Material* _Mat)
+	{
+		if (Pipelines.find(Id(_Mat->GetMaterialName()).GetID()) != Pipelines.end())
+		{
+			//If material exists
+			
+		}
+		else
+		{
+			//If material doesn't exist
+		}
+	}
 public:
 	~RenderResourcesManager();
 
-	template<class T>
-	Material* CreateMaterial()
-	{
-		Material* NewMaterial = new T();
-		if (!Materials.try_emplace(Id(NewMaterial->GetMaterialName()).GetID(), NewMaterial).second)
-		{
-			delete NewMaterial;
-			NewMaterial = nullptr;
-		}
-		return NewMaterial;
-	}
 
-	Material* GetMaterial(const char* _MaterialName)
-	{
-		return Materials[Id(_MaterialName).GetID()].First;
-	}
-
-	[[nodiscard]] const std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>>& GetMaterialMap() const { return Materials; }
+	//[[nodiscard]] const std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>>& GetMaterialMap() const { return Materials; }
 
 	Mesh* CreateMesh(StaticMesh* _SM);
 };

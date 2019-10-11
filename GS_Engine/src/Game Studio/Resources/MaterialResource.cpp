@@ -18,7 +18,7 @@ bool MaterialResource::LoadResource(const FString& _Path)
 		size_t HeaderCount = 0;
 		Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.
 
-		FileElementDescriptor CurrentFileElementHeader;
+		ResourceElementDescriptor CurrentFileElementHeader;
 		Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
 		Input.read(&reinterpret_cast<char&>(Data->GetResourceName() = new char[CurrentFileElementHeader.Bytes]), CurrentFileElementHeader.Bytes);
 

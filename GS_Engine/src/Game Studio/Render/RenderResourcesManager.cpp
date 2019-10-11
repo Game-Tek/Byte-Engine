@@ -6,9 +6,9 @@
 
 RenderResourcesManager::~RenderResourcesManager()
 {
-	for (auto const& x : Materials)
+	for (auto const& x : Pipelines)
 	{
-		delete x.second.Second;
+		delete x.second;
 	}
 }
 

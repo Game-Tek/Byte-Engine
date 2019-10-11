@@ -17,13 +17,16 @@ class MaterialResource : public Resource
 			delete[] FragmentShaderCode;
 		}
 
-		void* WriteTo(size_t _Index, size_t _Bytes) override
+		void** WriteTo(size_t _Index, size_t _Bytes) override
 		{
 			switch (_Index)
 			{
-			case 0: return new char[_Bytes];
-			case 1: return new char[_Bytes];
-			case 2: return &ShaderDynamicParameters;
+			case 0: VertexShaderCode = new char[_Bytes];
+					return reinterpret_cast<void**>(&VertexShaderCode);
+			case 1: VertexShaderCode = new char[_Bytes];
+					return reinterpret_cast<void**>(&VertexShaderCode);
+			case 2:
+					return reinterpret_cast<void**>(&ShaderDynamicParameters);
 			default: ;
 			}
 

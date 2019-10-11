@@ -77,7 +77,7 @@ public:
 	//Conditionally multiply the packed single-precision (32-bit) floating-point elements in a and b using the high 4 bits in imm8, sum the four products, and conditionally store the sum in dst using the low 4 bits of imm8.
 	[[nodiscard]] INLINE float4 DotProduct(const float4& _Other, uint32 _a) const
 	{
-		return _mm_dp_ps(Data, Data, _a);
+		return _mm_dp_ps(Data, _Other.Data, _a);
 	}
 
 	[[nodiscard]] INLINE float4 SquareRoot(const float4& _Other) const

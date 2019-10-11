@@ -17,16 +17,16 @@ class ResourceManager : public Object
 public:
 	class ResourcePush
 	{
-		FVector<FileElementDescriptor> FileElements;
+		FVector<SaveResourceElementDescriptor> FileElements;
 
 	public:
-		ResourcePush& operator+=(const FileElementDescriptor& _FED)
+		ResourcePush& operator+=(const SaveResourceElementDescriptor& _FED)
 		{
 			FileElements.push_back(_FED);
 			return *this;
 		}
 
-		const FileElementDescriptor& operator[](uint64 _I) const { return FileElements[_I]; }
+		const SaveResourceElementDescriptor& operator[](uint64 _I) const { return FileElements[_I]; }
 
 		[[nodiscard]] uint64 GetElementCount() const { return FileElements.length(); }
 	};
@@ -38,7 +38,7 @@ private:
 	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
 public:
 	template<class T>
-	T* GetResource(const FString& _ResourceName)
+	T* GetResource(const FString& _ResourceName) const
 	{
 		//auto HashedName = Id(_Name);
 		//
@@ -79,7 +79,7 @@ public:
 		GetResource<T>(_Path);
 	}
 
-	void ReleaseResource(Resource* _Resource);
+	void ReleaseResource(Resource* _Resource) const;
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 };

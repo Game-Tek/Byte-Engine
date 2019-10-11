@@ -10,6 +10,21 @@
 class GS_API TextureResource : public Resource
 {
 public:
+	class TextureResourceData : public ResourceData
+	{
+	public:
+		char* ImageData = nullptr;
+
+		void** WriteTo(size_t _Index, size_t _Bytes) override
+		{
+			switch (_Index)
+			{
+			case 0: return reinterpret_cast<void**>(&ImageData);
+			default: return nullptr;
+			}
+		}
+	};
+
 	TextureResource() = default;
 	~TextureResource();
 

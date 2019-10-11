@@ -20,7 +20,7 @@ public:
 		delete[] ResourceName;
 	}
 
-	virtual void* WriteTo(size_t _Index, size_t _Bytes) = 0;
+	virtual void** WriteTo(size_t _Index, size_t _Bytes) = 0;
 	char*& GetResourceName() { return ResourceName; }
 };
 
@@ -55,8 +55,14 @@ protected:
 	uint16 References = 0;
 };
 
-struct FileElementDescriptor
+struct ResourceElementDescriptor
 {
 	uint64 Bytes = 0;
 	//void* Data = nullptr;
+};
+
+struct SaveResourceElementDescriptor
+{
+	uint64 Bytes = 0;
+	void* Data = nullptr;
 };

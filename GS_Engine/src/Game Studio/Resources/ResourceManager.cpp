@@ -4,7 +4,7 @@
 #include <fstream>
 #include "Containers/DArray.hpp"
 
-void ResourceManager::ReleaseResource(Resource* _Resource)
+void ResourceManager::ReleaseResource(Resource* _Resource) const
 {
 	_Resource->DecrementReferences();
 

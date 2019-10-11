@@ -13,9 +13,7 @@ VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elemen
 
 StaticMeshResource::~StaticMeshResource()
 {
-	delete SCAST(Model*, Data)->IndexArray;
-	delete SCAST(Model*, Data)->VertexArray;
-	delete SCAST(Model*, Data);
+	delete Data;
 }
 
 VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
@@ -29,7 +27,7 @@ bool StaticMeshResource::LoadResource(const FString& _Path)
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene* Scene = Importer.ReadFile(FilePath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+	const aiScene* Scene = Importer.ReadFile(_Path.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
@@ -38,12 +36,14 @@ bool StaticMeshResource::LoadResource(const FString& _Path)
 	}
 
 	//Create pointer for return.
-	Data = new Model[Scene->mNumMeshes];	//Create new array of meshes.
+	Data = new StaticMeshResourceData;//[Scene->mNumMeshes];	//Create new array of meshes.
 
-	for (uint32 i = 0; i < Scene->mNumMeshes; i++)
-	{
-		SCAST(Model*, Data)[i] = ProcessMesh(Scene->mMeshes[i]);
-	}
+	*SCAST(StaticMeshResourceData*, Data) = ProcessMesh(Scene->mMeshes[0]);
+
+	//for (uint32 i = 0; i < Scene->mNumMeshes; i++)
+	//{
+	//	SCAST(StaticMeshResourceData*, Data)[i] = ProcessMesh(Scene->mMeshes[i]);
+	//}
 
 	return true;
 }
@@ -52,10 +52,10 @@ void StaticMeshResource::LoadFallbackResource(const FString& _Path)
 {
 }
 
-Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
+StaticMeshResource::StaticMeshResourceData* StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 {
 	//Store inside MeshData a new Array of meshes.
-	auto MeshData = new Model[Node->mNumMeshes];
+	auto MeshData = new StaticMeshResourceData[Node->mNumMeshes];
 
 	// Loop through each of the node's meshes (if any)
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)
@@ -71,10 +71,10 @@ Model * StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
 	return MeshData;
 }
 
-Model StaticMeshResource::ProcessMesh(aiMesh * InMesh)
+StaticMeshResource::StaticMeshResourceData StaticMeshResource::ProcessMesh(aiMesh * InMesh)
 {
 	//Create a mesh object to hold the mesh currently being processed.
-	Model Result;
+	StaticMeshResourceData Result;
 
 	//------------MESH SETUP------------
 

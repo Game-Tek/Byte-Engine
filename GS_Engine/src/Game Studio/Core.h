@@ -69,16 +69,5 @@ typedef double real;
 #define RCAST(to, from) reinterpret_cast<to>(from)
 #define CCAST(to, from) const_cast<to>(from)
 
-namespace std
-{
-	template<class T>
-	class char_traits;
-	template <class _Elem, class _Traits = char_traits<_Elem>>
-	class basic_ofstream;
-	using ofstream = basic_ofstream<char, char_traits<char>>;
-}
-
-using OutStream = std::ofstream;
-
 constexpr uint8 uint8MAX = 0xff;
 constexpr uint_64 uint_64MAX = 0xffffffffffffffff;

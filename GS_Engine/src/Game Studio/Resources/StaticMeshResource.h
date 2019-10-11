@@ -50,7 +50,10 @@ public:
 			delete[] IndexArray;
 		}
 
-		void** WriteTo(size_t _Index, size_t _Bytes) override;
+		void** WriteTo(size_t _Index, size_t _Bytes) override
+		{
+			return nullptr;
+		}
 	};
 
 	StaticMeshResource() = default;

@@ -5,19 +5,19 @@
 float GSM::LengthSquared(const Vector2& _A)
 {
 	float4 a(_A.X, _A.Y, 0.0f, 0.0f);
-	return a.DotProduct(a, 0xff).GetX();
+	return float4::DotProduct(a, a).GetX();
 }
 
 float GSM::LengthSquared(const Vector3& _A)
 {
 	float4 a(_A.X, _A.Y, _A.Z, 0.0f);
-	return a.DotProduct(a, 0xff).GetX();
+	return float4::DotProduct(a, a).GetX();
 }
 
 float GSM::LengthSquared(const Vector4& _A)
 {
 	float4 a(_A.X, _A.Y, _A.Z, _A.W);
-	return a.DotProduct(a, 0xff).GetX();
+	return float4::DotProduct(a, a).GetX();
 }
 
 Vector2 GSM::Normalized(const Vector2& _A)
@@ -85,20 +85,17 @@ void GSM::Normalize(Vector4& _A)
 
 float GSM::Dot(const Vector2& _A, const Vector2& _B)
 {
-	float4 A(_A.X, _A.Y, 0.0f, 0.0f);
-	return A.DotProduct(float4(_B.X, _B.Y, 0.0f, 0.0f), 0xff).GetX();
+	return float4::DotProduct(float4(_A.X, _A.Y, 0.0f, 0.0f), float4(_B.X, _B.Y, 0.0f, 0.0f)).GetX();
 }
 
 float GSM::Dot(const Vector3& _A, const Vector3& _B)
 {
-	float4 A(_A.X, _A.Y, _A.Z, 0.0f);
-	return A.DotProduct(float4(_B.X, _B.Y, _B.Z, 0.0f), 0xff).GetX();
+	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, 0.0f), float4(_B.X, _B.Y, _B.Z, 0.0f)).GetX();
 }
 
 float GSM::Dot(const Vector4& _A, const Vector4& _B)
 {
-	float4 A(&_A.X);
-	return A.DotProduct(float4(&_B.X), 0xff).GetX();
+	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, _A.W), float4(_B.X, _B.Y, _B.Z, _A.W)).GetX();
 }
 
 Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
@@ -108,7 +105,7 @@ Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
 	float4 a(_A.X, _A.Y, _A.Z, 0.0f);
 	float4 b(_B.X, _B.Y, _B.Z, 0.0f);
 
-	float4 res = a.Shuffle(a, 3, 0, 2, 1) * b.Shuffle(b, 3, 1, 0, 2) - a.Shuffle(a, 3, 0, 2, 1) * b.Shuffle(b, 3, 0, 2, 1);
+	float4 res = float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 1, 0, 2>(b, b) - float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 0, 2, 1>(b, b);
 	res.CopyToAlignedData(vector);
 
 	return Vector3(vector[0], vector[1], vector[2]);
@@ -116,8 +113,7 @@ Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
 
 real GSM::Dot(const Quaternion& _A, const Quaternion& _B)
 {
-	float4 A(&_A.X);
-	return A.DotProduct(float4(&_B.X), 0xff).GetX();
+	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, _A.Q), float4(_B.X, _B.Y, _B.Z, _A.Q)).GetX();
 }
 
 Quaternion GSM::Normalized(const Quaternion& _A)

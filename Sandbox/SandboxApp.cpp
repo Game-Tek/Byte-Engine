@@ -6,7 +6,7 @@
 //#include <Game Studio/Utility/FlipFlop.h>
 #include "Game Studio/Game/World.h"
 #include "TestObject.h"
-#include "Game Studio/Resources/MaterialResource.h"
+#include <Game Studio/Resources/MaterialResource.h>
 
 class Framebuffer;
 
@@ -21,7 +21,7 @@ public:
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
 
-		ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](ResourceManager::ResourcePush& _OS) { });
+		//ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](ResourceManager::ResourcePush& _OS) { });
 
 		Get()->SetActiveWindow(Win);
 

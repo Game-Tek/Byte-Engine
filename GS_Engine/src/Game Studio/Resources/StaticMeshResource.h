@@ -57,7 +57,7 @@ public:
 	~StaticMeshResource();
 
 	[[nodiscard]] const char* GetName() const override { return "Static Mesh Resource"; }
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gssma"; }
+	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gssm"; }
 
 	[[nodiscard]] Model GetModel() const
 	{

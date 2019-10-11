@@ -52,9 +52,15 @@ public:
 	}
 
 	//Shuffle single-precision (32-bit) floating-point elements in a using the control in imm8, and store the results in dst.
-	[[nodiscard]] INLINE float4 Shuffle(const float4& _Other, uint32 _a, uint32 _b, uint32 _c, uint32 _d) const
+	template<const uint32 _a, const uint32 _b, const uint32 _c, const uint32 _d>
+	[[nodiscard]] static INLINE float4 Shuffle(const float4& _A, const float4& _B)
 	{
-		return _mm_shuffle_ps(Data, _Other.Data, _MM_SHUFFLE(_a, _b, _c, _d));
+		return _mm_shuffle_ps(_A.Data, _B.Data, _MM_SHUFFLE(_a, _b, _c, _d));
+	}
+
+	INLINE static float4 Abs(const float4& _A)
+	{
+		return _mm_andnot_ps(_A.Data, float4(1.0f, 1.0f, 1.0f, 1.0f));
 	}
 
 	INLINE float4 HorizontalAdd(const float4& _Other) const
@@ -75,9 +81,9 @@ public:
 	}
 
 	//Conditionally multiply the packed single-precision (32-bit) floating-point elements in a and b using the high 4 bits in imm8, sum the four products, and conditionally store the sum in dst using the low 4 bits of imm8.
-	[[nodiscard]] INLINE float4 DotProduct(const float4& _Other, const uint32 _a) const
+	[[nodiscard]] INLINE static float4 DotProduct(const float4& _A, const float4& _B)
 	{
-		return _mm_dp_ps(Data, _Other.Data, _a);
+		return _mm_dp_ps(_A.Data, _B.Data, 0xff);
 	}
 
 	[[nodiscard]] INLINE float4 SquareRoot(const float4& _Other) const

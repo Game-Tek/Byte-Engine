@@ -39,7 +39,7 @@ public:
 
 	~MaterialResource()
 	{
-		delete SCAST(MaterialData*, Data);
+		delete Data;
 	}
 
 	bool LoadResource(const FString& _Path) override;
@@ -48,5 +48,4 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Material Resource"; }
 
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gsmat"; }
-protected:
 };

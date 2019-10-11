@@ -20,7 +20,7 @@ public:
 		FVector<SaveResourceElementDescriptor> FileElements;
 
 	public:
-		ResourcePush& operator+=(const SaveResourceElementDescriptor& _FED)
+		INLINE ResourcePush& operator+=(const SaveResourceElementDescriptor& _FED)
 		{
 			FileElements.push_back(_FED);
 			return *this;

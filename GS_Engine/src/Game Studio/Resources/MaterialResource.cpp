@@ -24,7 +24,7 @@ bool MaterialResource::LoadResource(const FString& _Path)
 
 		for(size_t i = 0; i < HeaderCount; ++i)		//For every header in the file
 		{
-			Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));	//Copy next section size from section header
+			Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(ResourceSegmentType));	//Copy next section size from section header
 			Input.read(reinterpret_cast<char*>(Data->WriteTo(i, CurrentFileElementHeader.Bytes)), CurrentFileElementHeader.Bytes);	//Copy section data from file to resource data
 		}
 

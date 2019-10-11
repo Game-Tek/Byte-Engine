@@ -7,6 +7,7 @@
 #include "Containers/FString.h"
 
 using ResourceHeaderType = uint64;
+using ResourceSegmentType = uint64;
 
 class ResourceData
 {
@@ -60,6 +61,6 @@ struct ResourceElementDescriptor
 
 struct SaveResourceElementDescriptor
 {
-	uint64 Bytes = 0;
+	ResourceSegmentType Bytes = 0;
 	void* Data = nullptr;
 };

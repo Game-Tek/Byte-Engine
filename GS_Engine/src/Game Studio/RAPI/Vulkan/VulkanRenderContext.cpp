@@ -120,7 +120,8 @@ VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instanc
 	InFlightFences(SwapchainImages.capacity()),
 	PresentationQueue(_Device->GetGraphicsQueue()),
 	CommandPool(CreateCommandPool(_Device)),
-	CommandBuffers(SwapchainImages.capacity())
+	CommandBuffers(SwapchainImages.capacity()),
+	FrameBuffers(SwapchainImages.capacity())
 {
 	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.capacity());
 

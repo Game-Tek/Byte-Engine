@@ -11,6 +11,7 @@
 #include "Containers/Id.h"
 
 #include "Debug/Logger.h"
+#include "StaticMeshResource.h"
 
 class ResourceManager : public Object
 {
@@ -20,6 +21,10 @@ public:
 		FVector<SaveResourceElementDescriptor> FileElements;
 
 	public:
+		ResourcePush() : FileElements(5)
+		{
+		}
+
 		INLINE ResourcePush& operator+=(const SaveResourceElementDescriptor& _FED)
 		{
 			FileElements.push_back(_FED);
@@ -32,12 +37,17 @@ public:
 	};
 
 private:
-	mutable std::unordered_map<Resource*, Resource*> ResourceMap;
+	//mutable std::unordered_map<Resource*, Resource*> ResourceMap;
+	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
 
 public:
+	ResourceManager() : R(50)
+	{
+	}
+
 	template<class T>
 	T* GetResource(const FString& _ResourceName) const
 	{
@@ -67,7 +77,8 @@ public:
 		}
 
 		resource->IncrementReferences();
-		ResourceMap.emplace(resource, resource);
+		//this->ResourceMap.emplace(resource, resource);
+		this->R.emplace_back(resource);
 
 		//return nullptr;
 		return SCAST(T*, resource);
@@ -79,6 +90,8 @@ public:
 		SaveFile(_Path, f);
 		GetResource<T>(_Path);
 	}
+
+	void tt() { return R.emplace_back(new StaticMeshResource()); }
 
 	void ReleaseResource(Resource* _Resource) const;
 

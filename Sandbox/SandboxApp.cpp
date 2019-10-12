@@ -7,6 +7,8 @@
 #include "Game Studio/Game/World.h"
 #include "TestObject.h"
 #include <Game Studio/Resources/MaterialResource.h>
+#include "Game Studio/Debug/Timer.h"
+#include "Game Studio/Math/GSM.hpp"
 
 class Framebuffer;
 
@@ -20,18 +22,20 @@ public:
 		WCI.Name = "Game Studio!";
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
-
+		
 		//ResourceManagerInstance->CreateResource<MaterialResource>(FString("TestMaterial"), [](ResourceManager::ResourcePush& _OS) { });
-
+		
 		Get()->SetActiveWindow(Win);
-
+		
 		MyWorld = new World();
 		ActiveWorld = MyWorld;
-
+		
 		GS_ASSERT(!MyWorld);
 		GS_ASSERT(!MyWorld->GetName());
 
- 		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
+		ResourceManagerInstance->tt();
+
+ 		//MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
 
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}

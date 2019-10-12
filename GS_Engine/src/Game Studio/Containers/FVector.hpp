@@ -52,7 +52,7 @@ public:
 	typedef const T* const_iterator;
 
 	//Constructs a new FVector.
-	FVector() = default;
+	FVector() = delete;
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
 	explicit FVector(const size_t _Capacity) : Capacity(_Capacity), Length(0), Data(allocate(this->Capacity))
@@ -217,20 +217,27 @@ public:
 		this->Length -= _Length;
 	}
 
-	//Looks for object inside of the array and when it finds it, it deletes it.
-	void eraseObject(T & object)
+	size_t find(const T& _Obj)
 	{
 		for (size_t i = 0; i < this->Length; i++)
 		{
-			if (object == Data[i])
+			if (_Obj == Data[i])
 			{
-				erase(i);
-
-				break;
+				return i;
 			}
 		}
+		return ~0ULL;
+	}
 
-		this->Length -= 1;
+	//Looks for object inside of the array and when it finds it, it deletes it.
+	void eraseObject(T & _Obj)
+	{
+		auto res = find(_Obj);
+		if(res != ~0ULL)
+		{
+			erase(res);
+			this->Length -= 1;
+		}
 	}
 
 	iterator getElement(const size_t _I) { return &this->Data[_I]; }
@@ -254,7 +261,7 @@ public:
 		#ifdef GS_DEBUG
 		if (index > this->Capacity)
 		{
-			throw "Out of bounds!";
+			throw "Entered index is not accessible, array is not as large.";
 		}
 		#endif
 

@@ -61,9 +61,6 @@ protected:
 	uint32 DrawCalls = 0;
 
 	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
-	mutable FVector<Material*> UsedMaterials;
-
-	FVector<RenderComponent*> RenderComponentsSortedForRendering;
 
 	//Scene elements
 	mutable FVector<RenderComponent*> RenderComponents;

@@ -4,7 +4,7 @@
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
 
-Scene::Scene() : RenderComponents(10)
+Scene::Scene() : RenderComponents(10), Framebuffers(3)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -157,12 +157,6 @@ Scene::~Scene()
 
 void Scene::OnUpdate()
 {
-	for (uint32 Mat = 0; Mat < UsedMaterials.length(); ++Mat)
-	{
-		
-	}
-
-
 	RC->BeginRecording();
 
 	RenderPassBeginInfo RPBI;

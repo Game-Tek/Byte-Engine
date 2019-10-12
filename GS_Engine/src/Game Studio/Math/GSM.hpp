@@ -11,6 +11,7 @@
 
 #include "Transform3.h"
 #include "Plane.h"
+#include <cmath>
 
 class GS_API GSM
 {
@@ -31,7 +32,7 @@ class GS_API GSM
 	// /  type
 	// /= type
 
-    static constexpr real SinTable [] =
+    static constexpr double SinTable [] =
     {
         0.0,                                //0 deg
         0.01745240643728351281941897851632, //1
@@ -556,7 +557,8 @@ public:
 	INLINE static float Modulo(const float A, const float B)
 	{
 		const float C = A / B;
-		return (C - Floor(C)) * B;
+		//return (C - Floor(C)) * B;
+		return (C - static_cast<int>(C)) * B;
 	}
 
 	//INLINE static float Power(const float Base, const int32 Exp)
@@ -597,24 +599,31 @@ public:
 	}
 
 	//Returns the sine of an angle.
-	INLINE static float Sine(const float Degrees)
+	INLINE static double Sine(const double Degrees)
 	{
-		const float abs = Abs(Degrees);
+		//const double c = Degrees / 180;
+		//const double res = SinTable[static_cast<int>(c - (static_cast<int>(Degrees) % 1) * c)];
+		//const double res1 = SinTable[static_cast<int>(c - (static_cast<int>(Degrees + 1) % 1) * c)];
+		//const double mix = res + (res - res1) * (res1 - res);
+		//return res;// Degrees > 0 ? res : -res;
 
-		if (Modulo(abs, 360.0f) > 180.0f)
-		{
-			return -Sin(Modulo(abs, 180.0f));
-		}
-		else
-		{
-			return Sin(Modulo(abs, 180.0f));
-		}
+		return sin(Degrees);
+
+		//if (Modulo(abs, 360.0f) > 180.0f)
+		//{
+		//	return -Sin(Modulo(abs, 180.0f));
+		//}
+		//else
+		//{
+		//	return Sin(Modulo(abs, 180.0f));
+		//}
 	}
 
 	//Returns the cosine of an angle.
 	INLINE static float Cosine(const float Degrees)
 	{
-		return Sine(Degrees + 90.0f);
+		//return Sine(Degrees + 90.0f);
+		return cos(Degrees);
 	}
 
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.

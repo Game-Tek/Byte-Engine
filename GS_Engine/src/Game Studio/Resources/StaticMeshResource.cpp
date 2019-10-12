@@ -38,12 +38,78 @@ bool StaticMeshResource::LoadResource(const FString& _Path)
 	//Create pointer for return.
 	Data = new StaticMeshResourceData;//[Scene->mNumMeshes];	//Create new array of meshes.
 
-	*SCAST(StaticMeshResourceData*, Data) = ProcessMesh(Scene->mMeshes[0]);
+	//SCAST(StaticMeshResourceData*, Data) = ProcessMesh(Scene->mMeshes[0]);
 
 	//for (uint32 i = 0; i < Scene->mNumMeshes; i++)
 	//{
 	//	SCAST(StaticMeshResourceData*, Data)[i] = ProcessMesh(Scene->mMeshes[i]);
 	//}
+
+	aiMesh* InMesh = Scene->mMeshes[0];
+
+		//We allocate a new array of vertices big enough to hold the number of vertices in this mesh and assign it to the
+	//pointer found inside the mesh.
+	//Data->WriteTo(0, InMesh->mNumVertices);
+
+	SCAST(StaticMeshResourceData*, Data)->VertexArray = new Vertex[InMesh->mNumVertices];
+	//Set this mesh's vertex count as the number of vertices found in this mesh.
+	SCAST(StaticMeshResourceData*, Data)->VertexCount = InMesh->mNumVertices;
+
+	//------------MESH SETUP------------
+
+	// Loop through each vertex.
+	for (uint32 i = 0; i < InMesh->mNumVertices; i++)
+	{
+		// Positions
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Position.X = InMesh->mVertices[i].x;
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Position.Y = InMesh->mVertices[i].y;
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Position.Z = InMesh->mVertices[i].z;
+
+		// Normals
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Normal.X = InMesh->mNormals[i].x;
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Normal.Y = InMesh->mNormals[i].y;
+		SCAST(StaticMeshResourceData*, Data)->VertexArray[i].Normal.Z = InMesh->mNormals[i].z;
+
+		// Texture Coordinates
+		if (InMesh->mTextureCoords[0]) //We check if the pointer to texture coords is valid. (Could be NULLPTR)
+		{
+			//A vertex can contain up to 8 different texture coordinates.
+			//Here, we are making the assumption we won't be using a model with more than one texture coordinates.
+			SCAST(StaticMeshResourceData*, Data)->VertexArray[i].TextCoord.U = InMesh->mTextureCoords[0][i].x;
+			SCAST(StaticMeshResourceData*, Data)->VertexArray[i].TextCoord.V = InMesh->mTextureCoords[0][i].y;
+		}
+
+		// Tangent
+		//Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
+		//Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
+		//Result.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
+
+		/*
+		// BiTangent
+		Result.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
+		Result.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;
+		Result.VertexArray[i].BiTangent.Z = InMesh->mBitangents[i].z;
+		*/
+	}
+
+	//We allocate a new array of unsigned ints big enough to hold the number of indices in this mesh and assign it to the
+	//pointer found inside the mesh.
+	SCAST(StaticMeshResourceData*, Data)->IndexArray = new uint16[InMesh->mNumFaces * 3];
+
+	//Wow loop through each of the mesh's faces and retrieve the corresponding vertex indices.
+	for (uint32 f = 0; f < InMesh->mNumFaces; f++)
+	{
+		const aiFace Face = InMesh->mFaces[f];
+
+		// Retrieve all indices of the face and store them in the indices array.
+		for (uint32 i = 0; i < Face.mNumIndices; i++)
+		{
+			SCAST(StaticMeshResourceData*, Data)->IndexArray[SCAST(StaticMeshResourceData*, Data)->IndexCount + i] = Face.mIndices[i];
+		}
+
+		//Update the vertex count by summing the number of indices that each face we loop through has.
+		SCAST(StaticMeshResourceData*, Data)->IndexCount += Face.mNumIndices;
+	}
 
 	return true;
 }

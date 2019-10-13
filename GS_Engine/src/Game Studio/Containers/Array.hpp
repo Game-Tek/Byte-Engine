@@ -7,7 +7,7 @@
 template <typename T, size_t Size, typename LT = uint8>
 class GS_EXPORT_ONLY Array
 {
-	T Data[Size] = {};
+	char Data[Size * sizeof(T)];
 	LT Length = 0;
 
 	void CopyToData(const void* _Src)
@@ -38,39 +38,39 @@ public:
 
 	T& operator[](const LT i)
 	{
-		return this->Data[i];
+		return RCAST(T&, this->Data[i]);
 	}
 
 	const T& operator[](const LT i) const
 	{
-		return this->Data[i];
+		return RCAST(T&, *CCAST(char*, &this->Data[i]));
 	}
 
 	void setLength(const LT _length) { Length = _length; }
 
 	const T* data()
 	{
-		return this->Data;
+		return RCAST(T*, this->Data);
 	}
 
 	[[nodiscard]] const T* data() const
 	{
-		return this->Data;
+		return RCAST(T*, this->Data);
 	}
 
 	LT push_back(const T& _obj)
 	{
-		this->Data[this->Length] = _obj;
+		CopyToData(&_obj, 1);
 
 		return this->Length++;
 	}
 
-	LT push_back(const T* _obj)
-	{
-		this->Data[this->Length] = *_obj;
-
-		return this->Length++;
-	}
+	//LT push_back(const T* _obj)
+	//{
+	//	this->Data[this->Length] = *_obj;
+	//
+	//	return this->Length++;
+	//}
 
 	[[nodiscard]] LT length() const
 	{

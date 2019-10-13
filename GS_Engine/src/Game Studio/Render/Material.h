@@ -18,7 +18,7 @@ public:
 	[[nodiscard]] const char* GetMaterialName() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
-	virtual void GetRenderingCode(FString& _VertexCode, FString& _FragmentCode) = 0;  //TEMPORAL: manual for now, should then be automated.
+	virtual void GetRenderingCode(char* _VS, char* _FS) = 0;  //TEMPORAL: manual for now, should then be automated.
 	//Returns true if there is uniform set info and writes said info to the passed in string.
 	virtual bool GetUniformSetCode(FString& _Code) = 0; //TEMPORAL: manual for now, should then be automated.
 	//Returns true if there is uniform set info and sets the size to the passed in int.

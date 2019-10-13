@@ -6,12 +6,13 @@
 class RenderComponent;
 class Scene;
 class Material;
+class StaticMesh;
 
 struct CreateInstanceResourcesInfo
 {
-	Scene* const Scene = nullptr;
 	RenderComponent* const RenderComponent = nullptr;
 
+	StaticMesh* StaticMesh = nullptr;
 	Material* Material = nullptr;
 };
 

@@ -41,7 +41,7 @@ private:
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _Path, void (*f)(ResourcePush& _OS));
+	void SaveFile(const FString& _ResourceName, void (*f)(ResourcePush& _OS));
 
 public:
 	ResourceManager() : R(50)

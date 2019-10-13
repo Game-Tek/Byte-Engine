@@ -5,6 +5,7 @@
 
 #include <Game Studio/Game/World.h>
 #include <Game Studio/Render/Scene.h>
+#include "Render/StaticMeshRenderComponent.h"
 
 class TestObject : public WorldObject
 {

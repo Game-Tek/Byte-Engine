@@ -15,26 +15,36 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
-void ResourceManager::SaveFile(const FString& _Path, void(* f)(ResourceManager::ResourcePush& _RP))
+void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(ResourceManager::ResourcePush& _RP))
 {
-	std::ofstream Outfile(_Path.c_str());
+	FString resource_name(_ResourceName.FindLast('.') - 1, _ResourceName.c_str());
+	//FString path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/") + GetBaseResourcePath() + _ResourceName;
+
+	std::ofstream Outfile("W:/Game Studio/bin/Sandbox/Debug-x64/resources/M_Base.gsmat");
+
+	if(!Outfile.is_open())
+	{
+		GS_LOG_WARNING("Could not save file %s.", _ResourceName.c_str())
+		Outfile.close();
+		return;
+	}
 
 	ResourcePush RP;
 	f(RP);
 
-	ResourceHeaderType HeaderCount = RP.GetElementCount() + 1 /*File name header*/;
-	Outfile.write(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));
+	ResourceHeaderType HeaderCount = RP.GetElementCount() + 1 /*File name segment*/;
+	Outfile.write(reinterpret_cast<char*>(&HeaderCount), sizeof(ResourceHeaderType));
 
-	ResourceSegmentType SegmentSize = _Path.GetLength();
+	ResourceSegmentType SegmentSize = resource_name.GetLength() + 1;
 
 	Outfile.write(reinterpret_cast<char*>(&SegmentSize), sizeof(ResourceSegmentType));
-	Outfile.write(_Path.c_str(), _Path.GetLength());
+	Outfile.write(resource_name.c_str(), SegmentSize);
 
-	for (uint64 i  = 0; i < HeaderCount; ++i)
+	for (uint64 i  = 0; i < HeaderCount - 1 /*File name segment is not written in loop*/; ++i)
 	{
 		SegmentSize = RP[i].Bytes;
-		Outfile.write(&reinterpret_cast<char&>(SegmentSize), sizeof(ResourceSegmentType));
-		Outfile.write(reinterpret_cast<char*>(RP[i].Data), sizeof(ResourceSegmentType));
+		Outfile.write(reinterpret_cast<char*>(&SegmentSize), sizeof(ResourceSegmentType));
+		Outfile.write(reinterpret_cast<char*>(RP[i].Data), SegmentSize);
 	}
 
 	Outfile.close();

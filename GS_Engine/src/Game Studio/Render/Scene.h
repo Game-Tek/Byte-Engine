@@ -15,7 +15,6 @@
 #include "RAPI/RenderContext.h"
 #include "RAPI/RenderPass.h"
 
-#include "StaticMeshRenderComponent.h"
 #include "RenderResourcesManager.h"
 #include <map>
 #include "RenderableInstructions.h"
@@ -46,19 +45,17 @@ public:
 	T* CreateRenderComponent(WorldObject* _Owner) const
 	{
 		RenderComponent* NRC = new T();
-		RenderableInstructionsMap.try_emplace(Id(NRC->GetRenderableTypeName()).GetID(), NRC->GetRenderableInstructions());
-		RenderComponents.emplace_back(NRC);
+		this->RegisterRenderComponent(NRC);
 		return static_cast<T*>(NRC);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
-	RenderResourcesManager ResourcesManager;
-
 	void DrawMesh(const DrawInfo& _DI);
 protected:
+	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
 
-	uint32 DrawCalls = 0;
+	mutable RenderResourcesManager ResourcesManager;
 
 	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
 
@@ -74,22 +71,21 @@ protected:
 	ScreenQuad MyQuad = {};
 	RenderContext* RC = nullptr;
 	RenderPass* RP = nullptr;
-	GraphicsPipeline* GP = nullptr;
 	UniformBuffer* UB = nullptr;
 	UniformLayout* UL = nullptr;
 
-	//Matrix necessary to represent the active camera's view position.
 	Matrix4 ViewMatrix;
-	//Matrix necessary to represent the active camera's view angle.
 	Matrix4 ProjectionMatrix;
-	//Matrix to represent the multiplication of the view and projection matrix.
 	Matrix4 ViewProjectionMatrix;
 
 	void UpdateMatrices();
 
-	//Returns a symetric perspective frustrum.
+	void RegisterRenderComponent(RenderComponent* _RC) const;
+	void RenderRenderables();
+
+	//Returns a symmetric perspective frustum.
 	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far);
 
-	//Returns a perspective frustrum.
-	static Matrix4 BuildPerspectiveFrustrum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
+	//Returns a perspective frustum.
+	static Matrix4 BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
 };

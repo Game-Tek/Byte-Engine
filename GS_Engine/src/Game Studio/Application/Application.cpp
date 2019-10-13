@@ -25,7 +25,7 @@ namespace GS
 
 			ActiveWindow->Update();
 
-			OnUpdate();
+			OnUpdate(); //Update instanced engine class
 		}
 
 		GS_LOG_WARNING("Shutting down application!\nReason: %s", CloseReason.c_str())

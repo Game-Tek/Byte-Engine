@@ -6,9 +6,7 @@
 
 void StaticMeshRenderComponent::CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI)
 {
-	//SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->RenderMaterial = _CIRI.Scene->ResourcesManager.CreateMaterial(SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->GetStaticMesh()->GetMaterial());
-	SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->renderMesh = _CIRI.Scene->ResourcesManager.CreateMesh(SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->GetStaticMesh());
-
+	_CIRI.StaticMesh = SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh;
 	_CIRI.Material = SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh->GetMaterial();
 }
 

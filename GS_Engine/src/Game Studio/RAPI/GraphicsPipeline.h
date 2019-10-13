@@ -5,6 +5,7 @@
 
 #include "RenderCore.h"
 #include "Mesh.h"
+#include "Containers/Array.hpp"
 
 
 struct GS_API StencilState
@@ -24,21 +25,12 @@ struct GS_API StencilOperations
 struct GS_API ShaderInfo
 {
 	ShaderType Type = ShaderType::VERTEX_SHADER;
-	FString ShaderCode = FString("NO CODE");
-};
-
-struct GS_API ShaderStages
-{
-	ShaderInfo* VertexShader = nullptr;
-	ShaderInfo* TessellationControlShader = nullptr;
-	ShaderInfo* TessellationEvaluationShader = nullptr;
-	ShaderInfo* GeometryShader = nullptr;
-	ShaderInfo* FragmentShader = nullptr;
+	char* ShaderCode = nullptr;
 };
 
 struct GS_API PipelineDescriptor
 {
-	ShaderStages Stages;
+	Array<ShaderInfo, 8> Stages;
 	CullMode CullMode = CullMode::CULL_NONE;
 	bool DepthClampEnable = false;
 	bool BlendEnable = false;
@@ -58,7 +50,6 @@ public:
 
 struct GS_API GraphicsPipelineCreateInfo
 {
-	Extent2D SwapchainSize = {1280, 720 };
 	RenderPass* RenderPass = nullptr;
 	VertexDescriptor* VDescriptor = nullptr;
 	PipelineDescriptor PipelineDescriptor;

@@ -54,50 +54,6 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	RPCI.Descriptor = RPD;
 	RP = RenderDevice::Get()->CreateRenderPass(RPCI);
 
-	ShaderInfo VS;
-	VS.Type = ShaderType::VERTEX_SHADER;
-	const char* VertexShaderCode =
-		R"(
-		#version 450
-		
-		layout(push_constant) uniform PushConstant
-		{
-			mat4 ModelMatrix;
-		} callData;
-
-		layout(binding = 0)uniform inObjPos
-		{
-			vec4 AddPos;
-		} UBO;
-
-		layout(location = 0)in vec3 inPos;
-		layout(location = 1)in vec3 inTexCoords;
-
-		layout(location = 0)out vec4 tPos;
-
-		void main()
-		{
-			tPos = vec4(inPos, 1.0);// * callData.ModelMatrix;
-			gl_Position = tPos;
-		})";
-	VS.ShaderCode = VertexShaderCode;
-
-	ShaderInfo FS;
-	FS.Type = ShaderType::FRAGMENT_SHADER;
-	const char* FragmentShaderCode =
-		R"(
-		#version 450
-
-		layout(location = 0)in vec4 tPos;
-		
-		layout(location = 0) out vec4 outColor;
-
-		void main()
-		{
-			outColor = vec4(0.3, 0.1, 0.5, 0);//tPos;
-		})";
-	FS.ShaderCode = FragmentShaderCode;
-
 	UniformLayoutCreateInfo ULCI;
 	ULCI.RenderContext = RC;
 	ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
@@ -121,15 +77,6 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	ULUI.PipelineUniformSets.setLength(1);
 	UL->UpdateUniformSet(ULUI);
 
-	GraphicsPipelineCreateInfo GPCI;
-	GPCI.RenderPass = RP;
-	GPCI.PipelineDescriptor.Stages.VertexShader = &VS;
-	GPCI.PipelineDescriptor.Stages.FragmentShader = &FS;
-	GPCI.SwapchainSize = Win->GetWindowExtent();
-	GPCI.UniformLayout = UL;
-	GPCI.VDescriptor = &ScreenQuad::VD;//StaticMesh::GetVertexDescriptor();
-	GP = RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
-
 	Framebuffers.resize(SCImages.length());
 	for (uint8 i = 0; i < SCImages.length(); ++i)
 	{
@@ -139,8 +86,6 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 		FBCI.Images = DArray<Image*>(&SCImages[i], 1);
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
-
-	ScreenQuad SQ;
 }
 
 Scene::~Scene()
@@ -150,13 +95,14 @@ Scene::~Scene()
 		delete Element;
 	}
 
-	delete GP;
 	delete RP;
 	delete RC;
 }
 
 void Scene::OnUpdate()
 {
+	UpdateMatrices();
+
 	RC->BeginRecording();
 
 	RenderPassBeginInfo RPBI;
@@ -165,13 +111,7 @@ void Scene::OnUpdate()
 
 	RC->BeginRenderPass(RPBI);
 
-	RC->BindGraphicsPipeline(GP);
-	RC->BindUniformLayout(UL);
-
-	DrawInfo DI;
-	DI.IndexCount = MyQuad.IndexCount;
-	DI.InstanceCount = 1;
-	RC->DrawIndexed(DI);
+	RenderRenderables();
 
 	RC->EndRenderPass(RP);
 
@@ -185,7 +125,7 @@ void Scene::OnUpdate()
 void Scene::DrawMesh(const DrawInfo& _DI)
 {
 	RC->DrawIndexed(_DI);
-	++DrawCalls;
+	GS_DEBUG_ONLY(++DrawCalls)
 }
 
 void Scene::UpdateMatrices()
@@ -203,26 +143,44 @@ void Scene::UpdateMatrices()
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }
 
+void Scene::RegisterRenderComponent(RenderComponent* _RC) const
+{
+	auto RI = _RC->GetRenderableInstructions();
+	RenderableInstructionsMap.try_emplace(Id(_RC->GetRenderableTypeName()).GetID(), _RC->GetRenderableInstructions());
+	RenderComponents.emplace_back(_RC);
+
+	CreateInstanceResourcesInfo CIRI { _RC };
+	RI.CreateInstanceResources(CIRI);
+
+	ResourcesManager.RegisterMesh(CIRI.StaticMesh);
+	ResourcesManager.RegisterMaterial(CIRI.Material);
+}
+
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
 {
 	const float Tangent = GSM::Tangent(GSM::Clamp(FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
 	const float Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
 	const float Width = Height * AspectRatio;		//Half width of the near plane(point that says where it is placed).
 
-	return BuildPerspectiveFrustrum(Width, -Width, Height, -Height, Near, Far);
+	return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);
 }
 
-Matrix4 Scene::BuildPerspectiveFrustrum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
+Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
 {
 	Matrix4 Result;
 
-	Result[0] = (2.0f * Near) / (Right - Left);
-	Result[5] = (2.0f * Near) / (Top - Bottom);
-	Result[8] = (Right + Left) / (Right - Left);
-	Result[9] = (Top + Bottom) / (Top - Bottom);
-	Result[10] = -((Far + Near) / (Far - Near));
+	const auto near2 = Near * 2.0f;
+	const auto top_m_bottom = Top - Bottom;
+	const auto far_m_near = Far - Near;
+	const auto right_m_left = Right - Left;
+
+	Result[0] = near2 / right_m_left;
+	Result[5] = near2 / top_m_bottom;
+	Result[8] = (Right + Left) / right_m_left;
+	Result[9] = (Top + Bottom) / top_m_bottom;
+	Result[10] = -((Far + Near) / far_m_near);
 	Result[11] = -1.0f;
-	Result[14] = -((2.0f * Far * Near) / (Far - Near));
+	Result[14] = -((near2 * Far) / far_m_near);
 	Result[15] = 0.0f;
 
 	return Result;

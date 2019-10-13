@@ -61,6 +61,10 @@ struct ResourceElementDescriptor
 
 struct SaveResourceElementDescriptor
 {
+	SaveResourceElementDescriptor(ResourceSegmentType _Bytes, void* _Data) : Bytes(_Bytes), Data(_Data)
+	{
+	}
+
 	ResourceSegmentType Bytes = 0;
 	void* Data = nullptr;
 };

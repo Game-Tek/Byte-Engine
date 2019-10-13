@@ -48,12 +48,12 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkViewport Viewport;
 	Viewport.x = 0.0f;
 	Viewport.y = 0.0f;
-	Viewport.width = _GPCI.SwapchainSize.Width;
-	Viewport.height = _GPCI.SwapchainSize.Height;
+	Viewport.width = 0;
+	Viewport.height = 0;
 	Viewport.minDepth = 0.0f;
 	Viewport.maxDepth = 1.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, Extent2DToVkExtent2D(_GPCI.SwapchainSize) };
+	VkRect2D Scissor = { { 0, 0 }, {0, 0 } };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;
@@ -134,46 +134,28 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI;
+	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI(_GPCI.PipelineDescriptor.Stages.length());
+	Array<VkShaderModuleCreateInfo, 8> VSMCI(_GPCI.PipelineDescriptor.Stages.length());
+	Array<DArray<uint32, uint32>, 8> SPIRV(_GPCI.PipelineDescriptor.Stages.length());
+	Array<VKShaderModule, 8> SMS(_GPCI.PipelineDescriptor.Stages.length());
 
-	//if (_PD.Stages.VertexShader)
-	//{
-	VkPipelineShaderStageCreateInfo VS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-	VS.stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages.VertexShader->Type);
+	for (uint8 i = 0; i < _GPCI.PipelineDescriptor.Stages.length(); ++i)
+	{
+		PSSCI[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		PSSCI[i].stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages[i].Type);
 
-	//TODO: ask for shader name from outside
-	auto VertexShaderCode = VKShaderModule::CompileGLSLToSpirV(_GPCI.PipelineDescriptor.Stages.VertexShader->ShaderCode, FString("Vertex Shader"), VK_SHADER_STAGE_VERTEX_BIT);
+		//TODO: ask for shader name from outside
+		SPIRV[i] = VKShaderModule::CompileGLSLToSpirV(FString(_GPCI.PipelineDescriptor.Stages[i].ShaderCode), FString("Vertex Shader"), PSSCI[i].stage);
 
-	VkShaderModuleCreateInfo VkVertexShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-	VkVertexShaderModuleCreateInfo.codeSize = VertexShaderCode.size();
-	VkVertexShaderModuleCreateInfo.pCode = VertexShaderCode.data();
+		VSMCI[i].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		VSMCI[i].codeSize = SPIRV[i].size();
+		VSMCI[i].pCode = SPIRV[i].data();
 
-	auto vs = VKShaderModule(VKShaderModuleCreator(_Device, &VkVertexShaderModuleCreateInfo));
+		SMS[i] = VKShaderModule(VKShaderModuleCreator(_Device, &VSMCI[i]));
 
-	VS.module = vs.GetHandle();
-	VS.pName = "main";
-
-	PSSCI.push_back(VS);
-	//}
-
-	//if (_PD.Stages.FragmentShader)
-	//{
-		VkPipelineShaderStageCreateInfo FS = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-		FS.stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages.FragmentShader->Type);
-
-		auto FragmentShaderCode = VKShaderModule::CompileGLSLToSpirV(_GPCI.PipelineDescriptor.Stages.FragmentShader->ShaderCode, FString("Fragment Shader"), VK_SHADER_STAGE_FRAGMENT_BIT);
-
-		VkShaderModuleCreateInfo VkFragmentShaderModuleCreateInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-		VkFragmentShaderModuleCreateInfo.codeSize = FragmentShaderCode.size();
-		VkFragmentShaderModuleCreateInfo.pCode = FragmentShaderCode.data();
-
-		auto fs = VKShaderModule(VKShaderModuleCreator(_Device, &VkFragmentShaderModuleCreateInfo));
-
-		FS.module = fs.GetHandle();
-		FS.pName = "main";
-
-		PSSCI.push_back(FS);
-	//}
+		PSSCI[i].module = SMS[i].GetHandle();
+		PSSCI[i].pName = "main";
+	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

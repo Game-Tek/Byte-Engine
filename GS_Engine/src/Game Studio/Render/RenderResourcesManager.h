@@ -23,23 +23,13 @@ class RenderResourcesManager
 	//FVector<Mesh*> Meshes;
 	// MESHES
 
-	void RegisterMaterial(Material* _Mat)
-	{
-		if (Pipelines.find(Id(_Mat->GetMaterialName()).GetID()) != Pipelines.end())
-		{
-			//If material exists
-			
-		}
-		else
-		{
-			//If material doesn't exist
-		}
-	}
+	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat);
+
 public:
 	~RenderResourcesManager();
 
-
 	//[[nodiscard]] const std::map<Id::HashType, Tuple<Material*, GraphicsPipeline*>>& GetMaterialMap() const { return Materials; }
 
-	Mesh* CreateMesh(StaticMesh* _SM);
+	Mesh* RegisterMesh(StaticMesh* _SM);
+	GraphicsPipeline* RegisterMaterial(Material* _Mat);
 };

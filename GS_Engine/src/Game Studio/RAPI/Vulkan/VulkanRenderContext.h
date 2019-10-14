@@ -79,7 +79,7 @@ public:
 	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
 	void BindComputePipeline(ComputePipeline* _CP) final override;
-	void DrawIndexed(const DrawInfo& _DI) final override;
+	void DrawIndexed(const DrawInfo& _DrawInfo) final override;
 	void Dispatch(const Extent3D& _WorkGroups) final override;
 
 	[[nodiscard]] FVector<Image*> GetSwapchainImages() const final override;

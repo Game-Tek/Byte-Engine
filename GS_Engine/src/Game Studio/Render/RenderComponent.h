@@ -16,6 +16,8 @@ protected:
 	//Determines whether this object will be drawn on the current update. DOES NOT DEPEND ON IsDynamic.
 	bool ShouldRender = true;
 
+	bool isRenderDirty = false;
+	bool isResourceDirty = false;
 public:
 	//bool GetIsDynamic() const { return IsDynamic; }
 
@@ -27,4 +29,9 @@ public:
 	[[nodiscard]] virtual RenderableInstructions GetRenderableInstructions() const = 0;
 
 	[[nodiscard]] virtual const char* GetRenderableTypeName() const = 0;
+
+	void FlagRenderDirty() { isRenderDirty = true; }
+	[[nodiscard]] bool IsRenderDirty() const { return isRenderDirty; }
+	void FlagResourceDirty() { isResourceDirty = true; }
+	[[nodiscard]] bool IsResourceDirty() const { return isResourceDirty; }
 };

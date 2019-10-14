@@ -39,19 +39,20 @@ public:
 	[[nodiscard]] const Matrix4& GetVPMatrix() const { return ViewProjectionMatrix; }
 
 	//Sets the active camera as the NewCamera.
-	void SetCamera(Camera * NewCamera) { ActiveCamera = NewCamera; }
+	void SetCamera(Camera * NewCamera) const { ActiveCamera = NewCamera; }
 
 	template<class T>
 	T* CreateRenderComponent(WorldObject* _Owner) const
 	{
 		RenderComponent* NRC = new T();
-		this->RegisterRenderComponent(NRC);
+		NRC->SetOwner(_Owner);
+		//this->RegisterRenderComponent(NRC);
 		return static_cast<T*>(NRC);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
-	void DrawMesh(const DrawInfo& _DI);
+	void DrawMesh(const DrawInfo& _DrawInfo);
 protected:
 	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
 
@@ -63,7 +64,7 @@ protected:
 	mutable FVector<RenderComponent*> RenderComponents;
 
 	//Pointer to the active camera.
-	Camera* ActiveCamera = nullptr;
+	mutable Camera* ActiveCamera = nullptr;
 
 	//Render elements
 	Window* Win = nullptr;
@@ -81,6 +82,8 @@ protected:
 	void UpdateMatrices();
 
 	void RegisterRenderComponent(RenderComponent* _RC) const;
+
+	void UpdateRenderables();
 	void RenderRenderables();
 
 	//Returns a symmetric perspective frustum.

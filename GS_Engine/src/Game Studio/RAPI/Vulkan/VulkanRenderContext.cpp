@@ -293,9 +293,9 @@ void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetHandle());
 }
 
-void VulkanRenderContext::DrawIndexed(const DrawInfo& _DI)
+void VulkanRenderContext::DrawIndexed(const DrawInfo& _DrawInfo)
 {
-	vkCmdDrawIndexed(CommandBuffers[CurrentImage], _DI.IndexCount, _DI.InstanceCount, 0, 0, 0);
+	vkCmdDrawIndexed(CommandBuffers[CurrentImage], _DrawInfo.IndexCount, _DrawInfo.InstanceCount, 0, 0, 0);
 }
 
 void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)

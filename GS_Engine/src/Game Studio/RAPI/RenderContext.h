@@ -92,7 +92,7 @@ public:
 	//  DRAW COMMANDS
 	
 	//Adds a DrawIndexed command to the command queue.
-	virtual void DrawIndexed(const DrawInfo& _DI) = 0;
+	virtual void DrawIndexed(const DrawInfo& _DrawInfo) = 0;
 	
 	//  COMPUTE COMMANDS
 	

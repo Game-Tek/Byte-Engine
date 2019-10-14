@@ -4,6 +4,8 @@
 
 #include "FVector.hpp"
 
+#include <ostream>
+
 class GS_API FString
 {
 	using string_type = char;
@@ -70,6 +72,7 @@ public:
 	static size_t StringLength(const char * In);
 
 private:
+	friend std::ostream& operator<<(std::ostream& _OS, FString& _String);
 	FVector<string_type> Data;
 
 	static FString MakeString(const char* _Text, ...);

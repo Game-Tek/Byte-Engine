@@ -103,6 +103,8 @@ void Scene::OnUpdate()
 {
 	UpdateMatrices();
 
+	UpdateRenderables();
+
 	RC->BeginRecording();
 
 	RenderPassBeginInfo RPBI;
@@ -122,9 +124,9 @@ void Scene::OnUpdate()
 	RC->Present();
 }
 
-void Scene::DrawMesh(const DrawInfo& _DI)
+void Scene::DrawMesh(const DrawInfo& _DrawInfo)
 {
-	RC->DrawIndexed(_DI);
+	RC->DrawIndexed(_DrawInfo);
 	GS_DEBUG_ONLY(++DrawCalls)
 }
 
@@ -148,12 +150,25 @@ void Scene::RegisterRenderComponent(RenderComponent* _RC) const
 	auto RI = _RC->GetRenderableInstructions();
 	RenderableInstructionsMap.try_emplace(Id(_RC->GetRenderableTypeName()).GetID(), _RC->GetRenderableInstructions());
 	RenderComponents.emplace_back(_RC);
+}
 
-	CreateInstanceResourcesInfo CIRI { _RC };
-	RI.CreateInstanceResources(CIRI);
+void Scene::UpdateRenderables()
+{
+	for (auto& e : RenderComponents)
+	{
+		if(e->IsResourceDirty())
+		{
+			CreateInstanceResourcesInfo CIRI{ e };
+			RenderableInstructionsMap.find(Id(e->GetRenderableTypeName()).GetID())->second.CreateInstanceResources(CIRI);
 
-	ResourcesManager.RegisterMesh(CIRI.StaticMesh);
-	ResourcesManager.RegisterMaterial(CIRI.Material);
+			ResourcesManager.RegisterMesh(CIRI.StaticMesh);
+			ResourcesManager.RegisterMaterial(CIRI.Material);
+		}
+	}
+}
+
+void Scene::RenderRenderables()
+{
 }
 
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)

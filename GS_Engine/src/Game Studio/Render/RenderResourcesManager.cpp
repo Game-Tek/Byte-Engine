@@ -35,7 +35,7 @@ GraphicsPipeline* RenderResourcesManager::CreatePipelineFromMaterial(Material* _
 
 	ShaderInfo VSI;
 	ShaderInfo FSI;
-	_Mat->GetRenderingCode(VSI.ShaderCode, FSI.ShaderCode);
+	_Mat->GetRenderingCode(&VSI.ShaderCode, &FSI.ShaderCode);
 
 	GPCI.PipelineDescriptor.Stages.push_back(VSI);
 	GPCI.PipelineDescriptor.Stages.push_back(FSI);

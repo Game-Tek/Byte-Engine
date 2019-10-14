@@ -41,7 +41,7 @@ private:
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _ResourceName, void (*f)(ResourcePush& _OS));
+	void SaveFile(const FString& _ResourceName, void (*f)(std::ostream& _OS));
 
 public:
 	ResourceManager() : R(50)
@@ -85,13 +85,11 @@ public:
 	}
 
 	template<class T>
-	void CreateResource(const FString& _Path, void (*f)(ResourcePush& _OS))
+	void CreateResource(const FString& _Path, void (*f)(std::ostream& _OS))
 	{
 		SaveFile(_Path, f);
 		GetResource<T>(_Path);
 	}
-
-	void tt() { return R.emplace_back(new StaticMeshResource()); }
 
 	void ReleaseResource(Resource* _Resource) const;
 

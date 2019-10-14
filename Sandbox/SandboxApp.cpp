@@ -23,7 +23,7 @@ public:
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
 
-		auto MatFun = [](ResourceManager::ResourcePush& _OS)
+		auto MatFun = [](std::ostream& _OS)
 		{
 			FString VS(
 				R"(
@@ -49,10 +49,9 @@ public:
 				tPos = vec4(inPos, 1.0);// * callData.ModelMatrix;
 				gl_Position = tPos;
 			}
-
 			)");
 
-			_OS += SaveResourceElementDescriptor(VS.GetLength() + 1, VS.c_str());
+			_OS << VS;
 
 			FString FS(
 				R"(
@@ -66,10 +65,9 @@ public:
 			{
 				outColor = vec4(0.3, 0.1, 0.5, 0);//tPos;
 			}
-			
 			)");
 
-			_OS += SaveResourceElementDescriptor(FS.GetLength() + 1, FS.c_str());
+			_OS << FS;
 		};
 
 		ResourceManagerInstance->CreateResource<MaterialResource>(FString("M_Base.gsmat"), MatFun);

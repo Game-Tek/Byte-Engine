@@ -5,6 +5,7 @@
 #include <cstring>
 #include <type_traits>
 #include <assert.h>
+#include <iostream>
 
 template <typename T, typename LT = size_t>
 class FVector
@@ -50,6 +51,26 @@ class FVector
 public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
+
+	friend std::ostream& operator<<(std::ostream& _OS, FVector<T>& _FV)
+	{
+		_OS << _FV.Capacity << _FV.Length;
+		for (LT i = 0; i < _FV.Length; ++i)
+		{
+			_OS << _FV.Data[i];
+		}
+		return _OS;
+	}
+
+	friend std::istream& operator>>(std::istream& _IS, FVector<T>& _FV)
+	{
+		_IS >> _FV.Capacity >> _FV.Length;
+		for (LT i = 0; i < _FV.Length; ++i)
+		{
+			_IS >> _FV.Data[i];
+		}
+		return _IS;
+	}
 
 	//Constructs a new FVector.
 	FVector() = delete;

@@ -2,6 +2,15 @@
 #include <cstdio>
 #include <cstdarg>
 
+#include <ostream>
+
+std::ostream& operator<<(std::ostream& _OS, FString& _String)
+{
+	_OS << _String.Data;
+	return _OS;
+}
+
+
 FString::FString() : Data(10)
 {
 }

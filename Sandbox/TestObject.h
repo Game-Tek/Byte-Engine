@@ -5,18 +5,28 @@
 
 #include <Game Studio/Game/World.h>
 #include <Game Studio/Render/Scene.h>
+#include <Game Studio/Camera.h>
 #include "Render/StaticMeshRenderComponent.h"
+
+#include "BaseMaterial.h"
 
 class TestObject : public WorldObject
 {
 	StaticMesh MyStaticMesh;
 	StaticMeshRenderComponent* MeshRender = nullptr;
+	BaseMaterial* Material = nullptr;
+	Camera MyCamera;
 
 public:
 	TestObject() : MyStaticMesh(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj"))
 	{
-		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(this);
+		Material = new BaseMaterial(FString("M_Base"));
+		MyStaticMesh.SetMaterial(Material);
+
+ 		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(this);
 		MeshRender->SetStaticMesh(&MyStaticMesh);
+
+		GetWorld()->GetScene().SetCamera(&MyCamera);
 	}
 
 	~TestObject()

@@ -2,13 +2,21 @@
 
 #include "Resource.h"
 
+#include <fstream>
+
+/*
+ * Vertex Shader Parameter Collection
+ * Vertex Shader Code
+ * Fragment Shader Parameter Collection
+ * Fragment Shader Code
+ */
 class MaterialResource : public Resource
 {
+public:
 	class MaterialData : public ResourceData
 	{
 		char* VertexShaderCode = nullptr;
 		char* FragmentShaderCode = nullptr;
-		int32 ShaderDynamicParameters = 0;
 
 	public:
 		~MaterialData()
@@ -21,20 +29,23 @@ class MaterialResource : public Resource
 		{
 			switch (_Index)
 			{
-			case 0: VertexShaderCode = new char[_Bytes];
+			case 3: VertexShaderCode = new char[_Bytes];
 					return reinterpret_cast<void**>(&VertexShaderCode);
-			case 1: VertexShaderCode = new char[_Bytes];
+			case 6: VertexShaderCode = new char[_Bytes];
 					return reinterpret_cast<void**>(&VertexShaderCode);
-			case 2:
-					return reinterpret_cast<void**>(&ShaderDynamicParameters);
 			default: ;
 			}
 
 			return nullptr;
 		}
+
+		[[nodiscard]] char* GetVertexShaderCode() const { return VertexShaderCode; }
+		[[nodiscard]] char* GetFragmentShaderCode() const { return FragmentShaderCode; }
+
+		friend std::ostream& operator<<(std::ostream& _O, MaterialData& _MD);
+		friend std::istream& operator>>(std::istream& _I, MaterialData& _MD);
 	};
 
-public:
 	MaterialResource() = default;
 
 	~MaterialResource()

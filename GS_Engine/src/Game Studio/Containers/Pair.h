@@ -3,15 +3,15 @@
 #include "Core.h"
 
 template<typename A, typename B>
-class GS_API Tuple
+class GS_API Pair
 {
 public:
 	A First;
 	B Second;
 
-	Tuple() = default;
+	Pair() = default;
 
-	Tuple(const A& _A, const B& _B) : First(_A), Second(_B)
+	Pair(const A& _A, const B& _B) : First(_A), Second(_B)
 	{
 	}
 };

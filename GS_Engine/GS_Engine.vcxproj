@@ -207,7 +207,7 @@
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h" />
-    <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
+    <ClInclude Include="src\Game Studio\Containers\Pair.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />

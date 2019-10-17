@@ -124,7 +124,6 @@
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\Octree.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
-    <ClInclude Include="src\Game Studio\Containers\Tuple.h" />
     <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\Containers\FString.h">
       <Filter>Misc</Filter>
@@ -238,6 +237,7 @@
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
+    <ClInclude Include="src\Game Studio\Containers\Pair.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

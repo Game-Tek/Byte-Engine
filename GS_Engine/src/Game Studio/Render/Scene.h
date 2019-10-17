@@ -55,12 +55,15 @@ public:
 
 	void DrawMesh(const DrawInfo& _DrawInfo);
 protected:
+	//Used to count the amount of draw calls in a frame.
 	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
+	GS_DEBUG_ONLY(uint32 InstanceDraws = 0)
+	GS_DEBUG_ONLY(uint32 PipelineSwitches = 0)
+	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
 	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
 
-	/*RAPI Resources*/
-
+	/* ---- RAPI Resources ---- */
 	// MATERIALS
 	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
 	// MATERIALS
@@ -74,8 +77,7 @@ protected:
 
 	Mesh* RegisterMesh(StaticMesh* _SM);
 	GraphicsPipeline* RegisterMaterial(Material* _Mat);
-
-	/*RAPI Resources*/
+	/* ---- RAPI Resources ---- */
 
 	//Scene elements
 	mutable FVector<RenderComponent*> RenderComponents;

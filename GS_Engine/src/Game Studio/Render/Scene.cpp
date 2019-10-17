@@ -110,6 +110,13 @@ Scene::~Scene()
 
 void Scene::OnUpdate()
 {
+	/*Update debug vars*/
+	GS_DEBUG_ONLY(DrawCalls = 0)
+	GS_DEBUG_ONLY(InstanceDraws = 0)
+	GS_DEBUG_ONLY(PipelineSwitches = 0)
+	GS_DEBUG_ONLY(DrawnComponents = 0)
+	/*Update debug vars*/
+
 	UpdateMatrices();
 
 	UpdateRenderables();
@@ -138,6 +145,7 @@ void Scene::DrawMesh(const DrawInfo& _DrawInfo)
 	RC->DrawIndexed(_DrawInfo);
 	GS_LOG_MESSAGE("Rendered!")
 	GS_DEBUG_ONLY(++DrawCalls)
+	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
 }
 
 GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat)
@@ -232,8 +240,8 @@ void Scene::UpdateRenderables()
 
 			e->GetRenderableInstructions().CreateInstanceResources(CIRI);
 
-			ResourcesManager.RegisterMesh(CIRI.StaticMesh);
-			ResourcesManager.RegisterMaterial(CIRI.Material);
+			RegisterMesh(CIRI.StaticMesh);
+			RegisterMaterial(CIRI.Material);
 		}
 	}
 }

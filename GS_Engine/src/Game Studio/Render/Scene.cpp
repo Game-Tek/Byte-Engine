@@ -217,7 +217,9 @@ void Scene::UpdateMatrices()
 	ViewMatrix[13] = CamPos.Y;
 	ViewMatrix[14] = CamPos.Z;
 
-	ProjectionMatrix = BuildPerspectiveMatrix(GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 0.1f, 500.0f);
+	auto& nfp = GetActiveCamera()->GetNearFarPair();
+
+	ProjectionMatrix = BuildPerspectiveMatrix(GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
 
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }

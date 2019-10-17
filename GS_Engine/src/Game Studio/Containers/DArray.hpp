@@ -49,7 +49,7 @@ public:
 		copyLength(this->Length, CCAST(T*, _List.begin()));
 	}
 
-	explicit DArray(const LT _Length) : Capacity(_Length), Length(_Length), Data(allocate(_Length))
+	explicit DArray(const LT _Length) : Capacity(_Length), Length(0), Data(allocate(_Length))
 	{
 	}
 
@@ -63,12 +63,8 @@ public:
 		copyToData(_Start, (_End - _Start) * sizeof(T));
 	}
 
-	DArray(const DArray<T>& _Other)
+	DArray(const DArray<T>& _Other) : Capacity(_Other.Capacity), Length(_Other.Length), Data(allocate(this->Capacity))
 	{
-		freeArray();
-		this->Capacity = _Other.Capacity;
-		this->Length = _Other.Length;
-		this->Data = allocate(this->Capacity);
 		copyLength(this->Capacity, _Other.Data);
 	}
 
@@ -129,6 +125,11 @@ public:
 	[[nodiscard]] LT capacity() const
 	{
 		return this->Capacity;
+	}
+
+	void resize(LT _NewLength)
+	{
+		this->Length = _NewLength;
 	}
 
 	//Returns the size in bytes the currently allocated array takes up.

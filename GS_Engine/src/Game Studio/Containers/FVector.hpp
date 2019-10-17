@@ -36,13 +36,13 @@ class FVector
 	}
 
 	//Allocates a new array if Length + newelements exceeds the allocated space.
-	void reallocIfExceeds(const size_t _AdditionalElements)
+	void reallocIfExceeds(const int64 _AdditionalElements)
 	{
 		if (this->Length + _AdditionalElements > this->Capacity)
 		{
 			const size_t newCapacity = (this->Length * 2) + _AdditionalElements;
 			T* newData = allocate(newCapacity);
-			copyArray(this->Data, newData, this->Length);
+			copyArray(this->Data, newData, this->Capacity);
 			freeData();
 			this->Capacity = newCapacity;
 			this->Data = newData;
@@ -54,21 +54,26 @@ public:
 
 	friend std::ostream& operator<<(std::ostream& _OS, FVector<T>& _FV)
 	{
-		_OS << _FV.Capacity << _FV.Length;
-		for (LT i = 0; i < _FV.Length; ++i)
-		{
-			_OS << _FV.Data[i];
-		}
+		_OS.write(reinterpret_cast<char*>(&_FV.Capacity), sizeof(size_t));
+		_OS.write(reinterpret_cast<char*>(&_FV.Length), sizeof(size_t));
+
+		_OS.write(static_cast<char*>(_FV.Data), _FV.Capacity);
+
 		return _OS;
 	}
 
 	friend std::istream& operator>>(std::istream& _IS, FVector<T>& _FV)
 	{
-		_IS >> _FV.Capacity >> _FV.Length;
-		for (LT i = 0; i < _FV.Length; ++i)
-		{
-			_IS >> _FV.Data[i];
-		}
+		size_t new_capacity = 0, new_length = 0;
+		_IS.read(reinterpret_cast<char*>(&new_capacity), sizeof(size_t));
+		_IS.read(reinterpret_cast<char*>(&new_length), sizeof(size_t));
+
+		_FV.reallocIfExceeds(new_length);
+
+		_IS.read(reinterpret_cast<char*>(_FV.Data), new_capacity);
+
+		_FV.Length = new_length;
+
 		return _IS;
 	}
 
@@ -173,7 +178,7 @@ public:
 	//Places the passed in FVector at the end of the array.
 	void push_back(const FVector& _Other)
 	{
-		reallocIfExceeds(_Other.Length - this->Length);
+		reallocIfExceeds(this->Length - _Other.Length);
 		copyArray(_Other.Data, getElement(this->Length), _Other.Length);
 		this->Length += _Other.Length;
 	}
@@ -187,7 +192,13 @@ public:
 	}
 
 	//Deletes the array's last element.
-	void pop_back() { this->Length -= 1; }
+	void pop_back()
+	{
+		if (this->Length != 0)
+		{
+			this->Length -= 1;
+		}
+	}
 
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
 	void insert(size_t _Index, const T& _Obj)

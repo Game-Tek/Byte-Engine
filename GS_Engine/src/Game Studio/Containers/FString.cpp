@@ -38,18 +38,27 @@ FString& FString::operator=(const char* _In)
 	return *this;
 }
 
-FString& FString::operator+(const char* _In)
+FString FString::operator+(const char* _In) const
+{
+	FString result;
+	result.Data.push_back(Data.length() - 1, Data.data());
+	result.Data.push_back(StringLength(_In), _In);
+	return result;
+}
+
+FString& FString::operator+=(const char* _In)
 {
 	Data.pop_back();
-	Data.push_back(StringLength(_In), const_cast<char*>(_In));
+	Data.push_back(StringLength(_In), _In);
 	return *this;
 }
 
-FString& FString::operator+(const FString& _Other)
+FString FString::operator+(const FString& _Other) const
 {
-	Data.pop_back();
-	Data.push_back(_Other.Data);
-	return *this;
+	FString result;
+	result.Data.push_back(Data.length() - 1, Data.data());
+	result.Data.push_back(_Other.Data.length(), _Other.Data.data());
+	return result;
 }
 
 bool FString::operator==(const FString & _Other) const

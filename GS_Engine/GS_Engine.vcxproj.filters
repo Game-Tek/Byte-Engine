@@ -233,11 +233,11 @@
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
       <Filter>Engine\Resource Manager\Resources</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Render\RenderResourcesManager.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
+    <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -311,7 +311,6 @@
     <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp">
       <Filter>Engine\Resource Manager\Resources</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
@@ -320,6 +319,7 @@
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

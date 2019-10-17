@@ -115,7 +115,6 @@
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderResourcesManager.h" />
     <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
@@ -126,6 +125,7 @@
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
@@ -235,11 +235,11 @@
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
-    <ClCompile Include="src\Game Studio\Render\RenderResourcesManager.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />

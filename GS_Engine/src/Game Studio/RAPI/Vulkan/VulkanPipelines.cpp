@@ -145,7 +145,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 		PSSCI[i].stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages[i].Type);
 
 		//TODO: ask for shader name from outside
-		SPIRV[i] = VKShaderModule::CompileGLSLToSpirV(FString(_GPCI.PipelineDescriptor.Stages[i].ShaderCode), FString("Vertex Shader"), PSSCI[i].stage);
+		SPIRV[i] = VKShaderModule::CompileGLSLToSpirV(*_GPCI.PipelineDescriptor.Stages[i].ShaderCode, FString("Vertex Shader"), PSSCI[i].stage);
 
 		VSMCI[i].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 		VSMCI[i].codeSize = SPIRV[i].size();

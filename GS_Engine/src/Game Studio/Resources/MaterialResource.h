@@ -15,14 +15,12 @@ class MaterialResource : public Resource
 public:
 	class MaterialData : public ResourceData
 	{
-		char* VertexShaderCode = nullptr;
-		char* FragmentShaderCode = nullptr;
+		FString VertexShaderCode;
+		FString FragmentShaderCode;
 
 	public:
 		~MaterialData()
 		{
-			delete[] VertexShaderCode;
-			delete[] FragmentShaderCode;
 		}
 
 		void** WriteTo(size_t _Index, size_t _Bytes) override
@@ -39,8 +37,8 @@ public:
 			return nullptr;
 		}
 
-		[[nodiscard]] char* GetVertexShaderCode() const { return VertexShaderCode; }
-		[[nodiscard]] char* GetFragmentShaderCode() const { return FragmentShaderCode; }
+		[[nodiscard]] FString& GetVertexShaderCode() { return VertexShaderCode; }
+		[[nodiscard]] FString& GetFragmentShaderCode() { return FragmentShaderCode; }
 
 		friend std::ostream& operator<<(std::ostream& _O, MaterialData& _MD);
 		friend std::istream& operator>>(std::istream& _I, MaterialData& _MD);

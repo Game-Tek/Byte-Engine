@@ -15,9 +15,9 @@
 #include "RAPI/RenderContext.h"
 #include "RAPI/RenderPass.h"
 
-#include "RenderResourcesManager.h"
 #include <map>
 #include "RenderableInstructions.h"
+#include "Containers/Id.h"
 
 class StaticMeshResource;
 class RenderProxy;
@@ -46,6 +46,7 @@ public:
 	{
 		RenderComponent* NRC = new T();
 		NRC->SetOwner(_Owner);
+		RenderComponents.emplace_back(NRC);
 		//this->RegisterRenderComponent(NRC);
 		return static_cast<T*>(NRC);
 	}
@@ -56,9 +57,25 @@ public:
 protected:
 	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
 
-	mutable RenderResourcesManager ResourcesManager;
-
 	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
+
+	/*RAPI Resources*/
+
+	// MATERIALS
+	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
+	// MATERIALS
+
+	// MESHES
+	std::map<StaticMesh*, Mesh*> Meshes;
+	//FVector<Mesh*> Meshes;
+	// MESHES
+
+	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat);
+
+	Mesh* RegisterMesh(StaticMesh* _SM);
+	GraphicsPipeline* RegisterMaterial(Material* _Mat);
+
+	/*RAPI Resources*/
 
 	//Scene elements
 	mutable FVector<RenderComponent*> RenderComponents;

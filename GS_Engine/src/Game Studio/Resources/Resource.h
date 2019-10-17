@@ -11,18 +11,18 @@ using ResourceSegmentType = uint64;
 
 class ResourceData
 {
-	char* ResourceName = nullptr;
+protected:
+	FString ResourceName;
 
 public:
 	ResourceData() = default;
 
 	virtual ~ResourceData()
 	{
-		delete[] ResourceName;
 	}
 
 	virtual void** WriteTo(size_t _Index, size_t _Bytes) = 0;
-	char*& GetResourceName() { return ResourceName; }
+	const FString& GetResourceName() const { return ResourceName; }
 };
 
 //Base class representation of all types of resources that can be loaded into the engine.

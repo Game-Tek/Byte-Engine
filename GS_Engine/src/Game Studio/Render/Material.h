@@ -2,6 +2,7 @@
 
 #include "MaterialInfo.h"
 #include "Containers/DArray.hpp"
+#include "RAPI/GraphicsPipeline.h"
 
 class FString;
 class MaterialResource;
@@ -19,7 +20,7 @@ public:
 	[[nodiscard]] virtual const char* GetMaterialName() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
-	void GetRenderingCode(char** _VS, char** _FS) const;  //TEMPORAL: manual for now, should then be automated.
+	void GetRenderingCode(ShaderInfo& _VS, ShaderInfo& _FS) const;  //TEMPORAL: manual for now, should then be automated.
 
 	//Returns true if there is uniform set info and writes said info to the passed in string.
 	bool GetUniformSetCode(FString& _Code); //TEMPORAL: manual for now, should then be automated.

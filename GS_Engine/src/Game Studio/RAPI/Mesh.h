@@ -39,7 +39,9 @@ class GS_API VertexDescriptor
 public:
 	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.length())
 	{
-		for (uint8 i = 0; i < Elements.length(); ++i)
+		Elements.resize(_Elements.length());
+
+		for (uint8 i = 0; i < Elements.capacity(); ++i)
 		{
 			Elements[i].Size = ShaderDataTypesSize(_Elements[i]);
 			Elements[i].DataType = _Elements[i];

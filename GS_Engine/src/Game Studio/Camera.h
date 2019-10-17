@@ -11,6 +11,8 @@ public:
 	explicit Camera(const float FOV);
 	~Camera() = default;
 
+	[[nodiscard]] const char* GetName() const override { return "Camera"; }
+
 	[[nodiscard]] float GetAperture() const { return Aperture; }
 	[[nodiscard]] float GetIrisHeightMultiplier() const { return IrisHeightMultiplier; }
 	[[nodiscard]] float GetFOV() const { return FOV; }

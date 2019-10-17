@@ -18,7 +18,7 @@ class TestObject : public WorldObject
 	Camera MyCamera;
 
 public:
-	TestObject() : MyStaticMesh(FString("W:/Game Studio/bin/Sandbox/Debug-x64/Sphere.obj"))
+	TestObject() : MyStaticMesh(FString("Sphere"))
 	{
 		Material = new BaseMaterial(FString("M_Base"));
 		MyStaticMesh.SetMaterial(Material);

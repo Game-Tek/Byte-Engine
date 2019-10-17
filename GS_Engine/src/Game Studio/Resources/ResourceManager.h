@@ -11,7 +11,6 @@
 #include "Containers/Id.h"
 
 #include "Debug/Logger.h"
-#include "StaticMeshResource.h"
 
 class ResourceManager : public Object
 {
@@ -43,6 +42,8 @@ private:
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _ResourceName, void (*f)(std::ostream& _OS));
 
+	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const;
+
 public:
 	ResourceManager() : R(50)
 	{
@@ -63,22 +64,8 @@ public:
 		//auto Path = GetBaseResourcePath() + "static meshes/" + _Name + ".obj";
 
 		Resource* resource = new T();
-		const auto FullPath = _ResourceName;
-		const auto Result = resource->LoadResource(_ResourceName);
 
-		if (Result)
-		{
-			//GS_LOG_SUCCESS("Loaded resource %s succesfully!", _ResourceName.c_str())
-		}
-		else
-		{
-			//GS_LOG_ERROR("Failed to load %s resource of type %s!\nLoaded default resource.", _ResourceName.c_str(), resource->GetName())
-			resource->LoadFallbackResource(FullPath);
-		}
-
-		resource->IncrementReferences();
-		//this->ResourceMap.emplace(resource, resource);
-		this->R.emplace_back(resource);
+		GetResourceInternal(_ResourceName, resource);
 
 		//return nullptr;
 		return SCAST(T*, resource);
@@ -87,8 +74,10 @@ public:
 	template<class T>
 	void CreateResource(const FString& _Path, void (*f)(std::ostream& _OS))
 	{
-		SaveFile(_Path, f);
-		GetResource<T>(_Path);
+		Resource* resource = new T();
+		FString path = _Path + resource->GetResourceTypeExtension();
+		SaveFile(path, f);
+		GetResourceInternal(_Path, resource);
 	}
 
 	void ReleaseResource(Resource* _Resource) const;

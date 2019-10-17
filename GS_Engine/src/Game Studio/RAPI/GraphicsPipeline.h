@@ -25,12 +25,12 @@ struct GS_API StencilOperations
 struct GS_API ShaderInfo
 {
 	ShaderType Type = ShaderType::VERTEX_SHADER;
-	char* ShaderCode = nullptr;
+	FString* ShaderCode = nullptr;
 };
 
 struct GS_API PipelineDescriptor
 {
-	Array<ShaderInfo, 8> Stages;
+	DArray<ShaderInfo> Stages = DArray<ShaderInfo>(8);
 	CullMode CullMode = CullMode::CULL_NONE;
 	bool DepthClampEnable = false;
 	bool BlendEnable = false;

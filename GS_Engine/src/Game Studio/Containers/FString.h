@@ -34,8 +34,9 @@ public:
 
 	FString& operator=(const char *);
 	FString& operator=(const FString & Other) = default;
-	FString& operator+(const char * Other);
-	FString& operator+(const FString & Other);
+	FString operator+(const char * _In) const;
+	FString& operator+=(const char* _In);
+	FString operator+(const FString & Other) const;
 
 	string_type operator[](size_t _Index) { return Data[_Index]; }
 	string_type operator[](size_t _Index) const { return Data[_Index]; }
@@ -73,6 +74,12 @@ public:
 
 private:
 	friend std::ostream& operator<<(std::ostream& _OS, FString& _String);
+	friend std::istream& operator>>(std::istream& _IS, FString& _String)
+	{
+		_IS >> _String.Data;
+		return _IS;
+	}
+
 	FVector<string_type> Data;
 
 	static FString MakeString(const char* _Text, ...);

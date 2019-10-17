@@ -3,6 +3,10 @@
 
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
+#include "Resources/StaticMeshResource.h"
+
+#include "Material.h"
+#include "Game/StaticMesh.h"
 
 Scene::Scene() : RenderComponents(10), Framebuffers(3)
 {
@@ -95,6 +99,11 @@ Scene::~Scene()
 		delete Element;
 	}
 
+	for (auto const& x : Pipelines)
+	{
+		delete x.second;
+	}
+
 	delete RP;
 	delete RC;
 }
@@ -127,7 +136,67 @@ void Scene::OnUpdate()
 void Scene::DrawMesh(const DrawInfo& _DrawInfo)
 {
 	RC->DrawIndexed(_DrawInfo);
+	GS_LOG_MESSAGE("Rendered!")
 	GS_DEBUG_ONLY(++DrawCalls)
+}
+
+GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat)
+{
+	GraphicsPipelineCreateInfo GPCI;
+
+	GPCI.VDescriptor = StaticMeshResource::GetVertexDescriptor();
+
+	ShaderInfo VSI;
+	ShaderInfo FSI;
+	_Mat->GetRenderingCode(VSI, FSI);
+
+	GPCI.PipelineDescriptor.Stages.push_back(VSI);
+	GPCI.PipelineDescriptor.Stages.push_back(FSI);
+	GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
+	GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
+	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
+	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::GREATER;
+
+	//GPCI.UniformLayout = UL;
+
+	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
+}
+
+Mesh* Scene::RegisterMesh(StaticMesh* _SM)
+{
+	Mesh* NewMesh = nullptr;
+
+	if (Meshes.find(_SM) == Meshes.end())
+	{
+		Model m = _SM->GetModel();
+
+		MeshCreateInfo MCI;
+		MCI.IndexCount = m.IndexCount;
+		MCI.VertexCount = m.VertexCount;
+		MCI.VertexData = m.VertexArray;
+		MCI.IndexData = m.IndexArray;
+		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
+		NewMesh = RenderDevice::Get()->CreateMesh(MCI);
+	}
+	else
+	{
+		NewMesh = Meshes[_SM];
+	}
+
+	return NewMesh;
+}
+
+GraphicsPipeline* Scene::RegisterMaterial(Material* _Mat)
+{
+	auto Res = Pipelines.find(Id(_Mat->GetMaterialName()).GetID());
+	if (Res != Pipelines.end())
+	{
+		return Pipelines[Res->first];
+	}
+
+	auto NP = CreatePipelineFromMaterial(_Mat);
+	Pipelines.emplace(Res->first, NP);
+	return NP;
 }
 
 void Scene::UpdateMatrices()
@@ -159,7 +228,9 @@ void Scene::UpdateRenderables()
 		if(e->IsResourceDirty())
 		{
 			CreateInstanceResourcesInfo CIRI{ e };
-			RenderableInstructionsMap.find(Id(e->GetRenderableTypeName()).GetID())->second.CreateInstanceResources(CIRI);
+			//RenderableInstructionsMap.find(Id(e->GetRenderableTypeName()).GetID())->second.CreateInstanceResources(CIRI);
+
+			e->GetRenderableInstructions().CreateInstanceResources(CIRI);
 
 			ResourcesManager.RegisterMesh(CIRI.StaticMesh);
 			ResourcesManager.RegisterMaterial(CIRI.Material);
@@ -169,6 +240,11 @@ void Scene::UpdateRenderables()
 
 void Scene::RenderRenderables()
 {
+	for(auto& e : RenderComponents)
+	{
+		DrawInstanceInfo DII{this, e };
+		e->GetRenderableInstructions().DrawInstance(DII);
+	}
 }
 
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)

@@ -9,11 +9,13 @@ Material::Material(const FString& _Name) : materialMaterialResource(GS::Applicat
 
 const char* Material::GetMaterialName() const
 {
-	return materialMaterialResource->GetData()->GetResourceName();
+	return materialMaterialResource->GetData()->GetResourceName().c_str();
 }
 
-void Material::GetRenderingCode(char** _VS, char** _FS) const
+void Material::GetRenderingCode(ShaderInfo& _VS, ShaderInfo& _FS) const
 {
-	*_VS = static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetVertexShaderCode();
-	*_FS = static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetFragmentShaderCode();
+	_VS.Type = ShaderType::VERTEX_SHADER;
+	_VS.ShaderCode = &static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetVertexShaderCode();
+	_FS.Type = ShaderType::FRAGMENT_SHADER;
+	_FS.ShaderCode = &static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetFragmentShaderCode();
 }

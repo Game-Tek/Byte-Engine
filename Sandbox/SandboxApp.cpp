@@ -9,6 +9,7 @@
 #include <Game Studio/Resources/MaterialResource.h>
 #include "Game Studio/Debug/Timer.h"
 #include "Game Studio/Math/GSM.hpp"
+#include <Game Studio/Resources/TextResource.h>
 
 class Framebuffer;
 
@@ -70,14 +71,14 @@ public:
 			_OS << FS;
 		};
 
-		ResourceManagerInstance->CreateResource<MaterialResource>(FString("M_Base.gsmat"), MatFun);
-		
+		ResourceManagerInstance->CreateResource<MaterialResource>(FString("M_Base"), MatFun);
+
 		Get()->SetActiveWindow(Win);
 		
 		MyWorld = new World();
 		ActiveWorld = MyWorld;
 		
-		GS_ASSERT(!MyWorld);
+		//GS_ASSERT(!MyWorld);
 
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
 

@@ -17,9 +17,9 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(std::ostream& _RP))
 {
 	FString resource_name(_ResourceName.FindLast('.') - 1, _ResourceName.c_str());
-	//FString path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/") + GetBaseResourcePath() + _ResourceName;
+	FString full_path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName;
 
-	std::ofstream Outfile("W:/Game Studio/bin/Sandbox/Debug-x64/resources/M_Base.gsmat");
+	std::ofstream Outfile(full_path.c_str(), std::ios::out | std::ios::binary);
 
 	if(!Outfile.is_open())
 	{
@@ -50,4 +50,24 @@ void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(std::ostr
 //}
 
 	Outfile.close();
+}
+
+void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const
+{
+	const auto FullPath = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName + _Resource->GetResourceTypeExtension();
+	const auto Result = _Resource->LoadResource(FullPath);
+
+	if (Result)
+	{
+		GS_LOG_SUCCESS("Loaded resource %s succesfully!", FullPath.c_str())
+	}
+	else
+	{
+		GS_LOG_WARNING("Failed to load %s resource of type %s! Loaded default resource.", FullPath.c_str(), _Resource->GetName())
+			_Resource->LoadFallbackResource(FullPath);
+	}
+
+	_Resource->IncrementReferences();
+	//this->ResourceMap.emplace(resource, resource);
+	this->R.emplace_back(_Resource);
 }

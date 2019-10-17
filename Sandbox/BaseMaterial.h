@@ -9,7 +9,8 @@ public:
 	{
 	}
 
-	[[nodiscard]] bool GetIsTwoSided() const override { return false; }
+	[[nodiscard]] bool GetIsTwoSided() const override { return true; }
 	[[nodiscard]] bool GetHasTransparency() const override { return false; }
 	DArray<MaterialParameter> GetMaterialDynamicParameters() override { return DArray<MaterialParameter>(); }
+	[[nodiscard]] const char* GetMaterialName() const override { return "Base"; }
 };

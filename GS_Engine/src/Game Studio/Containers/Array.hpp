@@ -5,15 +5,10 @@
 #include <initializer_list>
 
 template <typename T, size_t Size, typename LT = uint8>
-class GS_EXPORT_ONLY Array
+class Array
 {
 	char Data[Size * sizeof(T)];
 	LT Length = 0;
-
-	void CopyToData(const void* _Src)
-	{
-		memcpy(this->Data, _Src, this->Length * sizeof(T));
-	}
 
 	void CopyToData(const void* _Src, const LT _Length)
 	{
@@ -25,15 +20,16 @@ public:
 
 	Array(const std::initializer_list<T> _InitList) : Length(_InitList.size())
 	{
-		CopyToData(_InitList.begin());
+		CopyToData(_InitList.begin(), this->Length);
 	}
 
-	explicit Array(const LT _Length) : Length(_Length)
+	explicit Array(const LT _Length) : Data{}, Length(_Length)
 	{
 	}
 
-	Array(T _Data[], const LT _Length) : Data(_Data), Length(_Length)
+	Array(const LT _Length, T _Data[]) : Data(), Length(_Length)
 	{
+		CopyToData(_Data, Length);
 	}
 
 	T& operator[](const LT i)
@@ -62,7 +58,7 @@ public:
 	{
 		CopyToData(&_obj, 1);
 
-		return this->Length++;
+		return ++this->Length;
 	}
 
 	//LT push_back(const T* _obj)
@@ -72,13 +68,7 @@ public:
 	//	return this->Length++;
 	//}
 
-	[[nodiscard]] LT length() const
-	{
-		return this->Length;
-	}
+	[[nodiscard]] LT length() const	{ return this->Length; }
 
-	[[nodiscard]] LT capacity() const
-	{
-		return Size;
-	}
+	[[nodiscard]] LT capacity() const {	return Size; }
 };

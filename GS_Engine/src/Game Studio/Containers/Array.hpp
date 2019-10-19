@@ -7,7 +7,7 @@
 template <typename T, size_t Size, typename LT = uint8>
 class Array
 {
-	char Data[Size * sizeof(T)];
+	T Data[Size];
 	LT Length = 0;
 
 	void CopyToData(const void* _Src, const LT _Length)
@@ -23,7 +23,7 @@ public:
 		CopyToData(_InitList.begin(), this->Length);
 	}
 
-	explicit Array(const LT _Length) : Data{}, Length(_Length)
+	explicit Array(const LT _Length) : Length(_Length)
 	{
 	}
 
@@ -34,24 +34,24 @@ public:
 
 	T& operator[](const LT i)
 	{
-		return RCAST(T&, this->Data[i]);
+		return this->Data[i];
 	}
 
 	const T& operator[](const LT i) const
 	{
-		return RCAST(T&, *CCAST(char*, &this->Data[i]));
+		return this->Data[i];
 	}
 
 	void setLength(const LT _length) { Length = _length; }
 
 	const T* data()
 	{
-		return RCAST(T*, this->Data);
+		return this->Data;
 	}
 
 	[[nodiscard]] const T* data() const
 	{
-		return RCAST(T*, this->Data);
+		return this->Data;
 	}
 
 	LT push_back(const T& _obj)

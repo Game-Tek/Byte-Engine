@@ -1,5 +1,7 @@
 #include "Vulkan.h"
 
+#include "Native/VKDevice.h"
+
 #include "VulkanPipelines.h"
 
 #include "RAPI/Vulkan/Native/VKShaderModule.h"
@@ -136,25 +138,29 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI(_GPCI.PipelineDescriptor.Stages.length());
 	Array<VkShaderModuleCreateInfo, 8> VSMCI(_GPCI.PipelineDescriptor.Stages.length());
-	Array<DArray<uint32, uint32>, 8> SPIRV(_GPCI.PipelineDescriptor.Stages.length());
-	Array<VKShaderModule, 8> SMS(_GPCI.PipelineDescriptor.Stages.length());
+	DArray<DArray<uint32, uint32>> SPIRV(_GPCI.PipelineDescriptor.Stages.length());
+	DArray<VkShaderModule> SMS(_GPCI.PipelineDescriptor.Stages.length());
 
 	for (uint8 i = 0; i < _GPCI.PipelineDescriptor.Stages.length(); ++i)
 	{
 		PSSCI[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		PSSCI[i].pNext = nullptr;
+		PSSCI[i].flags = 0;
 		PSSCI[i].stage = ShaderTypeToVkShaderStageFlagBits(_GPCI.PipelineDescriptor.Stages[i].Type);
+		PSSCI[i].pName = "main";
 
 		//TODO: ask for shader name from outside
-		SPIRV[i] = VKShaderModule::CompileGLSLToSpirV(*_GPCI.PipelineDescriptor.Stages[i].ShaderCode, FString("Vertex Shader"), PSSCI[i].stage);
+		auto TT = VKShaderModule::CompileGLSLToSpirV(*_GPCI.PipelineDescriptor.Stages[i].ShaderCode, FString("Vertex Shader"), PSSCI[i].stage);
 
 		VSMCI[i].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-		VSMCI[i].codeSize = SPIRV[i].size();
-		VSMCI[i].pCode = SPIRV[i].data();
+		VSMCI[i].pNext = nullptr;
+		VSMCI[i].flags = 0;
+		VSMCI[i].codeSize = TT.lengthSize();
+		VSMCI[i].pCode = TT.data();
+		
+		auto T = vkCreateShaderModule(_Device->GetVkDevice(), &VSMCI[i], ALLOCATOR, &SMS[i]);
 
-		SMS[i] = VKShaderModule(VKShaderModuleCreator(_Device, &VSMCI[i]));
-
-		PSSCI[i].module = SMS[i].GetHandle();
-		PSSCI[i].pName = "main";
+		PSSCI[i].module = SMS[i];
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////

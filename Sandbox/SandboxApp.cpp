@@ -26,47 +26,11 @@ public:
 
 		auto MatFun = [](std::ostream& _OS)
 		{
-			FString VS(
-				R"(
-			#version 450
-
-			layout(push_constant) uniform PushConstant
-			{
-				mat4 ModelMatrix;
-			} callData;
-
-			layout(binding = 0)uniform inObjPos
-			{
-				vec4 AddPos;
-			} UBO;
-
-			layout(location = 0)in vec3 inPos;
-			layout(location = 1)in vec3 inTexCoords;
-
-			layout(location = 0)out vec4 tPos;
-
-			void main()
-			{
-				tPos = vec4(inPos, 1.0);// * callData.ModelMatrix;
-				gl_Position = tPos;
-			}
-			)");
+			FString VS("#version 450\n layout(location = 0)in vec3 inPos; layout(location = 1)in vec3 inTexCoords; layout(location = 0)out vec4 tPos; void main() { tPos = vec4(inPos, 1.0);// * callData.ModelMatrix; gl_Position = tPos; }");
 
 			_OS << VS;
 
-			FString FS(
-				R"(
-			#version 450
-
-			layout(location = 0)in vec4 tPos;
-			
-			layout(location = 0) out vec4 outColor;
-
-			void main()
-			{
-				outColor = vec4(0.3, 0.1, 0.5, 0);//tPos;
-			}
-			)");
+			FString FS("#version 450\n layout(location = 0)in vec4 tPos; layout(location = 0) out vec4 outColor; void main() {outColor = vec4(0.3, 0.1, 0.5, 0);//tPos;}");
 
 			_OS << FS;
 		};

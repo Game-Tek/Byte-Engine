@@ -148,7 +148,7 @@ void Scene::DrawMesh(const DrawInfo& _DrawInfo)
 	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
 }
 
-GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat)
+GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat) const
 {
 	GraphicsPipelineCreateInfo GPCI;
 
@@ -165,7 +165,8 @@ GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat)
 	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
 	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::GREATER;
 
-	//GPCI.UniformLayout = UL;
+	GPCI.RenderPass = RP;
+	GPCI.UniformLayout = UL;
 
 	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 }
@@ -259,9 +260,9 @@ void Scene::RenderRenderables()
 
 Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
 {
-	const float Tangent = GSM::Tangent(GSM::Clamp(FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
-	const float Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
-	const float Width = Height * AspectRatio;		//Half width of the near plane(point that says where it is placed).
+	const auto Tangent = GSM::Tangent(GSM::Clamp(FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
+	const auto Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
+	const auto Width = Height * AspectRatio;	//Half width of the near plane(point that says where it is placed).
 
 	return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);
 }

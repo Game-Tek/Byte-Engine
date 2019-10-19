@@ -73,7 +73,7 @@ protected:
 	//FVector<Mesh*> Meshes;
 	// MESHES
 
-	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat);
+	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
 	Mesh* RegisterMesh(StaticMesh* _SM);
 	GraphicsPipeline* RegisterMaterial(Material* _Mat);

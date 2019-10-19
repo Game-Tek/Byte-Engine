@@ -7,7 +7,7 @@
 #include <initializer_list>
 
 template <typename T, typename LT = uint8>
-class GS_EXPORT_ONLY DArray
+class DArray
 {
 	typedef T* iterator;
 	typedef const T* const_iterator;

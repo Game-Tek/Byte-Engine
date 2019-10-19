@@ -2,16 +2,15 @@
 
 #include "Core.h"
 
-template<typename A, typename B>
-class GS_API Pair
+template<typename _A, typename _B>
+struct Pair
 {
-public:
-	A First;
-	B Second;
+	_A First;
+	_B Second;
 
 	Pair() = default;
 
-	Pair(const A& _A, const B& _B) : First(_A), Second(_B)
+	Pair(const _A& _First, const _B& _Second) : First(_First), Second(_Second)
 	{
 	}
 };

@@ -95,7 +95,7 @@ Nanoseconds Clock::GetCurrentNanoseconds() const
 
 	QueryPerformanceCounter(&WinProcessorTicks);
 
-	return WinProcessorTicks.QuadPart / ProcessorFrequency;
+	return (WinProcessorTicks.QuadPart * 1000000000) / ProcessorFrequency;
 }
 
 uint16 Clock::GetYear()

@@ -2,11 +2,12 @@
 
 #include <fstream>
 
-using StreamType = std::fstream;
+using InStreamType  = std::ifstream;
+using OutStreamType = std::ofstream;
 
 void Archive::writeInternal(const size_t _Size, void* _Data) const
 {
-	auto stream_ = SCAST(StreamType*, stream);
+	auto stream_ = SCAST(OutStreamType*, stream);
 
 	//stream_->write(reinterpret_cast<char*>(const_cast<size_t*>(&_Size)), sizeof(size_t));
 	stream_->write(static_cast<char*>(_Data), _Size);
@@ -14,7 +15,7 @@ void Archive::writeInternal(const size_t _Size, void* _Data) const
 
 void Archive::readInternal(size_t _Size, void* _Data) const
 {
-	auto stream_ = SCAST(StreamType*, stream);
+	auto stream_ = SCAST(InStreamType*, stream);
 
 	stream_->read(static_cast<char*>(_Data), _Size);
 }

@@ -79,7 +79,7 @@ private:
 		return _Archive;
 	}
 	
-	friend Archive& operator>>(Archive& _Archive, FString& _String)
+	friend Archive& operator>>(Archive& _Archive, FString& _String) 
 	{
 		_Archive >> _String.Data;
 		return _Archive;

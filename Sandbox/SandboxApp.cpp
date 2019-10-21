@@ -52,6 +52,7 @@ public:
 	void OnUpdate() final override
 	{
 		MyWorld->OnUpdate();
+		GS_LOG_MESSAGE("FPS: %f", ClockInstance.GetFPS())
 	}
 
 	~Sandbox()

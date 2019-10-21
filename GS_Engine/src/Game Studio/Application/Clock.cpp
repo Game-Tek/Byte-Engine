@@ -10,8 +10,8 @@ Clock::Clock()
 	LARGE_INTEGER WinProcessorFrequency;
 	LARGE_INTEGER WinProcessorTicks;
 
-	QueryPerformanceFrequency(& WinProcessorFrequency);
-	QueryPerformanceCounter(& WinProcessorTicks);
+	QueryPerformanceFrequency(&WinProcessorFrequency);
+	QueryPerformanceCounter(&WinProcessorTicks);
 
 	ProcessorFrequency = WinProcessorFrequency.QuadPart;
 	StartSystemTicks = WinProcessorTicks.QuadPart;
@@ -26,32 +26,32 @@ Clock::~Clock()
 void Clock::OnUpdate()
 {
 #ifdef GS_PLATFORM_WIN
-	LARGE_INTEGER WinProcessorTicks;
+	LARGE_INTEGER win_processor_ticks;
 
-	QueryPerformanceCounter(&WinProcessorTicks);
+	QueryPerformanceCounter(&win_processor_ticks);
 
-	const uint_64 Delta = WinProcessorTicks.QuadPart - SystemTicks;
+	const uint_64 delta = win_processor_ticks.QuadPart - SystemTicks;
 
 
 	//Calculate delta time.
-	const float loc_DeltaTime = Delta / static_cast<float>(ProcessorFrequency);
+	const auto delta_time = delta / static_cast<double>(ProcessorFrequency);
 
 
 	//Check if loc_DeltaTime exceed 1 seconds.
 	//This is done to prevent possible problems caused by large time deltas,
 	//which could be caused by checking breakpoints during development
-	//or by ocassional freezes during normal gameplay.
+	//or by occasional freezes during normal game-play.
 
-	if (loc_DeltaTime > 1.0f)
+	if (delta_time > 1.0)
 	{
-		DeltaTime = 0.01666f;
+		DeltaTime = 0.0166666666;
 	}
 
 	//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
-	DeltaTime = loc_DeltaTime;
+	DeltaTime = delta_time;
 
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
-	SystemTicks = WinProcessorTicks.QuadPart;
+	SystemTicks = win_processor_ticks.QuadPart;
 
 	//Update elapsed time counter.
 	ElapsedTime += DeltaTime;
@@ -67,12 +67,12 @@ void Clock::OnUpdate()
 
 //CLOCK FUNCTIONALITY GETTERS
 
-float Clock::GetDeltaTime() const
+double Clock::GetDeltaTime() const
 {
 	return DeltaTime;
 }
 
-float Clock::GetGameDeltaTime() const
+double Clock::GetGameDeltaTime() const
 {
 	return DeltaTime * TimeDivisor * ShouldUpdateGameTime;
 }

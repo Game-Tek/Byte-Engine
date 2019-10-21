@@ -14,33 +14,11 @@
 
 class ResourceManager : public Object
 {
-public:
-	class ResourcePush
-	{
-		FVector<SaveResourceElementDescriptor> FileElements;
-
-	public:
-		ResourcePush() : FileElements(5)
-		{
-		}
-
-		INLINE ResourcePush& operator+=(const SaveResourceElementDescriptor& _FED)
-		{
-			FileElements.push_back(_FED);
-			return *this;
-		}
-
-		const SaveResourceElementDescriptor& operator[](uint64 _I) const { return FileElements[_I]; }
-
-		[[nodiscard]] uint64 GetElementCount() const { return FileElements.length(); }
-	};
-
-private:
 	//mutable std::unordered_map<Resource*, Resource*> ResourceMap;
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _ResourceName, void (*f)(Archive& _OS));
+	void SaveFile(FString& _ResourceName, FString& _ResourcePath, void (*f)(Archive& _OS));
 
 	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const;
 
@@ -72,12 +50,12 @@ public:
 	}
 
 	template<class T>
-	void CreateResource(const FString& _Path, void (*f)(Archive& _OS))
+	void CreateResource(const FString& _Name, void (*f)(Archive& _OS))
 	{
 		Resource* resource = new T();
-		FString path = _Path + resource->GetResourceTypeExtension();
-		SaveFile(path, f);
-		GetResourceInternal(_Path, resource);
+		FString path = _Name + resource->GetResourceTypeExtension();
+		SaveFile(const_cast<FString&>(_Name), path, f);
+		GetResourceInternal(_Name, resource);
 	}
 
 	void ReleaseResource(Resource* _Resource) const;

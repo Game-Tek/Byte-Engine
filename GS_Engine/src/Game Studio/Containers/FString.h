@@ -73,11 +73,16 @@ public:
 	static size_t StringLength(const char * In);
 
 private:
-	friend std::ostream& operator<<(std::ostream& _OS, FString& _String);
-	friend std::istream& operator>>(std::istream& _IS, FString& _String)
+	friend Archive& operator<<(Archive& _Archive, FString& _String)
 	{
-		_IS >> _String.Data;
-		return _IS;
+		_Archive << _String.Data;
+		return _Archive;
+	}
+	
+	friend Archive& operator>>(Archive& _Archive, FString& _String)
+	{
+		_Archive >> _String.Data;
+		return _Archive;
 	}
 
 	FVector<string_type> Data;

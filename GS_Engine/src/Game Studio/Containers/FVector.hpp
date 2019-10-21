@@ -5,7 +5,8 @@
 #include <cstring>
 #include <type_traits>
 #include <assert.h>
-#include <iostream>
+//#include <iostream>
+#include "Resources/Archive.h"
 
 template <typename T, typename LT = size_t>
 class FVector
@@ -52,29 +53,29 @@ public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
 
-	friend std::ostream& operator<<(std::ostream& _OS, FVector<T>& _FV)
+	friend Archive& operator<<(Archive& _Archive, FVector<T>& _FV)
 	{
-		_OS.write(reinterpret_cast<char*>(&_FV.Capacity), sizeof(size_t));
-		_OS.write(reinterpret_cast<char*>(&_FV.Length), sizeof(size_t));
+		_Archive.Write(_FV.Capacity);
+		_Archive.Write(_FV.Length);
 
-		_OS.write(static_cast<char*>(_FV.Data), _FV.Capacity);
+		_Archive.Write(_FV.Capacity, _FV.Data);
 
-		return _OS;
+		return _Archive;
 	}
 
-	friend std::istream& operator>>(std::istream& _IS, FVector<T>& _FV)
+	friend Archive& operator>>(Archive& _Archive, FVector<T>& _FV)
 	{
 		size_t new_capacity = 0, new_length = 0;
-		_IS.read(reinterpret_cast<char*>(&new_capacity), sizeof(size_t));
-		_IS.read(reinterpret_cast<char*>(&new_length), sizeof(size_t));
+		_Archive.Read(&new_capacity);
+		_Archive.Read(&new_length);
 
 		_FV.reallocIfExceeds(new_length);
 
-		_IS.read(reinterpret_cast<char*>(_FV.Data), new_capacity);
+		_Archive.Read(new_capacity, _FV.Data);
 
 		_FV.Length = new_length;
 
-		return _IS;
+		return _Archive;
 	}
 
 	//Constructs a new FVector.

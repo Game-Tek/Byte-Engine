@@ -14,7 +14,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
-void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(std::ostream& _RP))
+void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(Archive& _RP))
 {
 	FString resource_name(_ResourceName.FindLast('.') - 1, _ResourceName.c_str());
 	FString full_path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName;
@@ -28,10 +28,12 @@ void ResourceManager::SaveFile(const FString& _ResourceName, void(* f)(std::ostr
 		return;
 	}
 
-	Outfile << resource_name;
+	Archive out_archive(&Outfile);
+	
+	out_archive << resource_name;
 
 	//ResourcePush RP;
-	f(Outfile);
+	f(out_archive);
 
 
 //ResourceHeaderType HeaderCount = RP.GetElementCount() + 1 /*File name segment*/;

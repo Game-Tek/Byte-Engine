@@ -40,8 +40,8 @@ public:
 		[[nodiscard]] FString& GetVertexShaderCode() { return VertexShaderCode; }
 		[[nodiscard]] FString& GetFragmentShaderCode() { return FragmentShaderCode; }
 
-		friend std::ostream& operator<<(std::ostream& _O, MaterialData& _MD);
-		friend std::istream& operator>>(std::istream& _I, MaterialData& _MD);
+		friend Archive& operator<<(Archive& _O, MaterialData& _MD);
+		friend Archive& operator>>(Archive& _I, MaterialData& _MD);
 	};
 
 	MaterialResource() = default;

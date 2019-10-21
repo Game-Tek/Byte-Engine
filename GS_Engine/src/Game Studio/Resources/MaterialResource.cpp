@@ -4,13 +4,13 @@
 #include <string>
 #include "Debug/Logger.h"
 
-std::istream& operator>>(std::istream& _I, MaterialResource::MaterialData& _MD)
+Archive& operator>>(Archive& _I, MaterialResource::MaterialData& _MD)
 {
 	_I >> _MD.ResourceName >> _MD.VertexShaderCode >> _MD.FragmentShaderCode;
 	return _I;
 }
 
-std::ostream& operator<<(std::ostream& _O, MaterialResource::MaterialData& _MD)
+Archive& operator<<(Archive& _O, MaterialResource::MaterialData& _MD)
 {
 	_O << _MD.ResourceName << _MD.VertexShaderCode << _MD.FragmentShaderCode;
 	return _O;
@@ -27,9 +27,11 @@ bool MaterialResource::LoadResource(const FString& _Path)
 		uint64 FileLength = Input.tellg();		//Get file length
 		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
 
+		Archive in_archive(&Input);
+		
 		Data = new MaterialData;	//Intantiate resource data
 
-		Input >> *SCAST(MaterialData*, Data);
+		in_archive >> *SCAST(MaterialData*, Data);
 
 		//size_t HeaderCount = 0;
 		//Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.

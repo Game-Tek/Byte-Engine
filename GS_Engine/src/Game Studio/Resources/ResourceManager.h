@@ -40,7 +40,7 @@ private:
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _ResourceName, void (*f)(std::ostream& _OS));
+	void SaveFile(const FString& _ResourceName, void (*f)(Archive& _OS));
 
 	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const;
 
@@ -72,7 +72,7 @@ public:
 	}
 
 	template<class T>
-	void CreateResource(const FString& _Path, void (*f)(std::ostream& _OS))
+	void CreateResource(const FString& _Path, void (*f)(Archive& _OS))
 	{
 		Resource* resource = new T();
 		FString path = _Path + resource->GetResourceTypeExtension();

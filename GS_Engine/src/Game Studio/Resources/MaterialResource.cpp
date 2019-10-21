@@ -31,13 +31,6 @@ bool MaterialResource::LoadResource(const FString& _Path)
 
 		Input >> *SCAST(MaterialData*, Data);
 
-		GS_LOG_MESSAGE(SCAST(MaterialData*, Data)->GetVertexShaderCode().c_str())
-			GS_LOG_MESSAGE("VS Length: %d", SCAST(MaterialData*, Data)->GetVertexShaderCode().GetLength())
-
-		auto T = &SCAST(MaterialData*, Data)->GetVertexShaderCode();
-
-		GS_LOG_MESSAGE("%d", T->IsEmpty());
-
 		//size_t HeaderCount = 0;
 		//Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.
 		//

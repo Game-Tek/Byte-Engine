@@ -26,7 +26,7 @@ public:
 
 		auto MatFun = [](std::ostream& _OS)
 		{
-			FString VS("#version 450\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos, 1.0) + vec4(0, 0, 50, 0);// * callData.ModelMatrix;\ngl_Position = tPos;\n}");
+			FString VS("#version 450\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos, 1.0) + vec4(0, 0, -100, 0);// * callData.ModelMatrix;\ngl_Position = tPos;\n}");
 
 			_OS << VS;
 

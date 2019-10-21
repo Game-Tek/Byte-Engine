@@ -161,6 +161,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 		auto T = vkCreateShaderModule(_Device->GetVkDevice(), &VSMCI[i], ALLOCATOR, &SMS[i]);
 
 		PSSCI[i].module = SMS[i];
+		PSSCI[i].pSpecializationInfo = nullptr;
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////

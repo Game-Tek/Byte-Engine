@@ -6,6 +6,11 @@
 
 class WorldObject;
 
+struct ComponentCreateInfo
+{
+	WorldObject* Owner = nullptr;
+};
+
 class GS_API Component : public Object
 {
 protected:

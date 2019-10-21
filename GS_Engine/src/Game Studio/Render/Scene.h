@@ -42,18 +42,18 @@ public:
 	void SetCamera(Camera * NewCamera) const { ActiveCamera = NewCamera; }
 
 	template<class T>
-	T* CreateRenderComponent(WorldObject* _Owner) const
+	T* CreateRenderComponent(RenderComponentCreateInfo* _RCCI)
 	{
 		RenderComponent* NRC = new T();
-		NRC->SetOwner(_Owner);
-		RenderComponents.emplace_back(NRC);
-		//this->RegisterRenderComponent(NRC);
+		NRC->SetOwner(_RCCI->Owner);
+		this->RegisterRenderComponent(NRC, _RCCI);
 		return static_cast<T*>(NRC);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
-	void DrawMesh(const DrawInfo& _DrawInfo);
+	void DrawMesh(const DrawInfo& _DrawInfo, Mesh* _Mesh);
+	Mesh* RegisterMesh(StaticMesh* _SM);
 protected:
 	//Used to count the amount of draw calls in a frame.
 	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
@@ -75,7 +75,6 @@ protected:
 
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
-	Mesh* RegisterMesh(StaticMesh* _SM);
 	GraphicsPipeline* RegisterMaterial(Material* _Mat);
 	/* ---- RAPI Resources ---- */
 
@@ -100,7 +99,7 @@ protected:
 
 	void UpdateMatrices();
 
-	void RegisterRenderComponent(RenderComponent* _RC) const;
+	void RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI);
 
 	void UpdateRenderables();
 	void RenderRenderables();

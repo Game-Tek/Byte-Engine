@@ -325,11 +325,5 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
-    <None Include="src\Game Studio\GBufferVS.vshader">
-      <Filter>Engine\Render\Shaders\GLSL Code</Filter>
-    </None>
-    <None Include="src\Game Studio\GBufferFS.fshader">
-      <Filter>Engine\Render\Shaders\GLSL Code</Filter>
-    </None>
   </ItemGroup>
 </Project>

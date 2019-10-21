@@ -140,8 +140,9 @@ void Scene::OnUpdate()
 	RC->Present();
 }
 
-void Scene::DrawMesh(const DrawInfo& _DrawInfo)
+void Scene::DrawMesh(const DrawInfo& _DrawInfo, Mesh* _Mesh)
 {
+	RC->BindMesh(_Mesh);
 	RC->DrawIndexed(_DrawInfo);
 	GS_LOG_MESSAGE("Rendered!")
 	GS_DEBUG_ONLY(++DrawCalls)
@@ -204,7 +205,7 @@ GraphicsPipeline* Scene::RegisterMaterial(Material* _Mat)
 	}
 
 	auto NP = CreatePipelineFromMaterial(_Mat);
-	Pipelines.emplace(Res->first, NP);
+	Pipelines.insert({ Id(_Mat->GetMaterialName()).GetID(), NP });
 	return NP;
 }
 
@@ -225,9 +226,16 @@ void Scene::UpdateMatrices()
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }
 
-void Scene::RegisterRenderComponent(RenderComponent* _RC) const
+void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
 	auto RI = _RC->GetRenderableInstructions();
+	
+	CreateInstanceResourcesInfo CIRI{ _RC, this };
+	CIRI.RenderComponentCreateInfo = _RCCI;
+	RI.CreateInstanceResources(CIRI);
+
+	RegisterMaterial(CIRI.Material);
+	
 	RenderableInstructionsMap.try_emplace(Id(_RC->GetRenderableTypeName()).GetID(), _RC->GetRenderableInstructions());
 	RenderComponents.emplace_back(_RC);
 }
@@ -236,21 +244,13 @@ void Scene::UpdateRenderables()
 {
 	for (auto& e : RenderComponents)
 	{
-		if(e->IsResourceDirty())
-		{
-			CreateInstanceResourcesInfo CIRI{ e };
-			//RenderableInstructionsMap.find(Id(e->GetRenderableTypeName()).GetID())->second.CreateInstanceResources(CIRI);
-
-			e->GetRenderableInstructions().CreateInstanceResources(CIRI);
-
-			RegisterMesh(CIRI.StaticMesh);
-			RegisterMaterial(CIRI.Material);
-		}
 	}
 }
 
 void Scene::RenderRenderables()
 {
+	RC->BindGraphicsPipeline(Pipelines.begin()->second);
+	
 	for(auto& e : RenderComponents)
 	{
 		DrawInstanceInfo DII{this, e };

@@ -23,8 +23,10 @@ public:
 		Material = new BaseMaterial(FString("M_Base"));
 		MyStaticMesh.SetMaterial(Material);
 
- 		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(this);
-		MeshRender->SetStaticMesh(&MyStaticMesh);
+		StaticMeshRenderComponentCreateInfo SMRCCI;
+		SMRCCI.StaticMesh = &MyStaticMesh;
+		SMRCCI.Owner = this;
+ 		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
 
 		GetWorld()->GetScene().SetCamera(&MyCamera);
 	}

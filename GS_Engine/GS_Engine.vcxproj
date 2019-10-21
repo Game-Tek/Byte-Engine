@@ -296,12 +296,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
-    <None Include="src\Game Studio\GBufferFS.fshader" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="src\Game Studio\GBufferVS.vshader">
-      <FileType>Document</FileType>
-    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

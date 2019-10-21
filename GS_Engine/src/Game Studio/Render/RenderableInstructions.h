@@ -8,10 +8,30 @@ class Scene;
 class Material;
 class StaticMesh;
 
+struct RenderComponentCreateInfo;
+
+
+/**
+ * \brief Holds information to specify how to create an instance of a render component.
+ */
 struct CreateInstanceResourcesInfo
 {
+	
+	/**
+	 * \brief Pointer to the render component being created.
+	 */
 	RenderComponent* const RenderComponent = nullptr;
+	
+	/**
+	 * \brief Pointer to the scene creating the render component.
+	 */
+	Scene* Scene = nullptr;
 
+	/**
+	 * \brief Pointer to a RenderComponentCreateInfo which contains information specified during construction for how to instantiate this RenderComponent.
+	 */
+	RenderComponentCreateInfo* RenderComponentCreateInfo = nullptr;
+	
 	StaticMesh* StaticMesh = nullptr;
 	Material* Material = nullptr;
 };
@@ -32,9 +52,21 @@ struct BindTypeResourcesInfo
 	Scene* const Scene = nullptr;
 };
 
+
+/**
+ * \brief Holds information to specify the render component to be rendered. 
+ */
 struct DrawInstanceInfo
 {
+	
+	/**
+	 * \brief Pointer to the scene rendering the render component.
+	 */
 	Scene* Scene = nullptr;
+	
+	/**
+	 * \brief Pointer to the render component to be rendered.
+	 */
 	RenderComponent* RenderComponent = nullptr;
 };
 

@@ -6,6 +6,10 @@
 
 #include "RenderableInstructions.h"
 
+struct RenderComponentCreateInfo : ComponentCreateInfo
+{
+};
+
 class GS_API RenderComponent : public Component
 {
 protected:
@@ -30,6 +34,6 @@ public:
 
 	void FlagRenderDirty() { isRenderDirty = true; }
 	[[nodiscard]] bool IsRenderDirty() const { return isRenderDirty; }
-	void FlagResourceDirty() { isResourceDirty = true; }
+	void FlagResourceDirty(bool _State) { isResourceDirty = _State; }
 	[[nodiscard]] bool IsResourceDirty() const { return isResourceDirty; }
 };

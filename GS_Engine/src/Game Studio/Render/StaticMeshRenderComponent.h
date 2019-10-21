@@ -6,6 +6,11 @@
 
 #include "Game/StaticMesh.h"
 
+struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
+{
+	StaticMesh* StaticMesh = nullptr;
+};
+
 class GS_API StaticMeshRenderComponent : public RenderComponent
 {
 	StaticMesh* staticMesh = nullptr;
@@ -21,7 +26,6 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
 	[[nodiscard]] RenderableInstructions GetRenderableInstructions() const override;
 	[[nodiscard]] const char* GetRenderableTypeName() const override { return "StaticMesh"; }
-
-	void SetStaticMesh(StaticMesh* _NewStaticMesh) { staticMesh = _NewStaticMesh; FlagResourceDirty(); }
+	
 	[[nodiscard]] StaticMesh* GetStaticMesh() const { return staticMesh; }
 };

@@ -6,8 +6,10 @@
 
 void StaticMeshRenderComponent::CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI)
 {
-	_CIRI.StaticMesh = SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh;
-	_CIRI.Material = SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh->GetMaterial();
+	_CIRI.Material = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh->GetMaterial();
+
+	SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh;
+	SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->renderMesh = _CIRI.Scene->RegisterMesh(SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh);
 }
 
 void StaticMeshRenderComponent::BuildTypeInstanceSortData(BuildTypeInstanceSortDataInfo& _BTISDI)
@@ -27,7 +29,7 @@ void StaticMeshRenderComponent::DrawInstance(DrawInstanceInfo& _DII)
 	DrawInfo DI;
 	DI.IndexCount = SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->staticMesh->GetModel().IndexCount;
 	DI.InstanceCount = 1;
-	_DII.Scene->DrawMesh(DI);
+	_DII.Scene->DrawMesh(DI, SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->renderMesh);
 }
 
 RenderableInstructions StaticMeshRenderComponent::GetRenderableInstructions() const

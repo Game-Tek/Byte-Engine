@@ -56,6 +56,6 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "World"; }
 
-	[[nodiscard]] const Scene& GetScene() const { return WorldScene; }
+	[[nodiscard]] Scene& GetScene() { return WorldScene; }
 
 };

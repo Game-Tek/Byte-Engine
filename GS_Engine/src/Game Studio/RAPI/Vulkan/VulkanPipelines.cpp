@@ -104,7 +104,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 
 	//  COLOR BLEND STATE
-	VkPipelineColorBlendAttachmentState ColorBlendAttachment;
+	VkPipelineColorBlendAttachmentState ColorBlendAttachment = {};
 	ColorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	ColorBlendAttachment.blendEnable = _GPCI.PipelineDescriptor.BlendEnable;
 	ColorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;

@@ -64,9 +64,11 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
 	ULCI.PipelineUniformSets.setLength(1);
+	
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(Matrix4);
 	ULCI.PushConstant = &MyPushConstant;
+	
 	UL = RenderDevice::Get()->CreateUniformLayout(ULCI);
 
 	UniformBufferCreateInfo UBCI;
@@ -108,6 +110,8 @@ Scene::~Scene()
 	delete RC;
 }
 
+static Vector4 vec;
+
 void Scene::OnUpdate()
 {
 	/*Update debug vars*/
@@ -116,19 +120,35 @@ void Scene::OnUpdate()
 	GS_DEBUG_ONLY(PipelineSwitches = 0)
 	GS_DEBUG_ONLY(DrawnComponents = 0)
 	/*Update debug vars*/
+	
+	UniformBufferUpdateInfo uniform_buffer_update_info;
+	uniform_buffer_update_info.Data = &vec;
+	uniform_buffer_update_info.Size = sizeof(Vector4);
+	UB->UpdateBuffer(uniform_buffer_update_info);
 
+	vec.X += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::D) ? 0.5 : 0;
+	vec.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::A) ? 0.5 : 0;
+	vec.Y += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::SpaceBar) ? 0.5 : 0;
+	vec.Y -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::LShift) ? 0.5 : 0;
+	vec.Z += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::W) ? 0.5 : 0;
+	vec.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::S) ? 0.5 : 0;
+	
+	
 	UpdateMatrices();
 
-	UpdateRenderables();
-
-	RC->BeginRecording();
-
+	
+	RC->BeginRecording();	
+	
 	RenderPassBeginInfo RPBI;
 	RPBI.RenderPass = RP;
 	RPBI.Framebuffers = Framebuffers.data();
 
 	RC->BeginRenderPass(RPBI);
 
+	RC->BindUniformLayout(UL);
+	
+	UpdateRenderables();
+	
 	RenderRenderables();
 
 	RC->EndRenderPass(RP);

@@ -7,7 +7,7 @@ enum class KeyState : uint8
 	PRESSED, RELEASED, NONE
 };
 
-#define MAX_KEYBOARD_KEYS 70
+#define MAX_KEYBOARD_KEYS 71
 
 enum class KeyboardKeys : uint8
 {
@@ -48,8 +48,8 @@ enum class KeyboardKeys : uint8
 	Keyboard7,
 	Keyboard8,
 	Keyboard9,
-	
-	
+
+
 	Enter,
 
 	Tab,
@@ -65,12 +65,13 @@ enum class KeyboardKeys : uint8
 	Alt,
 	AltGr,
 
-
 	UpArrow,
 	RightArrow,
 	DownArrow,
 	LeftArrow,
 
+	SpaceBar,
+	
 	Numpad0,
 	Numpad1,
 	Numpad2,

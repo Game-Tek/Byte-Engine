@@ -181,5 +181,5 @@ void VulkanUniformLayout::UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI)
 		}
 	}
 
-	vkUpdateDescriptorSets(SCAST(VulkanRenderDevice*, RenderDevice::Get())->GetVKDevice().GetVkDevice(), WriteDescriptors.length(), WriteDescriptors.data(), 0, nullptr);
+	vkUpdateDescriptorSets(SCAST(VulkanRenderDevice*, RenderDevice::Get())->GetVKDevice().GetVkDevice(), WriteDescriptors.capacity(), WriteDescriptors.data(), 0, nullptr);
 }

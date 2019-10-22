@@ -224,6 +224,7 @@ int32 WindowsWindow::KeyboardKeysToGLFWKeys(KeyboardKeys _IE)
 	case KeyboardKeys::RightArrow:		return GLFW_KEY_RIGHT;
 	case KeyboardKeys::DownArrow:		return GLFW_KEY_DOWN;
 	case KeyboardKeys::LeftArrow:		return GLFW_KEY_LEFT;
+	case KeyboardKeys::SpaceBar:		return GLFW_KEY_SPACE;
 	case KeyboardKeys::Numpad0:			return GLFW_KEY_KP_0;
 	case KeyboardKeys::Numpad1:			return GLFW_KEY_KP_1;
 	case KeyboardKeys::Numpad2:			return GLFW_KEY_KP_2;

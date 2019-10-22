@@ -44,11 +44,13 @@ void Clock::OnUpdate()
 
 	if (delta_time > 1.0)
 	{
-		DeltaTime = 0.0166666666;
+		//Leave delta time as is. Assume last frame's delta time.
 	}
-
-	//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
-	DeltaTime = delta_time;
+	else
+	{
+		//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
+		DeltaTime = delta_time;
+	}
 
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	SystemTicks = win_processor_ticks.QuadPart;

@@ -26,11 +26,11 @@ public:
 
 		auto MatFun = [](Archive& _OS)
 		{
-			FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nvec4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos, 1.0) + vec4(0, 0, -100, 0);\ngl_Position = tPos;\n}");
+			FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nvec4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos.x, -inPos.y, inPos.z - 10, 1.0);\ngl_Position = tPos;\n}");
 
 			_OS << VS;
 
-			FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(0.3, 0.1, 0.5, 0);//tPos;\n}");
+			FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);//tPos;\n}");
 
 			_OS << FS;
 		};

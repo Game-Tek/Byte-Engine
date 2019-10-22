@@ -26,7 +26,7 @@ public:
 
 		auto MatFun = [](Archive& _OS)
 		{
-			FString VS("#version 450\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos, 1.0) + vec4(0, 0, -100, 0);// * callData.ModelMatrix;\ngl_Position = tPos;\n}");
+			FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nvec4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = vec4(inPos, 1.0) + vec4(0, 0, -100, 0);\ngl_Position = tPos;\n}");
 
 			_OS << VS;
 
@@ -49,7 +49,7 @@ public:
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}
 
-	void OnUpdate() final override
+	void OnUpdate() override
 	{
 		MyWorld->OnUpdate();
 		GS_LOG_MESSAGE("FPS: %f", ClockInstance.GetFPS())

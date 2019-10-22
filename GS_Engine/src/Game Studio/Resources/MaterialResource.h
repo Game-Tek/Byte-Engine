@@ -2,8 +2,6 @@
 
 #include "Resource.h"
 
-#include <fstream>
-
 /*
  * Vertex Shader Parameter Collection
  * Vertex Shader Code

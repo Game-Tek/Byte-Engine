@@ -76,7 +76,7 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	UniformLayoutUpdateInfo ULUI;
 	ULUI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
 	ULUI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
-	ULUI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
+	ULUI.PipelineUniformSets[0].UniformSetUniformsCount = 0;
 	ULUI.PipelineUniformSets[0].UniformData = UB;
 	ULUI.PipelineUniformSets.setLength(1);
 	UL->UpdateUniformSet(ULUI);

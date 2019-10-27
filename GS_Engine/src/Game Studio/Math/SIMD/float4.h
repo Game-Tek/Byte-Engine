@@ -36,8 +36,8 @@ public:
 	void SetAligned(const float* _Data) { Data = _mm_load_ps(_Data); }
 	void SetUnaligned(const float* _Data) { Data = _mm_loadu_ps(_Data); }
 
-	//Assumes aligned data.
-	float4& operator=(const float* _Data) { Data = _mm_load_ps(_Data); return *this; }
+	//Assumes unaligned data.
+	float4& operator=(const float* _Data) { Data = _mm_loadu_ps(_Data); return *this; }
 
 	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into unaligned memory.
 	void CopyToUnalignedData(float* _Dst) const

@@ -8,7 +8,7 @@
 #include "Material.h"
 #include "Game/StaticMesh.h"
 
-Scene::Scene() : RenderComponents(10), Framebuffers(3)
+Scene::Scene() : RenderComponents(10), Framebuffers(3), ViewMatrix(1), ProjectionMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -107,7 +107,7 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	gpci.VDescriptor = &ScreenQuad::VD;
 	gpci.PipelineDescriptor.BlendEnable = false;
 	
-	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = vec4(inPos, 1.0) * inData.Pos;\n}");
+	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::VERTEX_SHADER, &VS });
 	
 	FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
@@ -158,12 +158,12 @@ void Scene::OnUpdate()
 
 	RC->BindUniformLayout(UL);
 
-	//BindPipeline(FullScreenRenderingPipeline);
-	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
+	BindPipeline(FullScreenRenderingPipeline);
+	DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 	
-	UpdateRenderables();
-	
-	RenderRenderables();
+	///UpdateRenderables();
+	///
+	///RenderRenderables();
 
 	RC->EndRenderPass(RP);
 
@@ -305,7 +305,7 @@ Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, 
 
 	return Matrix4( 1 / (AspectRatio * Tangent), 0, 0, 0,
 					0, 1 / Tangent, 0, 0,
-					0, 0, Far / (Near - Far), 1, 
+					0, 0, Far / (Near - Far), -1, 
 					0, 0, -(Far * Near) / (Far - Near), 0);
 	
 	//return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);

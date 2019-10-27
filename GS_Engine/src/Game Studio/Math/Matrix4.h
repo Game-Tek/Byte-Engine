@@ -14,10 +14,14 @@
 class GS_API Matrix4
 {
 public:
-	Matrix4() : Array{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+	Matrix4() : Array{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 	{
 	}
 
+	explicit Matrix4(const float _A) : Array{ _A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A }
+	{
+	}
+	
 	Matrix4(const float A, const float B, const float C, const float D, const float E, const float F, const float G, const float H, const float I, const float J, const float K, const float L, const float M, const float N, const float O, const float P) :
 		Array{ A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P }
 	{
@@ -35,7 +39,7 @@ public:
 		return;
 	}
 
-	const float * GetData() const { return Array; }
+	[[nodiscard]] const float * GetData() const { return Array; }
 
 	Matrix4 operator+ (const float Other) const
 	{

@@ -4,7 +4,7 @@
 
 Vector4 Matrix4::operator*(const Vector4& Other) const
 {
-	Vector4 Result;
+	alignas(16) Vector4 Result;
 
 	const float4 P1(float4(&Other.X) * float4(&Array[0]));
 	const float4 P2(float4(&Other.Y) * float4(&Array[4]));
@@ -13,7 +13,7 @@ Vector4 Matrix4::operator*(const Vector4& Other) const
 
 	const float4 res = P1 + P2 + P3 + P4;
 
-	res.CopyToUnalignedData(&Result.X);
+	res.CopyToAlignedData(&Result.X);
 
 	return Result;
 }
@@ -52,7 +52,7 @@ Matrix4 Matrix4::operator*(const Matrix4& Other) const
 Matrix4& Matrix4::operator*=(const float Other)
 {
 	float Input = Other;
-	const __m512 InputVector = _mm512_load_ps(&Input);
+	const __m512 InputVector = _mm512_set1_ps(Input);
 	const __m512 MatrixVector = _mm512_load_ps(Array);
 
 	const __m512 Result = _mm512_mul_ps(InputVector, MatrixVector);

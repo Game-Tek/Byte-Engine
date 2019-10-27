@@ -72,7 +72,7 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 	UL = RenderDevice::Get()->CreateUniformLayout(ULCI);
 
 	UniformBufferCreateInfo UBCI;
-	UBCI.Size = sizeof(Vector4);
+	UBCI.Size = sizeof(Matrix4);
 	UB = RenderDevice::Get()->CreateUniformBuffer(UBCI);
 
 	UniformLayoutUpdateInfo ULUI;
@@ -92,6 +92,28 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3)
 		FBCI.Images = DArray<Image*>(&SCImages[i], 1);
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
+
+	MeshCreateInfo MCI;
+	MCI.IndexCount = ScreenQuad::IndexCount;
+	MCI.VertexCount = ScreenQuad::VertexCount;
+	MCI.VertexData = ScreenQuad::Vertices;
+	MCI.IndexData = ScreenQuad::Indices;
+	MCI.VertexLayout = &ScreenQuad::VD;
+	FullScreenQuad = RenderDevice::Get()->CreateMesh(MCI);
+
+	GraphicsPipelineCreateInfo gpci;
+	gpci.RenderPass = RP;
+	gpci.UniformLayout = UL;
+	gpci.VDescriptor = &ScreenQuad::VD;
+	gpci.PipelineDescriptor.BlendEnable = false;
+	
+	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = vec4(inPos, 1.0) * inData.Pos;\n}");
+	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::VERTEX_SHADER, &VS });
+	
+	FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
+	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::FRAGMENT_SHADER, &FS });
+
+	FullScreenRenderingPipeline = RenderDevice::Get()->CreateGraphicsPipeline(gpci);
 }
 
 Scene::~Scene()
@@ -110,8 +132,6 @@ Scene::~Scene()
 	delete RC;
 }
 
-static Vector4 vec;
-
 void Scene::OnUpdate()
 {
 	/*Update debug vars*/
@@ -121,22 +141,13 @@ void Scene::OnUpdate()
 	GS_DEBUG_ONLY(DrawnComponents = 0)
 	/*Update debug vars*/
 	
+	UpdateMatrices();
+	
 	UniformBufferUpdateInfo uniform_buffer_update_info;
-	uniform_buffer_update_info.Data = &vec;
-	uniform_buffer_update_info.Size = sizeof(Vector4);
+	uniform_buffer_update_info.Data = &ViewProjectionMatrix;
+	uniform_buffer_update_info.Size = sizeof(Matrix4);
 	UB->UpdateBuffer(uniform_buffer_update_info);
 
-	vec.X += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::D) ? 0.5 : 0;
-	vec.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::A) ? 0.5 : 0;
-	vec.Y += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::SpaceBar) ? 0.5 : 0;
-	vec.Y -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::LShift) ? 0.5 : 0;
-	vec.Z += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::W) ? 0.5 : 0;
-	vec.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::S) ? 0.5 : 0;
-	
-	
-	UpdateMatrices();
-
-	
 	RC->BeginRecording();	
 	
 	RenderPassBeginInfo RPBI;
@@ -146,6 +157,9 @@ void Scene::OnUpdate()
 	RC->BeginRenderPass(RPBI);
 
 	RC->BindUniformLayout(UL);
+
+	//BindPipeline(FullScreenRenderingPipeline);
+	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 	
 	UpdateRenderables();
 	
@@ -164,9 +178,14 @@ void Scene::DrawMesh(const DrawInfo& _DrawInfo, Mesh* _Mesh)
 {
 	RC->BindMesh(_Mesh);
 	RC->DrawIndexed(_DrawInfo);
-	GS_LOG_MESSAGE("Rendered!")
 	GS_DEBUG_ONLY(++DrawCalls)
 	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
+}
+
+void Scene::BindPipeline(GraphicsPipeline* _Pipeline)
+{
+	RC->BindGraphicsPipeline(_Pipeline);
+	GS_DEBUG_ONLY(++PipelineSwitches);
 }
 
 GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat) const
@@ -236,7 +255,7 @@ void Scene::UpdateMatrices()
 
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
 	ViewMatrix[12] = CamPos.X;
-	ViewMatrix[13] = CamPos.Y;
+	ViewMatrix[13] = -CamPos.Y;
 	ViewMatrix[14] = CamPos.Z;
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
@@ -269,7 +288,7 @@ void Scene::UpdateRenderables()
 
 void Scene::RenderRenderables()
 {
-	RC->BindGraphicsPipeline(Pipelines.begin()->second);
+	BindPipeline(Pipelines.begin()->second);
 	
 	for(auto& e : RenderComponents)
 	{
@@ -284,7 +303,36 @@ Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, 
 	const auto Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
 	const auto Width = Height * AspectRatio;	//Half width of the near plane(point that says where it is placed).
 
-	return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);
+	return Matrix4( 1 / (AspectRatio * Tangent), 0, 0, 0,
+					0, 1 / Tangent, 0, 0,
+					0, 0, Far / (Near - Far), 1, 
+					0, 0, -(Far * Near) / (Far - Near), 0);
+	
+	//return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);
+
+		/*return Matrix4(
+		  Tangent / AspectRatio,
+		  0.0f,
+		  0.0f,
+		  0.0f,
+
+		  0.0f,
+		  -Tangent,
+		  0.0f,
+		  0.0f,
+
+		  0.0f,
+		  0.0f,
+		  Far / (Near - Far),
+		  -1.0f,
+
+		  0.0f,
+		  0.0f,
+		  (Near * Far) / (Near - Far),
+		  0.0f);
+		*/
+	
+	//return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);	
 }
 
 Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
@@ -300,10 +348,10 @@ Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, cons
 	Result[5] = near2 / top_m_bottom;
 	Result[8] = (Right + Left) / right_m_left;
 	Result[9] = (Top + Bottom) / top_m_bottom;
-	Result[10] = -((Far + Near) / far_m_near);
+	Result[10] = -(Far + Near) / (far_m_near);
 	Result[11] = -1.0f;
-	Result[14] = -((near2 * Far) / far_m_near);
+	Result[14] = -near2 * Far / far_m_near;
 	Result[15] = 0.0f;
-
+	
 	return Result;
 }

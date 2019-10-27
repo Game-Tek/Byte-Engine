@@ -35,5 +35,18 @@ public:
 	{
 	}
 
+	void OnUpdate() override
+	{
+		Vector3 pos = MyCamera.GetPosition();
+		pos.X += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::D) ? 0.1 : 0;
+		pos.X -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::A) ? 0.1 : 0;
+		pos.Y += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::SpaceBar) ? 0.1 : 0;
+		pos.Y -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::LShift) ? 0.1 : 0;
+		pos.Z += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::W) ? 0.1 : 0;
+		pos.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::S) ? 0.1 : 0;
+
+		MyCamera.SetPosition(pos);
+	}
+
 	[[nodiscard]] const char* GetName() const override { return "TestObject"; }
 };

@@ -279,13 +279,16 @@ void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 {
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetHandle());
-
 	VkViewport Viewport = {};
+	Viewport.x = 0;
+	Viewport.y = 0;
+	Viewport.minDepth = 0;
 	Viewport.maxDepth = 1.0f;
 	Viewport.width = RenderExtent.Width;
 	Viewport.height = RenderExtent.Height;
 	vkCmdSetViewport(CommandBuffers[CurrentImage], 0, 1, &Viewport);
+	
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetHandle());
 }
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)

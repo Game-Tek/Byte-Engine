@@ -48,14 +48,14 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	//  VIEWPORT STATE
 	VkViewport Viewport;
-	Viewport.x = 0.0f;
-	Viewport.y = 0.0f;
-	Viewport.width = 0;
-	Viewport.height = 0;
+	Viewport.x = 0;
+	Viewport.y = 0;
+	Viewport.width = 1280;
+	Viewport.height = 720;
 	Viewport.minDepth = 0.0f;
-	Viewport.maxDepth = 1.0f;
+	Viewport.maxDepth = 500.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, {0, 0 } };
+	VkRect2D Scissor = { { 0, 0 }, {1280, 720 } };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;
@@ -69,7 +69,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	RasterizationState.rasterizerDiscardEnable = VK_FALSE;
 	RasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
 	RasterizationState.lineWidth = 1.0f;
-	RasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	RasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	RasterizationState.cullMode = VK_CULL_MODE_NONE;
 	RasterizationState.depthBiasEnable = VK_FALSE;
 	RasterizationState.depthBiasConstantFactor = 0.0f; // Optional
@@ -106,7 +106,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	//  COLOR BLEND STATE
 	VkPipelineColorBlendAttachmentState ColorBlendAttachment = {};
 	ColorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	ColorBlendAttachment.blendEnable = _GPCI.PipelineDescriptor.BlendEnable;
+	ColorBlendAttachment.blendEnable = VK_FALSE;//_GPCI.PipelineDescriptor.BlendEnable;
 	ColorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
 	ColorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
 	ColorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;

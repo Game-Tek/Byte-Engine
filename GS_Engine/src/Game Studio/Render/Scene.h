@@ -53,6 +53,7 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
 	void DrawMesh(const DrawInfo& _DrawInfo, Mesh* _Mesh);
+	void BindPipeline(GraphicsPipeline* _Pipeline);
 	Mesh* RegisterMesh(StaticMesh* _SM);
 protected:
 	//Used to count the amount of draw calls in a frame.
@@ -87,11 +88,14 @@ protected:
 	//Render elements
 	Window* Win = nullptr;
 	FVector<Framebuffer*> Framebuffers;
-	ScreenQuad MyQuad = {};
+	
 	RenderContext* RC = nullptr;
 	RenderPass* RP = nullptr;
 	UniformBuffer* UB = nullptr;
 	UniformLayout* UL = nullptr;
+	
+	Mesh* FullScreenQuad = nullptr;
+	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
 	Matrix4 ViewMatrix;
 	Matrix4 ProjectionMatrix;

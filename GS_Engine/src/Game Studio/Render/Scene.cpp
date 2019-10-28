@@ -256,9 +256,9 @@ void Scene::UpdateMatrices()
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
 	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix(0, 3) = CamPos.X;
-	ViewMatrix(1, 3) = -CamPos.Y;
-	ViewMatrix(2, 3) = CamPos.Z;
+	ViewMatrix(3, 0) = CamPos.X;
+	ViewMatrix(3, 1) = -CamPos.Y;
+	ViewMatrix(3, 2) = CamPos.Z;
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 

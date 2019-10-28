@@ -283,8 +283,8 @@ public:
 	float& operator[] (const uint8 Index) { return Array[Index]; }
 	float operator[] (const uint8 Index) const { return Array[Index]; }
 
-	float operator() (const uint8 _Row, const uint8 _Column) const { return Array[_Row * 4 + (_Column - 1)]; }
-	float& operator() (const uint8 _Row, const uint8 _Column) { return Array[_Row * 4 + (_Column - 1)]; }
+	float operator() (const uint8 _Row, const uint8 _Column) const { return Array[_Row * 4 + _Column]; }
+	float& operator() (const uint8 _Row, const uint8 _Column) { return Array[_Row * 4 + _Column]; }
 	
 private:
 	float Array[MATRIX_SIZE];

@@ -160,10 +160,12 @@ void Scene::OnUpdate()
 
 	BindPipeline(FullScreenRenderingPipeline);
 	DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
+
+
 	
-	///UpdateRenderables();
-	///
-	///RenderRenderables();
+	//UpdateRenderables();
+	//
+	//RenderRenderables();
 
 	RC->EndRenderPass(RP);
 
@@ -252,17 +254,21 @@ void Scene::UpdateMatrices()
 {
 	//We get and store the camera's position so as to not access it several times.
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
-
+	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix[12] = CamPos.X;
-	ViewMatrix[13] = -CamPos.Y;
-	ViewMatrix[14] = CamPos.Z;
+	ViewMatrix(0, 3) = CamPos.X;
+	ViewMatrix(1, 3) = -CamPos.Y;
+	ViewMatrix(2, 3) = CamPos.Z;
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 
-	ProjectionMatrix = BuildPerspectiveMatrix(GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
+	auto t = Win->GetAspectRatio();
+	
+	//BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
 
-	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
+	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
+	
+	ViewProjectionMatrix = ViewMatrix;//ProjectionMatrix * ViewMatrix;
 }
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
@@ -297,42 +303,23 @@ void Scene::RenderRenderables()
 	}
 }
 
-Matrix4 Scene::BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far)
+void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far)
 {
-	const auto Tangent = GSM::Tangent(GSM::Clamp(FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
-	const auto Height = Near * Tangent;			//Half height of the near plane(point that says where it is placed).
-	const auto Width = Height * AspectRatio;	//Half width of the near plane(point that says where it is placed).
+	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
 
-	return Matrix4( 1 / (AspectRatio * Tangent), 0, 0, 0,
-					0, 1 / Tangent, 0, 0,
-					0, 0, Far / (Near - Far), -1, 
-					0, 0, -(Far * Near) / (Far - Near), 0);
+	//Zero to one
+	//Left handed
+
+	_Matrix(0, 0) = static_cast<float>(1) / (_AspectRatio * tan_half_fov);
+	_Matrix(1, 1) = static_cast<float>(1) / (tan_half_fov);
+	_Matrix(2, 2) = _Far / (_Far - _Near);
+	_Matrix(2, 3) = static_cast<float>(1);
+	_Matrix(3, 2) = -(_Far * _Near) / (_Far - _Near);
 	
-	//return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);
-
-		/*return Matrix4(
-		  Tangent / AspectRatio,
-		  0.0f,
-		  0.0f,
-		  0.0f,
-
-		  0.0f,
-		  -Tangent,
-		  0.0f,
-		  0.0f,
-
-		  0.0f,
-		  0.0f,
-		  Far / (Near - Far),
-		  -1.0f,
-
-		  0.0f,
-		  0.0f,
-		  (Near * Far) / (Near - Far),
-		  0.0f);
-		*/
-	
-	//return BuildPerspectiveFrustum(Width, -Width, Height, -Height, Near, Far);	
+	//_Matrix = Matrix4( 1 / (_AspectRatio * Tangent), 0, 0, 0,
+	//				0, 1 / Tangent, 0, 0,
+	//				0, 0, _Far / (_Near - _Far), -1, 
+	//				0, 0, -(_Far * _Near) / (_Far - _Near), 0);
 }
 
 Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
@@ -354,4 +341,18 @@ Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, cons
 	Result[15] = 0.0f;
 	
 	return Result;
+}
+
+void Scene::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
+	const float _Bottom, const float _Near, const float _Far)
+{
+	//Zero to one
+	//Left handed
+
+	_Matrix(0, 0) = static_cast<float>(2) / (_Right - _Left);
+	_Matrix(1, 1) = static_cast<float>(2) / (_Top - _Bottom);
+	_Matrix(2, 2) = static_cast<float>(1) / (_Far - _Near);
+	_Matrix(3, 0) = -(_Right + _Left) / (_Right - _Left);
+	_Matrix(3, 1) = -(_Top + _Bottom) / (_Top - _Bottom);
+	_Matrix(3, 2) = -_Near / (_Far - _Near);
 }

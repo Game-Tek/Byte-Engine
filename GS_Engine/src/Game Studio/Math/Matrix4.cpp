@@ -36,10 +36,10 @@ Matrix4 Matrix4::operator*(const Matrix4& Other) const
 
 	for (uint8 i = 0; i < 4; ++i)
 	{
-		Bro1 = &Array[4 * i + 0];
-		Bro2 = &Array[4 * i + 1];
-		Bro3 = &Array[4 * i + 2];
-		Bro4 = &Array[4 * i + 3];
+		Bro1 = Array[4 * i + 0];
+		Bro2 = Array[4 * i + 1];
+		Bro3 = Array[4 * i + 2];
+		Bro4 = Array[4 * i + 3];
 
 		Row = (Bro1 * Row1) + (Bro2 * Row2) + (Bro3 * Row3) + (Bro4 * Row4);
 
@@ -69,21 +69,21 @@ Matrix4& Matrix4::operator*=(const Matrix4& Other)
 	float4 Row3(&Other.Array[8]);
 	float4 Row4(&Other.Array[12]);
 
-	float4 Bro1;
-	float4 Bro2;
-	float4 Bro3;
-	float4 Bro4;
+	float4 brod1;
+	float4 brod2;
+	float4 brod3;
+	float4 brod4;
 
 	float4 Row;
 
 	for (uint8 i = 0; i < 4; ++i)
 	{
-		Bro1 = &Array[4 * i + 0];
-		Bro2 = &Array[4 * i + 1];
-		Bro3 = &Array[4 * i + 2];
-		Bro4 = &Array[4 * i + 3];
+		brod1 = Array[4 * i + 0];
+		brod2 = Array[4 * i + 1];
+		brod3 = Array[4 * i + 2];
+		brod4 = Array[4 * i + 3];
 
-		Row = (Bro1 * Row1) + (Bro2 * Row2) + (Bro3 * Row3) + (Bro4 * Row4);
+		Row = (brod1 * Row1) + (brod2 * Row2) + (brod3 * Row3) + (brod4 * Row4);
 
 		Row.CopyToAlignedData(&Array[4 * i]);
 	}

@@ -45,7 +45,7 @@ public:
 		//GS_ASSERT(!MyWorld);
 
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
-
+		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}
 

@@ -36,9 +36,13 @@ public:
 	void SetAligned(const float* _Data) { Data = _mm_load_ps(_Data); }
 	void SetUnaligned(const float* _Data) { Data = _mm_loadu_ps(_Data); }
 
-	//Assumes unaligned data.
-	float4& operator=(const float* _Data) { Data = _mm_loadu_ps(_Data); return *this; }
-
+	/**
+	 * \brief Sets all of this vector's components as _Data.
+	 * \param _Data float to set all of this vector's components as.
+	 * \return Returns a reference to itself.
+	 */
+	float4& operator=(const float _Data) { Data = _mm_set_ps1(_Data); return *this; }
+	
 	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into unaligned memory.
 	void CopyToUnalignedData(float* _Dst) const
 	{

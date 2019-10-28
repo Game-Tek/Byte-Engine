@@ -97,9 +97,9 @@ protected:
 	Mesh* FullScreenQuad = nullptr;
 	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
-	Matrix4 ViewMatrix;
-	Matrix4 ProjectionMatrix;
-	Matrix4 ViewProjectionMatrix;
+	alignas(16) Matrix4 ViewMatrix;
+	alignas(16) Matrix4 ProjectionMatrix;
+	alignas(16) Matrix4 ViewProjectionMatrix;
 
 	void UpdateMatrices();
 
@@ -109,8 +109,10 @@ protected:
 	void RenderRenderables();
 
 	//Returns a symmetric perspective frustum.
-	static Matrix4 BuildPerspectiveMatrix(const float FOV, const float AspectRatio, const float Near, const float Far);
+	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far);
 
 	//Returns a perspective frustum.
 	static Matrix4 BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
+
+	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top, const float _Bottom, const float _Near, const float _Far);
 };

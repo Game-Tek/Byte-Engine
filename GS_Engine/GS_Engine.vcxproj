@@ -198,7 +198,7 @@
     <ClInclude Include="src\Game Studio\Math\Quaternion.h" />
     <ClInclude Include="src\Game Studio\Utility\RGB.h" />
     <ClInclude Include="src\Game Studio\Utility\RGBA.h" />
-    <ClInclude Include="src\Game Studio\Rotator.h" />
+    <ClInclude Include="src\Game Studio\Math\Rotator.h" />
     <ClInclude Include="src\Game Studio\Debug\Logger.h" />
     <ClInclude Include="src\Game Studio\Application\Clock.h" />
     <ClInclude Include="src\Game Studio\Application\EntryPoint.h" />

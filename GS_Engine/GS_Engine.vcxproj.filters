@@ -72,9 +72,6 @@
     <ClInclude Include="src\Game Studio\Object.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Rotator.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
@@ -240,6 +237,9 @@
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Math\Frustum.h" />
+    <ClInclude Include="src\Game Studio\Math\Rotator.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

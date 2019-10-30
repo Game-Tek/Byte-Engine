@@ -21,16 +21,15 @@ public:
 	{
 	}
 
-	float4(float _X, float _Y, float _Z, float _W) : Data(_mm_set_ps(_X, _Y, _Z, _W))
-	{
-	}
-
-	float4(const float* _Data) : Data(_mm_loadu_ps(_Data))
+	float4(const float _X, const float _Y, const float _Z, const float _W) : Data(_mm_set_ps(_X, _Y, _Z, _W))
 	{
 	}
 
 	~float4() = default;
 
+	INLINE static float4 MakeFromAligned(const float* _Data) { return _mm_load_ps(_Data); }
+	INLINE static float4 MakeFromUnaligned(const float* _Data) { return _mm_loadu_ps(_Data); }
+	
 	operator __m128() const { return Data; }
 
 	void SetAligned(const float* _Data) { Data = _mm_load_ps(_Data); }
@@ -64,7 +63,7 @@ public:
 
 	INLINE static float4 Abs(const float4& _A)
 	{
-		return _mm_andnot_ps(_A.Data, float4(1.0f, 1.0f, 1.0f, 1.0f));
+		return _mm_andnot_ps(_A.Data, float4(1.0f));
 	}
 
 	INLINE static float4 HorizontalAdd(const float4& _A, const float4& _B)

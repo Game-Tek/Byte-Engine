@@ -68,7 +68,7 @@ void GSM::Normalize(Vector3& _A)
 Vector4 GSM::Normalized(const Vector4& _A)
 {
 	alignas(16) Vector4 result;
-	float4 a(&_A.X);
+	auto a = float4::MakeFromUnaligned(&_A.X);
 	const float4 length(Length(_A));
 	a /= length;
 	a.CopyToAlignedData(&result.X);
@@ -77,7 +77,7 @@ Vector4 GSM::Normalized(const Vector4& _A)
 
 void GSM::Normalize(Vector4& _A)
 {
-	float4 a(&_A.X);
+	auto a = float4::MakeFromUnaligned(&_A.X);
 	const float4 length(Length(_A));
 	a /= length;
 	a.CopyToUnalignedData(&_A.X);
@@ -119,7 +119,7 @@ real GSM::Dot(const Quaternion& _A, const Quaternion& _B)
 Quaternion GSM::Normalized(const Quaternion& _A)
 {
 	alignas(16) Quaternion result;
-	float4 a(&_A.X);
+	auto a = float4::MakeFromUnaligned(&_A.X);
 	const float4 length(Length(_A));
 	a /= length;
 	a.CopyToAlignedData(&result.X);
@@ -128,7 +128,7 @@ Quaternion GSM::Normalized(const Quaternion& _A)
 
 void GSM::Normalize(Quaternion& _A)
 {
-	float4 a(&_A.X);
+	auto a = float4::MakeFromUnaligned(&_A.X);
 	const float4 length(Length(_A));
 	a /= length;
 	a.CopyToUnalignedData(&_A.X);

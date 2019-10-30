@@ -6,10 +6,10 @@ Vector4 Matrix4::operator*(const Vector4& Other) const
 {
 	alignas(16) Vector4 Result;
 
-	const float4 P1(float4(&Other.X) * float4(&Array[0]));
-	const float4 P2(float4(&Other.Y) * float4(&Array[4]));
-	const float4 P3(float4(&Other.Z) * float4(&Array[8]));
-	const float4 P4(float4(&Other.W) * float4(&Array[12]));
+	const auto P1(float4::MakeFromUnaligned(&Other.X) * float4::MakeFromUnaligned(&Array[0]));
+	const auto P2(float4::MakeFromUnaligned(&Other.Y) * float4::MakeFromUnaligned(&Array[4]));
+	const auto P3(float4::MakeFromUnaligned(&Other.Z) * float4::MakeFromUnaligned(&Array[8]));
+	const auto P4(float4::MakeFromUnaligned(&Other.W) * float4::MakeFromUnaligned(&Array[12]));
 
 	const float4 res = P1 + P2 + P3 + P4;
 
@@ -22,10 +22,10 @@ Matrix4 Matrix4::operator*(const Matrix4& Other) const
 {
 	Matrix4 Result;
 
-	float4 Row1(&Other.Array[0]);
-	float4 Row2(&Other.Array[4]);
-	float4 Row3(&Other.Array[8]);
-	float4 Row4(&Other.Array[12]);
+	auto Row1 = float4::MakeFromUnaligned(&Other.Array[0]);
+	auto Row2 = float4::MakeFromUnaligned(&Other.Array[4]);
+	auto Row3 = float4::MakeFromUnaligned(&Other.Array[8]);
+	auto Row4 = float4::MakeFromUnaligned(&Other.Array[12]);
 
 	float4 Bro1;
 	float4 Bro2;
@@ -64,10 +64,10 @@ Matrix4& Matrix4::operator*=(const float Other)
 
 Matrix4& Matrix4::operator*=(const Matrix4& Other)
 {
-	float4 Row1(&Other.Array[0]);
-	float4 Row2(&Other.Array[4]);
-	float4 Row3(&Other.Array[8]);
-	float4 Row4(&Other.Array[12]);
+	auto Row1 = float4::MakeFromUnaligned(&Other.Array[0]);
+	auto Row2 = float4::MakeFromUnaligned(&Other.Array[4]);
+	auto Row3 = float4::MakeFromUnaligned(&Other.Array[8]);
+	auto Row4 = float4::MakeFromUnaligned(&Other.Array[12]);
 
 	float4 brod1;
 	float4 brod2;

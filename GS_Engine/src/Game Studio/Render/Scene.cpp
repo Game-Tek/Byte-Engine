@@ -264,7 +264,7 @@ void Scene::UpdateMatrices()
 
 	auto t = Win->GetAspectRatio();
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 1, 10000);
+	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 0.5, 1000);
 
 	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
 	

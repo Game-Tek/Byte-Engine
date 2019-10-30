@@ -12,9 +12,10 @@ using ResourceSegmentType = uint64;
 class ResourceData
 {
 protected:
-	FString ResourceName;
 
 public:
+	FString ResourceName;
+	
 	ResourceData() = default;
 
 	virtual ~ResourceData()

@@ -238,7 +238,7 @@
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
-    <ClInclude Include="src\Game Studio\Resources\Archive.h" />
+    <ClInclude Include="src\Game Studio\Resources\Stream.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -321,7 +321,7 @@
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\Archive.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -158,14 +158,14 @@ void Scene::OnUpdate()
 
 	RC->BindUniformLayout(UL);
 
-	BindPipeline(FullScreenRenderingPipeline);
-	DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
+	//BindPipeline(FullScreenRenderingPipeline);
+	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 
 
 	
-	//UpdateRenderables();
-	//
-	//RenderRenderables();
+	UpdateRenderables();
+	
+	RenderRenderables();
 
 	RC->EndRenderPass(RP);
 
@@ -264,11 +264,11 @@ void Scene::UpdateMatrices()
 
 	auto t = Win->GetAspectRatio();
 	
-	//BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
+	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 1, 10000);
 
 	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
 	
-	ViewProjectionMatrix = ViewMatrix;//ProjectionMatrix * ViewMatrix;
+	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
@@ -310,11 +310,20 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//Zero to one
 	//Left handed
 
-	_Matrix(0, 0) = static_cast<float>(1) / (_AspectRatio * tan_half_fov);
-	_Matrix(1, 1) = static_cast<float>(1) / (tan_half_fov);
-	_Matrix(2, 2) = _Far / (_Far - _Near);
-	_Matrix(2, 3) = static_cast<float>(1);
-	_Matrix(3, 2) = -(_Far * _Near) / (_Far - _Near);
+	//_Matrix(0, 0) = 1 / (_AspectRatio * tan_half_fov);
+	//_Matrix(1, 1) = 1 / tan_half_fov;
+	//_Matrix(2, 2) = _Far / (_Far - _Near);
+	//_Matrix(3, 2) = -1;
+	//_Matrix(2, 3) = -(_Far * _Near) / (_Far - _Near);
+	//
+
+	auto f = 1 / tan_half_fov;
+	
+	_Matrix(0, 0) = f / _AspectRatio;
+	_Matrix(1, 1) = -f;
+	_Matrix(2, 2) = _Far / (_Near - _Far);
+	_Matrix(2, 3) = -1;
+	_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
 	
 	//_Matrix = Matrix4( 1 / (_AspectRatio * Tangent), 0, 0, 0,
 	//				0, 1 / Tangent, 0, 0,

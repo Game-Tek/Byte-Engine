@@ -12,13 +12,13 @@ public:
 		FString Text;
 
 	public:
-		friend Archive& operator<<(Archive& _OS, TextResourceData& _TRD)
+		friend OutStream& operator<<(OutStream& _OS, TextResourceData& _TRD)
 		{
 			_OS << _TRD.Text;
 			return _OS;
 		}
 
-		friend Archive& operator>>(Archive& _IS, TextResourceData& _TRD)
+		friend InStream& operator>>(InStream& _IS, TextResourceData& _TRD)
 		{
 			_IS >> _TRD.Text;
 			return _IS;

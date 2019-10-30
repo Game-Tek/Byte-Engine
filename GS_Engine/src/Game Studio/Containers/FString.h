@@ -73,13 +73,13 @@ public:
 	static size_t StringLength(const char * In);
 
 private:
-	friend Archive& operator<<(Archive& _Archive, FString& _String)
+	friend OutStream& operator<<(OutStream& _Archive, FString& _String)
 	{
 		_Archive << _String.Data;
 		return _Archive;
 	}
 	
-	friend Archive& operator>>(Archive& _Archive, FString& _String) 
+	friend InStream& operator>>(InStream& _Archive, FString& _String) 
 	{
 		_Archive >> _String.Data;
 		return _Archive;

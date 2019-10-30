@@ -13,10 +13,10 @@ class MaterialResource : public Resource
 public:
 	class MaterialData : public ResourceData
 	{
+	public:
 		FString VertexShaderCode;
 		FString FragmentShaderCode;
 
-	public:
 		~MaterialData()
 		{
 		}
@@ -38,8 +38,8 @@ public:
 		[[nodiscard]] FString& GetVertexShaderCode() { return VertexShaderCode; }
 		[[nodiscard]] FString& GetFragmentShaderCode() { return FragmentShaderCode; }
 
-		friend Archive& operator<<(Archive& _O, MaterialData& _MD);
-		friend Archive& operator>>(Archive& _I, MaterialData& _MD);
+		friend OutStream& operator<<(OutStream& _O, MaterialData& _MD);
+		friend InStream& operator>>(InStream& _I, MaterialData& _MD);
 	};
 
 	MaterialResource() = default;

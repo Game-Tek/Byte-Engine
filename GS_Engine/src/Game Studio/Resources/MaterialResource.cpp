@@ -4,13 +4,13 @@
 #include <string>
 #include "Debug/Logger.h"
 
-Archive& operator>>(Archive& _I, MaterialResource::MaterialData& _MD)
+InStream& operator>>(InStream& _I, MaterialResource::MaterialData& _MD)
 {
 	_I >> _MD.ResourceName >> _MD.VertexShaderCode >> _MD.FragmentShaderCode;
 	return _I;
 }
 
-Archive& operator<<(Archive& _O, MaterialResource::MaterialData& _MD)
+OutStream& operator<<(OutStream& _O, MaterialResource::MaterialData& _MD)
 {
 	_O << _MD.ResourceName << _MD.VertexShaderCode << _MD.FragmentShaderCode;
 	return _O;
@@ -27,7 +27,7 @@ bool MaterialResource::LoadResource(const FString& _Path)
 		uint64 FileLength = Input.tellg();		//Get file length
 		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
 
-		Archive in_archive(&Input);
+		InStream in_archive(&Input);
 		
 		Data = new MaterialData;	//Intantiate resource data
 

@@ -123,7 +123,7 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Resources\Archive.h" />
+    <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
@@ -238,7 +238,7 @@
     <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\Archive.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />

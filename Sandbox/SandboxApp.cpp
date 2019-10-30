@@ -9,7 +9,7 @@
 #include <Game Studio/Resources/MaterialResource.h>
 #include "Game Studio/Debug/Timer.h"
 #include "Game Studio/Math/GSM.hpp"
-#include <Game Studio/Resources/TextResource.h>
+#include <Game Studio/Resources/Stream.h>
 
 class Framebuffer;
 
@@ -24,7 +24,7 @@ public:
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
 
-		auto MatFun = [](Archive& _OS)
+		auto MatFun = [](OutStream& _OS)
 		{
 			FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
 

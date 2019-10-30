@@ -5,8 +5,7 @@
 #include <cstring>
 #include <type_traits>
 #include <assert.h>
-//#include <iostream>
-#include "Resources/Archive.h"
+#include "Resources/Stream.h"
 
 template <typename T, typename LT = size_t>
 class FVector
@@ -53,7 +52,7 @@ public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
 
-	friend Archive& operator<<(Archive& _Archive, FVector<T>& _FV)
+	friend OutStream& operator<<(OutStream& _Archive, FVector<T>& _FV)
 	{
 		_Archive.Write(_FV.Capacity);
 		_Archive.Write(_FV.Length);
@@ -63,7 +62,7 @@ public:
 		return _Archive;
 	}
 
-	friend Archive& operator>>(Archive& _Archive, FVector<T>& _FV)
+	friend InStream& operator>>(InStream& _Archive, FVector<T>& _FV)
 	{
 		size_t new_capacity = 0, new_length = 0;
 		_Archive.Read(&new_capacity);

@@ -12,7 +12,7 @@ bool TextResource::LoadResource(const FString& _FullPath)
 		uint64 FileLength = Input.tellg();		//Get file length
 		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
 
-		Archive in_archive(&Input);
+		InStream in_archive(&Input);
 		
 		Data = new TextResourceData;	//Intantiate resource data
 

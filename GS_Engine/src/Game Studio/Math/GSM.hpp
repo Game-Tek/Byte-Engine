@@ -768,7 +768,7 @@ public:
 		return A > 0 ? A : -A;
 	}
 
-	INLINE static float Abs(float _A)
+	INLINE static float Abs(const float _A)
 	{
 		return _A > 0.0f ? _A : -_A;
 	}
@@ -807,12 +807,12 @@ public:
 
 	INLINE static real DegreesToRadians(const real Degrees)
 	{
-		return Degrees * PI / 180.0;
+		return Degrees * (PI / 180.0);
 	}
 
 	INLINE static real RadiansToDegrees(const real Radians)
 	{
-		return Radians * 180.0 / PI;
+		return Radians * (180.0 / PI);
 	}
 
 	//////////////////////////////////////////////////////////////
@@ -820,21 +820,36 @@ public:
 	//////////////////////////////////////////////////////////////
 
 	//Calculates the length of a 2D vector.
-	INLINE static float Length(const Vector2 & Vec1)
+	INLINE static float Length(const Vector2& _A)
 	{
-		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y);
+		return SquareRoot(LengthSquared(_A));
 	}
 
-	INLINE static float Length(const Vector3 & Vec1)
+	INLINE static float Length(const Vector2& _A, const Vector2& _B)
 	{
-		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z);
+		return SquareRoot(LengthSquared(_A - _B));
+	}
+	
+	INLINE static float Length(const Vector3& _A)
+	{
+		return SquareRoot(LengthSquared(_A));
 	}
 
-	INLINE static float Length(const Vector4 & Vec1)
+	INLINE static float Length(const Vector3& _A, const Vector3& _B)
 	{
-		return SquareRoot(Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z + Vec1.W * Vec1.W);
+		return SquareRoot(LengthSquared(_A - _B));
 	}
 
+	INLINE static float Length(const Vector4& _A)
+	{
+		return SquareRoot(LengthSquared(_A));
+	}
+
+	INLINE static float Length(const Vector4& _A, const Vector4& _B)
+	{
+		return SquareRoot(LengthSquared(_A - _B));
+	}
+	
 	INLINE static float LengthSquared(const Vector2& _A);
 	//{
 	//	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
@@ -892,29 +907,29 @@ public:
 	//	Vec1.W = Vec1.W / Length;
 	//}
 
-	INLINE static float Dot(const Vector2& _A, const Vector2& _B);
+	INLINE static float DotProduct(const Vector2& _A, const Vector2& _B);
 		//{
 		//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y;
 		//}
 
-	INLINE static float Dot(const Vector3& _A, const Vector3& _B);
+	INLINE static float DotProduct(const Vector3& _A, const Vector3& _B);
 	//{
 	//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
 	//}
 
-	INLINE static float Dot(const Vector4& _A, const Vector4& _B);
+	INLINE static float DotProduct(const Vector4& _A, const Vector4& _B);
 
 	INLINE static Vector3 Cross(const Vector3& _A, const Vector3& _B);
 	//{
 	//	return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
 	//}
 
-	INLINE static Vector2 AbsVector(const Vector2& Vec1)
+	INLINE static Vector2 Abs(const Vector2& Vec1)
 	{
 		return Vector2(Abs(Vec1.X), Abs(Vec1.Y));
 	}
 
-	INLINE static Vector3 AbsVector(const Vector3& Vec1)
+	INLINE static Vector3 Abs(const Vector3& Vec1)
 	{
 		return Vector3(Abs(Vec1.X), Abs(Vec1.Y), Abs(Vec1.Z));
 	}
@@ -988,14 +1003,16 @@ public:
 	//						QUATERNION MATH						//
 	//////////////////////////////////////////////////////////////
 
-	INLINE static real Dot(const Quaternion& _A, const Quaternion& _B);
+	INLINE static real DotProduct(const Quaternion& _A, const Quaternion& _B);
     //{
     //    return _A.X * _B.X + _A.Y * _B.Y + _A.Z * _B.Z + _A.Q * _B.Q;
     //}
 
+	INLINE static float LengthSquared(const Quaternion& _A);
+	
 	INLINE static float Length(const Quaternion& _A)
 	{
-		return SquareRoot(Dot(_A, _A));
+		return SquareRoot(LengthSquared(_A));
 	}
 
 	INLINE static Quaternion Normalized(const Quaternion& _A);
@@ -1044,16 +1061,6 @@ public:
 		return (A > Min) && (A < Max);
 	}
 
-	INLINE static bool IsVectorEqual(const Vector2 & A, const Vector2 & B)
-	{
-		return A.X == B.X && A.Y == B.Y;
-	}
-
-	INLINE static bool IsVectorEqual(const Vector3 & A, const Vector3 & B)
-	{
-		return A.X == B.X && A.Y == B.Y && A.Z == B.Z;
-	}
-
 	INLINE static bool IsVectorNearlyEqual(const Vector2 & A, const Vector2 & Target, const float Tolerance)
 	{
 		return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance);
@@ -1061,7 +1068,18 @@ public:
 
 	INLINE static bool IsVectorNearlyEqual(const Vector3 & A, const Vector3 & Target, const float Tolerance)
 	{
-		return IsNearlyEqual(A.X, Target.X, Tolerance) && IsNearlyEqual(A.Y, Target.Y, Tolerance) && IsNearlyEqual(A.Z, Target.Z, Tolerance);
+		if (IsNearlyEqual(A.X, Target.X, Tolerance))
+		{
+			if (IsNearlyEqual(A.Y, Target.Y, Tolerance))
+			{
+				if (IsNearlyEqual(A.Z, Target.Z, Tolerance))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	INLINE static bool AreVectorComponentsGreater(const Vector3 & A, const Vector3 & B)
@@ -1180,21 +1198,21 @@ public:
 
 	INLINE static Vector3 ClosestPointOnPlane(const Vector3& _Point, const Plane& _Plane)
 	{
-		const float T = (Dot(_Plane.Normal, _Point) - _Plane.D) / Dot(_Plane.Normal, _Plane.Normal);
+		const float T = (DotProduct(_Plane.Normal, _Point) - _Plane.D) / DotProduct(_Plane.Normal, _Plane.Normal);
 		return _Point - _Plane.Normal * T;
 	}
 
 	INLINE static double DistanceFromPointToPlane(const Vector3& _Point, const Plane& _Plane)
 	{
 		// return Dot(q, p.n) - p.d; if plane equation normalized (||p.n||==1)
-		return (Dot(_Plane.Normal, _Point) - _Plane.D) / Dot(_Plane.Normal, _Plane.Normal);
+		return (DotProduct(_Plane.Normal, _Point) - _Plane.D) / DotProduct(_Plane.Normal, _Plane.Normal);
 	}
 
 	INLINE static void ClosestPointOnLineSegmentToPoint(const Vector3& _C, const Vector3& _A, const Vector3& _B, double& _T, Vector3& _D)
 	{
 		const Vector3 AB = _B - _A;
 		// Project c onto ab, computing parameterized position d(t) = a + t*(b – a)
-		_T = Dot(_C - _A, AB) / Dot(AB, AB);
+		_T = DotProduct(_C - _A, AB) / DotProduct(AB, AB);
 		// If outside segment, clamp t (and therefore d) to the closest endpoint
 		if (_T < 0.0) _T = 0.0;
 		if (_T > 1.0) _T = 1.0;
@@ -1207,13 +1225,13 @@ public:
 		const Vector3 AB = _B - _A;
 		const Vector3 AC = _C - _A;
 		const Vector3 BC = _C - _B;
-		float E = Dot(AC, AB);
+		float E = DotProduct(AC, AB);
 		// Handle cases where c projects outside ab
-		if (E <= 0.0f) return Dot(AC, AC);
-		float f = Dot(AB, AB);
-		if (E >= f) return Dot(BC, BC);
+		if (E <= 0.0f) return DotProduct(AC, AC);
+		float f = DotProduct(AB, AB);
+		if (E >= f) return DotProduct(BC, BC);
 		// Handle cases where c projects onto ab
-		return Dot(AC, AC) - E * E / f;
+		return DotProduct(AC, AC) - E * E / f;
 	}
 
 	INLINE static Vector3 ClosestPointOnTriangleToPoint(const Vector3& _A, const Vector3& _P1, const Vector3& _P2, const Vector3& _P3)
@@ -1223,14 +1241,14 @@ public:
 		const Vector3 AB = _P2 - _P1;
 		const Vector3 AC = _P3 - _P1;
 
-		const float D1 = Dot(AB, AP);
-		const float D2 = Dot(AC, AP);
+		const float D1 = DotProduct(AB, AP);
+		const float D2 = DotProduct(AC, AP);
 		if (D1 <= 0.0f && D2 <= 0.0f) return _P1; // barycentric coordinates (1,0,0)
 
 		// Check if P in vertex region outside B
 		const Vector3 BP = _A - _P2;
-		const float D3 = Dot(AB, BP);
-		const float D4 = Dot(AC, BP);
+		const float D3 = DotProduct(AB, BP);
+		const float D4 = DotProduct(AC, BP);
 		if (D3 >= 0.0f && D4 <= D3) return _P2; // barycentric coordinates (0,1,0)
 
 		// Check if P in edge region of AB, if so return projection of P onto AB
@@ -1243,8 +1261,8 @@ public:
 
 		// Check if P in vertex region outside C
 		const Vector3 CP = _A - _P3;
-		const float D5 = Dot(AB, CP);
-		const float D6 = Dot(AC, CP);
+		const float D5 = DotProduct(AB, CP);
+		const float D6 = DotProduct(AC, CP);
 		if (D6 >= 0.0f && D5 <= D6) return _P3; // barycentric coordinates (0,0,1)
 
 		// Check if P in edge region of AC, if so return projection of P onto AC
@@ -1272,13 +1290,13 @@ public:
 
 	INLINE static bool PointOutsideOfPlane(const Vector3& p, const Vector3& a, const Vector3& b, const Vector3& c)
 	{
-		return Dot(p - a, Cross(b - a, c - a)) >= 0.0f; // [AP AB AC] >= 0
+		return DotProduct(p - a, Cross(b - a, c - a)) >= 0.0f; // [AP AB AC] >= 0
 	}
 
 	INLINE static bool PointOutsideOfPlane(const Vector3& p, const Vector3& a, const Vector3& b, const Vector3& c, const Vector3& d)
 	{
-		const float signp = Dot(p - a, Cross(b - a, c - a)); // [AP AB AC]
-		const float signd = Dot(d - a, Cross(b - a, c - a)); // [AD AB AC]
+		const float signp = DotProduct(p - a, Cross(b - a, c - a)); // [AP AB AC]
+		const float signd = DotProduct(d - a, Cross(b - a, c - a)); // [AD AB AC]
 		// Points on opposite sides if expression signs are opposite
 		return signp * signd < 0.0f;
 	}
@@ -1293,7 +1311,7 @@ public:
 		if (PointOutsideOfPlane(p, a, b, c))
 		{
 			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, b, c);
-			const float sqDist = Dot(q - p, q - p);
+			const float sqDist = DotProduct(q - p, q - p);
 			// Update best closest point if (squared) distance is less than current best
 			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
 		}
@@ -1302,7 +1320,7 @@ public:
 		if (PointOutsideOfPlane(p, a, c, d))
 		{
 			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, c, d);
-			const float sqDist = Dot(q - p, q - p);
+			const float sqDist = DotProduct(q - p, q - p);
 			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
 		}
 
@@ -1310,7 +1328,7 @@ public:
 		if (PointOutsideOfPlane(p, a, d, b))
 		{
 			const Vector3 q = ClosestPointOnTriangleToPoint(p, a, d, b);
-			const float sqDist = Dot(q - p, q - p);
+			const float sqDist = DotProduct(q - p, q - p);
 			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
 		}
 
@@ -1318,7 +1336,7 @@ public:
 		if (PointOutsideOfPlane(p, b, d, c))
 		{
 			const Vector3 q = ClosestPointOnTriangleToPoint(p, b, d, c);
-			const float sqDist = Dot(q - p, q - p);
+			const float sqDist = DotProduct(q - p, q - p);
 			if (sqDist < BestSquaredDistance) BestSquaredDistance = sqDist, ClosestPoint = q;
 		}
 

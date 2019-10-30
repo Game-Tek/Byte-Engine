@@ -83,17 +83,17 @@ void GSM::Normalize(Vector4& _A)
 	a.CopyToUnalignedData(&_A.X);
 }
 
-float GSM::Dot(const Vector2& _A, const Vector2& _B)
+float GSM::DotProduct(const Vector2& _A, const Vector2& _B)
 {
 	return float4::DotProduct(float4(_A.X, _A.Y, 0.0f, 0.0f), float4(_B.X, _B.Y, 0.0f, 0.0f)).GetX();
 }
 
-float GSM::Dot(const Vector3& _A, const Vector3& _B)
+float GSM::DotProduct(const Vector3& _A, const Vector3& _B)
 {
 	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, 0.0f), float4(_B.X, _B.Y, _B.Z, 0.0f)).GetX();
 }
 
-float GSM::Dot(const Vector4& _A, const Vector4& _B)
+float GSM::DotProduct(const Vector4& _A, const Vector4& _B)
 {
 	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, _A.W), float4(_B.X, _B.Y, _B.Z, _A.W)).GetX();
 }
@@ -102,18 +102,24 @@ Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
 {
 	alignas(16) float vector[4];
 
-	float4 a(_A.X, _A.Y, _A.Z, 0.0f);
-	float4 b(_B.X, _B.Y, _B.Z, 0.0f);
+	const float4 a(_A.X, _A.Y, _A.Z, 0.0f);
+	const float4 b(_B.X, _B.Y, _B.Z, 0.0f);
 
-	float4 res = float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 1, 0, 2>(b, b) - float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 0, 2, 1>(b, b);
+	const float4 res = float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 1, 0, 2>(b, b) - float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 0, 2, 1>(b, b);
 	res.CopyToAlignedData(vector);
 
 	return Vector3(vector[0], vector[1], vector[2]);
 }
 
-real GSM::Dot(const Quaternion& _A, const Quaternion& _B)
+real GSM::DotProduct(const Quaternion& _A, const Quaternion& _B)
 {
 	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, _A.Q), float4(_B.X, _B.Y, _B.Z, _A.Q)).GetX();
+}
+
+float GSM::LengthSquared(const Quaternion& _A)
+{
+	float4 a(_A.X, _A.Y, _A.Z, _A.Q);
+	return float4::DotProduct(a, a).GetX();
 }
 
 Quaternion GSM::Normalized(const Quaternion& _A)

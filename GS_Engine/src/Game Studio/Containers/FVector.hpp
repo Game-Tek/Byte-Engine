@@ -201,7 +201,7 @@ public:
 	}
 
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
-	void insert(size_t _Index, const T& _Obj)
+	void push(size_t _Index, const T& _Obj)
 	{
 		reallocIfExceeds(1);
 		copyArray(getElement(_Index), getElement(_Index + 1), this->Length - _Index);
@@ -210,7 +210,7 @@ public:
 	}
 
 	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
-	void insert(const size_t _Length, T _Arr[], const size_t _Index)
+	void push(const size_t _Length, T _Arr[], const size_t _Index)
 	{
 		reallocIfExceeds(_Length);
 		copyArray(getElement(_Index), getElement(_Index + _Length), this->Length - _Index);
@@ -236,14 +236,14 @@ public:
 	}
 
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
-	void erase(const size_t _Index)
+	void pop(const size_t _Index)
 	{
 		copyArray(getElement(_Index + 1), getElement(_Index), this->Length - _Index);
 		this->Length -= 1;
 	}
 
 	//Deletes all elements between index and index + length and shifts the entire array backwards to fill the empty space.
-	void erase(const size_t _Index, const size_t _Length)
+	void popRange(const size_t _Index, const size_t _Length)
 	{
 		copyArray(getElement(_Index + _Length), getElement(_Index), this->Length - _Index);
 		this->Length -= _Length;
@@ -267,7 +267,7 @@ public:
 		auto res = find(_Obj);
 		if(res != ~0ULL)
 		{
-			erase(res);
+			pop(res);
 			this->Length -= 1;
 		}
 	}

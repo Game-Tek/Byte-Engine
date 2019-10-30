@@ -102,7 +102,7 @@ void FString::Append(const FString& _In)
 
 void FString::Insert(const char* _In, const size_t _Index)
 {
-	Data.insert(_Index, const_cast<char*>(_In), StringLength(_In));
+	Data.push(_Index, const_cast<char*>(_In), StringLength(_In));
 	return;
 }
 

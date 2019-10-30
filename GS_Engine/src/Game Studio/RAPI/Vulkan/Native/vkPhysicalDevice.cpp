@@ -28,7 +28,7 @@ vkPhysicalDevice::vkPhysicalDevice(const VKInstance& _Instance)
 		{
 			BestPhysicalDeviceIndex = i;
 
-			PhysicalDevicesProperties.erase(i);
+			PhysicalDevicesProperties.pop(i);
 
 			i--;
 		}

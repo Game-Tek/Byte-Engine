@@ -216,7 +216,6 @@
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
-    <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
@@ -240,6 +239,8 @@
     <ClInclude Include="src\Game Studio\Math\Rotator.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game Studio\Dispatcher.h" />
+    <ClInclude Include="src\Game Studio\Functor.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

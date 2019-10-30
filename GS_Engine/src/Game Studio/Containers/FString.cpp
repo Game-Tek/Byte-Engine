@@ -75,7 +75,7 @@ bool FString::NonSensitiveComp(const FString& _Other) const
 
 	for (size_t i = 0; i < Data.length(); i++)
 	{
-		if (Data[i] != ((ToLowerCase(_Other.Data[i]) | ToUpperCase(_Other.Data[i])) != 0))
+		if (Data[i] != (ToLowerCase(_Other.Data[i]) || ToUpperCase(_Other.Data[i])))
 		{
 			return false;
 		}
@@ -152,11 +152,11 @@ FString FString::MakeString(const char* _Text, ...)
 char FString::ToLowerCase(char _Char)
 {
 	if ('A' <= _Char && _Char <= 'Z') return _Char += ('a' - 'A');
-	return 0;
+	return _Char;
 }
 
 char FString::ToUpperCase(char _Char)
 {
 	if ('a' <= _Char && _Char <= 'z') return _Char += ('a' - 'A');
-	return 0;
+	return _Char;
 }

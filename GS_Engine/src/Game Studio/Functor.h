@@ -60,14 +60,14 @@ template <typename T> class Functor;
 template<typename RET, typename... PARAMS>
 class GS_API Functor<RET(PARAMS...)> final : FunctorBase<RET(PARAMS...)>
 {
-	typename FunctorBase<RET(PARAMS...)>::InvocationElement invocation;
+	typename FunctorBase<RET(PARAMS...)>::InvocationElement functionPointer;
 
 public:
 	Functor() = default;
 
 	[[nodiscard]] bool isNull() const
 	{
-		return invocation.FunctionPointer == nullptr;
+		return functionPointer.FunctionPointer == nullptr;
 	}
 
 	bool operator ==(void* ptr) const
@@ -82,36 +82,36 @@ public:
 
 	Functor(const Functor& another)
 	{
-		another.invocation.Clone(invocation);
+		another.functionPointer.Clone(functionPointer);
 	}
 
 	template <typename LAMBDA>
 	Functor(const LAMBDA& lambda)
 	{
-		assign((void*)(&lambda), lambda_stub<LAMBDA>);
+		assign(static_cast<void*>(&lambda), lambda_stub<LAMBDA>);
 	}
 
 	Functor& operator =(const Functor& another)
 	{
-		another.invocation.Clone(invocation);
+		another.functionPointer.Clone(functionPointer);
 		return *this;
 	}
 
 	template <typename LAMBDA> // template instantiation is not needed, will be deduced (inferred):
 	Functor& operator =(const LAMBDA& instance)
 	{
-		assign((void*)(&instance), lambda_stub<LAMBDA>);
+		assign(static_cast<void*>(&instance), lambda_stub<LAMBDA>);
 		return *this;
 	}
 
 	bool operator == (const Functor& another) const
 	{
-		return invocation == another.invocation;
+		return functionPointer == another.functionPointer;
 	}
 
 	bool operator != (const Functor& another) const
 	{
-		return invocation != another.invocation;
+		return functionPointer != another.functionPointer;
 	}
 
 	bool operator ==(const multicast_delegate<RET(PARAMS...)>& another) const
@@ -150,21 +150,21 @@ public:
 
 	RET operator()(PARAMS... arg) const
 	{
-		return (*invocation.FunctionPointer)(invocation.Callee, arg...);
+		return (*functionPointer.FunctionPointer)(functionPointer.Callee, arg...);
 	}
 
 private:
 
 	Functor(void* anObject, typename FunctorBase<RET(PARAMS...)>::FunctionPointerType aStub)
 	{
-		invocation.Callee = anObject;
-		invocation.FunctionPointer = aStub;
+		functionPointer.Callee = anObject;
+		functionPointer.FunctionPointer = aStub;
 	}
 
 	void assign(void* anObject, typename FunctorBase<RET(PARAMS...)>::FunctionPointerType aStub)
 	{
-		this->invocation.Callee = anObject;
-		this->invocation.FunctionPointer = aStub;
+		this->functionPointer.Callee = anObject;
+		this->functionPointer.FunctionPointer = aStub;
 	}
 
 	template <class T, RET(T::* TMethod)(PARAMS...)>

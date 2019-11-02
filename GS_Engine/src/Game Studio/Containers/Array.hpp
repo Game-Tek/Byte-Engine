@@ -33,7 +33,7 @@ public:
 	}
 
 	T* begin() { return this->Data; }
-	T* end() { return &this->Data[Size]; }
+	T* end() { return &this->Data[Size] + 1; }
 	
 	T& operator[](const LT i)
 	{

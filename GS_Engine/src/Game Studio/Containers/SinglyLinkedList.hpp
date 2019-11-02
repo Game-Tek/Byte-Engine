@@ -1,84 +1,93 @@
 #pragma once
 
 #include "Core.h"
+#include "Pair.h"
 
-template<class T>
-struct GS_API SingleLinkListNode
+template <class _T>
+class SingleLinkList
 {
-	SingleLinkListNode() = default;
-
-	SingleLinkListNode(const T& _Obj) : Element(_Obj)
+	struct SingleLinkListNode
 	{
-	}
+		friend class SingleLinkList;
+		
+		SingleLinkListNode() = default;
 
-	SingleLinkListNode * GetChild() { return Child; }
-	T & GetElement() { return Element; }
+		explicit SingleLinkListNode(const _T& _Obj) : element(_Obj)
+		{
+		}
 
-protected:
-	SingleLinkListNode<T> * Child = nullptr;
+		_T& GetElement() { return element; }
+		[[nodiscard]] const _T& GetElement() const { return element; }
+		
+	protected:
+		SingleLinkListNode* GetNext() { return next; }
+		
+		SingleLinkListNode* next = nullptr;
 
-	T Element;
-};
-
-template <class T>
-class GS_API SingleLinkList
-{
+		_T element;
+	};
+	
 public:
+	using ResultPair = Pair<bool, SingleLinkListNode*>;
+	
 	SingleLinkList() = default;
 
 	//Preallocate
-	explicit SingleLinkList(const size_t _Length) : m_Length(_Length)
+	explicit SingleLinkList(const size_t _Length) : length(_Length)
 	{
 	}
 
-	SingleLinkListNode<T> & operator[](const size_t Index)
+	SingleLinkListNode& operator[](const size_t Index)
 	{
-		SingleLinkListNode<T>* Result = &Root;
+		SingleLinkListNode* result = &root;
 
-		for (size_t i = 0; i < Index; i++)
+		for (size_t i = 0; i < Index; ++i)
 		{
-			Result = Result->GetChild();
+			result = result->GetChild();
 		}
 
-		return *Result;
+		return *result;
 	}
 
-	void PushBack(const T & _Obj)
+	void PushBack(const _T& _Obj)
 	{
-		SingleLinkListNode<T>* Next = &Root;
-
-		uint32 i = 0;
-		while (Next->GetChild() != nullptr)
-		{
-			Next = Next->GetChild();
-			i++;
-		}
-
-		Next->Child = new SingleLinkListNode<T>(_Obj);
+		auto new_node = new SingleLinkListNode(_Obj);
+		lastNode->next = new_node;  //<== Now last node
+		lastNode = new_node;
 	}
 
-	int32 Find(const T& _Obj)
+	void PopBack()
 	{
-		SingleLinkListNode<T>* l_Next;
+		auto new_last = (*this)[length - 1];
+		new_last.next = nullptr;
+		delete lastNode;
+		lastNode = new_last;
+	}
+
+	ResultPair Find(const _T& _Obj)
+	{
+		SingleLinkListNode* next = &root;
 		uint32 i = 0;
 
-		while (l_Next->GetChild() != nullptr)
+		while (next->GetChild() != nullptr)
 		{
-			if (*l_Next == _Obj)
+			if (*next == _Obj)
 			{
-				return i;
+				return { true, next };
 			}
 
-			l_Next = l_Next->GetChild();
+			next = next->GetChild();
 			i++;
 		}
 
-		return -1;
+		return { false, nullptr };
 	}
 
-	INLINE uint32 Length() const { return m_Length; }
+	INLINE uint32 Length() const { return length; }
+	
 protected:
-	SingleLinkListNode<T> Root;
-
-	uint32 m_Length = 0;
+	SingleLinkListNode root;
+	SingleLinkListNode* lastNode = &root;
+	
+	uint32 length = 0;
 };

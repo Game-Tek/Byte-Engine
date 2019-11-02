@@ -6,66 +6,66 @@
 #include <cstring>
 #include <initializer_list>
 
-template <typename T, typename LT = uint8>
+template <typename _T, typename _LT = uint8>
 class DArray
 {
-	typedef T* iterator;
-	typedef const T* const_iterator;
+	typedef _T* iterator;
+	typedef const _T* const_iterator;
 
-	LT Capacity = 0;
-	LT Length = 0;
-	T* Data = nullptr;
+	_LT capacity = 0;
+	_LT length = 0;
+	_T* data = nullptr;
 
-	static T* allocate(const LT _elements)
+	static _T* allocate(const _LT _elements)
 	{
 		//auto align = alignof(T);
-		return SCAST(T*, malloc(sizeof(T) * _elements));
+		return SCAST(_T*, malloc(sizeof(_T) * _elements));
 		//return SCAST(T*, _aligned_malloc(_elements * sizeof(T), alignof(T)));
 	}
 
-	void copyLength(const LT _elements, void* _from)
+	void copyLength(const _LT _elements, void* _from)
 	{
-		memcpy(this->Data, _from, sizeof(T) * _elements);
+		memcpy(this->data, _from, sizeof(_T) * _elements);
 	}
 
 	void copyToData(const void* _from, size_t _size)
 	{
-		memcpy(this->Data, _from, _size);
+		memcpy(this->data, _from, _size);
 	}
 
 	void freeArray()
 	{
-		free(this->Data);
+		free(this->data);
 		//_aligned_free(this->Data);
-		this->Data = nullptr;
+		this->data = nullptr;
 		return;
 	}
 
 public:
 	DArray() = default;
 
-	DArray(const std::initializer_list<T>& _List) : Capacity(_List.size()), Length(_List.size()), Data(allocate(_List.size()))
+	DArray(const std::initializer_list<_T>& _List) : capacity(_List.size()), length(_List.size()), data(allocate(_List.size()))
 	{
-		copyLength(this->Length, CCAST(T*, _List.begin()));
+		copyLength(this->length, CCAST(_T*, _List.begin()));
 	}
 
-	explicit DArray(const LT _Length) : Capacity(_Length), Length(0), Data(allocate(_Length))
+	explicit DArray(const _LT _Length) : capacity(_Length), length(0), data(allocate(_Length))
 	{
 	}
 
-	DArray(T _Data[], const LT _Length) : Data(allocate(_Length)), Capacity(_Length), Length(_Length)
+	DArray(_T _Data[], const _LT _Length) : data(allocate(_Length)), capacity(_Length), length(_Length)
 	{
 		copyLength(_Length, _Data);
 	}
 
-	DArray(const_iterator _Start, const_iterator _End) : Capacity(_End - _Start), Length(this->Capacity), Data(allocate(this->Capacity))
+	DArray(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(this->capacity), data(allocate(this->capacity))
 	{
-		copyToData(_Start, (_End - _Start) * sizeof(T));
+		copyToData(_Start, (_End - _Start) * sizeof(_T));
 	}
 
-	DArray(const DArray<T>& _Other) : Capacity(_Other.Capacity), Length(_Other.Length), Data(allocate(this->Capacity))
+	DArray(const DArray<_T>& _Other) : capacity(_Other.getCapacity), length(_Other.getLength), data(allocate(this->capacity))
 	{
-		copyLength(this->Capacity, _Other.Data);
+		copyLength(this->capacity, _Other.getData);
 	}
 
 	~DArray()
@@ -73,67 +73,69 @@ public:
 		freeArray();
 	}
 
-	DArray& operator=(const DArray<T>& _Other)
+	DArray& operator=(const DArray<_T>& _Other)
 	{
 		freeArray();
-		this->Capacity = _Other.Capacity;
-		this->Length = _Other.Length;
-		this->Data = allocate(this->Capacity);
-		copyLength(this->Capacity, _Other.Data);
+		this->capacity = _Other.capacity;
+		this->length = _Other.length;
+		this->data = allocate(this->capacity);
+		copyLength(this->capacity, _Other.data);
 		return *this;
 	}
 
-	T& operator[](const LT i)
+	_T& operator[](const _LT i)
 	{
-		return this->Data[i];
+		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
+		return this->data[i];
 	}
 
-	const T& operator[](const LT i) const
+	const _T& operator[](const _LT i) const
 	{
-		return this->Data[i];
+		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
+		return this->data[i];
 	}
 
-	T* data()
+	_T* getData()
 	{
-		return this->Data;
+		return this->data;
 	}
 
-	[[nodiscard]] const T* data() const
+	[[nodiscard]] const _T* getData() const
 	{
-		return this->Data;
+		return this->data;
 	}
 
-	LT push_back(const T& _obj)
+	_LT push_back(const _T& _obj)
 	{
-		this->Data[this->Length] = _obj;
+		this->data[this->length] = _obj;
 
-		return this->Length++;
+		return this->length++;
 	}
 
-	LT push_back(const T* _obj)
+	_LT push_back(const _T* _obj)
 	{
-		this->Data[this->Length] = *_obj;
+		this->data[this->length] = *_obj;
 
-		return this->Length++;
+		return this->length++;
 	}
 
-	[[nodiscard]] LT length() const
+	[[nodiscard]] _LT getLength() const
 	{
-		return this->Length;
+		return this->length;
 	}
 
-	[[nodiscard]] LT capacity() const
+	[[nodiscard]] _LT getCapacity() const
 	{
-		return this->Capacity;
+		return this->capacity;
 	}
 
-	void resize(LT _NewLength)
+	void resize(_LT _NewLength)
 	{
-		this->Length = _NewLength;
+		this->length = _NewLength;
 	}
 
 	//Returns the size in bytes the currently allocated array takes up.
-	[[nodiscard]] size_t size() const { return this->Capacity * sizeof(T); }
+	[[nodiscard]] size_t getSize() const { return this->capacity * sizeof(_T); }
 	//Returns the size in bytes the current length of the array takes up.
-	[[nodiscard]] size_t lengthSize() const { return this->Length * sizeof(T); }
+	[[nodiscard]] size_t getLengthSize() const { return this->length * sizeof(_T); }
 };

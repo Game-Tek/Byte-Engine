@@ -17,7 +17,7 @@ VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDe
 
 	Array<VkDescriptorSetLayoutBinding, MAX_DESCRIPTORS_PER_SET> DescriptorBindings;
 	{
-		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
+		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.getLength(); ++i)
 		{
 			DescriptorBindings[i].binding = i;
 			DescriptorBindings[i].descriptorCount = _PLCI.PipelineUniformSets[i].UniformSetUniformsCount;
@@ -26,10 +26,10 @@ VKDescriptorSetLayoutCreator VulkanUniformLayout::CreateDescriptorSetLayout(VKDe
 		}
 	}
 
-	DescriptorBindings.setLength(_PLCI.PipelineUniformSets.length());
+	DescriptorBindings.setLength(_PLCI.PipelineUniformSets.getLength());
 
-	DescriptorSetLayoutCreateInfo.bindingCount = DescriptorBindings.length();
-	DescriptorSetLayoutCreateInfo.pBindings = DescriptorBindings.data();
+	DescriptorSetLayoutCreateInfo.bindingCount = DescriptorBindings.getLength();
+	DescriptorSetLayoutCreateInfo.pBindings = DescriptorBindings.getData();
 
 	return VKDescriptorSetLayoutCreator(_Device, &DescriptorSetLayoutCreateInfo);
 }
@@ -38,19 +38,19 @@ VKDescriptorPoolCreator VulkanUniformLayout::CreateDescriptorPool(VKDevice* _Dev
 {
 	Array<VkDescriptorPoolSize, MAX_DESCRIPTORS_PER_SET> PoolSizes;
 	{
-		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.length(); ++i)
+		for (uint8 i = 0; i < _PLCI.PipelineUniformSets.getLength(); ++i)
 		{
 			PoolSizes[i].descriptorCount = _PLCI.RenderContext->GetMaxFramesInFlight();
 			PoolSizes[i].type = UniformTypeToVkDescriptorType(_PLCI.PipelineUniformSets[i].UniformSetType);
 		}
 	}
 
-	PoolSizes.setLength(_PLCI.PipelineUniformSets.length());
+	PoolSizes.setLength(_PLCI.PipelineUniformSets.getLength());
 
 	VkDescriptorPoolCreateInfo DescriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 	DescriptorPoolCreateInfo.maxSets = _PLCI.RenderContext->GetMaxFramesInFlight();
-	DescriptorPoolCreateInfo.poolSizeCount = PoolSizes.length();
-	DescriptorPoolCreateInfo.pPoolSizes = PoolSizes.data();
+	DescriptorPoolCreateInfo.poolSizeCount = PoolSizes.getLength();
+	DescriptorPoolCreateInfo.pPoolSizes = PoolSizes.getData();
 
 	return VKDescriptorPoolCreator(_Device, &DescriptorPoolCreateInfo);
 }
@@ -63,9 +63,9 @@ void VulkanUniformLayout::CreateDescriptorSet(VKDevice* _Device, const UniformLa
 
 	FVector<VkDescriptorSetLayout> SetLayouts(_PLCI.RenderContext->GetMaxFramesInFlight(), DescriptorSetLayout.GetHandle());
 
-	DescriptorSetAllocateInfo.pSetLayouts = SetLayouts.data();
+	DescriptorSetAllocateInfo.pSetLayouts = SetLayouts.getData();
 
-	DescriptorPool.AllocateDescriptorSets(&DescriptorSetAllocateInfo, DescriptorSets.data());
+	DescriptorPool.AllocateDescriptorSets(&DescriptorSetAllocateInfo, DescriptorSets.getData());
 }
 
 
@@ -107,8 +107,8 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 
 void VulkanUniformLayout::UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI)
 {
-	DArray<VkWriteDescriptorSet> WriteDescriptors(_ULUI.PipelineUniformSets.length());
-	for (uint8 i = 0; i < _ULUI.PipelineUniformSets.length(); ++i)
+	DArray<VkWriteDescriptorSet> WriteDescriptors(_ULUI.PipelineUniformSets.getLength());
+	for (uint8 i = 0; i < _ULUI.PipelineUniformSets.getLength(); ++i)
 	{
 		switch (_ULUI.PipelineUniformSets[i].UniformSetType)
 		{
@@ -181,5 +181,5 @@ void VulkanUniformLayout::UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI)
 		}
 	}
 
-	vkUpdateDescriptorSets(SCAST(VulkanRenderDevice*, RenderDevice::Get())->GetVKDevice().GetVkDevice(), WriteDescriptors.capacity(), WriteDescriptors.data(), 0, nullptr);
+	vkUpdateDescriptorSets(SCAST(VulkanRenderDevice*, RenderDevice::Get())->GetVKDevice().GetVkDevice(), WriteDescriptors.getCapacity(), WriteDescriptors.getData(), 0, nullptr);
 }

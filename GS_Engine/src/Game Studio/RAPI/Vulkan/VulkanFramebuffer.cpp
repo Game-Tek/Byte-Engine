@@ -10,9 +10,9 @@
 
 FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*>& _Images)
 {
-	FVector<VkImageView> Result(_Images.length());
+	FVector<VkImageView> Result(_Images.getLength());
 
-	for (uint8 i = 0; i < Result.capacity(); ++i)
+	for (uint8 i = 0; i < Result.getCapacity(); ++i)
 	{
 		Result.push_back(SCAST(VulkanImageBase*, _Images[i])->GetVKImageView().GetHandle());
 	}
@@ -25,12 +25,12 @@ VKFramebufferCreator VulkanFramebuffer::CreateFramebufferCreator(VKDevice* _Devi
 	auto t = ImagesToVkImageViews(_Images);
 
 	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-	FramebufferCreateInfo.attachmentCount = _Images.length();
+	FramebufferCreateInfo.attachmentCount = _Images.getLength();
 	FramebufferCreateInfo.width = _Extent.Width;
 	FramebufferCreateInfo.height = _Extent.Height;
 	FramebufferCreateInfo.layers = 1;
 	FramebufferCreateInfo.renderPass = _RP->GetVKRenderPass().GetHandle();
-	FramebufferCreateInfo.pAttachments = t.data();
+	FramebufferCreateInfo.pAttachments = t.getData();
 
 	return VKFramebufferCreator(_Device, &FramebufferCreateInfo);
 }

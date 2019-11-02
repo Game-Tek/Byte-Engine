@@ -32,7 +32,7 @@ FString& FString::operator=(const char* _In)
 FString FString::operator+(const char* _In) const
 {
 	FString result;
-	result.Data.push_back(Data.length() - 1, Data.data());
+	result.Data.push_back(Data.getLength() - 1, Data.getData());
 	result.Data.push_back(StringLength(_In), _In);
 	return result;
 }
@@ -47,17 +47,17 @@ FString& FString::operator+=(const char* _In)
 FString FString::operator+(const FString& _Other) const
 {
 	FString result;
-	result.Data.push_back(Data.length() - 1, Data.data());
-	result.Data.push_back(_Other.Data.length(), _Other.Data.data());
+	result.Data.push_back(Data.getLength() - 1, Data.getData());
+	result.Data.push_back(_Other.Data.getLength(), _Other.Data.getData());
 	return result;
 }
 
 bool FString::operator==(const FString & _Other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (Data.length() != _Other.Data.length()) return false;
+	if (Data.getLength() != _Other.Data.getLength()) return false;
 
-	for (size_t i = 0; i < Data.length(); i++)
+	for (size_t i = 0; i < Data.getLength(); i++)
 	{
 		if (Data[i] != _Other.Data[i])
 		{
@@ -71,9 +71,9 @@ bool FString::operator==(const FString & _Other) const
 bool FString::NonSensitiveComp(const FString& _Other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (Data.length() != _Other.Data.length()) return false;
+	if (Data.getLength() != _Other.Data.getLength()) return false;
 
-	for (size_t i = 0; i < Data.length(); i++)
+	for (size_t i = 0; i < Data.getLength(); i++)
 	{
 		if (Data[i] != (ToLowerCase(_Other.Data[i]) || ToUpperCase(_Other.Data[i])))
 		{
@@ -108,7 +108,7 @@ void FString::Insert(const char* _In, const size_t _Index)
 
 int64 FString::FindLast(char _Char) const
 {
-	for (int32 i = Data.length(); i > 0; --i)
+	for (int32 i = Data.getLength(); i > 0; --i)
 	{
 		if (Data[i] == _Char) return i;
 	}
@@ -137,12 +137,12 @@ FString FString::MakeString(const char* _Text, ...)
 
 	va_list vaargs;
 	va_start(vaargs, _Text);
-	const auto Count = snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs) + 1; //Take into account null terminator.
-	if(Count > Return.Data.length())
+	const auto Count = snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs) + 1; //Take into account null terminator.
+	if(Count > Return.Data.getLength())
     {
         Return.Data.resize(Count);
 
-        snprintf(Return.Data.data(), Return.Data.length(), _Text, vaargs);
+        snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs);
     }
 	va_end(vaargs);
 

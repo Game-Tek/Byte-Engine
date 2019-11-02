@@ -44,7 +44,7 @@ class GS_API HashMap
 	//Returns an index to the bucket in the list that holds that value. If none is found -1 is returned.
 	INLINE int16 FindValueInList(const V & _Value, const K & _Key)
 	{
-		for (uint8 i = 0; i < List[IndexFromKey(_Key)].Length(); i++)
+		for (uint8 i = 0; i < List[IndexFromKey(_Key)].getLength(); i++)
 		{
 			if (List[IndexFromKey(_Key)][i].GetElement() == _Value)
 			{

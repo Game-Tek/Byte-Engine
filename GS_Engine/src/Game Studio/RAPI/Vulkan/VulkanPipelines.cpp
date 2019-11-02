@@ -19,7 +19,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	BindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	Array<VkVertexInputAttributeDescription, 8>	VertexElements(_GPCI.VDescriptor->GetAttributeCount());
-	for (uint8 i = 0; i < VertexElements.length(); ++i)
+	for (uint8 i = 0; i < VertexElements.getLength(); ++i)
 	{
 		VertexElements[i].binding = 0;
 		VertexElements[i].location = i;
@@ -28,10 +28,10 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	}
 
 	VkPipelineVertexInputStateCreateInfo VertexInputState = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-	VertexInputState.vertexBindingDescriptionCount = BindingDescriptions.length();
-	VertexInputState.pVertexBindingDescriptions = BindingDescriptions.data();
-	VertexInputState.vertexAttributeDescriptionCount = VertexElements.length();
-	VertexInputState.pVertexAttributeDescriptions = VertexElements.data();
+	VertexInputState.vertexBindingDescriptionCount = BindingDescriptions.getLength();
+	VertexInputState.pVertexBindingDescriptions = BindingDescriptions.getData();
+	VertexInputState.vertexAttributeDescriptionCount = VertexElements.getLength();
+	VertexInputState.pVertexAttributeDescriptions = VertexElements.getData();
 
 
 	//  INPUT ASSEMBLY STATE
@@ -131,18 +131,18 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	VkPipelineDynamicStateCreateInfo DynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
 	Array<VkDynamicState, 1> DynamicStates = { VK_DYNAMIC_STATE_VIEWPORT };
-	DynamicState.dynamicStateCount = DynamicStates.capacity();
-	DynamicState.pDynamicStates = DynamicStates.data();
+	DynamicState.dynamicStateCount = DynamicStates.getCapacity();
+	DynamicState.pDynamicStates = DynamicStates.getData();
 
 
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI(_GPCI.PipelineDescriptor.Stages.length());
-	Array<VkShaderModuleCreateInfo, 8> VSMCI(_GPCI.PipelineDescriptor.Stages.length());
-	DArray<DArray<uint32, uint32>> SPIRV(_GPCI.PipelineDescriptor.Stages.length());
-	DArray<VkShaderModule> SMS(_GPCI.PipelineDescriptor.Stages.length());
+	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI(_GPCI.PipelineDescriptor.Stages.getLength());
+	Array<VkShaderModuleCreateInfo, 8> VSMCI(_GPCI.PipelineDescriptor.Stages.getLength());
+	DArray<DArray<uint32, uint32>> SPIRV(_GPCI.PipelineDescriptor.Stages.getLength());
+	DArray<VkShaderModule> SMS(_GPCI.PipelineDescriptor.Stages.getLength());
 
-	for (uint8 i = 0; i < _GPCI.PipelineDescriptor.Stages.length(); ++i)
+	for (uint8 i = 0; i < _GPCI.PipelineDescriptor.Stages.getLength(); ++i)
 	{
 		PSSCI[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		PSSCI[i].pNext = nullptr;
@@ -156,8 +156,8 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 		VSMCI[i].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 		VSMCI[i].pNext = nullptr;
 		VSMCI[i].flags = 0;
-		VSMCI[i].codeSize = TT.lengthSize();
-		VSMCI[i].pCode = TT.data();
+		VSMCI[i].codeSize = TT.getLengthSize();
+		VSMCI[i].pCode = TT.getData();
 		
 		auto T = vkCreateShaderModule(_Device->GetVkDevice(), &VSMCI[i], ALLOCATOR, &SMS[i]);
 
@@ -169,8 +169,8 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	VkGraphicsPipelineCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 
-	CreateInfo.stageCount = PSSCI.length();
-	CreateInfo.pStages = PSSCI.data();
+	CreateInfo.stageCount = PSSCI.getLength();
+	CreateInfo.pStages = PSSCI.getData();
 	CreateInfo.pVertexInputState = &VertexInputState;
 	CreateInfo.pInputAssemblyState = &InputAssemblyState;
 	CreateInfo.pTessellationState = &TessellationState;

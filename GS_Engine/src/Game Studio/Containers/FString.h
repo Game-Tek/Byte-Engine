@@ -48,15 +48,15 @@ public:
 	[[nodiscard]] bool NonSensitiveComp(const FString& _Other) const;
 
 	//Returns the contents of this FString as a C-String.
-	char* c_str() { return Data.data(); }
+	char* c_str() { return Data.getData(); }
 
 	//Returns the contents of this FString as a C-String.
-	[[nodiscard]] const char* c_str() const { return Data.data(); }
+	[[nodiscard]] const char* c_str() const { return Data.getData(); }
 
 	//Return the length of this FString. Does not take into account the null terminator character.
-	INLINE size_t GetLength() const { return Data.length() - 1; }
+	INLINE size_t GetLength() const { return Data.getLength() - 1; }
 	//Returns whether this FString is empty.
-	INLINE bool IsEmpty() const { return Data.length() == 0; }
+	INLINE bool IsEmpty() const { return Data.getLength() == 0; }
 
 	//Places a the C-FString after this FString with a space in the middle.
 	void Append(const char * In);

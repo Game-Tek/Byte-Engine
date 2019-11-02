@@ -34,8 +34,8 @@ VKDevice::VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD)
 	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos = CreateQueueInfos(QueueInfos, 3, _PD);
 
 	VkDeviceCreateInfo DeviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-	DeviceCreateInfo.queueCreateInfoCount = QueueCreateInfos.length();
-	DeviceCreateInfo.pQueueCreateInfos = QueueCreateInfos.data();
+	DeviceCreateInfo.queueCreateInfoCount = QueueCreateInfos.getLength();
+	DeviceCreateInfo.pQueueCreateInfos = QueueCreateInfos.getData();
 	DeviceCreateInfo.enabledExtensionCount = 1;
 	DeviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 	DeviceCreateInfo.ppEnabledExtensionNames = DeviceExtensions;
@@ -57,7 +57,7 @@ VKDevice::~VKDevice()
 
 void VKDevice::SetVk_Queues(vkQueue* _Queue[], const FVector<VkDeviceQueueCreateInfo>& _QCI)
 {
-	for (uint8 i = 0; i < _QCI.length(); ++i)
+	for (uint8 i = 0; i < _QCI.getLength(); ++i)
 	{
 		for (uint8 j = 0; j < _QCI[i].queueCount; ++j)
 		{
@@ -71,7 +71,7 @@ FVector<VkDeviceQueueCreateInfo> VKDevice::CreateQueueInfos(QueueInfo* _QI, uint
 	uint32_t QueueFamiliesCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, VK_NULL_HANDLE);	//Get the amount of queue families there are in the physical device.
 	FVector<VkQueueFamilyProperties> QueueFamilies(QueueFamiliesCount);
-	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, QueueFamilies.data());
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, QueueFamilies.getData());
 
 
 	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos(QueueFamiliesCount);

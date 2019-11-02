@@ -83,8 +83,8 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3), ViewMatrix(1), Projectio
 	ULUI.PipelineUniformSets.setLength(1);
 	UL->UpdateUniformSet(ULUI);
 
-	Framebuffers.resize(SCImages.length());
-	for (uint8 i = 0; i < SCImages.length(); ++i)
+	Framebuffers.resize(SCImages.getLength());
+	for (uint8 i = 0; i < SCImages.getLength(); ++i)
 	{
 		FramebufferCreateInfo FBCI;
 		FBCI.RenderPass = RP;
@@ -152,7 +152,7 @@ void Scene::OnUpdate()
 	
 	RenderPassBeginInfo RPBI;
 	RPBI.RenderPass = RP;
-	RPBI.Framebuffers = Framebuffers.data();
+	RPBI.Framebuffers = Framebuffers.getData();
 
 	RC->BeginRenderPass(RPBI);
 

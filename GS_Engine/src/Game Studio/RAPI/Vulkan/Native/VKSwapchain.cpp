@@ -23,7 +23,7 @@ FVector<VkImage> VKSwapchain::GetImages() const
 	uint32_t ImageCount = 0;
 	vkGetSwapchainImagesKHR(m_Device->GetVkDevice(), Handle, &ImageCount, nullptr);
 	Images.resize(ImageCount);
-	vkGetSwapchainImagesKHR(m_Device->GetVkDevice(), Handle, &ImageCount, Images.data());
+	vkGetSwapchainImagesKHR(m_Device->GetVkDevice(), Handle, &ImageCount, Images.getData());
 
 	return Images;
 }

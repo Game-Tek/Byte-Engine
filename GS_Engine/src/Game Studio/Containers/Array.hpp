@@ -47,12 +47,12 @@ public:
 
 	void setLength(const LT _length) { Length = _length; }
 
-	const T* data()
+	const T* getData()
 	{
 		return this->Data;
 	}
 
-	[[nodiscard]] const T* data() const
+	[[nodiscard]] const T* getData() const
 	{
 		return this->Data;
 	}
@@ -71,7 +71,7 @@ public:
 	//	return this->Length++;
 	//}
 
-	[[nodiscard]] LT length() const	{ return this->Length; }
+	[[nodiscard]] LT getLength() const	{ return this->Length; }
 
-	[[nodiscard]] LT capacity() const {	return Size; }
+	[[nodiscard]] LT getCapacity() const { return Size; }
 };

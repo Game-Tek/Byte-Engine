@@ -41,7 +41,7 @@ public:
 	T* CreateWorldObject(const Vector3& _Pos)
 	{
 		WorldObject* Obj = new T();
-		Obj->SetID(WorldObjects.length());
+		Obj->SetID(WorldObjects.getLength());
 		Obj->SetPosition(_Pos);
 
 		WorldObjects.push_back(Obj);

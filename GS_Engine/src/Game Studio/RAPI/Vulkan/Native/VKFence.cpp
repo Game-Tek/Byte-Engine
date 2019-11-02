@@ -27,13 +27,13 @@ void VKFence::Reset() const
 void VKFence::WaitForFences(uint8 _Count, VKFence* _Fences, bool _WaitForAll)
 {
 	FVector<VkFence> Fences(1);
-	vkWaitForFences(_Fences->m_Device->GetVkDevice(), _Count, Fences.data(), _WaitForAll, 0xffffffffffffffff);
+	vkWaitForFences(_Fences->m_Device->GetVkDevice(), _Count, Fences.getData(), _WaitForAll, 0xffffffffffffffff);
 }
 
 void VKFence::ResetFences(uint8 _Count, VKFence* _Fences)
 {
 	FVector<VkFence> Fences(1);
-	vkResetFences(_Fences->m_Device->GetVkDevice(), _Count, Fences.data());
+	vkResetFences(_Fences->m_Device->GetVkDevice(), _Count, Fences.getData());
 }
 
 bool VKFence::GetStatus() const

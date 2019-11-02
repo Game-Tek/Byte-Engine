@@ -37,11 +37,11 @@ class GS_API VertexDescriptor
 		}
 	}
 public:
-	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.length())
+	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
 	{
-		Elements.resize(_Elements.length());
+		Elements.resize(_Elements.getLength());
 
-		for (uint8 i = 0; i < Elements.capacity(); ++i)
+		for (uint8 i = 0; i < Elements.getCapacity(); ++i)
 		{
 			Elements[i].Size = ShaderDataTypesSize(_Elements[i]);
 			Elements[i].DataType = _Elements[i];
@@ -65,7 +65,7 @@ public:
 
 	//Returns the size in bytes this vertex takes up.
 	[[nodiscard]] uint8 GetSize() const { return Size; }
-	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.capacity(); }
+	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.getCapacity(); }
 };
 
 struct Vertex;

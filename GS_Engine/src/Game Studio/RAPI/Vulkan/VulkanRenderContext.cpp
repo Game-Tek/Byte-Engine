@@ -67,7 +67,7 @@ SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSur
 	uint32_t FormatsCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, nullptr);
 	DArray<VkSurfaceFormatKHR> SurfaceFormats(FormatsCount);
-	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, SurfaceFormats.data());
+	vkGetPhysicalDeviceSurfaceFormatsKHR(_PD, _Surface, &FormatsCount, SurfaceFormats.getData());
 
 	//NASTY, REMOVE
 	VkBool32 Supports = 0;
@@ -90,11 +90,11 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 	uint32_t PresentModesCount = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface.GetHandle(), &PresentModesCount, nullptr);
 	DArray<VkPresentModeKHR> PresentModes(PresentModesCount);
-	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface.GetHandle(), &PresentModesCount, PresentModes.data());
+	vkGetPhysicalDeviceSurfacePresentModesKHR(_PD, _Surface.GetHandle(), &PresentModesCount, PresentModes.getData());
 
 	uint8 BestScore = 0;
 	uint8 BestPresentModeIndex = 0;
-	for (uint8 i = 0; i < PresentModes.length(); i++)
+	for (uint8 i = 0; i < PresentModes.getLength(); i++)
 	{
 		if (ScorePresentMode(PresentModes[i]) > BestScore)
 		{
@@ -114,16 +114,16 @@ VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instanc
 	PresentMode(FindPresentMode(_PD, Surface)),
 	Swapchain(CreateSwapchain(_Device, VK_NULL_HANDLE)),
 	SwapchainImages(Swapchain.GetImages()),
-	Images(SwapchainImages.capacity()),
-	ImagesAvailable(SwapchainImages.capacity()),
-	RendersFinished(SwapchainImages.capacity()),
-	InFlightFences(SwapchainImages.capacity()),
+	Images(SwapchainImages.getCapacity()),
+	ImagesAvailable(SwapchainImages.getCapacity()),
+	RendersFinished(SwapchainImages.getCapacity()),
+	InFlightFences(SwapchainImages.getCapacity()),
 	PresentationQueue(_Device->GetGraphicsQueue()),
 	CommandPool(CreateCommandPool(_Device)),
-	CommandBuffers(SwapchainImages.capacity()),
-	FrameBuffers(SwapchainImages.capacity())
+	CommandBuffers(SwapchainImages.getCapacity()),
+	FrameBuffers(SwapchainImages.getCapacity())
 {
-	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.capacity());
+	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.getCapacity());
 
 	VkSemaphoreCreateInfo SemaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 
@@ -269,7 +269,7 @@ void VulkanRenderContext::BindMesh(Mesh* _Mesh)
 void VulkanRenderContext::BindUniformLayout(UniformLayout* _UL)
 {
 	const auto VKUL = SCAST(VulkanUniformLayout*, _UL);
-	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVKPipelineLayout().GetHandle(), 0, 1, VKUL->GetVkDescriptorSets().data(), 0, nullptr);
+	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVKPipelineLayout().GetHandle(), 0, 1, VKUL->GetVkDescriptorSets().getData(), 0, nullptr);
 }
 
 void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)

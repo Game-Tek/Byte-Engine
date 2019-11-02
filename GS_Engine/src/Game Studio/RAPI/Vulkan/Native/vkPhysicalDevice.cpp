@@ -10,7 +10,7 @@ vkPhysicalDevice::vkPhysicalDevice(const VKInstance& _Instance)
 	uint32_t DeviceCount = 0;
 	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, VK_NULL_HANDLE);	//Get the amount of physical devices(GPUs) there are.
 	FVector<VkPhysicalDevice> PhysicalDevices(DeviceCount);
-	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, PhysicalDevices.data());	//Fill the array with VkPhysicalDevice handles to every physical device (GPU) there is.
+	vkEnumeratePhysicalDevices(_Instance, &DeviceCount, PhysicalDevices.getData());	//Fill the array with VkPhysicalDevice handles to every physical device (GPU) there is.
 
 	FVector<VkPhysicalDeviceProperties> PhysicalDevicesProperties(DeviceCount);	//Create a vector to store the physical device properties associated with every physical device we queried before.
 	//Loop through every physical device there is while getting/querying the physical device properties of each one and storing them in the vector.
@@ -22,7 +22,7 @@ vkPhysicalDevice::vkPhysicalDevice(const VKInstance& _Instance)
 	uint16 BestPhysicalDeviceIndex = 0;	//Variable to hold the index into the physical devices properties vector of the current winner of the GPU sorting processes.
 	uint16 i = 0;
 	//Sort by Device Type.
-	while (PhysicalDevicesProperties.length() > i)
+	while (PhysicalDevicesProperties.getLength() > i)
 	{
 		if (GetDeviceTypeScore(PhysicalDevicesProperties[i].deviceType) > GetDeviceTypeScore(PhysicalDevicesProperties[BestPhysicalDeviceIndex].deviceType))
 		{

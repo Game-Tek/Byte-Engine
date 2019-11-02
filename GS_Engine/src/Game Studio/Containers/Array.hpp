@@ -32,6 +32,9 @@ public:
 		CopyToData(_Data, Length);
 	}
 
+	T* begin() { return this->Data; }
+	T* end() { return &this->Data[Size]; }
+	
 	T& operator[](const LT i)
 	{
 		return this->Data[i];

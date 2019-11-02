@@ -114,16 +114,6 @@ public:
 		return functionPointer != another.functionPointer;
 	}
 
-	bool operator ==(const multicast_delegate<RET(PARAMS...)>& another) const
-	{
-		return another == (*this);
-	}
-
-	bool operator !=(const multicast_delegate<RET(PARAMS...)>& another) const
-	{
-		return another != (*this);
-	}
-
 	template <class T, RET(T::* TMethod)(PARAMS...)>
 	static Functor Create(T* instance)
 	{
@@ -145,7 +135,7 @@ public:
 	template <typename LAMBDA>
 	static Functor Create(const LAMBDA& instance)
 	{
-		return Functor((void*)(&instance), lambda_stub<LAMBDA>);
+		return Functor(static_cast<void*>(&instance), lambda_stub<LAMBDA>);
 	}
 
 	RET operator()(PARAMS... arg) const

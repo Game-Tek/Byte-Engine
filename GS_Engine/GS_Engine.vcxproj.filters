@@ -241,6 +241,12 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Dispatcher.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
+    <ClInclude Include="src\Game Studio\Sound\Player.h" />
+    <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
+    <ClInclude Include="src\Game Studio\Sound\Mixer.h" />
+    <ClInclude Include="src\Game Studio\SAPI\AudioBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -324,6 +330,7 @@
     <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
+    <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

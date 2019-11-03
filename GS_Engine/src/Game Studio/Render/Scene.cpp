@@ -328,8 +328,8 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	_Matrix(0, 0) = f / _AspectRatio;
 	_Matrix(1, 1) = -f;
 	_Matrix(2, 2) = _Far / (_Near - _Far);
-	_Matrix(3, 2) = -1;
-	_Matrix(2, 3) = (_Near * _Far) / (_Near - _Far);
+	_Matrix(2, 3) = -1;
+	_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
 
 	/*Vulkan Cookbook Code*/
 }

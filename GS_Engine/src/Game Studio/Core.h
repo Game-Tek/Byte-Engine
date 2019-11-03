@@ -50,8 +50,7 @@ typedef double real;
 
 //Assert
 #ifdef GS_DEBUG
-	#define GS_ASSERT(func, ...) func;\
-							if ((func)) __debugbreak()
+	#define GS_ASSERT(func, ...) if ((func)) __debugbreak()
 #else
 	#define GS_ASSERT(func, ...) func;
 #endif

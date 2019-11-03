@@ -111,6 +111,7 @@ public:
 
 	FVector(const std::initializer_list<_T>& _InitializerList) : capacity(_InitializerList.end() - _InitializerList.begin()), length(this->capacity), data(allocate(this->capacity))
 	{
+		copyArray(_InitializerList.begin(), this->data, this->length);
 	}
 	
 	FVector(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(_End - _Start), data(allocate(this->capacity))
@@ -146,11 +147,11 @@ public:
 
 	[[nodiscard]] iterator begin() { return this->data; }
 
-	[[nodiscard]] iterator end() { return &this->data[this->length + 1]; }
+	[[nodiscard]] iterator end() { return &this->data[this->length]; }
 
 	[[nodiscard]] const_iterator begin() const { return this->data; }
 
-	[[nodiscard]] const_iterator end() const { return &this->data[this->length + 1]; }
+	[[nodiscard]] const_iterator end() const { return &this->data[this->length]; }
 
 	_T& front() { return this->data[0]; }
 

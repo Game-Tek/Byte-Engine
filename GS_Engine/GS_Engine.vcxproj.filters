@@ -245,8 +245,8 @@
     <ClInclude Include="src\Game Studio\Sound\Player.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
-    <ClInclude Include="src\Game Studio\Sound\Mixer.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioBuffer.h" />
+    <ClInclude Include="src\Game Studio\Sound\AudioMixer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

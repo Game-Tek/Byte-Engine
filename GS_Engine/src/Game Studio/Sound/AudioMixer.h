@@ -9,7 +9,7 @@
 
 class AudioBuffer;
 
-class Effect
+class AudioMixerChannelEffect
 {
 	/**
 	* \brief Defines the effect's name. Used to refer to it.
@@ -22,18 +22,22 @@ class Effect
 	float effectIntensity = 0.0f;
 	
 public:
-	virtual ~Effect();
+	virtual ~AudioMixerChannelEffect();
 	
 	virtual void Process(const AudioBuffer& _AudioBuffer) = 0;
 };
 
-struct EffectRemoveParameters
+/**
+ * \brief Structure to specify the details of the deletion of an audio channel effect.\n
+ * Like the fade out time, or the fade out function.
+ */
+struct AudioMixerChannelEffectRemoveParameters
 {
 	/**
-	 * \brief Determines the time it takes for this effect to be killed.\n
+	 * \brief Determines the time it takes for this effect to be faded out.\n
 	 * If KillTime is 0 the effect will be deleted immediately.
 	 */
-	float KillTime = 0.0f;
+	float FadeOutTime = 0.0f;
 
 	/**
 	 * \brief Pointer to the function to be used for fading out the effect. If any fading out is applied at all.
@@ -41,11 +45,11 @@ struct EffectRemoveParameters
 	void(*FadeFunction)() = nullptr;
 };
 
-class Mixer
+class AudioMixer
 {
-	class Channel
+	class AudioMixerChannel
 	{
-		friend class Mixer;
+		friend class AudioMixer;
 		
 		/**
 		 * \brief Defines the type for a Pair holding a bool to determine whether the sound is virtualized, and a Player* to know which Player to grab the data from.
@@ -69,12 +73,12 @@ class Mixer
 		FVector<PlayingSounds> playingSounds;
 		
 		/**
-		 * \brief Holds the collection of effects this channel has.
+		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.
 		 */
-		Array<Effect*, 10> effects;
+		Array<AudioMixerChannelEffect*, 10> effects;
 
 	public:
-		~Channel()
+		~AudioMixerChannel()
 		{
 			for(auto& e : effects)
 			{
@@ -84,32 +88,37 @@ class Mixer
 		
 		void SetMixVolume(const float _MixVolume) { mixVolume = _MixVolume; }
 
+		/**
+		 * \brief Adds and effect to the channel.
+		 * \tparam _T Class of effect
+		 * \return Effect* to the newly created effect. Could be used to set parameters.
+		 */
 		template<class _T>
-		Effect* AddEffect(const Effect& _NewEffect)
+		AudioMixerChannelEffect* AddEffect()
 		{
-			Effect* new_effect = new _T();
+			AudioMixerChannelEffect* new_effect = new _T();
 			effects.push_back(new_effect);
 			return new_effect;
 		}
 
-		void RemoveEffect(const EffectRemoveParameters& _ERP);
+		void RemoveEffect(const AudioMixerChannelEffectRemoveParameters& _ERP);
 	};
 	
 	/**
 	 * \brief Stores every channel available.
 	 */
-	HashMap<Channel> channels;
+	HashMap<AudioMixerChannel> channels;
 	
 public:
 	void OnUpdate();
 	
-	void RegisterNewChannel(const Channel& _Channel)
+	void RegisterNewChannel(const AudioMixerChannel& _Channel)
 	{
 		//channels.TryEmplace;
 		channels.Get(0).effects;
 	}
 
-	Channel& GetChannel(const Id& _Id)
+	AudioMixerChannel& GetChannel(const Id& _Id)
 	{
 		return channels.Get(_Id.GetID());
 	}

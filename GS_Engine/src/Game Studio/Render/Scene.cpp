@@ -310,25 +310,28 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//Zero to one
 	//Left handed
 
+	/*GLM LH_ZO Code*/
+	
 	//_Matrix(0, 0) = 1 / (_AspectRatio * tan_half_fov);
 	//_Matrix(1, 1) = 1 / tan_half_fov;
 	//_Matrix(2, 2) = _Far / (_Far - _Near);
-	//_Matrix(3, 2) = -1;
+	//_Matrix(3, 2) = 1;
 	//_Matrix(2, 3) = -(_Far * _Near) / (_Far - _Near);
 	//
 
-	auto f = 1 / tan_half_fov;
+	/*GLM LH_ZO Code*/
+	
+	/*Vulkan Cookbook Code*/
+
+	const auto f = 1 / tan_half_fov;
 	
 	_Matrix(0, 0) = f / _AspectRatio;
 	_Matrix(1, 1) = -f;
 	_Matrix(2, 2) = _Far / (_Near - _Far);
-	_Matrix(2, 3) = -1;
-	_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
-	
-	//_Matrix = Matrix4( 1 / (_AspectRatio * Tangent), 0, 0, 0,
-	//				0, 1 / Tangent, 0, 0,
-	//				0, 0, _Far / (_Near - _Far), -1, 
-	//				0, 0, -(_Far * _Near) / (_Far - _Near), 0);
+	_Matrix(3, 2) = -1;
+	_Matrix(2, 3) = (_Near * _Far) / (_Near - _Far);
+
+	/*Vulkan Cookbook Code*/
 }
 
 Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)

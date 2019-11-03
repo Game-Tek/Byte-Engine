@@ -4,64 +4,82 @@
 
 #include <initializer_list>
 
-template <typename T, size_t Size, typename LT = uint8>
+template <typename _T, size_t _Size, typename _LT = uint8>
 class Array
 {
-	T Data[Size];
-	LT Length = 0;
+	_T data[_Size];
+	_LT length = 0;
 
-	void CopyToData(const void* _Src, const LT _Length)
+	void CopyToData(const void* _Src, const _LT _Length)
 	{
-		memcpy(this->Data, _Src, _Length * sizeof(T));
+		memcpy(this->data, _Src, _Length * sizeof(_T));
 	}
 
 public:
+	typedef _T* iterator;
+	typedef const _T* const_iterator;
+
+	[[nodiscard]] iterator begin() { return this->data; }
+
+	[[nodiscard]] iterator end() { return &this->data[this->length]; }
+
+	[[nodiscard]] const_iterator begin() const { return this->data; }
+
+	[[nodiscard]] const_iterator end() const { return &this->data[this->length]; }
+
+	_T& front() { return this->data[0]; }
+
+	_T& back() { return this->data[this->length]; }
+
+	[[nodiscard]] const _T& front() const { return this->data[0]; }
+
+	[[nodiscard]] const _T& back() const { return this->data[this->length]; }
+	
 	Array() = default;
 
-	Array(const std::initializer_list<T> _InitList) : Length(_InitList.size())
+	Array(const std::initializer_list<_T>& _InitList) : length(_InitList.size())
 	{
-		CopyToData(_InitList.begin(), this->Length);
+		CopyToData(_InitList.begin(), this->length);
 	}
 
-	explicit Array(const LT _Length) : Length(_Length)
+	explicit Array(const _LT _Length) : length(_Length)
 	{
 	}
 
-	Array(const LT _Length, T _Data[]) : Data(), Length(_Length)
+	Array(const _LT _Length, _T _Data[]) : data(), length(_Length)
 	{
-		CopyToData(_Data, Length);
+		CopyToData(_Data, length);
 	}
-
-	T* begin() { return this->Data; }
-	T* end() { return &this->Data[Size] + 1; }
 	
-	T& operator[](const LT i)
+	_T& operator[](const _LT i)
 	{
-		return this->Data[i];
+		GS_DEBUG_ONLY(GS_ASSERT(i > _Size))
+		return this->data[i];
 	}
 
-	const T& operator[](const LT i) const
+	const _T& operator[](const _LT i) const
 	{
-		return this->Data[i];
+		GS_DEBUG_ONLY(GS_ASSERT(i > _Size))
+		return this->data[i];
 	}
 
-	void setLength(const LT _length) { Length = _length; }
+	void setLength(const _LT _length) { length = _length; }
 
-	const T* getData()
+	const _T* getData()
 	{
-		return this->Data;
+		return this->data;
 	}
 
-	[[nodiscard]] const T* getData() const
+	[[nodiscard]] const _T* getData() const
 	{
-		return this->Data;
+		return this->data;
 	}
 
-	LT push_back(const T& _obj)
+	_LT push_back(const _T& _obj)
 	{
 		CopyToData(&_obj, 1);
 
-		return ++this->Length;
+		return ++this->length;
 	}
 
 	//LT push_back(const T* _obj)
@@ -71,7 +89,7 @@ public:
 	//	return this->Length++;
 	//}
 
-	[[nodiscard]] LT getLength() const	{ return this->Length; }
+	[[nodiscard]] _LT getLength() const	{ return this->length; }
 
-	[[nodiscard]] LT getCapacity() const { return Size; }
+	[[nodiscard]] _LT getCapacity() const { return _Size; }
 };

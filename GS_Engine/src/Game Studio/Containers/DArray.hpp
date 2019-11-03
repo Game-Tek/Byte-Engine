@@ -9,9 +9,6 @@
 template <typename _T, typename _LT = uint8>
 class DArray
 {
-	typedef _T* iterator;
-	typedef const _T* const_iterator;
-
 	_LT capacity = 0;
 	_LT length = 0;
 	_T* data = nullptr;
@@ -42,6 +39,25 @@ class DArray
 	}
 
 public:
+	typedef _T* iterator;
+	typedef const _T* const_iterator;
+
+	[[nodiscard]] iterator begin() { return this->data; }
+
+	[[nodiscard]] iterator end() { return &this->data[this->length]; }
+
+	[[nodiscard]] const_iterator begin() const { return this->data; }
+
+	[[nodiscard]] const_iterator end() const { return &this->data[this->length]; }
+
+	_T& front() { return this->data[0]; }
+
+	_T& back() { return this->data[this->length]; }
+
+	[[nodiscard]] const _T& front() const { return this->data[0]; }
+
+	[[nodiscard]] const _T& back() const { return this->data[this->length]; }
+	
 	DArray() = default;
 
 	DArray(const std::initializer_list<_T>& _List) : capacity(_List.size()), length(_List.size()), data(allocate(_List.size()))

@@ -132,8 +132,9 @@
     <ClInclude Include="src\Game Studio\SAPI\AudioBuffer.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
-    <ClInclude Include="src\Game Studio\Sound\AudioMixer.h" />
-    <ClInclude Include="src\Game Studio\Sound\Player.h" />
+    <ClInclude Include="src\Game Studio\Sound\SoundMixer.h" />
+    <ClInclude Include="src\Game Studio\Sound\SoundManager.h" />
+    <ClInclude Include="src\Game Studio\Sound\SoundPlayer.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundListener.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />

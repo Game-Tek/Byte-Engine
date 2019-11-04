@@ -1,6 +1,6 @@
 #pragma once
 
-class Player
+class SoundPlayer
 {
 	class Sound;
 	

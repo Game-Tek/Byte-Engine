@@ -3,13 +3,13 @@
 #include "Containers/Id.h"
 #include "Containers/HashMap.hpp"
 
-#include "Player.h"
+#include "SoundPlayer.h"
 #include "Containers/Pair.h"
 #include "Containers/Array.hpp"
 
 class AudioBuffer;
 
-class AudioMixerChannelEffect
+class SoundMixerChannelEffect
 {
 	/**
 	* \brief Defines the effect's name. Used to refer to it.
@@ -22,7 +22,7 @@ class AudioMixerChannelEffect
 	float effectIntensity = 0.0f;
 	
 public:
-	virtual ~AudioMixerChannelEffect();
+	virtual ~SoundMixerChannelEffect();
 	
 	virtual void Process(const AudioBuffer& _AudioBuffer) = 0;
 };
@@ -31,7 +31,7 @@ public:
  * \brief Structure to specify the details of the deletion of an audio channel effect.\n
  * Like the fade out time, or the fade out function.
  */
-struct AudioMixerChannelEffectRemoveParameters
+struct SoundMixerChannelEffectRemoveParameters
 {
 	/**
 	 * \brief Determines the time it takes for this effect to be faded out.\n
@@ -45,16 +45,16 @@ struct AudioMixerChannelEffectRemoveParameters
 	void(*FadeFunction)() = nullptr;
 };
 
-class AudioMixer
+class SoundMixer
 {
-	class AudioMixerChannel
+	class SoundMixerChannel
 	{
-		friend class AudioMixer;
+		friend class SoundMixer;
 		
 		/**
 		 * \brief Defines the type for a Pair holding a bool to determine whether the sound is virtualized, and a Player* to know which Player to grab the data from.
 		 */
-		using PlayingSounds = Pair<bool, Player*>;
+		using PlayingSounds = Pair<bool, SoundPlayer*>;
 
 
 		/**
@@ -75,10 +75,10 @@ class AudioMixer
 		/**
 		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.
 		 */
-		Array<AudioMixerChannelEffect*, 10> effects;
+		Array<SoundMixerChannelEffect*, 10> effects;
 
 	public:
-		~AudioMixerChannel()
+		~SoundMixerChannel()
 		{
 			for(auto& e : effects)
 			{
@@ -94,31 +94,31 @@ class AudioMixer
 		 * \return Effect* to the newly created effect. Could be used to set parameters.
 		 */
 		template<class _T>
-		AudioMixerChannelEffect* AddEffect()
+		SoundMixerChannelEffect* AddEffect()
 		{
-			AudioMixerChannelEffect* new_effect = new _T();
+			SoundMixerChannelEffect* new_effect = new _T();
 			effects.push_back(new_effect);
 			return new_effect;
 		}
 
-		void RemoveEffect(const AudioMixerChannelEffectRemoveParameters& _ERP);
+		void RemoveEffect(const SoundMixerChannelEffectRemoveParameters& _ERP);
 	};
 	
 	/**
 	 * \brief Stores every channel available.
 	 */
-	HashMap<AudioMixerChannel> channels;
+	HashMap<SoundMixerChannel> channels;
 	
 public:
 	void OnUpdate();
 	
-	void RegisterNewChannel(const AudioMixerChannel& _Channel)
+	void RegisterNewChannel(const SoundMixerChannel& _Channel)
 	{
 		//channels.TryEmplace;
 		channels.Get(0).effects;
 	}
 
-	AudioMixerChannel& GetChannel(const Id& _Id)
+	SoundMixerChannel& GetChannel(const Id& _Id)
 	{
 		return channels.Get(_Id.GetID());
 	}

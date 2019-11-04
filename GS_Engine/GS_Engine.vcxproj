@@ -130,10 +130,12 @@
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioBuffer.h" />
+    <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Game Studio\Sound\AudioMixer.h" />
     <ClInclude Include="src\Game Studio\Sound\Player.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
+    <ClInclude Include="src\Game Studio\Sound\SoundListener.h" />
     <ClInclude Include="src\Game Studio\Utility\Functor.h" />
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />

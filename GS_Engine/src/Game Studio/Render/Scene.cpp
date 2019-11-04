@@ -264,7 +264,7 @@ void Scene::UpdateMatrices()
 
 	auto t = Win->GetAspectRatio();
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 0.5, 1000);
+	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 1, 500);
 
 	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
 	
@@ -317,8 +317,9 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//_Matrix(2, 2) = _Far / (_Far - _Near);
 	//_Matrix(3, 2) = 1;
 	//_Matrix(2, 3) = -(_Far * _Near) / (_Far - _Near);
-	//
+	//_Matrix(3, 3) = 0;
 
+	
 	/*GLM LH_ZO Code*/
 	
 	/*Vulkan Cookbook Code*/
@@ -330,8 +331,22 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	_Matrix(2, 2) = _Far / (_Near - _Far);
 	_Matrix(2, 3) = -1;
 	_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
+	_Matrix(3, 3) = 0;
 
 	/*Vulkan Cookbook Code*/
+
+
+	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
+	
+	//_Matrix(1, 1) = tan_half_fov;
+	//_Matrix(0, 0) = 1 * _Matrix(1, 1) / _AspectRatio;
+	//_Matrix(2, 2) = _Far * (1 / (_Far - _Near));
+	//_Matrix(3, 2) = (-_Far * _Near) * (1 / (_Far - _Near));
+	//_Matrix(2, 3) = -1;
+	//_Matrix(3, 3) = 0;
+
+	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
+	
 }
 
 Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)

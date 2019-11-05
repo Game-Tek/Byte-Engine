@@ -269,17 +269,17 @@ public:
 		this->length -= _Length;
 	}
 
-	size_t find(const _T& _Obj)
+	Pair<bool, size_t> find(const _T& _Obj)
 	{
 		for (size_t i = 0; i < this->length; i++)
 		{
 			if (_Obj == data[i])
 			{
-				return i;
+				return {true, i};
 			}
 		}
 		
-		return ~0ULL;
+		return {false, 0};
 	}
 
 	//Looks for object inside of the array and when it finds it, it deletes it.

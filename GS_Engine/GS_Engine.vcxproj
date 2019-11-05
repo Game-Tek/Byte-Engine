@@ -109,6 +109,7 @@
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
+    <ClInclude Include="src\Game Studio\Containers\VectorMap.h" />
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
     <ClInclude Include="src\Game Studio\Functor.h" />
     <ClInclude Include="src\Game Studio\Dispatcher.h" />

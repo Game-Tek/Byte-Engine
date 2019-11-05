@@ -10,7 +10,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	if (_Resource->GetReferenceCount() == 0)
 	{
 		//delete ResourceMap[_Resource];
-		delete R[R.find(_Resource)];
+		delete R[R.find(_Resource).Second];
 	}
 }
 

@@ -8,7 +8,7 @@
 #include "Material.h"
 #include "Game/StaticMesh.h"
 
-Scene::Scene() : RenderComponents(10), Framebuffers(3), ViewMatrix(1), ProjectionMatrix(1), ViewProjectionMatrix(1)
+Scene::Scene() : Framebuffers(3), ViewMatrix(1), ProjectionMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -118,9 +118,12 @@ Scene::Scene() : RenderComponents(10), Framebuffers(3), ViewMatrix(1), Projectio
 
 Scene::~Scene()
 {
-	for (auto& Element : RenderComponents)
+	for (auto& Element : ComponentToInstructionsMap)
 	{
-		delete Element;
+		for (auto& e : Element.Second)
+		{
+			delete e;
+		}
 	}
 
 	for (auto const& x : Pipelines)
@@ -273,33 +276,40 @@ void Scene::UpdateMatrices()
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
-	auto RI = _RC->GetRenderableInstructions();
+	auto ri = _RC->GetRenderableInstructions();
 	
 	CreateInstanceResourcesInfo CIRI{ _RC, this };
 	CIRI.RenderComponentCreateInfo = _RCCI;
-	RI.CreateInstanceResources(CIRI);
+	ri.CreateInstanceResources(CIRI);
 
 	RegisterMaterial(CIRI.Material);
 	
-	RenderableInstructionsMap.try_emplace(Id(_RC->GetRenderableTypeName()).GetID(), _RC->GetRenderableInstructions());
-	RenderComponents.emplace_back(_RC);
+	ComponentToInstructionsMap.Insert(ri, _RC, Id(_RC->GetRenderableTypeName()).GetID());
 }
 
 void Scene::UpdateRenderables()
 {
-	for (auto& e : RenderComponents)
+	for (auto& e : ComponentToInstructionsMap)
 	{
+		auto& ri = e.First;
+		
+		for(auto& f : e.Second)
+		{
+		}
 	}
 }
 
 void Scene::RenderRenderables()
 {
 	BindPipeline(Pipelines.begin()->second);
-	
-	for(auto& e : RenderComponents)
+
+	for (auto& ri : ComponentToInstructionsMap)
 	{
-		DrawInstanceInfo DII{this, e };
-		e->GetRenderableInstructions().DrawInstance(DII);
+		for (auto& component : ri.Second)
+		{
+			DrawInstanceInfo DII{ this, component };
+			ri.First.DrawInstance(DII);
+		}
 	}
 }
 

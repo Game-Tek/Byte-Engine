@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <initializer_list>
 #include "Resources/Stream.h"
+#include "Pair.h"
 
 template <typename _T, typename _LT = size_t>
 class FVector
@@ -275,11 +276,11 @@ public:
 		{
 			if (_Obj == data[i])
 			{
-				return {true, i};
+				return { true, i };
 			}
 		}
 		
-		return {false, 0};
+		return { false, 0 };
 	}
 
 	//Looks for object inside of the array and when it finds it, it deletes it.

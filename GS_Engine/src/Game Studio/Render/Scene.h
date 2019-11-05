@@ -18,6 +18,7 @@
 #include <map>
 #include "RenderableInstructions.h"
 #include "Containers/Id.h"
+#include "Containers/VectorMap.h"
 
 class StaticMeshResource;
 class RenderProxy;
@@ -62,8 +63,6 @@ protected:
 	GS_DEBUG_ONLY(uint32 PipelineSwitches = 0)
 	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
-	mutable std::map<Id::HashType, RenderableInstructions> RenderableInstructionsMap;
-
 	/* ---- RAPI Resources ---- */
 	// MATERIALS
 	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
@@ -74,13 +73,12 @@ protected:
 	//FVector<Mesh*> Meshes;
 	// MESHES
 
+	VectorMap<RenderComponent*, RenderableInstructions> ComponentToInstructionsMap;
+	
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
 	GraphicsPipeline* RegisterMaterial(Material* _Mat);
 	/* ---- RAPI Resources ---- */
-
-	//Scene elements
-	mutable FVector<RenderComponent*> RenderComponents;
 
 	//Pointer to the active camera.
 	mutable Camera* ActiveCamera = nullptr;

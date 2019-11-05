@@ -3,36 +3,42 @@
 #include "FVector.hpp"
 #include <map>
 
-template<typename _T, typename _K = uint32>
+template<typename _T, typename _P, typename _K = uint32>
 class VectorMap
 {
-	std::map<_K, FVector<_T>> vectorMap;
-
+	FVector<Pair<_P, FVector<_T>>> vectorMap;
+	
 public:
 
+	VectorMap() : vectorMap(10)
+	{
+	}
+	
 	/**
 	 * \brief Inserts a value into the list at the corresponding space.
-	 * \param _Val Value to insert.
+	 * \param _Pair Value to insert.
 	 * \param _Key Key for value.
 	 */
-	void Insert(const _T& _Val, const _K& _Key)
+	void Insert(const _P& _Identifier, const _T& _Value, const _K& _Key)
 	{
-		auto search_result = vectorMap.find(32);
+		auto search_result = vectorMap.find(_Value);
 
-		if(search_result != vectorMap.end())
+		if(search_result.First)
 		{
-			search_result->second.push_back(_Val);
+			//search_result->second.Second.push_back(_Value);
+			vectorMap[search_result->Second].Second.push_back(_Value);
 		}
 		else
 		{
-			vectorMap.emplace(FVector<_T>(10)).first->second.push_back(_Val);
-			
+			//vectorMap.emplace(Pair<_P, FVector<_T>>(_Identifier, FVector<_T>(10))).first->second.Second.push_back(_Value);
+			vectorMap.push_back(Pair<_P, FVector<_T>>(_Identifier, FVector<_T>(10)));
+			vectorMap[vectorMap.getLength()].Second.push_back(_Value);
 		}
 	}
 
 	void Delete(const _T& _Val, const _K& _Key)
 	{
-		vectorMap[_Key].eraseObject(_Val);
+		vectorMap[vectorMap.find(_Key).Second].eraseObject(_Val);
 	}
 
 	FVector<_T>& operator[](const _K& _Key)
@@ -40,6 +46,6 @@ public:
 		return vectorMap[_Key];
 	}
 
-	FVector<_T>* begin() const { return vectorMap.begin(); }
-	FVector<_T>* end() const { return vectorMap.end(); }
+	[[nodiscard]] Pair<_P, FVector<_T>>* begin() { return vectorMap.begin(); }
+	[[nodiscard]] Pair<_P, FVector<_T>>* end() { return vectorMap.end(); }
 };

@@ -116,6 +116,10 @@
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Math\Frustum.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
+    <ClInclude Include="src\Game Studio\Physics\ForceGenerator.h" />
+    <ClInclude Include="src\Game Studio\Physics\HitResult.h" />
+    <ClInclude Include="src\Game Studio\Physics\PhysicsWorld.h" />
+    <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />

@@ -250,6 +250,10 @@
     <ClInclude Include="src\Game Studio\Sound\SoundPlayer.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundManager.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundMixer.h" />
+    <ClInclude Include="src\Game Studio\Physics\PhysicsWorld.h" />
+    <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
+    <ClInclude Include="src\Game Studio\Physics\HitResult.h" />
+    <ClInclude Include="src\Game Studio\Physics\ForceGenerator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

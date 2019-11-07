@@ -257,6 +257,8 @@
     <ClInclude Include="src\Game Studio\Containers\VectorMap.h" />
     <ClInclude Include="src\Game Studio\Physics\Queries.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\SphereWithFallof.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\BoxWithFalloff.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

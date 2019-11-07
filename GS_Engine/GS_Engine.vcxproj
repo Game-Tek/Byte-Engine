@@ -155,6 +155,7 @@
     <ClInclude Include="src\Game Studio\PointLight.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Containers\Id.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Game\Actor.h" />
@@ -228,6 +229,7 @@
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
+    <ClInclude Include="src\Game Studio\Utility\Shapes\SphereWithFallof.h" />
     <ClInclude Include="src\GameStudio.h" />
     <ClInclude Include="src\Game Studio\Vertex.h" />
     <ClInclude Include="src\Game Studio\Math\Vector2.h" />

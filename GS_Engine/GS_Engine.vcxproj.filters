@@ -255,6 +255,8 @@
     <ClInclude Include="src\Game Studio\Physics\HitResult.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerator.h" />
     <ClInclude Include="src\Game Studio\Containers\VectorMap.h" />
+    <ClInclude Include="src\Game Studio\Physics\Queries.h" />
+    <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

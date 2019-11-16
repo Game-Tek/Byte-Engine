@@ -4,6 +4,8 @@
 
 #include "Scene.h"
 
+RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = { decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(), decltype(RenderableInstructions::BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>(), decltype(RenderableInstructions::BindTypeResources)::Create<&BindTypeResources>(), decltype(RenderableInstructions::DrawInstance)::Create<&DrawInstance>() };
+
 void StaticMeshRenderComponent::CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI)
 {
 	_CIRI.Material = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh->GetMaterial();
@@ -30,15 +32,4 @@ void StaticMeshRenderComponent::DrawInstance(DrawInstanceInfo& _DII)
 	DI.IndexCount = SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->staticMesh->GetModel().IndexCount;
 	DI.InstanceCount = 1;
 	_DII.Scene->DrawMesh(DI, SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->renderMesh);
-}
-
-RenderableInstructions StaticMeshRenderComponent::GetRenderableInstructions() const
-{
-	RenderableInstructions SMRCRI;
-	SMRCRI.RenderableTypeName = "StaticMesh";
-	SMRCRI.CreateInstanceResources = decltype(SMRCRI.CreateInstanceResources)::Create<&CreateInstanceResources>();
-	SMRCRI.BuildTypeInstanceSortData = decltype(SMRCRI.BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>();
-	SMRCRI.BindTypeResources = decltype(SMRCRI.BindTypeResources)::Create<&BindTypeResources>();
-	SMRCRI.DrawInstance = decltype(SMRCRI.DrawInstance)::Create<&DrawInstance>();
-	return SMRCRI;
 }

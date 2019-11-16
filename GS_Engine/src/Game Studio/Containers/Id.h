@@ -7,19 +7,27 @@ class FString;
 class GS_API Id
 {
 public:
-	using HashType = uint32;
+	using HashType = GS_HASH_TYPE;
+private:
+	static HashType HashString(const char* Text);
+public:
 
 	Id() = default;
-	explicit Id(const char * Text);
-	explicit Id(const FString& _Text);
+
+	Id(const char* Text);
+
+	Id(const FString& _Text);
+	
 	~Id() = default;
 
 	INLINE HashType GetID() { return HashedString; }
 	INLINE HashType GetID() const { return HashedString; }
-private:
-	uint32 HashedString;
+	
+	operator HashType() const { return HashedString; }
 
-	static HashType HashString(const char* Text);
+private:
+	HashType HashedString;
+
 	static HashType HashString(const FString& _Text);
 };
 

@@ -254,11 +254,14 @@
     <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
     <ClInclude Include="src\Game Studio\Physics\HitResult.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerator.h" />
-    <ClInclude Include="src\Game Studio\Containers\VectorMap.h" />
     <ClInclude Include="src\Game Studio\Physics\Queries.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\SphereWithFallof.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\BoxWithFalloff.h" />
+    <ClInclude Include="src\Game Studio\Core\Thread.h" />
+    <ClInclude Include="src\Game Studio\Core\Network.h" />
+    <ClInclude Include="src\Game Studio\Core\Allocator.h" />
+    <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

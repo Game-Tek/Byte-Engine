@@ -73,7 +73,9 @@ struct DrawInstanceInfo
 //Holds a set of functions that describe how to create resources, bind resources for some type of renderable and how to draw it.
 struct RenderableInstructions
 {
-	FString RenderableTypeName = FString("null");
+	RenderableInstructions() = default;
+	
+	//FString RenderableTypeName = FString("null");
 
 	//This function should create all required data/resources for a single object of the type being described.
 	Functor<void (CreateInstanceResourcesInfo&)> CreateInstanceResources;

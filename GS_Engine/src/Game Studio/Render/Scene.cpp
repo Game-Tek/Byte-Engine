@@ -120,10 +120,7 @@ Scene::~Scene()
 {
 	for (auto& Element : ComponentToInstructionsMap)
 	{
-		for (auto& e : Element.Second)
-		{
-			delete e;
-		}
+		delete Element.second;
 	}
 
 	for (auto const& x : Pipelines)
@@ -242,7 +239,7 @@ Mesh* Scene::RegisterMesh(StaticMesh* _SM)
 
 GraphicsPipeline* Scene::RegisterMaterial(Material* _Mat)
 {
-	auto Res = Pipelines.find(Id(_Mat->GetMaterialName()).GetID());
+	auto Res = Pipelines.find(Id(_Mat->GetMaterialName()));
 	if (Res != Pipelines.end())
 	{
 		return Pipelines[Res->first];
@@ -280,22 +277,19 @@ void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateI
 	
 	CreateInstanceResourcesInfo CIRI{ _RC, this };
 	CIRI.RenderComponentCreateInfo = _RCCI;
-	ri.CreateInstanceResources(CIRI);
+	ri->CreateInstanceResources(CIRI);
 
 	RegisterMaterial(CIRI.Material);
-	
-	ComponentToInstructionsMap.Insert(ri, _RC, Id(_RC->GetRenderableTypeName()).GetID());
 }
 
 void Scene::UpdateRenderables()
 {
 	for (auto& e : ComponentToInstructionsMap)
 	{
-		auto& ri = e.First;
-		
-		for(auto& f : e.Second)
-		{
-		}
+		auto ri = e.second->GetRenderableInstructions();
+
+		BindTypeResourcesInfo btpi{ this };
+		ri->BindTypeResources(btpi);
 	}
 }
 
@@ -303,13 +297,12 @@ void Scene::RenderRenderables()
 {
 	BindPipeline(Pipelines.begin()->second);
 
-	for (auto& ri : ComponentToInstructionsMap)
+	for (auto& e : ComponentToInstructionsMap)
 	{
-		for (auto& component : ri.Second)
-		{
-			DrawInstanceInfo DII{ this, component };
-			ri.First.DrawInstance(DII);
-		}
+		auto ri = e.second->GetRenderableInstructions();
+		
+		DrawInstanceInfo dii{ this, e.second };
+		ri->DrawInstance(dii);
 	}
 }
 
@@ -334,14 +327,14 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	
 	/*Vulkan Cookbook Code*/
 
-	const auto f = 1 / tan_half_fov;
-	
-	_Matrix(0, 0) = f / _AspectRatio;
-	_Matrix(1, 1) = -f;
-	_Matrix(2, 2) = _Far / (_Near - _Far);
-	_Matrix(2, 3) = -1;
-	_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
-	_Matrix(3, 3) = 0;
+	//const auto f = 1 / tan_half_fov;
+	//
+	//_Matrix(0, 0) = f / _AspectRatio;
+	//_Matrix(1, 1) = -f;
+	//_Matrix(2, 2) = _Far / (_Near - _Far);
+	//_Matrix(2, 3) = -1;
+	//_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
+	//_Matrix(3, 3) = 0;
 
 	/*Vulkan Cookbook Code*/
 
@@ -356,6 +349,30 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//_Matrix(3, 3) = 0;
 
 	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
+
+
+	//ANKI 3d	https://github.com/godlikepanos/anki-3d-engine/blob/master/src/anki/math/Mat.h
+
+	//ANKI_ASSERT(fovX > T(0) && fovY > T(0) && near > T(0) && far > T(0));
+	const float g = _Near - _Far;
+	const float f = 1 / GSM::Tangent(_FOV / 2); // f = cot(fovY/2)
+
+	_Matrix(0, 0) = f * _AspectRatio; // = f/aspectRatio;
+	_Matrix(0, 1) = 0;
+	_Matrix(0, 2) = 0;
+	_Matrix(0, 3) = 0;
+	_Matrix(1, 0) = 0;
+	_Matrix(1, 1) = f;
+	_Matrix(1, 2) = 0;
+	_Matrix(1, 3) = 0;
+	_Matrix(2, 0) = 0;
+	_Matrix(2, 1) = 0;
+	_Matrix(2, 2) = _Far / g;
+	_Matrix(2, 3) = (_Far * _Near) / g;
+	_Matrix(3, 0) = 0;
+	_Matrix(3, 1) = 0;
+	_Matrix(3, 2) = -1;
+	_Matrix(3, 3) = 0;
 	
 }
 

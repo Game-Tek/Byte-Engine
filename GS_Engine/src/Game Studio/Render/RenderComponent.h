@@ -28,7 +28,7 @@ public:
 
 	//Returns a pointer to a static renderable instructions struct.
 	//This RenderableInstructions struct should have it's set of function filled out so as to be able to specify how to render this render component type.
-	[[nodiscard]] virtual RenderableInstructions GetRenderableInstructions() const = 0;
+	[[nodiscard]] virtual RenderableInstructions* GetRenderableInstructions() const = 0;
 
 	[[nodiscard]] virtual const char* GetRenderableTypeName() const = 0;
 

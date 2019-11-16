@@ -95,7 +95,9 @@ public:
 	}
 
 	//Constructs a new FVector.
-	FVector() = delete;
+	FVector() : capacity(10), length(0), data(allocate(this->capacity))
+	{
+	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
 	explicit FVector(const size_t _Capacity) : capacity(_Capacity), length(0), data(allocate(this->capacity))
@@ -127,7 +129,7 @@ public:
 	}
 
 	//Constructs a new FVector from another FVector.
-	FVector(const FVector& _Other) :capacity(_Other.capacity), length(_Other.length), data(allocate(this->capacity))
+	FVector(const FVector& _Other) : capacity(_Other.capacity), length(_Other.length), data(allocate(this->capacity))
 	{
 		copyArray(_Other.data, this->data, this->length);
 	}

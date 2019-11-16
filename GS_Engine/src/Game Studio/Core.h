@@ -18,6 +18,8 @@ typedef float real;
 typedef double real;
 #endif
 
+using GS_HASH_TYPE = uint_64;
+
 #ifdef GS_PLATFORM_WIN
 	#define INLINE __forceinline
 #else

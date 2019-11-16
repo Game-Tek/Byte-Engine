@@ -20,11 +20,12 @@ class GS_API StaticMeshRenderComponent : public RenderComponent
 	static void BuildTypeInstanceSortData(BuildTypeInstanceSortDataInfo& _BTISDI);
 	static void BindTypeResources(BindTypeResourcesInfo& _BTRI);
 	static void DrawInstance(DrawInstanceInfo& _DII);
+	static RenderableInstructions StaticMeshRenderInstructions;
 public:
 	StaticMeshRenderComponent() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
-	[[nodiscard]] RenderableInstructions GetRenderableInstructions() const override;
+	[[nodiscard]] RenderableInstructions* GetRenderableInstructions() const override { return &StaticMeshRenderInstructions; }
 	[[nodiscard]] const char* GetRenderableTypeName() const override { return "StaticMesh"; }
 	
 	[[nodiscard]] StaticMesh* GetStaticMesh() const { return staticMesh; }

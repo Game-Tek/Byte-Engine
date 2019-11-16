@@ -73,7 +73,9 @@ protected:
 	//FVector<Mesh*> Meshes;
 	// MESHES
 
-	VectorMap<RenderComponent*, RenderableInstructions> ComponentToInstructionsMap;
+	//VectorMap<RenderComponent*, RenderableInstructions> ComponentToInstructionsMap;
+
+	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
 	
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 

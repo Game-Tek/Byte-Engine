@@ -2,28 +2,28 @@
 
 #include "FString.h"
 
-Id::Id(const char * Text) : HashedString(HashString(Text))
-{
-}
-
 Id::Id(const FString& _Text) : HashedString(HashString(_Text))
 {
 }
 
-uint32 Id::HashString(const char * Text)
+Id::HashType Id::HashString(const char* Text)
 {
-	const uint32 Length = FString::StringLength(Text);
+	const auto Length = FString::StringLength(Text) - 1;
 
-	uint32 Hash = 0;
+	HashType Hash = 0;
 
-	for (uint32 i = 0; i < Length; i++)
+	for (size_t i = 0; i < Length; i++)
 	{
-		Hash += Text[i] * i * 33;
+		Hash += Text[i] * (i / 5) * 33;
 	}
 
 	Hash = Hash * Length * 5;
 
 	return Hash;
+}
+
+Id::Id(const char* Text): HashedString(HashString(Text))
+{
 }
 
 Id::HashType Id::HashString(const FString& _Text)

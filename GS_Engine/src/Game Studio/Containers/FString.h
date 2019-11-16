@@ -4,8 +4,6 @@
 
 #include "FVector.hpp"
 
-#include <ostream>
-
 class GS_API FString
 {
 	using string_type = char;
@@ -70,7 +68,7 @@ public:
 	[[nodiscard]] int64 FindLast(char _Char) const;
 
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
-	static size_t StringLength(const char * In);
+	constexpr static size_t StringLength(const char * In);
 
 private:
 	friend OutStream& operator<<(OutStream& _Archive, FString& _String)

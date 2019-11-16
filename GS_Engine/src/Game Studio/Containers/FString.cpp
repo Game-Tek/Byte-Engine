@@ -116,7 +116,7 @@ int64 FString::FindLast(char _Char) const
 	return -1;
 }
 
-size_t FString::StringLength(const char * In)
+constexpr size_t FString::StringLength(const char * In)
 {
 	size_t Length = 0;
 

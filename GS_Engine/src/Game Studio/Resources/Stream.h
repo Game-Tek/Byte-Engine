@@ -115,7 +115,7 @@ private:
 };
 
 /**
- * \brief Is an interface for serialization  of data.
+ * \brief Is an interface for serialization of data.
  * Provides methods to write data to disk.
  * Is a wrapper for the actual implementation of the stream code.
  */

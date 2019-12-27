@@ -18,12 +18,6 @@ class Sandbox final : public GS::Application
 public:
 	Sandbox()
 	{
-		WindowCreateInfo WCI;
-		WCI.Extent = { 720, 720 };
-		WCI.Name = "Game Studio!";
-		WCI.WindowType = WindowFit::NORMAL;
-		auto Win = Window::CreateWindow(WCI);
-
 		auto MatFun = [](OutStream& _OS)
 		{
 			FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = inData.Pos * vec4(inPos, 1.0);\ngl_Position = tPos;\n}");
@@ -36,8 +30,6 @@ public:
 		};
 
 		ResourceManagerInstance->CreateResource<MaterialResource>(FString("M_Base"), MatFun);
-
-		Get()->SetActiveWindow(Win);
 		
 		MyWorld = new World();
 		ActiveWorld = MyWorld;

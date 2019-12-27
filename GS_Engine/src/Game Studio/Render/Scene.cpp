@@ -106,6 +106,7 @@ Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	gpci.UniformLayout = UL;
 	gpci.VDescriptor = &ScreenQuad::VD;
 	gpci.PipelineDescriptor.BlendEnable = false;
+	gpci.ActiveWindow = Win;
 	
 	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::VERTEX_SHADER, &VS });
@@ -208,6 +209,7 @@ GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat) const
 
 	GPCI.RenderPass = RP;
 	GPCI.UniformLayout = UL;
+	GPCI.ActiveWindow = Win;
 
 	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 }

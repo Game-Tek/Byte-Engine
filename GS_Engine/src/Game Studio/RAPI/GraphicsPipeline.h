@@ -5,7 +5,6 @@
 
 #include "RenderCore.h"
 #include "Mesh.h"
-#include "Containers/Array.hpp"
 
 
 struct GS_API StencilState
@@ -48,9 +47,12 @@ class GS_API GraphicsPipeline
 public:
 };
 
+class Window;
+
 struct GS_API GraphicsPipelineCreateInfo
 {
 	RenderPass* RenderPass = nullptr;
+	Window* ActiveWindow = nullptr;
 	VertexDescriptor* VDescriptor = nullptr;
 	PipelineDescriptor PipelineDescriptor;
 	UniformLayout* UniformLayout = nullptr;

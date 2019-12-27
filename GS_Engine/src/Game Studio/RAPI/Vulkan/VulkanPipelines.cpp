@@ -9,6 +9,8 @@
 #include "VulkanRenderPass.h"
 #include "VulkanUniformLayout.h"
 
+#include "RAPI/Window.h"
+
 VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI, VkPipeline _OldPipeline)
 {
 	//  VERTEX INPUT STATE
@@ -50,12 +52,13 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkViewport Viewport;
 	Viewport.x = 0;
 	Viewport.y = 0;
-	Viewport.width = 720;
-	Viewport.height = 720;
+	auto window_extent = _GPCI.ActiveWindow->GetWindowExtent();
+	Viewport.width = window_extent.Width;
+	Viewport.height = window_extent.Height;
 	Viewport.minDepth = 0.0f;
 	Viewport.maxDepth = 1.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, { 720, 720 } };
+	VkRect2D Scissor = { { 0, 0 }, { window_extent.Width, window_extent.Height } };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;

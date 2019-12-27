@@ -10,6 +10,13 @@ namespace GS
 		ApplicationInstance = this;
 
 		ResourceManagerInstance = new ResourceManager();
+
+		WindowCreateInfo WCI;
+		WCI.Extent = { 720, 720 };
+		WCI.Name = "Game Studio!";
+		WCI.WindowType = WindowFit::NORMAL;
+		
+		SetActiveWindow(Window::CreateWindow(WCI));
 	}
 
 	Application::~Application()

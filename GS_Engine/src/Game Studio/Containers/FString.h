@@ -19,7 +19,7 @@ public:
 	explicit FString(char* const _In);
 
 	//Constructs an FString from a C-String.
-	explicit FString(const char * In);
+	FString(const char * In);
 
 	explicit FString(size_t _Length);
 
@@ -36,8 +36,8 @@ public:
 	FString& operator+=(const char* _In);
 	FString operator+(const FString & Other) const;
 
-	string_type operator[](size_t _Index) { return Data[_Index]; }
-	string_type operator[](size_t _Index) const { return Data[_Index]; }
+	string_type operator[](const size_t _Index) { return Data[_Index]; }
+	string_type operator[](const size_t _Index) const { return Data[_Index]; }
 
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString & Other) const;

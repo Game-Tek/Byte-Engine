@@ -20,7 +20,7 @@ class TestObject : public WorldObject
 	Camera MyCamera;
 
 public:
-	TestObject() : MyStaticMesh(FString("Box")), MyTexture(FString("Logo_Game-Tek"))
+	TestObject() : MyStaticMesh("Box"), MyTexture("Logo_Game-Tek")
 	{
 		Material = new BaseMaterial(FString("M_Base"));
 		MyStaticMesh.SetMaterial(Material);

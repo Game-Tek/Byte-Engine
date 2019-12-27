@@ -8,6 +8,13 @@
 #include <GLFW/glfw3native.h>
 #endif // GS_PLATFORM_WIN
 
+static float ScrollValue;
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+{
+	ScrollValue = yoffset;
+}
+
 WindowsWindow::WindowsWindow(const WindowCreateInfo& _WCI) : Window(_WCI.Extent, _WCI.WindowType)
 {
 	glfwInit();
@@ -57,6 +64,8 @@ void WindowsWindow::Update()
 		glfwGetCursorPos(GLFWWindow, &X, &Y);
 		WindowMouseState.MousePosition.X = SCAST(float, X);
 		WindowMouseState.MousePosition.Y = SCAST(float, Y);
+
+		WindowMouseState.MouseWheelMove = ScrollValue;
 	}
 
 	{

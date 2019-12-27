@@ -8,7 +8,7 @@
 #include "Material.h"
 #include "Game/StaticMesh.h"
 
-Scene::Scene() : Framebuffers(3), ViewMatrix(1), ProjectionMatrix(1), ViewProjectionMatrix(1)
+Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -161,7 +161,6 @@ void Scene::OnUpdate()
 	//BindPipeline(FullScreenRenderingPipeline);
 	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 
-
 	
 	UpdateRenderables();
 	
@@ -256,19 +255,23 @@ void Scene::UpdateMatrices()
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
 	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix(3, 0) = CamPos.X;
-	ViewMatrix(3, 1) = -CamPos.Y;
-	ViewMatrix(3, 2) = CamPos.Z;
+	ViewMatrix(0, 3) = CamPos.X;
+	ViewMatrix(1, 3) = -CamPos.Y;
+	ViewMatrix(2, 3) = CamPos.Z;
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 
 	auto t = Win->GetAspectRatio();
+
+	//GSM::Scale(ProjectionMatrix, Vector3(0.1, 0.8, 1));
+	//GSM::Translate(ProjectionMatrix, Vector3(1, -1, 0));
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), 1, 500);
+	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, 1/*Win->GetAspectRatio()*/, 0.1, 100);
 
 	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
 	
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
+	//ViewProjectionMatrix[9] *= -1;
 }
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
@@ -278,7 +281,9 @@ void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateI
 	CreateInstanceResourcesInfo CIRI{ _RC, this };
 	CIRI.RenderComponentCreateInfo = _RCCI;
 	ri->CreateInstanceResources(CIRI);
-
+	
+	ComponentToInstructionsMap.insert(std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
+	
 	RegisterMaterial(CIRI.Material);
 }
 
@@ -309,6 +314,7 @@ void Scene::RenderRenderables()
 void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far)
 {
 	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
+	const auto f = 1 / tan_half_fov;
 
 	//Zero to one
 	//Left handed
@@ -322,13 +328,41 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//_Matrix(2, 3) = -(_Far * _Near) / (_Far - _Near);
 	//_Matrix(3, 3) = 0;
 
+
+	/*Coders Block Code*/
 	
-	/*GLM LH_ZO Code*/
+	_Matrix(0, 0) = 1.0f / (tan_half_fov * _AspectRatio);
+	_Matrix(1, 2) = -1.0f / tan_half_fov;
+	_Matrix(2, 1) = _Far / (_Far - _Near);
+	_Matrix(2, 3) = (_Near * _Far) / (_Near - _Far);
+	_Matrix(3, 1) = 1;
+
+	
+	/* VULKAN DEMOS*/
+	//
+	//_Matrix(0, 0) = f / _AspectRatio;
+	//_Matrix(0, 1) = 0.f;
+	//_Matrix(0, 2) = 0.f;
+	//_Matrix(0, 3) = 0.f;
+	//
+	//_Matrix(1, 0) = 0.f;
+	//_Matrix(1, 1) = -f;
+	//_Matrix(1, 2) = 0.f;
+	//_Matrix(1, 3) = 0.f;
+	//
+	//_Matrix(2, 0) = 0.f;
+	//_Matrix(2, 1) = 0.f;
+	//_Matrix(2, 2) = -((_Far + _Near) / (_Far - _Near));
+	//_Matrix(2, 3) = -((2.f * _Far * _Near) / (_Far - _Near));
+	//
+	//_Matrix(3, 0) = 0.f;
+	//_Matrix(3, 1) = 0.f;
+	//_Matrix(3, 2) = -1.f;
+	//_Matrix(3, 3) = 0.f;
+	
 	
 	/*Vulkan Cookbook Code*/
-
-	//const auto f = 1 / tan_half_fov;
-	//
+	
 	//_Matrix(0, 0) = f / _AspectRatio;
 	//_Matrix(1, 1) = -f;
 	//_Matrix(2, 2) = _Far / (_Near - _Far);
@@ -354,26 +388,24 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//ANKI 3d	https://github.com/godlikepanos/anki-3d-engine/blob/master/src/anki/math/Mat.h
 
 	//ANKI_ASSERT(fovX > T(0) && fovY > T(0) && near > T(0) && far > T(0));
-	const float g = _Near - _Far;
-	const float f = 1 / GSM::Tangent(_FOV / 2); // f = cot(fovY/2)
 
-	_Matrix(0, 0) = f * _AspectRatio; // = f/aspectRatio;
-	_Matrix(0, 1) = 0;
-	_Matrix(0, 2) = 0;
-	_Matrix(0, 3) = 0;
-	_Matrix(1, 0) = 0;
-	_Matrix(1, 1) = f;
-	_Matrix(1, 2) = 0;
-	_Matrix(1, 3) = 0;
-	_Matrix(2, 0) = 0;
-	_Matrix(2, 1) = 0;
-	_Matrix(2, 2) = _Far / g;
-	_Matrix(2, 3) = (_Far * _Near) / g;
-	_Matrix(3, 0) = 0;
-	_Matrix(3, 1) = 0;
-	_Matrix(3, 2) = -1;
-	_Matrix(3, 3) = 0;
-	
+	//_Matrix(0, 0) = f * _AspectRatio; // = f/aspectRatio;
+	//_Matrix(0, 1) = 0;
+	//_Matrix(0, 2) = 0;
+	//_Matrix(0, 3) = 0;
+	//_Matrix(1, 0) = 0;
+	//_Matrix(1, 1) = f;
+	//_Matrix(1, 2) = 0;
+	//_Matrix(1, 3) = 0;
+	//_Matrix(2, 0) = 0;
+	//_Matrix(2, 1) = 0;
+	//_Matrix(2, 2) = _Far / g;
+	//_Matrix(2, 3) = (_Far * _Near) / g;
+	//_Matrix(3, 0) = 0;
+	//_Matrix(3, 1) = 0;
+	//_Matrix(3, 2) = -1;
+	//_Matrix(3, 3) = 0;
+
 }
 
 Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)

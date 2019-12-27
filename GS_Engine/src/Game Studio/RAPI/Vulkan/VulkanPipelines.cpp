@@ -50,12 +50,12 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	VkViewport Viewport;
 	Viewport.x = 0;
 	Viewport.y = 0;
-	Viewport.width = 1280;
+	Viewport.width = 720;
 	Viewport.height = 720;
 	Viewport.minDepth = 0.0f;
-	Viewport.maxDepth = 500.0f;
+	Viewport.maxDepth = 1.0f;
 
-	VkRect2D Scissor = { { 0, 0 }, { 1280, 720 } };
+	VkRect2D Scissor = { { 0, 0 }, { 720, 720 } };
 
 	VkPipelineViewportStateCreateInfo ViewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	ViewportState.viewportCount = 1;
@@ -70,7 +70,6 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	RasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
 	RasterizationState.lineWidth = 1.0f;
 	RasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
-	RasterizationState.cullMode = VK_CULL_MODE_NONE;
 	RasterizationState.cullMode = VK_CULL_MODE_NONE;
 	RasterizationState.depthBiasEnable = VK_FALSE;
 	RasterizationState.depthBiasConstantFactor = 0.0f; // Optional

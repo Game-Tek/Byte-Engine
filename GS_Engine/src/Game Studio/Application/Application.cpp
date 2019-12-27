@@ -16,7 +16,7 @@ namespace GS
 	{
 	}
 
-	void Application::Run()
+	int Application::Run(int argc, char** argv)
 	{
 		while (!ShouldClose())
 		{
@@ -29,6 +29,8 @@ namespace GS
 		}
 
 		GS_LOG_WARNING("Shutting down application!\nReason: %s", CloseReason.c_str())
+
+		return 0;
 	}
 
 	void Application::SetActiveWindow(Window* _NewWindow)

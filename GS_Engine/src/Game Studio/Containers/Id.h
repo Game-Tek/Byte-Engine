@@ -8,9 +8,6 @@ class GS_API Id
 {
 public:
 	using HashType = GS_HASH_TYPE;
-private:
-	static HashType HashString(const char* Text);
-public:
 
 	Id() = default;
 
@@ -25,9 +22,10 @@ public:
 	
 	operator HashType() const { return HashedString; }
 
+	static HashType HashString(const char* Text);
+	static HashType HashString(const FString& _Text);
 private:
 	HashType HashedString;
 
-	static HashType HashString(const FString& _Text);
 };
 

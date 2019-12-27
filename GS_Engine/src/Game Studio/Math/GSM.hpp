@@ -1106,9 +1106,9 @@ public:
 	//Modifies the given matrix to make it a translation matrix.
 	INLINE static void Translate(Matrix4 & Matrix, const Vector3 & Vector)
 	{
-		Matrix[0 + 3 * 4] = Vector.X;
-		Matrix[1 + 3 * 4] = Vector.Y;
-		Matrix[2 + 3 * 4] = Vector.Z;
+		Matrix[0 + 12] = Vector.X;
+		Matrix[1 + 12] = Vector.Y;
+		Matrix[2 + 12] = Vector.Z;
 
 		return;
 	}

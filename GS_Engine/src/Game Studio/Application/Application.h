@@ -31,7 +31,7 @@ namespace GS
 		Application();
 		virtual ~Application();
 
-		void Run();
+		int Run(int argc, char** argv);
 
 		[[nodiscard]] const char* GetName() const override { return "Application"; }
 

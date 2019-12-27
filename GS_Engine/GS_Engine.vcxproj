@@ -118,6 +118,7 @@
     <ClInclude Include="src\Game Studio\Dispatcher.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
+    <ClInclude Include="src\Game Studio\Game\Texture.h" />
     <ClInclude Include="src\Game Studio\Math\Frustum.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />

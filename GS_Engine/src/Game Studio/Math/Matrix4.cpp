@@ -41,7 +41,7 @@ Matrix4 Matrix4::operator*(const Matrix4& Other) const
 		Bro3 = Array[4 * i + 2];
 		Bro4 = Array[4 * i + 3];
 
-		Row = (Bro1 * Row1) + (Bro2 * Row2) + (Bro3 * Row3) + (Bro4 * Row4);
+		Row = ((Bro1 * Row1) + (Bro2 * Row2)) + ((Bro3 * Row3) + (Bro4 * Row4));
 
 		Row.CopyToAlignedData(&Result.Array[4 * i]);
 	}
@@ -57,7 +57,7 @@ Matrix4& Matrix4::operator*=(const float Other)
 
 	const __m512 Result = _mm512_mul_ps(InputVector, MatrixVector);
 
-	_mm512_store_ps(Array, Result);
+	_mm512_storeu_ps(Array, Result);
 
 	return *this;
 }

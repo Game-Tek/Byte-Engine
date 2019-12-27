@@ -18,7 +18,6 @@
 #include <map>
 #include "RenderableInstructions.h"
 #include "Containers/Id.h"
-#include "Containers/VectorMap.h"
 
 class StaticMeshResource;
 class RenderProxy;
@@ -97,9 +96,9 @@ protected:
 	Mesh* FullScreenQuad = nullptr;
 	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
-	alignas(16) Matrix4 ViewMatrix;
-	alignas(16) Matrix4 ProjectionMatrix;
-	alignas(16) Matrix4 ViewProjectionMatrix;
+	__declspec(align(16)) Matrix4 ViewMatrix;
+	__declspec(align(16)) Matrix4 ProjectionMatrix;
+	__declspec(align(16)) Matrix4 ViewProjectionMatrix;
 
 	void UpdateMatrices();
 

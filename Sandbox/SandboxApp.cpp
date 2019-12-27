@@ -19,7 +19,7 @@ public:
 	Sandbox()
 	{
 		WindowCreateInfo WCI;
-		WCI.Extent = { 1280, 720 };
+		WCI.Extent = { 720, 720 };
 		WCI.Name = "Game Studio!";
 		WCI.WindowType = WindowFit::NORMAL;
 		auto Win = Window::CreateWindow(WCI);
@@ -47,6 +47,11 @@ public:
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 25));
 		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
+
+		Matrix4 A(-1, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
+		Matrix4 B(-2, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20, -21);
+		
+		Matrix4 C = A * B;
 	}
 
 	void OnUpdate() override

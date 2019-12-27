@@ -6,6 +6,7 @@
 #include <Game Studio/Game/World.h>
 #include <Game Studio/Render/Scene.h>
 #include <Game Studio/Camera.h>
+#include <Game Studio/Game/Texture.h>
 #include "Render/StaticMeshRenderComponent.h"
 
 #include "BaseMaterial.h"
@@ -13,12 +14,13 @@
 class TestObject : public WorldObject
 {
 	StaticMesh MyStaticMesh;
+	Texture MyTexture;
 	StaticMeshRenderComponent* MeshRender = nullptr;
 	BaseMaterial* Material = nullptr;
 	Camera MyCamera;
 
 public:
-	TestObject() : MyStaticMesh(FString("Sphere"))
+	TestObject() : MyStaticMesh(FString("Box")), MyTexture(FString("Logo_Game-Tek"))
 	{
 		Material = new BaseMaterial(FString("M_Base"));
 		MyStaticMesh.SetMaterial(Material);

@@ -16,7 +16,7 @@ class Framebuffer;
 class Sandbox final : public GS::Application
 {
 public:
-	Sandbox()
+	Sandbox() : Application(GS::ApplicationCreateInfo{"Sandbox"})
 	{
 		auto MatFun = [](OutStream& _OS)
 		{

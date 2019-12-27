@@ -11,6 +11,14 @@
 
 namespace GS
 {
+	/**
+	 * \brief Defines all the data necessary to startup a GameStudio application instance.
+	 */
+	struct ApplicationCreateInfo
+	{
+		const char* ApplicationName = nullptr;
+	};
+	
 	class GS_API Application : public Object
 	{
 		static Application* ApplicationInstance;
@@ -28,7 +36,7 @@ namespace GS
 
 		[[nodiscard]] bool ShouldClose() const;
 	public:
-		Application();
+		explicit Application(const ApplicationCreateInfo& ACI);
 		virtual ~Application();
 
 		int Run(int argc, char** argv);

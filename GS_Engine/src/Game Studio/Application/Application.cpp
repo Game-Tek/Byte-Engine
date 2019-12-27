@@ -5,7 +5,7 @@ GS::Application * GS::Application::ApplicationInstance = nullptr;
 
 namespace GS
 {
-	Application::Application()
+	Application::Application(const ApplicationCreateInfo& ACI)
 	{
 		ApplicationInstance = this;
 
@@ -13,9 +13,9 @@ namespace GS
 
 		WindowCreateInfo WCI;
 		WCI.Extent = { 720, 720 };
-		WCI.Name = "Game Studio!";
+		WCI.Name = ACI.ApplicationName;
 		WCI.WindowType = WindowFit::NORMAL;
-		
+
 		SetActiveWindow(Window::CreateWindow(WCI));
 	}
 
@@ -64,4 +64,5 @@ namespace GS
 	{
 		return ActiveWindow->GetShouldClose() || FlaggedForClose;
 	}
+
 }

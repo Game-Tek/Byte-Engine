@@ -8,6 +8,8 @@
 #include "Material.h"
 #include "Game/StaticMesh.h"
 
+
+
 Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
@@ -108,10 +110,10 @@ Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	gpci.PipelineDescriptor.BlendEnable = false;
 	gpci.ActiveWindow = Win;
 	
-	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
+	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0, row_major) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::VERTEX_SHADER, &VS });
 	
-	FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
+	FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(binding = 1) uniform sampler2D texSampler;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::FRAGMENT_SHADER, &FS });
 
 	FullScreenRenderingPipeline = RenderDevice::Get()->CreateGraphicsPipeline(gpci);
@@ -261,6 +263,11 @@ void Scene::UpdateMatrices()
 	ViewMatrix(1, 3) = -CamPos.Y;
 	ViewMatrix(2, 3) = CamPos.Z;
 
+	//ViewMatrix[3][0] = CamPos.X;
+	//ViewMatrix[3][1] = CamPos.Y;
+	//ViewMatrix[3][2] = CamPos.Z;
+	
+
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 
 	auto t = Win->GetAspectRatio();
@@ -268,12 +275,16 @@ void Scene::UpdateMatrices()
 	//GSM::Scale(ProjectionMatrix, Vector3(0.1, 0.8, 1));
 	//GSM::Translate(ProjectionMatrix, Vector3(1, -1, 0));
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, 1/*Win->GetAspectRatio()*/, 0.1, 100);
-
+	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, 1/*Win->GetAspectRatio()*/, 1, 1000);
+	//ProjectionMatrix.MakeIdentity();
+	//ProjectionMatrix = glm::perspective(glm::radians(45.0f), Win->GetAspectRatio(), 0.1f, 1000.f);
+	
 	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
 	
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 	//ViewProjectionMatrix[9] *= -1;
+
+	//ViewProjectionMatrix.Transpose();
 }
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
@@ -333,34 +344,34 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 
 	/*Coders Block Code*/
 	
-	_Matrix(0, 0) = 1.0f / (tan_half_fov * _AspectRatio);
-	_Matrix(1, 2) = -1.0f / tan_half_fov;
-	_Matrix(2, 1) = _Far / (_Far - _Near);
-	_Matrix(2, 3) = (_Near * _Far) / (_Near - _Far);
-	_Matrix(3, 1) = 1;
+	//_Matrix(0, 0) = 1.0f / (tan_half_fov * _AspectRatio);
+	//_Matrix(2, 1) = -1.0f / tan_half_fov;
+	//_Matrix(1, 2) = _Far / (_Far - _Near);
+	//_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
+	//_Matrix(1, 3) = 1;
 
 	
 	/* VULKAN DEMOS*/
 	//
-	//_Matrix(0, 0) = f / _AspectRatio;
-	//_Matrix(0, 1) = 0.f;
-	//_Matrix(0, 2) = 0.f;
-	//_Matrix(0, 3) = 0.f;
-	//
-	//_Matrix(1, 0) = 0.f;
-	//_Matrix(1, 1) = -f;
-	//_Matrix(1, 2) = 0.f;
-	//_Matrix(1, 3) = 0.f;
-	//
-	//_Matrix(2, 0) = 0.f;
-	//_Matrix(2, 1) = 0.f;
-	//_Matrix(2, 2) = -((_Far + _Near) / (_Far - _Near));
-	//_Matrix(2, 3) = -((2.f * _Far * _Near) / (_Far - _Near));
-	//
-	//_Matrix(3, 0) = 0.f;
-	//_Matrix(3, 1) = 0.f;
-	//_Matrix(3, 2) = -1.f;
-	//_Matrix(3, 3) = 0.f;
+	_Matrix(0, 0) = f / _AspectRatio;
+	_Matrix(0, 1) = 0.f;
+	_Matrix(0, 2) = 0.f;
+	_Matrix(0, 3) = 0.f;
+	
+	_Matrix(1, 0) = 0.f;
+	_Matrix(1, 1) = -f;
+	_Matrix(1, 2) = 0.f;
+	_Matrix(1, 3) = 0.f;
+	
+	_Matrix(2, 0) = 0.f;
+	_Matrix(2, 1) = 0.f;
+	_Matrix(2, 2) = -((_Far + _Near) / (_Far - _Near));
+	_Matrix(2, 3) = -((2.f * _Far * _Near) / (_Far - _Near));
+	
+	_Matrix(3, 0) = 0.f;
+	_Matrix(3, 1) = 0.f;
+	_Matrix(3, 2) = -1.f;
+	_Matrix(3, 3) = 0.f;
 	
 	
 	/*Vulkan Cookbook Code*/

@@ -244,7 +244,6 @@
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
-    <ClInclude Include="src\Game Studio\SAPI\AudioBuffer.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundListener.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundPlayer.h" />
@@ -263,6 +262,8 @@
     <ClInclude Include="src\Game Studio\Core\Allocator.h" />
     <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
     <ClInclude Include="src\Game Studio\Game\Texture.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
+    <ClInclude Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -347,6 +348,8 @@
     <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.cpp" />
+    <ClCompile Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

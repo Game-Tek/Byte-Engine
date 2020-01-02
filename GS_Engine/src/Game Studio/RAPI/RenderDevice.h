@@ -11,6 +11,7 @@
 #include "Framebuffer.h"
 #include "UniformBuffer.h"
 #include "UniformLayout.h"
+#include "Texture.h"
 
 enum class RAPIs : uint8
 {
@@ -35,6 +36,7 @@ public:
 	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
 	virtual UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) = 0;
 	virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;
+	virtual Texture* CreateTexture(const TextureCreateInfo& TCI_) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 	virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;
 	virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;

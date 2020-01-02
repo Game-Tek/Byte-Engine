@@ -34,9 +34,9 @@ public:
 
 	//Returns a pointer to the active camera.
 	[[nodiscard]] Camera* GetActiveCamera() const { return ActiveCamera; }
-	[[nodiscard]] const Matrix4& GetViewMatrix() const { return ViewMatrix; }
-	[[nodiscard]] const Matrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
-	[[nodiscard]] const Matrix4& GetVPMatrix() const { return ViewProjectionMatrix; }
+	//[[nodiscard]] const Matrix4& GetViewMatrix() const { return ViewMatrix; }
+	//[[nodiscard]] const Matrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
+	//[[nodiscard]] const Matrix4& GetVPMatrix() const { return ViewProjectionMatrix; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera * NewCamera) const { ActiveCamera = NewCamera; }
@@ -99,6 +99,9 @@ protected:
 	__declspec(align(16)) Matrix4 ViewMatrix;
 	__declspec(align(16)) Matrix4 ProjectionMatrix;
 	__declspec(align(16)) Matrix4 ViewProjectionMatrix;
+	//__declspec(align(16)) glm::mat4 ProjectionMatrix;
+	//__declspec(align(16)) glm::mat4 ViewMatrix;
+	//__declspec(align(16)) glm::mat4 ViewProjectionMatrix;
 
 	void UpdateMatrices();
 

@@ -22,7 +22,7 @@ class TestObject : public WorldObject
 public:
 	TestObject() : MyStaticMesh("Box"), MyTexture("Logo_Game-Tek")
 	{
-		Material = new BaseMaterial(FString("M_Base"));
+		Material = new BaseMaterial("M_Base");
 		MyStaticMesh.SetMaterial(Material);
 
 		StaticMeshRenderComponentCreateInfo SMRCCI;
@@ -30,6 +30,7 @@ public:
 		SMRCCI.Owner = this;
  		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
 
+		MyCamera.SetPosition(Vector3(0, 50, -250));
 		GetWorld()->GetScene().SetCamera(&MyCamera);
 	}
 
@@ -46,7 +47,7 @@ public:
 		pos.Y -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::LShift) ? 0.1 : 0;
 		pos.Z += GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::W) ? 0.1 : 0;
 		pos.Z -= GS::Application::Get()->GetInputManager().GetKeyState(KeyboardKeys::S) ? 0.1 : 0;
-
+		
 		MyCamera.SetPosition(pos);
 	}
 

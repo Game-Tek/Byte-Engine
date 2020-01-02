@@ -7,14 +7,14 @@
 
 struct GS_API ImageCreateInfo
 {
-	Extent2D Extent = {1280, 720 };
+	Extent2D Extent = { 1280, 720 };
 	Format ImageFormat = Format::RGBA_I8;
 	ImageType Type = ImageType::COLOR;
 	ImageDimensions Dimensions = ImageDimensions::IMAGE_2D;
 	ImageUse Use = ImageUse::INPUT_ATTACHMENT;
+
 };
 
-//Represents a resource utilized by the rendering API for storing and referencing attachments. Which are images which hold some information which the GPU writes info to.
 class GS_API Image
 {
 protected:

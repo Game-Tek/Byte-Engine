@@ -259,32 +259,19 @@ void Scene::UpdateMatrices()
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
 	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix(0, 3) = CamPos.X;
+	ViewMatrix(0, 3) = -CamPos.X;
 	ViewMatrix(1, 3) = -CamPos.Y;
 	ViewMatrix(2, 3) = CamPos.Z;
-
-	//ViewMatrix[3][0] = CamPos.X;
-	//ViewMatrix[3][1] = CamPos.Y;
-	//ViewMatrix[3][2] = CamPos.Z;
 	
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 
-	auto t = Win->GetAspectRatio();
-
 	//GSM::Scale(ProjectionMatrix, Vector3(0.1, 0.8, 1));
 	//GSM::Translate(ProjectionMatrix, Vector3(1, -1, 0));
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, 1/*Win->GetAspectRatio()*/, 1, 1000);
-	//ProjectionMatrix.MakeIdentity();
-	//ProjectionMatrix = glm::perspective(glm::radians(45.0f), Win->GetAspectRatio(), 0.1f, 1000.f);
-	
-	//MakeOrthoMatrix(ProjectionMatrix, 16, -16, 9, -9, 1, 500);
+	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, Win->GetAspectRatio(), 1, 1000);
 	
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
-	//ViewProjectionMatrix[9] *= -1;
-
-	//ViewProjectionMatrix.Transpose();
 }
 
 void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
@@ -396,28 +383,6 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//_Matrix(3, 3) = 0;
 
 	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
-
-
-	//ANKI 3d	https://github.com/godlikepanos/anki-3d-engine/blob/master/src/anki/math/Mat.h
-
-	//ANKI_ASSERT(fovX > T(0) && fovY > T(0) && near > T(0) && far > T(0));
-
-	//_Matrix(0, 0) = f * _AspectRatio; // = f/aspectRatio;
-	//_Matrix(0, 1) = 0;
-	//_Matrix(0, 2) = 0;
-	//_Matrix(0, 3) = 0;
-	//_Matrix(1, 0) = 0;
-	//_Matrix(1, 1) = f;
-	//_Matrix(1, 2) = 0;
-	//_Matrix(1, 3) = 0;
-	//_Matrix(2, 0) = 0;
-	//_Matrix(2, 1) = 0;
-	//_Matrix(2, 2) = _Far / g;
-	//_Matrix(2, 3) = (_Far * _Near) / g;
-	//_Matrix(3, 0) = 0;
-	//_Matrix(3, 1) = 0;
-	//_Matrix(3, 2) = -1;
-	//_Matrix(3, 3) = 0;
 
 }
 

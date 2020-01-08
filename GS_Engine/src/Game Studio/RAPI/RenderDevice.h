@@ -27,7 +27,11 @@ class GS_API RenderDevice
 	static RAPIs GetRAPIs();
 protected:
 	RenderDevice() = default;
-	virtual ~RenderDevice() = default;
+	virtual ~RenderDevice()
+	{
+		delete RenderDeviceInstance;
+	}
+	
 public:
 	static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
 	static INLINE RenderDevice* Get() { return RenderDeviceInstance; }

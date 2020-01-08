@@ -1,8 +1,5 @@
 #include <GameStudio.h>
 
-#include <Game Studio/RAPI/Window.h>
-#include <Game Studio/Debug/Logger.h>
-
 #include <Game Studio/Utility/FlipFlop.h>
 #include "Game Studio/Game/World.h"
 #include "TestObject.h"
@@ -20,30 +17,56 @@ public:
 	{
 		auto MatFun = [](OutStream& _OS)
 		{
-			FString VS("#version 450\n#extension GL_ARB_separate_shader_objects : enable\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0) uniform Data {\nlayout(row_major) mat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ntPos = inData.Pos * vec4(inPos, 1.0);\ngl_Position = tPos;\n}");
+			FString VS(R"(
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(push_constant) uniform Push
+{
+	mat4 Mat;
+} inPush;
+layout(binding = 0) uniform Data
+{
+	layout(row_major) mat4 Pos;
+} inData;
+
+layout(location = 0)in vec3 inPos;
+layout(location = 1)in vec3 inTexCoords;
+layout(location = 0)out vec4 tPos;
+
+void main()
+{
+	tPos = inData.Pos * vec4(inPos, 1.0);
+	gl_Position = tPos;
+}
+)");
 
 			_OS << VS;
 
-			FString FS("#version 450\n#extension GL_ARB_separate_shader_objects : enable\nlayout(location = 0)in vec4 tPos;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(tPos.x, tPos.y, tPos.z, 1);\n}");
+			FString FS(R"(
+#version 450
+
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(location = 0)in vec4 tPos;
+layout(location = 0) out vec4 outColor;
+
+void main()
+{
+outColor = vec4(tPos.x, tPos.y, tPos.z, 1);
+})");
 
 			_OS << FS;
 		};
 
-		ResourceManagerInstance->CreateResource<MaterialResource>(FString("M_Base"), MatFun);
+		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", MatFun);
 		
 		MyWorld = new World();
 		ActiveWorld = MyWorld;
-		
-		//GS_ASSERT(!MyWorld);
 
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 0));
 		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
-
-		Matrix4 A(-1, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
-		Matrix4 B(-2, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20, -21);
-		
-		Matrix4 C = A * B;
 	}
 
 	void OnUpdate() override

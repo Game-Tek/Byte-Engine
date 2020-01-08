@@ -108,7 +108,6 @@
     <ClCompile Include="SandboxApp.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="BaseMaterial.h" />
     <ClInclude Include="TestObject.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -23,8 +23,5 @@
     <ClInclude Include="TestObject.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="BaseMaterial.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>

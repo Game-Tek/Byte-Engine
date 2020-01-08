@@ -74,7 +74,7 @@ public:
 
 	[[nodiscard]] double GetFPS() const { return 1.0 / GetDeltaTime(); }
 	[[nodiscard]] double GetGameFPS() const { return 1.0 / GetGameDeltaTime(); }
-	
+
 	//UTILITY GETTERS
 
 	//Returns the current local year of the computer.
@@ -103,7 +103,8 @@ public:
 
 	// CALC
 
-	static INLINE double MilisecondsToSeconds(const Miliseconds _In) { return _In / 1000; }
+	static INLINE Miliseconds SecondsToMilliseconds(const float seconds_) { return 1000.0 / seconds_; }
+	static INLINE double MillisecondsToSeconds(const Miliseconds _In) { return _In / 1000; }
 	static INLINE double MicrosecondsToSeconds(const Microseconds _In) { return _In / 1000000; }
 	static INLINE double NanosecondsToSeconds(const Nanoseconds _In) { return _In / 1000000000; }
 	static INLINE uint16 SecondsToFPS(const float _Seconds) { return 1 / _Seconds; }

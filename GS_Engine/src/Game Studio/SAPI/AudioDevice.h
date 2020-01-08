@@ -7,7 +7,11 @@ class AudioDevice
 	inline static AudioDevice* audio_device_instance = nullptr;
 	
 public:
-	virtual ~AudioDevice() = default;
+	virtual ~AudioDevice()
+	{
+		delete audio_device_instance;
+	};
+	
 	static AudioDevice* Get() { return audio_device_instance; }
 
 	AudioDevice();

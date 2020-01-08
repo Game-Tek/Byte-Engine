@@ -2,6 +2,7 @@
 
 // TYPEDEFS
 
+typedef unsigned char byte;
 typedef unsigned char uint8;
 typedef char int8;
 typedef unsigned short uint16;
@@ -52,7 +53,7 @@ using GS_HASH_TYPE = uint_64;
 
 //Assert
 #ifdef GS_DEBUG
-	#define GS_ASSERT(func, ...) if ((func)) __debugbreak()
+	#define GS_ASSERT(func, ...) if ((func)) __debugbreak();
 #else
 	#define GS_ASSERT(func, ...) func;
 #endif
@@ -61,6 +62,12 @@ using GS_HASH_TYPE = uint_64;
 #define GS_DEBUG_ONLY(...) __VA_ARGS__;
 #else
 #define GS_DEBUG_ONLY(...);
+#endif
+
+#ifdef GS_DEBUG
+#define GS_THROW(text) throw (text);
+#else
+#define GS_THROW(text);
 #endif
 
 //  CASTS

@@ -18,24 +18,6 @@ class GS_API VertexDescriptor
 	//Size in bytes this vertex takes up.
 	uint8 Size = 0;
 
-	INLINE static uint8 ShaderDataTypesSize(ShaderDataTypes _SDT)
-	{
-		switch (_SDT)
-		{
-			case ShaderDataTypes::FLOAT:	return 4;
-			case ShaderDataTypes::FLOAT2:	return 4 * 2;
-			case ShaderDataTypes::FLOAT3:	return 4 * 3;
-			case ShaderDataTypes::FLOAT4:	return 4 * 4;
-			case ShaderDataTypes::INT:		return 4;
-			case ShaderDataTypes::INT2:		return 4 * 2;
-			case ShaderDataTypes::INT3:		return 4 * 3;
-			case ShaderDataTypes::INT4:		return 4 * 4;
-			case ShaderDataTypes::BOOL:		return 4;
-			case ShaderDataTypes::MAT3:		return 4 * 3 * 3;
-			case ShaderDataTypes::MAT4:		return 4 * 4 * 4;
-			default:						return 0;
-		}
-	}
 public:
 	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
 	{

@@ -53,7 +53,7 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-outColor = vec4(tPos.x, tPos.y, tPos.z, 1);
+	outColor = vec4(tPos.x, tPos.y, tPos.z, 1);
 })");
 
 			_OS << FS;

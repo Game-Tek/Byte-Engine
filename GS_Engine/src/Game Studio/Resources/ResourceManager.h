@@ -53,7 +53,7 @@ public:
 	void CreateResource(const FString& _Name, void (*f)(OutStream& _OS))
 	{
 		Resource* resource = new T();
-		FString path = _Name + resource->GetResourceTypeExtension();
+		auto path = _Name + resource->GetResourceTypeExtension();
 		SaveFile(const_cast<FString&>(_Name), path, f);
 		GetResourceInternal(_Name, resource);
 	}

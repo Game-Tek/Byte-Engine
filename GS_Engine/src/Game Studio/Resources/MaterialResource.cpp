@@ -28,10 +28,8 @@ bool MaterialResource::LoadResource(const FString& _Path)
 		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
 
 		InStream in_archive(&Input);
-		
-		Data = new MaterialData;	//Intantiate resource data
 
-		in_archive >> *SCAST(MaterialData*, Data);
+		in_archive >> data;
 
 		//size_t HeaderCount = 0;
 		//Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.

@@ -11,48 +11,42 @@
 class MaterialResource : public Resource
 {
 public:
-	class MaterialData : public ResourceData
+	class MaterialData final : public ResourceData
 	{
-	public:
 		FString VertexShaderCode;
 		FString FragmentShaderCode;
+		
+	public:
 
-		~MaterialData()
-		{
-		}
+		~MaterialData() = default;
 
 		void** WriteTo(size_t _Index, size_t _Bytes) override
 		{
-			switch (_Index)
-			{
-			case 3: VertexShaderCode = new char[_Bytes];
-					return reinterpret_cast<void**>(&VertexShaderCode);
-			case 6: VertexShaderCode = new char[_Bytes];
-					return reinterpret_cast<void**>(&VertexShaderCode);
-			default: ;
-			}
-
 			return nullptr;
 		}
 
-		[[nodiscard]] FString& GetVertexShaderCode() { return VertexShaderCode; }
-		[[nodiscard]] FString& GetFragmentShaderCode() { return FragmentShaderCode; }
+		[[nodiscard]] const FString& GetVertexShaderCode() const { return VertexShaderCode; }
+		[[nodiscard]] const FString& GetFragmentShaderCode() const { return FragmentShaderCode; }
 
 		friend OutStream& operator<<(OutStream& _O, MaterialData& _MD);
 		friend InStream& operator>>(InStream& _I, MaterialData& _MD);
 	};
 
+private:
+	MaterialData data;
+	
+public:
+
 	MaterialResource() = default;
 
-	~MaterialResource()
-	{
-		delete Data;
-	}
+	~MaterialResource()	= default;
 
+	[[nodiscard]] const MaterialData& GetMaterialData() const { return data; }
+	
 	bool LoadResource(const FString& _Path) override;
 	void LoadFallbackResource(const FString& _Path) override;
 
 	[[nodiscard]] const char* GetName() const override { return "Material Resource"; }
 
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".gsmat"; }
+	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "gsmat"; }
 };

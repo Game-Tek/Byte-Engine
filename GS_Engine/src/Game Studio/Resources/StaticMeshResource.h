@@ -31,7 +31,7 @@ class GS_API StaticMeshResource final : public Resource
 {
 public:
 	//Used to specify a single mesh. Contains a pointer to an array of vertices, and a pointer to an array of indices.
-	class StaticMeshResourceData : public ResourceData
+	class StaticMeshResourceData final : public ResourceData
 	{
 	public:
 		//Pointer to Vertex Array.
@@ -56,24 +56,26 @@ public:
 		}
 	};
 
-	StaticMeshResource() = default;
-	~StaticMeshResource();
-
-	[[nodiscard]] const char* GetName() const override { return "Static Mesh Resource"; }
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".obj"; }
-
-	[[nodiscard]] Model GetModel() const
-	{
-		return Model { SCAST(StaticMeshResourceData*, Data)->VertexArray, SCAST(StaticMeshResourceData*, Data)->IndexArray, SCAST(StaticMeshResourceData*, Data)->VertexCount, SCAST(StaticMeshResourceData*, Data)->IndexCount };
-	}
-
-	static VertexDescriptor* GetVertexDescriptor();
-	bool LoadResource(const FString& _Path) override;
 private:
+	StaticMeshResourceData data;
+
+	bool LoadResource(const FString& _Path) override;
 	void LoadFallbackResource(const FString& _Path) override;
+	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "obj"; }
 
 	static StaticMeshResourceData * ProcessNode(aiNode * Node, const aiScene * Scene);
 	static StaticMeshResourceData ProcessMesh(aiMesh * Mesh);
 
 	static VertexDescriptor StaticMeshVertexTypeVertexDescriptor;
+	
+public:
+	StaticMeshResource() = default;
+	~StaticMeshResource() = default;
+
+	[[nodiscard]] const char* GetName() const override { return "Static Mesh Resource"; }
+
+	[[nodiscard]] const StaticMeshResourceData& GetStaticMeshData() const { return data; }
+
+	static VertexDescriptor* GetVertexDescriptor();
+	
 };

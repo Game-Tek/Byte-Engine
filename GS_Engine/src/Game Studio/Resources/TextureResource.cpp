@@ -8,24 +8,17 @@ TextureResource::TextureResourceData::~TextureResourceData()
 	stbi_image_free(ImageData);
 }
 
-TextureResource::~TextureResource()
-{
-	delete Data;
-}
-
 bool TextureResource::LoadResource(const FString& _Path)
 {
-	int32 X = 0, Y = 0, NofChannels = 0;
+	auto X = 0, Y = 0, NofChannels = 0;
 
 	//Load  the image.
-	auto data = reinterpret_cast<char*>(stbi_load(_Path.c_str(), &X, &Y, &NofChannels, 0));
+	const auto imgdata = reinterpret_cast<char*>(stbi_load(_Path.c_str(), &X, &Y, &NofChannels, 0));
 	
-	if (data)	//If file is valid
+	if (imgdata) //If file is valid
 	{
-		Data = new TextureResourceData;
-		
 		//Load  the image.
-		SCAST(TextureResourceData*, Data)->ImageData = data;
+		data.ImageData = imgdata;
 		
 		TextureDimensions.Width = X;
 		TextureDimensions.Height = Y;
@@ -41,15 +34,20 @@ bool TextureResource::LoadResource(const FString& _Path)
 
 void TextureResource::LoadFallbackResource(const FString& _Path)
 {
-	*Data->WriteTo(0, 256 * 256 * 3) = new uint8[256 * 256 * 3];
+	*data.WriteTo(0, 256 * 256 * 3) = new uint8[256 * 256 * 3];
 
+	TextureDimensions.Width = 256;
+	TextureDimensions.Height = 256;
+
+	TextureFormat = Format::RGB_I8;
+	
 	for (uint16 X = 0; X < 256; ++X)
 	{
 		for (uint16 Y = 0; Y < 256; ++Y)
 		{
-			SCAST(TextureResourceData*, Data)->ImageData[X + Y + 0] = X;
-			SCAST(TextureResourceData*, Data)->ImageData[X + Y + 1] = Y;
-			SCAST(TextureResourceData*, Data)->ImageData[X + Y + 2] = 125;
+			data.ImageData[X + Y + 0] = X;
+			data.ImageData[X + Y + 1] = Y;
+			data.ImageData[X + Y + 2] = 125;
 		}
 	}
 }

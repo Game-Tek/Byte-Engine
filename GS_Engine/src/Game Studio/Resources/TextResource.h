@@ -4,10 +4,10 @@
 
 #include "Containers/FString.h"
 
-class TextResource : public Resource
+class TextResource final : public Resource
 {
 public:
-	class TextResourceData : public ResourceData
+	class TextResourceData final : public ResourceData
 	{
 		FString Text;
 
@@ -30,8 +30,17 @@ public:
 		}
 	};
 
-	const char* GetResourceTypeExtension() const override { return ".txt"; }
-	const char* GetName() const override { return "Text Resource"; }
+private:
+	TextResourceData data;
+
+public:
+	[[nodiscard]] const char* GetName() const override { return "Text Resource"; }
+
+	[[nodiscard]] const TextResourceData& GetTextData() const { return data; }
+	
+private:
+	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "txt"; }
+	
 	bool LoadResource(const FString& _FullPath) override;
 	void LoadFallbackResource(const FString& _FullPath) override;
 };

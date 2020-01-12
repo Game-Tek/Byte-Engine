@@ -13,10 +13,8 @@ bool TextResource::LoadResource(const FString& _FullPath)
 		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
 
 		InStream in_archive(&Input);
-		
-		Data = new TextResourceData;	//Intantiate resource data
 
-		in_archive >> *SCAST(TextResourceData*, Data);
+		in_archive >> data;
 	}
 	else
 	{

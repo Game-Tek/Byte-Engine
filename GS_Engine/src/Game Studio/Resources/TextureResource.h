@@ -40,14 +40,20 @@ public:
 		}
 	};
 
-	TextureResource() = default;
-	~TextureResource();
+private:
+	TextureResourceData data;
 
 	bool LoadResource(const FString& _Path) override;
 	void LoadFallbackResource(const FString& _Path) override;
+	
+	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "png"; }
+public:
+	TextureResource() = default;
+	~TextureResource() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "TextureResource"; }
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return ".png"; }
+
+	[[nodiscard]] const TextureResourceData& GetTextureData() const { return data; }
 protected:
 	//Used to hold the texture's dimensions once it's been loaded.
 	Extent2D TextureDimensions;

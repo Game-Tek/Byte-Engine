@@ -38,7 +38,7 @@ void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, v
 
 void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const
 {
-	const auto FullPath = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName + _Resource->GetResourceTypeExtension();
+	const auto FullPath = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName + "." + _Resource->GetResourceTypeExtension();
 	const auto Result = _Resource->LoadResource(FullPath);
 
 	if (Result)
@@ -47,8 +47,8 @@ void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource
 	}
 	else
 	{
-		GS_LOG_WARNING("Failed to load %s resource of type %s! Loaded default resource.", FullPath.c_str(), _Resource->GetName())
-			_Resource->LoadFallbackResource(FullPath);
+		GS_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(), _Resource->GetResourceTypeExtension())
+		_Resource->LoadFallbackResource(FullPath);
 	}
 
 	_Resource->IncrementReferences();

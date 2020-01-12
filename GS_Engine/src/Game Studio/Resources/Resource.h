@@ -11,7 +11,7 @@ using ResourceSegmentType = uint64;
 
 class ResourceData
 {
-protected:
+	friend class Resource;
 
 public:
 	FString ResourceName;
@@ -26,32 +26,29 @@ public:
 	const FString& GetResourceName() const { return ResourceName; }
 };
 
-//Base class representation of all types of resources that can be loaded into the engine.
-
+/**
+ * \brief Base class representation of all types of resources that can be loaded into the engine.
+ */
 class GS_API Resource : public Object
 {
+	friend class ResourceManager;
+	
+	uint16 References = 0;
+	
+	void IncrementReferences() { ++References; }
+	void DecrementReferences() { --References; }
+	[[nodiscard]] uint16 GetReferenceCount() const { return References; }
+	
+	virtual bool LoadResource(const FString& _FullPath) = 0;
+	virtual void LoadFallbackResource(const FString& _FullPath) = 0;
+	
+	//Must return the extension name for the extension type.
+	[[nodiscard]] virtual const char* GetResourceTypeExtension() const = 0;
+	
 public:
 	Resource() = default;
 
 	virtual ~Resource() = default;
-
-	void IncrementReferences() { ++References; }
-	void DecrementReferences() { --References; }
-	[[nodiscard]] uint16 GetReferenceCount() const { return References; }
-
-	virtual bool LoadResource(const FString& _FullPath) = 0;
-	virtual void LoadFallbackResource(const FString& _FullPath) = 0;
-
-	ResourceData* GetData() const { return Data; }
-
-	//Must return the extension name for the extension type, MUST contain the dot.
-	//IE: ".gsasset". NOT "gsasset".
-	[[nodiscard]] virtual const char* GetResourceTypeExtension() const = 0;
-
-protected:
-	ResourceData* Data = nullptr;
-
-	uint16 References = 0;
 };
 
 struct ResourceElementDescriptor

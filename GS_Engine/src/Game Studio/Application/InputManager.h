@@ -9,8 +9,18 @@
 #include "Input/MouseState.h"
 #include "Input/InputEnums.h"
 #include "Input/JoystickState.h"
+#include "Containers/Id.h"
+#include "Containers/FVector.hpp"
+#include "Utility/Functor.h"
+#include <map>
 
 class Window;
+
+struct InputAction
+{
+	Id Name;
+	FVector<FString> FiringInputEvents;
+};
 
 class GS_API InputManager : public Object
 {
@@ -22,6 +32,9 @@ class GS_API InputManager : public Object
 
 	Array<JoystickState, 4> JoystickStates;
 
+	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> SingleActions;
+	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> ContinuousActions;
+	
 	//Mouse vars
 	
 	//Current mouse position.

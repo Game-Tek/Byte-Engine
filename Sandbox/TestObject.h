@@ -9,20 +9,18 @@
 #include <Game Studio/Game/Texture.h>
 #include "Render/StaticMeshRenderComponent.h"
 
-#include "BaseMaterial.h"
-
 class TestObject : public WorldObject
 {
 	StaticMesh MyStaticMesh;
 	Texture MyTexture;
 	StaticMeshRenderComponent* MeshRender = nullptr;
-	BaseMaterial* Material = nullptr;
+	Material* MyMaterial = nullptr;
 	Camera MyCamera;
 
 public:
 	TestObject() : MyStaticMesh("Box"), MyTexture("Logo_Game-Tek")
 	{
-		Material = new BaseMaterial("M_Base");
+		MyMaterial = new Material("M_Base");
 		MyStaticMesh.SetMaterial(Material);
 
 		StaticMeshRenderComponentCreateInfo SMRCCI;

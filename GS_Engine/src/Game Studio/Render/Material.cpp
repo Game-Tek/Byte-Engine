@@ -43,9 +43,6 @@ void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type
 	GS_THROW("No parameter with such name!")
 }
 
-bool Material::GetHasTransparency() const
-{
-	return false;/*return materialMaterialResource->GetHasTransparency();*/
-}
+bool Material::GetHasTransparency() const { return materialMaterialResource->GetMaterialData().HasTransparency; }
 
-bool Material::GetIsTwoSided() const { return false; }/*return materialMaterialResource->GetIsTwoSided();*/
+bool Material::GetIsTwoSided() const { return materialMaterialResource->GetMaterialData().IsTwoSided; }

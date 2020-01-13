@@ -17,6 +17,22 @@ OutStream& operator<<(OutStream& _O, MaterialResource::MaterialData& _MD)
 }
 
 
+void MaterialResource::MaterialData::Write(OutStream& OutStream_)
+{
+	ResourceData::Write(OutStream_);
+
+	OutStream_ << VertexShaderCode;
+	OutStream_ << FragmentShaderCode;
+}
+
+void MaterialResource::MaterialData::Load(InStream& InStream_)
+{
+	ResourceData::Load(InStream_);
+
+	InStream_ >> VertexShaderCode;
+	InStream_ >> FragmentShaderCode;
+}
+
 bool MaterialResource::LoadResource(const FString& _Path)
 {
 	std::ifstream Input(_Path.c_str(), std::ios::in);	//Open file as binary
@@ -29,7 +45,7 @@ bool MaterialResource::LoadResource(const FString& _Path)
 
 		InStream in_archive(&Input);
 
-		in_archive >> data;
+		data.Load(in_archive);
 
 		//size_t HeaderCount = 0;
 		//Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.

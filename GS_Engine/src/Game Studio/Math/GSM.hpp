@@ -850,25 +850,25 @@ public:
 		return SquareRoot(LengthSquared(_A - _B));
 	}
 	
-	INLINE static float LengthSquared(const Vector2& _A);
+	static float LengthSquared(const Vector2& _A);
 	//{
 	//	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y;
 	//}
 
-	INLINE static float LengthSquared(const Vector3& _A);
+	static float LengthSquared(const Vector3& _A);
 	//{
 	//	return Vec1.X * Vec1.X + Vec1.Y * Vec1.Y + Vec1.Z * Vec1.Z;
 	//}
 
-	INLINE static float LengthSquared(const Vector4& _A);
+	static float LengthSquared(const Vector4& _A);
 
-	INLINE static Vector2 Normalized(const Vector2& _A);
+	static Vector2 Normalized(const Vector2& _A);
 	//{
 	//	const float Length = VectorLength(Vec1);
 	//	return Vector2(Vec1.X / Length, Vec1.Y / Length);
 	//}
 
-	INLINE static void Normalize(Vector2& _A);
+	static void Normalize(Vector2& _A);
 		//{
 		//	const float Length = VectorLength(Vec1);
 		//
@@ -876,13 +876,13 @@ public:
 		//	Vec1.Y = Vec1.Y / Length;
 		//}
 
-	INLINE static Vector3 Normalized(const Vector3& _A);
+	static Vector3 Normalized(const Vector3& _A);
 		//{
 		//	const float Length = VectorLength(Vec1);
 		//	return Vector3(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length);
 		//}
 
-	INLINE static void Normalize(Vector3& _A);
+	static void Normalize(Vector3& _A);
 		//{
 		//	const float Length = VectorLength(Vec1);
 		//
@@ -891,13 +891,13 @@ public:
 		//	Vec1.Z = Vec1.Z / Length;
 		//}
 
-	INLINE static Vector4 Normalized(const Vector4& _A);
+	static Vector4 Normalized(const Vector4& _A);
 		//{
 		//	const float Length = VectorLength(Vec1);
 		//	return Vector4(Vec1.X / Length, Vec1.Y / Length, Vec1.Z / Length, Vec1.W / Length);
 		//}
 
-	INLINE static void Normalize(Vector4& _A);
+	static void Normalize(Vector4& _A);
 	//{
 	//	const float Length = VectorLength(Vec1);
 	//
@@ -907,19 +907,19 @@ public:
 	//	Vec1.W = Vec1.W / Length;
 	//}
 
-	INLINE static float DotProduct(const Vector2& _A, const Vector2& _B);
+	static float DotProduct(const Vector2& _A, const Vector2& _B);
 		//{
 		//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y;
 		//}
 
-	INLINE static float DotProduct(const Vector3& _A, const Vector3& _B);
+	static float DotProduct(const Vector3& _A, const Vector3& _B);
 	//{
 	//	return Vec1.X * Vec2.X + Vec1.Y * Vec2.Y + Vec1.Z * Vec2.Z;
 	//}
 
-	INLINE static float DotProduct(const Vector4& _A, const Vector4& _B);
+	static float DotProduct(const Vector4& _A, const Vector4& _B);
 
-	INLINE static Vector3 Cross(const Vector3& _A, const Vector3& _B);
+	static Vector3 Cross(const Vector3& _A, const Vector3& _B);
 	//{
 	//	return Vector3(Vec1.Y * Vec2.Z - Vec1.Z * Vec2.Y, Vec1.Z * Vec2.X - Vec1.X * Vec2.Z, Vec1.X * Vec2.Y - Vec1.Y * Vec2.X);
 	//}
@@ -1003,26 +1003,26 @@ public:
 	//						QUATERNION MATH						//
 	//////////////////////////////////////////////////////////////
 
-	INLINE static real DotProduct(const Quaternion& _A, const Quaternion& _B);
+	static real DotProduct(const Quaternion& _A, const Quaternion& _B);
     //{
     //    return _A.X * _B.X + _A.Y * _B.Y + _A.Z * _B.Z + _A.Q * _B.Q;
     //}
 
-	INLINE static float LengthSquared(const Quaternion& _A);
+	static float LengthSquared(const Quaternion& _A);
 	
 	INLINE static float Length(const Quaternion& _A)
 	{
 		return SquareRoot(LengthSquared(_A));
 	}
 
-	INLINE static Quaternion Normalized(const Quaternion& _A);
+	static Quaternion Normalized(const Quaternion& _A);
 	//{
 	//	const float lLength = Length(Quat);
 	//
 	//	return Quaternion(Quat.X / lLength, Quat.Y / lLength, Quat.Z / lLength, Quat.Q / lLength);
 	//}
 
-	INLINE static void Normalize(Quaternion& _A);
+	static void Normalize(Quaternion& _A);
 	//{
 	//	const float lLength = Length(Quat);
 	//

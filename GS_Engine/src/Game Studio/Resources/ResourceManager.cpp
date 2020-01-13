@@ -14,7 +14,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
-void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, void (*f)(OutStream& _OS))
+void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_)
 {
 	FString full_path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourcePath;
 
@@ -28,10 +28,8 @@ void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, v
 	}
 
 	OutStream out_archive(&Outfile);
-	
-	out_archive << _ResourceName;
 
-	f(out_archive);
+	ResourceData_.Write(out_archive);
 
 	Outfile.close();
 }

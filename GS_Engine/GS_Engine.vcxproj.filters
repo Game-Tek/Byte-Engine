@@ -355,6 +355,7 @@
     <ClCompile Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.cpp" />
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -77,5 +77,7 @@ using GS_HASH_TYPE = uint_64;
 #define RCAST(to, from) reinterpret_cast<to>(from)
 #define CCAST(to, from) const_cast<to>(from)
 
+#define GS_ALIGN(x) __declspec(align(x))
+
 constexpr uint8 uint8MAX = 0xff;
 constexpr uint_64 uint_64MAX = 0xffffffffffffffff;

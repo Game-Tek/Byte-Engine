@@ -269,6 +269,7 @@
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />

@@ -52,7 +52,7 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
-	void DrawMesh(const DrawInfo& _DrawInfo, class MeshRenderResource* _Mesh);
+	void DrawMesh(const DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
 	void BindPipeline(GraphicsPipeline* _Pipeline);
 
 	
@@ -98,12 +98,9 @@ protected:
 	RenderMesh* FullScreenQuad = nullptr;
 	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
-	__declspec(align(16)) Matrix4 ViewMatrix;
-	__declspec(align(16)) Matrix4 ProjectionMatrix;
-	__declspec(align(16)) Matrix4 ViewProjectionMatrix;
-	//__declspec(align(16)) glm::mat4 ProjectionMatrix;
-	//__declspec(align(16)) glm::mat4 ViewMatrix;
-	//__declspec(align(16)) glm::mat4 ViewProjectionMatrix;
+	GS_ALIGN(16) Matrix4 ViewMatrix;
+	GS_ALIGN(16) Matrix4 ProjectionMatrix;
+	GS_ALIGN(16) Matrix4 ViewProjectionMatrix;
 
 	void UpdateMatrices();
 
@@ -114,9 +111,6 @@ protected:
 
 	//Returns a symmetric perspective frustum.
 	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far);
-
-	//Returns a perspective frustum.
-	static Matrix4 BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far);
 
 	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top, const float _Bottom, const float _Near, const float _Far);
 };

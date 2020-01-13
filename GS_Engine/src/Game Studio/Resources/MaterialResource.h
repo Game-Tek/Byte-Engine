@@ -13,10 +13,12 @@ class MaterialResource : public Resource
 public:
 	class MaterialData final : public ResourceData
 	{
+	public:
 		FString VertexShaderCode;
 		FString FragmentShaderCode;
-		
-	public:
+
+		bool HasTransparency = false;
+		bool IsTwoSided = false;
 
 		~MaterialData() = default;
 
@@ -28,6 +30,9 @@ public:
 		[[nodiscard]] const FString& GetVertexShaderCode() const { return VertexShaderCode; }
 		[[nodiscard]] const FString& GetFragmentShaderCode() const { return FragmentShaderCode; }
 
+		void Write(OutStream& OutStream_) override;
+		void Load(InStream& InStream_) override;
+		
 		friend OutStream& operator<<(OutStream& _O, MaterialData& _MD);
 		friend InStream& operator>>(InStream& _I, MaterialData& _MD);
 	};

@@ -7,6 +7,7 @@
 #include "Game Studio/Debug/Timer.h"
 #include "Game Studio/Math/GSM.hpp"
 #include <Game Studio/Resources/Stream.h>
+#include <Game Studio/Resources/MaterialResource.h>
 
 class Framebuffer;
 
@@ -15,9 +16,9 @@ class Sandbox final : public GS::Application
 public:
 	Sandbox() : Application(GS::ApplicationCreateInfo{"Sandbox"})
 	{
-		auto MatFun = [](OutStream& _OS)
-		{
-			FString VS(R"(
+		MaterialResource::MaterialData material_data;
+		
+		material_data.VertexShaderCode = FString(R"(
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
@@ -41,9 +42,7 @@ void main()
 }
 )");
 
-			_OS << VS;
-
-			FString FS(R"(
+			material_data.FragmentShaderCode = FString(R"(
 #version 450
 
 #extension GL_ARB_separate_shader_objects : enable
@@ -56,10 +55,7 @@ void main()
 	outColor = vec4(tPos.x, tPos.y, tPos.z, 1);
 })");
 
-			_OS << FS;
-		};
-
-		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", MatFun);
+		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", material_data);
 		
 		MyWorld = new World();
 		ActiveWorld = MyWorld;

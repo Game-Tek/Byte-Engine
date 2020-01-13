@@ -18,7 +18,7 @@ class ResourceManager : public Object
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(FString& _ResourceName, FString& _ResourcePath, void (*f)(OutStream& _OS));
+	void SaveFile(FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_);
 
 	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const;
 
@@ -50,11 +50,11 @@ public:
 	}
 
 	template<class T>
-	void CreateResource(const FString& _Name, void (*f)(OutStream& _OS))
+	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
 	{
 		Resource* resource = new T();
 		auto path = _Name + resource->GetResourceTypeExtension();
-		SaveFile(const_cast<FString&>(_Name), path, f);
+		SaveFile(const_cast<FString&>(_Name), path, ResourceData_);
 		GetResourceInternal(_Name, resource);
 	}
 

@@ -348,27 +348,6 @@ void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const 
 	_Matrix(3, 3) = 0.f;
 }
 
-Matrix4 Renderer::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
-{
-	Matrix4 Result;
-
-	const auto near2 = Near * 2.0f;
-	const auto top_m_bottom = Top - Bottom;
-	const auto far_m_near = Far - Near;
-	const auto right_m_left = Right - Left;
-
-	Result[0] = near2 / right_m_left;
-	Result[5] = near2 / top_m_bottom;
-	Result[8] = (Right + Left) / right_m_left;
-	Result[9] = (Top + Bottom) / top_m_bottom;
-	Result[10] = -(Far + Near) / (far_m_near);
-	Result[11] = -1.0f;
-	Result[14] = -near2 * Far / far_m_near;
-	Result[15] = 0.0f;
-	
-	return Result;
-}
-
 void Renderer::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
 	const float _Bottom, const float _Near, const float _Far)
 {

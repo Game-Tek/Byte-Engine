@@ -41,6 +41,6 @@ public:
 private:
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "txt"; }
 	
-	bool LoadResource(const FString& _FullPath) override;
+	bool LoadResource(const LoadResourceData& LRD_) override;
 	void LoadFallbackResource(const FString& _FullPath) override;
 };

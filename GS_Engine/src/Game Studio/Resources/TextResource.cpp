@@ -2,9 +2,9 @@
 
 #include <fstream>
 
-bool TextResource::LoadResource(const FString& _FullPath)
+bool TextResource::LoadResource(const LoadResourceData& LRD_)
 {
-	std::ifstream Input(_FullPath.c_str(), std::ios::in | std::ios::binary);	//Open file as binary
+	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in | std::ios::binary);	//Open file as binary
 
 	if (Input.is_open())	//If file is valid
 	{

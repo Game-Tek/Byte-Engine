@@ -8,12 +8,12 @@ TextureResource::TextureResourceData::~TextureResourceData()
 	stbi_image_free(ImageData);
 }
 
-bool TextureResource::LoadResource(const FString& _Path)
+bool TextureResource::LoadResource(const LoadResourceData& LRD_)
 {
 	auto X = 0, Y = 0, NofChannels = 0;
 
 	//Load  the image.
-	const auto imgdata = reinterpret_cast<char*>(stbi_load(_Path.c_str(), &X, &Y, &NofChannels, 0));
+	const auto imgdata = reinterpret_cast<char*>(stbi_load(LRD_.FullPath.c_str(), &X, &Y, &NofChannels, 0));
 	
 	if (imgdata) //If file is valid
 	{

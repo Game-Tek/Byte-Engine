@@ -59,7 +59,7 @@ public:
 private:
 	StaticMeshResourceData data;
 
-	bool LoadResource(const FString& _Path) override;
+	bool LoadResource(const LoadResourceData& LRD_) override;
 	void LoadFallbackResource(const FString& _Path) override;
 	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "obj"; }
 

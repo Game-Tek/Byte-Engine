@@ -33,9 +33,9 @@ void MaterialResource::MaterialData::Load(InStream& InStream_)
 	InStream_ >> FragmentShaderCode;
 }
 
-bool MaterialResource::LoadResource(const FString& _Path)
+bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
 {
-	std::ifstream Input(_Path.c_str(), std::ios::in);	//Open file as binary
+	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in);	//Open file as binary
 
 	if(Input.is_open())	//If file is valid
 	{

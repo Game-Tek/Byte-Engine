@@ -16,13 +16,13 @@ VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
 	return &StaticMeshVertexTypeVertexDescriptor;
 }
 
-bool StaticMeshResource::LoadResource(const FString& _Path)
+bool StaticMeshResource::LoadResource(const LoadResourceData& LRD_)
 {
 	//Create Importer.
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene* Scene = Importer.ReadFile(_Path.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+	const aiScene* Scene = Importer.ReadFile(LRD_.FullPath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{

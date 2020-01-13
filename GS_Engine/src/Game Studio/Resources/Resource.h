@@ -30,6 +30,12 @@ public:
 	const FString& GetResourceName() const { return ResourceName; }
 };
 
+struct LoadResourceData
+{
+	FString FullPath;
+	class ResourceManager* Caller = nullptr;
+};
+
 /**
  * \brief Base class representation of all types of resources that can be loaded into the engine.
  */
@@ -43,7 +49,7 @@ class GS_API Resource : public Object
 	void DecrementReferences() { --References; }
 	[[nodiscard]] uint16 GetReferenceCount() const { return References; }
 	
-	virtual bool LoadResource(const FString& _FullPath) = 0;
+	virtual bool LoadResource(const LoadResourceData& LRD_) = 0;
 	virtual void LoadFallbackResource(const FString& _FullPath) = 0;
 	
 	//Must return the extension name for the extension type.

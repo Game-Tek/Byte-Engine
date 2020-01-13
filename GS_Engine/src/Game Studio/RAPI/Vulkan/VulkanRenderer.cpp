@@ -143,7 +143,7 @@ VulkanRenderDevice::~VulkanRenderDevice()
 {
 }
 
-Mesh* VulkanRenderDevice::CreateMesh(const MeshCreateInfo& _MCI)
+RenderMesh* VulkanRenderDevice::CreateMesh(const MeshCreateInfo& _MCI)
 {
 	return new VulkanMesh(&Device, TransientCommandPool, _MCI.VertexData, _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }

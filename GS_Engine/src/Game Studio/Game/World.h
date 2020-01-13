@@ -5,13 +5,13 @@
 
 #include "Containers/FVector.hpp"
 #include "WorldObject.h"
-#include "Render/Scene.h"
+#include "Render/Renderer.h"
 
 class World : public Object
 {
 	FVector<WorldObject*> WorldObjects;
 
-	Scene WorldScene;
+	Renderer WorldScene;
 public:
 	World();
 	virtual ~World();
@@ -56,6 +56,6 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "World"; }
 
-	[[nodiscard]] Scene& GetScene() { return WorldScene; }
+	[[nodiscard]] Renderer& GetScene() { return WorldScene; }
 
 };

@@ -77,7 +77,7 @@ struct GS_API MeshCreateInfo
 	VertexDescriptor* VertexLayout = nullptr;
 };
 
-class GS_API Mesh
+class GS_API RenderMesh
 {
 public:
 };

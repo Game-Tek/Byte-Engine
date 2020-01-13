@@ -7,7 +7,7 @@
 
 class UniformLayout;
 class Window;
-class Mesh;
+class RenderMesh;
 class VertexBuffer;
 class IndexBuffer;
 class RenderPass;
@@ -76,7 +76,7 @@ public:
 	
 	
 	//Adds a BindMesh command to the command queue.
-	virtual void BindMesh(Mesh* _Mesh) = 0;
+	virtual void BindMesh(RenderMesh* _Mesh) = 0;
 	
 	//    BIND PIPELINE COMMANDS
 

@@ -255,7 +255,7 @@ void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
 	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
 }
 
-void VulkanRenderContext::BindMesh(Mesh* _Mesh)
+void VulkanRenderContext::BindMesh(RenderMesh* _Mesh)
 {
 	const auto l_Mesh = SCAST(VulkanMesh*, _Mesh);
 	VkDeviceSize Offset = 0;

@@ -14,7 +14,8 @@ struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
 class GS_API StaticMeshRenderComponent : public RenderComponent
 {
 	StaticMesh* staticMesh = nullptr;
-	Mesh* renderMesh = nullptr;
+	class MaterialRenderResource* renderMaterial = nullptr;
+	class MeshRenderResource* renderMesh = nullptr;
 
 	static void CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI);
 	static void BuildTypeInstanceSortData(BuildTypeInstanceSortDataInfo& _BTISDI);

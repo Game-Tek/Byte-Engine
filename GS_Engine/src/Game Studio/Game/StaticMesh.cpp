@@ -12,4 +12,7 @@ StaticMesh::~StaticMesh()
 	GS::Application::Get()->GetResourceManager()->ReleaseResource(staticMeshResource);
 }
 
-Model StaticMesh::GetModel() const { return staticMeshResource->GetModel(); }
+Model StaticMesh::GetModel() const
+{
+	return Model{ staticMeshResource->GetStaticMeshData().VertexArray, staticMeshResource->GetStaticMeshData().IndexArray, staticMeshResource->GetStaticMeshData().VertexCount, staticMeshResource->GetStaticMeshData().IndexCount };
+}

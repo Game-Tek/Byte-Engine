@@ -4,7 +4,7 @@
 #include "Containers/FString.h"
 
 #include "RenderCore.h"
-#include "Mesh.h"
+#include "RenderMesh.h"
 
 
 struct GS_API StencilState

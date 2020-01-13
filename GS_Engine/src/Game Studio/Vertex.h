@@ -5,7 +5,7 @@
 #include "Math/Vector2.h"
 #include "Math/Vector3.h"
 #include "Utility/TextureCoordinates.h"
-#include "RAPI/Mesh.h"
+#include "RAPI/RenderMesh.h"
 
 using Index = uint16;
 

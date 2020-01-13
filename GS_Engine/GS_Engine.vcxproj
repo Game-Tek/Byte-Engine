@@ -131,13 +131,15 @@
     <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
+    <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
+    <ClInclude Include="src\Game Studio\Render\MeshRenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
-    <ClInclude Include="src\Game Studio\Render\Renderer.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
@@ -169,7 +171,7 @@
     <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Mesh.h" />
+    <ClInclude Include="src\Game Studio\RAPI\RenderMesh.h" />
     <ClInclude Include="src\Game Studio\RAPI\UniformLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
@@ -210,7 +212,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
-    <ClInclude Include="src\Game Studio\Render\Scene.h" />
+    <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
     <ClInclude Include="src\Game Studio\Containers\FVector.hpp" />
     <ClInclude Include="src\Game Studio\Application\InputManager.h" />
@@ -264,7 +266,7 @@
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Scene.cpp" />
+    <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />

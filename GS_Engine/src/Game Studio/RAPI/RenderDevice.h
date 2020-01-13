@@ -4,7 +4,7 @@
 
 #include "RenderContext.h"
 #include "Image.h"
-#include "Mesh.h"
+#include "RenderMesh.h"
 #include "GraphicsPipeline.h"
 #include "ComputePipeline.h"
 #include "RenderPass.h"
@@ -36,7 +36,7 @@ public:
 	static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
 	static INLINE RenderDevice* Get() { return RenderDeviceInstance; }
 
-	virtual Mesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
+	virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
 	virtual UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) = 0;
 	virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;

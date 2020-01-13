@@ -1,6 +1,6 @@
 #include "StaticMeshResource.h"
 
-#include "RAPI/Mesh.h"
+#include "RAPI/RenderMesh.h"
 
 #include "Containers/FString.h"
 

@@ -6,7 +6,7 @@
 #include "Native/VKPipelineLayout.h"
 #include "Native/VKGraphicsPipeline.h"
 #include "Native/VKComputePipeline.h"
-#include "RAPI/Mesh.h"
+#include "RAPI/RenderMesh.h"
 #include "RAPI/GraphicsPipeline.h"
 #include "RAPI/ComputePipeline.h"
 

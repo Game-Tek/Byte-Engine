@@ -1,4 +1,4 @@
-#include "Scene.h"
+#include "Renderer.h"
 #include "RAPI/RenderDevice.h"
 
 #include "Application/Application.h"
@@ -7,10 +7,11 @@
 
 #include "Material.h"
 #include "Game/StaticMesh.h"
+#include "MeshRenderResource.h"
+#include "MaterialRenderResource.h"
 
 
-
-Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
+Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -119,7 +120,7 @@ Scene::Scene() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	FullScreenRenderingPipeline = RenderDevice::Get()->CreateGraphicsPipeline(gpci);
 }
 
-Scene::~Scene()
+Renderer::~Renderer()
 {
 	for (auto& Element : ComponentToInstructionsMap)
 	{
@@ -135,7 +136,7 @@ Scene::~Scene()
 	delete RC;
 }
 
-void Scene::OnUpdate()
+void Renderer::OnUpdate()
 {
 	/*Update debug vars*/
 	GS_DEBUG_ONLY(DrawCalls = 0)
@@ -178,32 +179,78 @@ void Scene::OnUpdate()
 	RC->Present();
 }
 
-void Scene::DrawMesh(const DrawInfo& _DrawInfo, Mesh* _Mesh)
+void Renderer::DrawMesh(const DrawInfo& _DrawInfo, MeshRenderResource* Mesh_)
 {
-	RC->BindMesh(_Mesh);
+	RC->BindMesh(Mesh_->mesh);
 	RC->DrawIndexed(_DrawInfo);
 	GS_DEBUG_ONLY(++DrawCalls)
 	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
 }
 
-void Scene::BindPipeline(GraphicsPipeline* _Pipeline)
+void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 {
 	RC->BindGraphicsPipeline(_Pipeline);
 	GS_DEBUG_ONLY(++PipelineSwitches);
 }
 
-GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat) const
+MeshRenderResource* Renderer::CreateMesh(StaticMesh* _SM)
+{
+	MeshRenderResource* NewMesh = nullptr;
+
+	if (Meshes.find(_SM) == Meshes.end())
+	{
+		Model m = _SM->GetModel();
+
+		MeshCreateInfo MCI;
+		MCI.IndexCount = m.IndexCount;
+		MCI.VertexCount = m.VertexCount;
+		MCI.VertexData = m.VertexArray;
+		MCI.IndexData = m.IndexArray;
+		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
+		MeshRenderResourceCreateInfo mesh_render_resource_create_info;
+		mesh_render_resource_create_info.Mesh = RenderDevice::Get()->CreateMesh(MCI);
+		NewMesh = new MeshRenderResource(mesh_render_resource_create_info);
+	}
+	else
+	{
+		NewMesh = Meshes[_SM];
+	}
+
+
+	return NewMesh;
+}
+
+MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
+{
+	auto Res = Pipelines.find(Id(Material_->GetMaterialName()));
+	
+	if (Res == Pipelines.end())
+	{
+		auto NP = CreatePipelineFromMaterial(Material_);
+		Pipelines.insert({ Id(Material_->GetMaterialName()).GetID(), NP });
+	}
+
+	MaterialRenderResourceCreateInfo material_render_resource_create_info;
+	material_render_resource_create_info.ParentMaterial = Material_;
+	material_render_resource_create_info.textures;
+	
+	return new MaterialRenderResource(material_render_resource_create_info);
+}
+
+GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 {
 	GraphicsPipelineCreateInfo GPCI;
 
 	GPCI.VDescriptor = StaticMeshResource::GetVertexDescriptor();
 
-	ShaderInfo VSI;
-	ShaderInfo FSI;
-	_Mat->GetRenderingCode(VSI, FSI);
+	FVector<ShaderInfo> si;
+	_Mat->GetRenderingCode(si);
 
-	GPCI.PipelineDescriptor.Stages.push_back(VSI);
-	GPCI.PipelineDescriptor.Stages.push_back(FSI);
+	for (auto& e : si)
+	{
+		GPCI.PipelineDescriptor.Stages.push_back(e);
+	}
+	
 	GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
 	GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
 	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
@@ -216,44 +263,7 @@ GraphicsPipeline* Scene::CreatePipelineFromMaterial(Material* _Mat) const
 	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 }
 
-Mesh* Scene::RegisterMesh(StaticMesh* _SM)
-{
-	Mesh* NewMesh = nullptr;
-
-	if (Meshes.find(_SM) == Meshes.end())
-	{
-		Model m = _SM->GetModel();
-
-		MeshCreateInfo MCI;
-		MCI.IndexCount = m.IndexCount;
-		MCI.VertexCount = m.VertexCount;
-		MCI.VertexData = m.VertexArray;
-		MCI.IndexData = m.IndexArray;
-		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
-		NewMesh = RenderDevice::Get()->CreateMesh(MCI);
-	}
-	else
-	{
-		NewMesh = Meshes[_SM];
-	}
-
-	return NewMesh;
-}
-
-GraphicsPipeline* Scene::RegisterMaterial(Material* _Mat)
-{
-	auto Res = Pipelines.find(Id(_Mat->GetMaterialName()));
-	if (Res != Pipelines.end())
-	{
-		return Pipelines[Res->first];
-	}
-
-	auto NP = CreatePipelineFromMaterial(_Mat);
-	Pipelines.insert({ Id(_Mat->GetMaterialName()).GetID(), NP });
-	return NP;
-}
-
-void Scene::UpdateMatrices()
+void Renderer::UpdateMatrices()
 {
 	//We get and store the camera's position so as to not access it several times.
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
@@ -274,7 +284,7 @@ void Scene::UpdateMatrices()
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }
 
-void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
+void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
 	auto ri = _RC->GetRenderableInstructions();
 	
@@ -283,11 +293,9 @@ void Scene::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateI
 	ri->CreateInstanceResources(CIRI);
 	
 	ComponentToInstructionsMap.insert(std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
-	
-	RegisterMaterial(CIRI.Material);
 }
 
-void Scene::UpdateRenderables()
+void Renderer::UpdateRenderables()
 {
 	for (auto& e : ComponentToInstructionsMap)
 	{
@@ -298,7 +306,7 @@ void Scene::UpdateRenderables()
 	}
 }
 
-void Scene::RenderRenderables()
+void Renderer::RenderRenderables()
 {
 	BindPipeline(Pipelines.begin()->second);
 
@@ -311,7 +319,7 @@ void Scene::RenderRenderables()
 	}
 }
 
-void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far)
+void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far)
 {
 	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
 	const auto f = 1 / tan_half_fov;
@@ -319,27 +327,6 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	//Zero to one
 	//Left handed
 
-	/*GLM LH_ZO Code*/
-	
-	//_Matrix(0, 0) = 1 / (_AspectRatio * tan_half_fov);
-	//_Matrix(1, 1) = 1 / tan_half_fov;
-	//_Matrix(2, 2) = _Far / (_Far - _Near);
-	//_Matrix(3, 2) = 1;
-	//_Matrix(2, 3) = -(_Far * _Near) / (_Far - _Near);
-	//_Matrix(3, 3) = 0;
-
-
-	/*Coders Block Code*/
-	
-	//_Matrix(0, 0) = 1.0f / (tan_half_fov * _AspectRatio);
-	//_Matrix(2, 1) = -1.0f / tan_half_fov;
-	//_Matrix(1, 2) = _Far / (_Far - _Near);
-	//_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
-	//_Matrix(1, 3) = 1;
-
-	
-	/* VULKAN DEMOS*/
-	//
 	_Matrix(0, 0) = f / _AspectRatio;
 	_Matrix(0, 1) = 0.f;
 	_Matrix(0, 2) = 0.f;
@@ -359,34 +346,9 @@ void Scene::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const flo
 	_Matrix(3, 1) = 0.f;
 	_Matrix(3, 2) = -1.f;
 	_Matrix(3, 3) = 0.f;
-	
-	
-	/*Vulkan Cookbook Code*/
-	
-	//_Matrix(0, 0) = f / _AspectRatio;
-	//_Matrix(1, 1) = -f;
-	//_Matrix(2, 2) = _Far / (_Near - _Far);
-	//_Matrix(2, 3) = -1;
-	//_Matrix(3, 2) = (_Near * _Far) / (_Near - _Far);
-	//_Matrix(3, 3) = 0;
-
-	/*Vulkan Cookbook Code*/
-
-
-	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
-	
-	//_Matrix(1, 1) = tan_half_fov;
-	//_Matrix(0, 0) = 1 * _Matrix(1, 1) / _AspectRatio;
-	//_Matrix(2, 2) = _Far * (1 / (_Far - _Near));
-	//_Matrix(3, 2) = (-_Far * _Near) * (1 / (_Far - _Near));
-	//_Matrix(2, 3) = -1;
-	//_Matrix(3, 3) = 0;
-
-	/*https://stackoverflow.com/questions/18404890/how-to-build-perspective-projection-matrix-no-api*/
-
 }
 
-Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
+Matrix4 Renderer::BuildPerspectiveFrustum(const float Right, const float Left, const float Top, const float Bottom, const float Near, const float Far)
 {
 	Matrix4 Result;
 
@@ -407,7 +369,7 @@ Matrix4 Scene::BuildPerspectiveFrustum(const float Right, const float Left, cons
 	return Result;
 }
 
-void Scene::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
+void Renderer::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
 	const float _Bottom, const float _Near, const float _Far)
 {
 	//Zero to one

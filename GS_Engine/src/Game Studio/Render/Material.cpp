@@ -14,7 +14,7 @@ Material::~Material()
 
 const char* Material::GetMaterialName() const
 {
-	return materialMaterialResource->GetData()->GetResourceName().c_str();
+	return materialMaterialResource->GetMaterialData().GetResourceName().c_str();
 }
 
 void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
@@ -22,9 +22,9 @@ void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
 	shaders_.resize(2);
 	
 	shaders_[0].Type = ShaderType::VERTEX_SHADER;
-	shaders_[0].ShaderCode = &static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetVertexShaderCode();
+	shaders_[0].ShaderCode = &const_cast<FString&>(materialMaterialResource->GetMaterialData().GetVertexShaderCode());
 	shaders_[1].Type = ShaderType::FRAGMENT_SHADER;
-	shaders_[1].ShaderCode = &static_cast<MaterialResource::MaterialData*>(materialMaterialResource->GetData())->GetFragmentShaderCode();
+	shaders_[1].ShaderCode = &const_cast<FString&>(materialMaterialResource->GetMaterialData().GetFragmentShaderCode());
 }
 
 
@@ -43,6 +43,9 @@ void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type
 	GS_THROW("No parameter with such name!")
 }
 
-bool Material::GetHasTransparency() const {	/*return materialMaterialResource->GetHasTransparency();*/ }
+bool Material::GetHasTransparency() const
+{
+	return false;/*return materialMaterialResource->GetHasTransparency();*/
+}
 
-bool Material::GetIsTwoSided() const { /*return materialMaterialResource->GetIsTwoSided();*/ }
+bool Material::GetIsTwoSided() const { return false; }/*return materialMaterialResource->GetIsTwoSided();*/

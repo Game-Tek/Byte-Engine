@@ -39,7 +39,7 @@ public:
 	VulkanRenderDevice();
 	~VulkanRenderDevice();
 
-	Mesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
+	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;
 	UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) final override;
 	Image* CreateImage(const ImageCreateInfo& _ICI) final override;

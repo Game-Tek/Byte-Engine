@@ -4,9 +4,10 @@
 #include <Game Studio/Render/RenderComponent.h>
 
 #include <Game Studio/Game/World.h>
-#include <Game Studio/Render/Scene.h>
+#include <Game Studio/Render/Renderer.h>
 #include <Game Studio/Camera.h>
 #include <Game Studio/Game/Texture.h>
+#include <Game Studio/Render/Material.h>
 #include "Render/StaticMeshRenderComponent.h"
 
 class TestObject : public WorldObject
@@ -21,7 +22,7 @@ public:
 	TestObject() : MyStaticMesh("Box"), MyTexture("Logo_Game-Tek")
 	{
 		MyMaterial = new Material("M_Base");
-		MyStaticMesh.SetMaterial(Material);
+		MyStaticMesh.SetMaterial(MyMaterial);
 
 		StaticMeshRenderComponentCreateInfo SMRCCI;
 		SMRCCI.StaticMesh = &MyStaticMesh;

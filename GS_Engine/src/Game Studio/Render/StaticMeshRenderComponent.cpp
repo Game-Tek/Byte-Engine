@@ -2,16 +2,19 @@
 
 #include "RenderableInstructions.h"
 
-#include "Scene.h"
+#include "Renderer.h"
+#include "MeshRenderResource.h"
 
 RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = { decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(), decltype(RenderableInstructions::BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>(), decltype(RenderableInstructions::BindTypeResources)::Create<&BindTypeResources>(), decltype(RenderableInstructions::DrawInstance)::Create<&DrawInstance>() };
 
 void StaticMeshRenderComponent::CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI)
 {
-	_CIRI.Material = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh->GetMaterial();
+	const auto component = SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent);
+	const auto create_info = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo);
 
-	SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->staticMesh = SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh;
-	SCAST(StaticMeshRenderComponent*, _CIRI.RenderComponent)->renderMesh = _CIRI.Scene->RegisterMesh(SCAST(StaticMeshRenderComponentCreateInfo*, _CIRI.RenderComponentCreateInfo)->StaticMesh);
+	component->staticMesh = create_info->StaticMesh;
+	component->renderMaterial = _CIRI.Scene->CreateMaterial(create_info->StaticMesh->GetMaterial());
+	component->renderMesh = _CIRI.Scene->CreateMesh(create_info->StaticMesh);
 }
 
 void StaticMeshRenderComponent::BuildTypeInstanceSortData(BuildTypeInstanceSortDataInfo& _BTISDI)

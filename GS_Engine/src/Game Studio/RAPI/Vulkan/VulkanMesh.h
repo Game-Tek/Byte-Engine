@@ -2,14 +2,14 @@
 
 #include "Core.h"
 
-#include "RAPI/Mesh.h"
+#include "RAPI/RenderMesh.h"
 
 #include "Native/VKBuffer.h"
 #include "Native/VKMemory.h"
 
 class VKDevice;
 
-class GS_API VulkanMesh final : public Mesh
+class GS_API VulkanMesh final : public RenderMesh
 {
 	VKBuffer VertexBuffer;
 	VKMemory VBMemory;

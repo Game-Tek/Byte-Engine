@@ -74,7 +74,7 @@ public:
 	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;
 	void AdvanceSubPass() override;
 	void EndRenderPass(RenderPass* _RP) final override;
-	void BindMesh(Mesh* _Mesh) final override;
+	void BindMesh(RenderMesh* _Mesh) final override;
 	void BindUniformLayout(UniformLayout* _UL) override;
 	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;

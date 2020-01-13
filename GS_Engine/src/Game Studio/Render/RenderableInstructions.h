@@ -4,7 +4,7 @@
 #include "Containers/FString.h"
 
 class RenderComponent;
-class Scene;
+class Renderer;
 class Material;
 class StaticMesh;
 
@@ -25,7 +25,7 @@ struct CreateInstanceResourcesInfo
 	/**
 	 * \brief Pointer to the scene creating the render component.
 	 */
-	Scene* Scene = nullptr;
+	Renderer* Scene = nullptr;
 
 	/**
 	 * \brief Pointer to a RenderComponentCreateInfo which contains information specified during construction for how to instantiate this RenderComponent.
@@ -49,7 +49,7 @@ struct BuildTypeInstanceSortDataInfo
 
 struct BindTypeResourcesInfo
 {
-	Scene* const Scene = nullptr;
+	Renderer* const Scene = nullptr;
 };
 
 
@@ -62,7 +62,7 @@ struct DrawInstanceInfo
 	/**
 	 * \brief Pointer to the scene rendering the render component.
 	 */
-	Scene* Scene = nullptr;
+	Renderer* Scene = nullptr;
 	
 	/**
 	 * \brief Pointer to the render component to be rendered.

@@ -74,7 +74,10 @@ public:
 		_Archive.Write(_FV.capacity);
 		_Archive.Write(_FV.length);
 
-		_Archive.Write(_FV.capacity, _FV.data);
+		for (uint32 i = 0; i < _FV.length; ++i)
+		{
+			data[i] >> _Archive;
+		}
 
 		return _Archive;
 	}
@@ -87,7 +90,12 @@ public:
 
 		_FV.reallocIfExceeds(new_length);
 
-		_Archive.Read(new_capacity, _FV.data);
+		//_Archive.Read(new_capacity, _FV.data);
+
+		for (uint32 i = 0; i < new_length; ++i)
+		{
+			data[i] << _Archive;
+		}
 
 		_FV.length = new_length;
 

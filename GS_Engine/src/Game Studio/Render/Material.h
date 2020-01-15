@@ -24,7 +24,6 @@ class Material
 
 	Array<MaterialParameter, 8> parameters;
 	
-	uint32 textureIndexes[8];
 	byte vars[32];
 public:
 	explicit Material(const FString& _Name);
@@ -41,6 +40,7 @@ public:
 	bool GetUniformSetSize(size_t& _Size); //TEMPORAL: manual for now, should then be automated.
 
 	void SetParameter(const Id& parameter_name_, ShaderDataTypes data_type_, void* data_);
+	void SetTexture(const Id& textureName, class Texture* texturePointer);
 	
 	//Returns an array consisting of all of the material's dynamic parameters which change on a per instance basis. Used for building and updating shader data.
 	Array<MaterialParameter, 8> GetMaterialDynamicParameters() const { return parameters; };

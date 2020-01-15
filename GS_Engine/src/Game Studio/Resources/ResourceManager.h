@@ -60,5 +60,7 @@ public:
 
 	void ReleaseResource(Resource* _Resource) const;
 
+	void* CreateFile();
+	
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 };

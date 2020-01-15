@@ -161,7 +161,13 @@ enum class ShaderDataTypes : uint8
 	BOOL,
 
 	MAT3,
-	MAT4
+	MAT4,
+
+	TEXTURE_1D,
+	TEXTURE_2D,
+	TEXTURE_3D,
+	
+	TEXTURE_2D_CUBE,
 };
 
 

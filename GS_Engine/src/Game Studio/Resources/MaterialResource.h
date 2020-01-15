@@ -17,6 +17,8 @@ public:
 		FString VertexShaderCode;
 		FString FragmentShaderCode;
 
+		FVector<FString> TextureNames;
+		
 		bool HasTransparency = false;
 		bool IsTwoSided = false;
 
@@ -29,9 +31,6 @@ public:
 
 		[[nodiscard]] const FString& GetVertexShaderCode() const { return VertexShaderCode; }
 		[[nodiscard]] const FString& GetFragmentShaderCode() const { return FragmentShaderCode; }
-
-		void Write(OutStream& OutStream_) override;
-		void Load(InStream& InStream_) override;
 		
 		friend OutStream& operator<<(OutStream& _O, MaterialData& _MD);
 		friend InStream& operator>>(InStream& _I, MaterialData& _MD);

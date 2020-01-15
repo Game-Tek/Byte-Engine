@@ -1,8 +1,9 @@
 #include "MaterialResource.h"
 
 #include <fstream>
-#include <string>
 #include "Debug/Logger.h"
+#include "ResourceManager.h"
+#include "TextureResource.h"
 
 InStream& operator>>(InStream& _I, MaterialResource::MaterialData& _MD)
 {
@@ -29,8 +30,9 @@ void MaterialResource::MaterialData::Load(InStream& InStream_)
 {
 	ResourceData::Load(InStream_);
 
-	InStream_ >> VertexShaderCode;
-	InStream_ >> FragmentShaderCode;
+
+
+	InStream_ >> TextureNames;
 }
 
 bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
@@ -45,27 +47,15 @@ bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
 
 		InStream in_archive(&Input);
 
-		data.Load(in_archive);
+		in_archive >> data.VertexShaderCode;
+		in_archive >> data.FragmentShaderCode;
 
-		//size_t HeaderCount = 0;
-		//Input.read(&reinterpret_cast<char&>(HeaderCount), sizeof(ResourceHeaderType));	//Get header count from the first element in the file since it's supposed to be a header count variable of type ResourceHeaderType(uint64) as per the engine spec.
-		//
-		//ResourceElementDescriptor CurrentFileElementHeader;
-		//Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
-		//Input.read(&reinterpret_cast<char&>(Data->GetResourceName() = new char[CurrentFileElementHeader.Bytes]), CurrentFileElementHeader.Bytes);
-		//
-		//for(size_t i = 0; i < HeaderCount; ++i)		//For every header in the file
-		//{
-		//	Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(ResourceSegmentType));	//Copy next section size from section header
-		//	Input.read(reinterpret_cast<char*>(Data->WriteTo(i, CurrentFileElementHeader.Bytes)), CurrentFileElementHeader.Bytes);	//Copy section data from file to resource data
-		//}
-
-		//Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
-		//Input.read(SCAST(MaterialData*, Data)->VertexShaderCode = new char[CurrentFileElementHeader.Bytes], CurrentFileElementHeader.Bytes);
-		//Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
-		//Input.read(SCAST(MaterialData*, Data)->FragmentShaderCode = new char[CurrentFileElementHeader.Bytes], CurrentFileElementHeader.Bytes);
-		//Input.read(&reinterpret_cast<char&>(CurrentFileElementHeader), sizeof(CurrentFileElementHeader));
-		//Input.read(&reinterpret_cast<char&>(SCAST(MaterialData*, Data)->ShaderDynamicParameters), CurrentFileElementHeader.Bytes);
+		in_archive >> data.TextureNames;
+		
+		for (auto& element : data.TextureNames)
+		{
+			LRD_.Caller->GetResource<TextureResource>(element);
+		}
 	}
 	else
 	{

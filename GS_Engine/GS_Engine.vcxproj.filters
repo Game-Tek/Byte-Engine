@@ -268,6 +268,7 @@
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Render\MeshRenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
+    <ClInclude Include="src\Game Studio\Core\FileSystem.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -356,6 +357,7 @@
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
+    <ClCompile Include="src\Game Studio\Core\FileSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

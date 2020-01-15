@@ -17,22 +17,14 @@ OutStream& operator<<(OutStream& _O, MaterialResource::MaterialData& _MD)
 	return _O;
 }
 
-
 void MaterialResource::MaterialData::Write(OutStream& OutStream_)
 {
-	ResourceData::Write(OutStream_);
+	OutStream_ << ResourceName;
 
 	OutStream_ << VertexShaderCode;
 	OutStream_ << FragmentShaderCode;
-}
 
-void MaterialResource::MaterialData::Load(InStream& InStream_)
-{
-	ResourceData::Load(InStream_);
-
-
-
-	InStream_ >> TextureNames;
+	SerializeFVector<FString>(OutStream_, TextureNames);
 }
 
 bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
@@ -47,10 +39,12 @@ bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
 
 		InStream in_archive(&Input);
 
+		in_archive >> data.ResourceName;
+
 		in_archive >> data.VertexShaderCode;
 		in_archive >> data.FragmentShaderCode;
 
-		in_archive >> data.TextureNames;
+		DeserializeFVector<FString>(in_archive, data.TextureNames);
 		
 		for (auto& element : data.TextureNames)
 		{

@@ -69,38 +69,38 @@ public:
 	typedef _T* iterator;
 	typedef const _T* const_iterator;
 
-	friend OutStream& operator<<(OutStream& _Archive, FVector<_T>& _FV)
-	{
-		_Archive.Write(_FV.capacity);
-		_Archive.Write(_FV.length);
-
-		for (uint32 i = 0; i < _FV.length; ++i)
-		{
-			data[i] >> _Archive;
-		}
-
-		return _Archive;
-	}
-
-	friend InStream& operator>>(InStream& _Archive, FVector<_T>& _FV)
-	{
-		size_t new_capacity = 0, new_length = 0;
-		_Archive.Read(&new_capacity);
-		_Archive.Read(&new_length);
-
-		_FV.reallocIfExceeds(new_length);
-
-		//_Archive.Read(new_capacity, _FV.data);
-
-		for (uint32 i = 0; i < new_length; ++i)
-		{
-			data[i] << _Archive;
-		}
-
-		_FV.length = new_length;
-
-		return _Archive;
-	}
+	//friend OutStream& operator<<(OutStream& _Archive, FVector<_T>& _FV)
+	//{
+	//	_Archive.Write(_FV.capacity);
+	//	_Archive.Write(_FV.length);
+	//
+	//	for (uint32 i = 0; i < _FV.length; ++i)
+	//	{
+	//		_Archive << _FV.data[i];
+	//	}
+	//
+	//	return _Archive;
+	//}
+	//
+	//friend InStream& operator>>(InStream& _Archive, FVector<_T>& _FV)
+	//{
+	//	size_t new_capacity = 0, new_length = 0;
+	//	_Archive.Read(&new_capacity);
+	//	_Archive.Read(&new_length);
+	//
+	//	_FV.reallocIfExceeds(new_length);
+	//
+	//	//_Archive.Read(new_capacity, _FV.data);
+	//
+	//	for (uint32 i = 0; i < new_length; ++i)
+	//	{
+	//		_Archive >> _FV.data[i];
+	//	}
+	//
+	//	_FV.length = new_length;
+	//
+	//	return _Archive;
+	//}
 
 	//Constructs a new FVector.
 	FVector() : capacity(10), length(0), data(allocate(this->capacity))

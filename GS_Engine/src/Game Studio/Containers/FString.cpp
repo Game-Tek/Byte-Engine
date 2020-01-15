@@ -2,6 +2,35 @@
 #include <cstdio>
 #include <cstdarg>
 
+OutStream& operator<<(OutStream& _Archive, FString& _String)
+{
+	auto t = _String.Data.getLength();
+	
+	_Archive.Write(_String.Data.getLength());
+	
+	for (uint32 i = 0; i < _String.Data.getLength(); ++i)
+	{
+		_Archive.Write(_String.Data[i]);
+	}
+	
+	return _Archive;
+}
+
+InStream& operator>>(InStream& _Archive, FString& _String)
+{
+	size_t length = 0;
+	_Archive.Read(&length);
+
+	_String.Data.resize(length);
+	
+	for (uint32 i = 0; i < _String.Data.getLength(); ++i)
+	{
+		_Archive.Read(&_String.Data[i]);
+	}
+
+	return _Archive;
+}
+
 FString::FString() : Data(10)
 {
 }
@@ -114,6 +143,12 @@ int64 FString::FindLast(char _Char) const
 	}
 
 	return -1;
+}
+
+void FString::Drop(int64 from)
+{
+	Data.resize(from);
+	Data[from] = '\0';
 }
 
 constexpr size_t FString::StringLength(const char * In)

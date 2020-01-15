@@ -67,21 +67,15 @@ public:
 	//Returns the index to the last character in the string that is equal to _Char, if no matching character is found -1 is returned.
 	[[nodiscard]] int64 FindLast(char _Char) const;
 
+	void Drop(int64 from);
+
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
 	constexpr static size_t StringLength(const char * In);
 
 private:
-	friend OutStream& operator<<(OutStream& _Archive, FString& _String)
-	{
-		_Archive << _String.Data;
-		return _Archive;
-	}
+	friend OutStream& operator<<(OutStream& _Archive, FString& _String);
 	
-	friend InStream& operator>>(InStream& _Archive, FString& _String) 
-	{
-		_Archive >> _String.Data;
-		return _Archive;
-	}
+	friend InStream& operator>>(InStream& _Archive, FString& _String);
 
 	FVector<string_type> Data;
 

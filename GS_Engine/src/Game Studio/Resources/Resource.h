@@ -9,6 +9,32 @@
 using ResourceHeaderType = uint64;
 using ResourceSegmentType = uint64;
 
+template<typename T>
+void SerializeFVector(OutStream& outStream, FVector<T>& vector)
+{
+	outStream.Write(vector.getLength());
+
+	for (uint_64 i = 0; i < vector.getLength(); ++i)
+	{
+		outStream << vector[i];
+	}
+}
+
+template<typename T>
+void DeserializeFVector(InStream& inStream, FVector<T>& vector)
+{
+	uint_64 length = 0;
+	
+	inStream.Read(&length);
+
+	vector.resize(length);
+	
+	for (uint_64 i = 0; i < length; ++i)
+	{
+		inStream >> vector[i];
+	}
+}
+
 class ResourceData
 {
 	friend class Resource;

@@ -59,7 +59,7 @@ namespace GS
 
 		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
-		[[nodiscard]] const ResourceManager* GetResourceManager() const { return ResourceManagerInstance; }
+		[[nodiscard]] ResourceManager* GetResourceManager() { return ResourceManagerInstance; }
 		[[nodiscard]] Window* GetActiveWindow() const { return ActiveWindow; }
 		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
 	};

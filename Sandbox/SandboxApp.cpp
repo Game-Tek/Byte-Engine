@@ -8,6 +8,7 @@
 #include "Game Studio/Math/GSM.hpp"
 #include <Game Studio/Resources/Stream.h>
 #include <Game Studio/Resources/MaterialResource.h>
+#include "Game Studio/Core/FileSystem.h"
 
 class Framebuffer;
 
@@ -17,6 +18,8 @@ public:
 	Sandbox() : Application(GS::ApplicationCreateInfo{"Sandbox"})
 	{
 		MaterialResource::MaterialData material_data;
+
+		material_data.ResourceName = "Dou";
 		
 		material_data.VertexShaderCode = FString(R"(
 #version 450
@@ -61,6 +64,8 @@ void main()
 		ActiveWorld = MyWorld;
 
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 0));
+
+		//GS_LOG_MESSAGE(FileSystem::GetRunningPath().c_str());
 		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}

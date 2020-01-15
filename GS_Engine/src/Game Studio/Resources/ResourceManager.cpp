@@ -14,7 +14,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
-void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_)
+void ResourceManager::SaveFile(const FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_)
 {
 	FString full_path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourcePath;
 
@@ -34,10 +34,13 @@ void ResourceManager::SaveFile(FString& _ResourceName, FString& _ResourcePath, R
 	Outfile.close();
 }
 
-void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource* _Resource) const
+void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource* _Resource)
 {
 	const auto FullPath = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName + "." + _Resource->GetResourceTypeExtension();
-	const auto Result = _Resource->LoadResource(FullPath);
+	LoadResourceData load_resource_data;
+	load_resource_data.Caller = this;
+	load_resource_data.FullPath = FullPath;
+	const auto Result = _Resource->LoadResource(load_resource_data);
 
 	if (Result)
 	{

@@ -12,37 +12,23 @@ class World : public Object
 	FVector<WorldObject*> WorldObjects;
 
 	Renderer WorldScene;
+
+	double levelRunningTime = 0;
+	double levelAdjustedRunningTime = 0;
+	float worldTimeMultiplier = 1;
+	
 public:
 	World();
 	virtual ~World();
 
-	void OnUpdate() override
-	{
-		for (auto& WorldObject : WorldObjects)
-		{
-			WorldObject->OnUpdate();
-		}
-
-		WorldScene.OnUpdate();
-	}
-
-	//template<class T>
-	//T* CreateWorldObject()
-	//{
-	//	WorldObject* Obj = new T();
-	//	WorldObjects.push_back(Obj);
-	//
-	//	Obj->SetID(WorldObjects.length());
-	//
-	//	return SCAST(T*, Obj);
-	//}
+	void OnUpdate() override;
 
 	template<class T>
-	T* CreateWorldObject(const Vector3& _Pos)
+	T* CreateWorldObject()
 	{
 		WorldObject* Obj = new T();
+		
 		Obj->SetID(WorldObjects.getLength());
-		Obj->SetPosition(_Pos);
 
 		WorldObjects.push_back(Obj);
 
@@ -58,4 +44,10 @@ public:
 
 	[[nodiscard]] Renderer& GetScene() { return WorldScene; }
 
+	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
+	
+	double GetWorldRunningTime() const { return levelRunningTime; }
+	double GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
+	static double GetRealRunningTime();
+	float GetWorldDeltaTime() const;
 };

@@ -31,7 +31,8 @@ namespace GS
 		World* ActiveWorld = nullptr;
 		Window* ActiveWindow = nullptr;
 
-		bool FlaggedForClose = false;
+		bool flaggedForClose = false;
+		bool isInBackground = false;
 		FString CloseReason = FString("none");
 
 		[[nodiscard]] bool ShouldClose() const;

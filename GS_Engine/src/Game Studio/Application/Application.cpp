@@ -50,7 +50,7 @@ namespace GS
 	void Application::Close(const char* _Reason)
 	{
 		if (_Reason) CloseReason = _Reason;
-		FlaggedForClose = true;
+		flaggedForClose = true;
 	}
 
 	void Application::PromptClose()
@@ -62,7 +62,7 @@ namespace GS
 
 	bool Application::ShouldClose() const
 	{
-		return ActiveWindow->GetShouldClose() || FlaggedForClose;
+		return ActiveWindow->GetShouldClose() || flaggedForClose;
 	}
 
 }

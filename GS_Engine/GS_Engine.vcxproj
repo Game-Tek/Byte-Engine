@@ -107,11 +107,13 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
     <ClInclude Include="src\Game Studio\Core\Allocator.h" />
     <ClInclude Include="src\Game Studio\Core\FileSystem.h" />
+    <ClInclude Include="src\Game Studio\Core\JobSystem.h" />
     <ClInclude Include="src\Game Studio\Core\Network\NetConnection.h" />
     <ClInclude Include="src\Game Studio\Core\Network\NetSocket.h" />
     <ClInclude Include="src\Game Studio\Core\Network\NetworkCore.h" />
@@ -130,6 +132,7 @@
     <ClInclude Include="src\Game Studio\Physics\PhysicsWorld.h" />
     <ClInclude Include="src\Game Studio\Physics\Queries.h" />
     <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
+    <ClInclude Include="src\Game Studio\PlayableAsset.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
@@ -257,6 +260,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Core\FileSystem.cpp" />
+    <ClCompile Include="src\Game Studio\Core\JobSystem.cpp" />
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />

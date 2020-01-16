@@ -147,8 +147,19 @@ int64 FString::FindLast(char _Char) const
 
 void FString::Drop(int64 from)
 {
-	Data.resize(from);
-	Data[from] = '\0';
+	Data.resize(from + 1);
+	Data[from + 1] = '\0';
+}
+
+void FString::ReplaceAll(char a, char with)
+{
+	for (uint32 i = 0; i < Data.getLength() - 1; ++i)
+	{
+		if (Data[i] == a)
+		{
+			Data[i] = with;
+		}
+	}
 }
 
 constexpr size_t FString::StringLength(const char * In)

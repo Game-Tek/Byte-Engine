@@ -18,7 +18,7 @@ class ResourceManager : public Object
 	mutable FVector<Resource*> R;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_);
+	void SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_);
 
 	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource);
 

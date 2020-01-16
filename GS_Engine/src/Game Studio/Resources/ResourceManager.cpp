@@ -2,6 +2,7 @@
 
 #include <ostream>
 #include <fstream>
+#include "Core/FileSystem.h"
 
 void ResourceManager::ReleaseResource(Resource* _Resource) const
 {
@@ -14,9 +15,9 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
-void ResourceManager::SaveFile(const FString& _ResourceName, FString& _ResourcePath, ResourceData& ResourceData_)
+void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_)
 {
-	FString full_path = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourcePath;
+	auto full_path = FileSystem::GetRunningPath() + "resources/" + fileName;
 
 	std::ofstream Outfile(full_path.c_str(), std::ios::out | std::ios::binary);
 
@@ -36,7 +37,7 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& _ResourceP
 
 void ResourceManager::GetResourceInternal(const FString& _ResourceName, Resource* _Resource)
 {
-	const auto FullPath = FString("W:/Game Studio/bin/Sandbox/Debug-x64/resources/") + _ResourceName + "." + _Resource->GetResourceTypeExtension();
+	const auto FullPath = FileSystem::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->GetResourceTypeExtension();
 	LoadResourceData load_resource_data;
 	load_resource_data.Caller = this;
 	load_resource_data.FullPath = FullPath;

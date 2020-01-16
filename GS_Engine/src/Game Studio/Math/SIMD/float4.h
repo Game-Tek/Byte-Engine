@@ -89,6 +89,8 @@ public:
 		return _mm_dp_ps(_A.Data, _B.Data, 0xff);
 	}
 
+	INLINE static void Transpose(float4& a, float4& b, float4& c, float4& d) { _MM_TRANSPOSE4_PS(a, b, c, d); }
+
 	[[nodiscard]] INLINE float4 SquareRoot(const float4& _Other) const
 	{
 		return _mm_sqrt_ps(Data);

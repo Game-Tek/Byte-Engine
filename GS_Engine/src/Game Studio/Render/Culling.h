@@ -46,6 +46,8 @@ void sse_culling_aabb(AABB* aabb_data, int num_objects, int* culling_res, vec4* 
 
 		//for now we have points in vectors aabb_min_x..w, but for calculations we need to xxxx yyyy zzzz vectors representation - just transpose data
 
+
+
 		_MM_TRANSPOSE4_PS(aabb_min_x, aabb_min_y, aabb_min_z, aabb_min_w);
 		_MM_TRANSPOSE4_PS(aabb_max_x, aabb_max_y, aabb_max_z, aabb_max_w);
 

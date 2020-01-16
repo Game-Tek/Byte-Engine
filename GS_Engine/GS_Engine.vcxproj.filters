@@ -205,7 +205,6 @@
     <ClInclude Include="src\Game Studio\Utility\RGBA.h">
       <Filter>Misc</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\Functor.h" />
     <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h">
       <Filter>Misc</Filter>
     </ClInclude>
@@ -237,7 +236,6 @@
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Dispatcher.h" />
-    <ClInclude Include="src\Game Studio\Functor.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
@@ -269,6 +267,8 @@
     <ClInclude Include="src\Game Studio\Render\MeshRenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
     <ClInclude Include="src\Game Studio\Core\FileSystem.h" />
+    <ClInclude Include="src\Game Studio\Utility\Delegate.h" />
+    <ClInclude Include="src\Game Studio\Delegate.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

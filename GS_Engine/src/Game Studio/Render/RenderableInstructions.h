@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Utility/Functor.h"
+#include "Utility/Delegate.h"
 #include "Containers/FString.h"
 
 class RenderComponent;
@@ -78,14 +78,14 @@ struct RenderableInstructions
 	//FString RenderableTypeName = FString("null");
 
 	//This function should create all required data/resources for a single object of the type being described.
-	Functor<void (CreateInstanceResourcesInfo&)> CreateInstanceResources;
+	Delegate<void (CreateInstanceResourcesInfo&)> CreateInstanceResources;
 
 	//This function should fill out the passed vector to specify all the required parameters for sorting the elements.
-	Functor<void (BuildTypeInstanceSortDataInfo&)> BuildTypeInstanceSortData;
+	Delegate<void (BuildTypeInstanceSortDataInfo&)> BuildTypeInstanceSortData;
 
 	//This function should bind all required resources for the type being described. No per object/instance data.
-	Functor<void (BindTypeResourcesInfo&)> BindTypeResources;
+	Delegate<void (BindTypeResourcesInfo&)> BindTypeResources;
 
 	//This function might bind all required resources for the particular instance of the type being rendered and also should draw said instance.
-	Functor<void (DrawInstanceInfo&)> DrawInstance;
+	Delegate<void (DrawInstanceInfo&)> DrawInstance;
 };

@@ -1,12 +1,12 @@
 #pragma once
 
 #include "Containers/FVector.hpp"
-#include "Utility/Functor.h"
+#include "Utility/Delegate.h"
 
 template<typename RET, typename... PARAMS>
 class Dispatcher
 {
-	using FunctorType = Functor<RET(PARAMS)>;
+	using FunctorType = Delegate<RET(PARAMS)>;
 	
 	FVector<FunctorType> Delegates;
 	

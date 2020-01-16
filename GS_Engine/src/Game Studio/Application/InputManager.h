@@ -11,7 +11,7 @@
 #include "Input/JoystickState.h"
 #include "Containers/Id.h"
 #include "Containers/FVector.hpp"
-#include "Utility/Functor.h"
+#include "Utility/Delegate.h"
 #include <map>
 
 class Window;

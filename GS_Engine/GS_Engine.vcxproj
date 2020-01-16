@@ -117,7 +117,7 @@
     <ClInclude Include="src\Game Studio\Core\Network\NetworkCore.h" />
     <ClInclude Include="src\Game Studio\Core\Thread.h" />
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
-    <ClInclude Include="src\Game Studio\Functor.h" />
+    <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Dispatcher.h" />
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
@@ -153,7 +153,7 @@
     <ClInclude Include="src\Game Studio\Sound\SoundPlayer.h" />
     <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundListener.h" />
-    <ClInclude Include="src\Game Studio\Utility\Functor.h" />
+    <ClInclude Include="src\Game Studio\Utility\Delegate.h" />
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />

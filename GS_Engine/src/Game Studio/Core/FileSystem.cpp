@@ -16,6 +16,6 @@ FString FileSystem::GetRunningPath()
 	char a[512];
 	GetModuleFileNameA(NULL, a, 512);
 	FString result(a);
-	result.Drop(result.FindLast('/'));
+	result.Drop(result.FindLast('\\'));
 	return result;
 }

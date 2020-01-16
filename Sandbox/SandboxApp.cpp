@@ -64,8 +64,6 @@ void main()
 		ActiveWorld = MyWorld;
 
  		MyObject = MyWorld->CreateWorldObject<TestObject>(Vector3(0, 0, 0));
-
-		//GS_LOG_MESSAGE(FileSystem::GetRunningPath().c_str());
 		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);
 	}

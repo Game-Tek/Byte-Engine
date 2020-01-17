@@ -28,6 +28,8 @@ public:
 	InStream& operator=(const InStream& _Other) = default;
 	InStream& operator=(InStream&& _Other) = default;
 
+	void operator>>(uint8& in) const { readInternal(sizeof(uint8), &in); }
+	void operator>>(int8& in) const { readInternal(sizeof(int8), &in); }
 	
 	/**
 	 * \brief Writes an int8 to memory from disk.
@@ -140,7 +142,9 @@ public:
 	OutStream& operator=(const OutStream& _Other) = default;
 	OutStream& operator=(OutStream&& _Other) = default;
 
-
+	void operator<<(int8 in) const { writeInternal(sizeof(int8), &in); }
+	void operator<<(uint8 in) const { writeInternal(sizeof(uint8), &in); }
+	
 	/**
 	 * \brief Writes an int8 to disk.
 	 * \param _In int8 to be written to disk.

@@ -42,7 +42,11 @@ class FVector
 	 */
 	void freeData()
 	{
-		free(this->data);
+		if (this->data)
+		{
+			free(this->data);
+		}
+		
 		this->data = nullptr;
 	}
 
@@ -179,6 +183,14 @@ public:
 		return;
 	}
 
+	void forceRealloc(const _LT count)
+	{
+		this->data = allocate(count);
+		this->capacity = count;
+		this->length = 0;
+		return;
+	}
+	
 	void shrink(const _LT _Count)
 	{
 		this->capacity = _Count;
@@ -194,7 +206,8 @@ public:
 	void push_back(const _T& _Obj)
 	{
 		reallocIfExceeds(1);
-		copyArray(&_Obj, getElement(this->length), 1);
+		//copyArray(&_Obj, getElement(this->length), 1);
+		::new (this->data + this->length) _T(_Obj);
 		this->length += 1;
 	}
 
@@ -218,7 +231,7 @@ public:
 	void emplace_back(Args&&... _Args)
 	{
 		reallocIfExceeds(1);
-		new (this->data + this->length) _T(std::forward<Args>(_Args) ...);
+		::new (this->data + this->length) _T(std::forward<Args>(_Args) ...);
 		this->length += 1;
 	}
 

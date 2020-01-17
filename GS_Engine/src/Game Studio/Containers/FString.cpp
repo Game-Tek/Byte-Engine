@@ -2,31 +2,18 @@
 #include <cstdio>
 #include <cstdarg>
 
+#include "Resources/Resource.h"
+
 OutStream& operator<<(OutStream& _Archive, FString& _String)
 {
-	auto t = _String.Data.getLength();
-	
-	_Archive.Write(_String.Data.getLength());
-	
-	for (uint32 i = 0; i < _String.Data.getLength(); ++i)
-	{
-		_Archive.Write(_String.Data[i]);
-	}
+	_Archive << _String.Data;
 	
 	return _Archive;
 }
 
 InStream& operator>>(InStream& _Archive, FString& _String)
 {
-	size_t length = 0;
-	_Archive.Read(&length);
-
-	_String.Data.resize(length);
-	
-	for (uint32 i = 0; i < _String.Data.getLength(); ++i)
-	{
-		_Archive.Read(&_String.Data[i]);
-	}
+	_Archive >> _String.Data;
 
 	return _Archive;
 }

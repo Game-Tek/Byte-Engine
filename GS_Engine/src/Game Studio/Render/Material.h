@@ -41,6 +41,8 @@ public:
 
 	void SetParameter(const Id& parameter_name_, ShaderDataTypes data_type_, void* data_);
 	void SetTexture(const Id& textureName, class Texture* texturePointer);
+
+	MaterialResource* GetMaterialResource() { return materialMaterialResource; }
 	
 	//Returns an array consisting of all of the material's dynamic parameters which change on a per instance basis. Used for building and updating shader data.
 	Array<MaterialParameter, 8> GetMaterialDynamicParameters() const { return parameters; };

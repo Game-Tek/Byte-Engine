@@ -362,6 +362,7 @@
     <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
     <ClCompile Include="src\Game Studio\Core\FileSystem.cpp" />
     <ClCompile Include="src\Game Studio\Core\JobSystem.cpp" />
+    <ClCompile Include="src\Game Studio\Render\MaterialRenderResource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

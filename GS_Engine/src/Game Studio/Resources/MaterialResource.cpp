@@ -24,7 +24,7 @@ void MaterialResource::MaterialData::Write(OutStream& OutStream_)
 	OutStream_ << VertexShaderCode;
 	OutStream_ << FragmentShaderCode;
 
-	SerializeFVector<FString>(OutStream_, TextureNames);
+	OutStream_ << TextureNames;
 }
 
 bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
@@ -43,8 +43,8 @@ bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
 
 		in_archive >> data.VertexShaderCode;
 		in_archive >> data.FragmentShaderCode;
-
-		DeserializeFVector<FString>(in_archive, data.TextureNames);
+		
+		in_archive >> data.TextureNames;
 		
 		for (auto& element : data.TextureNames)
 		{

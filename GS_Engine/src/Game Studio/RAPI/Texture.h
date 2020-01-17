@@ -7,7 +7,7 @@ struct GS_API TextureCreateInfo
 {
 	void* ImageData = nullptr;
 	size_t ImageDataSize = 0;
-	ImageUse Use = ImageUse::INPUT_ATTACHMENT;
+	ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;
 	Format ImageFormat = Format::RGBA_I8;
 	Extent2D Extent = { 1280, 720 };
 };

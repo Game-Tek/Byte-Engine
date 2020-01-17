@@ -15,6 +15,8 @@ public:
 	public:
 		char* ImageData = nullptr;
 		size_t imageDataSize = 0;
+		Extent2D TextureDimensions;
+		Format TextureFormat;
 
 		~TextureResourceData();
 		
@@ -54,11 +56,5 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "TextureResource"; }
 
 	[[nodiscard]] const TextureResourceData& GetTextureData() const { return data; }
-protected:
-	//Used to hold the texture's dimensions once it's been loaded.
-	Extent2D TextureDimensions;
-
-	//Used to hold the number of channels this texture has.
-	Format TextureFormat;
 };
 

@@ -3,7 +3,7 @@
 #include "RenderResource.h"
 #include "Containers/Array.hpp"
 
-struct MaterialRenderResourceCreateInfo
+struct MaterialRenderResourceCreateInfo : public RenderResourceCreateInfo
 {
 	class Material* ParentMaterial = nullptr;
 	Array<class Texture*, 8> textures;
@@ -16,8 +16,5 @@ class MaterialRenderResource : public RenderResource
 	Array<class Texture*, 8> textures;
 
 public:
-	explicit MaterialRenderResource(const MaterialRenderResourceCreateInfo& MRRCI_) : RenderResource(), referenceMaterial(MRRCI_.ParentMaterial), textures(MRRCI_.textures)
-	{
-		
-	}
+	explicit MaterialRenderResource(const MaterialRenderResourceCreateInfo& MRRCI_);
 };

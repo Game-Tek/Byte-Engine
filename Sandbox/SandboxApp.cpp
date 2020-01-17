@@ -53,11 +53,16 @@ void main()
 layout(location = 0)in vec4 tPos;
 layout(location = 0) out vec4 outColor;
 
+layout(binding = 1) uniform sampler2D texSampler;
+
 void main()
 {
-	outColor = vec4(tPos.x, tPos.y, tPos.z, 1);
+	outColor = texture(texSampler, vec2(tPos.x, tPos.y));
 })");
 
+		//material_data.TextureNames.resize(1);
+		material_data.TextureNames.emplace_back(FString("Logo"));
+		
 		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", material_data);
 		
 		MyWorld = new World();

@@ -122,14 +122,7 @@ void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_fo
 		throw std::invalid_argument("unsupported layout transition!");
 	}
 
-	vkCmdPipelineBarrier(
-		*command_buffer_,
-		sourceStage, destinationStage,
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrier
-	);
+	vkCmdPipelineBarrier(*command_buffer_, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 VulkanRenderDevice::VulkanRenderDevice() : Instance("Game Studio"),
@@ -203,24 +196,28 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	VkImage image = VK_NULL_HANDLE;
 	VkDeviceMemory image_memory = VK_NULL_HANDLE;
 	
-	CreateVkImage(&device, &image, TCI_.Extent, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+	CreateVkImage(&device, &image, TCI_.Extent, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
 	{
 		VkMemoryRequirements memRequirements;
-		vkGetBufferMemoryRequirements(Device, staging_buffer, &memRequirements);
+		vkGetImageMemoryRequirements(Device, image, &memRequirements);
 
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
 		allocInfo.memoryTypeIndex = Device.FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		GS_VK_CHECK(vkAllocateMemory(Device, &allocInfo, nullptr, &staging_buffer_memory), "failed to allocate buffer memory!");
+		GS_VK_CHECK(vkAllocateMemory(Device, &allocInfo, nullptr, &image_memory), "failed to allocate buffer memory!");
 
 		vkBindImageMemory(Device, image, image_memory, 0);
 	}
 	
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
+	ImageTransferCommandPool = TransientCommandPool.GetHandle();
+	
+	AllocateCommandBuffer(&device, &ImageTransferCommandPool, &commandBuffer, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
+	
 	StartCommandBuffer(&commandBuffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
 	TransitionImageLayout(&device, &image, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &commandBuffer);
@@ -238,14 +235,14 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 
 	vkCmdCopyBufferToImage(commandBuffer, staging_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-	TransitionImageLayout(&device, &image, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &commandBuffer);
+	TransitionImageLayout(&device, &image, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ImageLayoutToVkImageLayout(TCI_.Layout), &commandBuffer);
 	
 	vkEndCommandBuffer(commandBuffer);
 
 	auto queue = Device.GetTransferQueue().GetVkQueue();
-	auto fence = nullptr;
+	VkFence fence = nullptr;
 
-	SubmitCommandBuffer(&commandBuffer, 1, &queue, fence);
+	SubmitCommandBuffer(&commandBuffer, 1, &queue, &fence);
 
 	vkQueueWaitIdle(queue);
 	vkFreeCommandBuffers(Device, ImageTransferCommandPool, 1, &commandBuffer);

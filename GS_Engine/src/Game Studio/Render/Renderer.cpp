@@ -3,12 +3,15 @@
 
 #include "Application/Application.h"
 #include "Math/GSM.hpp"
+
 #include "Resources/StaticMeshResource.h"
+#include "Resources/MaterialResource.h"
 
 #include "Material.h"
 #include "Game/StaticMesh.h"
 #include "MeshRenderResource.h"
 #include "MaterialRenderResource.h"
+#include "Resources/TextureResource.h"
 
 
 Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
@@ -66,7 +69,10 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
 	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
-	ULCI.PipelineUniformSets.setLength(1);
+	ULCI.PipelineUniformSets[1].UniformSetType = UniformType::SAMPLER;
+	ULCI.PipelineUniformSets[1].ShaderStage = ShaderType::FRAGMENT_SHADER;
+	ULCI.PipelineUniformSets[1].UniformSetUniformsCount = 1;
+	ULCI.PipelineUniformSets.setLength(2);
 	
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(Matrix4);
@@ -232,7 +238,20 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 
 	MaterialRenderResourceCreateInfo material_render_resource_create_info;
 	material_render_resource_create_info.ParentMaterial = Material_;
-	material_render_resource_create_info.textures;
+
+	for (uint8 i = 0; i < Material_->GetMaterialResource()->GetMaterialData().TextureNames.getLength(); ++i)
+	{
+		auto texture = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(Material_->GetMaterialResource()->GetMaterialData().TextureNames[i]);
+		
+		TextureCreateInfo texture_create_info;
+		texture_create_info.ImageData = texture->GetTextureData().ImageData;
+		texture_create_info.ImageDataSize = texture->GetTextureData().imageDataSize;
+		texture_create_info.Extent = texture->GetTextureData().TextureDimensions;
+		texture_create_info.ImageFormat = texture->GetTextureData().TextureFormat;
+		texture_create_info.Layout = ImageLayout::SHADER_READ;
+		
+		material_render_resource_create_info.textures.push_back(RenderDevice::Get()->CreateTexture(texture_create_info));
+	}
 	
 	return new MaterialRenderResource(material_render_resource_create_info);
 }

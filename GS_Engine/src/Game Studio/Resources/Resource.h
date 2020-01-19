@@ -5,6 +5,7 @@
 #include "Object.h"
 
 #include "Containers/FString.h"
+#include "Containers/Id.h"
 
 using ResourceHeaderType = uint64;
 using ResourceSegmentType = uint64;
@@ -97,6 +98,8 @@ class GS_API Resource : public Object
 	friend class ResourceManager;
 	
 	uint16 References = 0;
+
+	Id resourceName;
 	
 	void IncrementReferences() { ++References; }
 	void DecrementReferences() { --References; }

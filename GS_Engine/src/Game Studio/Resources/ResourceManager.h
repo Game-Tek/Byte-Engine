@@ -14,38 +14,41 @@
 
 class ResourceManager : public Object
 {
-	//mutable std::unordered_map<Resource*, Resource*> ResourceMap;
-	mutable FVector<Resource*> R;
+	mutable std::unordered_map<Id::HashType, Resource*> ResourceMap;
 
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_);
 
-	void GetResourceInternal(const FString& _ResourceName, Resource* _Resource);
+	void LoadResource(const FString& _ResourceName, Resource* _Resource);
 
 public:
-	ResourceManager() : R(50)
+	ResourceManager()
 	{
+		for (auto& element : ResourceMap)
+		{
+			delete element.second;
+		}
 	}
 
 	template<class T>
 	T* GetResource(const FString& _ResourceName)
 	{
-		//auto HashedName = Id(_Name);
-		//
-		//auto Loc = ResourceMap.find(HashedName.GetID());
-		//
-		//if(Loc != ResourceMap.cend())
-		//{
-		//	return StaticMeshResourceHandle(&ResourceMap[HashedName.GetID()]);
-		//}
+		auto HashedName = Id(_ResourceName);
 		
-		//auto Path = GetBaseResourcePath() + "static meshes/" + _Name + ".obj";
+		auto Loc = ResourceMap.find(HashedName.GetID());
+		
+		if(Loc != ResourceMap.cend())
+		{
+			Loc->second->IncrementReferences();
+			return static_cast<T*>(Loc->second);
+		}
 
 		Resource* resource = new T();
 
-		GetResourceInternal(_ResourceName, resource);
+		LoadResource(_ResourceName, resource);
 
-		//return nullptr;
+		ResourceMap.insert({ Id(_ResourceName).GetID(), resource});
+		
 		return SCAST(T*, resource);
 	}
 
@@ -55,7 +58,7 @@ public:
 		Resource* resource = new T();
 		auto path = _Name + "." + resource->GetResourceTypeExtension();
 		SaveFile(_Name, path, ResourceData_);
-		GetResourceInternal(_Name, resource);
+		LoadResource(_Name, resource);
 	}
 
 	void ReleaseResource(Resource* _Resource) const;

@@ -57,7 +57,7 @@ layout(binding = 1) uniform sampler2D texSampler;
 
 void main()
 {
-	outColor = texture(texSampler, vec2(tPos.x, tPos.y));
+	outColor = texture(texSampler, vec2(tPos.x * 0.01, tPos.y * 0.01));
 })");
 
 		//material_data.TextureNames.resize(1);

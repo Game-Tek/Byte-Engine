@@ -69,9 +69,11 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
 	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
-	ULCI.PipelineUniformSets[1].UniformSetType = UniformType::SAMPLER;
-	ULCI.PipelineUniformSets[1].ShaderStage = ShaderType::FRAGMENT_SHADER;
-	ULCI.PipelineUniformSets[1].UniformSetUniformsCount = 1;
+	UniformSet uniform_set;
+	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
+	uniform_set.UniformSetType = UniformType::COMBINED_IMAGE_SAMPLER;
+	uniform_set.UniformSetUniformsCount = 1;
+	ULCI.PipelineUniformSets[1] = uniform_set;
 	ULCI.PipelineUniformSets.setLength(2);
 	
 	PushConstant MyPushConstant;
@@ -83,14 +85,6 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	UniformBufferCreateInfo UBCI;
 	UBCI.Size = sizeof(Matrix4);
 	UB = RenderDevice::Get()->CreateUniformBuffer(UBCI);
-
-	UniformLayoutUpdateInfo ULUI;
-	ULUI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
-	ULUI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
-	ULUI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
-	ULUI.PipelineUniformSets[0].UniformData = UB;
-	ULUI.PipelineUniformSets.setLength(1);
-	UL->UpdateUniformSet(ULUI);
 
 	Framebuffers.resize(SCImages.getLength());
 	for (uint8 i = 0; i < SCImages.getLength(); ++i)
@@ -241,16 +235,33 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 
 	for (uint8 i = 0; i < Material_->GetMaterialResource()->GetMaterialData().TextureNames.getLength(); ++i)
 	{
-		auto texture = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(Material_->GetMaterialResource()->GetMaterialData().TextureNames[i]);
+		auto texture_resource = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(Material_->GetMaterialResource()->GetMaterialData().TextureNames[i]);
 		
 		TextureCreateInfo texture_create_info;
-		texture_create_info.ImageData = texture->GetTextureData().ImageData;
-		texture_create_info.ImageDataSize = texture->GetTextureData().imageDataSize;
-		texture_create_info.Extent = texture->GetTextureData().TextureDimensions;
-		texture_create_info.ImageFormat = texture->GetTextureData().TextureFormat;
-		texture_create_info.Layout = ImageLayout::SHADER_READ;
+		texture_create_info.ImageData		= texture_resource->GetTextureData().ImageData;
+		texture_create_info.ImageDataSize	= texture_resource->GetTextureData().imageDataSize;
+		texture_create_info.Extent			= texture_resource->GetTextureData().TextureDimensions;
+		texture_create_info.ImageFormat		= texture_resource->GetTextureData().TextureFormat;
+		texture_create_info.Layout			= ImageLayout::SHADER_READ;
+
+		auto texture = RenderDevice::Get()->CreateTexture(texture_create_info);
+
+		UniformLayoutUpdateInfo uniform_layout_update_info;
+		UniformSet uniform;
+		uniform.UniformSetType = UniformType::UNIFORM_BUFFER;
+		uniform.ShaderStage = ShaderType::VERTEX_SHADER;
+		uniform.UniformSetUniformsCount = 1;
+		uniform.UniformData = UB;
+		uniform_layout_update_info.PipelineUniformSets.push_back(uniform);
+		UniformSet uniform_set;
+		uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
+		uniform_set.UniformData = texture;
+		uniform_set.UniformSetType = UniformType::COMBINED_IMAGE_SAMPLER;
+		uniform_set.UniformSetUniformsCount = 1;
+		uniform_layout_update_info.PipelineUniformSets.push_back(uniform_set);
+		UL->UpdateUniformSet(uniform_layout_update_info);
 		
-		material_render_resource_create_info.textures.push_back(RenderDevice::Get()->CreateTexture(texture_create_info));
+		material_render_resource_create_info.textures.push_back(texture);
 	}
 	
 	return new MaterialRenderResource(material_render_resource_create_info);

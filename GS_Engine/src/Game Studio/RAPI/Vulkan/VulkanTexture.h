@@ -26,7 +26,10 @@ class VulkanTexture : public Texture
 	VkSampler textureSampler = VK_NULL_HANDLE;
 	
 public:
-	explicit VulkanTexture(const VulkanTextureCreateInfo& VTCI_) : textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory)
+	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) : Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory), textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
 	{
 	}
+
+	[[nodiscard]] VkImageView GetImageView() const { return textureImageView; }
+	[[nodiscard]] VkSampler GetImageSampler() const { return textureSampler; }
 };

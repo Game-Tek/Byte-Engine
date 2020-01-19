@@ -9,15 +9,16 @@
 #include "Containers/DArray.hpp"
 #include "Native/VKDespcriptorSet.h"
 #include "Native/VKPipelineLayout.h"
+#include "Containers/FVector.hpp"
 
 struct VkWriteDescriptorSet;
 
 class GS_API VulkanUniformLayout final : public UniformLayout
 {
-	VKDescriptorSetLayout DescriptorSetLayout;
-	VKDescriptorPool DescriptorPool;
-	DArray<VkDescriptorSet> DescriptorSets;
-	VKPipelineLayout PipelineLayout;
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorPool descriptorPool;
+	FVector<VkDescriptorSet> descriptorSets;
+	VkPipelineLayout pipelineLayout;
 
 	static VKDescriptorSetLayoutCreator CreateDescriptorSetLayout(VKDevice* _Device, const UniformLayoutCreateInfo& _PLCI);
 
@@ -32,7 +33,7 @@ public:
 
 	void UpdateUniformSet(const UniformLayoutUpdateInfo& _ULUI) override;
 
-	[[nodiscard]] const auto& GetVkDescriptorSets() const { return DescriptorSets; }
-	[[nodiscard]] const VKDescriptorSetLayout& GetVKDescriptorSetLayout() const { return DescriptorSetLayout; }
-	[[nodiscard]] const VKPipelineLayout& GetVKPipelineLayout() const { return PipelineLayout; }
+	[[nodiscard]] const auto& GetVkDescriptorSets() const { return descriptorSets; }
+	[[nodiscard]] const VkDescriptorSetLayout& GetVkDescriptorSetLayout() const { return descriptorSetLayout; }
+	[[nodiscard]] const VkPipelineLayout& GetVkPipelineLayout() const { return pipelineLayout; }
 };

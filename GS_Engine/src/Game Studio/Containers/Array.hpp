@@ -77,7 +77,7 @@ public:
 
 	_LT push_back(const _T& _obj)
 	{
-		CopyToData(&_obj, 1);
+		::new(this->data + this->length) _T(_obj);
 
 		return ++this->length;
 	}

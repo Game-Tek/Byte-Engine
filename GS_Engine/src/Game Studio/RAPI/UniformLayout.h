@@ -25,6 +25,7 @@ struct GS_API UniformLayoutCreateInfo
 	Array<UniformSet, MAX_DESCRIPTORS_PER_SET> PipelineUniformSets;
 	PushConstant* PushConstant = nullptr;
 	RenderContext* RenderContext = nullptr;
+	int DescriptorCount;
 };
 
 struct GS_API UniformLayoutUpdateInfo

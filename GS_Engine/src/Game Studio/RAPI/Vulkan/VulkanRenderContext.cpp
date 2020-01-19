@@ -269,12 +269,12 @@ void VulkanRenderContext::BindMesh(RenderMesh* _Mesh)
 void VulkanRenderContext::BindUniformLayout(UniformLayout* _UL)
 {
 	const auto VKUL = SCAST(VulkanUniformLayout*, _UL);
-	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVKPipelineLayout().GetHandle(), 0, 1, VKUL->GetVkDescriptorSets().getData(), 0, nullptr);
+	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVkPipelineLayout(), 0, 1, VKUL->GetVkDescriptorSets().getData(), 0, nullptr);
 }
 
 void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
 {
-	vkCmdPushConstants(CommandBuffers[CurrentImage], SCAST(VulkanUniformLayout*, _PCI.UniformLayout)->GetVKPipelineLayout().GetHandle(), VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
+	vkCmdPushConstants(CommandBuffers[CurrentImage], SCAST(VulkanUniformLayout*, _PCI.UniformLayout)->GetVkPipelineLayout(), VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)

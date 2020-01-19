@@ -15,6 +15,7 @@ VkPhysicalDeviceMemoryProperties MemoryProperties = {};
 VKDevice::VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD)
 {
 	VkPhysicalDeviceFeatures deviceFeatures = {};	//COME BACK TO
+	deviceFeatures.samplerAnisotropy = VK_TRUE;
 
 	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 

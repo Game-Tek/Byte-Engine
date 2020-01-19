@@ -274,8 +274,10 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = 16;
+	
+	samplerInfo.anisotropyEnable = bool(TCI_.Anisotropy);
+	samplerInfo.maxAnisotropy = TCI_.Anisotropy == 0 ? 1 : TCI_.Anisotropy;
+	
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;
 	samplerInfo.compareEnable = VK_FALSE;
@@ -284,7 +286,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
 	samplerInfo.maxLod = 0.0f;
-
+	
 	VkSampler textureSampler;
 	GS_VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler), "failed to create texture sampler!");
 	
@@ -294,7 +296,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	vulkan_texture_create_info.TextureImageView = imageView;
 	vulkan_texture_create_info.TextureSampler = textureSampler;
 	
-	return new VulkanTexture(vulkan_texture_create_info);
+	return new VulkanTexture(TCI_, vulkan_texture_create_info);
 }
 
 GraphicsPipeline* VulkanRenderDevice::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)

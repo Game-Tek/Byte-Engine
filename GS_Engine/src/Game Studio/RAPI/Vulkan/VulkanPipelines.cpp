@@ -182,7 +182,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 	CreateInfo.pDepthStencilState = nullptr;//&DepthStencilState;
 	CreateInfo.pColorBlendState = &ColorBlendState;
 	CreateInfo.pDynamicState = &DynamicState;
-	CreateInfo.layout = SCAST(VulkanUniformLayout*, _GPCI.UniformLayout)->GetVKPipelineLayout().GetHandle();
+	CreateInfo.layout = SCAST(VulkanUniformLayout*, _GPCI.UniformLayout)->GetVkPipelineLayout();
 	CreateInfo.renderPass = SCAST(VulkanRenderPass*, _GPCI.RenderPass)->GetVKRenderPass().GetHandle();
 	CreateInfo.subpass = 0;
 	CreateInfo.basePipelineHandle = _OldPipeline; // Optional

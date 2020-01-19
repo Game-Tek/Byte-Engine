@@ -59,9 +59,9 @@ public:
 private:
 	StaticMeshResourceData data;
 
-	bool LoadResource(const LoadResourceData& LRD_) override;
-	void LoadFallbackResource(const FString& _Path) override;
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "obj"; }
+	bool loadResource(const LoadResourceData& LRD_) override;
+	void loadFallbackResource(const FString& _Path) override;
+	[[nodiscard]] const char* getResourceTypeExtension() const override { return "obj"; }
 
 	static StaticMeshResourceData * ProcessNode(aiNode * Node, const aiScene * Scene);
 	static StaticMeshResourceData ProcessMesh(aiMesh * Mesh);

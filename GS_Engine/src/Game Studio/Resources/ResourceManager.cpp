@@ -6,9 +6,9 @@
 
 void ResourceManager::ReleaseResource(Resource* _Resource) const
 {
-	_Resource->DecrementReferences();
+	_Resource->decrementReferences();
 
-	if (_Resource->GetReferenceCount() == 0)
+	if (_Resource->getReferenceCount() == 0)
 	{
 		delete ResourceMap[_Resource->resourceName.GetID()];
 	}
@@ -36,11 +36,11 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 
 void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Resource)
 {
-	const auto FullPath = FileSystem::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->GetResourceTypeExtension();
+	const auto FullPath = FileSystem::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->getResourceTypeExtension();
 	LoadResourceData load_resource_data;
 	load_resource_data.Caller = this;
 	load_resource_data.FullPath = FullPath;
-	const auto Result = _Resource->LoadResource(load_resource_data);
+	const auto Result = _Resource->loadResource(load_resource_data);
 
 	if (Result)
 	{
@@ -48,7 +48,7 @@ void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Reso
 	}
 	else
 	{
-		GS_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(), _Resource->GetResourceTypeExtension())
-		_Resource->LoadFallbackResource(FullPath);
+		GS_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(), _Resource->getResourceTypeExtension())
+		_Resource->loadFallbackResource(FullPath);
 	}
 }

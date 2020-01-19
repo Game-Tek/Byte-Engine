@@ -2,7 +2,7 @@
 
 #include <fstream>
 
-bool TextResource::LoadResource(const LoadResourceData& LRD_)
+bool TextResource::loadResource(const LoadResourceData& LRD_)
 {
 	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in | std::ios::binary);	//Open file as binary
 
@@ -27,6 +27,6 @@ bool TextResource::LoadResource(const LoadResourceData& LRD_)
 	return true;
 }
 
-void TextResource::LoadFallbackResource(const FString& _FullPath)
+void TextResource::loadFallbackResource(const FString& _FullPath)
 {
 }

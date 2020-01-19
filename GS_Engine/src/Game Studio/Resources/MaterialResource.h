@@ -49,10 +49,10 @@ public:
 
 	[[nodiscard]] const MaterialData& GetMaterialData() const { return data; }
 	
-	bool LoadResource(const LoadResourceData& LRD_) override;
-	void LoadFallbackResource(const FString& _Path) override;
+	bool loadResource(const LoadResourceData& LRD_) override;
+	void loadFallbackResource(const FString& _Path) override;
 
 	[[nodiscard]] const char* GetName() const override { return "Material Resource"; }
 
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "gsmat"; }
+	[[nodiscard]] const char* getResourceTypeExtension() const override { return "gsmat"; }
 };

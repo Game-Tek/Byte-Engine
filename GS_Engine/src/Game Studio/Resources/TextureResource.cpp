@@ -8,7 +8,7 @@ TextureResource::TextureResourceData::~TextureResourceData()
 	stbi_image_free(ImageData);
 }
 
-bool TextureResource::LoadResource(const LoadResourceData& LRD_)
+bool TextureResource::loadResource(const LoadResourceData& LRD_)
 {
 	auto X = 0, Y = 0, NofChannels = 0;
 
@@ -31,7 +31,7 @@ bool TextureResource::LoadResource(const LoadResourceData& LRD_)
 	return false;
 }
 
-void TextureResource::LoadFallbackResource(const FString& _Path)
+void TextureResource::loadFallbackResource(const FString& _Path)
 {
 	*data.WriteTo(0, 256 * 256 * 3) = new uint8[256 * 256 * 3];
 

@@ -45,10 +45,10 @@ public:
 private:
 	TextureResourceData data;
 
-	bool LoadResource(const LoadResourceData& LRD_) override;
-	void LoadFallbackResource(const FString& _Path) override;
+	bool loadResource(const LoadResourceData& LRD_) override;
+	void loadFallbackResource(const FString& _Path) override;
 	
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "png"; }
+	[[nodiscard]] const char* getResourceTypeExtension() const override { return "png"; }
 public:
 	TextureResource() = default;
 	~TextureResource() = default;

@@ -39,7 +39,7 @@ public:
 		
 		if(Loc != ResourceMap.cend())
 		{
-			Loc->second->IncrementReferences();
+			Loc->second->incrementReferences();
 			return static_cast<T*>(Loc->second);
 		}
 
@@ -56,7 +56,7 @@ public:
 	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
 	{
 		Resource* resource = new T();
-		auto path = _Name + "." + resource->GetResourceTypeExtension();
+		auto path = _Name + "." + resource->getResourceTypeExtension();
 		SaveFile(_Name, path, ResourceData_);
 		LoadResource(_Name, resource);
 	}

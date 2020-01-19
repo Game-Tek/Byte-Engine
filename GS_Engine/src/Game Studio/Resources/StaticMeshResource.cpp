@@ -16,7 +16,7 @@ VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
 	return &StaticMeshVertexTypeVertexDescriptor;
 }
 
-bool StaticMeshResource::LoadResource(const LoadResourceData& LRD_)
+bool StaticMeshResource::loadResource(const LoadResourceData& LRD_)
 {
 	//Create Importer.
 	Assimp::Importer Importer;
@@ -106,7 +106,7 @@ bool StaticMeshResource::LoadResource(const LoadResourceData& LRD_)
 	return true;
 }
 
-void StaticMeshResource::LoadFallbackResource(const FString& _Path)
+void StaticMeshResource::loadFallbackResource(const FString& _Path)
 {
 }
 

@@ -39,8 +39,8 @@ public:
 	[[nodiscard]] const TextResourceData& GetTextData() const { return data; }
 	
 private:
-	[[nodiscard]] const char* GetResourceTypeExtension() const override { return "txt"; }
+	[[nodiscard]] const char* getResourceTypeExtension() const override { return "txt"; }
 	
-	bool LoadResource(const LoadResourceData& LRD_) override;
-	void LoadFallbackResource(const FString& _FullPath) override;
+	bool loadResource(const LoadResourceData& LRD_) override;
+	void loadFallbackResource(const FString& _FullPath) override;
 };

@@ -27,7 +27,7 @@ void MaterialResource::MaterialData::Write(OutStream& OutStream_)
 	OutStream_ << TextureNames;
 }
 
-bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
+bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 {
 	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in);	//Open file as binary
 
@@ -62,6 +62,6 @@ bool MaterialResource::LoadResource(const LoadResourceData& LRD_)
 	return true;
 }
 
-void MaterialResource::LoadFallbackResource(const FString& _Path)
+void MaterialResource::loadFallbackResource(const FString& _Path)
 {
 }

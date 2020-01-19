@@ -97,19 +97,19 @@ class GS_API Resource : public Object
 {
 	friend class ResourceManager;
 	
-	uint16 References = 0;
-
 	Id resourceName;
 	
-	void IncrementReferences() { ++References; }
-	void DecrementReferences() { --References; }
-	[[nodiscard]] uint16 GetReferenceCount() const { return References; }
+	uint16 references = 0;
 	
-	virtual bool LoadResource(const LoadResourceData& LRD_) = 0;
-	virtual void LoadFallbackResource(const FString& _FullPath) = 0;
+	void incrementReferences() { ++references; }
+	void decrementReferences() { --references; }
+	[[nodiscard]] uint16 getReferenceCount() const { return references; }
+	
+	virtual bool loadResource(const LoadResourceData& loadResourceData) = 0;
+	virtual void loadFallbackResource(const FString& fullPath) = 0;
 	
 	//Must return the extension name for the extension type.
-	[[nodiscard]] virtual const char* GetResourceTypeExtension() const = 0;
+	[[nodiscard]] virtual const char* getResourceTypeExtension() const = 0;
 	
 public:
 	Resource() = default;

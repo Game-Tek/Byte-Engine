@@ -61,7 +61,7 @@ void main()
 })");
 
 		//material_data.TextureNames.resize(1);
-		material_data.TextureNames.emplace_back(FString("Logo"));
+		material_data.TextureNames.emplace_back(FString("hydrant_Albedo"));
 		
 		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", material_data);
 		

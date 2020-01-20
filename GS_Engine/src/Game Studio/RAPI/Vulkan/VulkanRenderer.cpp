@@ -125,15 +125,41 @@ void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_fo
 	vkCmdPipelineBarrier(*command_buffer_, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
+bool VulkanRenderDevice::isImageFormatSupported(VkFormat format, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling)
+{
+	VkFormatProperties format_properties;
+	vkGetPhysicalDeviceFormatProperties(PhysicalDevice, format, &format_properties);
+
+	switch (imageTiling)
+	{
+	case VK_IMAGE_TILING_LINEAR:
+		return format_properties.linearTilingFeatures & formatFeatureFlags;
+	case VK_IMAGE_TILING_OPTIMAL:
+		return format_properties.optimalTilingFeatures & formatFeatureFlags;
+	}
+}
+
 VulkanRenderDevice::VulkanRenderDevice() : Instance("Game Studio"),
 	PhysicalDevice(Instance),
 	Device(Instance, PhysicalDevice),
 	TransientCommandPool(CreateCommandPool())
 {
+	vkGetPhysicalDeviceProperties(PhysicalDevice, &deviceProperties);
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()
 {
+}
+
+GPUInfo VulkanRenderDevice::GetGPUInfo()
+{
+	GPUInfo result;
+
+	result.GPUName = deviceProperties.deviceName;
+	result.DriverVersion = deviceProperties.vendorID;
+	result.APIVersion = deviceProperties.apiVersion;
+	
+	return result;
 }
 
 RenderMesh* VulkanRenderDevice::CreateMesh(const MeshCreateInfo& _MCI)
@@ -176,12 +202,20 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	{
 		VkMemoryRequirements memRequirements;
 		vkGetBufferMemoryRequirements(Device, staging_buffer, &memRequirements);
+		
+		if(isImageFormatSupported(FormatToVkFormat(TCI_.ImageFormat), VK_FORMAT_FEATURE_TRANSFER_SRC_BIT, VK_IMAGE_TILING_OPTIMAL))
+		{
+			
+		}
+
+		
 
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
 		allocInfo.memoryTypeIndex = Device.FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+		
 		GS_VK_CHECK(vkAllocateMemory(Device, &allocInfo, nullptr, &staging_buffer_memory), "failed to allocate buffer memory!");
 
 		vkBindBufferMemory(Device, staging_buffer, staging_buffer_memory, 0);

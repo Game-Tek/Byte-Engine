@@ -11,6 +11,8 @@
 #include "Native/VKCommandPool.h"
 #include "Native/vkPhysicalDevice.h"
 
+#include "Vulkan.h"
+
 struct VkDeviceQueueCreateInfo;
 struct QueueInfo;
 enum VkPhysicalDeviceType;
@@ -27,7 +29,13 @@ class GS_API VulkanRenderDevice final : public RenderDevice
 	
 	VKCommandPoolCreator CreateCommandPool();
 
+	VkPhysicalDeviceProperties deviceProperties;
+	bool isImageFormatSupported(VkFormat format, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling);
+
+protected:
+	friend class VulkanTexture;
 	
+	[[nodiscard]] const VkPhysicalDeviceProperties& getPhysicalDeviceProperties() const { return deviceProperties; }
 	//static void AllocateCommandBuffer(VkDevice* device_, VkCommandPool* command_pool_, VkCommandBuffer* command_buffer_, VkCommandBufferLevel command_buffer_level_, uint8 command_buffer_count_);
 	//static void StartCommandBuffer(VkCommandBuffer* command_buffer_, VkCommandBufferUsageFlagBits command_buffer_usage_);
 	//static void SubmitCommandBuffer(VkCommandBuffer* command_buffer_, uint8 command_buffer_count_, VkQueue* queue_, VkFence* fence_);
@@ -39,6 +47,8 @@ public:
 	VulkanRenderDevice();
 	~VulkanRenderDevice();
 
+	GPUInfo GetGPUInfo() override;
+	
 	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;
 	UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) final override;

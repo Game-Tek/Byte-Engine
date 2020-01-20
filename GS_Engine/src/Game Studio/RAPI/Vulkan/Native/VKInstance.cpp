@@ -4,6 +4,10 @@
 
 #include "Debug/Logger.h"
 
+#define VK_USE_PLATFORM_WIN32_KHR
+#include <windows.h>
+#include <vulkan/vulkan_win32.h>
+
 static VkDebugUtilsMessengerEXT debugMessenger;
 
 inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,	void* pUserData)

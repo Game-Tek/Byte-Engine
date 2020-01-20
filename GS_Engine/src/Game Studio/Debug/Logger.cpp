@@ -50,7 +50,7 @@ void Logger::SetTextColorOnLogLevel(LogLevel _Level)
 
 	#undef ERROR
 
-	case LogLevel::ERROR:
+	case LogLevel::FATAL:
 		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY);
 		break;
 

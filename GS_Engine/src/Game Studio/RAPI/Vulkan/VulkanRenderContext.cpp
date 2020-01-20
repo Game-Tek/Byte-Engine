@@ -80,8 +80,6 @@ SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSur
 	VkBool32 Supported = 0;
 	vkGetPhysicalDeviceSurfaceSupportKHR(_PD, PresentationQueue.GetQueueIndex(), _Surface, &Supported);
 
-	auto bb = vkGetPhysicalDeviceWin32PresentationSupportKHR(_PD, PresentationQueue.GetQueueIndex());
-
 	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
 }
 

@@ -11,7 +11,7 @@ enum class LogLevel : uint8
 	MESSAGE,
 	SUCCESS,
 	WARNING,
-	ERROR
+	FATAL
 };
 
 class GS_API Logger
@@ -32,7 +32,7 @@ public:
 
 #define GS_LOG_WARNING(Text, ...)	Logger::PrintObjectLog(this, LogLevel::WARNING, Text, __VA_ARGS__);\
 
-#define GS_LOG_ERROR(Text, ...)		Logger::PrintObjectLog(this, LogLevel::ERROR, Text, __VA_ARGS__);\
+#define GS_LOG_ERROR(Text, ...)		Logger::PrintObjectLog(this, LogLevel::FATAL, Text, __VA_ARGS__);\
 
 #define GS_LOG_LEVEL(_Level)		Logger::SetMinLogLevel(_Level);
 
@@ -42,7 +42,7 @@ public:
 													 
 #define GS_BASIC_LOG_WARNING(Text, ...)	Logger::PrintBasicLog(LogLevel::WARNING, Text, __VA_ARGS__);\
 													 
-#define GS_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::ERROR, Text, __VA_ARGS__);\
+#define GS_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::FATAL, Text, __VA_ARGS__);\
 
 #else
 

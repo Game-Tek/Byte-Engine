@@ -1,11 +1,7 @@
 #pragma once
 
-#ifdef GS_PLATFORM_WIN
-#define VK_USE_PLATFORM_WIN32_KHR
-#include "vulkan/vulkan.h"
-// ReSharper disable once CppUnusedIncludeDirective
-#include "vulkan/vulkan_win32.h"
-#endif // GS_PLATFORM_WIN
+#include <vulkan/vulkan.h>
+
 
 #include <stdexcept>
 
@@ -31,42 +27,42 @@ INLINE Format VkFormatToFormat(VkFormat _Format)
 {
 	switch (_Format)
 	{
-	case VK_FORMAT_R8_UNORM:					return Format::R_I8;
-	case VK_FORMAT_R16_UNORM:					return Format::R_I16;
-	case VK_FORMAT_R32_UINT:					return Format::R_I32;
-	case VK_FORMAT_R64_UINT:					return Format::R_I64;
-	case VK_FORMAT_R8G8_UNORM:					return Format::RG_I8;
-	case VK_FORMAT_R16G16_UNORM:				return Format::RG_I16;
-	case VK_FORMAT_R32G32_UINT:					return Format::RG_I32;
-	case VK_FORMAT_R64G64_UINT:					return Format::RG_I64;
-	case VK_FORMAT_R8G8B8_UNORM:				return Format::RGB_I8;
-	case VK_FORMAT_R16G16B16_UNORM:				return Format::RGB_I16;
-	case VK_FORMAT_R32G32B32_UINT:				return Format::RGB_I32;
-	case VK_FORMAT_R64G64B64_UINT:				return Format::RGB_I64;
-	case VK_FORMAT_R8G8B8A8_UNORM:				return Format::RGBA_I8;
-	case VK_FORMAT_R16G16B16A16_UNORM:			return Format::RGBA_I16;
-	case VK_FORMAT_R32G32B32A32_UINT:			return Format::RGBA_I32;
-	case VK_FORMAT_R64G64B64A64_UINT:			return Format::RGBA_I64;
-	case VK_FORMAT_B8G8R8_UNORM:				return Format::BGR_I8;
-	case VK_FORMAT_B8G8R8A8_UNORM:				return Format::BGRA_I8;
-	case VK_FORMAT_R16_SFLOAT:					return Format::R_F16;
-	case VK_FORMAT_R32_SFLOAT:					return Format::R_F32;
-	case VK_FORMAT_R64_SFLOAT:					return Format::R_F64;
-	case VK_FORMAT_R16G16_SFLOAT:				return Format::RG_F16;
-	case VK_FORMAT_R32G32_SFLOAT:				return Format::RG_F32;
-	case VK_FORMAT_R64G64_SFLOAT:				return Format::RG_F64;
-	case VK_FORMAT_R16G16B16_SFLOAT:			return Format::RGB_F16;
-	case VK_FORMAT_R32G32B32_SFLOAT:			return Format::RGB_F32;
-	case VK_FORMAT_R64G64B64_SFLOAT:			return Format::RGB_F64;
-	case VK_FORMAT_R16G16B16A16_SFLOAT:			return Format::RGBA_F16;
-	case VK_FORMAT_R32G32B32A32_SFLOAT:			return Format::RGBA_F32;
-	case VK_FORMAT_R64G64B64A64_SFLOAT:			return Format::RGBA_F64;
-	case VK_FORMAT_D16_UNORM:					return Format::DEPTH16;
-	case VK_FORMAT_D32_SFLOAT:					return Format::DEPTH32;
-	case VK_FORMAT_D16_UNORM_S8_UINT:			return Format::DEPTH16_STENCIL8;
-	case VK_FORMAT_D24_UNORM_S8_UINT:			return Format::DEPTH24_STENCIL8;
-	case VK_FORMAT_D32_SFLOAT_S8_UINT:			return Format::DEPTH32_STENCIL8;
-	default:									return Format::R_I8;
+	case VK_FORMAT_R8_UNORM:				return Format::R_I8;
+	case VK_FORMAT_R16_UNORM:				return Format::R_I16;
+	case VK_FORMAT_R32_UINT:				return Format::R_I32;
+	case VK_FORMAT_R64_UINT:				return Format::R_I64;
+	case VK_FORMAT_R8G8_UNORM:				return Format::RG_I8;
+	case VK_FORMAT_R16G16_UNORM:			return Format::RG_I16;
+	case VK_FORMAT_R32G32_UINT:				return Format::RG_I32;
+	case VK_FORMAT_R64G64_UINT:				return Format::RG_I64;
+	case VK_FORMAT_R8G8B8_UNORM:			return Format::RGB_I8;
+	case VK_FORMAT_R16G16B16_UNORM:			return Format::RGB_I16;
+	case VK_FORMAT_R32G32B32_UINT:			return Format::RGB_I32;
+	case VK_FORMAT_R64G64B64_UINT:			return Format::RGB_I64;
+	case VK_FORMAT_R8G8B8A8_UNORM:			return Format::RGBA_I8;
+	case VK_FORMAT_R16G16B16A16_UNORM:		return Format::RGBA_I16;
+	case VK_FORMAT_R32G32B32A32_UINT:		return Format::RGBA_I32;
+	case VK_FORMAT_R64G64B64A64_UINT:		return Format::RGBA_I64;
+	case VK_FORMAT_B8G8R8_UNORM:			return Format::BGR_I8;
+	case VK_FORMAT_B8G8R8A8_UNORM:			return Format::BGRA_I8;
+	case VK_FORMAT_R16_SFLOAT:				return Format::R_F16;
+	case VK_FORMAT_R32_SFLOAT:				return Format::R_F32;
+	case VK_FORMAT_R64_SFLOAT:				return Format::R_F64;
+	case VK_FORMAT_R16G16_SFLOAT:			return Format::RG_F16;
+	case VK_FORMAT_R32G32_SFLOAT:			return Format::RG_F32;
+	case VK_FORMAT_R64G64_SFLOAT:			return Format::RG_F64;
+	case VK_FORMAT_R16G16B16_SFLOAT:		return Format::RGB_F16;
+	case VK_FORMAT_R32G32B32_SFLOAT:		return Format::RGB_F32;
+	case VK_FORMAT_R64G64B64_SFLOAT:		return Format::RGB_F64;
+	case VK_FORMAT_R16G16B16A16_SFLOAT:		return Format::RGBA_F16;
+	case VK_FORMAT_R32G32B32A32_SFLOAT:		return Format::RGBA_F32;
+	case VK_FORMAT_R64G64B64A64_SFLOAT:		return Format::RGBA_F64;
+	case VK_FORMAT_D16_UNORM:				return Format::DEPTH16;
+	case VK_FORMAT_D32_SFLOAT:				return Format::DEPTH32;
+	case VK_FORMAT_D16_UNORM_S8_UINT:		return Format::DEPTH16_STENCIL8;
+	case VK_FORMAT_D24_UNORM_S8_UINT:		return Format::DEPTH24_STENCIL8;
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:		return Format::DEPTH32_STENCIL8;
+	default:								return Format::R_I8;
 	}
 }
 
@@ -123,6 +119,7 @@ INLINE VkAttachmentLoadOp LoadOperationsToVkAttachmentLoadOp(LoadOperations _LOp
 	default:						return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
 	}
 }
+
 INLINE VkAttachmentStoreOp StoreOperationsToVkAttachmentStoreOp(StoreOperations _SOp)
 {
 	switch (_SOp)
@@ -132,6 +129,7 @@ INLINE VkAttachmentStoreOp StoreOperationsToVkAttachmentStoreOp(StoreOperations 
 	default:							return VK_ATTACHMENT_STORE_OP_MAX_ENUM;
 	}
 }
+
 INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 {
 	switch (_IL)
@@ -149,6 +147,7 @@ INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 	default:									return VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 }
+
 INLINE VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
 {
 	switch (_ST)

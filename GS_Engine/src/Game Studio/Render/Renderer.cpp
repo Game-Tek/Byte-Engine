@@ -23,7 +23,7 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	RC = RenderDevice::Get()->CreateRenderContext(RCCI);
 
 	auto SCImages = RC->GetSwapchainImages();
-
+	
 	//ImageCreateInfo CACI;
 	//CACI.Extent = GetWindow()->GetWindowExtent();
 	//CACI.LoadOperation = LoadOperations::CLEAR;

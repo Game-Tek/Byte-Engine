@@ -10,6 +10,7 @@
 #include "VulkanUniformBuffer.h"
 #include "VulkanUniformLayout.h"
 #include "VulkanTexture.h"
+#include "Debug/Logger.h"
 
 VKCommandPoolCreator VulkanRenderDevice::CreateCommandPool()
 {
@@ -125,18 +126,33 @@ void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_fo
 	vkCmdPipelineBarrier(*command_buffer_, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-bool VulkanRenderDevice::isImageFormatSupported(VkFormat format, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling)
+VkFormat VulkanRenderDevice::findSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling)
 {
 	VkFormatProperties format_properties;
-	vkGetPhysicalDeviceFormatProperties(PhysicalDevice, format, &format_properties);
 
-	switch (imageTiling)
+	bool isSupported = false;
+	
+	for(auto& e : formats)
 	{
-	case VK_IMAGE_TILING_LINEAR:
-		return format_properties.linearTilingFeatures & formatFeatureFlags;
-	case VK_IMAGE_TILING_OPTIMAL:
-		return format_properties.optimalTilingFeatures & formatFeatureFlags;
+		vkGetPhysicalDeviceFormatProperties(PhysicalDevice, e, &format_properties);
+		
+		switch (imageTiling)
+		{
+		case VK_IMAGE_TILING_LINEAR:
+			isSupported = format_properties.linearTilingFeatures & formatFeatureFlags;
+			break;
+		case VK_IMAGE_TILING_OPTIMAL:
+			isSupported = format_properties.optimalTilingFeatures & formatFeatureFlags;
+			break;
+		}
+
+		if(isSupported)
+		{
+			return e;
+		}
 	}
+
+	return VK_FORMAT_UNDEFINED;
 }
 
 VulkanRenderDevice::VulkanRenderDevice() : Instance("Game Studio"),
@@ -197,17 +213,32 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	VkBuffer staging_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory staging_buffer_memory = VK_NULL_HANDLE;
 
-	CreateBuffer(&device, &staging_buffer, TCI_.ImageDataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE);
+	DArray<VkFormat> formats = { FormatToVkFormat(TCI_.ImageFormat), VK_FORMAT_R8G8B8A8_UNORM };
+
+	auto originalFormat = FormatToVkFormat(TCI_.ImageFormat);
+	auto supportedFormat = findSupportedFormat(formats, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, VK_IMAGE_TILING_OPTIMAL);
+
+	auto originalTextureSize = TCI_.ImageDataSize;
+	auto supportedTextureSize = 0;
+	
+	if (originalFormat != supportedFormat)
+	{
+		switch (originalFormat)
+		{
+			case VK_FORMAT_R8G8B8_UNORM:
+				switch (supportedFormat)
+				{
+					case VK_FORMAT_R8G8B8A8_UNORM:
+						supportedTextureSize = (originalTextureSize / 3) * 4;
+				}
+		}
+	}
+	
+	CreateBuffer(&device, &staging_buffer, supportedTextureSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE);
 
 	{
 		VkMemoryRequirements memRequirements;
 		vkGetBufferMemoryRequirements(Device, staging_buffer, &memRequirements);
-		
-		if(isImageFormatSupported(FormatToVkFormat(TCI_.ImageFormat), VK_FORMAT_FEATURE_TRANSFER_SRC_BIT, VK_IMAGE_TILING_OPTIMAL))
-		{
-			
-		}
-
 		
 
 		VkMemoryAllocateInfo allocInfo = {};
@@ -220,17 +251,37 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 
 		vkBindBufferMemory(Device, staging_buffer, staging_buffer_memory, 0);
 	}
+
+	void* data = nullptr;
+	vkMapMemory(Device, staging_buffer_memory, 0, supportedTextureSize, 0, &data);
 	
-	void* data;
-	vkMapMemory(Device, staging_buffer_memory, 0, TCI_.ImageDataSize, 0, &data);
-	memcpy(data, TCI_.ImageData, static_cast<size_t>(TCI_.ImageDataSize));
+	if (originalFormat != supportedFormat)
+	{
+		switch (originalFormat)
+		{
+		case VK_FORMAT_R8G8B8_UNORM:
+			switch (supportedFormat)
+			{
+			case VK_FORMAT_R8G8B8A8_UNORM:
+				
+				for (uint32 i = supportedTextureSize - 4, i_n = originalTextureSize - 3; i > 4; i -= 4, i_n -= 3)
+				{
+					memcpy(static_cast<char*>(data) + i, static_cast<char*>(TCI_.ImageData) + i_n, 3);
+				}
+			}
+		}
+	}
+
+	supportedTextureSize = originalTextureSize;
+	
+	memcpy(data, TCI_.ImageData, static_cast<size_t>(supportedTextureSize));
 	vkUnmapMemory(Device, staging_buffer_memory);
 
 	
 	VkImage image = VK_NULL_HANDLE;
 	VkDeviceMemory image_memory = VK_NULL_HANDLE;
 	
-	CreateVkImage(&device, &image, TCI_.Extent, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+	CreateVkImage(&device, &image, TCI_.Extent, supportedFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
 	{
 		VkMemoryRequirements memRequirements;
@@ -254,7 +305,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	
 	StartCommandBuffer(&commandBuffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-	TransitionImageLayout(&device, &image, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &commandBuffer);
+	TransitionImageLayout(&device, &image, supportedFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &commandBuffer);
 
 	VkBufferImageCopy region = {};
 	region.bufferOffset = 0;
@@ -269,7 +320,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 
 	vkCmdCopyBufferToImage(commandBuffer, staging_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-	TransitionImageLayout(&device, &image, FormatToVkFormat(TCI_.ImageFormat), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ImageLayoutToVkImageLayout(TCI_.Layout), &commandBuffer);
+	TransitionImageLayout(&device, &image, supportedFormat, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ImageLayoutToVkImageLayout(TCI_.Layout), &commandBuffer);
 	
 	vkEndCommandBuffer(commandBuffer);
 
@@ -289,7 +340,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
 	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = FormatToVkFormat(TCI_.ImageFormat);
+	viewInfo.format = supportedFormat;
 	viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	viewInfo.subresourceRange.baseMipLevel = 0;
 	viewInfo.subresourceRange.levelCount = 1;

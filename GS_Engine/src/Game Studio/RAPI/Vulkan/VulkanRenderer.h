@@ -30,7 +30,7 @@ class GS_API VulkanRenderDevice final : public RenderDevice
 	VKCommandPoolCreator CreateCommandPool();
 
 	VkPhysicalDeviceProperties deviceProperties;
-	bool isImageFormatSupported(VkFormat format, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling);
+	VkFormat findSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling);
 
 protected:
 	friend class VulkanTexture;

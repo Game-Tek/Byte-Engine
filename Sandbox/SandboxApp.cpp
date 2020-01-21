@@ -35,13 +35,22 @@ layout(binding = 0) uniform Data
 } inData;
 
 layout(location = 0)in vec3 inPos;
-layout(location = 1)in vec3 inTexCoords;
-layout(location = 0)out vec4 tPos;
+layout(location = 1)in vec3 inNormal;
+layout(location = 2)in vec2 inTexCoords;
+
+layout(location = 0)out VERTEX_DATA
+{
+	vec4 vertPos;
+	vec4 vertNormal;
+	vec2 vertTexCoords;
+} outVertexData;
 
 void main()
 {
-	tPos = inData.Pos * vec4(inPos, 1.0);
-	gl_Position = tPos;
+	outVertexData.vertPos = inData.Pos * vec4(inPos, 1.0);
+	outVertexData.vertTexCoords = inTexCoords;
+
+	gl_Position = outVertexData.vertPos;
 }
 )");
 
@@ -50,14 +59,20 @@ void main()
 
 #extension GL_ARB_separate_shader_objects : enable
 
-layout(location = 0)in vec4 tPos;
+layout(location = 0)in VERTEX_DATA
+{
+	vec4 vertPos;
+	vec4 vertNormal;
+	vec2 vertTexCoords;
+} inVertexData;
+
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 1) uniform sampler2D texSampler;
 
 void main()
 {
-	outColor = texture(texSampler, vec2(tPos.x * 0.01, tPos.y * 0.01));
+	outColor = texture(texSampler, inVertexData.vertTexCoords);
 })");
 
 		//material_data.TextureNames.resize(1);

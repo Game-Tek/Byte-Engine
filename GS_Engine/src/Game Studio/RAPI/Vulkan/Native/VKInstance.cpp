@@ -70,7 +70,7 @@ VKInstance::VKInstance(const char* _AppName)
 	InstanceCreateInfo.pApplicationInfo = &AppInfo;
 	InstanceCreateInfo.enabledLayerCount = 1;
 	InstanceCreateInfo.ppEnabledLayerNames = InstanceLayers;
-	InstanceCreateInfo.enabledExtensionCount = 2;
+	InstanceCreateInfo.enabledExtensionCount = 3;
 	InstanceCreateInfo.ppEnabledExtensionNames = Extensions;
 
 	GS_VK_CHECK(vkCreateInstance(&InstanceCreateInfo, ALLOCATOR, &Instance), "Failed to create Instance!")

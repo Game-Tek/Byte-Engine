@@ -68,6 +68,7 @@ void main()
 		MyWorld = new World();
 		ActiveWorld = MyWorld;
 
+		
  		MyObject = MyWorld->CreateWorldObject<TestObject>();
 		
 		//auto D = Functor::MakeDelegate(&Window::GetAspectRatio, Win);

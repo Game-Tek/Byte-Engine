@@ -42,6 +42,8 @@ struct GS_API SubPassDescriptor
 
 	//Array of indices identifying attachments that are not used by this subpass, but whose contents MUST be preserved throughout the subpass.
 	Array<uint8, 8> PreserveAttachments;
+
+	AttachmentReference* DepthAttachmentReference = nullptr;
 };
 
 //Describes a render pass.

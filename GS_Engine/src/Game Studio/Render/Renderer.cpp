@@ -24,24 +24,18 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 
 	auto SCImages = RC->GetSwapchainImages();
 	
-	//ImageCreateInfo CACI;
-	//CACI.Extent = GetWindow()->GetWindowExtent();
-	//CACI.LoadOperation = LoadOperations::CLEAR;
-	//CACI.StoreOperation = StoreOperations::UNDEFINED;
-	//CACI.Dimensions = ImageDimensions::IMAGE_2D;
-	//CACI.InitialLayout = ImageLayout::COLOR_ATTACHMENT;
-	//CACI.FinalLayout = ImageLayout::COLOR_ATTACHMENT;
-	//CACI.Use = ImageUse::COLOR_ATTACHMENT;
-	//CACI.Type = ImageType::COLOR;
-	//CACI.ImageFormat = Format::RGB_I8;
-	//auto CA = RAPI::GetRAPI()->CreateImage(CACI);
+	ImageCreateInfo CACI;
+	CACI.Extent = Extent3D{ Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1 };
+	CACI.Dimensions = ImageDimensions::IMAGE_2D;
+	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
+	CACI.Type = ImageType::DEPTH_STENCIL;
+	CACI.ImageFormat = Format::DEPTH24_STENCIL8;
+	depthTexture = RenderDevice::Get()->CreateImage(CACI);
 
+	
 	RenderPassCreateInfo RPCI;
 	RenderPassDescriptor RPD;
 	AttachmentDescriptor SIAD;
-	SubPassDescriptor SPD;
-	AttachmentReference SubPassWriteAttachmentReference;
-	AttachmentReference SubPassReadAttachmentReference;
 
 	SIAD.AttachmentImage = SCImages[0]; //Only first because it gets only properties, doesn't access actual data.
 	SIAD.InitialLayout = ImageLayout::UNDEFINED;
@@ -49,23 +43,44 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	SIAD.StoreOperation = StoreOperations::STORE;
 	SIAD.LoadOperation = LoadOperations::CLEAR;
 
+
+	RPD.RenderPassColorAttachments.push_back(&SIAD);
+
+	AttachmentDescriptor depth_attachment;
+	depth_attachment.AttachmentImage = depthTexture;
+	depth_attachment.InitialLayout = ImageLayout::UNDEFINED;
+	depth_attachment.FinalLayout = ImageLayout::DEPTH_STENCIL_ATTACHMENT;
+	depth_attachment.LoadOperation = LoadOperations::CLEAR;
+	depth_attachment.StoreOperation = StoreOperations::UNDEFINED;
+	
+	RPD.DepthStencilAttachment = depth_attachment;
+
+	
+	SubPassDescriptor SPD;
+	AttachmentReference SubPassWriteAttachmentReference;
 	SubPassWriteAttachmentReference.Layout = ImageLayout::COLOR_ATTACHMENT;
 	SubPassWriteAttachmentReference.Index = 0;
 
-	SubPassReadAttachmentReference.Layout = ImageLayout::GENERAL;
-	SubPassReadAttachmentReference.Index = ATTACHMENT_UNUSED;
-
 	SPD.WriteColorAttachments.push_back(&SubPassWriteAttachmentReference);
+	
+	
+	AttachmentReference SubPassReadAttachmentReference;
+	SubPassReadAttachmentReference.Layout = ImageLayout::UNDEFINED;
+	SubPassReadAttachmentReference.Index = ATTACHMENT_UNUSED;
 	SPD.ReadColorAttachments.push_back(&SubPassReadAttachmentReference);
 
-	RPD.RenderPassColorAttachments.push_back(&SIAD);
+	AttachmentReference depth_reference;
+	depth_reference.Layout = ImageLayout::DEPTH_STENCIL_ATTACHMENT;
+	depth_reference.Index = 1;
+	SPD.DepthAttachmentReference = &depth_reference;
+	
 	RPD.SubPasses.push_back(&SPD);
-
 	RPCI.Descriptor = RPD;
 	RP = RenderDevice::Get()->CreateRenderPass(RPCI);
 
+	
 	UniformLayoutCreateInfo ULCI;
-	ULCI.RenderContext = RC;
+	ULCI.DescriptorCount = 3;
 	ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
 	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
@@ -92,7 +107,7 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 		FramebufferCreateInfo FBCI;
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
-		FBCI.Images = DArray<Image*>(&SCImages[i], 1);
+		FBCI.Images = DArray<Image*>() = { SCImages[i], depthTexture };
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
 
@@ -156,7 +171,7 @@ void Renderer::OnUpdate()
 	
 	RenderPassBeginInfo RPBI;
 	RPBI.RenderPass = RP;
-	RPBI.Framebuffers = Framebuffers.getData();
+	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
 
 	RC->BeginRenderPass(RPBI);
 
@@ -175,6 +190,7 @@ void Renderer::OnUpdate()
 	RC->EndRecording();
 
 	RC->AcquireNextImage();
+	
 	RC->Flush();
 	RC->Present();
 }

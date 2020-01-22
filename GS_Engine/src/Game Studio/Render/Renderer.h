@@ -89,6 +89,8 @@ protected:
 	//Render elements
 	Window* Win = nullptr;
 	FVector<Framebuffer*> Framebuffers;
+
+	Image* depthTexture = nullptr;
 	
 	RenderContext* RC = nullptr;
 	RenderPass* RP = nullptr;

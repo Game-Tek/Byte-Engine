@@ -41,7 +41,7 @@ VKSwapchainCreator VulkanRenderContext::CreateSwapchain(VKDevice* _Device, VkSwa
 	SwapchainCreateInfo.imageExtent = Extent2DToVkExtent2D(RenderExtent);
 	//The imageArrayLayers specifies the amount of layers each image consists of. This is always 1 unless you are developing a stereoscopic 3D application.
 	SwapchainCreateInfo.imageArrayLayers = 1;
-	SwapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	SwapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	SwapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	SwapchainCreateInfo.queueFamilyIndexCount = 0;
 	SwapchainCreateInfo.pQueueFamilyIndices = nullptr;
@@ -105,21 +105,22 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 	return PresentModes[BestPresentModeIndex];
 }
 
-VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window) :
+VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window) :
 	RenderExtent(_Window->GetWindowExtent()),
-	Surface(CreateSurface(_Device, _Instance, _Window)),
+	Surface(CreateSurface(&device->GetVKDevice(), _Instance, _Window)),
 	Format(FindFormat(_PD, Surface)),
 	PresentMode(FindPresentMode(_PD, Surface)),
-	Swapchain(CreateSwapchain(_Device, VK_NULL_HANDLE)),
+	Swapchain(CreateSwapchain(&device->GetVKDevice(), VK_NULL_HANDLE)),
 	SwapchainImages(Swapchain.GetImages()),
-	Images(SwapchainImages.getCapacity()),
+	swapchainImages(SwapchainImages.getCapacity()),
 	ImagesAvailable(SwapchainImages.getCapacity()),
 	RendersFinished(SwapchainImages.getCapacity()),
 	InFlightFences(SwapchainImages.getCapacity()),
-	PresentationQueue(_Device->GetGraphicsQueue()),
-	CommandPool(CreateCommandPool(_Device)),
+	PresentationQueue(device->GetVKDevice().GetGraphicsQueue()),
+	CommandPool(CreateCommandPool(&device->GetVKDevice())),
 	CommandBuffers(SwapchainImages.getCapacity()),
 	FrameBuffers(SwapchainImages.getCapacity())
+
 {
 	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.getCapacity());
 
@@ -130,21 +131,21 @@ VulkanRenderContext::VulkanRenderContext(VKDevice* _Device, VKInstance* _Instanc
 
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		ImagesAvailable.emplace_back(VKSemaphoreCreator(_Device, &SemaphoreCreateInfo));
-		RendersFinished.emplace_back(VKSemaphoreCreator(_Device, &SemaphoreCreateInfo));
-		InFlightFences.emplace_back(VKFenceCreator(_Device, &FenceCreateInfo));
+		ImagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
+		RendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
+		InFlightFences.emplace_back(VKFenceCreator(&device->GetVKDevice(), &FenceCreateInfo));
 		CommandBuffers.emplace_back(CommandPool.CreateCommandBuffer());
 
-		Images.push_back(new VulkanSwapchainImage(_Device, SwapchainImages[i], VkFormatToFormat(Format.format)));
+		ImageCreateInfo image_create_info;
+		image_create_info.Extent = { RenderExtent.Width, RenderExtent.Height, 0 };
+		image_create_info.ImageFormat = VkFormatToFormat(Format.format);
+		
+		swapchainImages.emplace_back(VulkanSwapchainImage(device, image_create_info, SwapchainImages[i]));
 	}
 }
 
 VulkanRenderContext::~VulkanRenderContext()
 {
-	for(auto& Image : Images)
-	{
-		delete Image;
-	}
 }
 
 void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
@@ -230,13 +231,13 @@ void VulkanRenderContext::EndRecording()
 
 void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 {
-	VkClearValue ClearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+	FVector<VkClearValue> ClearColor(_RPBI.Framebuffer->GetAttachmentCount(), { 0.0f, 0.0f, 0.0f, 1.0f });
 
 	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVKRenderPass().GetHandle();
-	RenderPassBeginInfo.pClearValues = &ClearColor;
-	RenderPassBeginInfo.clearValueCount = 1;
-	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffers[CurrentImage])->GetVk_Framebuffer().GetHandle();
+	RenderPassBeginInfo.pClearValues = ClearColor.getData();
+	RenderPassBeginInfo.clearValueCount = ClearColor.getCapacity();
+	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVkFramebuffer();
 	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
 
@@ -304,12 +305,18 @@ void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)
 	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroups.Width, _WorkGroups.Height, _WorkGroups.Depth);
 }
 
+void VulkanRenderContext::CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo)
+{
+	vkCmdCopyImage(CommandBuffers[CurrentImage], static_cast<VulkanImage*>(copyToSwapchainInfo.Image)->GetVkImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SwapchainImages[CurrentImage], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, nullptr);
+}
+
 FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
 {
 	FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
+	
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		l_Images.push_back(Images[i]);
+		l_Images.push_back(static_cast<Image*>(&swapchainImages[i]));
 	}
 
 	return l_Images;

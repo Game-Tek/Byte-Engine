@@ -47,7 +47,7 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 	PoolSizes.setLength(_PLCI.PipelineUniformSets.getLength());
 
 	VkDescriptorPoolCreateInfo DescriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-	DescriptorPoolCreateInfo.maxSets = _PLCI.RenderContext->GetMaxFramesInFlight();
+	DescriptorPoolCreateInfo.maxSets = _PLCI.DescriptorCount;
 	DescriptorPoolCreateInfo.poolSizeCount = PoolSizes.getLength();
 	DescriptorPoolCreateInfo.pPoolSizes = PoolSizes.getData();
 
@@ -55,9 +55,9 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 
 	VkDescriptorSetAllocateInfo DescriptorSetAllocateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
 	DescriptorSetAllocateInfo.descriptorPool = descriptorPool;
-	DescriptorSetAllocateInfo.descriptorSetCount = _PLCI.RenderContext->GetMaxFramesInFlight();
+	DescriptorSetAllocateInfo.descriptorSetCount = _PLCI.DescriptorCount;
 
-	FVector<VkDescriptorSetLayout> SetLayouts(_PLCI.RenderContext->GetMaxFramesInFlight(), descriptorSetLayout);
+	FVector<VkDescriptorSetLayout> SetLayouts(_PLCI.DescriptorCount, descriptorSetLayout);
 
 	DescriptorSetAllocateInfo.pSetLayouts = SetLayouts.getData();
 

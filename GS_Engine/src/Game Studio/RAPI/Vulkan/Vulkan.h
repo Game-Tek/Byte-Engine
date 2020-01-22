@@ -163,6 +163,11 @@ INLINE VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
 	}
 }
 
+INLINE VkExtent3D Extent3DToVkExtent3D(Extent3D extent)
+{
+	return { extent.Width, extent.Height, extent.Depth };
+}
+
 INLINE VkExtent2D Extent2DToVkExtent2D(Extent2D _Extent)
 {
 	return { _Extent.Width, _Extent.Height };
@@ -253,3 +258,27 @@ INLINE VkDescriptorType UniformTypeToVkDescriptorType(UniformType _UT)
 	default:									return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 	}
 };
+
+INLINE VkCullModeFlagBits CullModeToVkCullModeFlagBits(CullMode cullMode)
+{
+	switch (cullMode)
+	{
+	case CullMode::CULL_BACK:
+		return VK_CULL_MODE_BACK_BIT;
+	}
+}
+
+INLINE VkCompareOp CompareOperationToVkCompareOp(CompareOperation compareOperation)
+{
+	switch (compareOperation)
+	{
+		case CompareOperation::NEVER: return VK_COMPARE_OP_NEVER;
+		case CompareOperation::LESS: return VK_COMPARE_OP_LESS;
+		case CompareOperation::EQUAL: return VK_COMPARE_OP_EQUAL;
+		case CompareOperation::LESS_OR_EQUAL: return VK_COMPARE_OP_LESS_OR_EQUAL;
+		case CompareOperation::GREATER: return VK_COMPARE_OP_GREATER;
+		case CompareOperation::NOT_EQUAL: return VK_COMPARE_OP_NOT_EQUAL;
+		case CompareOperation::GREATER_OR_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+		case CompareOperation::ALWAYS: return VK_COMPARE_OP_ALWAYS;
+	default: ; }
+}

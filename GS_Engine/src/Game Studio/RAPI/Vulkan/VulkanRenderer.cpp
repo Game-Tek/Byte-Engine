@@ -155,6 +155,15 @@ VkFormat VulkanRenderDevice::findSupportedFormat(const DArray<VkFormat>& formats
 	return VK_FORMAT_UNDEFINED;
 }
 
+void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory)
+{
+	VkMemoryAllocateInfo vk_memory_allocate_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	vk_memory_allocate_info.allocationSize = memoryRequirements->size;
+	vk_memory_allocate_info.memoryTypeIndex = Device.FindMemoryType(memoryRequirements->memoryTypeBits, memoryPropertyFlag);
+
+	GS_VK_CHECK(vkAllocateMemory(Device.GetVkDevice(), &vk_memory_allocate_info, ALLOCATOR, deviceMemory), "Failed to allocate memory!");
+}
+
 VulkanRenderDevice::VulkanRenderDevice() : Instance("Game Studio"),
 	PhysicalDevice(Instance),
 	Device(Instance, PhysicalDevice),
@@ -201,9 +210,8 @@ Image* VulkanRenderDevice::CreateImage(const ImageCreateInfo& _ICI)
 	// TRANSITION LAYOUT FROM UNDEFINED TO TRANSFER_DST
 	// COPY STAGING BUFFER TO IMAGE
 	// TRANSITION LAYOUT FROM TRANSFER_DST TO { DESIRED USE }
-
 	
-	return new VulkanImage(&Device, _ICI.Extent, _ICI.ImageFormat, _ICI.Dimensions, _ICI.Type, _ICI.Use);
+	return new VulkanImage(this, _ICI);
 }
 
 Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
@@ -264,17 +272,23 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 			{
 			case VK_FORMAT_R8G8B8A8_UNORM:
 				
-				for (uint32 i = supportedTextureSize - 4, i_n = originalTextureSize - 3; i > 4; i -= 4, i_n -= 3)
+				for (uint32 i = 0, i_n = 0; i < supportedTextureSize; i += 4, i_n += 3)
 				{
 					memcpy(static_cast<char*>(data) + i, static_cast<char*>(TCI_.ImageData) + i_n, 3);
+					static_cast<char*>(data)[i + 3] = 0;
 				}
+
+				break;
 			}
 		}
 	}
+	else
+	{
+		supportedTextureSize = originalTextureSize;
+		memcpy(data, TCI_.ImageData, static_cast<size_t>(supportedTextureSize));
+	}
 
-	supportedTextureSize = originalTextureSize;
 	
-	memcpy(data, TCI_.ImageData, static_cast<size_t>(supportedTextureSize));
 	vkUnmapMemory(Device, staging_buffer_memory);
 
 	
@@ -401,10 +415,10 @@ ComputePipeline* VulkanRenderDevice::CreateComputePipeline(const ComputePipeline
 
 Framebuffer* VulkanRenderDevice::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
 {
-	return new VulkanFramebuffer(&Device, SCAST(VulkanRenderPass*, _FCI.RenderPass), _FCI.Extent, _FCI.Images);
+	return new VulkanFramebuffer(this, _FCI);
 }
 
 RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
-	return new VulkanRenderContext(&Device, &Instance, PhysicalDevice, _RCCI.Window);
+	return new VulkanRenderContext(this, &Instance, PhysicalDevice, _RCCI.Window);
 }

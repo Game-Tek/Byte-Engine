@@ -4,28 +4,26 @@
 
 #include "RAPI/Image.h"
 
-#include "Native/VKImageView.h"
-#include "Native/VKMemory.h"
-#include "Native/VKImage.h"
+#include <RAPI/Vulkan/Vulkan.h>
+
+class VulkanRenderDevice;
 
 class GS_API VulkanImageBase : public Image
 {
+protected:
+	VkImageView imageView = nullptr;
 public:
-	VulkanImageBase(const Extent2D _ImgExtent, const Format _ImgFormat, const ImageType _ImgType, const ImageDimensions _ID);
-	[[nodiscard]] virtual const VKImageView& GetVKImageView() const = 0;
+	VulkanImageBase(const ImageCreateInfo& imageCreateInfo);
+	[[nodiscard]] virtual const VkImageView& GetVkImageView() const { return imageView; }
 };
 
 class GS_API VulkanImage final : public VulkanImageBase
 {
-	VKImage m_Image;
-	VKMemory ImageMemory;
-	VKImageView ImageView;
+	VkImage image;
+	VkDeviceMemory imageMemory;
 
-	static VKImageCreator CreateVKImageCreator(VKDevice* _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse);
-	static VKMemoryCreator CreateVKMemoryCreator(VKDevice* _Device, const VKImage& _Image);
-	static VKImageViewCreator CreateVKImageViewCreator(VKDevice* _Device, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, const VKImage& _Image);
 public:
-	VulkanImage(VKDevice* _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse);
+	VulkanImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo);
 
-	const VKImageView& GetVKImageView() const override { return ImageView; }
+	[[nodiscard]] VkImage GetVkImage() const { return image; }
 };

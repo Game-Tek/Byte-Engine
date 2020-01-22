@@ -8,13 +8,8 @@
 
 class GS_API VulkanSwapchainImage final : public VulkanImageBase
 {
-	VKImageView ImageView;
-
-	static VKImageViewCreator CreateImageView(VKDevice* _Device, VkImage _Image, const Format _Format);
 public:
-	VulkanSwapchainImage(VKDevice* _Device, VkImage _Image, Format _Format);
+	VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo, VkImage image);
 	~VulkanSwapchainImage() = default;
-
-	[[nodiscard]] const VKImageView& GetVKImageView() const override { return ImageView; };
 };
 

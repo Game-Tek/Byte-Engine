@@ -14,6 +14,9 @@
 #include "Native/vkQueue.h"
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
+#include "VulkanUniformLayout.h"
+#include "ScreenQuad.h"
+#include "VulkanRenderPass.h"
 
 class VKDevice;
 
@@ -40,7 +43,7 @@ class GS_API VulkanRenderContext final : public RenderContext
 
 	VKSwapchain Swapchain;
 	FVector<VkImage> SwapchainImages;
-	mutable FVector<VulkanSwapchainImage*> Images;
+	mutable FVector<VulkanSwapchainImage> swapchainImages;
 	FVector<VKSemaphore> ImagesAvailable;
 	FVector<VKSemaphore> RendersFinished;
 	FVector<VKFence> InFlightFences;
@@ -53,7 +56,7 @@ class GS_API VulkanRenderContext final : public RenderContext
 	FVector<VKFramebuffer> FrameBuffers;
 
 	uint8 ImageIndex = 0;
-
+	
 	static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
 	VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
 	VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
@@ -61,26 +64,28 @@ class GS_API VulkanRenderContext final : public RenderContext
 	SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 public:
-	VulkanRenderContext(VKDevice* _Device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
+	VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
 	~VulkanRenderContext();
 
 	void OnResize(const ResizeInfo& _RI) final  override;
 
 	void AcquireNextImage() override;
-	void Flush() final override;
-	void Present() final override;
-	void BeginRecording() final override;
-	void EndRecording() final override;
-	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) final override;
+	void Flush() override;
+	void Present() override;
+	void BeginRecording() override;
+	void EndRecording() override;
+	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) override;
 	void AdvanceSubPass() override;
-	void EndRenderPass(RenderPass* _RP) final override;
-	void BindMesh(RenderMesh* _Mesh) final override;
+	void EndRenderPass(RenderPass* _RP) override;
+	void BindMesh(RenderMesh* _Mesh) override;
 	void BindUniformLayout(UniformLayout* _UL) override;
 	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
-	void BindGraphicsPipeline(GraphicsPipeline* _GP) final override;
-	void BindComputePipeline(ComputePipeline* _CP) final override;
-	void DrawIndexed(const DrawInfo& _DrawInfo) final override;
-	void Dispatch(const Extent3D& _WorkGroups) final override;
+	void BindGraphicsPipeline(GraphicsPipeline* _GP) override;
+	void BindComputePipeline(ComputePipeline* _CP) override;
+	void DrawIndexed(const DrawInfo& _DrawInfo) override;
+	void Dispatch(const Extent3D& _WorkGroups) override;
 
-	[[nodiscard]] FVector<Image*> GetSwapchainImages() const final override;
+	void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) override;
+	
+	[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
 };

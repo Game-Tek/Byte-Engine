@@ -6,6 +6,8 @@
 #include "RenderCore.h"
 
 #include "Containers/DArray.hpp"
+#include "Containers/FVector.hpp"
+#include "Utility/RGBA.h"
 
 class Image;
 class RenderPass;
@@ -29,14 +31,17 @@ struct GS_API FramebufferCreateInfo
 
 class GS_API Framebuffer
 {
+protected:
 	Extent2D Extent;
+	uint8 attachmentCount = 0;
 public:
-	explicit Framebuffer(Extent2D _Extent) :
-		Extent(_Extent)
+	explicit Framebuffer(const FramebufferCreateInfo& framebufferCreateInfo) :
+		Extent(framebufferCreateInfo.Extent)
 	{
 	}
 
 	virtual ~Framebuffer() = default;
 
 	[[nodiscard]] const Extent2D& GetExtent() const { return Extent; }
+	[[nodiscard]] uint8 GetAttachmentCount() const { return attachmentCount; };
 };

@@ -9,44 +9,49 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 	bool DSAA = _RPD.DepthStencilAttachment.AttachmentImage;
 
 	FVector<VkAttachmentDescription> Attachments(_RPD.RenderPassColorAttachments.getLength() + DSAA, VkAttachmentDescription{});	//Take into account depth/stencil attachment
-	//Set color attachments.
-	for (uint8 i = 0; i < Attachments.getCapacity() - DSAA; i++) //Loop through all color attachments(skip extra element for depth/stencil)
 	{
-		Attachments[i].format = FormatToVkFormat(_RPD.RenderPassColorAttachments[i]->AttachmentImage->GetImageFormat());
-		Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;	//Should match that of the SwapChain images.
-		Attachments[i].loadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.RenderPassColorAttachments[i]->LoadOperation);
-		Attachments[i].storeOp = StoreOperationsToVkAttachmentStoreOp(_RPD.RenderPassColorAttachments[i]->StoreOperation);
-		Attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		Attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		Attachments[i].initialLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->InitialLayout);
-		Attachments[i].finalLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->FinalLayout);
-	}
+		//Set color attachments.
+		for (uint8 i = 0; i < Attachments.getCapacity() - DSAA; i++) //Loop through all color attachments(skip extra element for depth/stencil)
+		{
+			Attachments[i].format = FormatToVkFormat(_RPD.RenderPassColorAttachments[i]->AttachmentImage->GetImageFormat());
+			Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;	//Should match that of the SwapChain images.
+			Attachments[i].loadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.RenderPassColorAttachments[i]->LoadOperation);
+			Attachments[i].storeOp = StoreOperationsToVkAttachmentStoreOp(_RPD.RenderPassColorAttachments[i]->StoreOperation);
+			Attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			Attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			Attachments[i].initialLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->InitialLayout);
+			Attachments[i].finalLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->FinalLayout);
+		}
 
-	if (DSAA)
-	{
-		//Set depth/stencil element.
-		Attachments[Attachments.getCapacity()].format = FormatToVkFormat(_RPD.DepthStencilAttachment.AttachmentImage->GetImageFormat());
-		Attachments[Attachments.getCapacity()].samples = VK_SAMPLE_COUNT_1_BIT;
-		Attachments[Attachments.getCapacity()].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		Attachments[Attachments.getCapacity()].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		Attachments[Attachments.getCapacity()].stencilLoadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
-		Attachments[Attachments.getCapacity()].stencilStoreOp = StoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
-		Attachments[Attachments.getCapacity()].initialLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.InitialLayout);
-		Attachments[Attachments.getCapacity()].finalLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.FinalLayout);
+		if (DSAA)
+		{
+			//Set depth/stencil element.
+			Attachments[Attachments.getCapacity() - 1].format = FormatToVkFormat(_RPD.DepthStencilAttachment.AttachmentImage->GetImageFormat());
+			Attachments[Attachments.getCapacity() - 1].samples = VK_SAMPLE_COUNT_1_BIT;
+			Attachments[Attachments.getCapacity() - 1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			Attachments[Attachments.getCapacity() - 1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			Attachments[Attachments.getCapacity() - 1].stencilLoadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
+			Attachments[Attachments.getCapacity() - 1].stencilStoreOp = StoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
+			Attachments[Attachments.getCapacity() - 1].initialLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.InitialLayout);
+			Attachments[Attachments.getCapacity() - 1].finalLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.FinalLayout);
+		}
 	}
-
-	const uint8 AttachmentsCount = _RPD.SubPasses.getLength() * _RPD.RenderPassColorAttachments.getLength();
-	DArray<VkAttachmentReference> WriteAttachmentsReferences(AttachmentsCount);
-	DArray<VkAttachmentReference> ReadAttachmentsReferences(AttachmentsCount);
-	DArray<uint32> PreserveAttachmentsIndices(AttachmentsCount);
+	
+	const uint8 attachments_count = _RPD.SubPasses.getLength() * _RPD.RenderPassColorAttachments.getLength();
+	DArray<VkAttachmentReference> WriteAttachmentsReferences(attachments_count);
+	DArray<VkAttachmentReference> ReadAttachmentsReferences(attachments_count);
+	DArray<uint32> PreserveAttachmentsIndices(attachments_count);
+	DArray<VkAttachmentReference> depth_attachment_references(_RPD.SubPasses.getLength());
 
 	uint8 WriteAttachmentsCount = 0;
 	uint8 ReadAttachmentsCount = 0;
 	uint8 PreserveAttachmentsCount = 0;
 
-	for (uint8 SUBPASS = 0; SUBPASS < AttachmentsCount; SUBPASS++)
+	for (uint8 SUBPASS = 0; SUBPASS < _RPD.SubPasses.getLength(); ++SUBPASS)
 	{
-		for (uint8 ATT = 0; ATT < _RPD.RenderPassColorAttachments.getLength(); ATT++)
+		uint8 written_attachment_references_this_subpass_loop = 0;
+		
+		for (uint8 ATT = 0; ATT < _RPD.SubPasses[SUBPASS]->WriteColorAttachments.getLength(); ++ATT)
 		{
 			if (_RPD.SubPasses[SUBPASS]->WriteColorAttachments[ATT]->Index == ATTACHMENT_UNUSED)
 			{
@@ -59,12 +64,13 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 				WriteAttachmentsReferences[SUBPASS + ATT].layout = ImageLayoutToVkImageLayout(_RPD.SubPasses[SUBPASS]->WriteColorAttachments[ATT]->Layout);
 
 				WriteAttachmentsCount++;
+				++written_attachment_references_this_subpass_loop;
 			}
 		}
 
-		for (uint8 ATT = 0; ATT < _RPD.RenderPassColorAttachments.getLength(); ATT++)
+		for (uint8 ATT = 0; ATT < _RPD.SubPasses[SUBPASS]->ReadColorAttachments.getLength(); ++ATT)
 		{
-			if(_RPD.SubPasses[SUBPASS]->ReadColorAttachments[ATT]->Index == ATTACHMENT_UNUSED)
+			if (_RPD.SubPasses[SUBPASS]->ReadColorAttachments[ATT]->Index == ATTACHMENT_UNUSED)
 			{
 				ReadAttachmentsReferences[SUBPASS + ATT].attachment = VK_ATTACHMENT_UNUSED;
 				ReadAttachmentsReferences[SUBPASS + ATT].layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -75,12 +81,13 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 				ReadAttachmentsReferences[SUBPASS + ATT].layout = ImageLayoutToVkImageLayout(_RPD.SubPasses[SUBPASS]->ReadColorAttachments[ATT]->Layout);
 
 				ReadAttachmentsCount++;
+				++written_attachment_references_this_subpass_loop;
 			}
 		}
 
-		for (uint8 ATT = 0; ATT < _RPD.RenderPassColorAttachments.getLength(); ATT++)
+		for (uint8 ATT = 0; ATT < _RPD.SubPasses[SUBPASS]->PreserveAttachments.getLength(); ++ATT)
 		{
-			if(_RPD.SubPasses[SUBPASS]->PreserveAttachments[ATT] == ATTACHMENT_UNUSED)
+			if (_RPD.SubPasses[SUBPASS]->PreserveAttachments[ATT] == ATTACHMENT_UNUSED)
 			{
 				PreserveAttachmentsIndices[SUBPASS + ATT] = VK_ATTACHMENT_UNUSED;
 			}
@@ -89,10 +96,24 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 				PreserveAttachmentsIndices[SUBPASS + ATT] = _RPD.SubPasses[SUBPASS]->PreserveAttachments[ATT];
 
 				PreserveAttachmentsCount++;
+				++written_attachment_references_this_subpass_loop;
 			}
+		}
+
+		if (!_RPD.SubPasses[SUBPASS]->DepthAttachmentReference)
+		{
+			depth_attachment_references[SUBPASS].attachment = _RPD.SubPasses[SUBPASS]->DepthAttachmentReference->Index;
+			depth_attachment_references[SUBPASS].layout = ImageLayoutToVkImageLayout(_RPD.SubPasses[SUBPASS]->DepthAttachmentReference->Layout);
+		}
+		else
+		{
+			depth_attachment_references[SUBPASS].attachment = VK_ATTACHMENT_UNUSED;
+			depth_attachment_references[SUBPASS].layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		}
 	}
 
+
+	
 	//Describe each subpass.
 	FVector<VkSubpassDescription> Subpasses(_RPD.SubPasses.getLength(), VkSubpassDescription{});
 	for (uint8 SUBPASS = 0; SUBPASS < Subpasses.getLength(); SUBPASS++)	//Loop through each subpass.
@@ -105,7 +126,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 		Subpasses[SUBPASS].pResolveAttachments = nullptr;
 		Subpasses[SUBPASS].preserveAttachmentCount = 0;//PreserveAttachmentsCount;
 		Subpasses[SUBPASS].pPreserveAttachments = PreserveAttachmentsIndices.getData() + SUBPASS;
-		Subpasses[SUBPASS].pDepthStencilAttachment = DSAA ? &WriteAttachmentsReferences[SUBPASS] : nullptr;
+		Subpasses[SUBPASS].pDepthStencilAttachment = &depth_attachment_references[SUBPASS];
 	}
 
 
@@ -130,6 +151,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 		}
 	}
 
+	
 	VkRenderPassCreateInfo RPCI = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
 	RPCI.attachmentCount = _RPD.RenderPassColorAttachments.getLength() + DSAA;
 	RPCI.pAttachments = Attachments.getData();

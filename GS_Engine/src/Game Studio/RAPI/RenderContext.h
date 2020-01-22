@@ -24,7 +24,7 @@ struct GS_API DrawInfo
 struct GS_API RenderPassBeginInfo
 {
 	RenderPass* RenderPass = nullptr;
-	Framebuffer** Framebuffers = nullptr;
+	Framebuffer* Framebuffer = nullptr;
 };
 
 struct GS_API PushConstantsInfo
@@ -43,6 +43,11 @@ struct GS_API RenderContextCreateInfo
 struct ResizeInfo
 {
 	Extent2D NewWindowSize;
+};
+
+struct CopyToSwapchainInfo
+{
+	Image* Image = nullptr;
 };
 
 class GS_API RenderContext
@@ -107,6 +112,8 @@ public:
 	virtual void AdvanceSubPass() = 0;
 	//Adds a EndRenderPass command to the command queue.
 	virtual void EndRenderPass(RenderPass* _RP) = 0;
+
+	virtual void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) = 0;
 
 	[[nodiscard]] virtual FVector<Image*> GetSwapchainImages() const = 0;
 

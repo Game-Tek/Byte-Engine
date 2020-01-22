@@ -2,22 +2,19 @@
 
 #include "Vulkan.h"
 
-VKImageViewCreator VulkanSwapchainImage::CreateImageView(VKDevice* _Device, VkImage _Image, const Format _Format)
-{
-	VkImageViewCreateInfo ImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-	ImageViewCreateInfo.format = FormatToVkFormat(_Format);
-	ImageViewCreateInfo.image = _Image;
-	ImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	ImageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	ImageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-	ImageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-	ImageViewCreateInfo.subresourceRange.layerCount = 1;
-	ImageViewCreateInfo.subresourceRange.levelCount = 1;
+#include "RAPI/Vulkan/VulkanRenderer.h"
 
-	return VKImageViewCreator(_Device, &ImageViewCreateInfo);
-}
-
-VulkanSwapchainImage::VulkanSwapchainImage(VKDevice* _Device, VkImage _Image, Format _Format) : VulkanImageBase(Extent2D(1280, 720), _Format, ImageType::COLOR, ImageDimensions::IMAGE_2D),
-ImageView(CreateImageView(_Device, _Image, _Format))
+VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo, VkImage image) : VulkanImageBase(imageCreateInfo)
 {
+	VkImageViewCreateInfo vk_image_view_create_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	vk_image_view_create_info.format = FormatToVkFormat(imageCreateInfo.ImageFormat);
+	vk_image_view_create_info.image = image;
+	vk_image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vk_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	vk_image_view_create_info.subresourceRange.baseArrayLayer = 0;
+	vk_image_view_create_info.subresourceRange.baseMipLevel = 0;
+	vk_image_view_create_info.subresourceRange.layerCount = 1;
+	vk_image_view_create_info.subresourceRange.levelCount = 1;
+
+	GS_VK_CHECK(vkCreateImageView(device->GetVKDevice().GetVkDevice(), &vk_image_view_create_info, ALLOCATOR, &imageView), "Failed to create image view!");
 }

@@ -34,8 +34,10 @@ class GS_API VulkanRenderDevice final : public RenderDevice
 
 protected:
 	friend class VulkanTexture;
+	friend class VulkanImage;
 	
 	[[nodiscard]] const VkPhysicalDeviceProperties& getPhysicalDeviceProperties() const { return deviceProperties; }
+	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory);
 	//static void AllocateCommandBuffer(VkDevice* device_, VkCommandPool* command_pool_, VkCommandBuffer* command_buffer_, VkCommandBufferLevel command_buffer_level_, uint8 command_buffer_count_);
 	//static void StartCommandBuffer(VkCommandBuffer* command_buffer_, VkCommandBufferUsageFlagBits command_buffer_usage_);
 	//static void SubmitCommandBuffer(VkCommandBuffer* command_buffer_, uint8 command_buffer_count_, VkQueue* queue_, VkFence* fence_);
@@ -60,5 +62,5 @@ public:
 	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) final override;
 
-	INLINE const VKDevice& GetVKDevice() const { return Device; }
+	INLINE VKDevice& GetVKDevice() { return Device; }
 };

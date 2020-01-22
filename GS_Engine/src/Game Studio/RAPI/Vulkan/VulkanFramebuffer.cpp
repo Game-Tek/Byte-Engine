@@ -4,39 +4,28 @@
 
 #include "VulkanRenderPass.h"
 
-#include "RAPI/Image.h"
+#include "VulkanRenderer.h"
 
 #include "VulkanImage.h"
 
-FVector<VkImageView> VulkanFramebuffer::ImagesToVkImageViews(const DArray<Image*>& _Images)
+VulkanFramebuffer::VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& framebufferCreateInfo) : Framebuffer(framebufferCreateInfo)
 {
-	FVector<VkImageView> Result(_Images.getLength());
+	FVector<VkImageView> Result(framebufferCreateInfo.Images.getLength());
 
 	for (uint8 i = 0; i < Result.getCapacity(); ++i)
 	{
-		Result.push_back(SCAST(VulkanImageBase*, _Images[i])->GetVKImageView().GetHandle());
+		Result.push_back(SCAST(VulkanImageBase*, framebufferCreateInfo.Images[i])->GetVkImageView());
 	}
 
-	return Result;
-}
-
-VKFramebufferCreator VulkanFramebuffer::CreateFramebufferCreator(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images)
-{
-	auto t = ImagesToVkImageViews(_Images);
-
+	attachmentCount = framebufferCreateInfo.Images.getLength();
+	
 	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-	FramebufferCreateInfo.attachmentCount = _Images.getLength();
-	FramebufferCreateInfo.width = _Extent.Width;
-	FramebufferCreateInfo.height = _Extent.Height;
+	FramebufferCreateInfo.attachmentCount = framebufferCreateInfo.Images.getLength();
+	FramebufferCreateInfo.width = framebufferCreateInfo.Extent.Width;
+	FramebufferCreateInfo.height = framebufferCreateInfo.Extent.Height;
 	FramebufferCreateInfo.layers = 1;
-	FramebufferCreateInfo.renderPass = _RP->GetVKRenderPass().GetHandle();
-	FramebufferCreateInfo.pAttachments = t.getData();
+	FramebufferCreateInfo.renderPass = static_cast<VulkanRenderPass*>(framebufferCreateInfo.RenderPass)->GetVKRenderPass().GetHandle();
+	FramebufferCreateInfo.pAttachments = Result.getData();
 
-	return VKFramebufferCreator(_Device, &FramebufferCreateInfo);
-}
-
-VulkanFramebuffer::VulkanFramebuffer(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images) : Framebuffer(_Extent),
-	m_Framebuffer(CreateFramebufferCreator(_Device, _RP, _Extent, _Images))
-{
-
+	GS_VK_CHECK(vkCreateFramebuffer(_Device->GetVKDevice().GetVkDevice(), &FramebufferCreateInfo, ALLOCATOR, &framebuffer), "Failed to create framebuffer!");
 }

@@ -2,59 +2,46 @@
 
 #include "Vulkan.h"
 
-#include "Native/VKDevice.h"
-#include "Native/VKImage.h"
+#include "VulkanRenderer.h"
 
-VulkanImageBase::VulkanImageBase(const Extent2D _ImgExtent, const Format _ImgFormat, const ImageType _ImgType, const ImageDimensions _ID) : Image(_ImgExtent, _ImgFormat, _ImgType, _ID)
+VulkanImageBase::VulkanImageBase(const ImageCreateInfo& imageCreateInfo) : Image(imageCreateInfo)
 {
 }
 
-VKImageCreator VulkanImage::CreateVKImageCreator(VKDevice* _Device, const Extent2D _ImgExtent,
-	const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, ImageUse _ImgUse)
+VulkanImage::VulkanImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo) : VulkanImageBase(imageCreateInfo)
 {
-	VkImageCreateInfo ImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-	ImageCreateInfo.format = FormatToVkFormat(_ImgFormat);
-	ImageCreateInfo.arrayLayers = 1;
-	ImageCreateInfo.extent = { _ImgExtent.Width, _ImgExtent.Height, 0 };
-	ImageCreateInfo.imageType = ImageDimensionsToVkImageType(_ID);
-	ImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	ImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-	ImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	const auto image_format = FormatToVkFormat(imageCreateInfo.ImageFormat);
+	const auto image_extent = Extent3DToVkExtent3D(imageCreateInfo.Extent);
+	
+	VkImageCreateInfo vk_image_create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	vk_image_create_info.format = image_format;
+	vk_image_create_info.arrayLayers = 1;
+	vk_image_create_info.extent = image_extent;
+	vk_image_create_info.imageType = ImageDimensionsToVkImageType(imageCreateInfo.Dimensions);
+	vk_image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	vk_image_create_info.usage = ImageUseToVkImageUsageFlagBits(imageCreateInfo.Use);
+	vk_image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	vk_image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	vk_image_create_info.mipLevels = 1;
+	
+	GS_VK_CHECK(vkCreateImage(device->GetVKDevice().GetVkDevice(), &vk_image_create_info, ALLOCATOR, &image), "Failed to allocate image!");
+	
+	VkMemoryRequirements vk_memory_requirements;
+	vkGetImageMemoryRequirements(device->GetVKDevice().GetVkDevice(), image, &vk_memory_requirements);
 
-	return VKImageCreator(_Device, &ImageCreateInfo);
-}
+	VkImageViewCreateInfo vk_image_view_create_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	vk_image_view_create_info.format = image_format;
+	vk_image_view_create_info.image = image;
+	vk_image_view_create_info.viewType = ImageDimensionsToVkImageViewType(imageCreateInfo.Dimensions);
+	vk_image_view_create_info.subresourceRange.aspectMask = ImageTypeToVkImageAspectFlagBits(imageCreateInfo.Type);
+	vk_image_view_create_info.subresourceRange.baseArrayLayer = 0;
+	vk_image_view_create_info.subresourceRange.baseMipLevel = 0;
+	vk_image_view_create_info.subresourceRange.layerCount = 1;
+	vk_image_view_create_info.subresourceRange.levelCount = 1;
 
-VKMemoryCreator VulkanImage::CreateVKMemoryCreator(VKDevice* _Device, const VKImage& _Image)
-{
-	const auto MemoryRequirements = _Image.GetMemoryRequirements();
+	device->allocateMemory(&vk_memory_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &imageMemory);
+	
+	vkBindImageMemory(device->GetVKDevice().GetVkDevice(), image, imageMemory, 0);
 
-	VkMemoryAllocateInfo MemoryAllocateInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-	MemoryAllocateInfo.allocationSize = MemoryRequirements.size;
-	MemoryAllocateInfo.memoryTypeIndex = _Device->FindMemoryType(MemoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	return VKMemoryCreator(_Device, &MemoryAllocateInfo);
-}
-
-VKImageViewCreator VulkanImage::CreateVKImageViewCreator(VKDevice* _Device, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType,	const VKImage& _Image)
-{
-	VkImageViewCreateInfo ImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-	ImageViewCreateInfo.format = FormatToVkFormat(_ImgFormat);
-	ImageViewCreateInfo.image = _Image.GetHandle();
-	ImageViewCreateInfo.viewType = ImageDimensionsToVkImageViewType(_ID);
-	ImageViewCreateInfo.subresourceRange.aspectMask = ImageTypeToVkImageAspectFlagBits(_ImgType);
-	ImageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-	ImageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-	ImageViewCreateInfo.subresourceRange.layerCount = 1;
-	ImageViewCreateInfo.subresourceRange.levelCount = 1;
-
-	return VKImageViewCreator(_Device, &ImageViewCreateInfo);
-}
-
-VulkanImage::VulkanImage(VKDevice* _Device, const Extent2D _ImgExtent, const Format _ImgFormat, const ImageDimensions _ID, const ImageType _ImgType, const ImageUse _ImgUse) :
-	VulkanImageBase(_ImgExtent, _ImgFormat, _ImgType, _ID), 
-	m_Image(CreateVKImageCreator(_Device, _ImgExtent, _ImgFormat, _ID, _ImgType, _ImgUse)),
-	ImageMemory(CreateVKMemoryCreator(_Device, m_Image)),
-	ImageView(CreateVKImageViewCreator(_Device, _ImgFormat, _ID, _ImgType, m_Image))
-{
+	GS_VK_CHECK(vkCreateImageView(device->GetVKDevice().GetVkDevice(), &vk_image_view_create_info, ALLOCATOR, &imageView), "Failed to create image view!");
 }

@@ -9,7 +9,9 @@
 #include "Containers/DArray.hpp"
 #include "Native/VKImageView.h"
 #include "Containers/FVector.hpp"
+#include <RAPI/Vulkan/Vulkan.h>
 
+class VulkanRenderDevice;
 class VulkanRenderPass;
 class VulkanImage;
 
@@ -19,15 +21,12 @@ struct VkAttachmentDescription;
 struct VkSubpassDescription;
 
 class GS_API VulkanFramebuffer final : public Framebuffer
-{
-	VKFramebuffer m_Framebuffer;
-
-	static FVector<VkImageView> ImagesToVkImageViews(const DArray<Image*>& _Images);
-
-	static VKFramebufferCreator CreateFramebufferCreator(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images);
+{	
+	VkFramebuffer framebuffer;
+	
 public:
-	VulkanFramebuffer(VKDevice* _Device, VulkanRenderPass* _RP, Extent2D _Extent, const DArray<Image*>& _Images);
+	VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& framebufferCreateInfo);
 	~VulkanFramebuffer() = default;
 
-	INLINE const VKFramebuffer& GetVk_Framebuffer() const { return m_Framebuffer; }
+	INLINE const VkFramebuffer& GetVkFramebuffer() const { return framebuffer; }
 };

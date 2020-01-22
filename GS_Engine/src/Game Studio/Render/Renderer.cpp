@@ -108,6 +108,7 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
 		FBCI.Images = DArray<Image*>() = { SCImages[i], depthTexture };
+		FBCI.ClearValues = { {0, 0, 0, 0 }, {1, 0, 0, 0} };
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
 
@@ -300,7 +301,7 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 	GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
 	GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
 	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
-	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::GREATER;
+	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::LESS;
 
 	GPCI.RenderPass = RP;
 	GPCI.UniformLayout = UL;

@@ -27,6 +27,7 @@ struct GS_API FramebufferCreateInfo
 	RenderPass* RenderPass = nullptr;
 	Extent2D Extent = { 1280, 720 };
 	DArray<Image*> Images;
+	FVector<RGBA> ClearValues;
 };
 
 class GS_API Framebuffer

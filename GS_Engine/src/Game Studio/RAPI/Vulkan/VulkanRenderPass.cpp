@@ -28,8 +28,8 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 			//Set depth/stencil element.
 			Attachments[Attachments.getCapacity() - 1].format = FormatToVkFormat(_RPD.DepthStencilAttachment.AttachmentImage->GetImageFormat());
 			Attachments[Attachments.getCapacity() - 1].samples = VK_SAMPLE_COUNT_1_BIT;
-			Attachments[Attachments.getCapacity() - 1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			Attachments[Attachments.getCapacity() - 1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			Attachments[Attachments.getCapacity() - 1].loadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
+			Attachments[Attachments.getCapacity() - 1].storeOp = StoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
 			Attachments[Attachments.getCapacity() - 1].stencilLoadOp = LoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
 			Attachments[Attachments.getCapacity() - 1].stencilStoreOp = StoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
 			Attachments[Attachments.getCapacity() - 1].initialLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.InitialLayout);
@@ -100,7 +100,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 			}
 		}
 
-		if (!_RPD.SubPasses[SUBPASS]->DepthAttachmentReference)
+		if (_RPD.SubPasses[SUBPASS]->DepthAttachmentReference)
 		{
 			depth_attachment_references[SUBPASS].attachment = _RPD.SubPasses[SUBPASS]->DepthAttachmentReference->Index;
 			depth_attachment_references[SUBPASS].layout = ImageLayoutToVkImageLayout(_RPD.SubPasses[SUBPASS]->DepthAttachmentReference->Layout);

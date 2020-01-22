@@ -281,4 +281,5 @@ INLINE VkCompareOp CompareOperationToVkCompareOp(CompareOperation compareOperati
 		case CompareOperation::GREATER_OR_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
 		case CompareOperation::ALWAYS: return VK_COMPARE_OP_ALWAYS;
 	default: ; }
+	return {};
 }

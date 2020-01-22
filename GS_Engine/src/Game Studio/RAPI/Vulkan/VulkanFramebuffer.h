@@ -21,7 +21,8 @@ struct VkAttachmentDescription;
 struct VkSubpassDescription;
 
 class GS_API VulkanFramebuffer final : public Framebuffer
-{	
+{
+	FVector<VkClearValue> clearValues;
 	VkFramebuffer framebuffer;
 	
 public:
@@ -29,4 +30,5 @@ public:
 	~VulkanFramebuffer() = default;
 
 	INLINE const VkFramebuffer& GetVkFramebuffer() const { return framebuffer; }
+	[[nodiscard]] const FVector<VkClearValue>& GetClearValues() const { return clearValues; }
 };

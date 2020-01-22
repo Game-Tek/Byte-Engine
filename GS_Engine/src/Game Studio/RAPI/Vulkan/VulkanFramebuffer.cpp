@@ -17,6 +17,12 @@ VulkanFramebuffer::VulkanFramebuffer(VulkanRenderDevice* _Device, const Framebuf
 		Result.push_back(SCAST(VulkanImageBase*, framebufferCreateInfo.Images[i])->GetVkImageView());
 	}
 
+	for (uint8 i = 0; i < framebufferCreateInfo.ClearValues.getLength(); ++i)
+	{
+		auto c = VkClearValue{ framebufferCreateInfo.ClearValues[i].R, framebufferCreateInfo.ClearValues[i].G, framebufferCreateInfo.ClearValues[i].B, framebufferCreateInfo.ClearValues[i].A };
+		clearValues.push_back(c);
+	}
+	
 	attachmentCount = framebufferCreateInfo.Images.getLength();
 	
 	VkFramebufferCreateInfo FramebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };

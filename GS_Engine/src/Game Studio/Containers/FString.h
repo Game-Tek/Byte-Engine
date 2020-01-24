@@ -78,6 +78,7 @@ public:
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
 	constexpr static size_t StringLength(const char * In);
 
+	static FString MakeString(const char* _Text, ...);
 private:
 	friend OutStream& operator<<(OutStream& _Archive, FString& _String);
 	
@@ -85,7 +86,6 @@ private:
 
 	FVector<string_type> Data;
 
-	static FString MakeString(const char* _Text, ...);
 	static char ToLowerCase(char _Char);
 	static char ToUpperCase(char _Char);
 };

@@ -1,9 +1,7 @@
 #pragma once
 
-#include "Core.h"
-
 //Used to specify a rotation in 3D space with floating point precision.
-class GS_API Quaternion
+class Quaternion
 {
 public:
 	//X component of this quaternion.
@@ -16,7 +14,7 @@ public:
 	float Z = 0.0f;
 
 	//Q component of this quaternion.
-	float Q = 0.0f;
+	float Q = 1.0f;
 
 	Quaternion() = default;
 
@@ -118,7 +116,7 @@ public:
 		return *this;
 	}
 
-	Quaternion& operator*=(const Quaternion& _Other);
+	Quaternion& operator*=(const Quaternion& other);
 	//{
 	//	X = Q * Other.X + X * Other.Q + Y * Other.Z - Z * Other.Y;
 	//	Y = Q * Other.Y - X * Other.Z + Y * Other.Q + Z * Other.X;

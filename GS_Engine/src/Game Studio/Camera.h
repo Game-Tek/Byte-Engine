@@ -18,7 +18,7 @@ public:
 
 	[[nodiscard]] float GetAperture() const { return Aperture; }
 	[[nodiscard]] float GetIrisHeightMultiplier() const { return IrisHeightMultiplier; }
-	[[nodiscard]] float GetFOV() const { return FOV; }
+	[[nodiscard]] float& GetFOV() { return FOV; }
 	[[nodiscard]] float GetFocusDistance() const { return FocusDistance; }
 	[[nodiscard]] uint16 GetWhiteBalance() const { return WhiteBalance; }
 	[[nodiscard]] uint16 GetISO() const { return ISO; }
@@ -43,5 +43,5 @@ protected:
 	uint16 WhiteBalance = 4000;
 	uint16 ISO = 1800;
 
-	NearFarPair nearFar = NearFarPair(1.0f, 500.0f);
+	NearFarPair nearFar = NearFarPair(1.0f, 1000.0f);
 };

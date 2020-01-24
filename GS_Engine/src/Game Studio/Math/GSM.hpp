@@ -12,6 +12,7 @@
 #include "Transform3.h"
 #include "Plane.h"
 #include <cmath>
+#include "Rotator.h"
 
 class GS_API GSM
 {
@@ -1092,13 +1093,13 @@ public:
 	//////////////////////////////////////////////////////////////
 
 	//Creates a translation matrix.
-	INLINE static Matrix4 Translation(const Vector3 & Vector)
+	INLINE static Matrix4 Translation(const Vector3& Vector)
 	{
-		Matrix4 Result;
+		Matrix4 Result(1);
 
-		Result[0 + 3 * 4] = Vector.X;
-		Result[1 + 3 * 4] = Vector.Y;
-		Result[2 + 3 * 4] = Vector.Z;
+		Result(0, 3) = Vector.X;
+		Result(1, 3) = Vector.Y;
+		Result(2, 3) = Vector.Z;
 
 		return Result;
 	}
@@ -1106,62 +1107,175 @@ public:
 	//Modifies the given matrix to make it a translation matrix.
 	INLINE static void Translate(Matrix4 & Matrix, const Vector3 & Vector)
 	{
-		Matrix[0 + 12] = Vector.X;
-		Matrix[1 + 12] = Vector.Y;
-		Matrix[2 + 12] = Vector.Z;
+		const auto translation = Translation(Vector);
+		
+		Matrix *= translation;
+		
+		return;
+	}
+
+	INLINE static Matrix4 NormalToRotation(Vector3 normal)
+	{
+		// Find a vector in the plane
+		Vector3 tangent0 = Cross(normal, Vector3(1, 0, 0));
+		if (DotProduct(tangent0, tangent0) < 0.001)
+			tangent0 = Cross(normal, Vector3(0, 1, 0));
+		Normalize(tangent0);
+		// Find another vector in the plane
+		Vector3 tangent1 = Normalized(Cross(normal, tangent0));
+		return Matrix4(tangent0.X, tangent0.Y, tangent0.Z, 0.0f, tangent1.X, tangent1.Y, tangent1.Z, 0.0f, normal.X, normal.Y, normal.Z, 0.0f, 0, 0, 0, 0);
+	}
+	
+	INLINE static void Rotate(Matrix4& A, const Quaternion& Q)
+	{
+		const auto rotation = Rotation(Q);
+
+		A *= rotation;
+
+		return;
+	}
+	
+	INLINE static void Rotate(Matrix4 & A, const Vector3 & Q)
+	{
+		const auto rotation = Rotation(Q);
+
+		A *= rotation;
 
 		return;
 	}
 
-	INLINE static void Rotate(Matrix4 & A, const Quaternion & Q)
+	INLINE static Vector3 SphericalCoordinatesToCartesianCoordinates(const Vector2& sphericalCoordinates)
 	{
-		const float cos = Cosine(Q.Q);
-		const float sin = Sine(Q.Q);
-		const float omc = 1.0f - cos;
-
-		A[0] = Q.X * omc + cos;
-		A[1] = Q.Y * Q.X * omc - Q.Y * sin;
-		A[2] = Q.X * Q.Z * omc - Q.Y * sin;
-
-		A[4] = Q.X * Q.Y * omc - Q.Z * sin;
-		A[5] = Q.Y * omc + cos;
-		A[6] = Q.Y * Q.Z * omc + Q.X * sin;
-
-		A[8] = Q.X * Q.Z * omc + Q.Y * sin;
-		A[9] = Q.Y * Q.Z * omc - Q.X * sin;
-		A[10] = Q.Z * omc + cos;
+		auto cy = Cosine(sphericalCoordinates.Y);
+		
+		return Vector3(cy * Sine(sphericalCoordinates.X), Sine(sphericalCoordinates.Y), cy * Cosine(sphericalCoordinates.X));
 	}
 
-	INLINE static Matrix4 Rotation(const Quaternion & A)
+	INLINE static Vector3 RotatorToNormalVector(const Rotator& rotator)
 	{
-		Matrix4 Result;
+		auto x = Cosine(rotator.Y) * Cosine(rotator.X);
+		auto y = Sine(rotator.Y) * Cosine(rotator.X);
+		auto z = Sine(rotator.X);
 
-		const float cos = Cosine(A.Q);
-		const float sin = Sine(A.Q);
-		const float omc = 1.0f - cos;
+		return Vector3(x, y, z);
+	}
+	
+	INLINE static Quaternion RotatorToQuaternion(const Rotator& rotator)
+	{
+		// Abbreviations for the various angular functions
+		double cy = cos(DegreesToRadians(rotator.Y * 0.5));
+		double sy = sin(DegreesToRadians(rotator.Y * 0.5));
+		double cp = cos(DegreesToRadians(rotator.X * 0.5));
+		double sp = sin(DegreesToRadians(rotator.X * 0.5));
+		double cr = cos(DegreesToRadians(rotator.Z * 0.5));
+		double sr = sin(DegreesToRadians(rotator.Z * 0.5));
 
-		Result[0] = A.X * omc + cos;
-		Result[1] = A.Y * A.X * omc - A.Y * sin;
-		Result[2] = A.X * A.Z * omc - A.Y * sin;
+		Quaternion q;
+		q.X = sy * cp * sr + cy * sp * cr;
+		q.Y = sy * cp * cr - cy * sp * sr;
+		q.Z = cy * cp * sr - sy * sp * cr;
+		q.Q = cy * cp * cr + sy * sp * sr;
 
-		Result[4] = A.X * A.Y * omc - A.Z * sin;
-		Result[5] = A.Y * omc + cos;
-		Result[6] = A.Y * A.Z * omc + A.X * sin;
+		return q;
+	}
 
-		Result[8] = A.X * A.Z * omc + A.Y * sin;
-		Result[9] = A.Y * A.Z * omc - A.X * sin;
-		Result[10] = A.Z * omc + cos;
+	INLINE static Matrix4 Rotation(const Quaternion& A)
+	{
+		Matrix4 result(1);
 
-		return Result;
+		auto xx = A.X * A.X;
+		auto xy = A.X * A.Y;
+		auto xz = A.X * A.Z;
+		auto xw = A.X * A.Q;
+		auto yy = A.Y * A.Y;
+		auto yz = A.Y * A.Z;
+		auto yw = A.Y * A.Q;
+		auto zz = A.Z * A.Z;
+		auto zw = A.Z * A.Q;
+
+		result(0, 0) = 1 - 2 * (yy + zz);
+		result(0, 1) = 2 * (xy - zw);
+		result(0, 2) = 2 * (xz + yw);
+		result(1, 0) = 2 * (xy + zw);
+		result(1, 1) = 1 - 2 * (xx + zz);
+		result(1, 2) = 2 * (yz - xw);
+		result(2, 0) = 2 * (xz - yw);
+		result(2, 1) = 2 * (yz + xw);
+		result(2, 2) = 1 - 2 * (xx + yy);
+		result(0, 3) = result(1, 3) = result(2, 3) = result(3, 0) = result(3, 1) = result(3, 2) = 0;
+		result(3, 3) = 1;
+
+		return result;
+	}
+
+	INLINE static Matrix4 Rotation(const Vector3& A, float angle)
+	{
+		Matrix4 result(1);
+
+		float c = cosf(DegreesToRadians(angle));    // cosine
+		float s = sinf(DegreesToRadians(angle));    // sine
+		float xx = A.X * A.X;
+		float xy = A.X * A.Y;
+		float xz = A.X * A.Z;
+		float yy = A.Y * A.Y;
+		float yz = A.Y * A.Z;
+		float zz = A.Z * A.Z;
+
+		// build rotation matrix
+		Matrix4 m;
+		m[0] = xx * (1 - c) + c;
+		m[1] = xy * (1 - c) - A.Z * s;
+		m[2] = xz * (1 - c) + A.Y * s;
+		m[3] = 0;
+		m[4] = xy * (1 - c) + A.Z * s;
+		m[5] = yy * (1 - c) + c;
+		m[6] = yz * (1 - c) - A.X * s;
+		m[7] = 0;
+		m[8] = xz * (1 - c) - A.Y * s;
+		m[9] = yz * (1 - c) + A.X * s;
+		m[10] = zz * (1 - c) + c;
+		m[11] = 0;
+		m[12] = 0;
+		m[13] = 0;
+		m[14] = 0;
+		m[15] = 1;
+
+		return result;
+	}
+	
+	INLINE static Matrix4 Rotation(const Vector3& A)
+	{
+		Matrix4 result(1);
+
+		float c = cosf(DegreesToRadians(0));    // cosine
+		float s = sinf(DegreesToRadians(0));    // sine
+		float xx = A.X * A.X;
+		float xy = A.X * A.Y;
+		float xz = A.X * A.Z;
+		float yy = A.Y * A.Y;
+		float yz = A.Y * A.Z;
+		float zz = A.Z * A.Z;
+
+		result[0] = xx * (1 - c) + c;
+		result[1] = xy * (1 - c) - A.Z * s;
+		result[2] = xz * (1 - c) + A.Y * s;
+		result[3] = 0;
+		result[4] = xy * (1 - c) + A.Z * s;
+		result[5] = yy * (1 - c) + c;
+		result[6] = yz * (1 - c) - A.X * s;
+		result[7] = 0;
+		result[8] = xz * (1 - c) - A.Y * s;
+		result[9] = yz * (1 - c) + A.X * s;
+		result[10] = zz * (1 - c) + c;
+
+		return result;
 	}
 
 	INLINE static void Scale(Matrix4 & A, const Vector3 & B)
 	{
-		A[0] = B.X;
-		A[5] = B.Y;
-		A[10] = B.Z;
+		const auto scaling = Scaling(B);
 
-		return;
+		A *= scaling;
 	}
 
 	INLINE static Matrix4 Scaling(const Vector3 & A)
@@ -1179,7 +1293,7 @@ public:
 	{
 		Matrix4 Return;
 		Translate(Return, _A.Position);
-		Rotate(Return, _A.Rotation);
+		//Rotate(Return, _A.Rotation);
 		Scale(Return, _A.Scale);
 		return Return;
 	}
@@ -1187,7 +1301,7 @@ public:
 	INLINE static void Transform(Matrix4& _A, Transform3& _B)
 	{
 		Translate(_A, _B.Position);
-		Rotate(_A, _B.Rotation);
+		//Rotate(_A, _B.Rotation);
 		Scale(_A, _B.Scale);
 	}
 

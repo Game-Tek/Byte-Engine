@@ -93,6 +93,8 @@ void main()
 	void OnUpdate() override
 	{
 		MyWorld->OnUpdate();
+		//auto time = FString::MakeString("Time: %f", 3.14);
+		//GetActiveWindow()->SetWindowTitle(time.c_str());
 	}
 
 	~Sandbox()

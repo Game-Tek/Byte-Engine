@@ -7,43 +7,43 @@ class GS_API Rotator
 {
 public:
 	//Yaw(Y) component of this rotator.
-	float Yaw = 0;
+	float X = 0;
 
 	//Pitch(X) component of this rotator.
-	float Pitch = 0;
+	float Y = 0;
 
 	//Roll(Z) component of this rotator.
-	float Roll = 0;
+	float Z = 0;
 
 	Rotator()
 	{
 	}
 
-	Rotator(float Yaw, float Pitch, float Roll) : Yaw(Yaw), Pitch(Pitch), Roll(Roll)
+	Rotator(float x, float y, float z) : X(x), Y(y), Z(z)
 	{
 	}
 
-	Rotator(const Rotator & Other) : Yaw(Other.Yaw), Pitch(Other.Pitch), Roll(Other.Roll)
+	Rotator(const Rotator & Other) : X(Other.X), Y(Other.Y), Z(Other.Z)
 	{
 	}
 
 	Rotator operator+ (const Rotator & Other)
 	{
-		return { Yaw + Other.Yaw, Pitch + Other.Pitch, Roll + Other.Roll };
+		return { X + Other.X, Y + Other.Y, Z + Other.Z };
 	}
 
 	Rotator operator- (const Rotator & Other)
 	{
-		return { Yaw - Other.Yaw, Pitch - Other.Pitch, Roll - Other.Roll };
+		return { X - Other.X, Y - Other.Y, Z - Other.Z };
 	}
 
 	Rotator operator* (float Other)
 	{
-		return { Yaw * Other, Pitch * Other, Roll * Other };
+		return { X * Other, Y * Other, Z * Other };
 	}
 
 	Rotator operator/ (float Other)
 	{
-		return { Yaw / Other, Pitch / Other, Roll / Other };
+		return { X / Other, Y / Other, Z / Other };
 	}
 };

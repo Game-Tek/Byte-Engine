@@ -56,6 +56,8 @@ public:
 	[[nodiscard]] bool GetKeyState(KeyboardKeys _Key) const { return Keys[SCAST(uint8, _Key)]; }
 	[[nodiscard]] JoystickState GetJoystickState(uint8 _Joystick) const { return JoystickStates[_Joystick]; }
 
+	Vector2 GetMouseOffset() const { return MouseOffset; }
+	
 	void OnUpdate() override;
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }

@@ -50,7 +50,7 @@ Vector3 GSM::Normalized(const Vector3& _A)
 	alignas(16) float vector[4];
 	a.CopyToAlignedData(vector);
 
-	return Vector3(vector[0], vector[1], vector[2]);
+	return Vector3(vector[3], vector[2], vector[1]);
 }
 
 void GSM::Normalize(Vector3& _A)
@@ -100,15 +100,18 @@ float GSM::DotProduct(const Vector4& _A, const Vector4& _B)
 
 Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
 {
-	alignas(16) float vector[4];
+	//alignas(16) float vector[4];
+	//
+	//const float4 a(_A.X, _A.Y, _A.Z, 1.0f);
+	//const float4 b(_B.X, _B.Y, _B.Z, 1.0f);
+	//
+	//const float4 res = float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 1, 0, 2>(b, b) - float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 0, 2, 1>(b, b);
+	//res.CopyToAlignedData(vector);
+	//
+	//return Vector3(vector[3], vector[2], vector[1]);
+	//
 
-	const float4 a(_A.X, _A.Y, _A.Z, 0.0f);
-	const float4 b(_B.X, _B.Y, _B.Z, 0.0f);
-
-	const float4 res = float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 1, 0, 2>(b, b) - float4::Shuffle<3, 0, 2, 1>(a, a) * float4::Shuffle<3, 0, 2, 1>(b, b);
-	res.CopyToAlignedData(vector);
-
-	return Vector3(vector[0], vector[1], vector[2]);
+	return Vector3(_A.Y * _B.Z - _A.Z * _B.Y, _A.Z * _B.X - _A.X * _B.Z, _A.X * _B.Y - _A.Y * _B.X);
 }
 
 real GSM::DotProduct(const Quaternion& _A, const Quaternion& _B)

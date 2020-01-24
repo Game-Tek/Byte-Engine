@@ -115,4 +115,6 @@ protected:
 	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far);
 
 	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top, const float _Bottom, const float _Near, const float _Far);
+
+	
 };

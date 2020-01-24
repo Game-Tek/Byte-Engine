@@ -4,6 +4,7 @@
 
 #include "Vector3.h"
 #include "Quaternion.h"
+#include "Rotator.h"
 
 //Used to specify a transform in 3D space with floating point precision.
 struct GS_API Transform3
@@ -14,7 +15,7 @@ struct GS_API Transform3
 
 	Transform3() = default;
 
-	Transform3(const Vector3 & _Pos, const Quaternion & _Quat, const Vector3 & _Scale) : Position(_Pos), Rotation(_Quat), Scale(_Scale)
+	Transform3(const Vector3 & _Pos, const Quaternion & rotator, const Vector3 & _Scale) : Position(_Pos), Rotation(rotator), Scale(_Scale)
 	{
 	}
 

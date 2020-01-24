@@ -41,6 +41,8 @@ WindowsWindow::WindowsWindow(const WindowCreateInfo& _WCI) : Window(_WCI.Extent,
 	{
 		JoystickCount += glfwJoystickPresent(i);
 	}
+
+	glfwSetScrollCallback(GLFWWindow, scroll_callback);
 }
 
 WindowsWindow::~WindowsWindow()
@@ -117,6 +119,8 @@ void WindowsWindow::Update()
 		JoystickStates[i].IsRightMenuButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_START];
 		JoystickStates[i].IsLeftMenuButtonPressed = GamepadState.buttons[GLFW_GAMEPAD_BUTTON_BACK];
 	}
+
+	ScrollValue = 0;
 }
 
 void WindowsWindow::SetWindowFit(WindowFit _Fit)

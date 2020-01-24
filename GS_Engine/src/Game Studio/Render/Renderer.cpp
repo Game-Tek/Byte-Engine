@@ -13,7 +13,6 @@
 #include "MaterialRenderResource.h"
 #include "Resources/TextureResource.h"
 
-
 Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
@@ -316,17 +315,35 @@ void Renderer::UpdateMatrices()
 	const Vector3 CamPos = GetActiveCamera()->GetPosition();
 	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
-	ViewMatrix(0, 3) = -CamPos.X;
-	ViewMatrix(1, 3) = -CamPos.Y;
-	ViewMatrix(2, 3) = CamPos.Z;
+
+	//ViewMatrix(0, 3) = -CamPos.X;
+	//ViewMatrix(1, 3) = -CamPos.Y;
+	//ViewMatrix(2, 3) = CamPos.Z;
+
+	ViewMatrix.MakeIdentity();
 	
+	Transform3 camera_transform;
+	camera_transform.Position.X = -CamPos.X;
+	camera_transform.Position.Y = -CamPos.Y;
+	camera_transform.Position.Z = CamPos.Z;
+	camera_transform.Rotation = GetActiveCamera()->GetTransform().Rotation;
+
+	auto t = GetActiveCamera()->GetTransform().Rotation;
+
+	//Vector3 direction(GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.X)) * GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.Y)), GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.X)), GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.X)) * GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.Y)));
+	//Vector3 right(GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.Y - 90)), 0, GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.Y - 90)));
+	//Vector3 up = GSM::Cross(right, direction);
+	//
+	//GSM::Rotate(ViewMatrix, GSM::RotatorToQuaternion(Rotator(up.X, up.Y, up.Z)));/*camera_transform.Rotation*/
+	//GSM::Rotate(ViewMatrix, t);
+
+	//ViewMatrix *= GSM::NormalToRotation(Vector3(0, 0, 0));
+	
+	GSM::Translate(ViewMatrix, camera_transform.Position);
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
-
-	//GSM::Scale(ProjectionMatrix, Vector3(0.1, 0.8, 1));
-	//GSM::Translate(ProjectionMatrix, Vector3(1, -1, 0));
 	
-	BuildPerspectiveMatrix(ProjectionMatrix, 45/*GetActiveCamera()->GetFOV()*/, Win->GetAspectRatio(), 1, 1000);
+	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
 	
 	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
 }

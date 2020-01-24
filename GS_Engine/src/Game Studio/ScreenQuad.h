@@ -4,7 +4,7 @@
 
 #include "Vertex.h"
 
-struct GS_API ScreenQuad
+struct ScreenQuad
 {
 	ScreenQuad() = default;
 
@@ -16,5 +16,5 @@ struct GS_API ScreenQuad
 	inline static uint8 IndexCount = 6;
 
 	inline static const DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT2 };
-	inline static VertexDescriptor VD = Elements;
+	inline static VertexDescriptor VD{ Elements };
 };

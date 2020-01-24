@@ -226,8 +226,8 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	auto originalFormat = FormatToVkFormat(TCI_.ImageFormat);
 	auto supportedFormat = findSupportedFormat(formats, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, VK_IMAGE_TILING_OPTIMAL);
 
-	auto originalTextureSize = TCI_.ImageDataSize;
-	auto supportedTextureSize = 0;
+	uint64 originalTextureSize = TCI_.ImageDataSize;
+	uint64 supportedTextureSize = 0;
 	
 	if (originalFormat != supportedFormat)
 	{
@@ -375,7 +375,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	
 	samplerInfo.anisotropyEnable = bool(TCI_.Anisotropy);
-	samplerInfo.maxAnisotropy = TCI_.Anisotropy == 0 ? 1 : TCI_.Anisotropy;
+	samplerInfo.maxAnisotropy = static_cast<float>(TCI_.Anisotropy == 0 ? 1 : TCI_.Anisotropy);
 	
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;

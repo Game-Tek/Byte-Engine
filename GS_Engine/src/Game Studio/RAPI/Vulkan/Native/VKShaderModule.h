@@ -24,5 +24,5 @@ public:
 
 	~VKShaderModule();
 
-	static DArray<uint32, uint32> CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB);
+	static DArray<uint32> CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB);
 };

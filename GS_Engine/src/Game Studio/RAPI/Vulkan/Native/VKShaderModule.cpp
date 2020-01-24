@@ -20,7 +20,7 @@ VKShaderModule::~VKShaderModule()
 	vkDestroyShaderModule(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 }
 
-DArray<uint32, uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB)
+DArray<uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, const FString& _ShaderName, unsigned _SSFB)
 {
 	shaderc_shader_kind Stage;
 
@@ -48,5 +48,5 @@ DArray<uint32, uint32> VKShaderModule::CompileGLSLToSpirV(const FString& _Code, 
 		GS_BASIC_LOG_ERROR("Failed to compile shader: %s. Errors: %s", _ShaderName.c_str(), Module.GetErrorMessage().c_str())
 	}
 
-	return DArray<uint32, uint32>(Module.cbegin(), Module.cend());
+	return DArray<uint32>(Module.cbegin(), Module.cend());
 }

@@ -19,7 +19,7 @@ class GS_API VertexDescriptor
 	uint8 Size = 0;
 
 public:
-	VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
+	explicit VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
 	{
 		Elements.resize(_Elements.getLength());
 

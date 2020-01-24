@@ -234,7 +234,7 @@ void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVKRenderPass().GetHandle();
 	RenderPassBeginInfo.pClearValues = static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getData();
-	RenderPassBeginInfo.clearValueCount = static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getLength();
+	RenderPassBeginInfo.clearValueCount = static_cast<uint32>(static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getLength());
 	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVkFramebuffer();
 	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
 	RenderPassBeginInfo.renderArea.offset = { 0, 0 };

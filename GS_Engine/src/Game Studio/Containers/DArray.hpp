@@ -6,21 +6,21 @@
 #include <cstring>
 #include <initializer_list>
 
-template <typename _T, typename _LT = uint8>
+template <typename _T>
 class DArray
 {
-	_LT capacity = 0;
-	_LT length = 0;
+	uint32 capacity = 0;
+	uint32 length = 0;
 	_T* data = nullptr;
 
-	static _T* allocate(const _LT _elements)
+	static _T* allocate(const uint32 _elements)
 	{
 		//auto align = alignof(T);
 		return SCAST(_T*, malloc(sizeof(_T) * _elements));
 		//return SCAST(T*, _aligned_malloc(_elements * sizeof(T), alignof(T)));
 	}
 
-	void copyLength(const _LT _elements, void* _from)
+	void copyLength(const uint32 _elements, void* _from)
 	{
 		memcpy(this->data, _from, sizeof(_T) * _elements);
 	}
@@ -65,11 +65,11 @@ public:
 		copyLength(this->length, CCAST(_T*, _List.begin()));
 	}
 
-	explicit DArray(const _LT _Length) : capacity(_Length), length(0), data(allocate(_Length))
+	explicit DArray(const uint32 _Length) : capacity(_Length), length(0), data(allocate(_Length))
 	{
 	}
 
-	DArray(_T _Data[], const _LT _Length) : data(allocate(_Length)), capacity(_Length), length(_Length)
+	DArray(_T _Data[], const uint32 _Length) : data(allocate(_Length)), capacity(_Length), length(_Length)
 	{
 		copyLength(_Length, _Data);
 	}
@@ -99,13 +99,13 @@ public:
 		return *this;
 	}
 
-	_T& operator[](const _LT i)
+	_T& operator[](const uint32 i)
 	{
 		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
 		return this->data[i];
 	}
 
-	const _T& operator[](const _LT i) const
+	const _T& operator[](const uint32 i) const
 	{
 		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
 		return this->data[i];
@@ -121,31 +121,31 @@ public:
 		return this->data;
 	}
 
-	_LT push_back(const _T& _obj)
+	uint32 push_back(const _T& _obj)
 	{
 		this->data[this->length] = _obj;
 
 		return this->length++;
 	}
 
-	_LT push_back(const _T* _obj)
+	uint32 push_back(const _T* _obj)
 	{
 		this->data[this->length] = *_obj;
 
 		return this->length++;
 	}
 
-	[[nodiscard]] _LT getLength() const
+	[[nodiscard]] uint32 getLength() const
 	{
 		return this->length;
 	}
 
-	[[nodiscard]] _LT getCapacity() const
+	[[nodiscard]] uint32 getCapacity() const
 	{
 		return this->capacity;
 	}
 
-	void resize(_LT _NewLength)
+	void resize(uint32 _NewLength)
 	{
 		this->length = _NewLength;
 	}

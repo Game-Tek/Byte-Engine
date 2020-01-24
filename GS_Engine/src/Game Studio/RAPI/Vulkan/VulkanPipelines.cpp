@@ -141,7 +141,7 @@ VKGraphicsPipelineCreator VulkanGraphicsPipeline::CreateVk_GraphicsPipelineCreat
 
 	Array<VkPipelineShaderStageCreateInfo, 8> PSSCI(_GPCI.PipelineDescriptor.Stages.getLength());
 	Array<VkShaderModuleCreateInfo, 8> VSMCI(_GPCI.PipelineDescriptor.Stages.getLength());
-	DArray<DArray<uint32, uint32>> SPIRV(_GPCI.PipelineDescriptor.Stages.getLength());
+	DArray<DArray<uint32>> SPIRV(_GPCI.PipelineDescriptor.Stages.getLength());
 	DArray<VkShaderModule> SMS(_GPCI.PipelineDescriptor.Stages.getLength());
 
 	for (uint8 i = 0; i < _GPCI.PipelineDescriptor.Stages.getLength(); ++i)

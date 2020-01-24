@@ -70,7 +70,7 @@ VulkanUniformLayout::VulkanUniformLayout(VKDevice* _Device, const UniformLayoutC
 	VkPushConstantRange PushConstantRange = {};
 	if (_PLCI.PushConstant)
 	{
-		PushConstantRange.size = _PLCI.PushConstant->Size;
+		PushConstantRange.size = static_cast<uint32>(_PLCI.PushConstant->Size);
 		PushConstantRange.offset = 0;
 		PushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 

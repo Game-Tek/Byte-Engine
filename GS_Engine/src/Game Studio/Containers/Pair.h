@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Core.h"
-
 template<typename _A, typename _B>
 struct Pair
 {

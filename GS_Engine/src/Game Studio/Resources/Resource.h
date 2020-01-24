@@ -7,6 +7,8 @@
 #include "Containers/FString.h"
 #include "Containers/Id.h"
 
+#include "Stream.h"
+
 using ResourceHeaderType = uint64;
 using ResourceSegmentType = uint64;
 

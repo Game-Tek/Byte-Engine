@@ -7,7 +7,6 @@
 #include "Game/SubWorlds.h"
 #include "RenderComponent.h"
 
-#include "ScreenQuad.h"
 #include "RAPI/Window.h"
 #include "RAPI/Framebuffer.h"
 #include "RAPI/GraphicsPipeline.h"
@@ -30,6 +29,8 @@ public:
 	Renderer();
 	virtual ~Renderer();
 
+	[[nodiscard]] const char* GetName() const override { return "Scene"; }
+	
 	void OnUpdate() override;	
 
 	//Returns a pointer to the active camera.
@@ -50,7 +51,6 @@ public:
 		return static_cast<T*>(NRC);
 	}
 
-	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
 	void DrawMesh(const DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
 	void BindPipeline(GraphicsPipeline* _Pipeline);

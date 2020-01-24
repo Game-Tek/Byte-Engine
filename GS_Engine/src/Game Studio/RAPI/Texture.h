@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Core.h"
-#include "Image.h"
 
-struct GS_API TextureCreateInfo
+#include "RenderCore.h"
+#include "Utility/Extent.h"
+
+struct TextureCreateInfo
 {
 	void* ImageData = nullptr;
 	size_t ImageDataSize = 0;
@@ -15,7 +17,7 @@ struct GS_API TextureCreateInfo
 };
 
 //Represents a resource utilized by the rendering API for storing and referencing textures. Which are images which hold some information loaded from memory.
-class GS_API Texture
+class Texture
 {
 	ImageLayout layout;
 public:

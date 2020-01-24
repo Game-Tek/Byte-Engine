@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Containers/Id.h"
-#include "Containers/HashMap.hpp"
 
 #include "SoundPlayer.h"
 #include "Containers/Pair.h"
@@ -107,7 +106,7 @@ class SoundMixer
 	/**
 	 * \brief Stores every channel available.
 	 */
-	HashMap<SoundMixerChannel> channels;
+	//HashMap<SoundMixerChannel> channels;
 	
 public:
 	void OnUpdate();
@@ -115,11 +114,11 @@ public:
 	void RegisterNewChannel(const SoundMixerChannel& _Channel)
 	{
 		//channels.TryEmplace;
-		channels.Get(0).effects;
+		//channels.Get(0).effects;
 	}
 
 	SoundMixerChannel& GetChannel(const Id& _Id)
 	{
-		return channels.Get(_Id.GetID());
+		//return channels.Get(_Id.GetID());
 	}
 };

@@ -3,7 +3,6 @@
 #include "RAPI/Vulkan/Vulkan.h"
 
 #include "VKDevice.h"
-#include "vkQueue.h"
 #include "VKCommandBuffer.h"
 
 VKCommandPoolCreator::VKCommandPoolCreator(VKDevice* _Device, const VkCommandPoolCreateInfo* _VkCPCI) : VKObject<VkCommandPool>(_Device)

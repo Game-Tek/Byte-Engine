@@ -1,5 +1,8 @@
 #include "NetSocket.h"
 
+#include <WinSock2.h>
+#pragma comment(lib, "wsock32.lib")
+
 NetSocket::NetSocket(const NetSocketCreateInfo& NSCI_)
 {
     WSADATA WsaData;
@@ -7,7 +10,7 @@ NetSocket::NetSocket(const NetSocketCreateInfo& NSCI_)
 
     handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-    sockaddr_in address;
+    sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(NSCI_.Port);

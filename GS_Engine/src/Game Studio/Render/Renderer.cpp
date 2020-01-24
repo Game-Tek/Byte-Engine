@@ -13,6 +13,8 @@
 #include "MaterialRenderResource.h"
 #include "Resources/TextureResource.h"
 
+#include "ScreenQuad.h"
+
 Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();

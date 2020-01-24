@@ -51,16 +51,16 @@ public:
 
 	GPUInfo GetGPUInfo() override;
 	
-	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) final override;
-	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) final override;
-	UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) final override;
-	Image* CreateImage(const ImageCreateInfo& _ICI) final override;
+	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;
+	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
+	UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) override;
+	Image* CreateImage(const ImageCreateInfo& _ICI) override;
 	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;
-	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) final override;
-	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) final override;
-	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) final override;
-	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) final override;
-	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) final override;
+	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) override;
+	RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) override;
+	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) override;
+	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) override;
+	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) override;
 
 	INLINE VKDevice& GetVKDevice() { return Device; }
 };

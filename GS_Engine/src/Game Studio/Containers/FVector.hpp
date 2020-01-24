@@ -5,7 +5,6 @@
 #include <cstring>
 #include <type_traits>
 #include <initializer_list>
-#include "Resources/Stream.h"
 #include "Pair.h"
 
 template <typename _T, typename _LT = size_t>

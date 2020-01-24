@@ -19,8 +19,8 @@ public:
 
 class GS_API VulkanImage final : public VulkanImageBase
 {
-	VkImage image;
-	VkDeviceMemory imageMemory;
+	VkImage image = nullptr;
+	VkDeviceMemory imageMemory = nullptr;
 
 public:
 	VulkanImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo);

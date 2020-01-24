@@ -10,8 +10,6 @@
 #include "Containers/FString.h"
 #include "Containers/Id.h"
 
-#include "Debug/Logger.h"
-
 class ResourceManager : public Object
 {
 	mutable std::unordered_map<Id::HashType, Resource*> ResourceMap;

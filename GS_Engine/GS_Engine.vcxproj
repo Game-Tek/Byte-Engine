@@ -163,7 +163,6 @@
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
-    <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\PointLight.h" />
     <ClInclude Include="src\Game Studio\Light.h" />
     <ClInclude Include="src\Game Studio\Containers\Id.h" />

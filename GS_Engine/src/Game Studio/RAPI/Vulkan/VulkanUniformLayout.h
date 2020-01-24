@@ -6,7 +6,6 @@
 
 #include "Native/VKDescriptorSetLayout.h"
 #include "Native/VKDescriptorPool.h"
-#include "Containers/DArray.hpp"
 #include "Native/VKDespcriptorSet.h"
 #include "Native/VKPipelineLayout.h"
 #include "Containers/FVector.hpp"

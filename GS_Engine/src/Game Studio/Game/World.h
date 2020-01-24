@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Core.h"
 #include "Object.h"
 
 #include "Containers/FVector.hpp"

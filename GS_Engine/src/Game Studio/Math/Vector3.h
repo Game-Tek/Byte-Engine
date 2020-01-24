@@ -1,11 +1,7 @@
 #pragma once
 
-#include "Core.h"
-
-#include "Object.h"
-
 //Used to specify a location in 3D space with floating point precision.
-class GS_API Vector3
+class Vector3
 {
 public:
 	//X component of this vector.

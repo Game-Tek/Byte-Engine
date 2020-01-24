@@ -1,7 +1,6 @@
 #pragma once
 
 #include "NetworkCore.h"
-#include "NetSocket.h"
 #include "Application/Clock.h"
 
 class NetConnection

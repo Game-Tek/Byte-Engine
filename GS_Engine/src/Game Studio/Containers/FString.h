@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "FVector.hpp"
+#include "Resources/Stream.h"
 
 class GS_API FString
 {

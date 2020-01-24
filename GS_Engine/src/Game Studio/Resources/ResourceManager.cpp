@@ -3,6 +3,7 @@
 #include <ostream>
 #include <fstream>
 #include "Core/FileSystem.h"
+#include "Debug/Logger.h"
 
 void ResourceManager::ReleaseResource(Resource* _Resource) const
 {

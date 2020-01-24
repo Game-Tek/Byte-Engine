@@ -2,7 +2,6 @@
 
 #include <vulkan/vulkan.h>
 
-
 #include <stdexcept>
 
 #ifdef GS_DEBUG

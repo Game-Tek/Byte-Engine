@@ -67,7 +67,7 @@ public:
 	VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
 	~VulkanRenderContext();
 
-	void OnResize(const ResizeInfo& _RI) final  override;
+	void OnResize(const ResizeInfo& _RI)  override;
 
 	void AcquireNextImage() override;
 	void Flush() override;

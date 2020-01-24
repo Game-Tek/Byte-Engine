@@ -2,8 +2,6 @@
 
 #include "NetworkCore.h"
 
-#include <WinSock2.h>
-#pragma comment(lib, "wsock32.lib")
 
 struct NetSocketCreateInfo
 {

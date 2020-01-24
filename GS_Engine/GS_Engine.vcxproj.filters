@@ -121,7 +121,6 @@
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\Octree.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
-    <ClInclude Include="src\Game Studio\Containers\HashMap.hpp" />
     <ClInclude Include="src\Game Studio\Containers\FString.h">
       <Filter>Misc</Filter>
     </ClInclude>

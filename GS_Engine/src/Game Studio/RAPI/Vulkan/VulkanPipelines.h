@@ -2,11 +2,9 @@
 
 #include "Core.h"
 
-#include "Utility/Extent.h"
 #include "Native/VKPipelineLayout.h"
 #include "Native/VKGraphicsPipeline.h"
 #include "Native/VKComputePipeline.h"
-#include "RAPI/RenderMesh.h"
 #include "RAPI/GraphicsPipeline.h"
 #include "RAPI/ComputePipeline.h"
 

@@ -20,6 +20,8 @@ public:
 	{
 	}
 
+	explicit Vector3(const class Rotator& rotator);
+	
 	Vector3(const Vector3& _Other) = default;
 
 	~Vector3() = default;
@@ -83,6 +85,11 @@ public:
 	Vector3 operator* (float _Other) const
 	{
 		return { X * _Other, Y * _Other, Z * _Other };
+	}
+
+	Vector3 operator* (const Vector3& _Other) const
+	{
+		return { X * _Other.X, Y * _Other.Y, Z * _Other.Z };
 	}
 
 	Vector3 & operator*= (float _Other)

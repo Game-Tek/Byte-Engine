@@ -7,6 +7,7 @@
 #include "Core.h"
 
 #include "Vector4.h"
+#include "Vector3.h"
 
 //Index increases in row order.
 
@@ -81,9 +82,12 @@ public:
 				   _Row3_Column0, _Row3_Column1, _Row3_Column2, _Row3_Column3 }
 	{
 	}
-
+	
 	~Matrix4() = default;
 
+	explicit Matrix4(const class Quaternion& quaternion);
+	explicit Matrix4(const class Rotator& rotator);
+	
 	/**
 	 * \brief Sets all of this matrices' components to represent an Identity matrix.\n
 	 *
@@ -217,6 +221,17 @@ public:
 		return Result;
 	}
 
+	Vector3 operator* (const Vector3& Other) const
+	{
+		Vector3 Result;
+	
+		Result.X = Array[0] * Other.X + Array[1] * Other.X + Array[2] * Other.X + Array[3] * Other.X;
+		Result.Y = Array[4] * Other.Y + Array[5] * Other.Y + Array[6] * Other.Y+ Array[7] * Other.Y;
+		Result.Z = Array[8] * Other.Z + Array[9] * Other.Z + Array[10] * Other.Z + Array[11] * Other.Z;
+	
+		return Result;
+	}
+	
 	Vector4 operator* (const Vector4& Other) const;
 	//{
 	//	Vector4 Result;

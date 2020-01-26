@@ -337,7 +337,7 @@ void Renderer::UpdateMatrices()
 	//Vector3 up = GSM::Cross(right, direction);
 	//
 	//GSM::Rotate(ViewMatrix, GSM::RotatorToQuaternion(Rotator(up.X, up.Y, up.Z)));/*camera_transform.Rotation*/
-	//GSM::Rotate(ViewMatrix, t);
+	GSM::Rotate(ViewMatrix, t);
 
 	//ViewMatrix *= GSM::NormalToRotation(Vector3(0, 0, 0));
 	

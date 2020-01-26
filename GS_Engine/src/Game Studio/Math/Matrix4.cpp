@@ -1,6 +1,65 @@
 #include "Matrix4.h"
 
 #include "SIMD/float4.h"
+#include "GSM.hpp"
+
+//CODE IS CORRECT
+Matrix4::Matrix4(const Quaternion& quaternion)
+{
+	const auto xx = quaternion.X * quaternion.X;
+	const auto xy = quaternion.X * quaternion.Y;
+	const auto xz = quaternion.X * quaternion.Z;
+	const auto xw = quaternion.X * quaternion.Q;
+	const auto yy = quaternion.Y * quaternion.Y;
+	const auto yz = quaternion.Y * quaternion.Z;
+	const auto yw = quaternion.Y * quaternion.Q;
+	const auto zz = quaternion.Z * quaternion.Z;
+	const auto zw = quaternion.Z * quaternion.Q;
+
+	Array[0] = 1 - 2 * (yy + zz);
+	Array[1] = 2 * (xy - zw);
+	Array[2] = 2 * (xz + yw);
+	Array[4] = 2 * (xy + zw);
+	Array[5] = 1 - 2 * (xx + zz);
+	Array[6] = 2 * (yz - xw);
+	Array[8] = 2 * (xz - yw);
+	Array[9] = 2 * (yz + xw);
+	Array[10] = 1 - 2 * (xx + yy);
+	Array[3] = Array[7] = Array[11] = Array[12] = Array[13] = Array[14] = 0;
+	Array[15] = 1;
+}
+
+
+//CODE IS CORRECT
+Matrix4::Matrix4(const Rotator& rotator) : Matrix4(1)
+{
+	float SP, SY, SR;
+	float CP, CY, CR;
+
+	GSM::SinCos(&SP, &CP, rotator.X);
+	GSM::SinCos(&SY, &CY, rotator.Y);
+	GSM::SinCos(&SR, &CR, rotator.Z);
+
+	Array[0] = CP * CY;
+	Array[1] = CP * SY;
+	Array[2] = SP;
+	Array[3] = 0.f;
+
+	Array[4] = SR * SP * CY - CR * SY;
+	Array[5] = SR * SP * SY + CR * CY;
+	Array[6] = -SR * CP;
+	Array[7] = 0.f;
+
+	Array[8] = -(CR * SP * CY + SR * SY);
+	Array[9] = CY * SR - CR * SP * SY;
+	Array[10] = CR * CP;
+	Array[11] = 0.f;
+
+	Array[12] = 0;
+	Array[13] = 0;
+	Array[14] = 0;
+	Array[15] = 1;
+}
 
 Vector4 Matrix4::operator*(const Vector4& Other) const
 {

@@ -27,6 +27,8 @@ public:
 	{
 	}
 
+	//explicit Rotator(const Vector3& vector);
+
 	Rotator operator+ (const Rotator & Other)
 	{
 		return { X + Other.X, Y + Other.Y, Z + Other.Z };

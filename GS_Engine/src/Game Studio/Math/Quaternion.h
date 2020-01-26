@@ -22,6 +22,8 @@ public:
 	{
 	}
 
+	explicit Quaternion(const class Rotator& rotator);
+	
 	~Quaternion() = default;
 
 	Quaternion operator+(const float Other) const

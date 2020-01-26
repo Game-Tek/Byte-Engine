@@ -1,6 +1,24 @@
 #include "Quaternion.h"
 
 #include "SIMD/float4.h"
+#include "GSM.hpp"
+
+//CODE IS CORRECT
+Quaternion::Quaternion(const Rotator& rotator)
+{
+	// Abbreviations for the various angular functions
+	auto cy = GSM::Cosine(rotator.Y * 0.5);
+	auto sy = GSM::Sine(rotator.Y * 0.5);
+	auto cp = GSM::Cosine(rotator.X * 0.5);
+	auto sp = GSM::Sine(rotator.X * 0.5);
+	auto cr = GSM::Cosine(rotator.Z * 0.5);
+	auto sr = GSM::Sine(rotator.Z * 0.5);
+
+	X = sy * cp * cr - cy * sp * sr;
+	Y = sy * cp * sr + cy * sp * cr;
+	Z = cy * cp * sr - sy * sp * cr;
+	Q = cy * cp * cr + sy * sp * sr;
+}
 
 Quaternion Quaternion::operator*(const Quaternion& other) const
 {

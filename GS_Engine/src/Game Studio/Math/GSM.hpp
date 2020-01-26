@@ -608,7 +608,7 @@ public:
 		//const double mix = res + (res - res1) * (res1 - res);
 		//return res;// Degrees > 0 ? res : -res;
 
-		return sin(Degrees);
+		return sin(DegreesToRadians(Degrees));
 
 		//if (Modulo(abs, 360.0f) > 180.0f)
 		//{
@@ -621,10 +621,10 @@ public:
 	}
 
 	//Returns the cosine of an angle.
-	INLINE static float Cosine(const float Degrees)
+	INLINE static double Cosine(const float Degrees)
 	{
 		//return Sine(Degrees + 90.0f);
-		return cos(Degrees);
+		return cos(DegreesToRadians(Degrees));
 	}
 
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
@@ -1134,15 +1134,6 @@ public:
 
 		return;
 	}
-	
-	INLINE static void Rotate(Matrix4 & A, const Vector3 & Q)
-	{
-		const auto rotation = Rotation(Q);
-
-		A *= rotation;
-
-		return;
-	}
 
 	INLINE static Vector3 SphericalCoordinatesToCartesianCoordinates(const Vector2& sphericalCoordinates)
 	{
@@ -1163,12 +1154,12 @@ public:
 	INLINE static Quaternion RotatorToQuaternion(const Rotator& rotator)
 	{
 		// Abbreviations for the various angular functions
-		double cy = cos(DegreesToRadians(rotator.Y * 0.5));
-		double sy = sin(DegreesToRadians(rotator.Y * 0.5));
-		double cp = cos(DegreesToRadians(rotator.X * 0.5));
-		double sp = sin(DegreesToRadians(rotator.X * 0.5));
-		double cr = cos(DegreesToRadians(rotator.Z * 0.5));
-		double sr = sin(DegreesToRadians(rotator.Z * 0.5));
+		double cy = Cosine(rotator.Y * 0.5);
+		double sy = Sine(rotator.Y * 0.5);
+		double cp = Cosine(rotator.X * 0.5);
+		double sp = Sine(rotator.X * 0.5);
+		double cr = Cosine(rotator.Z * 0.5);
+		double sr = Sine(rotator.Z * 0.5);
 
 		Quaternion q;
 		q.X = sy * cp * sr + cy * sp * cr;
@@ -1212,8 +1203,8 @@ public:
 	{
 		Matrix4 result(1);
 
-		float c = cosf(DegreesToRadians(angle));    // cosine
-		float s = sinf(DegreesToRadians(angle));    // sine
+		float c = Cosine(angle);    // cosine
+		float s = Sine(angle);    // sine
 		float xx = A.X * A.X;
 		float xy = A.X * A.Y;
 		float xz = A.X * A.Z;
@@ -1239,34 +1230,6 @@ public:
 		m[13] = 0;
 		m[14] = 0;
 		m[15] = 1;
-
-		return result;
-	}
-	
-	INLINE static Matrix4 Rotation(const Vector3& A)
-	{
-		Matrix4 result(1);
-
-		float c = cosf(DegreesToRadians(0));    // cosine
-		float s = sinf(DegreesToRadians(0));    // sine
-		float xx = A.X * A.X;
-		float xy = A.X * A.Y;
-		float xz = A.X * A.Z;
-		float yy = A.Y * A.Y;
-		float yz = A.Y * A.Z;
-		float zz = A.Z * A.Z;
-
-		result[0] = xx * (1 - c) + c;
-		result[1] = xy * (1 - c) - A.Z * s;
-		result[2] = xz * (1 - c) + A.Y * s;
-		result[3] = 0;
-		result[4] = xy * (1 - c) + A.Z * s;
-		result[5] = yy * (1 - c) + c;
-		result[6] = yz * (1 - c) - A.X * s;
-		result[7] = 0;
-		result[8] = xz * (1 - c) - A.Y * s;
-		result[9] = yz * (1 - c) + A.X * s;
-		result[10] = zz * (1 - c) + c;
 
 		return result;
 	}
@@ -1455,5 +1418,11 @@ public:
 		}
 
 		return ClosestPoint;
+	}
+
+	INLINE static void SinCos(float* sp, float* cp, float degrees)
+	{
+		*sp = Sine(degrees);
+		*cp = Cosine(degrees);
 	}
 };

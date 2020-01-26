@@ -600,6 +600,12 @@ public:
 	}
 
 	//Returns the sine of an angle.
+	INLINE static float Sine(const float Degrees)
+	{
+		return sinf(DegreesToRadians(Degrees));
+	}
+
+	//Returns the sine of an angle.
 	INLINE static double Sine(const double Degrees)
 	{
 		//const double c = Degrees / 180;
@@ -621,7 +627,14 @@ public:
 	}
 
 	//Returns the cosine of an angle.
-	INLINE static double Cosine(const float Degrees)
+	INLINE static float Cosine(const float Degrees)
+	{
+		//return Sine(Degrees + 90.0f);
+		return cosf(DegreesToRadians(Degrees));
+	}
+
+	//Returns the cosine of an angle.
+	INLINE static double Cosine(const double Degrees)
 	{
 		//return Sine(Degrees + 90.0f);
 		return cos(DegreesToRadians(Degrees));
@@ -630,57 +643,86 @@ public:
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
 	INLINE static float Tangent(const float Degrees)
 	{
-		if (Degrees > 0.0f)
-		{
-			return Tan(Degrees);
-		}
-		else
-		{
-			return -Tan(Abs(Degrees));
-		}
+		//if (Degrees > 0.0f)
+		//{
+		//	return Tan(Degrees);
+		//}
+		//else
+		//{
+		//	return -Tan(Abs(Degrees));
+		//}
+		//
+
+		return tanf(DegreesToRadians(DegreesToRadians(Degrees)));
+	}
+
+	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
+	INLINE static double Tangent(const double Degrees)
+	{
+		//if (Degrees > 0.0f)
+		//{
+		//	return Tan(Degrees);
+		//}
+		//else
+		//{
+		//	return -Tan(Abs(Degrees));
+		//}
+		//
+
+		return tan(DegreesToRadians(DegreesToRadians(Degrees)));
 	}
 
 	//Returns the ArcSine. INPUT DEGREES MUST BE BETWEEN 0 AND 1.
 	INLINE static float ArcSine(const float A)
 	{
-		if (A > 0.0f)
-		{
-			return ASin(A);
-		}
-		else
-		{
-			return -ASin(Abs(A));
-		}
+		//if (A > 0.0f)
+		//{
+		//	return ASin(A);
+		//}
+		//else
+		//{
+		//	return -ASin(Abs(A));
+		//}
+		//
+
+		return RadiansToDegrees(asin(A));
 	}
 
 	INLINE static float ArcCosine(const float A)
 	{
-		if (A > 0.0f)
-		{
-			return 90.0f - ASin(1.0f - A);
-		}
-		else
-		{
-			return 90.0f + ASin(Abs(A));
-		}
+		//if (A > 0.0f)
+		//{
+		//	return 90.0f - ASin(1.0f - A);
+		//}
+		//else
+		//{
+		//	return 90.0f + ASin(Abs(A));
+		//}
+		//
+		return RadiansToDegrees(acos(A));
 	}
 
 	//Returns the arctangent of the number. INPUT DEGREES MUST BE BETWEEN 0 AND 12.
 	INLINE static float ArcTangent(const float A)
 	{
-		if (A > 0.0f)
-		{
-			return ATan(A);
-		}
-		else
-		{
-			return -ATan(Abs(A));
-		}
+		//if (A > 0.0f)
+		//{
+		//	return ATan(A);
+		//}
+		//else
+		//{
+		//	return -ATan(Abs(A));
+		//}
+		//
+
+		return atan(A);
 	}
 
 	INLINE static float ArcTan2(const float X, const float Y)
 	{
-		return ArcTangent(Y / X);
+		//return ArcTangent(Y / X);
+
+		return RadiansToDegrees(atan2(Y, X));
 	}
 
 	INLINE static real Power(const real _A, const real Times)

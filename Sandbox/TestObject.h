@@ -35,7 +35,8 @@ public:
 
 		auto a = Matrix4(Rotator(40, 0, 0));
 		auto b = Quaternion(Rotator(40, 0, 0));
-		auto c = Vector3(Rotator(45, 45, 0));
+		auto c = Vector3(Rotator(32, 0, 0));
+		auto d = Rotator(c);
 	}
 
 	~TestObject()

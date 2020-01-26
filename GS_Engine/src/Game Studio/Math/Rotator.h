@@ -27,7 +27,7 @@ public:
 	{
 	}
 
-	//explicit Rotator(const Vector3& vector);
+	explicit Rotator(const class Vector3& vector);
 
 	Rotator operator+ (const Rotator & Other)
 	{

@@ -48,4 +48,12 @@ public:
 	{
 		return { X / Other, Y / Other, Z / Other };
 	}
+
+	Rotator& operator+=(const Rotator& rotator)
+	{
+		X += rotator.X;
+		Y += rotator.Y;
+		Z += rotator.Z;
+		return *this;
+	}
 };

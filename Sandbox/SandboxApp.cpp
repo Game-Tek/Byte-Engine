@@ -76,7 +76,7 @@ void main()
 })");
 
 		//material_data.TextureNames.resize(1);
-		material_data.TextureNames.emplace_back(FString("hydrant_Albedo"));
+		material_data.TextureNames.emplace_back("hydrant_Albedo");
 		material_data.IsTwoSided = false;
 		
 		ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", material_data);

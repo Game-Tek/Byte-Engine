@@ -653,7 +653,7 @@ public:
 		//}
 		//
 
-		return tanf(DegreesToRadians(DegreesToRadians(Degrees)));
+		return tanf(DegreesToRadians(Degrees));
 	}
 
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
@@ -669,7 +669,7 @@ public:
 		//}
 		//
 
-		return tan(DegreesToRadians(DegreesToRadians(Degrees)));
+		return tan(DegreesToRadians(Degrees));
 	}
 
 	//Returns the ArcSine. INPUT DEGREES MUST BE BETWEEN 0 AND 1.
@@ -715,7 +715,7 @@ public:
 		//}
 		//
 
-		return atan(A);
+		return RadiansToDegrees(atan(A));
 	}
 
 	INLINE static float ArcTan2(const float X, const float Y)

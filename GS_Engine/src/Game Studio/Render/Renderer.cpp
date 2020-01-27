@@ -318,11 +318,11 @@ void Renderer::UpdateMatrices()
 	
 	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
 
-	//ViewMatrix(0, 3) = -CamPos.X;
-	//ViewMatrix(1, 3) = -CamPos.Y;
-	//ViewMatrix(2, 3) = CamPos.Z;
+	ViewMatrix(0, 3) = -CamPos.X;
+	ViewMatrix(1, 3) = -CamPos.Y;
+	ViewMatrix(2, 3) = CamPos.Z;
 
-	ViewMatrix.MakeIdentity();
+	//ViewMatrix.MakeIdentity();
 	
 	Transform3 camera_transform;
 	camera_transform.Position.X = -CamPos.X;
@@ -337,11 +337,11 @@ void Renderer::UpdateMatrices()
 	//Vector3 up = GSM::Cross(right, direction);
 	//
 	//GSM::Rotate(ViewMatrix, GSM::RotatorToQuaternion(Rotator(up.X, up.Y, up.Z)));/*camera_transform.Rotation*/
-	GSM::Rotate(ViewMatrix, t);
+	//GSM::Rotate(ViewMatrix, t);
 
 	//ViewMatrix *= GSM::NormalToRotation(Vector3(0, 0, 0));
 	
-	GSM::Translate(ViewMatrix, camera_transform.Position);
+	//GSM::Translate(ViewMatrix, camera_transform.Position);
 
 	auto& nfp = GetActiveCamera()->GetNearFarPair();
 	

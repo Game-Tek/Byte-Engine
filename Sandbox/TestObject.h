@@ -10,6 +10,7 @@
 #include <Game Studio/Render/Material.h>
 #include "Render/StaticMeshRenderComponent.h"
 #include "Math/GSM.hpp"
+#include "Debug/Logger.h"
 
 class TestObject : public WorldObject
 {
@@ -18,6 +19,7 @@ class TestObject : public WorldObject
 	StaticMeshRenderComponent* MeshRender = nullptr;
 	Material* MyMaterial = nullptr;
 	Camera MyCamera;
+	Rotator accumRotation;
 
 public:
 	TestObject() : MyStaticMesh("hydrant"), MyTexture("Logo_Game-Tek")
@@ -33,11 +35,6 @@ public:
 		MyCamera.SetPosition(Vector3(0, 50, -250));
 		GetWorld()->GetScene().SetCamera(&MyCamera);
 
-		auto a = Matrix4(Rotator(40, 0, 0));
-		auto b = Quaternion(Rotator(40, 0, 0));
-		auto c = Vector3(Rotator(-127, 69, 0));
-		auto d = Rotator(c);
-		//auto d = Rotator(Vector3(-0.44, 0.5, -0.75));
 	}
 
 	~TestObject()
@@ -47,8 +44,10 @@ public:
 	void OnUpdate() override
 	{
 		auto i_m = GS::Application::Get()->GetInputManager();
-		
-		auto rot = Rotator(i_m.GetMouseOffset().Y * 0.5, i_m.GetMouseOffset().X * 0.5, 0);
+		//
+		//accumRotation += Rotator(i_m.GetMouseOffset().Y, i_m.GetMouseOffset().X, 0);
+		//
+		//auto totrot = Rotator(i_m.GetMouseState().MousePosition.Y, i_m.GetMouseState().MousePosition.X, 0);
 		
 		Vector3 pos;
 		pos.X += i_m.GetKeyState(KeyboardKeys::D) ? 0.5 : 0;
@@ -58,14 +57,15 @@ public:
 		pos.Z += i_m.GetKeyState(KeyboardKeys::W) ? 0.5 : 0;
 		pos.Z -= i_m.GetKeyState(KeyboardKeys::S) ? 0.5 : 0;
 		
-		MyCamera.GetTransform().Position += Matrix4(rot) * pos;
+		//auto t = Vector3(totrot) * pos;
+		//MyCamera.GetTransform().Position += pos;
 
 
 		//MyCamera.GetTransform().Rotation = GSM::RotatorToQuaternion(rot) * MyCamera.GetTransform().Rotation;
 		//MyCamera.GetTransform().Rotation *= corrected;
 		//MyCamera.GetTransform().Rotation *= Quaternion(0, 1, 0, 0);
 
-		MyCamera.GetFOV() -= i_m.GetMouseState().MouseWheelMove;
+		//MyCamera.GetFOV() -= i_m.GetMouseState().MouseWheelMove;
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "TestObject"; }

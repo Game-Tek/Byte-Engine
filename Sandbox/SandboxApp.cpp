@@ -8,7 +8,7 @@
 #include "Game Studio/Math/GSM.hpp"
 #include <Game Studio/Resources/Stream.h>
 #include <Game Studio/Resources/MaterialResource.h>
-#include "Game Studio/Core/FileSystem.h"
+#include "Game Studio/Core/System.h"
 
 class Framebuffer;
 

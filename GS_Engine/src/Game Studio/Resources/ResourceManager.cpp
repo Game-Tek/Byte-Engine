@@ -2,7 +2,7 @@
 
 #include <ostream>
 #include <fstream>
-#include "Core/FileSystem.h"
+#include "Core/System.h"
 #include "Debug/Logger.h"
 
 void ResourceManager::ReleaseResource(Resource* _Resource) const
@@ -17,7 +17,7 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 
 void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_)
 {
-	auto full_path = FileSystem::GetRunningPath() + "resources/" + fileName;
+	auto full_path = System::GetRunningPath() + "resources/" + fileName;
 
 	std::ofstream Outfile(full_path.c_str(), std::ios::out | std::ios::binary);
 
@@ -37,7 +37,7 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 
 void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Resource)
 {
-	const auto FullPath = FileSystem::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->getResourceTypeExtension();
+	const auto FullPath = System::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->getResourceTypeExtension();
 	LoadResourceData load_resource_data;
 	load_resource_data.Caller = this;
 	load_resource_data.FullPath = FullPath;

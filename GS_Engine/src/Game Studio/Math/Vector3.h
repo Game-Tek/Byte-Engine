@@ -101,6 +101,8 @@ public:
 		return *this;
 	}
 
+	Vector3& operator*= (const class Quaternion& quaternion);
+
 	Vector3 operator/ (float _Other) const
 	{
 		return { X / _Other, Y / _Other, Z / _Other };

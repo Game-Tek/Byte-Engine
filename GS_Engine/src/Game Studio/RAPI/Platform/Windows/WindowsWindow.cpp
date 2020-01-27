@@ -64,8 +64,8 @@ void WindowsWindow::Update()
 	{
 		double X, Y;
 		glfwGetCursorPos(GLFWWindow, &X, &Y);
-		WindowMouseState.MousePosition.X = SCAST(float, X);
-		WindowMouseState.MousePosition.Y = SCAST(float, Y);
+		WindowMouseState.MousePosition.X = SCAST(float, (X - Extent.Width / 2) / Extent.Width * 2);
+		WindowMouseState.MousePosition.Y = SCAST(float, (Y - Extent.Height / 2) / Extent.Height * -2);
 
 		WindowMouseState.MouseWheelMove = ScrollValue;
 	}

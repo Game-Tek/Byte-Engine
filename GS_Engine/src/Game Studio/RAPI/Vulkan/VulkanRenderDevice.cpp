@@ -8,9 +8,7 @@
 #include "VulkanMesh.h"
 #include "VulkanImage.h"
 #include "VulkanUniformBuffer.h"
-#include "VulkanBindings.h"
 #include "VulkanTexture.h"
-#include "Debug/Logger.h"
 
 VKCommandPoolCreator VulkanRenderDevice::CreateCommandPool()
 {

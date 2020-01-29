@@ -310,8 +310,7 @@ void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 {
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE,
-	                  SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetHandle());
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, static_cast<VulkanComputePipeline*>(_CP)->GetVkPipeline());
 }
 
 void VulkanRenderContext::DrawIndexed(const DrawInfo& _DrawInfo)

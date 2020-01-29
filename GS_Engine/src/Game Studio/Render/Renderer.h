@@ -17,6 +17,7 @@
 #include <map>
 #include "RenderableInstructions.h"
 #include "Containers/Id.h"
+#include "RAPI/Bindings.h"
 
 class StaticMeshResource;
 class RenderProxy;
@@ -63,22 +64,13 @@ protected:
 	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
 	/* ---- RAPI Resources ---- */
-	// MATERIALS
 	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
 	FVector<class MaterialRenderResource*> materialRenderResources;
-	// MATERIALS
-
-	// MESHES
 	std::map<StaticMesh*, MeshRenderResource*> Meshes;
-	// MESHES
-
-	//VectorMap<RenderComponent*, RenderableInstructions> ComponentToInstructionsMap;
-
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
+	std::map<GS_HASH_TYPE, Pair<BindingsPool*, BindingsSet*>> bindings;
 
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
-
-	/* ---- RAPI Resources ---- */
 
 	//Pointer to the active camera.
 	mutable Camera* ActiveCamera = nullptr;

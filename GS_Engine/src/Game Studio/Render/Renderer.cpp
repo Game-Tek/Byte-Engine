@@ -270,7 +270,6 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 		uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
 		uniform_set.ArrayLength = 1;
 		uniform_layout_update_info.LayoutBindings.push_back(uniform_set);
-		UL->UpdateBindingSet(uniform_layout_update_info);
 
 		material_render_resource_create_info.textures.push_back(texture);
 	}

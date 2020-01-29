@@ -32,14 +32,6 @@ struct BindingSetUpdateInfo : RenderInfo
 	uint8 DestinationSet = 0;
 };
 
-class BindingLayout
-{
-public:
-	virtual ~BindingLayout() = default;
-
-	virtual void UpdateBindingSet(const BindingSetUpdateInfo& _ULUI) = 0;
-};
-
 
 struct BindingsPoolCreateInfo : RenderInfo
 {
@@ -80,5 +72,6 @@ class BindingsSet
 {
 public:
 	virtual ~BindingsSet() = default;
+	
 	virtual void Update(const BindingSetUpdateInfo& uniformLayoutUpdateInfo) = 0;
 };

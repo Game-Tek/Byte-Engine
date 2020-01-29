@@ -32,11 +32,11 @@ public:
 
 class VulkanComputePipeline final : public ComputePipeline
 {
-	VKComputePipeline ComputePipeline;
+	VkPipeline vkPipeline = nullptr;
 
 public:
-	VulkanComputePipeline(VKDevice* _Device);
+	explicit VulkanComputePipeline(VKDevice* _Device);
 	~VulkanComputePipeline() = default;
 
-	INLINE const VKComputePipeline& GetVk_ComputePipeline() const { return ComputePipeline; }
+	[[nodiscard]] VkPipeline GetVkPipeline() const { return vkPipeline; }
 };

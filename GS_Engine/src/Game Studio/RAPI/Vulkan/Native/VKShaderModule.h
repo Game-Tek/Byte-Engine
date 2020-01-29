@@ -12,7 +12,7 @@ struct VkShaderModuleCreateInfo;
 
 struct GS_API VKShaderModuleCreator final : public VKObjectCreator<VkShaderModule>
 {
-	VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo * _VkSMCI);
+	VKShaderModuleCreator(VKDevice* _Device, const VkShaderModuleCreateInfo* _VkSMCI);
 };
 
 class GS_API VKShaderModule final : public VKObject<VkShaderModule>

@@ -18,7 +18,7 @@ namespace GS
 	{
 		const char* ApplicationName = nullptr;
 	};
-	
+
 	class GS_API Application : public Object
 	{
 		static Application* ApplicationInstance;
@@ -65,5 +65,5 @@ namespace GS
 		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
 	};
 
-	Application * CreateApplication();
+	Application* CreateApplication();
 }

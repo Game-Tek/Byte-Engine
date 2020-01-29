@@ -10,17 +10,17 @@ struct HitData
 	 * false = there was no collision.
 	 */
 	bool WasHit = false;
-	
+
 	/**
 	 * \brief Defines the position (in world space) of the hit.
 	 */
 	Vector3 HitPosition;
-	
+
 	/**
 	 * \brief Defines the normal (in world space) of the hit.
 	 */
 	Vector3 HitNormal;
-	
+
 	/**
 	 * \brief Defines the penetration distance of the two colliding bodies. This is along the HitNormal.
 	 */

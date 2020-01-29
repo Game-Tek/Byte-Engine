@@ -11,7 +11,7 @@ struct VkImageCreateInfo;
 
 struct GS_API VKImageCreator final : VKObjectCreator<VkImage>
 {
-	VKImageCreator(VKDevice* _Device, const VkImageCreateInfo * _VkICI);
+	VKImageCreator(VKDevice* _Device, const VkImageCreateInfo* _VkICI);
 };
 
 

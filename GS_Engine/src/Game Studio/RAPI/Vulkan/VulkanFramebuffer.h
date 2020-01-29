@@ -21,7 +21,7 @@ class GS_API VulkanFramebuffer final : public Framebuffer
 {
 	FVector<VkClearValue> clearValues;
 	VkFramebuffer framebuffer;
-	
+
 public:
 	VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& framebufferCreateInfo);
 	~VulkanFramebuffer() = default;

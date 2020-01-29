@@ -14,10 +14,11 @@ VkPhysicalDeviceMemoryProperties MemoryProperties = {};
 
 VKDevice::VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD)
 {
-	VkPhysicalDeviceFeatures deviceFeatures = {};	//COME BACK TO
+	VkPhysicalDeviceFeatures deviceFeatures = {}; //COME BACK TO
 	deviceFeatures.samplerAnisotropy = VK_TRUE;
+	deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 
-	const char* DeviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+	const char* DeviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 	QueueInfo GraphicsQueueInfo;
 	QueueInfo ComputeQueueInfo;
@@ -30,11 +31,11 @@ VKDevice::VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD)
 	TransferQueueInfo.QueueFlag = VK_QUEUE_TRANSFER_BIT;
 	TransferQueueInfo.QueuePriority = 1.0f;
 
-	QueueInfo QueueInfos[] = { GraphicsQueueInfo, ComputeQueueInfo, TransferQueueInfo };
+	QueueInfo QueueInfos[] = {GraphicsQueueInfo, ComputeQueueInfo, TransferQueueInfo};
 
 	FVector<VkDeviceQueueCreateInfo> QueueCreateInfos = CreateQueueInfos(QueueInfos, 3, _PD);
 
-	VkDeviceCreateInfo DeviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+	VkDeviceCreateInfo DeviceCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
 	DeviceCreateInfo.queueCreateInfoCount = QueueCreateInfos.getLength();
 	DeviceCreateInfo.pQueueCreateInfos = QueueCreateInfos.getData();
 	DeviceCreateInfo.enabledExtensionCount = 1;
@@ -43,7 +44,7 @@ VKDevice::VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD)
 
 	GS_VK_CHECK(vkCreateDevice(_PD, &DeviceCreateInfo, ALLOCATOR, &Device), "Failed to create Device!");
 
-	vkQueue* Queues[] = { &GraphicsQueue, &ComputeQueue, &TransferQueue };
+	vkQueue* Queues[] = {&GraphicsQueue, &ComputeQueue, &TransferQueue};
 
 	SetVk_Queues(Queues, QueueCreateInfos);
 
@@ -67,10 +68,12 @@ void VKDevice::SetVk_Queues(vkQueue* _Queue[], const FVector<VkDeviceQueueCreate
 	}
 }
 
-FVector<VkDeviceQueueCreateInfo> VKDevice::CreateQueueInfos(QueueInfo* _QI, uint8 _QueueCount, const vkPhysicalDevice& _PD)
+FVector<VkDeviceQueueCreateInfo> VKDevice::CreateQueueInfos(QueueInfo* _QI, uint8 _QueueCount,
+                                                            const vkPhysicalDevice& _PD)
 {
 	uint32_t QueueFamiliesCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, VK_NULL_HANDLE);	//Get the amount of queue families there are in the physical device.
+	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, VK_NULL_HANDLE);
+	//Get the amount of queue families there are in the physical device.
 	FVector<VkQueueFamilyProperties> QueueFamilies(QueueFamiliesCount);
 	vkGetPhysicalDeviceQueueFamilyProperties(_PD, &QueueFamiliesCount, QueueFamilies.getData());
 

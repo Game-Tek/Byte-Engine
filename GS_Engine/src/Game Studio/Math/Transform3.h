@@ -15,7 +15,8 @@ struct GS_API Transform3
 
 	Transform3() = default;
 
-	Transform3(const Vector3 & _Pos, const Quaternion & rotator, const Vector3 & _Scale) : Position(_Pos), Rotation(rotator), Scale(_Scale)
+	Transform3(const Vector3& _Pos, const Quaternion& rotator, const Vector3& _Scale) : Position(_Pos),
+	                                                                                    Rotation(rotator), Scale(_Scale)
 	{
 	}
 

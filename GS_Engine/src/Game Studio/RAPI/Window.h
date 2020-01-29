@@ -14,7 +14,9 @@
 
 enum class WindowFit : uint8
 {
-	NORMAL, MAXIMIZED, FULLSCREEN
+	NORMAL,
+	MAXIMIZED,
+	FULLSCREEN
 };
 
 struct WindowIconInfo
@@ -53,7 +55,9 @@ public:
 	{
 	}
 
-	virtual ~Window() {};
+	virtual ~Window()
+	{
+	};
 
 	static Window* CreateWindow(const WindowCreateInfo& _WCI);
 
@@ -74,7 +78,7 @@ public:
 	[[nodiscard]] const Extent2D& GetWindowExtent() const { return Extent; }
 	[[nodiscard]] const MouseState& GetMouseState() const { return WindowMouseState; }
 	[[nodiscard]] uint8 GetJoystickCount() const { return JoystickCount; }
-	[[nodiscard]] const Array<JoystickState, 4> & GetJoystickStates() const { return JoystickStates; }
+	[[nodiscard]] const Array<JoystickState, 4>& GetJoystickStates() const { return JoystickStates; }
 	[[nodiscard]] const Array<bool, MAX_KEYBOARD_KEYS>& GetKeyboardKeys() const { return Keys; }
 
 	INLINE bool GetShouldClose() const { return ShouldClose; }

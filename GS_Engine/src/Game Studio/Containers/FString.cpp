@@ -7,7 +7,7 @@
 OutStream& operator<<(OutStream& _Archive, FString& _String)
 {
 	_Archive << _String.Data;
-	
+
 	return _Archive;
 }
 
@@ -68,7 +68,7 @@ FString FString::operator+(const FString& _Other) const
 	return result;
 }
 
-bool FString::operator==(const FString & _Other) const
+bool FString::operator==(const FString& _Other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
 	if (Data.getLength() != _Other.Data.getLength()) return false;
@@ -102,17 +102,17 @@ bool FString::NonSensitiveComp(const FString& _Other) const
 
 void FString::Append(const char* _In)
 {
-	Data.pop_back();											//Get rid of null terminator.
-	Data.push_back(' ');									//Push space.
+	Data.pop_back(); //Get rid of null terminator.
+	Data.push_back(' '); //Push space.
 	Data.push_back(StringLength(_In), const_cast<char*>(_In));
 	return;
 }
 
 void FString::Append(const FString& _In)
 {
-	Data.pop_back();			//Get rid of null terminator.
-	Data.push_back(' ');	//Push space.
-	Data.push_back(_In.Data);	//Push new string.
+	Data.pop_back(); //Get rid of null terminator.
+	Data.push_back(' '); //Push space.
+	Data.push_back(_In.Data); //Push new string.
 	return;
 }
 
@@ -149,11 +149,11 @@ void FString::ReplaceAll(char a, char with)
 	}
 }
 
-constexpr size_t FString::StringLength(const char * In)
+constexpr size_t FString::StringLength(const char* In)
 {
 	size_t Length = 0;
 
-	while(In[Length] != '\0')
+	while (In[Length] != '\0')
 	{
 		Length++;
 	}
@@ -170,13 +170,14 @@ FString FString::MakeString(const char* _Text, ...)
 
 	va_list vaargs;
 	va_start(vaargs, _Text);
-	const auto Count = snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs) + 1; //Take into account null terminator.
-	if(Count > Return.Data.getLength())
-    {
-        Return.Data.resize(Count);
+	const auto Count = snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs) + 1;
+	//Take into account null terminator.
+	if (Count > Return.Data.getLength())
+	{
+		Return.Data.resize(Count);
 
-        snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs);
-    }
+		snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs);
+	}
 	va_end(vaargs);
 
 	return Return;

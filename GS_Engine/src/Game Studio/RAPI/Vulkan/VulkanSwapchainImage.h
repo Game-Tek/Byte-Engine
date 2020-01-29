@@ -12,4 +12,3 @@ public:
 	VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo, VkImage image);
 	~VulkanSwapchainImage() = default;
 };
-

@@ -29,13 +29,13 @@ void MaterialResource::MaterialData::Write(OutStream& OutStream_)
 
 bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 {
-	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in);	//Open file as binary
+	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in); //Open file as binary
 
-	if(Input.is_open())	//If file is valid
+	if (Input.is_open()) //If file is valid
 	{
-		Input.seekg(0, std::ios::end);	//Search for end
-		uint64 FileLength = Input.tellg();		//Get file length
-		Input.seekg(0, std::ios::beg);	//Move file pointer back to beginning
+		Input.seekg(0, std::ios::end); //Search for end
+		uint64 FileLength = Input.tellg(); //Get file length
+		Input.seekg(0, std::ios::beg); //Move file pointer back to beginning
 
 		InStream in_archive(&Input);
 
@@ -43,9 +43,9 @@ bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 
 		in_archive >> data.VertexShaderCode;
 		in_archive >> data.FragmentShaderCode;
-		
+
 		in_archive >> data.TextureNames;
-		
+
 		for (auto& element : data.TextureNames)
 		{
 			LRD_.Caller->GetResource<TextureResource>(element);

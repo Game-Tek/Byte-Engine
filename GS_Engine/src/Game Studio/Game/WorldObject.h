@@ -22,7 +22,7 @@ public:
 
 	void SetID(WorldObjectID _ID) { ID = _ID; }
 
-	[[nodiscard]] WorldObjectID GetID() const { return ID;}
+	[[nodiscard]] WorldObjectID GetID() const { return ID; }
 
 	void SetTransform(const Transform3& _NewTransform) { Transform = _NewTransform; }
 	[[nodiscard]] Transform3& GetTransform() { return Transform; }

@@ -7,7 +7,6 @@ World::World() : WorldObjects(10)
 }
 
 
-
 World::~World()
 {
 	for (auto& WOBJECT : WorldObjects)
@@ -31,4 +30,7 @@ void World::OnUpdate()
 
 double World::GetRealRunningTime() { return GS::Application::Get()->GetClock().GetElapsedTime(); }
 
-float World::GetWorldDeltaTime() const { return GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier; }
+float World::GetWorldDeltaTime() const
+{
+	return GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier;
+}

@@ -10,13 +10,13 @@ struct GS_API Extent2D
 	{
 	}
 
-	uint16 Width	= 0;
-	uint16 Height	= 0;
+	uint16 Width = 0;
+	uint16 Height = 0;
 };
 
 struct GS_API Extent3D
 {
-	uint16 Width	= 0;
-	uint16 Height	= 0;
-	uint16 Depth	= 0;
+	uint16 Width = 0;
+	uint16 Height = 0;
+	uint16 Depth = 0;
 };

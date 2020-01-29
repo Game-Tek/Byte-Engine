@@ -13,8 +13,9 @@ WindowsAudioDevice::WindowsAudioDevice()
 	const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
 	const IID IID_IAudioClient = __uuidof(IAudioClient);
 	const IID IID_IAudioRenderClient = __uuidof(IAudioRenderClient);
-	
-	HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, reinterpret_cast<void**>(&enumerator));
+
+	HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,
+	                              reinterpret_cast<void**>(&enumerator));
 
 	//IMMDeviceCollection* audio_endpoints = nullptr;
 	//enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &audio_endpoints);
@@ -28,7 +29,7 @@ WindowsAudioDevice::WindowsAudioDevice()
 	audioClient->GetService(IID_IAudioRenderClient, reinterpret_cast<void**>(&renderClient));
 
 	audioClient->GetBufferSize(&bufferFrameCount);
-	
+
 	renderClient->GetBuffer(bufferFrameCount, reinterpret_cast<BYTE**>(&data));
 }
 
@@ -50,7 +51,7 @@ void WindowsAudioDevice::GetAvailableBufferSize(uint64* available_buffer_size_)
 {
 	UINT32 numFramesPadding = 0;
 	audioClient->GetCurrentPadding(&numFramesPadding);
-	
+
 	*available_buffer_size_ = bufferFrameCount - numFramesPadding;
 }
 

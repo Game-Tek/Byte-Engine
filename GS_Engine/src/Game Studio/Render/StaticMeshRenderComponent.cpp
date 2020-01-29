@@ -5,7 +5,12 @@
 #include "Renderer.h"
 #include "MeshRenderResource.h"
 
-RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = { decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(), decltype(RenderableInstructions::BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>(), decltype(RenderableInstructions::BindTypeResources)::Create<&BindTypeResources>(), decltype(RenderableInstructions::DrawInstance)::Create<&DrawInstance>() };
+RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = {
+	decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(),
+	decltype(RenderableInstructions::BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>(),
+	decltype(RenderableInstructions::BindTypeResources)::Create<&BindTypeResources>(),
+	decltype(RenderableInstructions::DrawInstance)::Create<&DrawInstance>()
+};
 
 void StaticMeshRenderComponent::CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI)
 {

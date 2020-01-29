@@ -12,20 +12,25 @@ class VKRenderPass;
 class RenderPass;
 
 MAKE_VK_HANDLE(VkPipelineLayout)
+MAKE_VK_HANDLE(VkPipeline)
 
-class GS_API VulkanGraphicsPipeline final : public GraphicsPipeline
+class VulkanGraphicsPipeline final : public GraphicsPipeline
 {
-	VKGraphicsPipeline Pipeline;
+	VkPipelineLayout vkPipelineLayout = nullptr;
+	VkPipeline vkPipeline = nullptr;
 
-	static VKGraphicsPipelineCreator CreateVk_GraphicsPipelineCreator(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI, VkPipeline _OldPipeline = VK_NULL_HANDLE);
+	static VKGraphicsPipelineCreator CreateVk_GraphicsPipelineCreator(VKDevice* _Device,
+	                                                                  const GraphicsPipelineCreateInfo& _GPCI,
+	                                                                  VkPipeline _OldPipeline = VK_NULL_HANDLE);
 public:
-	VulkanGraphicsPipeline(VKDevice* _Device, const GraphicsPipelineCreateInfo& _GPCI);
+	VulkanGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI);
 	~VulkanGraphicsPipeline() = default;
 
-	INLINE const VKGraphicsPipeline& GetVk_GraphicsPipeline() const { return Pipeline; }
+	INLINE VkPipeline GetVkGraphicsPipeline() const { return vkPipeline; }
+	INLINE VkPipelineLayout GetVkPipelineLayout() const { return vkPipelineLayout; }
 };
 
-class GS_API VulkanComputePipeline final : public ComputePipeline
+class VulkanComputePipeline final : public ComputePipeline
 {
 	VKComputePipeline ComputePipeline;
 

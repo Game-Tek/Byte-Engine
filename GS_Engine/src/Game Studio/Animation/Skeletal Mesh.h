@@ -24,6 +24,6 @@ struct Joint
 class Skeleton
 {
 	std::map<Id, Joint> bones;
-	
+
 public:
 };

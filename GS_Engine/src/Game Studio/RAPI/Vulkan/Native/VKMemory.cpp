@@ -11,16 +11,18 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
-VKMemoryCreator::VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo* _VkMAI) : VKObjectCreator<VkDeviceMemory>(_Device)
+VKMemoryCreator::
+VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo* _VkMAI) : VKObjectCreator<VkDeviceMemory>(_Device)
 {
 	GS_VK_CHECK(vkAllocateMemory(m_Device->GetVkDevice(), _VkMAI, ALLOCATOR, &Handle), "Failed to allocate memory!")
 }
 
-void VKMemory::CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP, const vkQueue& _Queue, size_t _Size) const
+void VKMemory::CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP,
+                            const vkQueue& _Queue, size_t _Size) const
 {
 	VKCommandBuffer CommandBuffer(_CP.CreateCommandBuffer());
 
-	VkCommandBufferBeginInfo CommandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VkCommandBufferBeginInfo CommandBufferBeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	CommandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 	CommandBuffer.Begin(&CommandBufferBeginInfo);
@@ -33,7 +35,7 @@ void VKMemory::CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuff
 
 	VkCommandBuffer pCommandBuffer = CommandBuffer.GetHandle();
 
-	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkSubmitInfo SubmitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
 	SubmitInfo.commandBufferCount = 1;
 	SubmitInfo.pCommandBuffers = &pCommandBuffer;
 

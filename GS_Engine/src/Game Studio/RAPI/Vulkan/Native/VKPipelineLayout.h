@@ -10,7 +10,7 @@ struct VkPipelineLayoutCreateInfo;
 
 struct GS_API VKPipelineLayoutCreator final : VKObjectCreator<VkPipelineLayout>
 {
-	VKPipelineLayoutCreator(VKDevice* _Device, const VkPipelineLayoutCreateInfo * _VkPLCI);
+	VKPipelineLayoutCreator(VKDevice* _Device, const VkPipelineLayoutCreateInfo* _VkPLCI);
 };
 
 

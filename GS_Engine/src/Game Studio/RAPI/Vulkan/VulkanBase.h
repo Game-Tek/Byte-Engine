@@ -8,7 +8,7 @@
 
 class VKDevice;
 
-template<typename T>
+template <typename T>
 struct GS_API VKObjectCreator
 {
 	VKObjectCreator(VKDevice* _Device) : m_Device(_Device)

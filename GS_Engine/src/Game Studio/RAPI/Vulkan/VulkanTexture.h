@@ -24,9 +24,11 @@ class VulkanTexture : public Texture
 	VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
 	VkImageView textureImageView = VK_NULL_HANDLE;
 	VkSampler textureSampler = VK_NULL_HANDLE;
-	
+
 public:
-	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) : Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory), textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
+	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
+		Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory),
+		textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
 	{
 	}
 

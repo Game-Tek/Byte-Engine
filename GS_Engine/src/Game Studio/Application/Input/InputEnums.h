@@ -4,7 +4,9 @@
 
 enum class KeyState : uint8
 {
-	PRESSED, RELEASED, NONE
+	PRESSED,
+	RELEASED,
+	NONE
 };
 
 #define MAX_KEYBOARD_KEYS 71
@@ -71,7 +73,7 @@ enum class KeyboardKeys : uint8
 	LeftArrow,
 
 	SpaceBar,
-	
+
 	Numpad0,
 	Numpad1,
 	Numpad2,
@@ -83,7 +85,18 @@ enum class KeyboardKeys : uint8
 	Numpad8,
 	Numpad9,
 
-	F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12
+	F1,
+	F2,
+	F3,
+	F4,
+	F5,
+	F6,
+	F7,
+	F8,
+	F9,
+	F10,
+	F11,
+	F12
 };
 
 enum JoystickButtons

@@ -84,12 +84,12 @@ Quaternion& Quaternion::operator*=(const Quaternion& other)
 	//(lhs.w * rhs.y) + (lhs.y * rhs.w) + (lhs.z * rhs.x) - (lhs.x * rhs.z),
 	//(lhs.w * rhs.z) + (lhs.z * rhs.w) + (lhs.x * rhs.y) - (lhs.y * rhs.x),
 	//(lhs.w * rhs.w) - (lhs.x * rhs.x) - (lhs.y * rhs.y) - (lhs.z * rhs.z));
-	
+
 	//X = Q * other.X + X * other.Q + Y * other.Z - Z * other.Y;
 	//Y = Q * other.Y + Y * other.Q + Z * other.X - X * other.Z;
 	//Z = Q * other.Z + Z * other.Q + X * other.Y - Y * other.X;
 	//Q = Q * other.Q - X * other.X - Y * other.Y - Z * other.Z;
-	
+
 	*this = *this * other;
 	return *this;
 }

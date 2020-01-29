@@ -37,10 +37,10 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Text Resource"; }
 
 	[[nodiscard]] const TextResourceData& GetTextData() const { return data; }
-	
+
 private:
 	[[nodiscard]] const char* getResourceTypeExtension() const override { return "txt"; }
-	
+
 	bool loadResource(const LoadResourceData& LRD_) override;
 	void loadFallbackResource(const FString& _FullPath) override;
 };

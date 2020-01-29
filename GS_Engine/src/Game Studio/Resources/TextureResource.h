@@ -19,7 +19,7 @@ public:
 		Format TextureFormat;
 
 		~TextureResourceData();
-		
+
 		void** WriteTo(size_t _Index, size_t _Bytes) override
 		{
 			switch (_Index)
@@ -47,7 +47,7 @@ private:
 
 	bool loadResource(const LoadResourceData& LRD_) override;
 	void loadFallbackResource(const FString& _Path) override;
-	
+
 	[[nodiscard]] const char* getResourceTypeExtension() const override { return "png"; }
 public:
 	TextureResource() = default;
@@ -57,4 +57,3 @@ public:
 
 	[[nodiscard]] const TextureResourceData& GetTextureData() const { return data; }
 };
-

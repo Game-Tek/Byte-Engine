@@ -18,23 +18,23 @@ public:
 	{
 	}
 
-	Vector2(const Vector2 & Other) : X(Other.X), Y(Other.Y)
+	Vector2(const Vector2& Other) : X(Other.X), Y(Other.Y)
 	{
 	}
 
 	~Vector2() = default;
 
-	Vector2 operator+ (float Other) const
+	Vector2 operator+(float Other) const
 	{
-		return { X + Other, Y + Other };
+		return {X + Other, Y + Other};
 	}
 
-	Vector2 operator+ (const Vector2 & Other) const
+	Vector2 operator+(const Vector2& Other) const
 	{
-		return { X + Other.X, Y + Other.Y };
+		return {X + Other.X, Y + Other.Y};
 	}
 
-	Vector2 & operator+= (float Other)
+	Vector2& operator+=(float Other)
 	{
 		X += Other;
 		Y += Other;
@@ -42,7 +42,7 @@ public:
 		return *this;
 	}
 
-	Vector2 & operator+= (const Vector2 & Other)
+	Vector2& operator+=(const Vector2& Other)
 	{
 		X += Other.X;
 		Y += Other.Y;
@@ -50,17 +50,17 @@ public:
 		return *this;
 	}
 
-	Vector2 operator- (float Other) const
+	Vector2 operator-(float Other) const
 	{
-		return { X - Other, Y - Other };
+		return {X - Other, Y - Other};
 	}
 
-	Vector2 operator- (const Vector2 & Other) const
+	Vector2 operator-(const Vector2& Other) const
 	{
-		return { X - Other.X, Y - Other.Y };
+		return {X - Other.X, Y - Other.Y};
 	}
 
-	Vector2 & operator-= (float Other)
+	Vector2& operator-=(float Other)
 	{
 		X -= Other;
 		Y -= Other;
@@ -68,20 +68,20 @@ public:
 		return *this;
 	}
 
-	Vector2 & operator-= (const Vector2 & Other)
+	Vector2& operator-=(const Vector2& Other)
 	{
 		X -= Other.X;
 		Y -= Other.Y;
 
 		return *this;
 	}
-	
-	Vector2 operator* (float Other) const
+
+	Vector2 operator*(float Other) const
 	{
-		return { X * Other, Y * Other };
+		return {X * Other, Y * Other};
 	}
 
-	Vector2 & operator*= (float Other)
+	Vector2& operator*=(float Other)
 	{
 		X *= Other;
 		Y *= Other;
@@ -89,12 +89,12 @@ public:
 		return *this;
 	}
 
-	Vector2 operator/ (float Other) const
+	Vector2 operator/(float Other) const
 	{
-		return { X / Other, Y / Other };
+		return {X / Other, Y / Other};
 	}
 
-	Vector2 & operator/= (float Other)
+	Vector2& operator/=(float Other)
 	{
 		X /= Other;
 		Y /= Other;
@@ -102,12 +102,12 @@ public:
 		return *this;
 	}
 
-	inline bool operator==(const Vector2 & Other)
+	inline bool operator==(const Vector2& Other)
 	{
 		return X == Other.X && Y == Other.Y;
 	}
 
-	inline bool operator!=(const Vector2 & Other)
+	inline bool operator!=(const Vector2& Other)
 	{
 		return X != Other.X || Y != Other.Y;
 	}

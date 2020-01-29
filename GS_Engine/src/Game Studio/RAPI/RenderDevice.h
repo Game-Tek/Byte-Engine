@@ -10,12 +10,13 @@
 #include "RenderPass.h"
 #include "Framebuffer.h"
 #include "UniformBuffer.h"
-#include "UniformLayout.h"
+#include "Bindings.h"
 #include "Texture.h"
 
 enum class RAPIs : uint8
 {
-	NONE, VULKAN
+	NONE,
+	VULKAN
 };
 
 struct GPUInfo
@@ -29,25 +30,25 @@ class GS_API RenderDevice
 {
 	static RAPIs RenderAPI;
 	static RenderDevice* RenderDeviceInstance;
-	
+
 	static RenderDevice* CreateRAPI();
 	static RAPIs GetRAPIs();
 protected:
 	RenderDevice() = default;
+
 	virtual ~RenderDevice()
 	{
 		delete RenderDeviceInstance;
 	}
-	
+
 public:
 	static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
 	static INLINE RenderDevice* Get() { return RenderDeviceInstance; }
 
 	virtual GPUInfo GetGPUInfo() = 0;
-	
+
 	virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 	virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
-	virtual UniformLayout* CreateUniformLayout(const UniformLayoutCreateInfo& _ULCI) = 0;
 	virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;
 	virtual Texture* CreateTexture(const TextureCreateInfo& TCI_) = 0;
 	virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;

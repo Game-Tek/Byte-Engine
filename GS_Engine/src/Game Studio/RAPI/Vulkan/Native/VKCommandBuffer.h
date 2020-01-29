@@ -10,7 +10,7 @@ struct VkCommandBufferAllocateInfo;
 
 struct GS_API VKCommandBufferCreator : VKObjectCreator<VkCommandBuffer>
 {
-	VKCommandBufferCreator(VKDevice* _Device, const VkCommandBufferAllocateInfo * _VkCBCI);
+	VKCommandBufferCreator(VKDevice* _Device, const VkCommandBufferAllocateInfo* _VkCBCI);
 };
 
 class VKCommandPool;

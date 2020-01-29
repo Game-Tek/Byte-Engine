@@ -33,7 +33,7 @@ Vector2 GSM::Normalized(const Vector2& _A)
 
 void GSM::Normalize(Vector2& _A)
 {
-	float4 a(_A.X, _A.Y,0.0f, 0.0f);
+	float4 a(_A.X, _A.Y, 0.0f, 0.0f);
 	const float4 length(Length(_A));
 	a /= length;
 	alignas(16) float vector[4];

@@ -17,14 +17,14 @@
 
 */
 
-template<typename T>
+template <typename T>
 class DelegateBase;
 
-template<typename RET, typename ...PARAMS>
-class GS_API DelegateBase<RET(PARAMS...)>
+template <typename RET, typename ...PARAMS>
+class GS_API DelegateBase<RET(PARAMS ...)>
 {
 protected:
-	using FunctionPointerType = RET(*)(void* this_ptr, PARAMS...);
+	using FunctionPointerType = RET(*)(void* this_ptr, PARAMS ...);
 
 	struct InvocationElement
 	{
@@ -55,12 +55,13 @@ protected:
 	};
 };
 
-template <typename T> class Delegate;
+template <typename T>
+class Delegate;
 
-template<typename RET, typename... PARAMS>
-class GS_API Delegate<RET(PARAMS...)> final : DelegateBase<RET(PARAMS...)>
+template <typename RET, typename... PARAMS>
+class GS_API Delegate<RET(PARAMS ...)> final : DelegateBase<RET(PARAMS ...)>
 {
-	typename DelegateBase<RET(PARAMS...)>::InvocationElement functionPointer;
+	typename DelegateBase<RET(PARAMS ...)>::InvocationElement functionPointer;
 
 public:
 	Delegate() = default;
@@ -104,29 +105,29 @@ public:
 		return *this;
 	}
 
-	bool operator == (const Delegate& another) const
+	bool operator ==(const Delegate& another) const
 	{
 		return functionPointer == another.functionPointer;
 	}
 
-	bool operator != (const Delegate& another) const
+	bool operator !=(const Delegate& another) const
 	{
 		return functionPointer != another.functionPointer;
 	}
 
-	template <class T, RET(T::* TMethod)(PARAMS...)>
+	template <class T, RET(T::* TMethod)(PARAMS ...)>
 	static Delegate Create(T* instance)
 	{
 		return Delegate(instance, method_stub<T, TMethod>);
 	}
 
-	template <class T, RET(T::* TMethod)(PARAMS...) const>
+	template <class T, RET(T::* TMethod)(PARAMS ...) const>
 	static Delegate Create(T const* instance)
 	{
 		return Delegate(const_cast<T*>(instance), const_method_stub<T, TMethod>);
 	}
 
-	template <RET(*TMethod)(PARAMS...)>
+	template <RET(*TMethod)(PARAMS ...)>
 	static Delegate Create()
 	{
 		return Delegate(nullptr, function_stub<TMethod>);
@@ -138,47 +139,47 @@ public:
 		return Delegate(static_cast<void*>(&instance), lambda_stub<LAMBDA>);
 	}
 
-	RET operator()(PARAMS... arg) const
+	RET operator()(PARAMS ... arg) const
 	{
 		return (*functionPointer.FunctionPointer)(functionPointer.Callee, arg...);
 	}
 
 private:
 
-	Delegate(void* anObject, typename DelegateBase<RET(PARAMS...)>::FunctionPointerType aStub)
+	Delegate(void* anObject, typename DelegateBase<RET(PARAMS ...)>::FunctionPointerType aStub)
 	{
 		functionPointer.Callee = anObject;
 		functionPointer.FunctionPointer = aStub;
 	}
 
-	void assign(void* anObject, typename DelegateBase<RET(PARAMS...)>::FunctionPointerType aStub)
+	void assign(void* anObject, typename DelegateBase<RET(PARAMS ...)>::FunctionPointerType aStub)
 	{
 		this->functionPointer.Callee = anObject;
 		this->functionPointer.FunctionPointer = aStub;
 	}
 
-	template <class T, RET(T::* TMethod)(PARAMS...)>
-	static RET method_stub(void* this_ptr, PARAMS... params)
+	template <class T, RET(T::* TMethod)(PARAMS ...)>
+	static RET method_stub(void* this_ptr, PARAMS ... params)
 	{
 		T* p = static_cast<T*>(this_ptr);
 		return (p->*TMethod)(params...);
 	}
 
-	template <class T, RET(T::* TMethod)(PARAMS...) const>
-	static RET const_method_stub(void* this_ptr, PARAMS... params)
+	template <class T, RET(T::* TMethod)(PARAMS ...) const>
+	static RET const_method_stub(void* this_ptr, PARAMS ... params)
 	{
 		T* const p = static_cast<T*>(this_ptr);
 		return (p->*TMethod)(params...);
 	}
 
-	template <RET(*TMethod)(PARAMS...)>
-	static RET function_stub(void* this_ptr, PARAMS... params)
+	template <RET(*TMethod)(PARAMS ...)>
+	static RET function_stub(void* this_ptr, PARAMS ... params)
 	{
 		return (TMethod)(params...);
 	}
 
 	template <typename LAMBDA>
-	static RET lambda_stub(void* this_ptr, PARAMS... arg)
+	static RET lambda_stub(void* this_ptr, PARAMS ... arg)
 	{
 		LAMBDA* p = static_cast<LAMBDA*>(this_ptr);
 		return (p->operator())(arg...);

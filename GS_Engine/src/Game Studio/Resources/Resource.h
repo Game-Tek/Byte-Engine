@@ -12,7 +12,7 @@
 using ResourceHeaderType = uint64;
 using ResourceSegmentType = uint64;
 
-template<typename T>
+template <typename T>
 void SerializeFVector(OutStream& outStream, FVector<T>& vector)
 {
 	outStream.Write(vector.getLength());
@@ -23,7 +23,7 @@ void SerializeFVector(OutStream& outStream, FVector<T>& vector)
 	}
 }
 
-template<typename T>
+template <typename T>
 void operator<<(OutStream& outStream, FVector<T>& vector)
 {
 	outStream.Write(vector.getLength());
@@ -34,7 +34,7 @@ void operator<<(OutStream& outStream, FVector<T>& vector)
 	}
 }
 
-template<typename T>
+template <typename T>
 void operator>>(InStream& inStream, FVector<T>& vector)
 {
 	uint_64 length = 0;
@@ -50,15 +50,15 @@ void operator>>(InStream& inStream, FVector<T>& vector)
 	}
 }
 
-template<typename T>
+template <typename T>
 void DeserializeFVector(InStream& inStream, FVector<T>& vector)
 {
 	uint_64 length = 0;
-	
+
 	inStream.Read(&length);
 
 	vector.resize(length);
-	
+
 	for (uint_64 i = 0; i < length; ++i)
 	{
 		inStream >> vector[i];
@@ -71,7 +71,7 @@ class ResourceData
 
 public:
 	FString ResourceName;
-	
+
 	ResourceData() = default;
 
 	virtual ~ResourceData()
@@ -82,7 +82,7 @@ public:
 
 	virtual void Load(InStream& InStream_);
 	virtual void Write(OutStream& OutStream_);
-	
+
 	const FString& GetResourceName() const { return ResourceName; }
 };
 
@@ -98,21 +98,21 @@ struct LoadResourceData
 class GS_API Resource : public Object
 {
 	friend class ResourceManager;
-	
+
 	Id resourceName;
-	
+
 	uint16 references = 0;
-	
+
 	void incrementReferences() { ++references; }
 	void decrementReferences() { --references; }
 	[[nodiscard]] uint16 getReferenceCount() const { return references; }
-	
+
 	virtual bool loadResource(const LoadResourceData& loadResourceData) = 0;
 	virtual void loadFallbackResource(const FString& fullPath) = 0;
-	
+
 	//Must return the extension name for the extension type.
 	[[nodiscard]] virtual const char* getResourceTypeExtension() const = 0;
-	
+
 public:
 	Resource() = default;
 

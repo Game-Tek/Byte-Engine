@@ -30,19 +30,16 @@ public:
 	virtual ~Renderer();
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
-	
-	void OnUpdate() override;	
+
+	void OnUpdate() override;
 
 	//Returns a pointer to the active camera.
 	[[nodiscard]] Camera* GetActiveCamera() const { return ActiveCamera; }
-	[[nodiscard]] const Matrix4& GetViewMatrix() const { return ViewMatrix; }
-	[[nodiscard]] const Matrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
-	[[nodiscard]] const Matrix4& GetVPMatrix() const { return ViewProjectionMatrix; }
 
 	//Sets the active camera as the NewCamera.
-	void SetCamera(Camera * NewCamera) const { ActiveCamera = NewCamera; }
+	void SetCamera(Camera* NewCamera) const { ActiveCamera = NewCamera; }
 
-	template<class T>
+	template <class T>
 	T* CreateRenderComponent(RenderComponentCreateInfo* _RCCI)
 	{
 		RenderComponent* NRC = new T();
@@ -55,7 +52,7 @@ public:
 	void DrawMesh(const DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
 	void BindPipeline(GraphicsPipeline* _Pipeline);
 
-	
+
 	class MeshRenderResource* CreateMesh(StaticMesh* _SM);
 	class MaterialRenderResource* CreateMaterial(Material* Material_);
 protected:
@@ -78,7 +75,7 @@ protected:
 	//VectorMap<RenderComponent*, RenderableInstructions> ComponentToInstructionsMap;
 
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
-	
+
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
 	/* ---- RAPI Resources ---- */
@@ -91,20 +88,38 @@ protected:
 	FVector<Framebuffer*> Framebuffers;
 
 	Image* depthTexture = nullptr;
-	
+
 	RenderContext* RC = nullptr;
 	RenderPass* RP = nullptr;
 	UniformBuffer* UB = nullptr;
-	UniformLayout* UL = nullptr;
-	
+	BindingLayout* UL = nullptr;
+
 	RenderMesh* FullScreenQuad = nullptr;
 	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
-	GS_ALIGN(16) Matrix4 ViewMatrix;
-	GS_ALIGN(16) Matrix4 ProjectionMatrix;
-	GS_ALIGN(16) Matrix4 ViewProjectionMatrix;
+	struct InstanceData
+	{
+	};
 
-	void UpdateMatrices();
+	struct MaterialData
+	{
+		uint32 textureIndices[8];
+	};
+
+	struct ViewData
+	{
+		GS_ALIGN(16) Matrix4 ViewMatrix;
+		GS_ALIGN(16) Matrix4 ProjectionMatrix;
+		GS_ALIGN(16) Matrix4 ViewProjectionMatrix;
+	};
+
+	FVector<ViewData> perViewData;
+	FVector<InstanceData> perInstanceData;
+	FVector<Matrix4> perInstanceTransform;
+	FVector<MaterialData> perMaterialInstanceData;
+
+
+	void UpdateViews();
 
 	void RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI);
 
@@ -112,9 +127,9 @@ protected:
 	void RenderRenderables();
 
 	//Returns a symmetric perspective frustum.
-	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far);
+	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near,
+	                                   const float _Far);
 
-	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top, const float _Bottom, const float _Near, const float _Far);
-
-	
+	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
+	                            const float _Bottom, const float _Near, const float _Far);
 };

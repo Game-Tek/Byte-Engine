@@ -4,7 +4,9 @@
 
 #include "VKDevice.h"
 
-VKDescriptorSetLayoutCreator::VKDescriptorSetLayoutCreator(VKDevice* _Device, const VkDescriptorSetLayoutCreateInfo* _VkDSLCI) : VKObjectCreator<VkDescriptorSetLayout>(_Device)
+VKDescriptorSetLayoutCreator::VKDescriptorSetLayoutCreator(VKDevice* _Device,
+                                                           const VkDescriptorSetLayoutCreateInfo* _VkDSLCI) :
+	VKObjectCreator<VkDescriptorSetLayout>(_Device)
 {
 	vkCreateDescriptorSetLayout(_Device->GetVkDevice(), _VkDSLCI, ALLOCATOR, &Handle);
 }

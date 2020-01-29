@@ -28,14 +28,14 @@ public:
 		}
 	}
 
-	template<class T>
+	template <class T>
 	T* GetResource(const FString& _ResourceName)
 	{
 		auto HashedName = Id(_ResourceName);
-		
+
 		auto Loc = ResourceMap.find(HashedName.GetID());
-		
-		if(Loc != ResourceMap.cend())
+
+		if (Loc != ResourceMap.cend())
 		{
 			Loc->second->incrementReferences();
 			return static_cast<T*>(Loc->second);
@@ -45,12 +45,12 @@ public:
 
 		LoadResource(_ResourceName, resource);
 
-		ResourceMap.insert({ Id(_ResourceName).GetID(), resource});
-		
+		ResourceMap.insert({Id(_ResourceName).GetID(), resource});
+
 		return SCAST(T*, resource);
 	}
 
-	template<class T>
+	template <class T>
 	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
 	{
 		Resource* resource = new T();
@@ -62,6 +62,6 @@ public:
 	void ReleaseResource(Resource* _Resource) const;
 
 	void* CreateFile();
-	
+
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 };

@@ -11,17 +11,17 @@ enum class AudioChannelCount : uint8
 	 * \brief Audio is mono, has only one channel.
 	 */
 	CHANNELS_MONO,
-	
+
 	/**
 	 * \brief Audio is stereo, has two channels. Typical for speakers or headphones.
 	 */
 	CHANNELS_STEREO,
-	
+
 	/**
 	 * \brief Audio is in 5.1, has five channels and one sub-woofer channel. Typical for home cinema setups.
 	 */
 	CHANNELS_5_1,
-	
+
 	/**
 	 * \brief Audio is in 7.1, has seven channels and one sub-woofer channel. Typical for home cinema setups.
 	 */
@@ -37,12 +37,12 @@ enum class AudioBitDepth : uint8
 	 * \brief Audio bit depth is 8 bit.
 	 */
 	BIT_DEPTH_8,
-	
+
 	/**
 	 * \brief Audio bit depth is 16 bit.
 	 */
 	BIT_DEPTH_16,
-	
+
 	/**
 	 * \brief Audio bit depth is 24 bit.
 	 */
@@ -58,7 +58,7 @@ enum class AudioSampleRate : uint8
 	 * \brief Audio sample rate is 44.100 Hz.
 	 */
 	KHZ_44_1,
-	
+
 	/**
 	* \brief Audio sample rate is 48.000 Hz.
 	 */
@@ -83,5 +83,5 @@ enum class AudioOutputDeviceType : uint8
 	/**
 	 * \brief Audio output device are headphones.
 	 */
-	 HEADPHONES
+	HEADPHONES
 };

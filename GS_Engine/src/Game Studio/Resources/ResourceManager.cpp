@@ -21,7 +21,7 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 
 	std::ofstream Outfile(full_path.c_str(), std::ios::out | std::ios::binary);
 
-	if(!Outfile.is_open())
+	if (!Outfile.is_open())
 	{
 		GS_LOG_WARNING("Could not save file %s.", _ResourceName.c_str())
 		Outfile.close();
@@ -37,7 +37,8 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 
 void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Resource)
 {
-	const auto FullPath = System::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->getResourceTypeExtension();
+	const auto FullPath = System::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->
+		getResourceTypeExtension();
 	LoadResourceData load_resource_data;
 	load_resource_data.Caller = this;
 	load_resource_data.FullPath = FullPath;
@@ -49,7 +50,8 @@ void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Reso
 	}
 	else
 	{
-		GS_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(), _Resource->getResourceTypeExtension())
+		GS_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(),
+		               _Resource->getResourceTypeExtension())
 		_Resource->loadFallbackResource(FullPath);
 	}
 }

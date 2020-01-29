@@ -15,7 +15,7 @@ struct VkMemoryAllocateInfo;
 
 struct GS_API VKMemoryCreator final : VKObjectCreator<VkDeviceMemory>
 {
-	VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo * _VkMAI);
+	VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo* _VkMAI);
 };
 
 class GS_API VKMemory final : public VKObject<VkDeviceMemory>
@@ -33,7 +33,8 @@ public:
 	void CopyToMappedMemory(void* _Src, void* _Dst, size_t _Size) const;
 	void UnmapMemory() const;
 
-	void CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP, const vkQueue& _Queue, size_t _Size) const;
+	void CopyToDevice(const VKBuffer& _SrcBuffer, const VKBuffer& _DstBuffer, const VKCommandPool& _CP,
+	                  const vkQueue& _Queue, size_t _Size) const;
 
 	void BindBufferMemory(const VKBuffer& _Buffer) const;
 	void BindImageMemory(const VKImage& _Image) const;

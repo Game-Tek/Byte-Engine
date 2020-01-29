@@ -1,6 +1,6 @@
 #include "Vulkan.h"
 
-#include "VulkanRenderer.h"
+#include "VulkanRenderDevice.h"
 
 #include "VulkanRenderContext.h"
 #include "VulkanRenderPass.h"
@@ -10,7 +10,7 @@
 
 #include "RAPI/Window.h"
 #include "Native/vkPhysicalDevice.h"
-#include "VulkanUniformLayout.h"
+#include "VulkanBindings.h"
 
 //  VULKAN RENDER CONTEXT
 
@@ -18,12 +18,11 @@ uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 {
 	switch (_PresentMode)
 	{
-	case VK_PRESENT_MODE_MAILBOX_KHR:	return 255;
-	case VK_PRESENT_MODE_FIFO_KHR:		return 254;
-	default:							return 0;
+	case VK_PRESENT_MODE_MAILBOX_KHR: return 255;
+	case VK_PRESENT_MODE_FIFO_KHR: return 254;
+	default: return 0;
 	}
 }
-
 
 VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window)
 {
@@ -32,7 +31,7 @@ VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstanc
 
 VKSwapchainCreator VulkanRenderContext::CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const
 {
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
 
 	SwapchainCreateInfo.surface = Surface.GetHandle();
 	SwapchainCreateInfo.minImageCount = 3;
@@ -56,7 +55,7 @@ VKSwapchainCreator VulkanRenderContext::CreateSwapchain(VKDevice* _Device, VkSwa
 
 VKCommandPoolCreator VulkanRenderContext::CreateCommandPool(VKDevice* _Device)
 {
-	VkCommandPoolCreateInfo CommandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	VkCommandPoolCreateInfo CommandPoolCreateInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
 	CommandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
 	return VKCommandPoolCreator(_Device, &CommandPoolCreateInfo);
@@ -80,7 +79,7 @@ SurfaceFormat VulkanRenderContext::FindFormat(const vkPhysicalDevice& _PD, VkSur
 	VkBool32 Supported = 0;
 	vkGetPhysicalDeviceSurfaceSupportKHR(_PD, PresentationQueue.GetQueueIndex(), _Surface, &Supported);
 
-	return { SurfaceFormats[0].format, SurfaceFormats[0].colorSpace };
+	return {SurfaceFormats[0].format, SurfaceFormats[0].colorSpace};
 }
 
 VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface)
@@ -105,7 +104,8 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 	return PresentModes[BestPresentModeIndex];
 }
 
-VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window) :
+VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
+                                         Window* _Window) :
 	RenderExtent(_Window->GetWindowExtent()),
 	Surface(CreateSurface(&device->GetVKDevice(), _Instance, _Window)),
 	Format(FindFormat(_PD, Surface)),
@@ -124,9 +124,9 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance*
 {
 	MAX_FRAMES_IN_FLIGHT = SCAST(uint8, SwapchainImages.getCapacity());
 
-	VkSemaphoreCreateInfo SemaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	VkSemaphoreCreateInfo SemaphoreCreateInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-	VkFenceCreateInfo FenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	VkFenceCreateInfo FenceCreateInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 	FenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
@@ -137,16 +137,14 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance*
 		CommandBuffers.emplace_back(CommandPool.CreateCommandBuffer());
 
 		ImageCreateInfo image_create_info;
-		image_create_info.Extent = { RenderExtent.Width, RenderExtent.Height, 0 };
+		image_create_info.Extent = {RenderExtent.Width, RenderExtent.Height, 0};
 		image_create_info.ImageFormat = VkFormatToFormat(Format.format);
-		
+
 		swapchainImages.emplace_back(VulkanSwapchainImage(device, image_create_info, SwapchainImages[i]));
 	}
 }
 
-VulkanRenderContext::~VulkanRenderContext()
-{
-}
+VulkanRenderContext::~VulkanRenderContext() = default;
 
 void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 {
@@ -156,23 +154,26 @@ void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 
 void VulkanRenderContext::AcquireNextImage()
 {
-	const auto lImageIndex = Swapchain.AcquireNextImage(ImagesAvailable[CurrentImage]); //This signals the semaphore when the image becomes available
+	const auto lImageIndex = Swapchain.AcquireNextImage(ImagesAvailable[CurrentImage]);
+	//This signals the semaphore when the image becomes available
 	ImageIndex = lImageIndex;
 }
 
 void VulkanRenderContext::Flush()
 {
-	InFlightFences[CurrentImage].Wait();	//Get current's frame fences and wait for it.
-	InFlightFences[CurrentImage].Reset();	//Then reset it.
+	InFlightFences[CurrentImage].Wait(); //Get current's frame fences and wait for it.
+	InFlightFences[CurrentImage].Reset(); //Then reset it.
 
-	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	VkPipelineStageFlags WaitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 
-	VkSemaphore WaitSemaphores[] = { ImagesAvailable[CurrentImage] };		//Set current's frame ImageAvaiable semaphore as the semaphore to wait for to start rendering to.
-	VkSemaphore SignalSemaphores[] = { RendersFinished[CurrentImage] };	//Set current's frame RenderFinished semaphore as the semaphore to signal once rendering has finished.
-	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[CurrentImage] };	
+	VkSemaphore WaitSemaphores[] = {ImagesAvailable[CurrentImage]};
+	//Set current's frame ImageAvaiable semaphore as the semaphore to wait for to start rendering to.
+	VkSemaphore SignalSemaphores[] = {RendersFinished[CurrentImage]};
+	//Set current's frame RenderFinished semaphore as the semaphore to signal once rendering has finished.
+	VkCommandBuffer lCommandBuffers[] = {CommandBuffers[CurrentImage]};
 
 	/* Submit signal semaphore to graphics queue */
-	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkSubmitInfo SubmitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
 	{
 		SubmitInfo.waitSemaphoreCount = 1;
 		SubmitInfo.pWaitSemaphores = WaitSemaphores;
@@ -184,7 +185,8 @@ void VulkanRenderContext::Flush()
 		SubmitInfo.pWaitDstStageMask = WaitStages;
 	}
 
-	PresentationQueue.Submit(&SubmitInfo, InFlightFences[CurrentImage]);	//Signal fence when execution of this queue has finished.
+	PresentationQueue.Submit(&SubmitInfo, InFlightFences[CurrentImage]);
+	//Signal fence when execution of this queue has finished.
 
 	InFlightFences[CurrentImage].Wait();
 	CommandBuffers[CurrentImage].Reset();
@@ -192,14 +194,14 @@ void VulkanRenderContext::Flush()
 
 void VulkanRenderContext::Present()
 {
-	VkSemaphore WaitSemaphores[] = { RendersFinished[CurrentImage] };
+	VkSemaphore WaitSemaphores[] = {RendersFinished[CurrentImage]};
 
 	/* Present result on screen */
-	const VkSwapchainKHR Swapchains[] = { Swapchain };
+	const VkSwapchainKHR Swapchains[] = {Swapchain};
 
 	uint32 lImageIndex = ImageIndex;
 
-	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+	VkPresentInfoKHR PresentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
 	{
 		PresentInfo.waitSemaphoreCount = 1;
 		PresentInfo.pWaitSemaphores = WaitSemaphores;
@@ -210,13 +212,13 @@ void VulkanRenderContext::Present()
 	}
 
 	PresentationQueue.Present(&PresentInfo);
-	
+
 	CurrentImage = (CurrentImage + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanRenderContext::BeginRecording()
 {
-	VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VkCommandBufferBeginInfo BeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 	//Hint to primary buffer if this is secondary.
 	BeginInfo.pInheritanceInfo = nullptr;
@@ -231,13 +233,14 @@ void VulkanRenderContext::EndRecording()
 
 void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
 {
-	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+	VkRenderPassBeginInfo RenderPassBeginInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVKRenderPass().GetHandle();
 	RenderPassBeginInfo.pClearValues = static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getData();
-	RenderPassBeginInfo.clearValueCount = static_cast<uint32>(static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getLength());
+	RenderPassBeginInfo.clearValueCount = static_cast<uint32>(static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)
+	                                                          ->GetClearValues().getLength());
 	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVkFramebuffer();
 	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
-	RenderPassBeginInfo.renderArea.offset = { 0, 0 };
+	RenderPassBeginInfo.renderArea.offset = {0, 0};
 
 	vkCmdBeginRenderPass(CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 }
@@ -263,15 +266,31 @@ void VulkanRenderContext::BindMesh(RenderMesh* _Mesh)
 	vkCmdBindIndexBuffer(CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer().GetHandle(), 0, VK_INDEX_TYPE_UINT16);
 }
 
-void VulkanRenderContext::BindUniformLayout(UniformLayout* _UL)
+void VulkanRenderContext::BindBindingsSet(const ::BindBindingsSet& bindBindingsSet)
 {
-	const auto VKUL = SCAST(VulkanUniformLayout*, _UL);
-	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, VKUL->GetVkPipelineLayout(), 0, 1, VKUL->GetVkDescriptorSets().getData(), 0, nullptr);
+	Array<VkDescriptorSet, 8> descriptor_sets(bindBindingsSet.BindingsSets.First);
+	{
+		uint8 i = 0;
+
+		for (auto& e : descriptor_sets)
+		{
+			e = static_cast<VulkanBindingsSet*>(bindBindingsSet.BindingsSets.Second[i])->GetVkDescriptorSets()[
+				bindBindingsSet.BindingSetIndex];
+
+			++i;
+		}
+	}
+
+	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS,
+	                        static_cast<VulkanGraphicsPipeline*>(bindBindingsSet.Pipeline)->GetVkPipelineLayout(), 0,
+	                        descriptor_sets.getLength(), descriptor_sets.getData(), 0, 0);
 }
 
 void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
 {
-	vkCmdPushConstants(CommandBuffers[CurrentImage], SCAST(VulkanUniformLayout*, _PCI.UniformLayout)->GetVkPipelineLayout(), VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
+	vkCmdPushConstants(CommandBuffers[CurrentImage],
+	                   SCAST(VulkanGraphicsPipeline*, _PCI.Pipeline)->GetVkPipelineLayout(),
+	                   VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
 }
 
 void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
@@ -284,13 +303,15 @@ void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
 	Viewport.width = RenderExtent.Width;
 	Viewport.height = RenderExtent.Height;
 	vkCmdSetViewport(CommandBuffers[CurrentImage], 0, 1, &Viewport);
-	
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, SCAST(VulkanGraphicsPipeline*, _GP)->GetVk_GraphicsPipeline().GetHandle());
+
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS,
+	                  SCAST(VulkanGraphicsPipeline*, _GP)->GetVkGraphicsPipeline());
 }
 
 void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
 {
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetHandle());
+	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE,
+	                  SCAST(VulkanComputePipeline*, _CP)->GetVk_ComputePipeline().GetHandle());
 }
 
 void VulkanRenderContext::DrawIndexed(const DrawInfo& _DrawInfo)
@@ -305,13 +326,15 @@ void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)
 
 void VulkanRenderContext::CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo)
 {
-	vkCmdCopyImage(CommandBuffers[CurrentImage], static_cast<VulkanImage*>(copyToSwapchainInfo.Image)->GetVkImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SwapchainImages[CurrentImage], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, nullptr);
+	vkCmdCopyImage(CommandBuffers[CurrentImage], static_cast<VulkanImage*>(copyToSwapchainInfo.Image)->GetVkImage(),
+	               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SwapchainImages[CurrentImage],
+	               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, nullptr);
 }
 
 FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
 {
 	FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
-	
+
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
 		l_Images.push_back(static_cast<Image*>(&swapchainImages[i]));

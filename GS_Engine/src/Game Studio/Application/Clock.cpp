@@ -105,7 +105,7 @@ uint16 Clock::GetYear()
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(& WinTimeStructure);
+	GetLocalTime(&WinTimeStructure);
 
 	return WinTimeStructure.wYear;
 #endif
@@ -116,7 +116,7 @@ Months Clock::GetMonth()
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(& WinTimeStructure);
+	GetLocalTime(&WinTimeStructure);
 
 	return static_cast<Months>(WinTimeStructure.wMonth);
 #endif
@@ -127,7 +127,7 @@ uint8 Clock::GetDayOfMonth()
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(& WinTimeStructure);
+	GetLocalTime(&WinTimeStructure);
 
 	return WinTimeStructure.wDay;
 #endif
@@ -138,7 +138,7 @@ Days Clock::GetDayOfWeek()
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(& WinTimeStructure);
+	GetLocalTime(&WinTimeStructure);
 
 	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
 #endif
@@ -149,8 +149,11 @@ Time Clock::GetTime()
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
 
-	GetLocalTime(& WinTimeStructure);
-	
-	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
+	GetLocalTime(&WinTimeStructure);
+
+	return {
+		static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute),
+		static_cast<uint8>(WinTimeStructure.wSecond)
+	};
 #endif
 }

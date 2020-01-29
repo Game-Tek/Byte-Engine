@@ -3,7 +3,8 @@
 #include "Resources/StaticMeshResource.h"
 #include "Application/Application.h"
 
-StaticMesh::StaticMesh(const FString& _Name) : staticMeshResource(GS::Application::Get()->GetResourceManager()->GetResource<StaticMeshResource>(_Name))
+StaticMesh::StaticMesh(const FString& _Name) : staticMeshResource(
+	GS::Application::Get()->GetResourceManager()->GetResource<StaticMeshResource>(_Name))
 {
 }
 
@@ -14,5 +15,8 @@ StaticMesh::~StaticMesh()
 
 Model StaticMesh::GetModel() const
 {
-	return Model{ staticMeshResource->GetStaticMeshData().VertexArray, staticMeshResource->GetStaticMeshData().IndexArray, staticMeshResource->GetStaticMeshData().VertexCount, staticMeshResource->GetStaticMeshData().IndexCount };
+	return Model{
+		staticMeshResource->GetStaticMeshData().VertexArray, staticMeshResource->GetStaticMeshData().IndexArray,
+		staticMeshResource->GetStaticMeshData().VertexCount, staticMeshResource->GetStaticMeshData().IndexCount
+	};
 }

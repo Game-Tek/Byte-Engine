@@ -31,7 +31,7 @@ public:
 		}
 	}
 
-	[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const 
+	[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const
 	{
 		uint8 Offset = 0;
 

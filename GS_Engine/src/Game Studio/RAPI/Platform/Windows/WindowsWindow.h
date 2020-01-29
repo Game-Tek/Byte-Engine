@@ -11,7 +11,7 @@ class GS_API WindowsWindow final : public Window
 {
 	HWND WindowObject = nullptr;
 	HINSTANCE WindowInstance = nullptr;
-	
+
 	GLFWwindow* GLFWWindow = nullptr;
 
 	static int32 KeyboardKeysToGLFWKeys(KeyboardKeys _IE);

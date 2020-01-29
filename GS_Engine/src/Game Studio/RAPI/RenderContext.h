@@ -5,7 +5,7 @@
 #include "Image.h"
 #include "Containers/FVector.hpp"
 
-class UniformLayout;
+class BindingLayout;
 class Window;
 class RenderMesh;
 class VertexBuffer;
@@ -29,7 +29,7 @@ struct GS_API RenderPassBeginInfo
 
 struct GS_API PushConstantsInfo
 {
-	UniformLayout* UniformLayout = nullptr;
+	class Pipeline* Pipeline = nullptr;
 	uint32 Offset = 0;
 	uint32 Size = 0;
 	void* Data = nullptr;
@@ -50,6 +50,16 @@ struct CopyToSwapchainInfo
 	Image* Image = nullptr;
 };
 
+struct BindBindingsSet
+{
+	/**
+	 * \brief What index in the bindings set to use.
+	 */
+	uint8 BindingSetIndex = 0;
+	Pair<uint8, class BindingsSet**> BindingsSets;
+	class Pipeline* Pipeline = nullptr;
+};
+
 class GS_API RenderContext
 {
 protected:
@@ -57,7 +67,9 @@ protected:
 	uint8 MAX_FRAMES_IN_FLIGHT = 0;
 
 public:
-	virtual ~RenderContext() {};
+	virtual ~RenderContext()
+	{
+	};
 
 	virtual void OnResize(const ResizeInfo& _RI) = 0;
 
@@ -73,39 +85,39 @@ public:
 
 	//Swaps buffers and sends new image to the screen.
 	virtual void Present() = 0;
-	
+
 	// COMMANDS
-	
+
 	//  BIND COMMANDS
 	//    BIND BUFFER COMMANDS
-	
-	
+
+
 	//Adds a BindMesh command to the command queue.
 	virtual void BindMesh(RenderMesh* _Mesh) = 0;
-	
+
 	//    BIND PIPELINE COMMANDS
 
-	//Adds a BindUniformLayout to the command queue.
-	virtual void BindUniformLayout(UniformLayout* _UL) = 0;
+	//Adds a BindBindingsSet to the command queue.
+	virtual void BindBindingsSet(const BindBindingsSet& bindBindingsSet) = 0;
 	virtual void UpdatePushConstant(const PushConstantsInfo& _PCI) = 0;
 	//Adds a BindGraphicsPipeline command to the command queue.
 	virtual void BindGraphicsPipeline(GraphicsPipeline* _GP) = 0;
 	//Adds a BindComputePipeline to the command queue.
 	virtual void BindComputePipeline(ComputePipeline* _CP) = 0;
-	
-	
+
+
 	//  DRAW COMMANDS
-	
+
 	//Adds a DrawIndexed command to the command queue.
 	virtual void DrawIndexed(const DrawInfo& _DrawInfo) = 0;
-	
+
 	//  COMPUTE COMMANDS
-	
+
 	//Adds a Dispatch command to the command queue.
 	virtual void Dispatch(const Extent3D& _WorkGroups) = 0;
 
 	//  RENDER PASS COMMANDS
-	
+
 	//Adds a BeginRenderPass command to the command queue.
 	virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
 	//Adds a AdvanceSubPass command to the command buffer.

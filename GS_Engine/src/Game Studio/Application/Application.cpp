@@ -1,7 +1,7 @@
 #include "Application.h"
 #include "Debug/Logger.h"
 
-GS::Application * GS::Application::ApplicationInstance = nullptr;
+GS::Application* GS::Application::ApplicationInstance = nullptr;
 
 namespace GS
 {
@@ -12,7 +12,7 @@ namespace GS
 		ResourceManagerInstance = new ResourceManager();
 
 		WindowCreateInfo WCI;
-		WCI.Extent = { 720, 720 };
+		WCI.Extent = {720, 720};
 		WCI.Name = ACI.ApplicationName;
 		WCI.WindowType = WindowFit::NORMAL;
 
@@ -42,7 +42,10 @@ namespace GS
 
 	void Application::SetActiveWindow(Window* _NewWindow)
 	{
-		GS_DEBUG_ONLY(if (ActiveWindow) GS_LOG_WARNING("An active window is already set!\nAlthough the recently input window will be regarded as the new active window make sure you are doing what you intend."))
+		GS_DEBUG_ONLY(
+			if (ActiveWindow) GS_LOG_WARNING(
+				"An active window is already set!\nAlthough the recently input window will be regarded as the new active window make sure you are doing what you intend."
+			))
 		ActiveWindow = _NewWindow;
 		InputManagerInstance.SetActiveWindow(ActiveWindow);
 	}
@@ -64,5 +67,4 @@ namespace GS
 	{
 		return ActiveWindow->GetShouldClose() || flaggedForClose;
 	}
-
 }

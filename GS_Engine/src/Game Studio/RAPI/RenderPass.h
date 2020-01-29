@@ -26,9 +26,9 @@ struct GS_API AttachmentDescriptor
 	//Defines the operation that should be run when the attachment is done being rendered to.
 	StoreOperations StoreOperation = StoreOperations::STORE;
 	//Layout of the attachment when first used in the render pass.
-	ImageLayout	InitialLayout = ImageLayout::GENERAL;
+	ImageLayout InitialLayout = ImageLayout::GENERAL;
 	//Layout of the attachment after use in the render pass.
-	ImageLayout	FinalLayout = ImageLayout::GENERAL;
+	ImageLayout FinalLayout = ImageLayout::GENERAL;
 };
 
 //Describes a subpass.

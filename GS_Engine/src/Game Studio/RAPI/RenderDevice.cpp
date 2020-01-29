@@ -1,6 +1,6 @@
 #include "RenderDevice.h"
 
-#include "Vulkan/VulkanRenderer.h"
+#include "Vulkan/VulkanRenderDevice.h"
 
 RAPIs RenderDevice::RenderAPI = GetRAPIs();
 RenderDevice* RenderDevice::RenderDeviceInstance = CreateRAPI();
@@ -9,9 +9,9 @@ RenderDevice* RenderDevice::CreateRAPI()
 {
 	switch (RenderAPI)
 	{
-	case RAPIs::NONE:		return nullptr;
-	case RAPIs::VULKAN:		return new VulkanRenderDevice();
-	default:				return nullptr;
+	case RAPIs::NONE: return nullptr;
+	case RAPIs::VULKAN: return new VulkanRenderDevice();
+	default: return nullptr;
 	}
 }
 

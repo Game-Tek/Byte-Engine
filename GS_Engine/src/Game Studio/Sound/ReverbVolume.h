@@ -11,5 +11,5 @@ class ReverbVolume
 	 */
 	Box extent;
 
-	void(*decayFunction)(float&, const Vector3&) = nullptr;
+	void (*decayFunction)(float&, const Vector3&) = nullptr;
 };

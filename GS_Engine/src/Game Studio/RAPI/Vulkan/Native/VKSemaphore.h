@@ -10,7 +10,7 @@ struct VkSemaphoreCreateInfo;
 
 struct GS_API VKSemaphoreCreator final : VKObjectCreator<VkSemaphore>
 {
-	VKSemaphoreCreator(VKDevice* _Device, const VkSemaphoreCreateInfo * _VkSCI);
+	VKSemaphoreCreator(VKDevice* _Device, const VkSemaphoreCreateInfo* _VkSCI);
 };
 
 class GS_API VKSemaphore final : public VKObject<VkSemaphore>

@@ -14,7 +14,7 @@ bool TextureResource::loadResource(const LoadResourceData& LRD_)
 
 	//Load  the image.
 	const auto imgdata = reinterpret_cast<char*>(stbi_load(LRD_.FullPath.c_str(), &X, &Y, &NofChannels, 0));
-	
+
 	if (imgdata) //If file is valid
 	{
 		//Load  the image.
@@ -39,7 +39,7 @@ void TextureResource::loadFallbackResource(const FString& _Path)
 	data.TextureDimensions.Height = 256;
 
 	data.TextureFormat = Format::RGB_I8;
-	
+
 	for (uint16 X = 0; X < 256; ++X)
 	{
 		for (uint16 Y = 0; Y < 256; ++Y)

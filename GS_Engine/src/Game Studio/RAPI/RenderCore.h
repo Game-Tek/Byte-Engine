@@ -2,7 +2,10 @@
 
 #include "Core.h"
 
-#define MAX_DESCRIPTORS_PER_SET 8
+struct RenderInfo
+{
+	class RenderDevice* RenderDevice = nullptr;
+};
 
 // IMAGE
 
@@ -23,12 +26,17 @@ enum class ImageLayout : uint8
 
 enum class ImageDimensions : uint8
 {
-	IMAGE_1D, IMAGE_2D, IMAGE_3D
+	IMAGE_1D,
+	IMAGE_2D,
+	IMAGE_3D
 };
 
 enum class ImageType : uint8
 {
-	COLOR, DEPTH, STENCIL, DEPTH_STENCIL
+	COLOR,
+	DEPTH,
+	STENCIL,
+	DEPTH_STENCIL
 };
 
 enum class ImageUse : uint8
@@ -50,13 +58,25 @@ enum class Format : uint8
 	//INTEGER
 
 	//R
-	R_I8, R_I16, R_I32, R_I64,
+	R_I8,
+	R_I16,
+	R_I32,
+	R_I64,
 	//RG
-	RG_I8, RG_I16, RG_I32, RG_I64,
+	RG_I8,
+	RG_I16,
+	RG_I32,
+	RG_I64,
 	//RBG
-	RGB_I8, RGB_I16, RGB_I32, RGB_I64,
+	RGB_I8,
+	RGB_I16,
+	RGB_I32,
+	RGB_I64,
 	//RGBA
-	RGBA_I8, RGBA_I16, RGBA_I32, RGBA_I64,
+	RGBA_I8,
+	RGBA_I16,
+	RGBA_I32,
+	RGBA_I64,
 	//RGBA
 	BGRA_I8,
 
@@ -65,13 +85,21 @@ enum class Format : uint8
 	//FLOATING POINT
 
 	//R
-	R_F16, R_F32, R_F64,
+	R_F16,
+	R_F32,
+	R_F64,
 	//RG
-	RG_F16, RG_F32, RG_F64,
+	RG_F16,
+	RG_F32,
+	RG_F64,
 	//RBG
-	RGB_F16, RGB_F32, RGB_F64,
+	RGB_F16,
+	RGB_F32,
+	RGB_F64,
 	//RGBA
-	RGBA_F16, RGBA_F32, RGBA_F64,
+	RGBA_F16,
+	RGBA_F32,
+	RGBA_F64,
 
 
 	//  DEPTH STENCIL
@@ -166,7 +194,7 @@ enum class ShaderDataTypes : uint8
 	TEXTURE_1D,
 	TEXTURE_2D,
 	TEXTURE_3D,
-	
+
 	TEXTURE_2D_CUBE,
 };
 
@@ -192,7 +220,11 @@ enum class CullMode : uint8
 
 enum class BlendOperation : uint8
 {
-	ADD, SUBTRACT, REVERSE_SUBTRACT, MIN, MAX
+	ADD,
+	SUBTRACT,
+	REVERSE_SUBTRACT,
+	MIN,
+	MAX
 };
 
 enum class CompareOperation : uint8
@@ -209,7 +241,14 @@ enum class CompareOperation : uint8
 
 enum class StencilCompareOperation : uint8
 {
-	KEEP, ZERO, REPLACE, INCREMENT_AND_CLAMP, DECREMENT_AND_CLAMP, INVERT, INCREMENT_AND_WRAP, DECREMENT_AND_WRAP
+	KEEP,
+	ZERO,
+	REPLACE,
+	INCREMENT_AND_CLAMP,
+	DECREMENT_AND_CLAMP,
+	INVERT,
+	INCREMENT_AND_WRAP,
+	DECREMENT_AND_WRAP
 };
 
 enum class UniformType : uint8
@@ -231,17 +270,17 @@ INLINE uint8 ShaderDataTypesSize(ShaderDataTypes _SDT)
 {
 	switch (_SDT)
 	{
-	case ShaderDataTypes::FLOAT:	return 4;
-	case ShaderDataTypes::FLOAT2:	return 4 * 2;
-	case ShaderDataTypes::FLOAT3:	return 4 * 3;
-	case ShaderDataTypes::FLOAT4:	return 4 * 4;
-	case ShaderDataTypes::INT:		return 4;
-	case ShaderDataTypes::INT2:		return 4 * 2;
-	case ShaderDataTypes::INT3:		return 4 * 3;
-	case ShaderDataTypes::INT4:		return 4 * 4;
-	case ShaderDataTypes::BOOL:		return 4;
-	case ShaderDataTypes::MAT3:		return 4 * 3 * 3;
-	case ShaderDataTypes::MAT4:		return 4 * 4 * 4;
-	default:						return 0;
+	case ShaderDataTypes::FLOAT: return 4;
+	case ShaderDataTypes::FLOAT2: return 4 * 2;
+	case ShaderDataTypes::FLOAT3: return 4 * 3;
+	case ShaderDataTypes::FLOAT4: return 4 * 4;
+	case ShaderDataTypes::INT: return 4;
+	case ShaderDataTypes::INT2: return 4 * 2;
+	case ShaderDataTypes::INT3: return 4 * 3;
+	case ShaderDataTypes::INT4: return 4 * 4;
+	case ShaderDataTypes::BOOL: return 4;
+	case ShaderDataTypes::MAT3: return 4 * 3 * 3;
+	case ShaderDataTypes::MAT4: return 4 * 4 * 4;
+	default: return 0;
 	}
 }

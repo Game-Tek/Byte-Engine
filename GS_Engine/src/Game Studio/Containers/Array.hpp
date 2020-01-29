@@ -34,7 +34,12 @@ public:
 	[[nodiscard]] const _T& front() const { return this->data[0]; }
 
 	[[nodiscard]] const _T& back() const { return this->data[this->length]; }
-	
+
+	void resize(size_t size)
+	{
+		this->length = size;
+	}
+
 	Array() = default;
 
 	Array(const std::initializer_list<_T>& _InitList) : length(_InitList.size())
@@ -50,7 +55,7 @@ public:
 	{
 		CopyToData(_Data, length);
 	}
-	
+
 	_T& operator[](const _LT i)
 	{
 		GS_DEBUG_ONLY(GS_ASSERT(i > _Size))
@@ -65,7 +70,7 @@ public:
 
 	void setLength(const _LT _length) { length = _length; }
 
-	const _T* getData()
+	_T* getData()
 	{
 		return this->data;
 	}
@@ -89,7 +94,7 @@ public:
 	//	return this->Length++;
 	//}
 
-	[[nodiscard]] _LT getLength() const	{ return this->length; }
+	[[nodiscard]] _LT getLength() const { return this->length; }
 
 	[[nodiscard]] _LT getCapacity() const { return _Size; }
 };

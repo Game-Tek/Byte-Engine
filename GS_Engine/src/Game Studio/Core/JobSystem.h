@@ -6,9 +6,9 @@
 class JobSystem
 {
 	FVector<Thread> threads;
-	
+
 public:
 	JobSystem();
-	
+
 	//Job StartJob(const Delegate& function);
 };

@@ -25,10 +25,15 @@ public:
 	[[nodiscard]] const NearFarPair& GetNearFarPair() const { return nearFar; }
 
 	void SetAperture(const float NewAperture) { Aperture = NewAperture; }
-	void SetIrisHeightMultiplier(const float NewIrisHeightMultiplier) { IrisHeightMultiplier = NewIrisHeightMultiplier; }
+
+	void SetIrisHeightMultiplier(const float NewIrisHeightMultiplier)
+	{
+		IrisHeightMultiplier = NewIrisHeightMultiplier;
+	}
+
 	void SetFOV(const float NewFOV) { FOV = NewFOV; }
 	void SetFocusDistance(const float NewFocusDistance) { FocusDistance = NewFocusDistance; }
-	void SetFocusDistance(const Vector3 & Object);
+	void SetFocusDistance(const Vector3& Object);
 	void SetWhiteBalance(const uint16 NewWhiteBalance) { WhiteBalance = NewWhiteBalance; }
 	void SetISO(const uint16 NewISO) { ISO = NewISO; }
 	void SetNearFar(const NearFarPair& _NFP) { nearFar = _NFP; }

@@ -6,9 +6,11 @@
 #include "VKCommandPool.h"
 
 //  VK_COMMANDBUFFER
-VKCommandBufferCreator::VKCommandBufferCreator(VKDevice* _Device, const VkCommandBufferAllocateInfo* _VkCBCI) : VKObjectCreator(_Device)
+VKCommandBufferCreator::
+VKCommandBufferCreator(VKDevice* _Device, const VkCommandBufferAllocateInfo* _VkCBCI) : VKObjectCreator(_Device)
 {
-	GS_VK_CHECK(vkAllocateCommandBuffers(m_Device->GetVkDevice(), _VkCBCI, &Handle), "Failed to allocate Command Buffer!")
+	GS_VK_CHECK(vkAllocateCommandBuffers(m_Device->GetVkDevice(), _VkCBCI, &Handle),
+	            "Failed to allocate Command Buffer!")
 }
 
 void VKCommandBuffer::Free(const VKCommandPool& _CP) const

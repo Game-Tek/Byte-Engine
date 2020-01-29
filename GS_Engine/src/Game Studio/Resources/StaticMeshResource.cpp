@@ -8,7 +8,10 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
-static DArray<ShaderDataTypes> Elements = { ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3 };
+static DArray<ShaderDataTypes> Elements = {
+	ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3,
+	ShaderDataTypes::FLOAT3
+};
 VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elements);
 
 VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
@@ -22,7 +25,10 @@ bool StaticMeshResource::loadResource(const LoadResourceData& LRD_)
 	Assimp::Importer Importer;
 
 	//Create Scene and import file.
-	const aiScene* Scene = Importer.ReadFile(LRD_.FullPath.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+	const aiScene* Scene = Importer.ReadFile(LRD_.FullPath.c_str(),
+	                                         aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices
+	                                         | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals |
+	                                         aiProcess_ImproveCacheLocality);
 
 	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
 	{
@@ -39,7 +45,7 @@ bool StaticMeshResource::loadResource(const LoadResourceData& LRD_)
 
 	aiMesh* InMesh = Scene->mMeshes[0];
 
-		//We allocate a new array of vertices big enough to hold the number of vertices in this mesh and assign it to the
+	//We allocate a new array of vertices big enough to hold the number of vertices in this mesh and assign it to the
 	//pointer found inside the mesh.
 	//Data->WriteTo(0, InMesh->mNumVertices);
 
@@ -110,7 +116,7 @@ void StaticMeshResource::loadFallbackResource(const FString& _Path)
 {
 }
 
-StaticMeshResource::StaticMeshResourceData* StaticMeshResource::ProcessNode(aiNode * Node, const aiScene * Scene)
+StaticMeshResource::StaticMeshResourceData* StaticMeshResource::ProcessNode(aiNode* Node, const aiScene* Scene)
 {
 	//Store inside MeshData a new Array of meshes.
 	auto MeshData = new StaticMeshResourceData[Node->mNumMeshes];
@@ -119,17 +125,16 @@ StaticMeshResource::StaticMeshResourceData* StaticMeshResource::ProcessNode(aiNo
 	for (unsigned int m = 0; m < Node->mNumMeshes; m++)
 	{
 		//Create a insertholder to store the this scene's mesh at [m].
-		aiMesh * Mesh = Scene->mMeshes[Node->mMeshes[m]];
+		aiMesh* Mesh = Scene->mMeshes[Node->mMeshes[m]];
 
 		//Store in Data at [m] a pointer to the array of vertices created for this mesh.
 		MeshData[m] = ProcessMesh(Mesh);
-
 	}
 
 	return MeshData;
 }
 
-StaticMeshResource::StaticMeshResourceData StaticMeshResource::ProcessMesh(aiMesh * InMesh)
+StaticMeshResource::StaticMeshResourceData StaticMeshResource::ProcessMesh(aiMesh* InMesh)
 {
 	//Create a mesh object to hold the mesh currently being processed.
 	StaticMeshResourceData Result;
@@ -171,7 +176,7 @@ StaticMeshResource::StaticMeshResourceData StaticMeshResource::ProcessMesh(aiMes
 		//Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
 		//Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
 		//Result.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
-		
+
 		/*
 		// BiTangent
 		Result.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;

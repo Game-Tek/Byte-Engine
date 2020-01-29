@@ -12,7 +12,7 @@ struct MaterialRenderResourceCreateInfo : public RenderResourceCreateInfo
 class MaterialRenderResource : public RenderResource
 {
 	class Material* referenceMaterial = nullptr;
-	
+
 	Array<class Texture*, 8> textures;
 
 public:

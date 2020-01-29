@@ -8,7 +8,7 @@ struct VkBufferCreateInfo;
 
 struct GS_API VKBufferCreator : VKObjectCreator<VkBuffer>
 {
-	VKBufferCreator(VKDevice* _Device, const VkBufferCreateInfo * _VkBCI);
+	VKBufferCreator(VKDevice* _Device, const VkBufferCreateInfo* _VkBCI);
 };
 
 struct VkMemoryRequirements;

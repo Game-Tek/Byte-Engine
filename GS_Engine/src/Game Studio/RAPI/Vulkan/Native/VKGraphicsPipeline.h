@@ -11,7 +11,7 @@ struct VkGraphicsPipelineCreateInfo;
 
 struct GS_API VKGraphicsPipelineCreator : VKObjectCreator<VkPipeline>
 {
-	VKGraphicsPipelineCreator(VKDevice* _Device, const VkGraphicsPipelineCreateInfo * _VGPCI);
+	VKGraphicsPipelineCreator(VKDevice* _Device, const VkGraphicsPipelineCreateInfo* _VGPCI);
 };
 
 class GS_API VKGraphicsPipeline final : public VKObject<VkPipeline>

@@ -23,7 +23,7 @@ class Material
 	MaterialResource* materialMaterialResource = nullptr;
 
 	Array<MaterialParameter, 8> parameters;
-	
+
 	byte vars[32];
 public:
 	explicit Material(const FString& _Name);
@@ -32,7 +32,7 @@ public:
 	[[nodiscard]] const char* GetMaterialName() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
-	void GetRenderingCode(FVector<ShaderInfo>& shaders_) const;  //TEMPORAL: manual for now, should then be automated.
+	void GetRenderingCode(FVector<ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
 
 	//Returns true if there is uniform set info and writes said info to the passed in string.
 	bool GetUniformSetCode(FString& _Code); //TEMPORAL: manual for now, should then be automated.
@@ -43,7 +43,7 @@ public:
 	void SetTexture(const Id& textureName, class Texture* texturePointer);
 
 	MaterialResource* GetMaterialResource() { return materialMaterialResource; }
-	
+
 	//Returns an array consisting of all of the material's dynamic parameters which change on a per instance basis. Used for building and updating shader data.
 	Array<MaterialParameter, 8> GetMaterialDynamicParameters() const { return parameters; };
 

@@ -18,7 +18,7 @@ public:
 		FString FragmentShaderCode;
 
 		FVector<FString> TextureNames;
-		
+
 		bool HasTransparency = false;
 		bool IsTwoSided = false;
 
@@ -33,22 +33,22 @@ public:
 		[[nodiscard]] const FString& GetFragmentShaderCode() const { return FragmentShaderCode; }
 
 		void Write(OutStream& OutStream_) override;
-		
+
 		friend OutStream& operator<<(OutStream& _O, MaterialData& _MD);
 		friend InStream& operator>>(InStream& _I, MaterialData& _MD);
 	};
 
 private:
 	MaterialData data;
-	
+
 public:
 
 	MaterialResource() = default;
 
-	~MaterialResource()	= default;
+	~MaterialResource() = default;
 
 	[[nodiscard]] const MaterialData& GetMaterialData() const { return data; }
-	
+
 	bool loadResource(const LoadResourceData& LRD_) override;
 	void loadFallbackResource(const FString& _Path) override;
 

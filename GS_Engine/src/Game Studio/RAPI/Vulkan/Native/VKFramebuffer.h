@@ -10,7 +10,7 @@ struct VkFramebufferCreateInfo;
 
 struct GS_API VKFramebufferCreator final : VKObjectCreator<VkFramebuffer>
 {
-	VKFramebufferCreator(VKDevice* _Device, const VkFramebufferCreateInfo * _VkFCI);
+	VKFramebufferCreator(VKDevice* _Device, const VkFramebufferCreateInfo* _VkFCI);
 };
 
 class GS_API VKFramebuffer final : public VKObject<VkFramebuffer>

@@ -5,6 +5,5 @@
  */
 class SoundListener
 {
-	
 public:
 };

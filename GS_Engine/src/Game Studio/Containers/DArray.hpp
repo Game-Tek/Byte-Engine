@@ -57,10 +57,11 @@ public:
 	[[nodiscard]] const _T& front() const { return this->data[0]; }
 
 	[[nodiscard]] const _T& back() const { return this->data[this->length]; }
-	
+
 	DArray() = default;
 
-	DArray(const std::initializer_list<_T>& _List) : capacity(_List.size()), length(_List.size()), data(allocate(_List.size()))
+	DArray(const std::initializer_list<_T>& _List) : capacity(_List.size()), length(_List.size()),
+	                                                 data(allocate(_List.size()))
 	{
 		copyLength(this->length, CCAST(_T*, _List.begin()));
 	}
@@ -74,12 +75,14 @@ public:
 		copyLength(_Length, _Data);
 	}
 
-	DArray(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(this->capacity), data(allocate(this->capacity))
+	DArray(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(this->capacity),
+	                                                     data(allocate(this->capacity))
 	{
 		copyToData(_Start, (_End - _Start) * sizeof(_T));
 	}
 
-	DArray(const DArray<_T>& _Other) : capacity(_Other.getCapacity), length(_Other.getLength), data(allocate(this->capacity))
+	DArray(const DArray<_T>& _Other) : capacity(_Other.getCapacity), length(_Other.getLength),
+	                                   data(allocate(this->capacity))
 	{
 		copyLength(this->capacity, _Other.getData);
 	}

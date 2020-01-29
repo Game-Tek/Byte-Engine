@@ -19,13 +19,12 @@ public:
 	//Sets Lumens as NewLumens.
 	void SetLumens(const float NewLumens) { Lumens = NewLumens; }
 	//Sets Color as NewColor.
-	void SetColor(const RGB & NewColor) { Color = NewColor; }
+	void SetColor(const RGB& NewColor) { Color = NewColor; }
 	//Sets Color from a color temperature.
 	void SetColor(const uint16 ColorTemperature);
 
 protected:
 	//Determines the intensity of the light in lumens.
 	float Lumens = 1000.0f;
-	RGB Color = { 0.0f , 0.0f , 0.0f };
+	RGB Color = {0.0f, 0.0f, 0.0f};
 };
-

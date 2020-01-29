@@ -4,9 +4,11 @@
 
 #include "VKDevice.h"
 
-VKRenderPassCreator::VKRenderPassCreator(VKDevice* _Device, const VkRenderPassCreateInfo* _VkRPCI) : VKObjectCreator(_Device)
+VKRenderPassCreator::
+VKRenderPassCreator(VKDevice* _Device, const VkRenderPassCreateInfo* _VkRPCI) : VKObjectCreator(_Device)
 {
-	GS_VK_CHECK(vkCreateRenderPass(m_Device->GetVkDevice(), _VkRPCI, ALLOCATOR, &Handle), "Failed to create RenderPass!");
+	GS_VK_CHECK(vkCreateRenderPass(m_Device->GetVkDevice(), _VkRPCI, ALLOCATOR, &Handle),
+	            "Failed to create RenderPass!");
 }
 
 VKRenderPass::~VKRenderPass()

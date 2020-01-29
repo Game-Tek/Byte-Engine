@@ -1,6 +1,6 @@
 #pragma once
 
-template<typename _A, typename _B>
+template <typename _A, typename _B>
 struct Pair
 {
 	_A First;

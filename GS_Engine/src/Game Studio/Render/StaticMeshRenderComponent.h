@@ -26,8 +26,13 @@ public:
 	StaticMeshRenderComponent() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
-	[[nodiscard]] RenderableInstructions* GetRenderableInstructions() const override { return &StaticMeshRenderInstructions; }
+
+	[[nodiscard]] RenderableInstructions* GetRenderableInstructions() const override
+	{
+		return &StaticMeshRenderInstructions;
+	}
+
 	[[nodiscard]] const char* GetRenderableTypeName() const override { return "StaticMesh"; }
-	
+
 	[[nodiscard]] StaticMesh* GetStaticMesh() const { return staticMesh; }
 };

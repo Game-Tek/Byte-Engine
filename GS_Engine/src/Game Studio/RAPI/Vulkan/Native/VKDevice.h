@@ -25,7 +25,8 @@ class GS_API VKDevice
 
 	void SetVk_Queues(vkQueue** _Queue, const FVector<VkDeviceQueueCreateInfo>& _QCI);
 
-	static FVector<VkDeviceQueueCreateInfo> CreateQueueInfos(QueueInfo* _QI, uint8 _QueueCount, const vkPhysicalDevice& _PD);
+	static FVector<VkDeviceQueueCreateInfo> CreateQueueInfos(QueueInfo* _QI, uint8 _QueueCount,
+	                                                         const vkPhysicalDevice& _PD);
 
 public:
 	VKDevice(const VKInstance& _Instance, const vkPhysicalDevice& _PD);

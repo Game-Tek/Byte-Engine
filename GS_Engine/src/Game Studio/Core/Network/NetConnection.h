@@ -16,7 +16,11 @@ class NetConnection
 		return ((a_ > b_) && (a_ - b_ <= 32768)) || ((a_ < b_) && (b_ - a_ > 32768));
 	}
 
-	static void setBit(Packet::AckType& a_, const uint8 bit_n_, const bool value_) { value_ ? a_ = a_ | (1 << bit_n_) : a_ = a_ & ~(1 << bit_n_); }
+	static void setBit(Packet::AckType& a_, const uint8 bit_n_, const bool value_)
+	{
+		value_ ? a_ = a_ | (1 << bit_n_) : a_ = a_ & ~(1 << bit_n_);
+	}
+
 public:
 	NetConnection();
 	~NetConnection();

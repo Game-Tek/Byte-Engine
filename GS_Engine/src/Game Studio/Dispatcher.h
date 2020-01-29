@@ -3,13 +3,13 @@
 #include "Containers/FVector.hpp"
 #include "Utility/Delegate.h"
 
-template<typename RET, typename... PARAMS>
+template <typename RET, typename... PARAMS>
 class Dispatcher
 {
 	using FunctorType = Delegate<RET(PARAMS)>;
-	
+
 	FVector<FunctorType> Delegates;
-	
+
 public:
 	void Subscribe(const FunctorType& _FT) { Delegates.emplace_back(_FT); }
 	void Unsubcribe(const FunctorType& _FT) { Delegates.pop(Delegates.find(_FT)); }

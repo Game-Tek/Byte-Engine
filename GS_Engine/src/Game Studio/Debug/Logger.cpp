@@ -10,7 +10,7 @@ LogLevel Logger::MinLogLevel;
 
 void Logger::PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...)
 {
-	if(_Level >= MinLogLevel)
+	if (_Level >= MinLogLevel)
 	{
 		SetTextColorOnLogLevel(_Level);
 
@@ -48,12 +48,11 @@ void Logger::SetTextColorOnLogLevel(LogLevel _Level)
 		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_GREEN);
 		break;
 
-	#undef ERROR
+#undef ERROR
 
 	case LogLevel::FATAL:
 		SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY);
 		break;
-
 	}
 	return;
 }

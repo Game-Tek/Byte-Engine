@@ -3,7 +3,8 @@
 #include "Resources/MaterialResource.h"
 #include "Application/Application.h"
 
-Material::Material(const FString& _Name) : materialMaterialResource(GS::Application::Get()->GetResourceManager()->GetResource<MaterialResource>(_Name))
+Material::Material(const FString& _Name) : materialMaterialResource(
+	GS::Application::Get()->GetResourceManager()->GetResource<MaterialResource>(_Name))
 {
 }
 
@@ -20,7 +21,7 @@ const char* Material::GetMaterialName() const
 void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
 {
 	shaders_.resize(2);
-	
+
 	shaders_[0].Type = ShaderType::VERTEX_SHADER;
 	shaders_[0].ShaderCode = &const_cast<FString&>(materialMaterialResource->GetMaterialData().GetVertexShaderCode());
 	shaders_[1].Type = ShaderType::FRAGMENT_SHADER;
@@ -30,9 +31,9 @@ void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
 
 void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type_, void* data_)
 {
-	for(auto& e : parameters)
+	for (auto& e : parameters)
 	{
-		if(e.ParameterName == parameter_name_)
+		if (e.ParameterName == parameter_name_)
 		{
 			memcpy(e.Data, data_, ShaderDataTypesSize(data_type_));
 
@@ -45,7 +46,6 @@ void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type
 
 void Material::SetTexture(const Id& textureName, Texture* texturePointer)
 {
-	
 }
 
 bool Material::GetHasTransparency() const { return materialMaterialResource->GetMaterialData().HasTransparency; }

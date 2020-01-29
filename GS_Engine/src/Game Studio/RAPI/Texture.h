@@ -11,7 +11,7 @@ struct TextureCreateInfo
 	size_t ImageDataSize = 0;
 	ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;
 	Format ImageFormat = Format::RGBA_I8;
-	Extent2D Extent = { 1280, 720 };
+	Extent2D Extent = {1280, 720};
 
 	uint8 Anisotropy = 0;
 };
@@ -25,6 +25,6 @@ public:
 	explicit Texture(const TextureCreateInfo& textureCreateInfo) : layout(textureCreateInfo.Layout)
 	{
 	}
-	
+
 	[[nodiscard]] ImageLayout GetImageLayout() const { return layout; }
 };

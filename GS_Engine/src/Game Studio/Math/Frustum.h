@@ -12,10 +12,10 @@ class Frustum
 	// LEFT
 	// FRONT
 	// BACK
-	
+
 public:
 	Frustum() = default;
-	
+
 	[[nodiscard]] Plane& GetTopPlane() { return Planes[0]; }
 	[[nodiscard]] Plane& GetRightPlane() { return Planes[1]; }
 	[[nodiscard]] Plane& GetBottomPlane() { return Planes[2]; }

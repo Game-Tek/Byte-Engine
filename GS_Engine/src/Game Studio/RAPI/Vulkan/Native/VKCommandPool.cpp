@@ -5,9 +5,11 @@
 #include "VKDevice.h"
 #include "VKCommandBuffer.h"
 
-VKCommandPoolCreator::VKCommandPoolCreator(VKDevice* _Device, const VkCommandPoolCreateInfo* _VkCPCI) : VKObject<VkCommandPool>(_Device)
+VKCommandPoolCreator::
+VKCommandPoolCreator(VKDevice* _Device, const VkCommandPoolCreateInfo* _VkCPCI) : VKObject<VkCommandPool>(_Device)
 {
-	GS_VK_CHECK(vkCreateCommandPool(m_Device->GetVkDevice(), _VkCPCI, ALLOCATOR, &Handle), "Failed to create Command Pool!")
+	GS_VK_CHECK(vkCreateCommandPool(m_Device->GetVkDevice(), _VkCPCI, ALLOCATOR, &Handle),
+	            "Failed to create Command Pool!")
 }
 
 VKCommandPool::~VKCommandPool()
@@ -17,7 +19,7 @@ VKCommandPool::~VKCommandPool()
 
 VKCommandBufferCreator VKCommandPool::CreateCommandBuffer() const
 {
-	VkCommandBufferAllocateInfo VkCommandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	VkCommandBufferAllocateInfo VkCommandBufferAllocateInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
 	VkCommandBufferAllocateInfo.commandBufferCount = 1;
 	VkCommandBufferAllocateInfo.commandPool = Handle;
 

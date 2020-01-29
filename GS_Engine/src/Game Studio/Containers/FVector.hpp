@@ -45,7 +45,7 @@ class FVector
 		{
 			free(this->data);
 		}
-		
+
 		this->data = nullptr;
 	}
 
@@ -68,6 +68,7 @@ class FVector
 			this->data = newData;
 		}
 	}
+
 public:
 	typedef _T* iterator;
 	typedef const _T* const_iterator;
@@ -115,6 +116,11 @@ public:
 	{
 	}
 
+	explicit FVector(const size_t _Capacity, const size_t length) : capacity(_Capacity), length(length),
+	                                                                data(allocate(this->capacity))
+	{
+	}
+
 	FVector(const size_t _Length, const _T& _Obj) : capacity(_Length), length(_Length), data(allocate(this->capacity))
 	{
 		for (size_t i = 0; i < this->length; ++i)
@@ -123,12 +129,15 @@ public:
 		}
 	}
 
-	FVector(const std::initializer_list<_T>& _InitializerList) : capacity(_InitializerList.end() - _InitializerList.begin()), length(this->capacity), data(allocate(this->capacity))
+	FVector(const std::initializer_list<_T>& _InitializerList) :
+		capacity(_InitializerList.end() - _InitializerList.begin()), length(this->capacity),
+		data(allocate(this->capacity))
 	{
 		copyArray(_InitializerList.begin(), this->data, this->length);
 	}
-	
-	FVector(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(_End - _Start), data(allocate(this->capacity))
+
+	FVector(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(_End - _Start),
+	                                                      data(allocate(this->capacity))
 	{
 		copyArray(_Start, this->data);
 	}
@@ -189,7 +198,7 @@ public:
 		this->length = 0;
 		return;
 	}
-	
+
 	void shrink(const _LT _Count)
 	{
 		this->capacity = _Count;
@@ -206,7 +215,7 @@ public:
 	{
 		reallocIfExceeds(1);
 		//copyArray(&_Obj, getElement(this->length), 1);
-		::new (this->data + this->length) _T(_Obj);
+		::new(this->data + this->length) _T(_Obj);
 		this->length += 1;
 	}
 
@@ -226,11 +235,11 @@ public:
 		this->length += _Other.length;
 	}
 
-	template<typename... Args>
+	template <typename... Args>
 	void emplace_back(Args&&... _Args)
 	{
 		reallocIfExceeds(1);
-		::new (this->data + this->length) _T(std::forward<Args>(_Args) ...);
+		::new(this->data + this->length) _T(std::forward<Args>(_Args) ...);
 		this->length += 1;
 	}
 
@@ -298,18 +307,18 @@ public:
 		{
 			if (_Obj == data[i])
 			{
-				return { true, i };
+				return {true, i};
 			}
 		}
-		
-		return { false, 0 };
+
+		return {false, 0};
 	}
 
 	//Looks for object inside of the array and when it finds it, it deletes it.
 	void eraseObject(_T& _Obj)
 	{
 		auto res = find(_Obj);
-		if(res != ~0ULL)
+		if (res != ~0ULL)
 		{
 			pop(res);
 			this->length -= 1;
@@ -326,12 +335,12 @@ public:
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE _T& operator[](const size_t index)
 	{
-		#ifdef GS_DEBUG
+#ifdef GS_DEBUG
 		if (index > this->capacity)
 		{
 			throw "Out of bounds!";
 		}
-		#endif
+#endif
 
 		return this->data[index];
 	}
@@ -339,12 +348,12 @@ public:
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE const _T& operator[](const size_t index) const
 	{
-		#ifdef GS_DEBUG
+#ifdef GS_DEBUG
 		if (index > this->capacity)
 		{
 			throw "Entered index is not accessible, array is not as large.";
 		}
-		#endif
+#endif
 
 		return this->data[index];
 	}

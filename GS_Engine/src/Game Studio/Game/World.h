@@ -15,18 +15,18 @@ class World : public Object
 	double levelRunningTime = 0;
 	double levelAdjustedRunningTime = 0;
 	float worldTimeMultiplier = 1;
-	
+
 public:
 	World();
 	virtual ~World();
 
 	void OnUpdate() override;
 
-	template<class T>
+	template <class T>
 	T* CreateWorldObject()
 	{
 		WorldObject* Obj = new T();
-		
+
 		Obj->SetID(WorldObjects.getLength());
 
 		WorldObjects.push_back(Obj);
@@ -44,7 +44,7 @@ public:
 	[[nodiscard]] Renderer& GetScene() { return WorldScene; }
 
 	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
-	
+
 	double GetWorldRunningTime() const { return levelRunningTime; }
 	double GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
 	static double GetRealRunningTime();

@@ -6,7 +6,9 @@
 #include "VKSemaphore.h"
 #include "VKSurface.h"
 
-VKSwapchainCreator::VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR* _VkSCIKHR) : VKObjectCreator<VkSwapchainKHR>(_Device)
+VKSwapchainCreator::
+VKSwapchainCreator(VKDevice* _Device, const VkSwapchainCreateInfoKHR* _VkSCIKHR) : VKObjectCreator<VkSwapchainKHR>(
+	_Device)
 {
 	auto ff = vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle);
 	//GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), _VkSCIKHR, ALLOCATOR, &Handle), "Failed to create Swapchain!");
@@ -28,25 +30,33 @@ FVector<VkImage> VKSwapchain::GetImages() const
 	return Images;
 }
 
-void VKSwapchain::Recreate(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode)
+void VKSwapchain::Recreate(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace,
+                           VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode)
 {
 	vkDestroySwapchainKHR(m_Device->GetVkDevice(), Handle, ALLOCATOR);
 
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, _PresentMode, Handle);
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = CreateSwapchainCreateInfo(
+		_Surface, _SurfaceFormat, _SurfaceColorSpace, _SurfaceExtent, _PresentMode, Handle);
 
-	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), &SwapchainCreateInfo, ALLOCATOR, &Handle), "Failed to create Swapchain!")
+	GS_VK_CHECK(vkCreateSwapchainKHR(m_Device->GetVkDevice(), &SwapchainCreateInfo, ALLOCATOR, &Handle),
+	            "Failed to create Swapchain!")
 }
 
 uint32 VKSwapchain::AcquireNextImage(const VKSemaphore& _ImageAvailable) const
 {
 	uint32 ImageIndex = 0;
-	vkAcquireNextImageKHR(m_Device->GetVkDevice(), Handle, 0xffffffffffffffff, _ImageAvailable.GetHandle(), VK_NULL_HANDLE, &ImageIndex);
+	vkAcquireNextImageKHR(m_Device->GetVkDevice(), Handle, 0xffffffffffffffff, _ImageAvailable.GetHandle(),
+	                      VK_NULL_HANDLE, &ImageIndex);
 	return ImageIndex;
 }
 
-VkSwapchainCreateInfoKHR VKSwapchain::CreateSwapchainCreateInfo(const VKSurface& _Surface, VkFormat _SurfaceFormat, VkColorSpaceKHR _SurfaceColorSpace, VkExtent2D _SurfaceExtent, VkPresentModeKHR _PresentMode, VkSwapchainKHR _OldSwapchain)
+VkSwapchainCreateInfoKHR VKSwapchain::CreateSwapchainCreateInfo(const VKSurface& _Surface, VkFormat _SurfaceFormat,
+                                                                VkColorSpaceKHR _SurfaceColorSpace,
+                                                                VkExtent2D _SurfaceExtent,
+                                                                VkPresentModeKHR _PresentMode,
+                                                                VkSwapchainKHR _OldSwapchain)
 {
-	VkSwapchainCreateInfoKHR SwapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+	VkSwapchainCreateInfoKHR SwapchainCreateInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
 
 	SwapchainCreateInfo.surface = _Surface.GetHandle();
 	SwapchainCreateInfo.minImageCount = 2;

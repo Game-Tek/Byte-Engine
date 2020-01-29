@@ -20,4 +20,3 @@ VkMemoryRequirements VKImage::GetMemoryRequirements() const
 	vkGetImageMemoryRequirements(m_Device->GetVkDevice(), Handle, &MemoryRequirements);
 	return MemoryRequirements;
 }
-

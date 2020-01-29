@@ -29,7 +29,7 @@ public:
 
 	INLINE static float4 MakeFromAligned(const float* _Data) { return _mm_load_ps(_Data); }
 	INLINE static float4 MakeFromUnaligned(const float* _Data) { return _mm_loadu_ps(_Data); }
-	
+
 	operator __m128() const { return Data; }
 
 	void SetAligned(const float* _Data) { Data = _mm_load_ps(_Data); }
@@ -40,8 +40,12 @@ public:
 	 * \param _Data float to set all of this vector's components as.
 	 * \return Returns a reference to itself.
 	 */
-	float4& operator=(const float _Data) { Data = _mm_set_ps1(_Data); return *this; }
-	
+	float4& operator=(const float _Data)
+	{
+		Data = _mm_set_ps1(_Data);
+		return *this;
+	}
+
 	//Store 128-bits (composed of 4 packed single-precision (32-bit) floating-point elements) from this vector into unaligned memory.
 	void CopyToUnalignedData(float* _Dst) const
 	{
@@ -55,7 +59,7 @@ public:
 	}
 
 	//Shuffle single-precision (32-bit) floating-point elements in a using the control in imm8, and store the results in dst.
-	template<const uint32 _a, const uint32 _b, const uint32 _c, const uint32 _d>
+	template <const uint32 _a, const uint32 _b, const uint32 _c, const uint32 _d>
 	[[nodiscard]] static INLINE float4 Shuffle(const float4& _A, const float4& _B)
 	{
 		return _mm_shuffle_ps(_A.Data, _B.Data, _MM_SHUFFLE(_a, _b, _c, _d));
@@ -89,7 +93,10 @@ public:
 		return _mm_dp_ps(_A.Data, _B.Data, 0xff);
 	}
 
-	INLINE static void Transpose(float4& a, float4& b, float4& c, float4& d) { _MM_TRANSPOSE4_PS(a, b, c, d); }
+	INLINE static void Transpose(float4& a, float4& b, float4& c, float4& d)
+	{
+		_MM_TRANSPOSE4_PS(a, b, c, d);
+	}
 
 	[[nodiscard]] INLINE float4 SquareRoot(const float4& _Other) const
 	{

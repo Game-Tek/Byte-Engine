@@ -26,24 +26,16 @@ public:
 
 #ifdef GS_DEBUG
 
-#define GS_LOG_SUCCESS(Text, ...)	Logger::PrintObjectLog(this, LogLevel::SUCCESS, Text, __VA_ARGS__);\
-
-#define GS_LOG_MESSAGE(Text, ...)	Logger::PrintObjectLog(this, LogLevel::MESSAGE, Text, __VA_ARGS__);\
-
-#define GS_LOG_WARNING(Text, ...)	Logger::PrintObjectLog(this, LogLevel::WARNING, Text, __VA_ARGS__);\
-
-#define GS_LOG_ERROR(Text, ...)		Logger::PrintObjectLog(this, LogLevel::FATAL, Text, __VA_ARGS__);\
-
+#define GS_LOG_SUCCESS(Text, ...)	Logger::PrintObjectLog(this, LogLevel::SUCCESS, Text, __VA_ARGS__);
+#define GS_LOG_MESSAGE(Text, ...)	Logger::PrintObjectLog(this, LogLevel::MESSAGE, Text, __VA_ARGS__);
+#define GS_LOG_WARNING(Text, ...)	Logger::PrintObjectLog(this, LogLevel::WARNING, Text, __VA_ARGS__);
+#define GS_LOG_ERROR(Text, ...)		Logger::PrintObjectLog(this, LogLevel::FATAL, Text, __VA_ARGS__);
 #define GS_LOG_LEVEL(_Level)		Logger::SetMinLogLevel(_Level);
 
-#define GS_BASIC_LOG_SUCCESS(Text, ...)	Logger::PrintBasicLog(LogLevel::SUCCESS, Text, __VA_ARGS__);\
-													 
-#define GS_BASIC_LOG_MESSAGE(Text, ...)	Logger::PrintBasicLog(LogLevel::MESSAGE, Text, __VA_ARGS__);\
-													 
-#define GS_BASIC_LOG_WARNING(Text, ...)	Logger::PrintBasicLog(LogLevel::WARNING, Text, __VA_ARGS__);\
-													 
-#define GS_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::FATAL, Text, __VA_ARGS__);\
-
+#define GS_BASIC_LOG_SUCCESS(Text, ...)	Logger::PrintBasicLog(LogLevel::SUCCESS, Text, __VA_ARGS__);
+#define GS_BASIC_LOG_MESSAGE(Text, ...)	Logger::PrintBasicLog(LogLevel::MESSAGE, Text, __VA_ARGS__);
+#define GS_BASIC_LOG_WARNING(Text, ...)	Logger::PrintBasicLog(LogLevel::WARNING, Text, __VA_ARGS__);
+#define GS_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::FATAL, Text, __VA_ARGS__);
 #else
 
 #define GS_LOG_SUCCESS(Text, ...)
@@ -58,4 +50,3 @@ public:
 
 #endif
 };
-

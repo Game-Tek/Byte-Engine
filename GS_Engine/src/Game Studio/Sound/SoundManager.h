@@ -12,7 +12,7 @@ public:
 
 	[[nodiscard]] auto GetActiveSoundMixer() const { return activeSoundMixer; }
 
-	template<typename _T>
+	template <typename _T>
 	void SwapAudioMixer()
 	{
 		delete activeSoundMixer;

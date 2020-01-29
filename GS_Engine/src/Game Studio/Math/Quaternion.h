@@ -9,7 +9,7 @@ public:
 
 	//Y component of this quaternion.
 	float Y = 0.0f;
-	
+
 	//Z component of this quaternion.
 	float Z = 0.0f;
 
@@ -23,7 +23,7 @@ public:
 	}
 
 	explicit Quaternion(const class Rotator& rotator);
-	
+
 	~Quaternion() = default;
 
 	Quaternion operator+(const float Other) const
@@ -31,12 +31,12 @@ public:
 		return Quaternion(X + Other, Y + Other, Z + Other, Q + Other);
 	}
 
-	Quaternion operator+(const Quaternion & Other) const
+	Quaternion operator+(const Quaternion& Other) const
 	{
 		return Quaternion(X + Other.X, Y + Other.Y, Z + Other.Y, Q + Other.Z);
 	}
 
-	Quaternion & operator+=(const float Other)
+	Quaternion& operator+=(const float Other)
 	{
 		X += Other;
 		Y += Other;
@@ -46,7 +46,7 @@ public:
 		return *this;
 	}
 
-	Quaternion operator+=(const Quaternion & Other)
+	Quaternion operator+=(const Quaternion& Other)
 	{
 		X += Other.X;
 		Y += Other.Y;
@@ -66,12 +66,12 @@ public:
 		return Quaternion(X - Other, Y - Other, Z - Other, Q - Other);
 	}
 
-	Quaternion operator-(const Quaternion & Other) const
+	Quaternion operator-(const Quaternion& Other) const
 	{
 		return Quaternion(X - Other.X, Y - Other.Y, Z - Other.Y, Q - Other.Z);
 	}
 
-	Quaternion & operator-=(const float Other)
+	Quaternion& operator-=(const float Other)
 	{
 		X -= Other;
 		Y -= Other;
@@ -81,7 +81,7 @@ public:
 		return *this;
 	}
 
-	Quaternion operator-=(const Quaternion & Other)
+	Quaternion operator-=(const Quaternion& Other)
 	{
 		X -= Other.X;
 		Y -= Other.Y;
@@ -108,7 +108,7 @@ public:
 	//	return Result;
 	//}
 
-	Quaternion & operator*=(const float Other)
+	Quaternion& operator*=(const float Other)
 	{
 		X *= Other;
 		Y *= Other;
@@ -133,12 +133,12 @@ public:
 		return Quaternion(X / Other, Y / Other, Z / Other, Q / Other);
 	}
 
-	Quaternion operator/(const Quaternion & Other)
+	Quaternion operator/(const Quaternion& Other)
 	{
 		return Quaternion(X / Other.X, Y / Other.X, Z / Other.Z, Q / Other.Q);
 	}
 
-	Quaternion & operator/=(const float Other)
+	Quaternion& operator/=(const float Other)
 	{
 		X /= Other;
 		Y /= Other;
@@ -148,7 +148,7 @@ public:
 		return *this;
 	}
 
-	Quaternion & operator/=(const Quaternion & Other)
+	Quaternion& operator/=(const Quaternion& Other)
 	{
 		X /= Other.X;
 		Y /= Other.Y;

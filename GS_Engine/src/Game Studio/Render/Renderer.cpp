@@ -15,7 +15,7 @@
 
 #include "ScreenQuad.h"
 
-Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
+Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -24,16 +24,16 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	RC = RenderDevice::Get()->CreateRenderContext(RCCI);
 
 	auto SCImages = RC->GetSwapchainImages();
-	
+
 	ImageCreateInfo CACI;
-	CACI.Extent = Extent3D{ Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1 };
+	CACI.Extent = Extent3D{Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1};
 	CACI.Dimensions = ImageDimensions::IMAGE_2D;
 	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
 	CACI.Type = ImageType::DEPTH_STENCIL;
 	CACI.ImageFormat = Format::DEPTH24_STENCIL8;
 	depthTexture = RenderDevice::Get()->CreateImage(CACI);
 
-	
+
 	RenderPassCreateInfo RPCI;
 	RenderPassDescriptor RPD;
 	AttachmentDescriptor SIAD;
@@ -53,18 +53,18 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	depth_attachment.FinalLayout = ImageLayout::DEPTH_STENCIL_ATTACHMENT;
 	depth_attachment.LoadOperation = LoadOperations::CLEAR;
 	depth_attachment.StoreOperation = StoreOperations::UNDEFINED;
-	
+
 	RPD.DepthStencilAttachment = depth_attachment;
 
-	
+
 	SubPassDescriptor SPD;
 	AttachmentReference SubPassWriteAttachmentReference;
 	SubPassWriteAttachmentReference.Layout = ImageLayout::COLOR_ATTACHMENT;
 	SubPassWriteAttachmentReference.Index = 0;
 
 	SPD.WriteColorAttachments.push_back(&SubPassWriteAttachmentReference);
-	
-	
+
+
 	AttachmentReference SubPassReadAttachmentReference;
 	SubPassReadAttachmentReference.Layout = ImageLayout::UNDEFINED;
 	SubPassReadAttachmentReference.Index = ATTACHMENT_UNUSED;
@@ -74,29 +74,26 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	depth_reference.Layout = ImageLayout::DEPTH_STENCIL_ATTACHMENT;
 	depth_reference.Index = 1;
 	SPD.DepthAttachmentReference = &depth_reference;
-	
+
 	RPD.SubPasses.push_back(&SPD);
 	RPCI.Descriptor = RPD;
 	RP = RenderDevice::Get()->CreateRenderPass(RPCI);
 
-	
-	UniformLayoutCreateInfo ULCI;
+
+	BindingLayoutCreateInfo ULCI;
 	ULCI.DescriptorCount = 3;
-	ULCI.PipelineUniformSets[0].UniformSetType = UniformType::UNIFORM_BUFFER;
-	ULCI.PipelineUniformSets[0].ShaderStage = ShaderType::VERTEX_SHADER;
-	ULCI.PipelineUniformSets[0].UniformSetUniformsCount = 1;
-	UniformSet uniform_set;
+	ULCI.LayoutBindings[0].BindingType = UniformType::UNIFORM_BUFFER;
+	ULCI.LayoutBindings[0].ShaderStage = ShaderType::VERTEX_SHADER;
+	ULCI.LayoutBindings[0].ArrayLength = 1;
+	BindingDescriptor uniform_set;
 	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
-	uniform_set.UniformSetType = UniformType::COMBINED_IMAGE_SAMPLER;
-	uniform_set.UniformSetUniformsCount = 1;
-	ULCI.PipelineUniformSets[1] = uniform_set;
-	ULCI.PipelineUniformSets.setLength(2);
-	
+	uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
+	uniform_set.ArrayLength = 1;
+	ULCI.LayoutBindings[1] = uniform_set;
+	ULCI.LayoutBindings.setLength(2);
+
 	PushConstant MyPushConstant;
-	MyPushConstant.Size = sizeof(Matrix4);
-	ULCI.PushConstant = &MyPushConstant;
-	
-	UL = RenderDevice::Get()->CreateUniformLayout(ULCI);
+	MyPushConstant.Size = sizeof(uint32);
 
 	UniformBufferCreateInfo UBCI;
 	UBCI.Size = sizeof(Matrix4);
@@ -108,8 +105,8 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 		FramebufferCreateInfo FBCI;
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
-		FBCI.Images = DArray<Image*>() = { SCImages[i], depthTexture };
-		FBCI.ClearValues = { {0, 0, 0, 0 }, {1, 0, 0, 0} };
+		FBCI.Images = DArray<Image*>() = {SCImages[i], depthTexture};
+		FBCI.ClearValues = {{0, 0, 0, 0}, {1, 0, 0, 0}};
 		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
 	}
 
@@ -127,12 +124,14 @@ Renderer::Renderer() : Framebuffers(3), ViewMatrix(1), ViewProjectionMatrix(1)
 	gpci.VDescriptor = &ScreenQuad::VD;
 	gpci.PipelineDescriptor.BlendEnable = false;
 	gpci.ActiveWindow = Win;
-	
-	FString VS("#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0, row_major) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
-	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::VERTEX_SHADER, &VS });
-	
-	FString FS("#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(binding = 1) uniform sampler2D texSampler;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
-	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ ShaderType::FRAGMENT_SHADER, &FS });
+
+	FString VS(
+		"#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0, row_major) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
+	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ShaderType::VERTEX_SHADER, &VS});
+
+	FString FS(
+		"#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(binding = 1) uniform sampler2D texSampler;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
+	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ShaderType::FRAGMENT_SHADER, &FS});
 
 	FullScreenRenderingPipeline = RenderDevice::Get()->CreateGraphicsPipeline(gpci);
 }
@@ -161,30 +160,22 @@ void Renderer::OnUpdate()
 	GS_DEBUG_ONLY(PipelineSwitches = 0)
 	GS_DEBUG_ONLY(DrawnComponents = 0)
 	/*Update debug vars*/
-	
-	UpdateMatrices();
-	
-	UniformBufferUpdateInfo uniform_buffer_update_info;
-	uniform_buffer_update_info.Data = &ViewProjectionMatrix;
-	uniform_buffer_update_info.Size = sizeof(Matrix4);
-	UB->UpdateBuffer(uniform_buffer_update_info);
 
-	RC->BeginRecording();	
-	
+	UpdateViews();
+
+	UpdateRenderables();
+
+	RC->BeginRecording();
+
 	RenderPassBeginInfo RPBI;
 	RPBI.RenderPass = RP;
 	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
 
 	RC->BeginRenderPass(RPBI);
 
-	RC->BindUniformLayout(UL);
-
 	//BindPipeline(FullScreenRenderingPipeline);
 	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 
-	
-	UpdateRenderables();
-	
 	RenderRenderables();
 
 	RC->EndRenderPass(RP);
@@ -192,7 +183,7 @@ void Renderer::OnUpdate()
 	RC->EndRecording();
 
 	RC->AcquireNextImage();
-	
+
 	RC->Flush();
 	RC->Present();
 }
@@ -241,11 +232,11 @@ MeshRenderResource* Renderer::CreateMesh(StaticMesh* _SM)
 MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 {
 	auto Res = Pipelines.find(Id(Material_->GetMaterialName()));
-	
+
 	if (Res == Pipelines.end())
 	{
 		auto NP = CreatePipelineFromMaterial(Material_);
-		Pipelines.insert({ Id(Material_->GetMaterialName()).GetID(), NP });
+		Pipelines.insert({Id(Material_->GetMaterialName()).GetID(), NP});
 	}
 
 	MaterialRenderResourceCreateInfo material_render_resource_create_info;
@@ -253,35 +244,37 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 
 	for (uint8 i = 0; i < Material_->GetMaterialResource()->GetMaterialData().TextureNames.getLength(); ++i)
 	{
-		auto texture_resource = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(Material_->GetMaterialResource()->GetMaterialData().TextureNames[i]);
-		
+		auto texture_resource = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(
+			Material_->GetMaterialResource()->GetMaterialData().
+			           TextureNames[i]);
+
 		TextureCreateInfo texture_create_info;
-		texture_create_info.ImageData		= texture_resource->GetTextureData().ImageData;
-		texture_create_info.ImageDataSize	= texture_resource->GetTextureData().imageDataSize;
-		texture_create_info.Extent			= texture_resource->GetTextureData().TextureDimensions;
-		texture_create_info.ImageFormat		= texture_resource->GetTextureData().TextureFormat;
-		texture_create_info.Layout			= ImageLayout::SHADER_READ;
+		texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
+		texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
+		texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;
+		texture_create_info.ImageFormat = texture_resource->GetTextureData().TextureFormat;
+		texture_create_info.Layout = ImageLayout::SHADER_READ;
 
 		auto texture = RenderDevice::Get()->CreateTexture(texture_create_info);
 
-		UniformLayoutUpdateInfo uniform_layout_update_info;
-		UniformSet uniform;
-		uniform.UniformSetType = UniformType::UNIFORM_BUFFER;
+		BindingSetUpdateInfo uniform_layout_update_info;
+		BindingDescriptor uniform;
+		uniform.BindingType = UniformType::UNIFORM_BUFFER;
 		uniform.ShaderStage = ShaderType::VERTEX_SHADER;
-		uniform.UniformSetUniformsCount = 1;
-		uniform.UniformData = UB;
-		uniform_layout_update_info.PipelineUniformSets.push_back(uniform);
-		UniformSet uniform_set;
+		uniform.ArrayLength = 1;
+		uniform.BindingResource = UB;
+		uniform_layout_update_info.LayoutBindings.push_back(uniform);
+		BindingDescriptor uniform_set;
 		uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
-		uniform_set.UniformData = texture;
-		uniform_set.UniformSetType = UniformType::COMBINED_IMAGE_SAMPLER;
-		uniform_set.UniformSetUniformsCount = 1;
-		uniform_layout_update_info.PipelineUniformSets.push_back(uniform_set);
-		UL->UpdateUniformSet(uniform_layout_update_info);
-		
+		uniform_set.BindingResource = texture;
+		uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
+		uniform_set.ArrayLength = 1;
+		uniform_layout_update_info.LayoutBindings.push_back(uniform_set);
+		UL->UpdateBindingSet(uniform_layout_update_info);
+
 		material_render_resource_create_info.textures.push_back(texture);
 	}
-	
+
 	return new MaterialRenderResource(material_render_resource_create_info);
 }
 
@@ -298,7 +291,7 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 	{
 		GPCI.PipelineDescriptor.Stages.push_back(e);
 	}
-	
+
 	GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
 	GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
 	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
@@ -311,83 +304,100 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
 }
 
-void Renderer::UpdateMatrices()
+void Renderer::UpdateViews()
 {
-	//We get and store the camera's position so as to not access it several times.
-	const Vector3 CamPos = GetActiveCamera()->GetPosition();
-	
-	//We set the view matrix's corresponding component to the inverse of the camera's position to make the matrix a translation matrix in the opposite direction of the camera.
+	for (auto& view : perViewData)
+	{
+		//We get and store the camera's position so as to not access it several times.
+		const Vector3 CamPos = GetActiveCamera()->GetPosition();
 
-	ViewMatrix(0, 3) = -CamPos.X;
-	ViewMatrix(1, 3) = -CamPos.Y;
-	ViewMatrix(2, 3) = CamPos.Z;
+		view.ViewMatrix.MakeIdentity(); //Reset view matrix or it will accumulate operation over time(BAD).
 
-	//ViewMatrix.MakeIdentity();
-	
-	Transform3 camera_transform;
-	camera_transform.Position.X = -CamPos.X;
-	camera_transform.Position.Y = -CamPos.Y;
-	camera_transform.Position.Z = CamPos.Z;
-	camera_transform.Rotation = GetActiveCamera()->GetTransform().Rotation;
+		Transform3 camera_transform;
+		camera_transform.Position.X = -CamPos.X;
+		camera_transform.Position.Y = -CamPos.Y;
+		camera_transform.Position.Z = CamPos.Z;
+		camera_transform.Rotation = GetActiveCamera()->GetTransform().Rotation;
 
-	auto t = GetActiveCamera()->GetTransform().Rotation;
+		auto t = GetActiveCamera()->GetTransform().Rotation;
 
-	//Vector3 direction(GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.X)) * GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.Y)), GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.X)), GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.X)) * GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.Y)));
-	//Vector3 right(GSM::Sine(GSM::DegreesToRadians(camera_transform.Rotation.Y - 90)), 0, GSM::Cosine(GSM::DegreesToRadians(camera_transform.Rotation.Y - 90)));
-	//Vector3 up = GSM::Cross(right, direction);
-	//
-	//GSM::Rotate(ViewMatrix, GSM::RotatorToQuaternion(Rotator(up.X, up.Y, up.Z)));/*camera_transform.Rotation*/
-	//GSM::Rotate(ViewMatrix, t);
+		//GSM::Rotate(view.ViewMatrix, t);
 
-	//ViewMatrix *= GSM::NormalToRotation(Vector3(0, 0, 0));
-	
-	//GSM::Translate(ViewMatrix, camera_transform.Position);
+		GSM::Translate(view.ViewMatrix, camera_transform.Position);
 
-	auto& nfp = GetActiveCamera()->GetNearFarPair();
-	
-	BuildPerspectiveMatrix(ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
-	
-	ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
+		auto& nfp = GetActiveCamera()->GetNearFarPair();
+
+		BuildPerspectiveMatrix(view.ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First,
+		                       nfp.Second);
+
+		view.ViewProjectionMatrix = view.ProjectionMatrix * view.ViewMatrix;
+	}
 }
 
 void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
 	auto ri = _RC->GetRenderableInstructions();
-	
-	CreateInstanceResourcesInfo CIRI{ _RC, this };
+
+	CreateInstanceResourcesInfo CIRI{_RC, this};
 	CIRI.RenderComponentCreateInfo = _RCCI;
 	ri->CreateInstanceResources(CIRI);
-	
-	ComponentToInstructionsMap.insert(std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
+
+	ComponentToInstructionsMap.insert(
+		std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
 }
 
 void Renderer::UpdateRenderables()
 {
+	//for (auto& e : ComponentToInstructionsMap)
+	//{
+	//	auto ri = e.second->GetRenderableInstructions();
+	//
+	//	BindTypeResourcesInfo btpi{ this };
+	//	ri->BindTypeResources(btpi);
+	//}
+
+	uint32 i = 0;
+
 	for (auto& e : ComponentToInstructionsMap)
 	{
-		auto ri = e.second->GetRenderableInstructions();
+		GSM::Translate(perInstanceTransform[i], e.second->GetOwner()->GetPosition());
+		perInstanceTransform[i] = perViewData[0].ViewProjectionMatrix * perInstanceTransform[i];
 
-		BindTypeResourcesInfo btpi{ this };
-		ri->BindTypeResources(btpi);
+		++i;
 	}
+
+	//UL->UpdateBindingSet()
 }
 
 void Renderer::RenderRenderables()
 {
 	BindPipeline(Pipelines.begin()->second);
 
+	uint32 i = 0;
+
+	PushConstantsInfo push_constants_info;
+	push_constants_info.Offset = 0;
+	push_constants_info.Size = sizeof(uint32);
+
 	for (auto& e : ComponentToInstructionsMap)
 	{
 		auto ri = e.second->GetRenderableInstructions();
-		
-		DrawInstanceInfo dii{ this, e.second };
+
+		push_constants_info.Data = &i;
+		RC->UpdatePushConstant(push_constants_info);
+
+		DrawInstanceInfo dii{this, e.second};
 		ri->DrawInstance(dii);
+
+		++i;
 	}
 }
 
-void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near, const float _Far)
+void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near,
+                                      const float _Far)
 {
-	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f)); //Tangent of half the vertical view angle.
+	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f));
+	//Tangent of half the vertical view angle.
 	const auto f = 1 / tan_half_fov;
 
 	//Zero to one
@@ -397,17 +407,17 @@ void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const 
 	_Matrix(0, 1) = 0.f;
 	_Matrix(0, 2) = 0.f;
 	_Matrix(0, 3) = 0.f;
-	
+
 	_Matrix(1, 0) = 0.f;
 	_Matrix(1, 1) = -f;
 	_Matrix(1, 2) = 0.f;
 	_Matrix(1, 3) = 0.f;
-	
+
 	_Matrix(2, 0) = 0.f;
 	_Matrix(2, 1) = 0.f;
 	_Matrix(2, 2) = -((_Far + _Near) / (_Far - _Near));
 	_Matrix(2, 3) = -((2.f * _Far * _Near) / (_Far - _Near));
-	
+
 	_Matrix(3, 0) = 0.f;
 	_Matrix(3, 1) = 0.f;
 	_Matrix(3, 2) = -1.f;
@@ -415,7 +425,7 @@ void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const 
 }
 
 void Renderer::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
-	const float _Bottom, const float _Near, const float _Far)
+                               const float _Bottom, const float _Near, const float _Far)
 {
 	//Zero to one
 	//Left handed

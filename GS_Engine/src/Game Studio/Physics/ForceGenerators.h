@@ -31,7 +31,7 @@ public:
 class MagnetGenerator : public ForceGenerator
 {
 	SphereWithFalloff effectVolume;
-	
+
 public:
 	const char* GetForceType() override { return "Magnet"; }
 };
@@ -40,7 +40,7 @@ class WindGenerator : public ForceGenerator
 {
 	Vector3 windDirection;
 	BoxWithFalloff effectVolume;
-	
+
 public:
 	const char* GetForceType() override { return "Wind"; }
 };
@@ -49,7 +49,7 @@ class DirectionalWindGenerator : public ForceGenerator
 {
 	Quaternion windOrientation;
 	ConeWithFalloff windDirection;
-	
+
 public:
 	const char* GetForceType() override { return "Directional Wind"; }
 };

@@ -19,10 +19,10 @@ class SoundMixerChannelEffect
 	 * \brief Determines the effects intensity when used in a channel.
 	 */
 	float effectIntensity = 0.0f;
-	
+
 public:
 	virtual ~SoundMixerChannelEffect();
-	
+
 	virtual void Process(const AudioBuffer& _AudioBuffer) = 0;
 };
 
@@ -41,7 +41,7 @@ struct SoundMixerChannelEffectRemoveParameters
 	/**
 	 * \brief Pointer to the function to be used for fading out the effect. If any fading out is applied at all.
 	 */
-	void(*FadeFunction)() = nullptr;
+	void (*FadeFunction)() = nullptr;
 };
 
 class SoundMixer
@@ -49,7 +49,7 @@ class SoundMixer
 	class SoundMixerChannel
 	{
 		friend class SoundMixer;
-		
+
 		/**
 		 * \brief Defines the type for a Pair holding a bool to determine whether the sound is virtualized, and a Player* to know which Player to grab the data from.
 		 */
@@ -70,7 +70,7 @@ class SoundMixer
 		 * \brief Holds an array of sounds which are to be played.
 		 */
 		FVector<PlayingSounds> playingSounds;
-		
+
 		/**
 		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.
 		 */
@@ -79,12 +79,12 @@ class SoundMixer
 	public:
 		~SoundMixerChannel()
 		{
-			for(auto& e : effects)
+			for (auto& e : effects)
 			{
 				delete e;
 			}
 		}
-		
+
 		void SetMixVolume(const float _MixVolume) { mixVolume = _MixVolume; }
 
 		/**
@@ -92,7 +92,7 @@ class SoundMixer
 		 * \tparam _T Class of effect
 		 * \return Effect* to the newly created effect. Could be used to set parameters.
 		 */
-		template<class _T>
+		template <class _T>
 		SoundMixerChannelEffect* AddEffect()
 		{
 			SoundMixerChannelEffect* new_effect = new _T();
@@ -102,15 +102,15 @@ class SoundMixer
 
 		void RemoveEffect(const SoundMixerChannelEffectRemoveParameters& _ERP);
 	};
-	
+
 	/**
 	 * \brief Stores every channel available.
 	 */
 	//HashMap<SoundMixerChannel> channels;
-	
+
 public:
 	void OnUpdate();
-	
+
 	void RegisterNewChannel(const SoundMixerChannel& _Channel)
 	{
 		//channels.TryEmplace;

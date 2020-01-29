@@ -44,12 +44,8 @@ public:
 	void OnUpdate() override
 	{
 		auto i_m = GS::Application::Get()->GetInputManager();
-		//
-		MyCamera.GetTransform().Rotation *= Quaternion(Rotator(i_m.GetMouseOffset().Y, i_m.GetMouseOffset().X, 0));
-		//
-		auto totrot = Rotator(i_m.GetMouseState().MousePosition.Y, i_m.GetMouseState().MousePosition.X, 0);
-
-		GS_LOG_MESSAGE("NormMousePos: X: %f, Y: %f", i_m.GetMouseState().MousePosition.X, i_m.GetMouseState().MousePosition.Y)
+		
+		accumRotation += Rotator(i_m.GetMouseOffset().X * 50, (-i_m.GetMouseOffset().Y * 50) * GSM::Cosine(accumRotation.X), (-i_m.GetMouseOffset().Y * 50) * GSM::Sine(accumRotation.X));
 		
 		Vector3 pos;
 		pos.X += i_m.GetKeyState(KeyboardKeys::D) ? 0.5 : 0;
@@ -59,15 +55,12 @@ public:
 		pos.Z += i_m.GetKeyState(KeyboardKeys::W) ? 0.5 : 0;
 		pos.Z -= i_m.GetKeyState(KeyboardKeys::S) ? 0.5 : 0;
 
-		pos *= MyCamera.GetTransform().Rotation;
+		//pos *= MyCamera.GetTransform().Rotation;
 		MyCamera.GetTransform().Position += pos;
 
+		//MyCamera.GetTransform().Rotation = Quaternion(accumRotation);
 
-		//MyCamera.GetTransform().Rotation = GSM::RotatorToQuaternion(rot) * MyCamera.GetTransform().Rotation;
-		//MyCamera.GetTransform().Rotation *= corrected;
-		//MyCamera.GetTransform().Rotation *= Quaternion(0, 1, 0, 0);
-
-		//MyCamera.GetFOV() -= i_m.GetMouseState().MouseWheelMove;
+		MyCamera.GetFOV() -= i_m.GetMouseState().MouseWheelMove;
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "TestObject"; }

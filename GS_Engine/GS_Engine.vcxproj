@@ -175,7 +175,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Image.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderMesh.h" />
-    <ClInclude Include="src\Game Studio\RAPI\UniformLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Bindings.h" />
     <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
@@ -213,7 +213,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
     <ClInclude Include="src\Game Studio\Camera.h" />
@@ -252,7 +252,7 @@
     <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h" />
     <ClInclude Include="src\Game Studio\Math\Vector4.h" />
     <ClInclude Include="src\Game Studio\Resources\TextureResource.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.h" />
@@ -318,7 +318,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformLayout.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp" />
@@ -331,7 +331,7 @@
     <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderer.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\Native\VKCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.cpp" />

@@ -6,7 +6,7 @@
 
 VKBufferCreator VulkanUniformBuffer::CreateBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI)
 {
-	VkBufferCreateInfo BufferCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	VkBufferCreateInfo BufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 	BufferCreateInfo.size = _BCI.Size;
 	BufferCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
 	BufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -18,14 +18,18 @@ VKMemoryCreator VulkanUniformBuffer::CreateMemory(VKDevice* _Device)
 {
 	const auto MemReqs = Buffer.GetMemoryRequirements();
 
-	VkMemoryAllocateInfo MemoryAllocateInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	VkMemoryAllocateInfo MemoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	MemoryAllocateInfo.allocationSize = MemReqs.size;
-	MemoryAllocateInfo.memoryTypeIndex = _Device->FindMemoryType(MemReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	MemoryAllocateInfo.memoryTypeIndex = _Device->FindMemoryType(MemReqs.memoryTypeBits,
+	                                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+	                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 	return VKMemoryCreator(_Device, &MemoryAllocateInfo);
 }
 
-VulkanUniformBuffer::VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI) : Buffer(CreateBuffer(_Device, _BCI)), Memory(CreateMemory(_Device))
+VulkanUniformBuffer::
+VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI) : Buffer(CreateBuffer(_Device, _BCI)),
+                                                                              Memory(CreateMemory(_Device))
 {
 	Memory.BindBufferMemory(Buffer);
 	MappedMemoryPointer = Memory.MapMemory(0, _BCI.Size);

@@ -2,12 +2,13 @@
 
 #include "Core.h"
 #include "Containers/FString.h"
+#include "Containers/Array.hpp"
 
 #include "RenderCore.h"
 #include "RenderMesh.h"
 
 
-struct GS_API StencilState
+struct StencilState
 {
 	StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
 	StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
@@ -15,19 +16,19 @@ struct GS_API StencilState
 	CompareOperation CompareOperation = CompareOperation::NEVER;
 };
 
-struct GS_API StencilOperations
+struct StencilOperations
 {
 	StencilState Front;
 	StencilState Back;
 };
 
-struct GS_API ShaderInfo
+struct ShaderInfo
 {
 	ShaderType Type = ShaderType::VERTEX_SHADER;
 	FString* ShaderCode = nullptr;
 };
 
-struct GS_API PipelineDescriptor
+struct PipelineDescriptor
 {
 	DArray<ShaderInfo> Stages = DArray<ShaderInfo>(8);
 	CullMode CullMode = CullMode::CULL_NONE;
@@ -40,21 +41,32 @@ struct GS_API PipelineDescriptor
 };
 
 class RenderPass;
-class UniformLayout;
+class BindingLayout;
 
-class GS_API GraphicsPipeline
+class Pipeline
+{
+};
+
+class GraphicsPipeline : public Pipeline
 {
 public:
 };
 
-class Window;
+struct PushConstant
+{
+	size_t Size = 0;
+	ShaderType Stage = ShaderType::ALL_STAGES;
+};
 
-struct GS_API GraphicsPipelineCreateInfo
+struct GraphicsPipelineCreateInfo : RenderInfo
 {
 	RenderPass* RenderPass = nullptr;
-	Window* ActiveWindow = nullptr;
+	class Window* ActiveWindow = nullptr;
 	VertexDescriptor* VDescriptor = nullptr;
 	PipelineDescriptor PipelineDescriptor;
-	UniformLayout* UniformLayout = nullptr;
+	BindingLayout* UniformLayout = nullptr;
 	GraphicsPipeline* ParentPipeline = nullptr;
+
+	PushConstant* PushConstant = nullptr;
+	Array<class BindingsSet*, 16> BindingsSets;
 };

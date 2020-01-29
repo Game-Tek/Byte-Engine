@@ -22,7 +22,7 @@ typedef double real;
 using GS_HASH_TYPE = uint_64;
 
 #ifdef GS_PLATFORM_WIN
-	#define INLINE __forceinline
+#define INLINE __forceinline
 #else
 	#define inline
 #endif
@@ -30,19 +30,19 @@ using GS_HASH_TYPE = uint_64;
 //Library import/export.
 
 #ifdef GS_PLATFORM_WIN
-	#ifdef GS_BUILD
-		#define GS_API //__declspec(dllexport)
-	#else
+#ifdef GS_BUILD
+#define GS_API //__declspec(dllexport)
+#else
 		#define GS_API //__declspec(dllimport)
-	#endif
+#endif
 #endif
 
 #ifdef GS_PLATFORM_WIN
-	#ifdef GS_BUILD
-		#define GS_EXPORT_ONLY __declspec(dllexport)
-	#else
+#ifdef GS_BUILD
+#define GS_EXPORT_ONLY __declspec(dllexport)
+#else
 		#define GS_EXPORT_ONLY
-	#endif
+#endif
 #endif
 
 //Class setup simplification.
@@ -53,7 +53,7 @@ using GS_HASH_TYPE = uint_64;
 
 //Assert
 #ifdef GS_DEBUG
-	#define GS_ASSERT(func, ...) if ((func)) __debugbreak();
+#define GS_ASSERT(func, ...) if ((func)) __debugbreak();
 #else
 	#define GS_ASSERT(func, ...) func;
 #endif

@@ -16,12 +16,11 @@ struct RenderComponentCreateInfo;
  */
 struct CreateInstanceResourcesInfo
 {
-	
 	/**
 	 * \brief Pointer to the render component being created.
 	 */
 	RenderComponent* const RenderComponent = nullptr;
-	
+
 	/**
 	 * \brief Pointer to the scene creating the render component.
 	 */
@@ -31,7 +30,7 @@ struct CreateInstanceResourcesInfo
 	 * \brief Pointer to a RenderComponentCreateInfo which contains information specified during construction for how to instantiate this RenderComponent.
 	 */
 	RenderComponentCreateInfo* RenderComponentCreateInfo = nullptr;
-	
+
 	StaticMesh* StaticMesh = nullptr;
 	Material* Material = nullptr;
 };
@@ -58,12 +57,11 @@ struct BindTypeResourcesInfo
  */
 struct DrawInstanceInfo
 {
-	
 	/**
 	 * \brief Pointer to the scene rendering the render component.
 	 */
 	Renderer* Scene = nullptr;
-	
+
 	/**
 	 * \brief Pointer to the render component to be rendered.
 	 */
@@ -74,7 +72,7 @@ struct DrawInstanceInfo
 struct RenderableInstructions
 {
 	RenderableInstructions() = default;
-	
+
 	//FString RenderableTypeName = FString("null");
 
 	//This function should create all required data/resources for a single object of the type being described.

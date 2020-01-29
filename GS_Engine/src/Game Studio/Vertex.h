@@ -17,9 +17,9 @@ struct GS_API Vertex2D
 
 struct GS_API Vertex
 {
-	Vector3				Position;
-	Vector3				Normal;
-	TextureCoordinates	TextCoord;
-	Vector3				Tangent;
-	Vector3				BiTangent;
+	Vector3 Position;
+	Vector3 Normal;
+	TextureCoordinates TextCoord;
+	Vector3 Tangent;
+	Vector3 BiTangent;
 };

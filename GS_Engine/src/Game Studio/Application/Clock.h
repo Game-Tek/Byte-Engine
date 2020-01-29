@@ -58,13 +58,13 @@ public:
 
 	//Returns the real seconds elapsed since the last game update (tick).
 	[[nodiscard]] double GetDeltaTime() const;
-	
+
 	//Returns the delta time adjusted for time dilation.
 	[[nodiscard]] double GetGameDeltaTime() const;
-	
+
 	//Returns the time the game has been running in real seconds.
 	[[nodiscard]] double GetElapsedTime() const;
-	
+
 	//Returns the elapsed game time adjusted for time dilations and game pauses.
 	[[nodiscard]] double GetElapsedGameTime() const;
 
@@ -92,7 +92,7 @@ public:
 	//Returns the current local time (Hour, Minute, Second) of the computer.
 	static Time GetTime();
 
-	
+
 	//CLOCK FUNCTIONALITY SETTERS
 
 	//Sets the percentage by which time should be divided.
@@ -112,15 +112,16 @@ public:
 private:
 	bool ShouldUpdateGameTime = true;
 
-	double DeltaTime = 0.0f;							//Stores the real seconds elapsed since the last game update (tick).
+	double DeltaTime = 0.0f; //Stores the real seconds elapsed since the last game update (tick).
 
 	uint_64 GameTicks = 0;
-	double ElapsedTime = 0.0f;						//Stores the time the game has been running in real microseconds. 1,000,000.
-	double ElapsedGameTime = 0.0f;					//Stores the elapsed game time adjusted for time dilation and game pauses.
+	double ElapsedTime = 0.0f; //Stores the time the game has been running in real microseconds. 1,000,000.
+	double ElapsedGameTime = 0.0f; //Stores the elapsed game time adjusted for time dilation and game pauses.
 
-	double TimeDivisor = 1.0f;						//Stores the percentage by which time should be divided.
+	double TimeDivisor = 1.0f; //Stores the percentage by which time should be divided.
 
 	uint_64 StartSystemTicks = 0;
 	uint_64 SystemTicks = 0;
-	uint_64 ProcessorFrequency = 0;					//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
+	uint_64 ProcessorFrequency = 0;
+	//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
 };

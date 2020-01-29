@@ -2,7 +2,7 @@
 
 #include <fstream>
 
-using InStreamType  = std::ifstream;
+using InStreamType = std::ifstream;
 using OutStreamType = std::ofstream;
 
 void InStream::readInternal(size_t _Size, void* _Data) const

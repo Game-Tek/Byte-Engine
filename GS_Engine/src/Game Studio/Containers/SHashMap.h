@@ -3,12 +3,12 @@
 #include "DArray.hpp"
 #include "Pair.h"
 
-template<typename T>
+template <typename T>
 class FHashMap
 {
 	DArray<T> array;
 
-	INLINE size_t indexFromHash(const size_t hash)	{ return hash & (array.getCapacity() - 1); }
+	INLINE size_t indexFromHash(const size_t hash) { return hash & (array.getCapacity() - 1); }
 
 public:
 	explicit FHashMap(const size_t Length) : array(Length)
@@ -23,7 +23,7 @@ public:
 	void Remove(const size_t hash) { array[indexFromHash(hash)].~T(); }
 
 	T& At(const size_t hash) { return array[indexFromHash(hash)]; }
-	
+
 	//Pair<bool, T*> Find(const size_t hash)
 	//{
 	//	if (array[indexFromHash(hash)])

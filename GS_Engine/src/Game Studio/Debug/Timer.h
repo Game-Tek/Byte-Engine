@@ -7,11 +7,11 @@
 
 class GS_API Timer
 {
-    Nanoseconds StartingTime = 0;
-    FString Name = FString("No name!");
+	Nanoseconds StartingTime = 0;
+	FString Name = FString("No name!");
 public:
-    Timer(const FString& _Name);
-    ~Timer();
+	Timer(const FString& _Name);
+	~Timer();
 };
 
 #ifdef GS_DEBUG

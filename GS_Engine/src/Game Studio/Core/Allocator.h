@@ -9,7 +9,7 @@ class Allocator
 		size_t size = 0;
 		void* data = nullptr;
 		size_t marker = 0;
-		
+
 	public:
 		Block(const size_t size, const void* data);
 	};
@@ -17,7 +17,8 @@ class Allocator
 public:
 	static void* AlignForward(void* address, uint8 alignment)
 	{
-		return reinterpret_cast<void*>((reinterpret_cast<uint8>(address) + static_cast<uint8>(alignment - 1)) & static_cast<uint8>(~(alignment - 1)));
+		return reinterpret_cast<void*>((reinterpret_cast<uint8>(address) + static_cast<uint8>(alignment - 1)) &
+			static_cast<uint8>(~(alignment - 1)));
 	}
 
 	static inline uint8 alignForwardAdjustment(const void* address, uint8 alignment)
@@ -47,5 +48,4 @@ public:
 
 		return adjustment;
 	}
-
 };

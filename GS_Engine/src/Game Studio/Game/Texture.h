@@ -9,10 +9,10 @@ class Texture : public Object
 {
 	TextureResource* textureResource = nullptr;
 public:
-	
-	explicit Texture(const FString& name) : textureResource(GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(name))
+
+	explicit Texture(const FString& name) : textureResource(
+		GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(name))
 	{
-		
 	}
 
 	~Texture()

@@ -23,30 +23,30 @@ public:
 	{
 	}
 
-	Rotator(const Rotator & Other) : X(Other.X), Y(Other.Y), Z(Other.Z)
+	Rotator(const Rotator& Other) : X(Other.X), Y(Other.Y), Z(Other.Z)
 	{
 	}
 
 	explicit Rotator(const class Vector3& vector);
 
-	Rotator operator+ (const Rotator & Other)
+	Rotator operator+(const Rotator& Other)
 	{
-		return { X + Other.X, Y + Other.Y, Z + Other.Z };
+		return {X + Other.X, Y + Other.Y, Z + Other.Z};
 	}
 
-	Rotator operator- (const Rotator & Other)
+	Rotator operator-(const Rotator& Other)
 	{
-		return { X - Other.X, Y - Other.Y, Z - Other.Z };
+		return {X - Other.X, Y - Other.Y, Z - Other.Z};
 	}
 
-	Rotator operator* (float Other)
+	Rotator operator*(float Other)
 	{
-		return { X * Other, Y * Other, Z * Other };
+		return {X * Other, Y * Other, Z * Other};
 	}
 
-	Rotator operator/ (float Other)
+	Rotator operator/(float Other)
 	{
-		return { X / Other, Y / Other, Z / Other };
+		return {X / Other, Y / Other, Z / Other};
 	}
 
 	Rotator& operator+=(const Rotator& rotator)

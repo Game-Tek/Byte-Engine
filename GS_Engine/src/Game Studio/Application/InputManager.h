@@ -24,7 +24,7 @@ struct InputAction
 
 class GS_API InputManager : public Object
 {
-	Window * ActiveWindow = nullptr;
+	Window* ActiveWindow = nullptr;
 
 	MouseState Mouse;
 
@@ -34,12 +34,12 @@ class GS_API InputManager : public Object
 
 	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> SingleActions;
 	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> ContinuousActions;
-	
+
 	//Mouse vars
-	
+
 	//Current mouse position.
 	Vector2 MousePosition;
-	
+
 	//Offset from last frame's mouse position.
 	Vector2 MouseOffset;
 
@@ -57,9 +57,8 @@ public:
 	[[nodiscard]] JoystickState GetJoystickState(uint8 _Joystick) const { return JoystickStates[_Joystick]; }
 
 	Vector2 GetMouseOffset() const { return MouseOffset; }
-	
+
 	void OnUpdate() override;
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
 };
-

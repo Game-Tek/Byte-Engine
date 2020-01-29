@@ -14,7 +14,7 @@
 #include "Native/vkQueue.h"
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
-#include "VulkanUniformLayout.h"
+#include "VulkanBindings.h"
 #include "ScreenQuad.h"
 #include "VulkanRenderPass.h"
 
@@ -56,7 +56,7 @@ class GS_API VulkanRenderContext final : public RenderContext
 	FVector<VKFramebuffer> FrameBuffers;
 
 	uint8 ImageIndex = 0;
-	
+
 	static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
 	VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
 	VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
@@ -64,10 +64,11 @@ class GS_API VulkanRenderContext final : public RenderContext
 	SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 public:
-	VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
+	VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
+	                    Window* _Window);
 	~VulkanRenderContext();
 
-	void OnResize(const ResizeInfo& _RI)  override;
+	void OnResize(const ResizeInfo& _RI) override;
 
 	void AcquireNextImage() override;
 	void Flush() override;
@@ -78,7 +79,7 @@ public:
 	void AdvanceSubPass() override;
 	void EndRenderPass(RenderPass* _RP) override;
 	void BindMesh(RenderMesh* _Mesh) override;
-	void BindUniformLayout(UniformLayout* _UL) override;
+	void BindBindingsSet(const ::BindBindingsSet& bindBindingsSet) override;
 	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
 	void BindGraphicsPipeline(GraphicsPipeline* _GP) override;
 	void BindComputePipeline(ComputePipeline* _CP) override;
@@ -86,6 +87,6 @@ public:
 	void Dispatch(const Extent3D& _WorkGroups) override;
 
 	void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) override;
-	
+
 	[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
 };

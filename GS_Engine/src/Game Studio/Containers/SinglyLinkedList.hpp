@@ -9,7 +9,7 @@ class SingleLinkList
 	struct SingleLinkListNode
 	{
 		friend class SingleLinkList;
-		
+
 		SingleLinkListNode() = default;
 
 		explicit SingleLinkListNode(const _T& _Obj) : element(_Obj)
@@ -18,18 +18,18 @@ class SingleLinkList
 
 		_T& GetElement() { return element; }
 		[[nodiscard]] const _T& GetElement() const { return element; }
-		
+
 	protected:
 		SingleLinkListNode* GetNext() { return next; }
-		
+
 		SingleLinkListNode* next = nullptr;
 
 		_T element;
 	};
-	
+
 public:
 	using ResultPair = Pair<bool, SingleLinkListNode*>;
-	
+
 	SingleLinkList() = default;
 
 	//Preallocate
@@ -52,7 +52,7 @@ public:
 	void PushBack(const _T& _Obj)
 	{
 		auto new_node = new SingleLinkListNode(_Obj);
-		lastNode->next = new_node;  //<== Now last node
+		lastNode->next = new_node; //<== Now last node
 		lastNode = new_node;
 	}
 
@@ -73,21 +73,21 @@ public:
 		{
 			if (*next == _Obj)
 			{
-				return { true, next };
+				return {true, next};
 			}
 
 			next = next->GetChild();
 			i++;
 		}
 
-		return { false, nullptr };
+		return {false, nullptr};
 	}
 
 	INLINE uint32 Length() const { return length; }
-	
+
 protected:
 	SingleLinkListNode root;
 	SingleLinkListNode* lastNode = &root;
-	
+
 	uint32 length = 0;
 };

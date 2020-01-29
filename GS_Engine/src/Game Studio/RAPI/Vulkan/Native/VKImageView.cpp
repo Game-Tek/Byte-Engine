@@ -4,7 +4,8 @@
 
 #include "VKDevice.h"
 
-VKImageViewCreator::VKImageViewCreator(VKDevice* _Device, const VkImageViewCreateInfo* _VkIVCI) : VKObjectCreator<VkImageView>(_Device)
+VKImageViewCreator::
+VKImageViewCreator(VKDevice* _Device, const VkImageViewCreateInfo* _VkIVCI) : VKObjectCreator<VkImageView>(_Device)
 {
 	GS_VK_CHECK(vkCreateImageView(m_Device->GetVkDevice(), _VkIVCI, ALLOCATOR, &Handle), "Failed to create Image View!")
 }

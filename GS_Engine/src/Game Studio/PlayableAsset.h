@@ -7,7 +7,7 @@ class PlayableAsset
 	uint32 totalFrames = 0;
 	float currentFrame = 0;
 	uint8 framesPerSecond = 0;
-	
+
 public:
 
 	void Update(const float deltaTime);

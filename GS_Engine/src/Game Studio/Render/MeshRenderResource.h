@@ -10,7 +10,7 @@ struct MeshRenderResourceCreateInfo
 class MeshRenderResource : public RenderResource
 {
 	friend class Renderer;
-	
+
 	class RenderMesh* mesh = nullptr;
 
 public:

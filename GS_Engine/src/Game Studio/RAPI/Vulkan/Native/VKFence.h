@@ -10,7 +10,7 @@ struct VkFenceCreateInfo;
 
 struct GS_API VKFenceCreator final : VKObjectCreator<VkFence>
 {
-	VKFenceCreator(VKDevice* _Device, const VkFenceCreateInfo * _VkFCI);
+	VKFenceCreator(VKDevice* _Device, const VkFenceCreateInfo* _VkFCI);
 };
 
 class GS_API VKFence final : public VKObject<VkFence>

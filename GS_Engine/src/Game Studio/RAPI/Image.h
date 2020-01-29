@@ -7,18 +7,17 @@
 
 struct GS_API ImageCreateInfo
 {
-	Extent3D Extent = { 1280, 720 };
+	Extent3D Extent = {1280, 720};
 	Format ImageFormat = Format::RGBA_I8;
 	ImageType Type = ImageType::COLOR;
 	ImageDimensions Dimensions = ImageDimensions::IMAGE_2D;
 	ImageUse Use = ImageUse::INPUT_ATTACHMENT;
-
 };
 
 class GS_API Image
 {
 protected:
-	Extent3D ImageExtent = { 1280, 720 };
+	Extent3D ImageExtent = {1280, 720};
 	Format ImageFormat = Format::RGBA_I8;
 	ImageType Type = ImageType::COLOR;
 	ImageDimensions Dimensions = ImageDimensions::IMAGE_2D;
@@ -39,5 +38,4 @@ public:
 	INLINE Format GetImageFormat() const { return ImageFormat; }
 	INLINE ImageType GetImageType() const { return Type; }
 	INLINE ImageDimensions GetImageDimensions() const { return Dimensions; }
-
 };

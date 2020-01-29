@@ -4,8 +4,8 @@
 
 struct RAMInfo
 {
-	uint64 TotalPhysicalMemory = 0;
-	uint64 FreePhysicalMemory = 0;
+	size_t TotalPhysicalMemory = 0;
+	size_t FreePhysicalMemory = 0;
 };
 
 struct VectorInfo

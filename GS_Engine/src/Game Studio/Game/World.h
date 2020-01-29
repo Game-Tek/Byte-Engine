@@ -27,7 +27,7 @@ public:
 	{
 		WorldObject* Obj = new T();
 
-		Obj->SetID(WorldObjects.getLength());
+		Obj->SetID(static_cast<WorldObjectID>(WorldObjects.getLength()));
 
 		WorldObjects.push_back(Obj);
 

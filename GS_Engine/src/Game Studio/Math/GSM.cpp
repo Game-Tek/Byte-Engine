@@ -114,7 +114,7 @@ Vector3 GSM::Cross(const Vector3& _A, const Vector3& _B)
 	return Vector3(_A.Y * _B.Z - _A.Z * _B.Y, _A.Z * _B.X - _A.X * _B.Z, _A.X * _B.Y - _A.Y * _B.X);
 }
 
-real GSM::DotProduct(const Quaternion& _A, const Quaternion& _B)
+float GSM::DotProduct(const Quaternion& _A, const Quaternion& _B)
 {
 	return float4::DotProduct(float4(_A.X, _A.Y, _A.Z, _A.Q), float4(_B.X, _B.Y, _B.Z, _A.Q)).GetX();
 }

@@ -7,12 +7,12 @@
 Quaternion::Quaternion(const Rotator& rotator)
 {
 	// Abbreviations for the various angular functions
-	auto cy = GSM::Cosine(rotator.Y * 0.5);
-	auto sy = GSM::Sine(rotator.Y * 0.5);
-	auto cp = GSM::Cosine(rotator.X * 0.5);
-	auto sp = GSM::Sine(rotator.X * 0.5);
-	auto cr = GSM::Cosine(rotator.Z * 0.5);
-	auto sr = GSM::Sine(rotator.Z * 0.5);
+	const auto cy = GSM::Cosine(rotator.Y * 0.5f);
+	const auto sy = GSM::Sine(rotator.Y   * 0.5f);
+	const auto cp = GSM::Cosine(rotator.X * 0.5f);
+	const auto sp = GSM::Sine(rotator.X   * 0.5f);
+	const auto cr = GSM::Cosine(rotator.Z * 0.5f);
+	const auto sr = GSM::Sine(rotator.Z   * 0.5f);
 
 	X = sy * cp * cr - cy * sp * sr;
 	Y = sy * cp * sr + cy * sp * cr;

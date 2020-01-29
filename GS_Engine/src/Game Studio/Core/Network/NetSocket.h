@@ -24,7 +24,7 @@ struct NetSocketReceiveInfo
 
 class NetSocket
 {
-	int handle = 0;
+	uint64 handle = 0;
 public:
 	NetSocket(const NetSocketCreateInfo& NSCI_);
 	~NetSocket();

@@ -68,7 +68,7 @@ protected:
 	FVector<class MaterialRenderResource*> materialRenderResources;
 	std::map<StaticMesh*, MeshRenderResource*> Meshes;
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
-	std::map<GS_HASH_TYPE, Pair<BindingsPool*, BindingsSet*>> bindings;
+	FVector<Pair<BindingsPool*, BindingsSet*>> bindings;
 
 	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 

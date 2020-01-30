@@ -17,6 +17,13 @@ class Sandbox final : public GS::Application
 public:
 	Sandbox() : Application(GS::ApplicationCreateInfo{"Sandbox"})
 	{
+		FVector<int> a = { 10, 20, 30, 40, 50 };
+
+		for(auto& e : a)
+		{
+			printf("%u", e);
+		}
+		
 		MaterialResource::MaterialData material_data;
 
 		material_data.ResourceName = "Dou";

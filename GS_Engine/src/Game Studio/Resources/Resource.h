@@ -37,7 +37,7 @@ void operator<<(OutStream& outStream, FVector<T>& vector)
 template <typename T>
 void operator>>(InStream& inStream, FVector<T>& vector)
 {
-	uint_64 length = 0;
+	typename FVector<T>::length_type length = 0;
 
 	inStream.Read(&length);
 
@@ -53,7 +53,7 @@ void operator>>(InStream& inStream, FVector<T>& vector)
 template <typename T>
 void DeserializeFVector(InStream& inStream, FVector<T>& vector)
 {
-	uint_64 length = 0;
+	typename FVector<T>::length_type length = 0;
 
 	inStream.Read(&length);
 

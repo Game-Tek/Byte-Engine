@@ -10,8 +10,11 @@
 template <typename T>
 class FVector
 {
-	uint32 capacity = 0;
-	uint32 length = 0;
+public:
+	typedef uint32 length_type;
+private:
+	length_type capacity = 0;
+	length_type length = 0;
 
 	T* data = nullptr;
 
@@ -21,7 +24,7 @@ class FVector
 	 * \param _to Pointer to write the data to.
 	 * \param _ElementCount How many elements of this vector's T to write to _to.
 	 */
-	static void copyArray(const T* _from, T* _to, const size_t _ElementCount)
+	static void copyArray(const T* _from, T* _to, const length_type _ElementCount)
 	{
 		memcpy(_to, _from, _ElementCount * sizeof(T));
 	}
@@ -31,7 +34,7 @@ class FVector
 	 * \param _ElementCount How many elements of this vector's T to allocate space for.
 	 * \return T pointer to the newly allocated memory.
 	 */
-	static T* allocate(const size_t _ElementCount)
+	static T* allocate(const length_type _ElementCount)
 	{
 		return SCAST(T*, malloc(_ElementCount * sizeof(T)));
 	}
@@ -60,7 +63,7 @@ class FVector
 	{
 		if (this->length + _AdditionalElements > this->capacity)
 		{
-			const size_t newCapacity = (this->length * 2) + _AdditionalElements;
+			const length_type newCapacity = (this->length * 2) + _AdditionalElements;
 			T* newData = allocate(newCapacity);
 			copyArray(this->data, newData, this->capacity);
 			freeData();
@@ -72,14 +75,13 @@ class FVector
 public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
-	typedef uint32 length_type;
 
 	//friend OutStream& operator<<(OutStream& _Archive, FVector<T>& _FV)
 	//{
 	//	_Archive.Write(_FV.capacity);
 	//	_Archive.Write(_FV.length);
 	//
-	//	for (uint32 i = 0; i < _FV.length; ++i)
+	//	for (length_type i = 0; i < _FV.length; ++i)
 	//	{
 	//		_Archive << _FV.data[i];
 	//	}
@@ -89,7 +91,7 @@ public:
 	//
 	//friend InStream& operator>>(InStream& _Archive, FVector<T>& _FV)
 	//{
-	//	size_t new_capacity = 0, new_length = 0;
+	//	length_type new_capacity = 0, new_length = 0;
 	//	_Archive.Read(&new_capacity);
 	//	_Archive.Read(&new_length);
 	//
@@ -97,7 +99,7 @@ public:
 	//
 	//	//_Archive.Read(new_capacity, _FV.data);
 	//
-	//	for (uint32 i = 0; i < new_length; ++i)
+	//	for (length_type i = 0; i < new_length; ++i)
 	//	{
 	//		_Archive >> _FV.data[i];
 	//	}
@@ -113,18 +115,18 @@ public:
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(const size_t _Capacity) : capacity(_Capacity), length(0), data(allocate(this->capacity))
+	explicit FVector(const length_type _Capacity) : capacity(_Capacity), length(0), data(allocate(this->capacity))
 	{
 	}
 
-	explicit FVector(const size_t _Capacity, const size_t length) : capacity(_Capacity), length(length),
+	explicit FVector(const length_type _Capacity, const length_type length) : capacity(_Capacity), length(length),
 	                                                                data(allocate(this->capacity))
 	{
 	}
 
-	FVector(const size_t _Length, const T& _Obj) : capacity(_Length), length(_Length), data(allocate(this->capacity))
+	FVector(const length_type _Length, const T& _Obj) : capacity(_Length), length(_Length), data(allocate(this->capacity))
 	{
-		for (size_t i = 0; i < this->length; ++i)
+		for (length_type i = 0; i < this->length; ++i)
 		{
 			copyArray(&_Obj, getElement(i), 1);
 		}
@@ -144,7 +146,7 @@ public:
 	}
 
 	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	FVector(const size_t _Length, T _Array[]) : capacity(_Length), length(_Length), data(allocate(this->capacity))
+	FVector(const length_type _Length, T _Array[]) : capacity(_Length), length(_Length), data(allocate(this->capacity))
 	{
 		copyArray(_Array, this->data, this->length);
 	}
@@ -190,14 +192,14 @@ public:
 
 	[[nodiscard]] const T& back() const { return this->data[this->length]; }
 
-	void resize(const uint32 _Count)
+	void resize(const length_type _Count)
 	{
 		reallocIfExceeds(_Count - this->length);
 		this->length = _Count;
 		return;
 	}
 
-	void forceRealloc(const uint32 count)
+	void forceRealloc(const length_type count)
 	{
 		this->data = allocate(count);
 		this->capacity = count;
@@ -205,7 +207,7 @@ public:
 		return;
 	}
 
-	void shrink(const uint32 _Count)
+	void shrink(const length_type _Count)
 	{
 		this->capacity = _Count;
 		this->length = _Count;
@@ -226,7 +228,7 @@ public:
 	}
 
 	//Places the passed in array at the end of the array.
-	void push_back(const size_t _Length, const T _Arr[])
+	void push_back(const length_type _Length, const T _Arr[])
 	{
 		reallocIfExceeds(_Length);
 		copyArray(_Arr, getElement(this->length), _Length);
@@ -242,7 +244,7 @@ public:
 	}
 
 	template <typename... Args>
-	uint32 emplace_back(Args&&... _Args)
+	length_type emplace_back(Args&&... _Args)
 	{
 		reallocIfExceeds(1);
 		::new(this->data + this->length) T(std::forward<Args>(_Args) ...);
@@ -259,7 +261,7 @@ public:
 	}
 
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
-	uint32 push(size_t _Index, const T& _Obj)
+	length_type push(length_type _Index, const T& _Obj)
 	{
 		reallocIfExceeds(1);
 		copyArray(getElement(_Index), getElement(_Index + 1), this->length - _Index);
@@ -268,7 +270,7 @@ public:
 	}
 
 	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
-	void push(const size_t _Length, T _Arr[], const size_t _Index)
+	void push(const length_type _Length, T _Arr[], const length_type _Index)
 	{
 		reallocIfExceeds(_Length);
 		copyArray(getElement(_Index), getElement(_Index + _Length), this->length - _Index);
@@ -277,7 +279,7 @@ public:
 	}
 
 	//Overwrites existing data with the data from the passed array.
-	void overwrite(const size_t _Length, T _Arr[], const size_t _Index)
+	void overwrite(const length_type _Length, T _Arr[], const length_type _Index)
 	{
 		reallocIfExceeds((this->length - _Length) + _Index);
 		copyArray(_Arr, getElement(_Index), _Length);
@@ -285,7 +287,7 @@ public:
 	}
 
 	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
-	void recreate(const size_t _Length, T _Arr[])
+	void recreate(const length_type _Length, T _Arr[])
 	{
 		reallocIfExceeds(_Length - this->length);
 		copyArray(_Arr, this->data, _Length);
@@ -294,14 +296,14 @@ public:
 	}
 
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
-	void pop(const size_t _Index)
+	void pop(const length_type _Index)
 	{
 		copyArray(getElement(_Index + 1), getElement(_Index), this->length - _Index);
 		this->length -= 1;
 	}
 
 	//Deletes all elements between index and index + length and shifts the entire array backwards to fill the empty space.
-	void popRange(const size_t _Index, const size_t _Length)
+	void popRange(const length_type _Index, const length_type _Length)
 	{
 		copyArray(getElement(_Index + _Length), getElement(_Index), this->length - _Index);
 		this->length -= _Length;
@@ -309,7 +311,7 @@ public:
 
 	iterator find(const T& _Obj)
 	{
-		for (size_t i = 0; i < this->length; i++)
+		for (length_type i = 0; i < this->length; i++)
 		{
 			if (_Obj == data[i])
 			{
@@ -336,10 +338,10 @@ public:
 	 * \param _I Index to the element to be retrieved.
 	 * \return iterator to the element at _I.
 	 */
-	iterator getElement(const size_t _I) { return &this->data[_I]; }
+	iterator getElement(const length_type _I) { return &this->data[_I]; }
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	INLINE T& operator[](const size_t index)
+	INLINE T& operator[](const length_type index)
 	{
 #ifdef GS_DEBUG
 		if (index > this->capacity)
@@ -352,7 +354,7 @@ public:
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
-	INLINE const T& operator[](const size_t index) const
+	INLINE const T& operator[](const length_type index) const
 	{
 #ifdef GS_DEBUG
 		if (index > this->capacity)
@@ -365,10 +367,10 @@ public:
 	}
 
 	//Returns the occupied elements count.
-	INLINE size_t getLength() const { return this->length; }
+	INLINE length_type getLength() const { return this->length; }
 
 	//Returns the total allocated elements count. 
-	INLINE size_t getCapacity() const { return this->capacity; }
+	INLINE length_type getCapacity() const { return this->capacity; }
 
 	//Returns a pointer to the allocated array.
 	INLINE T* getData() { return this->data; }

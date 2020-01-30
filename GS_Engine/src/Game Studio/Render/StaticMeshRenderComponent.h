@@ -11,7 +11,7 @@ struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
 	StaticMesh* StaticMesh = nullptr;
 };
 
-class GS_API StaticMeshRenderComponent : public RenderComponent
+class StaticMeshRenderComponent : public RenderComponent
 {
 	StaticMesh* staticMesh = nullptr;
 	class MaterialRenderResource* renderMaterial = nullptr;

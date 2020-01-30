@@ -13,7 +13,7 @@ public:
 	class TextureResourceData final : public ResourceData
 	{
 	public:
-		char* ImageData = nullptr;
+		byte* ImageData = nullptr;
 		size_t imageDataSize = 0;
 		Extent2D TextureDimensions;
 		Format TextureFormat;

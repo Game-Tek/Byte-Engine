@@ -119,9 +119,9 @@ protected:
 	void RenderRenderables();
 
 	//Returns a symmetric perspective frustum.
-	static void BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near,
-	                                   const float _Far);
+	static void BuildPerspectiveMatrix(Matrix4& matrix, float fov, float aspectRatio, float near,
+	                                   float far);
 
-	static void MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
-	                            const float _Bottom, const float _Near, const float _Far);
+	static void MakeOrthoMatrix(Matrix4& matrix, float right, float left, float top,
+	                            float bottom, float near, float far);
 };

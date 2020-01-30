@@ -2,12 +2,20 @@
 
 #include "Core.h"
 
+#include "AudioCore.h"
 /**
  * \brief Interface for an audio device. Creates and manages an audio device, endpoint and buffer.
  */
 class AudioDevice
 {
 	inline static AudioDevice* audio_device_instance = nullptr;
+
+protected:
+	AudioBitDepth bitDepth;
+	AudioSampleRate sampleRate;
+	AudioChannelCount channelCount;
+	AudioOutputDeviceType outputDevice;
+	
 
 public:
 	virtual ~AudioDevice()

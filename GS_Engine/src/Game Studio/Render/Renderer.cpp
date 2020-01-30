@@ -392,47 +392,47 @@ void Renderer::RenderRenderables()
 	}
 }
 
-void Renderer::BuildPerspectiveMatrix(Matrix4& _Matrix, const float _FOV, const float _AspectRatio, const float _Near,
-                                      const float _Far)
+void Renderer::BuildPerspectiveMatrix(Matrix4& matrix, const float fov, const float aspectRatio, const float near,
+                                      const float far)
 {
-	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(_FOV * 0.5f, 0.0f, 90.0f));
+	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(fov * 0.5f, 0.0f, 90.0f));
 	//Tangent of half the vertical view angle.
 	const auto f = 1 / tan_half_fov;
 
 	//Zero to one
 	//Left handed
 
-	_Matrix(0, 0) = f / _AspectRatio;
-	_Matrix(0, 1) = 0.f;
-	_Matrix(0, 2) = 0.f;
-	_Matrix(0, 3) = 0.f;
+	matrix(0, 0) = f / aspectRatio;
+	matrix(0, 1) = 0.f;
+	matrix(0, 2) = 0.f;
+	matrix(0, 3) = 0.f;
 
-	_Matrix(1, 0) = 0.f;
-	_Matrix(1, 1) = -f;
-	_Matrix(1, 2) = 0.f;
-	_Matrix(1, 3) = 0.f;
+	matrix(1, 0) = 0.f;
+	matrix(1, 1) = -f;
+	matrix(1, 2) = 0.f;
+	matrix(1, 3) = 0.f;
 
-	_Matrix(2, 0) = 0.f;
-	_Matrix(2, 1) = 0.f;
-	_Matrix(2, 2) = -((_Far + _Near) / (_Far - _Near));
-	_Matrix(2, 3) = -((2.f * _Far * _Near) / (_Far - _Near));
+	matrix(2, 0) = 0.f;
+	matrix(2, 1) = 0.f;
+	matrix(2, 2) = -((far + near) / (far - near));
+	matrix(2, 3) = -((2.f * far * near) / (far - near));
 
-	_Matrix(3, 0) = 0.f;
-	_Matrix(3, 1) = 0.f;
-	_Matrix(3, 2) = -1.f;
-	_Matrix(3, 3) = 0.f;
+	matrix(3, 0) = 0.f;
+	matrix(3, 1) = 0.f;
+	matrix(3, 2) = -1.f;
+	matrix(3, 3) = 0.f;
 }
 
-void Renderer::MakeOrthoMatrix(Matrix4& _Matrix, const float _Right, const float _Left, const float _Top,
-                               const float _Bottom, const float _Near, const float _Far)
+void Renderer::MakeOrthoMatrix(Matrix4& matrix, const float right, const float left, const float top,
+                               const float bottom, const float near, const float far)
 {
 	//Zero to one
 	//Left handed
 
-	_Matrix(0, 0) = static_cast<float>(2) / (_Right - _Left);
-	_Matrix(1, 1) = static_cast<float>(2) / (_Top - _Bottom);
-	_Matrix(2, 2) = static_cast<float>(1) / (_Far - _Near);
-	_Matrix(3, 0) = -(_Right + _Left) / (_Right - _Left);
-	_Matrix(3, 1) = -(_Top + _Bottom) / (_Top - _Bottom);
-	_Matrix(3, 2) = -_Near / (_Far - _Near);
+	matrix(0, 0) = static_cast<float>(2) / (right - left);
+	matrix(1, 1) = static_cast<float>(2) / (top - bottom);
+	matrix(2, 2) = static_cast<float>(1) / (far - near);
+	matrix(3, 0) = -(right + left) / (right - left);
+	matrix(3, 1) = -(top + bottom) / (top - bottom);
+	matrix(3, 2) = -near / (far - near);
 }

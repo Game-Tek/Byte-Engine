@@ -78,8 +78,6 @@ public:
 	{
 	}
 
-	virtual void** WriteTo(size_t _Index, size_t _Bytes) = 0;
-
 	virtual void Load(InStream& InStream_);
 	virtual void Write(OutStream& OutStream_);
 

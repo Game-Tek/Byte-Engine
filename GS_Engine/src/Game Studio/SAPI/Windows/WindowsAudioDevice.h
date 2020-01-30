@@ -9,11 +9,11 @@
 
 class WindowsAudioDevice : public AudioDevice
 {
-	IMMDeviceEnumerator* enumerator = NULL;
-	IMMDevice* endPoint = NULL;
-	IAudioClient* audioClient = NULL;
-	IAudioRenderClient* renderClient = NULL;
-	WAVEFORMATEX* pwfx = NULL;
+	IMMDeviceEnumerator* enumerator = nullptr;
+	IMMDevice* endPoint = nullptr;
+	IAudioClient* audioClient = nullptr;
+	IAudioRenderClient* renderClient = nullptr;
+	WAVEFORMATEX* pwfx = nullptr;
 
 	uint32 bufferFrameCount = 0;
 	void* data = nullptr;

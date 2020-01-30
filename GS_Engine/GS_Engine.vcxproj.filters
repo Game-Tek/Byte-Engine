@@ -271,6 +271,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.h" />
     <ClInclude Include="src\Game Studio\RAPI\Bindings.h" />
+    <ClInclude Include="src\Game Studio\Resources\AudioResource.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -364,6 +365,7 @@
     <ClCompile Include="src\Game Studio\Core\System.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\AudioResource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

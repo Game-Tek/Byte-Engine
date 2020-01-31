@@ -8,76 +8,25 @@ float GSM::Power(const float x, const float y) { return powf(x, y); }
 
 float GSM::Log10(const float x) { return log10f(x); }
 
-float GSM::Sine(const float Degrees)
-{
-	return sinf(DegreesToRadians(Degrees));
-}
+float GSM::Sine(const float Degrees) { return sinf(DegreesToRadians(Degrees)); }
 
-double GSM::Sine(const double Degrees)
-{
-	return sin(DegreesToRadians(Degrees));
-}
+double GSM::Sine(const double Degrees) { return sin(DegreesToRadians(Degrees)); }
 
-float GSM::Cosine(const float Degrees)
-{
-	return cosf(DegreesToRadians(Degrees));
-}
+float GSM::Cosine(const float Degrees) { return cosf(DegreesToRadians(Degrees)); }
 
-double GSM::Cosine(const double Degrees)
-{
-	return cos(DegreesToRadians(Degrees));
-}
+double GSM::Cosine(const double Degrees) { return cos(DegreesToRadians(Degrees)); }
 
-float GSM::Tangent(const float Degrees)
-{
-	return tanf(DegreesToRadians(Degrees));
-}
+float GSM::Tangent(const float Degrees) { return tanf(DegreesToRadians(Degrees)); }
 
-double GSM::Tangent(const double Degrees)
-{
-	return tan(DegreesToRadians(Degrees));
-}
+double GSM::Tangent(const double Degrees) {	return tan(DegreesToRadians(Degrees)); }
 
-float GSM::ArcSine(const float A)
-{
-	return RadiansToDegrees(asin(A));
-}
+float GSM::ArcSine(const float A) {	return RadiansToDegrees(asin(A)); }
 
-float GSM::ArcCosine(const float A)
-{
-	//if (A > 0.0f)
-	//{
-	//	return 90.0f - ASin(1.0f - A);
-	//}
-	//else
-	//{
-	//	return 90.0f + ASin(Abs(A));
-	//}
-	//
-	return RadiansToDegrees(acos(A));
-}
+float GSM::ArcCosine(const float A) { return RadiansToDegrees(acos(A)); }
 
-float GSM::ArcTangent(const float A)
-{
-	//if (A > 0.0f)
-	//{
-	//	return ATan(A);
-	//}
-	//else
-	//{
-	//	return -ATan(Abs(A));
-	//}
-	//
+float GSM::ArcTangent(const float A) { return RadiansToDegrees(atan(A)); }
 
-	return RadiansToDegrees(atan(A));
-}
-
-float GSM::ArcTan2(const float X, const float Y)
-{
-	//return ArcTangent(Y / X);
-
-	return RadiansToDegrees(atan2(Y, X));
-}
+float GSM::ArcTan2(const float X, const float Y) { return RadiansToDegrees(atan2(Y, X)); }
 
 float GSM::LengthSquared(const Vector2& _A)
 {

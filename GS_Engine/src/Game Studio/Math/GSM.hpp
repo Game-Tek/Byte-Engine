@@ -87,10 +87,7 @@ public:
 
 	//INLINE STATIC
 
-	INLINE static int32 Floor(const float A)
-	{
-		return static_cast<int32>(A - (static_cast<int32>(A) % 1));
-	}
+	INLINE static int32 Floor(const float A) { return static_cast<int32>(A - (static_cast<int32>(A) % 1)); }
 
 	INLINE static float Modulo(const float A, const float B)
 	{
@@ -98,31 +95,6 @@ public:
 		//return (C - Floor(C)) * B;
 		return (C - static_cast<int>(C)) * B;
 	}
-
-	//INLINE static float Power(const float Base, const int32 Exp)
-	//{
-	//	if (Exp < 0)
-	//	{
-	//		if (Base == 0)
-	//		{
-	//			return -0; // Error!!
-	//		}
-	//
-	//		return 1 / (Base * Power(Base, (-Exp) - 1));
-	//	}
-	//
-	//	if (Exp == 0)
-	//	{
-	//		return 1;
-	//	}
-	//
-	//	if (Exp == 1)
-	//	{
-	//		return Base;
-	//	}
-	//
-	//	return Base * Power(Base, Exp - 1);
-	//}
 
 	INLINE static uint32 Fact(const int8 A)
 	{
@@ -136,36 +108,88 @@ public:
 		return Result;
 	}
 
+	/**
+	 * \brief Returns x to the y.
+	 * \param x number
+	 * \param y exponent
+	 * \return x ^ y
+	 */
 	static float Power(float x, float y);
 
+	/**
+	 * \brief Returns the base 10 logarithm of x.
+	 * \param x number
+	 * \return Base 10 logarithm of x
+	 */
 	static float Log10(float x);
 	
-	//Returns the sine of an angle.
+	/**
+	 * \brief Returns the sine of an angle.
+	 * \param Degrees Angle in degrees.
+	 * \return Sine of Degrees
+	 */
 	static float Sine(float Degrees);
 
-	//Returns the sine of an angle.
+	/**
+	 * \brief Returns the sine of an angle.
+	 * \param Degrees Angle in degrees.
+	 * \return Sine of Degrees
+	 */	
 	static double Sine(double Degrees);
 
-	//Returns the cosine of an angle.
+	/**
+	* \brief Returns the cosine of an angle.
+	* \param Degrees Angle in degrees.
+	* \return Cosine of Degrees
+	*/	
 	static float Cosine(float Degrees);
 
-	//Returns the cosine of an angle.
+	/**
+	* \brief Returns the cosine of an angle.
+	* \param Degrees Angle in degrees.
+	* \return Cosine of Degrees
+	*/
 	static double Cosine(double Degrees);
 
-	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
+	/**
+	* \brief Returns the tangent of an angle.
+	* \param Degrees Angle in degrees.
+	* \return Tangent of Degrees
+	*/
 	static float Tangent(float Degrees);
 
-	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
+	/**
+	* \brief Returns the tangent of an angle.
+	* \param Degrees Angle in degrees.
+	* \return Tangent of Degrees
+	*/
 	static double Tangent(double Degrees);
 
-	//Returns the ArcSine. INPUT DEGREES MUST BE BETWEEN 0 AND 1.
+	/**
+	* \brief Returns the arcsine of A in degrees.
+	* \param A
+	* \return Degrees of A
+	*/
 	static float ArcSine(float A);
 
+	/**
+	* \brief Returns the arccosine of A in degrees.
+	* \param A
+	* \return Degrees of A
+	*/
 	static float ArcCosine(float A);
 
-	//Returns the arctangent of the number. INPUT DEGREES MUST BE BETWEEN 0 AND 12.
+	/**
+	* \brief Returns the arctangent of A in degrees.
+	* \param A
+	* \return Degrees of A
+	*/
 	static float ArcTangent(float A);
 
+	/**
+	* \brief Returns the arctangent of Y / X in degrees.
+	* \return Degrees of Y / X
+	*/
 	static float ArcTan2(float X, float Y);
 
 	//////////////////////////////////////////////////////////////
@@ -298,25 +322,33 @@ public:
 		return (A > B) ? A : B;
 	}
 
-	INLINE static float DegreesToRadians(const float Degrees)
-	{
-		return Degrees * static_cast<float>(PI / 180.0);
-	}
+	/**
+	 * \brief Returns degrees converted to radians.
+	 * \param Degrees degrees to convert
+	 * \return Degrees as radians
+	 */
+	INLINE static float DegreesToRadians(const float Degrees) {	return Degrees * static_cast<float>(PI / 180.0); }
 
-	INLINE static double DegreesToRadians(const double Degrees)
-	{
-		return Degrees * (PI / 180.0);
-	}
+	/**
+	 * \brief Returns degrees converted to radians.
+	 * \param Degrees degrees to convert
+	 * \return Degrees as radians
+	 */
+	INLINE static double DegreesToRadians(const double Degrees)	{ return Degrees * (PI / 180.0); }
 
-	INLINE static float RadiansToDegrees(const float Radians)
-	{
-		return Radians * static_cast<float>(180.0 / PI);
-	}
+	/**
+	 * \brief Returns Radians converted to degrees.
+	 * \param Radians radians to convert.
+	 * \return Radians as degrees.
+	 */
+	INLINE static float RadiansToDegrees(const float Radians) {	return Radians * static_cast<float>(180.0 / PI); }
 
-	INLINE static double RadiansToDegrees(const double Radians)
-	{
-		return Radians * (180.0 / PI);
-	}
+	/**
+	 * \brief Returns Radians converted to degrees.
+	 * \param Radians radians to convert.
+	 * \return Radians as degrees.
+	 */
+	INLINE static double RadiansToDegrees(const double Radians)	{ return Radians * (180.0 / PI); }
 
 	//////////////////////////////////////////////////////////////
 	//						VECTOR MATH							//

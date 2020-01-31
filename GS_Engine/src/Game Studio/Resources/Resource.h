@@ -93,7 +93,7 @@ struct LoadResourceData
 /**
  * \brief Base class representation of all types of resources that can be loaded into the engine.
  */
-class GS_API Resource : public Object
+class Resource : public Object
 {
 	friend class ResourceManager;
 

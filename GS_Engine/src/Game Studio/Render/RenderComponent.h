@@ -10,7 +10,7 @@ struct RenderComponentCreateInfo : ComponentCreateInfo
 {
 };
 
-class GS_API RenderComponent : public Component
+class RenderComponent : public Component
 {
 protected:
 	//Determines whether this object will be drawn on the current update. DOES NOT DEPEND ON IsDynamic.

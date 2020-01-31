@@ -5,7 +5,7 @@
 #include "FVector.hpp"
 #include "Resources/Stream.h"
 
-class GS_API FString
+class FString
 {
 	using string_type = char;
 public:

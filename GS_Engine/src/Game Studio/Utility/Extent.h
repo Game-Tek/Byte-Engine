@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-struct GS_API Extent2D
+struct Extent2D
 {
 	Extent2D() = default;
 
@@ -14,7 +14,7 @@ struct GS_API Extent2D
 	uint16 Height = 0;
 };
 
-struct GS_API Extent3D
+struct Extent3D
 {
 	uint16 Width = 0;
 	uint16 Height = 0;

@@ -10,7 +10,7 @@ MAKE_VK_HANDLE(VkBuffer)
 
 struct VkBufferCreateInfo;
 
-struct GS_API VKBufferCreator : VKObjectCreator<VkBuffer>
+struct VKBufferCreator : VKObjectCreator<VkBuffer>
 {
 	VKBufferCreator(VKDevice* _Device, const VkBufferCreateInfo* _VkBCI);
 };

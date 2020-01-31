@@ -8,7 +8,7 @@
 
 class VulkanRenderDevice;
 
-class GS_API VulkanImageBase : public Image
+class VulkanImageBase : public Image
 {
 protected:
 	VkImageView imageView = nullptr;
@@ -17,7 +17,7 @@ public:
 	[[nodiscard]] virtual const VkImageView& GetVkImageView() const { return imageView; }
 };
 
-class GS_API VulkanImage final : public VulkanImageBase
+class VulkanImage final : public VulkanImageBase
 {
 	VkImage image = nullptr;
 	VkDeviceMemory imageMemory = nullptr;

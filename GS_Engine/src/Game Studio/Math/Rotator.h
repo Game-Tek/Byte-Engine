@@ -3,7 +3,7 @@
 #include "Core.h"
 
 //Used to specify a rotation with floating point precision.
-class GS_API Rotator
+class Rotator
 {
 public:
 	//Yaw(Y) component of this rotator.

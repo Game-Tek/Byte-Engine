@@ -2,7 +2,7 @@
 #include "Core.h"
 #include "Math/Vector2.h"
 
-struct GS_API JoystickState
+struct JoystickState
 {
 	Vector2 LeftJoystickPosition;
 	bool IsLeftStickPressed = false;

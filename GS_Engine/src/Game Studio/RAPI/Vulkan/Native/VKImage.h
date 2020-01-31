@@ -9,13 +9,13 @@ struct VkMemoryRequirements;
 
 struct VkImageCreateInfo;
 
-struct GS_API VKImageCreator final : VKObjectCreator<VkImage>
+struct VKImageCreator final : VKObjectCreator<VkImage>
 {
 	VKImageCreator(VKDevice* _Device, const VkImageCreateInfo* _VkICI);
 };
 
 
-class GS_API VKImage final : public VKObject<VkImage>
+class VKImage final : public VKObject<VkImage>
 {
 public:
 	VKImage(const VKImageCreator& _VKIC) : VKObject<VkImage>(_VKIC)

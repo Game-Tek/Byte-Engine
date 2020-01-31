@@ -23,7 +23,7 @@ template <typename T>
 class DelegateBase;
 
 template <typename RET, typename ...PARAMS>
-class GS_API DelegateBase<RET(PARAMS ...)>
+class DelegateBase<RET(PARAMS ...)>
 {
 protected:
 	using FunctionPointerType = RET(*)(void* this_ptr, PARAMS ...);
@@ -61,7 +61,7 @@ template <typename T>
 class Delegate;
 
 template <typename RET, typename... PARAMS>
-class GS_API Delegate<RET(PARAMS ...)> final : DelegateBase<RET(PARAMS ...)>
+class Delegate<RET(PARAMS ...)> final : DelegateBase<RET(PARAMS ...)>
 {
 	typename DelegateBase<RET(PARAMS ...)>::InvocationElement functionPointer;
 

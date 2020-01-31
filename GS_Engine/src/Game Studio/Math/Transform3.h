@@ -7,7 +7,7 @@
 #include "Rotator.h"
 
 //Used to specify a transform in 3D space with floating point precision.
-struct GS_API Transform3
+struct Transform3
 {
 	Vector3 Position;
 	Quaternion Rotation;

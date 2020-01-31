@@ -9,13 +9,13 @@
 
 using Index = uint16;
 
-struct GS_API Vertex2D
+struct Vertex2D
 {
 	Vector2 Position;
 	TextureCoordinates TextureCoordinates;
 };
 
-struct GS_API Vertex
+struct Vertex
 {
 	Vector3 Position;
 	Vector3 Normal;

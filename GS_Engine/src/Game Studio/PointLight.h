@@ -4,7 +4,7 @@
 
 #include "Light.h"
 
-class GS_API PointLight : public Light
+class PointLight : public Light
 {
 public:
 	PointLight() = default;

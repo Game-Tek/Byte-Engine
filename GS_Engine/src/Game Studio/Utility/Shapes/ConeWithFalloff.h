@@ -4,7 +4,7 @@
 
 #include "Cone.h"
 
-struct GS_API ConeWithFalloff : public Cone
+struct ConeWithFalloff : public Cone
 {
 	ConeWithFalloff() = default;
 	ConeWithFalloff(float Radius, float Length);

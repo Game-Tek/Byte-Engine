@@ -5,7 +5,7 @@
 #include "Game/WorldObject.h"
 #include "Containers/Pair.h"
 
-class GS_API Camera : public WorldObject
+class Camera : public WorldObject
 {
 	//First is near, Second is far
 	using NearFarPair = Pair<float, float>;

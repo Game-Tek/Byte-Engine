@@ -6,7 +6,7 @@
 
 class WorldObject;
 
-class GS_API SubWorld : public Object
+class SubWorld : public Object
 {
 public:
 };

@@ -22,30 +22,6 @@ using GS_HASH_TYPE = uint_64;
 	#define inline
 #endif
 
-//Library import/export.
-
-#ifdef GS_PLATFORM_WIN
-#ifdef GS_BUILD
-#define GS_API //__declspec(dllexport)
-#else
-		#define GS_API //__declspec(dllimport)
-#endif
-#endif
-
-#ifdef GS_PLATFORM_WIN
-#ifdef GS_BUILD
-#define GS_EXPORT_ONLY __declspec(dllexport)
-#else
-		#define GS_EXPORT_ONLY
-#endif
-#endif
-
-//Class setup simplification.
-
-#define GS_CLASS class GS_API
-
-#define GS_STRUCT struct GS_API
-
 //Assert
 #ifdef GS_DEBUG
 #define GS_ASSERT(func, ...) if ((func)) __debugbreak();

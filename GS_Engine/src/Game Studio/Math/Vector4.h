@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-class GS_API Vector4
+class Vector4
 {
 public:
 	//X component of this vector.

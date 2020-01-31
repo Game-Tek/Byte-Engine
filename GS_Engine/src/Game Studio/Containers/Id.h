@@ -4,7 +4,7 @@
 
 class FString;
 
-class GS_API Id
+class Id
 {
 public:
 	using HashType = GS_HASH_TYPE;

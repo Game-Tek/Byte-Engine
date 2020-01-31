@@ -14,7 +14,7 @@ using WorldObjectID = uint64;
 
 class RenderInfo;
 
-class GS_API WorldObject : public Object
+class WorldObject : public Object
 {
 public:
 	WorldObject() = default;

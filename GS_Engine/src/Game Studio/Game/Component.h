@@ -11,7 +11,7 @@ struct ComponentCreateInfo
 	WorldObject* Owner = nullptr;
 };
 
-class GS_API Component : public Object
+class Component : public Object
 {
 protected:
 	WorldObject* Owner = nullptr;

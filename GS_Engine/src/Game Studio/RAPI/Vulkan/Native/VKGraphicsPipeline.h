@@ -9,12 +9,12 @@ MAKE_VK_HANDLE(VkShaderModule)
 
 struct VkGraphicsPipelineCreateInfo;
 
-struct GS_API VKGraphicsPipelineCreator : VKObjectCreator<VkPipeline>
+struct VKGraphicsPipelineCreator : VKObjectCreator<VkPipeline>
 {
 	VKGraphicsPipelineCreator(VKDevice* _Device, const VkGraphicsPipelineCreateInfo* _VGPCI);
 };
 
-class GS_API VKGraphicsPipeline final : public VKObject<VkPipeline>
+class VKGraphicsPipeline final : public VKObject<VkPipeline>
 {
 public:
 	explicit VKGraphicsPipeline(const VKGraphicsPipelineCreator& _Vk_GPC) : VKObject<VkPipeline>(_Vk_GPC)

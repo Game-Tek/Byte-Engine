@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-struct GS_API Cone
+struct Cone
 {
 	Cone() = default;
 

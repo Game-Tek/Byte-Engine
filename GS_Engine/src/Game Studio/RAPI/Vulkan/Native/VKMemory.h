@@ -13,12 +13,12 @@ class vkQueue;
 
 struct VkMemoryAllocateInfo;
 
-struct GS_API VKMemoryCreator final : VKObjectCreator<VkDeviceMemory>
+struct VKMemoryCreator final : VKObjectCreator<VkDeviceMemory>
 {
 	VKMemoryCreator(VKDevice* _Device, const VkMemoryAllocateInfo* _VkMAI);
 };
 
-class GS_API VKMemory final : public VKObject<VkDeviceMemory>
+class VKMemory final : public VKObject<VkDeviceMemory>
 {
 public:
 	VKMemory(const VKMemoryCreator& _VKMC) : VKObject<VkDeviceMemory>(_VKMC)

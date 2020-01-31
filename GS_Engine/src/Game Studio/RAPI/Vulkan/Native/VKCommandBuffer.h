@@ -8,7 +8,7 @@ MAKE_VK_HANDLE(VkCommandBuffer)
 
 struct VkCommandBufferAllocateInfo;
 
-struct GS_API VKCommandBufferCreator : VKObjectCreator<VkCommandBuffer>
+struct VKCommandBufferCreator : VKObjectCreator<VkCommandBuffer>
 {
 	VKCommandBufferCreator(VKDevice* _Device, const VkCommandBufferAllocateInfo* _VkCBCI);
 };
@@ -16,7 +16,7 @@ struct GS_API VKCommandBufferCreator : VKObjectCreator<VkCommandBuffer>
 class VKCommandPool;
 struct VkCommandBufferBeginInfo;
 
-class GS_API VKCommandBuffer final : public VKObject<VkCommandBuffer>
+class VKCommandBuffer final : public VKObject<VkCommandBuffer>
 {
 public:
 	explicit VKCommandBuffer(const VKCommandBufferCreator& _VKCBC) : VKObject<VkCommandBuffer>(_VKCBC)

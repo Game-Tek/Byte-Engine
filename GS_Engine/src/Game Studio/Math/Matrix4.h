@@ -27,7 +27,7 @@
  * Most operations are accelerated by SIMD code.
  * 
  */
-class GS_API Matrix4
+class Matrix4
 {
 public:
 	/**

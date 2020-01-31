@@ -45,7 +45,7 @@ enum class Months : uint8
 	December,
 };
 
-class GS_API Clock : public Object
+class Clock : public Object
 {
 public:
 	Clock();

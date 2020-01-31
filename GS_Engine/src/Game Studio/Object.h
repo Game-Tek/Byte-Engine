@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-class GS_API Object
+class Object
 {
 public:
 	Object() = default;

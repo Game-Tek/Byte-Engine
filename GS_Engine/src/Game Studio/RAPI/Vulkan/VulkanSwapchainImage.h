@@ -6,7 +6,7 @@
 
 #include "VulkanImage.h"
 
-class GS_API VulkanSwapchainImage final : public VulkanImageBase
+class VulkanSwapchainImage final : public VulkanImageBase
 {
 public:
 	VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo, VkImage image);

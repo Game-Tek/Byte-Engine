@@ -5,7 +5,7 @@
 #include "Game/WorldObject.h"
 #include "Utility/RGB.h"
 
-class GS_API Light : public WorldObject
+class Light : public WorldObject
 {
 public:
 	Light() = default;

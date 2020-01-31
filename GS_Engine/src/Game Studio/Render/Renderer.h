@@ -24,7 +24,7 @@ class RenderProxy;
 class PointLightRenderProxy;
 
 //Stores all the data necessary for the RAPI to work. It's the RAPIs representation of the game world.
-class GS_API Renderer : public SubWorld
+class Renderer : public SubWorld
 {
 public:
 	Renderer();
@@ -50,8 +50,8 @@ public:
 	}
 
 
-	void DrawMesh(const DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
-	void BindPipeline(GraphicsPipeline* _Pipeline);
+	void DrawMesh(const RAPI::DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
+	void BindPipeline(RAPI::GraphicsPipeline* _Pipeline);
 
 
 	class MeshRenderResource* CreateMesh(StaticMesh* _SM);
@@ -64,30 +64,30 @@ protected:
 	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
 	/* ---- RAPI Resources ---- */
-	std::map<Id::HashType, GraphicsPipeline*> Pipelines;
+	std::map<Id::HashType, RAPI::GraphicsPipeline*> Pipelines;
 	FVector<class MaterialRenderResource*> materialRenderResources;
 	std::map<StaticMesh*, MeshRenderResource*> Meshes;
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
-	FVector<Pair<BindingsPool*, BindingsSet*>> bindings;
+	FVector<Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>> bindings;
 
-	GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
+	RAPI::GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
 	//Pointer to the active camera.
 	mutable Camera* ActiveCamera = nullptr;
 
 	//Render elements
-	Window* Win = nullptr;
-	FVector<Framebuffer*> Framebuffers;
+	RAPI::Window* Win = nullptr;
+	FVector<RAPI::Framebuffer*> Framebuffers;
 
-	Image* depthTexture = nullptr;
+	RAPI::Image* depthTexture = nullptr;
 
-	RenderContext* RC = nullptr;
-	RenderPass* RP = nullptr;
-	UniformBuffer* UB = nullptr;
-	BindingLayout* UL = nullptr;
+	RAPI::RenderContext* RC = nullptr;
+	RAPI::RenderPass* RP = nullptr;
+	RAPI::UniformBuffer* UB = nullptr;
+	RAPI::BindingLayout* UL = nullptr;
 
-	RenderMesh* FullScreenQuad = nullptr;
-	GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
+	RAPI::RenderMesh* FullScreenQuad = nullptr;
+	RAPI::GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
 	struct InstanceData
 	{

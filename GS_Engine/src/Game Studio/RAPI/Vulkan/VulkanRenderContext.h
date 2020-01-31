@@ -15,8 +15,6 @@
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
 #include "VulkanBindings.h"
-#include "ScreenQuad.h"
-#include "VulkanRenderPass.h"
 
 class VKDevice;
 
@@ -30,63 +28,66 @@ struct SurfaceFormat
 	VkColorSpaceKHR colorSpace;
 };
 
-class Window;
-
-class GS_API VulkanRenderContext final : public RenderContext
+namespace RAPI
 {
-	Extent2D RenderExtent;
+	class Window;
 
-	VKSurface Surface;
+	class VulkanRenderContext final : public RenderContext
+	{
+		Extent2D RenderExtent;
 
-	SurfaceFormat Format;
-	VkPresentModeKHR PresentMode;
+		VKSurface Surface;
 
-	VKSwapchain Swapchain;
-	FVector<VkImage> SwapchainImages;
-	mutable FVector<VulkanSwapchainImage> swapchainImages;
-	FVector<VKSemaphore> ImagesAvailable;
-	FVector<VKSemaphore> RendersFinished;
-	FVector<VKFence> InFlightFences;
+		SurfaceFormat Format;
+		VkPresentModeKHR PresentMode;
 
-	vkQueue PresentationQueue;
+		VKSwapchain Swapchain;
+		FVector<VkImage> SwapchainImages;
+		mutable FVector<VulkanSwapchainImage> swapchainImages;
+		FVector<VKSemaphore> ImagesAvailable;
+		FVector<VKSemaphore> RendersFinished;
+		FVector<VKFence> InFlightFences;
 
-	VKCommandPool CommandPool;
+		vkQueue PresentationQueue;
 
-	FVector<VKCommandBuffer> CommandBuffers;
-	FVector<VKFramebuffer> FrameBuffers;
+		VKCommandPool CommandPool;
 
-	uint8 ImageIndex = 0;
+		FVector<VKCommandBuffer> CommandBuffers;
+		FVector<VKFramebuffer> FrameBuffers;
 
-	static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
-	VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
-	VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
+		uint8 ImageIndex = 0;
 
-	SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
-	static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
-public:
-	VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
-	                    Window* _Window);
-	~VulkanRenderContext();
+		static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window);
+		VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
+		VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
 
-	void OnResize(const ResizeInfo& _RI) override;
+		SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
+		static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
+	public:
+		VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
+			RAPI::Window* _Window);
+		~VulkanRenderContext();
 
-	void AcquireNextImage() override;
-	void Flush() override;
-	void Present() override;
-	void BeginRecording() override;
-	void EndRecording() override;
-	void BeginRenderPass(const RenderPassBeginInfo& _RPBI) override;
-	void AdvanceSubPass() override;
-	void EndRenderPass(RenderPass* _RP) override;
-	void BindMesh(RenderMesh* _Mesh) override;
-	void BindBindingsSet(const ::BindBindingsSet& bindBindingsSet) override;
-	void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
-	void BindGraphicsPipeline(GraphicsPipeline* _GP) override;
-	void BindComputePipeline(ComputePipeline* _CP) override;
-	void DrawIndexed(const DrawInfo& _DrawInfo) override;
-	void Dispatch(const Extent3D& _WorkGroups) override;
+		void OnResize(const ResizeInfo& _RI) override;
 
-	void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) override;
+		void AcquireNextImage() override;
+		void Flush() override;
+		void Present() override;
+		void BeginRecording() override;
+		void EndRecording() override;
+		void BeginRenderPass(const RenderPassBeginInfo& _RPBI) override;
+		void AdvanceSubPass() override;
+		void EndRenderPass(RAPI::RenderPass* _RP) override;
+		void BindMesh(RenderMesh* _Mesh) override;
+		void BindBindingsSet(const ::BindBindingsSet& bindBindingsSet) override;
+		void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
+		void BindGraphicsPipeline(GraphicsPipeline* _GP) override;
+		void BindComputePipeline(ComputePipeline* _CP) override;
+		void DrawIndexed(const DrawInfo& _DrawInfo) override;
+		void Dispatch(const Extent3D& _WorkGroups) override;
 
-	[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
-};
+		void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) override;
+
+		[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
+	};
+}

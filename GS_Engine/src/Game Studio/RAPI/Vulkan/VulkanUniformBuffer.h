@@ -7,20 +7,20 @@
 #include "Native/VKBuffer.h"
 #include "Native/VKMemory.h"
 
-class GS_API VulkanUniformBuffer : public UniformBuffer
+class VulkanUniformBuffer : public RAPI::UniformBuffer
 {
 	VKBuffer Buffer;
 	VKMemory Memory;
 
 	void* MappedMemoryPointer = nullptr;
 
-	static VKBufferCreator CreateBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI);
+	static VKBufferCreator CreateBuffer(VKDevice* _Device, const RAPI::UniformBufferCreateInfo& _BCI);
 	VKMemoryCreator CreateMemory(VKDevice* _Device);
 public:
-	VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI);
+	VulkanUniformBuffer(VKDevice* _Device, const RAPI::UniformBufferCreateInfo& _BCI);
 	~VulkanUniformBuffer();
 
-	void UpdateBuffer(const UniformBufferUpdateInfo& _BUI) const override;
+	void UpdateBuffer(const RAPI::UniformBufferUpdateInfo& _BUI) const override;
 
 	[[nodiscard]] const VKBuffer& GetVKBuffer() const { return Buffer; }
 };

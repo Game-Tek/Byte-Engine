@@ -2,6 +2,8 @@
 
 #include "Vulkan/VulkanRenderDevice.h"
 
+using namespace RAPI;
+
 RAPIs RenderDevice::RenderAPI = GetRAPIs();
 RenderDevice* RenderDevice::RenderDeviceInstance = CreateRAPI();
 

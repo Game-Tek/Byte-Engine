@@ -3,6 +3,8 @@
 #include "Resources/MaterialResource.h"
 #include "Application/Application.h"
 
+using namespace RAPI;
+
 Material::Material(const FString& _Name) : materialMaterialResource(
 	GS::Application::Get()->GetResourceManager()->GetResource<MaterialResource>(_Name))
 {

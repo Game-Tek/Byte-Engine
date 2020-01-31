@@ -218,7 +218,7 @@ Image* VulkanRenderDevice::CreateImage(const ImageCreateInfo& _ICI)
 	return new VulkanImage(this, _ICI);
 }
 
-Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
+RAPI::Texture* VulkanRenderDevice::CreateTexture(const RAPI::TextureCreateInfo& TCI_)
 {
 	auto device = Device.GetVkDevice();
 
@@ -415,7 +415,7 @@ GraphicsPipeline* VulkanRenderDevice::CreateGraphicsPipeline(const GraphicsPipel
 	return new VulkanGraphicsPipeline(_GPCI);
 }
 
-RenderPass* VulkanRenderDevice::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
+RAPI::RenderPass* VulkanRenderDevice::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
 {
 	return new VulkanRenderPass(&Device, _RPCI.Descriptor);
 }

@@ -8,7 +8,7 @@ struct MaterialParameter
 {
 	Id ParameterName;
 	//Specifies the type of the variable being referred to so we can build uniform sets and copy information.
-	ShaderDataTypes ParameterDataType;
+	RAPI::ShaderDataTypes ParameterDataType;
 	//Pointer to the variable holding the data to be copied to the GPU.
 	void* Data = nullptr;
 };

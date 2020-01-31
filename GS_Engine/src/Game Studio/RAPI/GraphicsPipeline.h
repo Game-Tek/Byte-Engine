@@ -7,66 +7,70 @@
 #include "RenderCore.h"
 #include "RenderMesh.h"
 
-
-struct StencilState
+namespace RAPI
 {
-	StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
-	StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
-	StencilCompareOperation DepthFailOperation = StencilCompareOperation::ZERO;
-	CompareOperation CompareOperation = CompareOperation::NEVER;
-};
 
-struct StencilOperations
-{
-	StencilState Front;
-	StencilState Back;
-};
+	struct StencilState
+	{
+		StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
+		StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
+		StencilCompareOperation DepthFailOperation = StencilCompareOperation::ZERO;
+		CompareOperation CompareOperation = CompareOperation::NEVER;
+	};
 
-struct ShaderInfo
-{
-	ShaderType Type = ShaderType::VERTEX_SHADER;
-	FString* ShaderCode = nullptr;
-};
+	struct StencilOperations
+	{
+		StencilState Front;
+		StencilState Back;
+	};
 
-struct PipelineDescriptor
-{
-	DArray<ShaderInfo> Stages = DArray<ShaderInfo>(8);
-	CullMode CullMode = CullMode::CULL_NONE;
-	bool DepthClampEnable = false;
-	bool BlendEnable = false;
-	BlendOperation ColorBlendOperation = BlendOperation::ADD;
-	SampleCount RasterizationSamples = SampleCount::SAMPLE_COUNT_1;
-	CompareOperation DepthCompareOperation = CompareOperation::NEVER;
-	StencilOperations StencilOperations;
-};
+	struct ShaderInfo
+	{
+		ShaderType Type = ShaderType::VERTEX_SHADER;
+		FString* ShaderCode = nullptr;
+	};
 
-class RenderPass;
-class BindingLayout;
+	struct PipelineDescriptor
+	{
+		DArray<ShaderInfo> Stages = DArray<ShaderInfo>(8);
+		CullMode CullMode = CullMode::CULL_NONE;
+		bool DepthClampEnable = false;
+		bool BlendEnable = false;
+		BlendOperation ColorBlendOperation = BlendOperation::ADD;
+		SampleCount RasterizationSamples = SampleCount::SAMPLE_COUNT_1;
+		CompareOperation DepthCompareOperation = CompareOperation::NEVER;
+		StencilOperations StencilOperations;
+	};
 
-class Pipeline
-{
-};
+	class RenderPass;
+	class BindingLayout;
 
-class GraphicsPipeline : public Pipeline
-{
-public:
-};
+	class Pipeline
+	{
+	};
 
-struct PushConstant
-{
-	size_t Size = 0;
-	ShaderType Stage = ShaderType::ALL_STAGES;
-};
+	class GraphicsPipeline : public Pipeline
+	{
+	public:
+	};
 
-struct GraphicsPipelineCreateInfo : RenderInfo
-{
-	RenderPass* RenderPass = nullptr;
-	class Window* ActiveWindow = nullptr;
-	VertexDescriptor* VDescriptor = nullptr;
-	PipelineDescriptor PipelineDescriptor;
-	BindingLayout* UniformLayout = nullptr;
-	GraphicsPipeline* ParentPipeline = nullptr;
+	struct PushConstant
+	{
+		size_t Size = 0;
+		ShaderType Stage = ShaderType::ALL_STAGES;
+	};
 
-	PushConstant* PushConstant = nullptr;
-	Array<class BindingsSet*, 16> BindingsSets;
-};
+	struct GraphicsPipelineCreateInfo : RenderInfo
+	{
+		RenderPass* RenderPass = nullptr;
+		class Window* ActiveWindow = nullptr;
+		VertexDescriptor* VDescriptor = nullptr;
+		PipelineDescriptor PipelineDescriptor;
+		BindingLayout* UniformLayout = nullptr;
+		GraphicsPipeline* ParentPipeline = nullptr;
+
+		PushConstant* PushConstant = nullptr;
+		Array<class BindingsSet*, 16> BindingsSets;
+	};
+
+}

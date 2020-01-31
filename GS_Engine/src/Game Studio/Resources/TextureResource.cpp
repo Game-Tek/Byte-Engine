@@ -3,6 +3,8 @@
 #include "stb image/stb_image.h"
 #include <fstream>
 
+using namespace RAPI;
+
 TextureResource::TextureResourceData::~TextureResourceData()
 {
 	stbi_image_free(ImageData);

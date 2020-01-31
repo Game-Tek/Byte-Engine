@@ -5,79 +5,81 @@
 #include "RenderCore.h"
 #include "Containers/DArray.hpp"
 
-struct GS_API VertexElement
+namespace RAPI
 {
-	ShaderDataTypes DataType;
-	uint8 Size;
-};
-
-class GS_API VertexDescriptor
-{
-	DArray<VertexElement> Elements;
-
-	//Size in bytes this vertex takes up.
-	uint8 Size = 0;
-
-public:
-	explicit VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
+	struct VertexElement
 	{
-		Elements.resize(_Elements.getLength());
+		ShaderDataTypes DataType;
+		uint8 Size;
+	};
 
-		for (uint8 i = 0; i < Elements.getCapacity(); ++i)
-		{
-			Elements[i].Size = ShaderDataTypesSize(_Elements[i]);
-			Elements[i].DataType = _Elements[i];
-			Size += Elements[i].Size;
-		}
-	}
-
-	[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const
+	class VertexDescriptor
 	{
-		uint8 Offset = 0;
+		DArray<VertexElement> Elements;
 
-		for (uint8 i = 0; i < _Index; ++i)
+		//Size in bytes this vertex takes up.
+		uint8 Size = 0;
+
+	public:
+		explicit VertexDescriptor(const DArray<ShaderDataTypes>& _Elements) : Elements(_Elements.getLength())
 		{
-			Offset += Elements[i].Size;
+			Elements.resize(_Elements.getLength());
+
+			for (uint8 i = 0; i < Elements.getCapacity(); ++i)
+			{
+				Elements[i].Size = ShaderDataTypesSize(_Elements[i]);
+				Elements[i].DataType = _Elements[i];
+				Size += Elements[i].Size;
+			}
 		}
 
-		return Offset;
-	}
+		[[nodiscard]] uint8 GetOffsetToMember(uint8 _Index) const
+		{
+			uint8 Offset = 0;
 
-	[[nodiscard]] ShaderDataTypes GetAttribute(uint8 _I) const { return Elements[_I].DataType; }
+			for (uint8 i = 0; i < _Index; ++i)
+			{
+				Offset += Elements[i].Size;
+			}
 
-	//Returns the size in bytes this vertex takes up.
-	[[nodiscard]] uint8 GetSize() const { return Size; }
-	[[nodiscard]] uint8 GetAttributeCount() const { return Elements.getCapacity(); }
-};
+			return Offset;
+		}
 
-struct Vertex;
+		[[nodiscard]] ShaderDataTypes GetAttribute(uint8 _I) const { return Elements[_I].DataType; }
 
-//Describes all data necessary to create a mesh.
-//    Pointer to an array holding the vertices that describe the mesh.
-//        Vertex* VertexData;
-//    Total number of vertices found in the VertexData array.
-//        uint16 VertexCount;
-//    Pointer to an array holding the indices that describe the mesh.
-//        uint16* IndexData;
-//    Total number of indices found in the IndexData array.
-//        uint16 IndexCount;
-//    A vertex descriptor that defines the layout of the vertices found in VertexData.
-//        VertexDescriptor VertexLayout;
-struct GS_API MeshCreateInfo
-{
-	//Pointer to an array holding the vertices that describe the mesh.
-	void* VertexData = nullptr;
-	//Total number of vertices found in the VertexData array.
-	uint16 VertexCount = 0;
-	//Pointer to an array holding the indices that describe the mesh.
-	uint16* IndexData = nullptr;
-	//Total number of indices found in the IndexData array.
-	uint16 IndexCount = 0;
-	//A vertex descriptor that defines the layout of the vertices found in VertexData.
-	VertexDescriptor* VertexLayout = nullptr;
-};
+		//Returns the size in bytes this vertex takes up.
+		[[nodiscard]] uint8 GetSize() const { return Size; }
+		[[nodiscard]] uint8 GetAttributeCount() const { return Elements.getCapacity(); }
+	};
 
-class GS_API RenderMesh
-{
-public:
-};
+	//Describes all data necessary to create a mesh.
+	//    Pointer to an array holding the vertices that describe the mesh.
+	//        Vertex* VertexData;
+	//    Total number of vertices found in the VertexData array.
+	//        uint16 VertexCount;
+	//    Pointer to an array holding the indices that describe the mesh.
+	//        uint16* IndexData;
+	//    Total number of indices found in the IndexData array.
+	//        uint16 IndexCount;
+	//    A vertex descriptor that defines the layout of the vertices found in VertexData.
+	//        VertexDescriptor VertexLayout;
+	struct MeshCreateInfo
+	{
+		//Pointer to an array holding the vertices that describe the mesh.
+		void* VertexData = nullptr;
+		//Total number of vertices found in the VertexData array.
+		uint16 VertexCount = 0;
+		//Pointer to an array holding the indices that describe the mesh.
+		uint16* IndexData = nullptr;
+		//Total number of indices found in the IndexData array.
+		uint16 IndexCount = 0;
+		//A vertex descriptor that defines the layout of the vertices found in VertexData.
+		VertexDescriptor* VertexLayout = nullptr;
+	};
+
+	class RenderMesh
+	{
+	public:
+	};
+
+}

@@ -4,7 +4,7 @@
 
 #undef CreateWindow
 
-Window* Window::CreateWindow(const WindowCreateInfo& _WCI)
+RAPI::Window* RAPI::Window::CreateWindow(const WindowCreateInfo& _WCI)
 {
 #ifdef GS_PLATFORM_WIN
 	return new WindowsWindow(_WCI);

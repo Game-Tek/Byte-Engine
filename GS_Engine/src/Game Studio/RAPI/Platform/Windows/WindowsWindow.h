@@ -7,7 +7,7 @@
 
 struct GLFWwindow;
 
-class GS_API WindowsWindow final : public Window
+class WindowsWindow final : public RAPI::Window
 {
 	HWND WindowObject = nullptr;
 	HINSTANCE WindowInstance = nullptr;
@@ -17,7 +17,7 @@ class GS_API WindowsWindow final : public Window
 	static int32 KeyboardKeysToGLFWKeys(KeyboardKeys _IE);
 	static KeyState GLFWKeyStateToKeyState(int32 _KS);
 public:
-	WindowsWindow(const WindowCreateInfo& _WCI);
+	WindowsWindow(const RAPI::WindowCreateInfo& _WCI);
 	~WindowsWindow();
 
 	INLINE HWND GetWindowObject() const { return WindowObject; }
@@ -25,9 +25,9 @@ public:
 
 	void Update() override;
 
-	void SetWindowFit(WindowFit _Fit) override;
+	void SetWindowFit(RAPI::WindowFit _Fit) override;
 	void SetWindowResolution(Extent2D _Res) override;
-	void SetWindowIcon(const WindowIconInfo& _WII) override;
+	void SetWindowIcon(const RAPI::WindowIconInfo& _WII) override;
 	void MinimizeWindow() override;
 	void NotifyWindow() override;
 	void FocusWindow() override;

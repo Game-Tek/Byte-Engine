@@ -32,14 +32,14 @@ public:
 	[[nodiscard]] const char* GetMaterialName() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
-	void GetRenderingCode(FVector<ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
+	void GetRenderingCode(FVector<RAPI::ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
 
 	//Returns true if there is uniform set info and writes said info to the passed in string.
 	bool GetUniformSetCode(FString& _Code); //TEMPORAL: manual for now, should then be automated.
 	//Returns true if there is uniform set info and sets the size to the passed in int.
 	bool GetUniformSetSize(size_t& _Size); //TEMPORAL: manual for now, should then be automated.
 
-	void SetParameter(const Id& parameter_name_, ShaderDataTypes data_type_, void* data_);
+	void SetParameter(const Id& parameter_name_, RAPI::ShaderDataTypes data_type_, void* data_);
 	void SetTexture(const Id& textureName, class Texture* texturePointer);
 
 	MaterialResource* GetMaterialResource() { return materialMaterialResource; }

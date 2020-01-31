@@ -2,31 +2,25 @@
 
 #include "RAPI/Texture.h"
 
-#include "RAPI/Vulkan/VulkanBase.h"
-#include "Native/VKImage.h"
-
-MAKE_VK_HANDLE(VkBuffer)
-MAKE_VK_HANDLE(VkDeviceMemory)
-MAKE_VK_HANDLE(VkImageView)
-MAKE_VK_HANDLE(VkSampler)
+#include "Vulkan.h"
 
 struct VulkanTextureCreateInfo
 {
-	VkImage TextureImage = VK_NULL_HANDLE;
-	VkDeviceMemory TextureImageMemory = VK_NULL_HANDLE;
-	VkImageView TextureImageView = VK_NULL_HANDLE;
-	VkSampler TextureSampler = VK_NULL_HANDLE;
+	VkImage TextureImage = nullptr;
+	VkDeviceMemory TextureImageMemory = nullptr;
+	VkImageView TextureImageView = nullptr;
+	VkSampler TextureSampler = nullptr;
 };
 
-class VulkanTexture : public Texture
+class VulkanTexture : public RAPI::Texture
 {
-	VkImage textureImage = VK_NULL_HANDLE;
-	VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
-	VkImageView textureImageView = VK_NULL_HANDLE;
-	VkSampler textureSampler = VK_NULL_HANDLE;
+	VkImage textureImage = nullptr;
+	VkDeviceMemory textureImageMemory = nullptr;
+	VkImageView textureImageView = nullptr;
+	VkSampler textureSampler = nullptr;
 
 public:
-	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
+	explicit VulkanTexture(const RAPI::TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
 		Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory),
 		textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
 	{

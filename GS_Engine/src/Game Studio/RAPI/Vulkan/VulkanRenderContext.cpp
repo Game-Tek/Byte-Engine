@@ -14,6 +14,8 @@
 
 //  VULKAN RENDER CONTEXT
 
+using namespace RAPI;
+
 uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 {
 	switch (_PresentMode)
@@ -24,7 +26,7 @@ uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 	}
 }
 
-VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window)
+VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window)
 {
 	return VKSurfaceCreator(_Device, _Instance, _Window);
 }
@@ -105,7 +107,7 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 }
 
 VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
-                                         Window* _Window) :
+                                         RAPI::Window* _Window) :
 	RenderExtent(_Window->GetWindowExtent()),
 	Surface(CreateSurface(&device->GetVKDevice(), _Instance, _Window)),
 	Format(FindFormat(_PD, Surface)),
@@ -250,7 +252,7 @@ void VulkanRenderContext::AdvanceSubPass()
 	vkCmdNextSubpass(CommandBuffers[CurrentImage], VK_SUBPASS_CONTENTS_INLINE);
 }
 
-void VulkanRenderContext::EndRenderPass(RenderPass* _RP)
+void VulkanRenderContext::EndRenderPass(RAPI::RenderPass* _RP)
 {
 	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
 }

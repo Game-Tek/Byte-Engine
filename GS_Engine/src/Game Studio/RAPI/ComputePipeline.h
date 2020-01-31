@@ -1,10 +1,15 @@
 #pragma once
 
-struct ComputePipelineCreateInfo
+namespace RAPI
 {
-};
 
-class ComputePipeline : public Pipeline
-{
-public:
-};
+	struct ComputePipelineCreateInfo
+	{
+	};
+
+	class ComputePipeline : public Pipeline
+	{
+	public:
+	};
+
+}

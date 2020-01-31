@@ -8,13 +8,16 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 
+using namespace RAPI;
+
 static DArray<ShaderDataTypes> Elements = {
 	ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT3, ShaderDataTypes::FLOAT2, ShaderDataTypes::FLOAT3,
 	ShaderDataTypes::FLOAT3
 };
-VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elements);
 
-VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
+RAPI::VertexDescriptor StaticMeshResource::StaticMeshVertexTypeVertexDescriptor(Elements);
+
+RAPI::VertexDescriptor* StaticMeshResource::GetVertexDescriptor()
 {
 	return &StaticMeshVertexTypeVertexDescriptor;
 }

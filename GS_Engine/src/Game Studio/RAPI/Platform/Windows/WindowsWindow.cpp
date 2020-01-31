@@ -8,6 +8,8 @@
 #include <GLFW/glfw3native.h>
 #endif // GS_PLATFORM_WIN
 
+using namespace RAPI;
+
 static float ScrollValue;
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)

@@ -61,7 +61,7 @@ private:
 	static StaticMeshResourceData* ProcessNode(aiNode* Node, const aiScene* Scene);
 	static StaticMeshResourceData ProcessMesh(aiMesh* Mesh);
 
-	static VertexDescriptor StaticMeshVertexTypeVertexDescriptor;
+	static RAPI::VertexDescriptor StaticMeshVertexTypeVertexDescriptor;
 
 public:
 	StaticMeshResource() = default;
@@ -71,5 +71,5 @@ public:
 
 	[[nodiscard]] const StaticMeshResourceData& GetStaticMeshData() const { return data; }
 
-	static VertexDescriptor* GetVertexDescriptor();
+	static RAPI::VertexDescriptor* GetVertexDescriptor();
 };

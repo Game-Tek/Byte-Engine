@@ -11,12 +11,12 @@ namespace GS
 
 		ResourceManagerInstance = new ResourceManager();
 
-		WindowCreateInfo WCI;
+		RAPI::WindowCreateInfo WCI;
 		WCI.Extent = {720, 720};
 		WCI.Name = ACI.ApplicationName;
-		WCI.WindowType = WindowFit::NORMAL;
+		WCI.WindowType = RAPI::WindowFit::NORMAL;
 
-		SetActiveWindow(Window::CreateWindow(WCI));
+		SetActiveWindow(RAPI::Window::CreateWindow(WCI));
 	}
 
 	Application::~Application()
@@ -40,7 +40,7 @@ namespace GS
 		return 0;
 	}
 
-	void Application::SetActiveWindow(Window* _NewWindow)
+	void Application::SetActiveWindow(RAPI::Window* _NewWindow)
 	{
 		GS_DEBUG_ONLY(
 			if (ActiveWindow) GS_LOG_WARNING(

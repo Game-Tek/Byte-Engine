@@ -4,14 +4,14 @@
 
 struct MeshRenderResourceCreateInfo
 {
-	class RenderMesh* Mesh = nullptr;
+	class RAPI::RenderMesh* Mesh = nullptr;
 };
 
 class MeshRenderResource : public RenderResource
 {
 	friend class Renderer;
 
-	class RenderMesh* mesh = nullptr;
+	class RAPI::RenderMesh* mesh = nullptr;
 
 public:
 	explicit MeshRenderResource(const MeshRenderResourceCreateInfo& MRRCI_) : RenderResource(), mesh(MRRCI_.Mesh)

@@ -9,7 +9,7 @@
 
 class VKDevice;
 
-class GS_API VulkanMesh final : public RenderMesh
+class VulkanMesh final : public RAPI::RenderMesh
 {
 	VKBuffer VertexBuffer;
 	VKMemory VBMemory;

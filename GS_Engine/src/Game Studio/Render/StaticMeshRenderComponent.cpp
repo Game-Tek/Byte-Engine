@@ -6,6 +6,8 @@
 
 #include "Resources/StaticMeshResource.h"
 
+using namespace RAPI;
+
 RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = {
 	decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(),
 	decltype(RenderableInstructions::BuildTypeInstanceSortData)::Create<&BuildTypeInstanceSortData>(),

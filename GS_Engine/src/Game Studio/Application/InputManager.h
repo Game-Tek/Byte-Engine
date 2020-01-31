@@ -14,7 +14,10 @@
 #include "Utility/Delegate.h"
 #include <map>
 
-class Window;
+namespace RAPI
+{
+		class Window;
+}
 
 struct InputAction
 {
@@ -22,9 +25,9 @@ struct InputAction
 	FVector<FString> FiringInputEvents;
 };
 
-class GS_API InputManager : public Object
+class InputManager : public Object
 {
-	Window* ActiveWindow = nullptr;
+	RAPI::Window* ActiveWindow = nullptr;
 
 	MouseState Mouse;
 
@@ -50,13 +53,13 @@ public:
 	InputManager() = default;
 	~InputManager() = default;
 
-	void SetActiveWindow(Window* _NewWindow) { ActiveWindow = _NewWindow; }
+	void SetActiveWindow(RAPI::Window* _NewWindow) { ActiveWindow = _NewWindow; }
 
 	[[nodiscard]] MouseState GetMouseState() const { return Mouse; }
 	[[nodiscard]] bool GetKeyState(KeyboardKeys _Key) const { return Keys[SCAST(uint8, _Key)]; }
 	[[nodiscard]] JoystickState GetJoystickState(uint8 _Joystick) const { return JoystickStates[_Joystick]; }
 
-	Vector2 GetMouseOffset() const { return MouseOffset; }
+	[[nodiscard]] Vector2 GetMouseOffset() const { return MouseOffset; }
 
 	void OnUpdate() override;
 

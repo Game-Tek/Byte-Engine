@@ -4,20 +4,24 @@
 
 #include "RAPI/Vulkan/VulkanBase.h"
 
+namespace RAPI {
+	class Window;
+}
+
 MAKE_VK_HANDLE(VkSurfaceKHR)
 
 class VKInstance;
 class vkPhysicalDevice;
 class Window;
 
-struct GS_API VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
+struct VKSurfaceCreator final : VKObjectCreator<VkSurfaceKHR>
 {
 	VKInstance* m_Instance = nullptr;
 
-	VKSurfaceCreator(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
+	VKSurfaceCreator(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window);
 };
 
-class GS_API VKSurface final : public VKObject<VkSurfaceKHR>
+class VKSurface final : public VKObject<VkSurfaceKHR>
 {
 	VKInstance* m_Instance = nullptr;
 

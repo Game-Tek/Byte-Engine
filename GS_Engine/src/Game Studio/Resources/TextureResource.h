@@ -7,7 +7,7 @@
 #include "RAPI/RenderCore.h"
 #include "Utility/Extent.h"
 
-class GS_API TextureResource : public Resource
+class TextureResource : public Resource
 {
 public:
 	class TextureResourceData final : public ResourceData
@@ -16,7 +16,7 @@ public:
 		byte* ImageData = nullptr;
 		size_t imageDataSize = 0;
 		Extent2D TextureDimensions;
-		Format TextureFormat;
+		RAPI::Format TextureFormat;
 
 		~TextureResourceData();
 

@@ -10,8 +10,9 @@
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 
-VKSurfaceCreator::
-VKSurfaceCreator(VKDevice* _Device, VKInstance* _Instance, Window* _Window) : VKObjectCreator<VkSurfaceKHR>(_Device),
+using namespace RAPI;
+
+VKSurfaceCreator::VKSurfaceCreator(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window) : VKObjectCreator<VkSurfaceKHR>(_Device),
                                                                               m_Instance(_Instance)
 {
 	VkWin32SurfaceCreateInfoKHR WCreateInfo = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};

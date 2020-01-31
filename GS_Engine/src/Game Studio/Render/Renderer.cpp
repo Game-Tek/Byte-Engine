@@ -15,6 +15,8 @@
 
 #include "ScreenQuad.h"
 
+using namespace RAPI;
+
 Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
 {
 	Win = GS::Application::Get()->GetActiveWindow();
@@ -248,7 +250,7 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 			Material_->GetMaterialResource()->GetMaterialData().
 			           TextureNames[i]);
 
-		TextureCreateInfo texture_create_info;
+		RAPI::TextureCreateInfo texture_create_info;
 		texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
 		texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
 		texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;

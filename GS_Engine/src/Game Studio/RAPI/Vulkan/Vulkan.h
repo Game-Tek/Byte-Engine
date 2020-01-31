@@ -22,6 +22,8 @@ if ((func) != VK_SUCCESS)\
 
 #include "Utility/Extent.h"
 
+using namespace RAPI;
+
 INLINE Format VkFormatToFormat(VkFormat _Format)
 {
 	switch (_Format)

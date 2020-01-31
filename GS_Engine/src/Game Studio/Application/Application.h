@@ -19,7 +19,7 @@ namespace GS
 		const char* ApplicationName = nullptr;
 	};
 
-	class GS_API Application : public Object
+	class Application : public Object
 	{
 		static Application* ApplicationInstance;
 
@@ -29,7 +29,7 @@ namespace GS
 		ResourceManager* ResourceManagerInstance = nullptr;
 
 		World* ActiveWorld = nullptr;
-		Window* ActiveWindow = nullptr;
+		RAPI::Window* ActiveWindow = nullptr;
 
 		bool flaggedForClose = false;
 		bool isInBackground = false;
@@ -51,7 +51,7 @@ namespace GS
 		static Application* Get() { return ApplicationInstance; }
 
 		//Updates the window the application gets it's context information from.
-		void SetActiveWindow(Window* _NewWindow);
+		void SetActiveWindow(RAPI::Window* _NewWindow);
 
 		//Fires a delegate to signal that the application has been requested to close.
 		void PromptClose();
@@ -61,7 +61,7 @@ namespace GS
 		[[nodiscard]] const Clock& GetClock() const { return ClockInstance; }
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() { return ResourceManagerInstance; }
-		[[nodiscard]] Window* GetActiveWindow() const { return ActiveWindow; }
+		[[nodiscard]] RAPI::Window* GetActiveWindow() const { return ActiveWindow; }
 		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
 	};
 

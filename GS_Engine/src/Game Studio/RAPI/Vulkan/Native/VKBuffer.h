@@ -2,6 +2,10 @@
 
 #include "RAPI/Vulkan/VulkanBase.h"
 
+namespace RAPI {
+	enum class BufferType : unsigned char;
+}
+
 MAKE_VK_HANDLE(VkBuffer)
 
 struct VkBufferCreateInfo;
@@ -15,9 +19,9 @@ struct VkMemoryRequirements;
 
 enum class BufferType : unsigned char;
 
-class GS_API VKBuffer final : public VKObject<VkBuffer>
+class VKBuffer final : public VKObject<VkBuffer>
 {
-	static unsigned BufferTypeToVkBufferUsageFlagBits(BufferType _BT);
+	static unsigned BufferTypeToVkBufferUsageFlagBits(RAPI::BufferType _BT);
 public:
 	VKBuffer(const VKBufferCreator& _VKBC) : VKObject<VkBuffer>(_VKBC)
 	{

@@ -33,17 +33,21 @@ bool AudioResource::loadResource(const LoadResourceData& loadResourceData)
 		{
 			throw std::exception("No riff found!");
 		}
+		
 		in_archive.Read(&overall_size);
+		
 		in_archive.Read(4, wave);
 		if (wave[0] != 'w' || wave[1] != 'a' || wave[2] != 'v' || wave[3] != 'e')
 		{
 			throw std::exception("No wave found!");
 		}
+		
 		in_archive.Read(4, fmt_chunk_marker);
 		if (fmt_chunk_marker[0] != 'f' || fmt_chunk_marker[1] != 'm' || fmt_chunk_marker[2] != 't' || fmt_chunk_marker[3] != '\0')
 		{
 			throw std::exception("No fmt found!");
 		}
+		
 		in_archive.Read(&length_of_fmt);
 		in_archive.Read(&format_type);
 		in_archive.Read(&channels);
@@ -75,6 +79,7 @@ bool AudioResource::loadResource(const LoadResourceData& loadResourceData)
 		case 24: data.AudioBitDepth = AudioBitDepth::BIT_DEPTH_24; break;
 		default: throw std::exception("Bit-depth not supported!");
 		}
+		
 		in_archive.Read(4, data_chunk_header);
 		in_archive.Read(&data_size);
 

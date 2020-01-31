@@ -2,8 +2,6 @@
 
 #include "RenderComponent.h"
 
-#include "Resources/StaticMeshResource.h"
-
 #include "Game/StaticMesh.h"
 
 struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
@@ -11,7 +9,7 @@ struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
 	StaticMesh* StaticMesh = nullptr;
 };
 
-class StaticMeshRenderComponent : public RenderComponent
+class StaticMeshRenderComponent final : public RenderComponent
 {
 	StaticMesh* staticMesh = nullptr;
 	class MaterialRenderResource* renderMaterial = nullptr;

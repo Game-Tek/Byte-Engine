@@ -23,11 +23,6 @@ public:
 			_IS >> _TRD.Text;
 			return _IS;
 		}
-
-		void** WriteTo(size_t _Index, size_t _Bytes) override
-		{
-			return nullptr;
-		}
 	};
 
 private:

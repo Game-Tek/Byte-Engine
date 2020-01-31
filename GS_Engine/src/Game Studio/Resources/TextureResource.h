@@ -20,15 +20,6 @@ public:
 
 		~TextureResourceData();
 
-		void** WriteTo(size_t _Index, size_t _Bytes) override
-		{
-			switch (_Index)
-			{
-			case 0: return reinterpret_cast<void**>(&ImageData);
-			default: return nullptr;
-			}
-		}
-
 		friend OutStream& operator<<(OutStream& _OS, TextureResourceData& _TRD)
 		{
 			_OS.Write(_TRD.imageDataSize, _TRD.ImageData);

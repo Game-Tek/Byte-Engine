@@ -27,7 +27,7 @@ struct Model
 	uint16 IndexCount = 0;
 };
 
-class GS_API StaticMeshResource final : public Resource
+class StaticMeshResource final : public Resource
 {
 public:
 	//Used to specify a single mesh. Contains a pointer to an array of vertices, and a pointer to an array of indices.
@@ -48,11 +48,6 @@ public:
 		{
 			delete[] VertexArray;
 			delete[] IndexArray;
-		}
-
-		void** WriteTo(size_t _Index, size_t _Bytes) override
-		{
-			return nullptr;
 		}
 	};
 

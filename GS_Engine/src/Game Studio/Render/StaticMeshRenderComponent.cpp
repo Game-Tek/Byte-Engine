@@ -3,7 +3,8 @@
 #include "RenderableInstructions.h"
 
 #include "Renderer.h"
-#include "MeshRenderResource.h"
+
+#include "Resources/StaticMeshResource.h"
 
 RenderableInstructions StaticMeshRenderComponent::StaticMeshRenderInstructions = {
 	decltype(RenderableInstructions::CreateInstanceResources)::Create<&CreateInstanceResources>(),
@@ -37,7 +38,7 @@ void StaticMeshRenderComponent::BindTypeResources(BindTypeResourcesInfo& _BTRI)
 void StaticMeshRenderComponent::DrawInstance(DrawInstanceInfo& _DII)
 {
 	DrawInfo DI;
-	DI.IndexCount = SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->staticMesh->GetModel().IndexCount;
+	DI.IndexCount = static_cast<StaticMeshRenderComponent*>(_DII.RenderComponent)->GetStaticMesh()->GetModel().IndexCount;
 	DI.InstanceCount = 1;
 	_DII.Scene->DrawMesh(DI, SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->renderMesh);
 }

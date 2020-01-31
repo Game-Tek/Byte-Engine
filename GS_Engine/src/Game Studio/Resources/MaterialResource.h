@@ -24,11 +24,6 @@ public:
 
 		~MaterialData() = default;
 
-		void** WriteTo(size_t _Index, size_t _Bytes) override
-		{
-			return nullptr;
-		}
-
 		[[nodiscard]] const FString& GetVertexShaderCode() const { return VertexShaderCode; }
 		[[nodiscard]] const FString& GetFragmentShaderCode() const { return FragmentShaderCode; }
 

@@ -6,36 +6,32 @@ Id::Id(const FString& _Text) : HashedString(HashString(_Text))
 {
 }
 
-Id::HashType Id::HashString(const char* Text)
+Id::HashType Id::HashString(const char* text)
 {
-	const auto Length = FString::StringLength(Text) - 1;
+	const auto Length = FString::StringLength(text) - 1;
 
-	HashType Hash = 0;
-
-	for (size_t i = 0; i < Length; i++)
+	HashType h(525201411107845655ull);
+	for (; *text; ++text)
 	{
-		Hash += Text[i] * (i / 5) * 33;
+		h ^= *text;
+		h *= 0x5bd1e9955bd1e995;
+		h ^= h >> 47;
 	}
-
-	Hash = Hash * Length * 5;
-
-	return Hash;
+	return h;
 }
 
 Id::Id(const char* Text): HashedString(HashString(Text))
 {
 }
 
-Id::HashType Id::HashString(const FString& _Text)
+Id::HashType Id::HashString(const FString& fstring)
 {
-	uint_64 Hash = 0;
-
-	for (uint32 i = 0; i < _Text.GetLength(); i++)
+	HashType h(525201411107845655ull);
+	for (auto c : fstring)
 	{
-		Hash ^= i * _Text[i] * 33;
+		h ^= c;
+		h *= 0x5bd1e9955bd1e995;
+		h ^= h >> 47;
 	}
-
-	Hash = Hash * _Text.GetLength() * 5;
-
-	return Hash;
+	return h;
 }

@@ -40,6 +40,11 @@ public:
 	string_type operator[](const size_t _Index) { return Data[_Index]; }
 	string_type operator[](const size_t _Index) const { return Data[_Index]; }
 
+	auto begin() { return Data.begin(); }
+	[[nodiscard]] auto begin()const { return Data.begin(); }
+	auto end() { return Data.end(); }
+	[[nodiscard]] auto end() const { return Data.end(); }
+
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString& Other) const;
 

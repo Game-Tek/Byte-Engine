@@ -22,8 +22,8 @@ public:
 
 	operator HashType() const { return HashedString; }
 
-	static HashType HashString(const char* Text);
-	static HashType HashString(const FString& _Text);
+	static HashType HashString(const char* text);
+	static HashType HashString(const FString& fstring);
 private:
 	HashType HashedString;
 };

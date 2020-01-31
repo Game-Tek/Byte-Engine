@@ -40,5 +40,5 @@ void StaticMeshRenderComponent::DrawInstance(DrawInstanceInfo& _DII)
 	DrawInfo DI;
 	DI.IndexCount = static_cast<StaticMeshRenderComponent*>(_DII.RenderComponent)->GetStaticMesh()->GetModel().IndexCount;
 	DI.InstanceCount = 1;
-	_DII.Scene->DrawMesh(DI, SCAST(StaticMeshRenderComponent*, _DII.RenderComponent)->renderMesh);
+	_DII.Scene->DrawMesh(DI, static_cast<StaticMeshRenderComponent*>(_DII.RenderComponent)->renderMesh);
 }

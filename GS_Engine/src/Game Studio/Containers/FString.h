@@ -8,6 +8,7 @@
 class FString
 {
 	using string_type = char;
+	using length_type = FVector<string_type>::length_type;
 public:
 	//Constructs an empty FString.
 	FString();
@@ -22,10 +23,10 @@ public:
 	//Constructs an FString from a C-String.
 	FString(const char* In);
 
-	explicit FString(size_t _Length);
+	explicit FString(length_type _Length);
 
 	//Constructs a FString from a non null terminated character array.
-	FString(size_t Length, const char* In);
+	FString(length_type Length, const char* In);
 
 	FString(const FString& Other) = default;
 
@@ -37,8 +38,8 @@ public:
 	FString& operator+=(const char* _In);
 	FString operator+(const FString& Other) const;
 
-	string_type operator[](const size_t _Index) { return Data[_Index]; }
-	string_type operator[](const size_t _Index) const { return Data[_Index]; }
+	string_type operator[](const length_type _Index) { return Data[_Index]; }
+	string_type operator[](const length_type _Index) const { return Data[_Index]; }
 
 	auto begin() { return Data.begin(); }
 	[[nodiscard]] auto begin()const { return Data.begin(); }
@@ -82,7 +83,7 @@ public:
 	void ReplaceAll(char a, char with);
 
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
-	constexpr static size_t StringLength(const char* In);
+	constexpr static length_type StringLength(const char* In);
 
 	static FString MakeString(const char* _Text, ...);
 private:

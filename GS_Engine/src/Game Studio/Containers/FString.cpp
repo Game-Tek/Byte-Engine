@@ -30,11 +30,11 @@ FString::FString(char* const _In) : Data(StringLength(_In), CCAST(char*, _In))
 {
 }
 
-FString::FString(size_t _Length) : Data(_Length)
+FString::FString(length_type _Length) : Data(_Length)
 {
 }
 
-FString::FString(const size_t _Length, const char* _In) : Data(_Length + 1, const_cast<char*>(_In))
+FString::FString(const length_type _Length, const char* _In) : Data(_Length + 1, const_cast<char*>(_In))
 {
 	Data.push_back('\0');
 }
@@ -149,9 +149,9 @@ void FString::ReplaceAll(char a, char with)
 	}
 }
 
-constexpr size_t FString::StringLength(const char* In)
+constexpr FString::length_type FString::StringLength(const char* In)
 {
-	size_t Length = 0;
+	length_type Length = 0;
 
 	while (In[Length] != '\0')
 	{

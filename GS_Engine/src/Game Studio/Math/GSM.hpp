@@ -11,10 +11,9 @@
 
 #include "Transform3.h"
 #include "Plane.h"
-#include <cmath>
 #include "Rotator.h"
 
-class GS_API GSM
+class GSM
 {
 	// +  float
 	// += float
@@ -137,92 +136,37 @@ public:
 		return Result;
 	}
 
+	static float Power(float x, float y);
+
+	static float Log10(float x);
+	
 	//Returns the sine of an angle.
-	INLINE static float Sine(const float Degrees)
-	{
-		return sinf(DegreesToRadians(Degrees));
-	}
+	static float Sine(float Degrees);
 
 	//Returns the sine of an angle.
-	INLINE static double Sine(const double Degrees)
-	{
-
-		return sin(DegreesToRadians(Degrees));
-	}
+	static double Sine(double Degrees);
 
 	//Returns the cosine of an angle.
-	INLINE static float Cosine(const float Degrees)
-	{
-		return cosf(DegreesToRadians(Degrees));
-	}
+	static float Cosine(float Degrees);
 
 	//Returns the cosine of an angle.
-	INLINE static double Cosine(const double Degrees)
-	{
-		return cos(DegreesToRadians(Degrees));
-	}
+	static double Cosine(double Degrees);
 
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
-	INLINE static float Tangent(const float Degrees)
-	{
-		return tanf(DegreesToRadians(Degrees));
-	}
+	static float Tangent(float Degrees);
 
 	//Returns the tangent of an angle. INPUT DEGREES MUST BE BETWEEN 0 AND 90.
-	INLINE static double Tangent(const double Degrees)
-	{
-		return tan(DegreesToRadians(Degrees));
-	}
+	static double Tangent(double Degrees);
 
 	//Returns the ArcSine. INPUT DEGREES MUST BE BETWEEN 0 AND 1.
-	INLINE static float ArcSine(const float A)
-	{
-		return RadiansToDegrees(asin(A));
-	}
+	static float ArcSine(float A);
 
-	INLINE static float ArcCosine(const float A)
-	{
-		//if (A > 0.0f)
-		//{
-		//	return 90.0f - ASin(1.0f - A);
-		//}
-		//else
-		//{
-		//	return 90.0f + ASin(Abs(A));
-		//}
-		//
-		return RadiansToDegrees(acos(A));
-	}
+	static float ArcCosine(float A);
 
 	//Returns the arctangent of the number. INPUT DEGREES MUST BE BETWEEN 0 AND 12.
-	INLINE static float ArcTangent(const float A)
-	{
-		//if (A > 0.0f)
-		//{
-		//	return ATan(A);
-		//}
-		//else
-		//{
-		//	return -ATan(Abs(A));
-		//}
-		//
+	static float ArcTangent(float A);
 
-		return RadiansToDegrees(atan(A));
-	}
-
-	INLINE static float ArcTan2(const float X, const float Y)
-	{
-		//return ArcTangent(Y / X);
-
-		return RadiansToDegrees(atan2(Y, X));
-	}
-
-	INLINE static float Power(const float _A, const float Times)
-	{
-		const float Timesplus = StraightRaise(_A, Floor(Times));
-
-		return Lerp(Timesplus, Timesplus * _A, Times - Floor(Times));
-	}
+	static float ArcTan2(float X, float Y);
 
 	//////////////////////////////////////////////////////////////
 	//						SCALAR MATH							//

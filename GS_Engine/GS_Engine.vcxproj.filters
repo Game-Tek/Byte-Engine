@@ -366,6 +366,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />
     <ClCompile Include="src\Game Studio\Resources\AudioResource.cpp" />
+    <ClCompile Include="src\Game Studio\SAPI\AudioCore.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

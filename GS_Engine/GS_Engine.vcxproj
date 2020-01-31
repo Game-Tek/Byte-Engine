@@ -284,6 +284,7 @@
     <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
+    <ClCompile Include="src\Game Studio\SAPI\AudioCore.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />

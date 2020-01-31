@@ -85,3 +85,6 @@ enum class AudioOutputDeviceType : uint8
 	 */
 	HEADPHONES
 };
+
+inline float dBToVolume(float db);
+inline float VolumeTodB(float volume);

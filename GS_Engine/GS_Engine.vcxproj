@@ -149,6 +149,7 @@
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />

@@ -78,9 +78,6 @@ public:
 	{
 	}
 
-	virtual void Load(InStream& InStream_);
-	virtual void Write(OutStream& OutStream_);
-
 	const FString& GetResourceName() const { return ResourceName; }
 };
 
@@ -106,6 +103,7 @@ class Resource : public Object
 	[[nodiscard]] uint16 getReferenceCount() const { return references; }
 
 	virtual bool loadResource(const LoadResourceData& loadResourceData) = 0;
+	virtual void makeFromData(ResourceData& resourceData) {}
 	virtual void loadFallbackResource(const FString& fullPath) = 0;
 
 	//Must return the extension name for the extension type.

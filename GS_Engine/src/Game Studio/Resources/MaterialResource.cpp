@@ -17,16 +17,6 @@ OutStream& operator<<(OutStream& _O, MaterialResource::MaterialData& _MD)
 	return _O;
 }
 
-void MaterialResource::MaterialData::Write(OutStream& OutStream_)
-{
-	OutStream_ << ResourceName;
-
-	OutStream_ << VertexShaderCode;
-	OutStream_ << FragmentShaderCode;
-
-	OutStream_ << TextureNames;
-}
-
 bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 {
 	std::ifstream Input(LRD_.FullPath.c_str(), std::ios::in); //Open file as binary
@@ -43,13 +33,6 @@ bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 
 		in_archive >> data.VertexShaderCode;
 		in_archive >> data.FragmentShaderCode;
-
-		in_archive >> data.TextureNames;
-
-		for (auto& element : data.TextureNames)
-		{
-			LRD_.Caller->GetResource<TextureResource>(element);
-		}
 	}
 	else
 	{
@@ -60,6 +43,11 @@ bool MaterialResource::loadResource(const LoadResourceData& LRD_)
 	Input.close();
 
 	return true;
+}
+
+void MaterialResource::makeFromData(ResourceData& resourceData)
+{
+	data = reinterpret_cast<MaterialData&>(resourceData);
 }
 
 void MaterialResource::loadFallbackResource(const FString& _Path)

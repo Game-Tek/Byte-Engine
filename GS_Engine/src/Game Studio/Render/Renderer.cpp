@@ -244,37 +244,37 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 	MaterialRenderResourceCreateInfo material_render_resource_create_info;
 	material_render_resource_create_info.ParentMaterial = Material_;
 
-	for (uint8 i = 0; i < Material_->GetMaterialResource()->GetMaterialData().TextureNames.getLength(); ++i)
-	{
-		auto texture_resource = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(
-			Material_->GetMaterialResource()->GetMaterialData().
-			           TextureNames[i]);
-
-		RAPI::TextureCreateInfo texture_create_info;
-		texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
-		texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
-		texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;
-		texture_create_info.ImageFormat = texture_resource->GetTextureData().TextureFormat;
-		texture_create_info.Layout = ImageLayout::SHADER_READ;
-
-		auto texture = RenderDevice::Get()->CreateTexture(texture_create_info);
-
-		BindingSetUpdateInfo uniform_layout_update_info;
-		BindingDescriptor uniform;
-		uniform.BindingType = UniformType::UNIFORM_BUFFER;
-		uniform.ShaderStage = ShaderType::VERTEX_SHADER;
-		uniform.ArrayLength = 1;
-		uniform.BindingResource = UB;
-		uniform_layout_update_info.LayoutBindings.push_back(uniform);
-		BindingDescriptor uniform_set;
-		uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
-		uniform_set.BindingResource = texture;
-		uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
-		uniform_set.ArrayLength = 1;
-		uniform_layout_update_info.LayoutBindings.push_back(uniform_set);
-
-		material_render_resource_create_info.textures.push_back(texture);
-	}
+	//for (uint8 i = 0; i < Material_->GetMaterialResource()->GetMaterialData().TextureNames.getLength(); ++i)
+	//{
+	//	auto texture_resource = GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(
+	//		Material_->GetMaterialResource()->GetMaterialData().
+	//		           TextureNames[i]);
+	//
+	//	RAPI::TextureCreateInfo texture_create_info;
+	//	texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
+	//	texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
+	//	texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;
+	//	texture_create_info.ImageFormat = texture_resource->GetTextureData().TextureFormat;
+	//	texture_create_info.Layout = ImageLayout::SHADER_READ;
+	//
+	//	auto texture = RenderDevice::Get()->CreateTexture(texture_create_info);
+	//
+	//	BindingSetUpdateInfo uniform_layout_update_info;
+	//	BindingDescriptor uniform;
+	//	uniform.BindingType = UniformType::UNIFORM_BUFFER;
+	//	uniform.ShaderStage = ShaderType::VERTEX_SHADER;
+	//	uniform.ArrayLength = 1;
+	//	uniform.BindingResource = UB;
+	//	uniform_layout_update_info.LayoutBindings.push_back(uniform);
+	//	BindingDescriptor uniform_set;
+	//	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
+	//	uniform_set.BindingResource = texture;
+	//	uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
+	//	uniform_set.ArrayLength = 1;
+	//	uniform_layout_update_info.LayoutBindings.push_back(uniform_set);
+	//
+	//	material_render_resource_create_info.textures.push_back(texture);
+	//}
 
 	return new MaterialRenderResource(material_render_resource_create_info);
 }

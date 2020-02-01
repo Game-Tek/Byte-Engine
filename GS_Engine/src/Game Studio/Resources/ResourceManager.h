@@ -54,9 +54,10 @@ public:
 	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
 	{
 		Resource* resource = new T();
-		auto path = _Name + "." + resource->getResourceTypeExtension();
-		SaveFile(_Name, path, ResourceData_);
-		LoadResource(_Name, resource);
+		resource->makeFromData(ResourceData_);
+		//auto path = _Name + "." + resource->getResourceTypeExtension();
+		//SaveFile(_Name, path, ResourceData_);
+		//LoadResource(_Name, resource);
 	}
 
 	void ReleaseResource(Resource* _Resource) const;

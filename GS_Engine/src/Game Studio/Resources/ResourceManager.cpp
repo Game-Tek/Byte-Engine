@@ -30,8 +30,6 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 
 	OutStream out_archive(&Outfile);
 
-	ResourceData_.Write(out_archive);
-
 	Outfile.close();
 }
 

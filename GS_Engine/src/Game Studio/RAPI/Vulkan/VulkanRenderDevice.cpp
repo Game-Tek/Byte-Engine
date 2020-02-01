@@ -410,6 +410,16 @@ RAPI::Texture* VulkanRenderDevice::CreateTexture(const RAPI::TextureCreateInfo& 
 	return new VulkanTexture(TCI_, vulkan_texture_create_info);
 }
 
+BindingsPool* VulkanRenderDevice::CreateBindingsPool(const RAPI::BindingsPoolCreateInfo& bindingsPoolCreateInfo)
+{
+	return new VulkanBindingsPool(this, bindingsPoolCreateInfo);
+}
+
+BindingsSet* VulkanRenderDevice::CreateBindingsSet(const RAPI::BindingsSetCreateInfo& bindingsSetCreateInfo)
+{
+	return new VulkanBindingsSet(this, bindingsSetCreateInfo);
+}
+
 GraphicsPipeline* VulkanRenderDevice::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
 {
 	return new VulkanGraphicsPipeline(_GPCI);

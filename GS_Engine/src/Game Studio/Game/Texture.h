@@ -20,5 +20,7 @@ public:
 		GS::Application::Get()->GetResourceManager()->ReleaseResource(textureResource);
 	}
 
+	const TextureResource* GetTextureResource() const { return textureResource; }
+	
 	[[nodiscard]] const char* GetName() const override { return "Texture"; }
 };

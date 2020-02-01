@@ -48,6 +48,8 @@ void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type
 
 void Material::SetTexture(const Id& textureName, Texture* texturePointer)
 {
+	textures[textureName.GetID()] = texturePointer;
+	textures.resize(1);
 }
 
 bool Material::GetHasTransparency() const { return materialMaterialResource->GetMaterialData().HasTransparency; }

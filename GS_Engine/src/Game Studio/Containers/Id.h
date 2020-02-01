@@ -11,9 +11,11 @@ public:
 
 	Id() = default;
 
-	Id(const char* Text);
+	explicit Id(const char* Text);
 
-	Id(const FString& _Text);
+	explicit Id(HashType id);
+	
+	explicit Id(const FString& _Text);
 
 	~Id() = default;
 

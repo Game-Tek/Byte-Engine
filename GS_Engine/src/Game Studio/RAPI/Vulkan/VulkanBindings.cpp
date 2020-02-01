@@ -98,7 +98,7 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 		&vk_descriptor_set_allocate_info, vkDescriptorSets.getData());
 }
 
-void VulkanBindingsSet::Update(const BindingSetUpdateInfo& uniformLayoutUpdateInfo)
+void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateInfo)
 {
 	DArray<VkWriteDescriptorSet> write_descriptors(uniformLayoutUpdateInfo.LayoutBindings.getLength());
 

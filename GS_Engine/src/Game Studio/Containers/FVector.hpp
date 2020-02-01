@@ -75,6 +75,7 @@ private:
 public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
+	typedef T value_type;
 
 	//friend OutStream& operator<<(OutStream& _Archive, FVector<T>& _FV)
 	//{

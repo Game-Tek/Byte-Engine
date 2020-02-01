@@ -77,7 +77,7 @@ layout(location = 0)in VERTEX_DATA
 
 layout(location = 0) out vec4 outColor;
 
-layout(binding = 1) uniform sampler2D textures[4096];
+layout(set = 0, binding = 0) uniform sampler2D textures[4096];
 
 void main()
 {

@@ -24,6 +24,10 @@ Id::Id(const char* Text): HashedString(HashString(Text))
 {
 }
 
+Id::Id(const HashType id) : HashedString(id)
+{
+}
+
 Id::HashType Id::HashString(const FString& fstring)
 {
 	HashType h(525201411107845655ull);

@@ -29,7 +29,7 @@ namespace RAPI
 		int DescriptorCount = 0;
 	};
 
-	struct BindingSetUpdateInfo : RenderInfo
+	struct BindingsSetUpdateInfo : RenderInfo
 	{
 		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> LayoutBindings;
 		uint8 DestinationSet = 0;
@@ -76,7 +76,7 @@ namespace RAPI
 	public:
 		virtual ~BindingsSet() = default;
 
-		virtual void Update(const BindingSetUpdateInfo& uniformLayoutUpdateInfo) = 0;
+		virtual void Update(const BindingsSetUpdateInfo& uniformLayoutUpdateInfo) = 0;
 	};
 
 }

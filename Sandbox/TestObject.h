@@ -22,11 +22,13 @@ class TestObject : public WorldObject
 	Rotator accumRotation;
 
 public:
-	TestObject() : MyStaticMesh("hydrant"), MyTexture("Logo_Game-Tek")
+	TestObject() : MyStaticMesh("hydrant"), MyTexture("hydrant_Albedo")
 	{
 		MyMaterial = new Material("M_Base");
 		MyStaticMesh.SetMaterial(MyMaterial);
 
+		MyMaterial->SetTexture(Id(0ULL), &MyTexture);
+		
 		StaticMeshRenderComponentCreateInfo SMRCCI;
 		SMRCCI.StaticMesh = &MyStaticMesh;
 		SMRCCI.Owner = this;

@@ -23,6 +23,7 @@ class Material
 	MaterialResource* materialMaterialResource = nullptr;
 
 	Array<MaterialParameter, 8> parameters;
+	Array<class Texture*, 8> textures;
 
 	byte vars[32];
 public:
@@ -43,6 +44,7 @@ public:
 	void SetTexture(const Id& textureName, class Texture* texturePointer);
 
 	MaterialResource* GetMaterialResource() { return materialMaterialResource; }
+	[[nodiscard]] const decltype(textures)& GetTextures() const { return textures; }
 
 	//Returns an array consisting of all of the material's dynamic parameters which change on a per instance basis. Used for building and updating shader data.
 	Array<MaterialParameter, 8> GetMaterialDynamicParameters() const { return parameters; };

@@ -31,7 +31,7 @@ class VulkanBindingsSet final : public BindingsSet
 public:
 	VulkanBindingsSet(class VulkanRenderDevice* device, const BindingsSetCreateInfo& descriptorSetCreateInfo);
 
-	void Update(const BindingSetUpdateInfo& uniformLayoutUpdateInfo) override;
+	void Update(const BindingsSetUpdateInfo& uniformLayoutUpdateInfo) override;
 
 	[[nodiscard]] VkDescriptorSetLayout GetVkDescriptorSetLayout() const { return vkDescriptorSetLayout; }
 	[[nodiscard]] const Array<VkDescriptorSet, 4>& GetVkDescriptorSets() const { return vkDescriptorSets; }

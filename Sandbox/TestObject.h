@@ -29,10 +29,10 @@ public:
 
 		MyMaterial->SetTexture(Id(0ULL), &MyTexture);
 		
-		StaticMeshRenderComponentCreateInfo SMRCCI;
-		SMRCCI.StaticMesh = &MyStaticMesh;
-		SMRCCI.Owner = this;
- 		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
+		//StaticMeshRenderComponentCreateInfo SMRCCI;
+		//SMRCCI.StaticMesh = &MyStaticMesh;
+		//SMRCCI.Owner = this;
+ 		//MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
 
 		MyCamera.SetPosition(Vector3(0, 50, -250));
 		GetWorld()->GetScene().SetCamera(&MyCamera);

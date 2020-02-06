@@ -4,6 +4,10 @@
 
 #include "Game/StaticMesh.h"
 
+namespace RAPI {
+	class RenderMesh;
+}
+
 struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
 {
 	StaticMesh* StaticMesh = nullptr;
@@ -13,22 +17,12 @@ class StaticMeshRenderComponent final : public RenderComponent
 {
 	StaticMesh* staticMesh = nullptr;
 	class MaterialRenderResource* renderMaterial = nullptr;
-	class MeshRenderResource* renderMesh = nullptr;
-
-	static void CreateInstanceResources(CreateInstanceResourcesInfo& _CIRI);
-	static void BuildTypeInstanceSortData(BuildTypeInstanceSortDataInfo& _BTISDI);
-	static void BindTypeResources(BindTypeResourcesInfo& _BTRI);
-	static void DrawInstance(DrawInstanceInfo& _DII);
-	static RenderableInstructions StaticMeshRenderInstructions;
+	RAPI::RenderMesh* renderMesh = nullptr;
+	
 public:
 	StaticMeshRenderComponent() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
-
-	[[nodiscard]] RenderableInstructions* GetRenderableInstructions() const override
-	{
-		return &StaticMeshRenderInstructions;
-	}
 
 	[[nodiscard]] const char* GetRenderableTypeName() const override { return "StaticMesh"; }
 

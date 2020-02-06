@@ -8,8 +8,6 @@
  */
 class AudioDevice
 {
-	inline static AudioDevice* audio_device_instance = nullptr;
-
 protected:
 	AudioBitDepth bitDepth;
 	AudioSampleRate sampleRate;
@@ -20,12 +18,11 @@ protected:
 public:
 	virtual ~AudioDevice()
 	{
-		delete audio_device_instance;
 	};
 
-	static AudioDevice* Get() { return audio_device_instance; }
-
 	AudioDevice();
+
+	static AudioDevice* CreateAudioDevice();
 
 	/**
 	 * \brief Initializes the audio device to start receiving audio. Must be called before any other function.

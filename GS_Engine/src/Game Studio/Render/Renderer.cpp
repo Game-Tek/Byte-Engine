@@ -5,7 +5,6 @@
 #include "Math/GSM.hpp"
 
 #include "Resources/StaticMeshResource.h"
-#include "Resources/MaterialResource.h"
 
 #include "Material.h"
 #include "Game/StaticMesh.h"
@@ -16,11 +15,12 @@
 #include "Game/Texture.h"
 
 #include "ScreenQuad.h"
+#include "StaticMeshRenderableManager.h"
 
 using namespace RAPI;
 
 Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
-{
+{	
 	Win = GS::Application::Get()->GetActiveWindow();
 
 	RenderContextCreateInfo RCCI;
@@ -86,15 +86,15 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 	BindingLayoutCreateInfo ULCI;
 	ULCI.DescriptorCount = 3;
-	ULCI.LayoutBindings[0].BindingType = UniformType::UNIFORM_BUFFER;
-	ULCI.LayoutBindings[0].ShaderStage = ShaderType::VERTEX_SHADER;
-	ULCI.LayoutBindings[0].ArrayLength = 1;
+	ULCI.BindingsSetLayout[0].BindingType = UniformType::UNIFORM_BUFFER;
+	ULCI.BindingsSetLayout[0].ShaderStage = ShaderType::VERTEX_SHADER;
+	ULCI.BindingsSetLayout[0].ArrayLength = 1;
 	BindingDescriptor uniform_set;
 	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
 	uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
 	uniform_set.ArrayLength = 1;
-	ULCI.LayoutBindings[1] = uniform_set;
-	ULCI.LayoutBindings.setLength(2);
+	ULCI.BindingsSetLayout[1] = uniform_set;
+	ULCI.BindingsSetLayout.setLength(2);
 
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(uint32);
@@ -123,6 +123,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	FullScreenQuad = RenderDevice::Get()->CreateMesh(MCI);
 
 	GraphicsPipelineCreateInfo gpci;
+	gpci.RenderDevice = RenderDevice::Get();
 	gpci.RenderPass = RP;
 	gpci.UniformLayout = UL;
 	gpci.VDescriptor = &ScreenQuad::VD;
@@ -262,16 +263,16 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 		material_render_resource_create_info.textures.push_back(texture);
 	}
 
-	auto binding_set = RenderDevice::Get()->CreateBindingsSet();
-	auto binding_pool = RenderDevice::Get()->CreateBindingsPool();
+	//auto binding_set = RenderDevice::Get()->CreateBindingsSet();
+	//auto binding_pool = RenderDevice::Get()->CreateBindingsPool();
 
-	material_render_resource_create_info.BindingsIndex = bindings.emplace_back(Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>(binding_pool, binding_set));
+	//material_render_resource_create_info.BindingsIndex = bindings.emplace_back(Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>(binding_pool, binding_set));
 
 	BindingsSetUpdateInfo bindings_set_update_info;
 	bindings_set_update_info.RenderDevice = RAPI::RenderDevice::Get();
 	bindings_set_update_info.DestinationSet = 255;
-	bindings_set_update_info.LayoutBindings[0];
-	binding_set->Update(bindings_set_update_info);
+	bindings_set_update_info.BindingsSetLayout[0];
+	//binding_set->Update(bindings_set_update_info);
 
 	return new MaterialRenderResource(material_render_resource_create_info);
 }
@@ -334,14 +335,12 @@ void Renderer::UpdateViews()
 
 void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
-	auto ri = _RC->GetRenderableInstructions();
+	//ComponentToInstructionsMap.insert(std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
 
-	CreateInstanceResourcesInfo CIRI{_RC, this};
-	CIRI.RenderComponentCreateInfo = _RCCI;
-	ri->CreateInstanceResources(CIRI);
-
-	ComponentToInstructionsMap.insert(
-		std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
+	if (_RC->GetRenderableTypeName() == "StaticMesh")
+	{
+		staticMeshRenderablesData.staticMeshs.emplace_back(_RC);
+	}
 }
 
 void Renderer::UpdateRenderables()
@@ -369,7 +368,7 @@ void Renderer::UpdateRenderables()
 
 void Renderer::RenderRenderables()
 {
-	BindPipeline(Pipelines.begin()->second);
+	//BindPipeline(Pipelines.begin()->second);
 
 	uint32 i = 0;
 
@@ -379,13 +378,8 @@ void Renderer::RenderRenderables()
 
 	for (auto& e : ComponentToInstructionsMap)
 	{
-		auto ri = e.second->GetRenderableInstructions();
-
 		push_constants_info.Data = &i;
 		RC->UpdatePushConstant(push_constants_info);
-
-		DrawInstanceInfo dii{this, e.second};
-		ri->DrawInstance(dii);
 
 		++i;
 	}

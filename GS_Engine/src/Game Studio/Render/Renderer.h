@@ -15,10 +15,11 @@
 #include "RAPI/RenderPass.h"
 
 #include <map>
-#include "RenderableInstructions.h"
 #include "Containers/Id.h"
 #include "RAPI/Bindings.h"
+#include "Game/StaticMesh.h"
 
+class Material;
 class StaticMeshResource;
 class RenderProxy;
 class PointLightRenderProxy;
@@ -63,6 +64,14 @@ protected:
 	GS_DEBUG_ONLY(uint32 PipelineSwitches = 0)
 	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
+	struct StaticMeshRenderablesData
+	{
+		Pair<RAPI::BindingsPool*, RAPI::BindingsSet*> instanceDataBindings;
+		RAPI::UniformBuffer* instanceDataBuffer = nullptr;
+
+		FVector<RenderComponent*> staticMeshs;
+	} staticMeshRenderablesData;
+	
 	/* ---- RAPI Resources ---- */
 	std::map<Id::HashType, RAPI::GraphicsPipeline*> Pipelines;
 	FVector<class MaterialRenderResource*> materialRenderResources;
@@ -117,7 +126,7 @@ protected:
 
 	void UpdateRenderables();
 	void RenderRenderables();
-
+	
 	//Returns a symmetric perspective frustum.
 	static void BuildPerspectiveMatrix(Matrix4& matrix, float fov, float aspectRatio, float near,
 	                                   float far);

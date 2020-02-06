@@ -53,7 +53,7 @@ namespace RAPI
 		virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
 		virtual Image* CreateImage(const ImageCreateInfo& _ICI) = 0;
 		virtual RAPI::Texture* CreateTexture(const RAPI::TextureCreateInfo& TCI_) = 0;
-		virtual BindingsPool* CreateBindingsPool(const RAPI::BindingsPoolCreateInfo& bindingsPoolCreateInfo);
+		virtual BindingsPool* CreateBindingsPool(const RAPI::BindingsPoolCreateInfo& bindingsPoolCreateInfo) = 0;
 		virtual BindingsSet* CreateBindingsSet(const RAPI::BindingsSetCreateInfo& bindingsSetCreateInfo) = 0;
 		virtual GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) = 0;
 		virtual ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) = 0;

@@ -11,7 +11,7 @@ public:
 
 	Id() = default;
 
-	explicit Id(const char* Text);
+	Id(const char* Text);
 
 	explicit Id(HashType id);
 	

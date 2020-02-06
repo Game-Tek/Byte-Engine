@@ -81,10 +81,10 @@ public:
 		copyToData(_Start, (_End - _Start) * sizeof(_T));
 	}
 
-	DArray(const DArray<_T>& _Other) : capacity(_Other.getCapacity), length(_Other.getLength),
+	DArray(const DArray<_T>& _Other) : capacity(_Other.capacity), length(_Other.length),
 	                                   data(allocate(this->capacity))
 	{
-		copyLength(this->capacity, _Other.getData);
+		copyLength(this->capacity, _Other.data);
 	}
 
 	~DArray()

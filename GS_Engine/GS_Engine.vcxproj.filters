@@ -216,7 +216,6 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderableInstructions.h" />
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
       <Filter>Engine\Resource Manager\Resources</Filter>
     </ClInclude>
@@ -273,6 +272,10 @@
     <ClInclude Include="src\Game Studio\RAPI\Bindings.h" />
     <ClInclude Include="src\Game Studio\Resources\AudioResource.h" />
     <ClInclude Include="src\Game Studio\Resources\SubResourceManager.h" />
+    <ClInclude Include="src\Game Studio\RAPI\CommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderableTypeManager.h" />
+    <ClInclude Include="src\Game Studio\Render\StaticMeshRenderableManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\AudioResourceManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -368,6 +371,9 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />
     <ClCompile Include="src\Game Studio\Resources\AudioResource.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioCore.cpp" />
+    <ClCompile Include="src\Game Studio\Render\StaticMeshRenderableManager.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\AudioResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Sound\SoundManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

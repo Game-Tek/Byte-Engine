@@ -25,20 +25,20 @@ namespace RAPI
 
 	struct BindingLayoutCreateInfo
 	{
-		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> LayoutBindings;
+		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> BindingsSetLayout;
 		int DescriptorCount = 0;
 	};
 
 	struct BindingsSetUpdateInfo : RenderInfo
 	{
-		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> LayoutBindings;
+		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> BindingsSetLayout;
 		uint8 DestinationSet = 0;
 	};
 
 
 	struct BindingsPoolCreateInfo : RenderInfo
 	{
-		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> LayoutBindings;
+		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> BindingsSetLayout;
 		/**
 		 * \brief How many sets to allocate.
 		 */
@@ -64,7 +64,7 @@ namespace RAPI
 		 * \brief Pointer to a binding pool to allocated the bindings set from.
 		 */
 		BindingsPool* BindingsPool = nullptr;
-		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> LayoutBindings;
+		Array<BindingDescriptor, MAX_BINDINGS_PER_SET> BindingsSetLayout;
 		/**
 		 * \brief How many sets to allocate.
 		 */

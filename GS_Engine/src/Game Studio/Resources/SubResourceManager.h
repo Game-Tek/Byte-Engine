@@ -12,8 +12,11 @@
 class SubResourceManager
 {
 public:
+
+	struct ResourceData{};
+	
 	SubResourceManager() = default;
-	~SubResourceManager() = default;
+	virtual ~SubResourceManager() = default;
 	
 	/**
 	 * \brief Struct specifying how a resource will be loaded.
@@ -23,7 +26,10 @@ public:
 		const char* ResourceName = nullptr;
 	};
 
-	struct OnResourceLoadInfo;
+	struct OnResourceLoadInfo
+	{
+		ResourceData* ResourceData = nullptr;
+	};
 	
 	/**
 	 * \brief Loads a resource specified by the loadResourceInfo parameter.
@@ -31,18 +37,18 @@ public:
 	 * \param onResourceLoadInfo Struct for detailing the results of this load operation.
 	 * \return Boolean to indicate whether loading of this resource was successful or not.
 	 */
-	virtual bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo);
+	virtual bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 	/**
 	 * \brief Creates a resource and fills it with fallback data. This function should be called by the superior ResourceManager if the "real" resource load operation failed.
 	 * Usually the resource created by this function will contain exotic data that will draw attention to itself once utilized and will alert the developer of the failed resource load. Besides it may print and error message to the console.
 	 * \param loadResourceInfo Struct holding the data for how this resource will be loaded.
 	 * \param onResourceLoadInfo Struct for detailing the results of this load operation.
 	 */
-	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo);
+	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 
 	/**
 	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
 	 * \return A string containing the type name.
 	 */
-	[[nodiscard]] virtual const char* GetResourceTypeName() const;
+	[[nodiscard]] virtual const char* GetResourceTypeName() const = 0;
 };

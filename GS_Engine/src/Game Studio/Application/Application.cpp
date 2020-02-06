@@ -1,5 +1,6 @@
 #include "Application.h"
 #include "Debug/Logger.h"
+#include "Resources/AudioResourceManager.h"
 
 GS::Application* GS::Application::ApplicationInstance = nullptr;
 
@@ -17,6 +18,8 @@ namespace GS
 		WCI.WindowType = RAPI::WindowFit::NORMAL;
 
 		SetActiveWindow(RAPI::Window::CreateWindow(WCI));
+
+		ResourceManagerInstance->CreateSubResourceManager<AudioResourceManager>();
 	}
 
 	Application::~Application()

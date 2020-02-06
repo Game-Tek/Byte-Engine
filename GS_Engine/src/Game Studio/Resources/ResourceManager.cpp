@@ -5,6 +5,22 @@
 #include "Core/System.h"
 #include "Debug/Logger.h"
 
+SubResourceManager::OnResourceLoadInfo ResourceManager::GetResource(const FString& name, const Id& type)
+{
+	auto resource_manager = resourceManagers.find(type);
+
+	GS_ASSERT(resource_manager->second)
+
+	SubResourceManager::LoadResourceInfo load_resource_info;
+	load_resource_info.ResourceName = name.c_str();
+
+	SubResourceManager::OnResourceLoadInfo on_resource_load_info;
+	
+	resource_manager->second->LoadResource(load_resource_info, on_resource_load_info);
+
+	return on_resource_load_info;
+}
+
 void ResourceManager::ReleaseResource(Resource* _Resource) const
 {
 	_Resource->decrementReferences();

@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include "Containers/FString.h"
 #include "Containers/Id.h"
+#include "SubResourceManager.h"
 
 class ResourceManager : public Object
 {
@@ -19,9 +20,16 @@ class ResourceManager : public Object
 
 	void LoadResource(const FString& _ResourceName, Resource* _Resource);
 
+	std::unordered_map<Id::HashType, SubResourceManager*> resourceManagers;
+	
 public:
 	ResourceManager()
 	{
+		for (auto& resource_manager : resourceManagers)
+		{
+			delete resource_manager.second;
+		}
+		
 		for (auto& element : ResourceMap)
 		{
 			delete element.second;
@@ -50,6 +58,9 @@ public:
 		return SCAST(T*, resource);
 	}
 
+	SubResourceManager::OnResourceLoadInfo GetResource(const FString& name, const Id& type);
+	
+
 	template <class T>
 	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
 	{
@@ -63,6 +74,14 @@ public:
 	void ReleaseResource(Resource* _Resource) const;
 
 	void* CreateFile();
+
+	template<class T>
+	void CreateSubResourceManager()
+	{
+		auto new_resource_manager = static_cast<SubResourceManager*>(new T());
+		
+		resourceManagers.insert({ Id(new_resource_manager->GetResourceTypeName()), new_resource_manager });
+	}
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 };

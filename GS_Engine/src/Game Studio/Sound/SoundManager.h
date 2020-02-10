@@ -16,7 +16,7 @@ class SoundManager
 
 	AudioResourceManager::AudioResourceData* sound = nullptr;
 
-	void* buffer = nullptr;
+	byte* buffer = nullptr;
 	uint32 bufferSize = 0;
 public:
 	SoundManager();

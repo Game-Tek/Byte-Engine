@@ -207,7 +207,7 @@ void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 	GS_DEBUG_ONLY(++PipelineSwitches);
 }
 
-MeshRenderResource* Renderer::CreateMesh(StaticMesh* _SM)
+RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 {
 	MeshRenderResource* NewMesh = nullptr;
 
@@ -221,9 +221,7 @@ MeshRenderResource* Renderer::CreateMesh(StaticMesh* _SM)
 		MCI.VertexData = m.VertexArray;
 		MCI.IndexData = m.IndexArray;
 		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
-		MeshRenderResourceCreateInfo mesh_render_resource_create_info;
-		mesh_render_resource_create_info.Mesh = RenderDevice::Get()->CreateMesh(MCI);
-		NewMesh = new MeshRenderResource(mesh_render_resource_create_info);
+		Meshes[_SM] = RenderDevice::Get()->CreateMesh(MCI);
 	}
 	else
 	{
@@ -236,12 +234,12 @@ MeshRenderResource* Renderer::CreateMesh(StaticMesh* _SM)
 
 MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 {
-	auto Res = Pipelines.find(Id(Material_->GetMaterialName()));
+	auto Res = Pipelines.find(Id(Material_->GetMaterialType()));
 
 	if (Res == Pipelines.end())
 	{
 		auto NP = CreatePipelineFromMaterial(Material_);
-		Pipelines.insert({Id(Material_->GetMaterialName()).GetID(), NP});
+		Pipelines.insert({Id(Material_->GetMaterialType()).GetID(), NP});
 	}
 
 	MaterialRenderResourceCreateInfo material_render_resource_create_info;
@@ -262,17 +260,6 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 	
 		material_render_resource_create_info.textures.push_back(texture);
 	}
-
-	//auto binding_set = RenderDevice::Get()->CreateBindingsSet();
-	//auto binding_pool = RenderDevice::Get()->CreateBindingsPool();
-
-	//material_render_resource_create_info.BindingsIndex = bindings.emplace_back(Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>(binding_pool, binding_set));
-
-	BindingsSetUpdateInfo bindings_set_update_info;
-	bindings_set_update_info.RenderDevice = RAPI::RenderDevice::Get();
-	bindings_set_update_info.DestinationSet = 255;
-	bindings_set_update_info.BindingsSetLayout[0];
-	//binding_set->Update(bindings_set_update_info);
 
 	return new MaterialRenderResource(material_render_resource_create_info);
 }
@@ -335,11 +322,16 @@ void Renderer::UpdateViews()
 
 void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
-	//ComponentToInstructionsMap.insert(std::pair<GS_HASH_TYPE, RenderComponent*>(Id::HashString(_RC->GetRenderableTypeName()), _RC));
-
-	if (_RC->GetRenderableTypeName() == "StaticMesh")
+	FString name(64);
+	
+	for(auto& manager : renderableTypeManagers)
 	{
-		staticMeshRenderablesData.staticMeshs.emplace_back(_RC);
+		manager->GetRenderableTypeName(name);
+
+		if(name == _RC->GetRenderableType())
+		{
+			manager->RegisterComponent(_RC);
+		}
 	}
 }
 

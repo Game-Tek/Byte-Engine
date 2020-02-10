@@ -15,7 +15,7 @@ Material::~Material()
 	GS::Application::Get()->GetResourceManager()->ReleaseResource(materialMaterialResource);
 }
 
-const char* Material::GetMaterialName() const
+const char* Material::GetMaterialType() const
 {
 	return materialMaterialResource->GetMaterialData().GetResourceName().c_str();
 }

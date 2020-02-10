@@ -30,7 +30,7 @@ public:
 	explicit Material(const FString& _Name);
 	virtual ~Material();
 
-	[[nodiscard]] const char* GetMaterialName() const;
+	[[nodiscard]] Id GetMaterialType() const;
 
 	//Writes the vertex shader code and fragment shader code to the passed in variables.
 	void GetRenderingCode(FVector<RAPI::ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.

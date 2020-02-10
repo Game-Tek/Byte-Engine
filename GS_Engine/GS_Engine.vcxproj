@@ -135,6 +135,7 @@
     <ClInclude Include="src\Game Studio\PlayableAsset.h" />
     <ClInclude Include="src\Game Studio\RAPI\CommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
+    <ClInclude Include="src\Game Studio\Render\BindingsSetDescriptor.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\MeshRenderResource.h" />
@@ -144,6 +145,7 @@
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderGroup.h" />
     <ClInclude Include="src\Game Studio\Render\RenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderableManager.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />

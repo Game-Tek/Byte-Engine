@@ -18,6 +18,8 @@
 #include "Containers/Id.h"
 #include "RAPI/Bindings.h"
 #include "Game/StaticMesh.h"
+#include "RenderableTypeManager.h"
+#include "RenderGroup.h"
 
 class Material;
 class StaticMeshResource;
@@ -64,18 +66,16 @@ protected:
 	GS_DEBUG_ONLY(uint32 PipelineSwitches = 0)
 	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
 
-	struct StaticMeshRenderablesData
-	{
-		Pair<RAPI::BindingsPool*, RAPI::BindingsSet*> instanceDataBindings;
-		RAPI::UniformBuffer* instanceDataBuffer = nullptr;
+	friend RenderableTypeManager;
+	
+	FVector<RenderableTypeManager*> renderableTypeManagers;
 
-		FVector<RenderComponent*> staticMeshs;
-	} staticMeshRenderablesData;
+	std::map<Id::HashType, RenderGroup> renderGroups;
 	
 	/* ---- RAPI Resources ---- */
 	std::map<Id::HashType, RAPI::GraphicsPipeline*> Pipelines;
 	FVector<class MaterialRenderResource*> materialRenderResources;
-	std::map<StaticMesh*, MeshRenderResource*> Meshes;
+	std::map<StaticMesh*, RAPI::RenderMesh*> Meshes;
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;
 	FVector<Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>> bindings;
 

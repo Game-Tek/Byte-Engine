@@ -3,6 +3,7 @@
 #include "Core.h"
 
 #include "Game/Component.h"
+#include "Containers/Id.h"
 
 struct RenderComponentCreateInfo : ComponentCreateInfo
 {
@@ -22,5 +23,5 @@ public:
 	//Returns whether this render component should be rendered on the current update.
 	[[nodiscard]] bool GetShouldRender() const { return ShouldRender; }
 
-	[[nodiscard]] virtual const char* GetRenderableTypeName() const = 0;
+	[[nodiscard]] virtual Id GetRenderableType() const = 0;
 };

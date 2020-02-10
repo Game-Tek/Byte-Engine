@@ -2,6 +2,7 @@
 
 #include "Object.h"
 
+class Renderer;
 class FString;
 
 namespace RAPI
@@ -51,4 +52,6 @@ public:
      * \param name Reference to an FString in which the name will be stored.
      */
     virtual void GetRenderableTypeName(FString& name) = 0;
+
+    virtual uint32 RegisterComponent(Renderer* renderer, RenderComponent* renderComponent);
 };

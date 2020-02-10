@@ -24,7 +24,7 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
 
-	[[nodiscard]] const char* GetRenderableTypeName() const override { return "StaticMesh"; }
+	[[nodiscard]] Id GetRenderableType() const override { return "StaticMesh"; }
 
 	[[nodiscard]] StaticMesh* GetStaticMesh() const { return staticMesh; }
 };

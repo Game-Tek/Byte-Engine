@@ -276,6 +276,8 @@
     <ClInclude Include="src\Game Studio\Render\RenderableTypeManager.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderableManager.h" />
     <ClInclude Include="src\Game Studio\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderGroup.h" />
+    <ClInclude Include="src\Game Studio\Render\BindingsSetDescriptor.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

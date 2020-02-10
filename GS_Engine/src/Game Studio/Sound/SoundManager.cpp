@@ -11,7 +11,7 @@ SoundManager::SoundManager()
 
 	audioDevice->GetBufferSize(&bufferSize);
 	
-	buffer = malloc(bufferSize);
+	buffer = static_cast<byte*>(malloc(bufferSize));
 }
 
 SoundManager::~SoundManager()
@@ -25,5 +25,9 @@ void SoundManager::Update()
 	uint64 buffer_size = 0;
 	audioDevice->GetAvailableBufferSize(&buffer_size);
 
-	audioDevice->PushAudioData();
+	GS::Application::Get()->GetClock().GetElapsedTime();
+	
+	//buffer[]
+	
+	//audioDevice->PushAudioData();
 }

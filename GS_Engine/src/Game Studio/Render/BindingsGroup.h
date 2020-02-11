@@ -1,11 +1,13 @@
 #pragma once
 
-#include "RAPI/GraphicsPipeline.h"
+#include "Containers/Array.hpp"
 
 #include <unordered_map>
-#include "Containers/FVector.hpp"
 
-class BindingsSetDescriptor;
+#include "BindingsSetDescriptor.h"
+#include "Containers/Id.h"
+#include "RAPI/Bindings.h"
+#include "RAPI/CommandBuffer.h"
 
 class RenderGroupBase
 {
@@ -17,12 +19,12 @@ class RenderGroupBase
      */
     uint32 maxInstanceCount = 0;
 
-    Id parentGroup = 0;
+    Array<Id, 8>parentGroups;
 
 public:
 
-    void SetParentGroup(const Id& parentId) { parentGroup = parentId; }
-	[[nodiscard]] Id GetParentGroup() const { return parentGroup; }
+    void AddParentGroup(const Id& parentId) { parentGroups.push_back(parentId); }
+	[[nodiscard]] const decltype(parentGroups)& GetParentGroups() const { return parentGroups; }
 };
 
 class BindingsGroup : public RenderGroupBase
@@ -33,7 +35,7 @@ class BindingsGroup : public RenderGroupBase
 public:
     struct BindingsGroupCreateInfo
     {
-	    
+        BindingsSetDescriptor BindingsSetDescriptor;
     };
 	
     explicit BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo);
@@ -44,8 +46,14 @@ class BindingsGroupManager
     std::unordered_map<Id, BindingsGroup> bindingsGroups;
 	
 public:
-	void AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup& bindingsGroup) { bindingsGroups.emplace(bindingsGroupId, bindingsGroup); }
-
+	const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo) { return bindingsGroups.emplace(bindingsGroupId, bindingsGroupCreateInfo).first->second; }
+    const BindingsGroup& GetBindingsGroup(const Id& bindingsGroupId)
+	{
+		const auto find_result = bindingsGroups.find(bindingsGroupId);
+        //GS_ASSERT(find_result);
+        return find_result->second;
+	}
+	
     struct BindBindingsGroupInfo
     {
         RAPI::CommandBuffer* CommandBuffer = nullptr;

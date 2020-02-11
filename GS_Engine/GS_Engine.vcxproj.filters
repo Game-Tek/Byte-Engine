@@ -378,6 +378,7 @@
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderableManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Sound\SoundManager.cpp" />
+    <ClCompile Include="src\Game Studio\Render\BindingsGroup.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -19,13 +19,18 @@ public:
 
 	~Id() = default;
 
-	INLINE HashType GetID() { return HashedString; }
-	INLINE HashType GetID() const { return HashedString; }
+	INLINE HashType GetID() { return hashValue; }
+	INLINE HashType GetID() const { return hashValue; }
 
-	operator HashType() const { return HashedString; }
+	operator HashType() const { return hashValue; }
 
 	static HashType HashString(const char* text);
 	static HashType HashString(const FString& fstring);
+
+	bool operator==(const Id& other) { return hashValue == other.hashValue; }
+	
 private:
-	HashType HashedString;
+	HashType hashValue = 0;
+
+	static HashType hashString(uint32 length, const char* text);
 };

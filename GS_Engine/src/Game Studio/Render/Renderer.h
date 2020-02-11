@@ -19,7 +19,7 @@
 #include "RAPI/Bindings.h"
 #include "Game/StaticMesh.h"
 #include "RenderableTypeManager.h"
-#include "RenderGroup.h"
+#include "BindingsGroup.h"
 
 class Material;
 class StaticMeshResource;
@@ -69,8 +69,6 @@ protected:
 	friend RenderableTypeManager;
 	
 	FVector<RenderableTypeManager*> renderableTypeManagers;
-
-	std::map<Id::HashType, RenderGroup> renderGroups;
 	
 	/* ---- RAPI Resources ---- */
 	std::map<Id::HashType, RAPI::GraphicsPipeline*> Pipelines;

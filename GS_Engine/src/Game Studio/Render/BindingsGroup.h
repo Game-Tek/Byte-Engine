@@ -23,6 +23,9 @@ class RenderGroupBase
 
 public:
 
+    void SetMaxInstanceCount(const uint32 instanceCount) { maxInstanceCount = instanceCount; }
+	[[nodiscard]] uint32 GetMaxInstanceCount() const { return maxInstanceCount; }
+	
     void AddParentGroup(const Id& parentId) { parentGroups.push_back(parentId); }
 	[[nodiscard]] const decltype(parentGroups)& GetParentGroups() const { return parentGroups; }
 };
@@ -39,20 +42,55 @@ public:
     };
 	
     explicit BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo);
+
+    struct BindingsGroupBindInfo
+    {
+	    
+    };
+    void Bind(const BindingsGroupBindInfo& bindInfo) const;
+};
+
+class BindingsDependencyGroup : public RenderGroupBase
+{
+    RAPI::BindingsPool* bindingsPool = nullptr;
+    RAPI::BindingsSet* bindingsSet = nullptr;
+
+public:
+    struct BindingsDependencyGroupCreateInfo
+    {
+        BindingsSetDescriptor BindingsSetDescriptor;
+    };
+
+    explicit BindingsDependencyGroup(const BindingsDependencyGroupCreateInfo& BindingsDependencyGroupCreateInfo);
+
+    struct BindingsDependencyGroupBindInfo
+    {
+
+    };
+    void Bind(const BindingsDependencyGroupBindInfo& bindInfo) const;
 };
 
 class BindingsGroupManager
 {
     std::unordered_map<Id::HashType, BindingsGroup> bindingsGroups;
+    std::unordered_map<Id::HashType, BindingsDependencyGroup> bindingsDependencyGroups;
+	
+    uint8 maxFramesInFlight = 0;
 	
 public:
-	const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo) { return bindingsGroups.emplace(bindingsGroupId, bindingsGroupCreateInfo).first->second; }
-    const BindingsGroup& GetBindingsGroup(const Id& bindingsGroupId)
-	{
-		const auto find_result = bindingsGroups.find(bindingsGroupId);
-        //GS_ASSERT(find_result);
-        return find_result->second;
-	}
+    struct BindingsGroupManagerCreateInfo
+    {
+        uint8 MaxFramesInFlight = 0;
+    };
+    explicit BindingsGroupManager(const BindingsGroupManagerCreateInfo& createInfo) : maxFramesInFlight(createInfo.MaxFramesInFlight)
+    {
+    }
+	
+    const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
+    [[nodiscard]] const BindingsGroup& GetBindingsGroup(const Id& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
+
+    const BindingsDependencyGroup& AddBindingsDependencyGroup(const Id& bindingsGroupId, const BindingsDependencyGroup::BindingsDependencyGroupCreateInfo& bindingsDependecyGroupCreateInfo);
+    [[nodiscard]] const BindingsDependencyGroup& GetBindingsDependencyGroup(const Id& bindingsDependencyGroupId) const { return bindingsDependencyGroups.at(bindingsDependencyGroupId); }
 	
     struct BindBindingsGroupInfo
     {
@@ -60,5 +98,11 @@ public:
         Id BindingsGroup = 0;
     };
     void BindBindingsGroup(const BindBindingsGroupInfo& bindBindingsGroupInfo);
+
+    struct BindDependencyGroupInfo
+    {
+        Id DependencyGroup = 0;
+    };
+    void BindDependencyGroups(const BindDependencyGroupInfo& bindDependencyGroupInfo);
 	
 };

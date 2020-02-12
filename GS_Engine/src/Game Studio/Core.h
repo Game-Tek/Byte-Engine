@@ -27,7 +27,7 @@ using GS_HASH_TYPE = uint_64;
 
 //Assert
 #ifdef GS_DEBUG
-#define GS_ASSERT(func, text) if ((func)) { GS_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %s: ", __FILE__, __LINE__,text); __debugbreak(); }
+#define GS_ASSERT(func, text) if ((func)) { GS_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %s: %s", __FILE__, __LINE__, text); __debugbreak(); }
 #else
 	#define GS_ASSERT(func, text)
 #endif

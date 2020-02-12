@@ -148,6 +148,7 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\BindingsGroup.h" />
     <ClInclude Include="src\Game Studio\Render\RenderGroup.h" />
+    <ClInclude Include="src\Game Studio\Render\RenderingCore.h" />
     <ClInclude Include="src\Game Studio\Render\RenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderableManager.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />

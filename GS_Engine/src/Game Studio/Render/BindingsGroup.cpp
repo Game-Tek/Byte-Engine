@@ -1,7 +1,47 @@
 #include "BindingsGroup.h"
 
-BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo)
+#include "RAPI/RenderDevice.h"
+
+Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> RenderGroupBase::bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor)
 {
+	RAPI::BindingsPoolCreateInfo bindings_pool_create_info;
+	RAPI::BindingsSetCreateInfo bindings_set_create_info;
+	
+	for (auto& e : bindingsSetDescriptor)
+	{
+		RAPI::BindingDescriptor binding_descriptor;
+		binding_descriptor.ArrayLength = e.Count;
+		binding_descriptor.BindingType = e.Type;
+		binding_descriptor.ShaderStage = bindingsSetDescriptor.GetShaderType();
+		
+		bindings_pool_create_info.BindingsSetLayout.emplace_back(binding_descriptor);
+
+		bindings_set_create_info.BindingsSetLayout.emplace_back(binding_descriptor);
+	}
+	
+	return { bindings_pool_create_info, bindings_set_create_info };
+}
+
+BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo) : uniformBuffers(), buffers()
+{
+	auto pair = bindingDescriptorToRAPIBindings(bindingsGroupCreateInfo.BindingsSetDescriptor);
+
+	pair.First.RenderDevice = bindingsGroupCreateInfo.RenderDevice;
+	pair.First.BindingsSetCount = bindingsGroupCreateInfo.MaxFramesInFlight;
+
+	bindingsPool = bindingsGroupCreateInfo.RenderDevice->CreateBindingsPool(pair.First);
+
+	pair.Second.RenderDevice = bindingsGroupCreateInfo.RenderDevice;
+	pair.Second.BindingsSetCount = bindingsGroupCreateInfo.MaxFramesInFlight;
+	pair.Second.BindingsPool = bindingsPool;
+
+	bindingsSet = bindingsGroupCreateInfo.RenderDevice->CreateBindingsSet(pair.Second);
+
+	RAPI::UniformBufferCreateInfo uniform_buffer_create_info;
+	uniform_buffer_create_info.Size = bindingsGroupCreateInfo.BindingsSetDescriptor;
+	
+	uniformBuffers.emplace_back();
+	buffers.emplace_back();
 }
 
 void BindingsGroup::Bind(const BindingsGroupBindInfo& bindInfo) const

@@ -8,6 +8,14 @@
 #include "Containers/Id.h"
 #include "RAPI/Bindings.h"
 #include "RAPI/CommandBuffer.h"
+#include "Containers/Pair.h"
+
+#include "RenderingCore.h"
+
+namespace RAPI {
+    class RenderDevice;
+	class UniformBuffer;
+}
 
 class RenderGroupBase
 {
@@ -21,6 +29,9 @@ class RenderGroupBase
 
     Array<Id, 8>parentGroups;
 
+protected:
+    static Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor);
+	
 public:
 
     void SetMaxInstanceCount(const uint32 instanceCount) { maxInstanceCount = instanceCount; }
@@ -35,12 +46,16 @@ class BindingsGroup : public RenderGroupBase
     RAPI::BindingsPool* bindingsPool = nullptr;
     RAPI::BindingsSet* bindingsSet = nullptr;
 
+    RAPI::UniformBuffer* uniformBuffers;
+    byte* buffer = nullptr;
+	
 public:
     struct BindingsGroupCreateInfo
     {
+        RAPI::RenderDevice* RenderDevice = nullptr;
         BindingsSetDescriptor BindingsSetDescriptor;
+        uint8 MaxFramesInFlight = 0;
     };
-	
     explicit BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo);
 
     struct BindingsGroupBindInfo

@@ -23,13 +23,26 @@ struct BindingDescriptor
 class BindingsSetDescriptor
 {
 	DArray<BindingDescriptor> bindings;
+	RAPI::ShaderType shaderType;
 	
 public:
-	BindingsSetDescriptor(const std::initializer_list<BindingDescriptor>& initializerList) : bindings(initializerList)
+	BindingsSetDescriptor(const std::initializer_list<BindingDescriptor>& initializerList, RAPI::ShaderType shader) : bindings(initializerList), shaderType(shader)
 	{
 	}
 
+	[[nodiscard]] auto begin() const { return bindings.begin(); }
+	[[nodiscard]] auto end() const { return bindings.end(); }
+	
 	[[nodiscard]] uint8 GetBindingsCount() const { return bindings.getLength(); }
+
+	[[nodiscard]] RAPI::ShaderType GetShaderType() const { return shaderType; }
+
+	[[nodiscard]] uint16 GetDataSize() const
+	{
+		for(auto& e : bindings)
+		{
+		}
+	}
 	
 	const BindingDescriptor& operator[](const uint8 i) const { return bindings[i]; }
 };

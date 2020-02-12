@@ -43,7 +43,7 @@ public:
 
 class BindingsGroupManager
 {
-    std::unordered_map<Id, BindingsGroup> bindingsGroups;
+    std::unordered_map<Id::HashType, BindingsGroup> bindingsGroups;
 	
 public:
 	const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo) { return bindingsGroups.emplace(bindingsGroupId, bindingsGroupCreateInfo).first->second; }

@@ -1,12 +1,10 @@
 #pragma once
 
-#include "Core.h"
-
 class Object;
 
 #undef ERROR
 
-enum class LogLevel : uint8
+enum class LogLevel
 {
 	MESSAGE,
 	SUCCESS,

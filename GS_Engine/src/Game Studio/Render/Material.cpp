@@ -15,10 +15,7 @@ Material::~Material()
 	GS::Application::Get()->GetResourceManager()->ReleaseResource(materialMaterialResource);
 }
 
-const char* Material::GetMaterialType() const
-{
-	return materialMaterialResource->GetMaterialData().GetResourceName().c_str();
-}
+Id Material::GetMaterialType() const { return materialMaterialResource->GetMaterialData().GetResourceName().c_str(); }
 
 void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
 {

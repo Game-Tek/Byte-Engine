@@ -9,7 +9,7 @@ SubResourceManager::OnResourceLoadInfo ResourceManager::GetResource(const FStrin
 {
 	auto resource_manager = resourceManagers.find(type);
 
-	GS_ASSERT(resource_manager->second)
+	GS_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
 
 	SubResourceManager::LoadResourceInfo load_resource_info;
 	load_resource_info.ResourceName = name.c_str();

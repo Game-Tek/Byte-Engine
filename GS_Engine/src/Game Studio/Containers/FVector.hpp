@@ -77,39 +77,6 @@ public:
 	typedef const T* const_iterator;
 	typedef T value_type;
 
-	//friend OutStream& operator<<(OutStream& _Archive, FVector<T>& _FV)
-	//{
-	//	_Archive.Write(_FV.capacity);
-	//	_Archive.Write(_FV.length);
-	//
-	//	for (length_type i = 0; i < _FV.length; ++i)
-	//	{
-	//		_Archive << _FV.data[i];
-	//	}
-	//
-	//	return _Archive;
-	//}
-	//
-	//friend InStream& operator>>(InStream& _Archive, FVector<T>& _FV)
-	//{
-	//	length_type new_capacity = 0, new_length = 0;
-	//	_Archive.Read(&new_capacity);
-	//	_Archive.Read(&new_length);
-	//
-	//	_FV.reallocIfExceeds(new_length);
-	//
-	//	//_Archive.Read(new_capacity, _FV.data);
-	//
-	//	for (length_type i = 0; i < new_length; ++i)
-	//	{
-	//		_Archive >> _FV.data[i];
-	//	}
-	//
-	//	_FV.length = new_length;
-	//
-	//	return _Archive;
-	//}
-
 	//Constructs a new FVector.
 	FVector() : capacity(10), length(0), data(allocate(this->capacity))
 	{

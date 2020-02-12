@@ -11,7 +11,7 @@ VulkanBindingsPool::VulkanBindingsPool(VulkanRenderDevice* device,
                                        const BindingsPoolCreateInfo& descriptorPoolCreateInfo)
 {
 	Array<VkDescriptorPoolSize, MAX_BINDINGS_PER_SET> descriptor_pool_sizes;
-	descriptor_pool_sizes.setLength(descriptorPoolCreateInfo.BindingsSetLayout.getLength());
+	descriptor_pool_sizes.resize(descriptorPoolCreateInfo.BindingsSetLayout.getLength());
 	{
 		uint8 i = 0;
 
@@ -57,7 +57,7 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 	};
 
 	Array<VkDescriptorSetLayoutBinding, MAX_BINDINGS_PER_SET> descriptor_set_layout_bindings;
-	descriptor_set_layout_bindings.setLength(descriptorSetCreateInfo.BindingsSetLayout.getLength());
+	descriptor_set_layout_bindings.resize(descriptorSetCreateInfo.BindingsSetLayout.getLength());
 	{
 		uint8 i = 0;
 

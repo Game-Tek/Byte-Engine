@@ -1,5 +1,6 @@
 #pragma once
 
+
 // TYPEDEFS
 
 typedef unsigned char byte;
@@ -22,23 +23,25 @@ using GS_HASH_TYPE = uint_64;
 	#define inline
 #endif
 
+#include "Debug/Logger.h"
+
 //Assert
 #ifdef GS_DEBUG
-#define GS_ASSERT(func, ...) if ((func)) __debugbreak();
+#define GS_ASSERT(func, text) if ((func)) { GS_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %s: ", __FILE__, __LINE__,text); __debugbreak(); }
 #else
-	#define GS_ASSERT(func, ...) func;
+	#define GS_ASSERT(func, text)
 #endif
 
 #ifdef GS_DEBUG
 #define GS_DEBUG_ONLY(...) __VA_ARGS__;
 #else
-#define GS_DEBUG_ONLY(...);
+#define GS_DEBUG_ONLY(...)
 #endif
 
 #ifdef GS_DEBUG
 #define GS_THROW(text) throw (text);
 #else
-#define GS_THROW(text);
+#define GS_THROW(text)
 #endif
 
 //  CASTS

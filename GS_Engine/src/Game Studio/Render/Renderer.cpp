@@ -89,12 +89,12 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	ULCI.BindingsSetLayout[0].BindingType = UniformType::UNIFORM_BUFFER;
 	ULCI.BindingsSetLayout[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.BindingsSetLayout[0].ArrayLength = 1;
-	BindingDescriptor uniform_set;
+	RAPI::BindingDescriptor uniform_set;
 	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
 	uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
 	uniform_set.ArrayLength = 1;
 	ULCI.BindingsSetLayout[1] = uniform_set;
-	ULCI.BindingsSetLayout.setLength(2);
+	ULCI.BindingsSetLayout.resize(2);
 
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(uint32);

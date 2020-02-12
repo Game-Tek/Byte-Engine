@@ -3,7 +3,7 @@
 template<typename T>
 class Ranger
 {
-	const T* from = 0, to = 0;
+	const T* from = 0,* to = 0;
 	
 public:
 	constexpr Ranger(T* start, T* end) noexcept : from(start), to(end)

@@ -104,13 +104,13 @@ public:
 
 	_T& operator[](const uint32 i)
 	{
-		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
+		GS_ASSERT(i > this->capacity, "Out of Bounds! Requested index is greater than the array's allocated(current) size!")
 		return this->data[i];
 	}
 
 	const _T& operator[](const uint32 i) const
 	{
-		GS_DEBUG_ONLY(GS_ASSERT(i > this->capacity))
+		GS_ASSERT(i > this->capacity, "Out of Bounds! Requested index is greater than the array's allocated(current) size!")
 		return this->data[i];
 	}
 

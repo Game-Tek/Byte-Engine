@@ -5,6 +5,7 @@
 #include "SoundPlayer.h"
 #include "Containers/Pair.h"
 #include "Containers/Array.hpp"
+#include "Containers/FVector.hpp"
 
 class AudioBuffer;
 

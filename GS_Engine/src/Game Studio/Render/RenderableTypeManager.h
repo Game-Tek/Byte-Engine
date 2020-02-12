@@ -53,5 +53,5 @@ public:
      */
     virtual void GetRenderableTypeName(FString& name) = 0;
 
-    virtual uint32 RegisterComponent(Renderer* renderer, RenderComponent* renderComponent);
+    virtual uint32 RegisterComponent(Renderer* renderer, class RenderComponent* renderComponent);
 };

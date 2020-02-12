@@ -22,7 +22,7 @@ Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> RenderGroupBase:
 	return { bindings_pool_create_info, bindings_set_create_info };
 }
 
-BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo) : uniformBuffers(), buffers()
+BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo)
 {
 	auto pair = bindingDescriptorToRAPIBindings(bindingsGroupCreateInfo.BindingsSetDescriptor);
 
@@ -38,10 +38,9 @@ BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateI
 	bindingsSet = bindingsGroupCreateInfo.RenderDevice->CreateBindingsSet(pair.Second);
 
 	RAPI::UniformBufferCreateInfo uniform_buffer_create_info;
-	uniform_buffer_create_info.Size = bindingsGroupCreateInfo.BindingsSetDescriptor;
+	//uniform_buffer_create_info.Size = bindingsGroupCreateInfo.BindingsSetDescriptor;
 	
-	uniformBuffers.emplace_back();
-	buffers.emplace_back();
+	uniformBuffers = bindingsGroupCreateInfo.RenderDevice->CreateUniformBuffer(uniform_buffer_create_info);
 }
 
 void BindingsGroup::Bind(const BindingsGroupBindInfo& bindInfo) const

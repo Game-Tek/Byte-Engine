@@ -47,7 +47,7 @@ class BindingsGroup : public RenderGroupBase
     RAPI::BindingsSet* bindingsSet = nullptr;
 
     RAPI::UniformBuffer* uniformBuffers;
-    byte* buffer = nullptr;
+    uint32 bufferOffset[MAX_FRAMES_IN_FLIGHT];
 	
 public:
     struct BindingsGroupCreateInfo

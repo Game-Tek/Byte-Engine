@@ -27,12 +27,11 @@ VKMemoryCreator VulkanUniformBuffer::CreateMemory(VKDevice* _Device)
 	return VKMemoryCreator(_Device, &MemoryAllocateInfo);
 }
 
-VulkanUniformBuffer::
-VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI) : Buffer(CreateBuffer(_Device, _BCI)),
-                                                                              Memory(CreateMemory(_Device))
+VulkanUniformBuffer::VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI) : Buffer(CreateBuffer(_Device, _BCI)),
+	Memory(CreateMemory(_Device))
 {
 	Memory.BindBufferMemory(Buffer);
-	MappedMemoryPointer = Memory.MapMemory(0, _BCI.Size);
+	MappedMemoryPointer = static_cast<byte*>(Memory.MapMemory(0, _BCI.Size));
 }
 
 VulkanUniformBuffer::~VulkanUniformBuffer()
@@ -40,7 +39,7 @@ VulkanUniformBuffer::~VulkanUniformBuffer()
 	Memory.UnmapMemory();
 }
 
-void VulkanUniformBuffer::UpdateBuffer(const UniformBufferUpdateInfo& _BUI) const
+void VulkanUniformBuffer::UpdateBuffer(const UniformBufferUpdateInfo& uniformBufferUpdateInfo) const
 {
-	Memory.CopyToMappedMemory(_BUI.Data, MappedMemoryPointer, _BUI.Size);
+	Memory.CopyToMappedMemory(uniformBufferUpdateInfo.Data, MappedMemoryPointer + uniformBufferUpdateInfo.Offset, uniformBufferUpdateInfo.Size);
 }

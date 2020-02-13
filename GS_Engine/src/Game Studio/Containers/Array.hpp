@@ -20,13 +20,13 @@ public:
 	typedef T* iterator;
 	typedef const T* const_iterator;
 
-	[[nodiscard]] iterator begin() { return (iterator)this->data; }
+	[[nodiscard]] iterator begin() { return reinterpret_cast<iterator>(this->data); }
 
-	[[nodiscard]] iterator end() { return (iterator)&this->data[this->length]; }
+	[[nodiscard]] iterator end() { return reinterpret_cast<iterator>(&this->data[this->length]); }
 
-	[[nodiscard]] const_iterator begin() const { return (iterator)this->data; }
+	[[nodiscard]] const_iterator begin() const { return reinterpret_cast<iterator>(this->data); }
 
-	[[nodiscard]] const_iterator end() const { return (iterator)&this->data[this->length]; }
+	[[nodiscard]] const_iterator end() const { return reinterpret_cast<iterator>(&this->data[this->length]); }
 
 	T& front() { return this->data[0]; }
 
@@ -78,9 +78,9 @@ public:
 		return reinterpret_cast<T&>(const_cast<byte&>(this->data[i]));
 	}
 
-	T* getData() { return (T*)(&this->data); }
+	T* getData() { return reinterpret_cast<T*>(&this->data); }
 
-	[[nodiscard]] const T* getData() const { return this->data; }
+	[[nodiscard]] const T* getData() const { return reinterpret_cast<T*>(this->data); }
 
 	LT push_back(const T& obj)
 	{
@@ -100,7 +100,7 @@ public:
 	void pop_back()
 	{
 		GS_ASSERT(this->length == 0, "Array's length is already 0. Cannot pop any more elements!")
-		this->data[this->length].~T();
+		reinterpret_cast<T&>(this->data[this->length]).~T();
 		--this->length;
 	}
 

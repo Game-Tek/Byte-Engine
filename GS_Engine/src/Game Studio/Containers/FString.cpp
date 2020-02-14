@@ -163,7 +163,7 @@ void FString::ReplaceAll(const char* a, const char* with)
 	{
 		ocurrences.resize(0); //every time we enter loop set occurrences to 0
 
-		while(ocurrences.getLength() < ocurrences.getCapacity() && i < Data.getLength()) //while we don't exceed the occurrences array capacity and we are not at the end of the array(because we might hit the end in the first caching iteration)
+		while(ocurrences.getLength() < ocurrences.getCapacity() && i < Data.getLength() - 1) //while we don't exceed the occurrences array capacity and we are not at the end of the array(because we might hit the end in the first caching iteration)
 		{
 			if (Data [i] == a[0]) //if current char matches the a's first character enter whole word loop check
 			{

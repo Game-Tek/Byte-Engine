@@ -3,6 +3,7 @@
 #include <cstdarg>
 
 #include "Resources/Resource.h"
+#include "Array.hpp"
 
 OutStream& operator<<(OutStream& _Archive, FString& _String)
 {
@@ -145,6 +146,65 @@ void FString::ReplaceAll(char a, char with)
 		if (Data[i] == a)
 		{
 			Data[i] = with;
+		}
+	}
+}
+
+void FString::ReplaceAll(const char* a, const char* with)
+{
+	Array<uint32, 24, uint8> ocurrences; //cache ocurrences so as to not perform an array resize every time we find a match
+
+	auto a_length = StringLength(a) - 1;
+	auto with_length = StringLength(with) - 1;
+
+	uint32 i = 0;
+	
+	while (true) //we don't know how long we will have to check for matches so keep looping until last if exits
+	{
+		ocurrences.resize(0); //every time we enter loop set occurrences to 0
+
+		while(ocurrences.getLength() < ocurrences.getCapacity() && i < Data.getLength()) //while we don't exceed the occurrences array capacity and we are not at the end of the array(because we might hit the end in the first caching iteration)
+		{
+			if (Data [i] == a[0]) //if current char matches the a's first character enter whole word loop check
+			{
+				uint32 j = 1;
+				
+				for (; j < a_length; ++j) //if the a text is matched add occurrence else quickly escape loop and go to next whole string loop
+				{
+					if (Data[i + j] != a[j]) 
+					{
+						break;
+					}
+				}
+
+				if (j == a_length - 1) //if loop found word insert occurrence and jump i by a's length
+				{
+					ocurrences.emplace_back(i + 1 - a_length);
+					i += a_length;
+				}
+			}
+			else //current char is not a match just check next in the following iteration
+			{
+				++i;
+			}
+		}
+
+		const auto resize_size = ocurrences.getLength() * (with_length - a_length);
+
+		if (resize_size > 0)
+		{
+			Data.resize(Data.getLength() + resize_size);
+		}
+
+		for (auto& e : ocurrences)
+		{
+			Data.insert(e, with_length - a_length);
+			Data.overwrite(with_length, const_cast<string_type*>(with), e);
+		}
+
+		if (i == Data.getLength() - 1) //if current index is last index in whole string break out of the loop
+		{
+			break;
 		}
 	}
 }

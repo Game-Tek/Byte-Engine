@@ -229,6 +229,14 @@ public:
 	}
 
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
+	length_type insert(length_type index, length_type length)
+	{
+		reallocIfExceeds(length);
+		copyArray(getElement(index), getElement(index + length), this->length - index);
+		return this->length += length;
+	}
+	
+	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
 	length_type push(length_type _Index, const T& _Obj)
 	{
 		reallocIfExceeds(1);

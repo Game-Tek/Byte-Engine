@@ -81,6 +81,7 @@ public:
 	void Drop(int64 from);
 
 	void ReplaceAll(char a, char with);
+	void ReplaceAll(const char* a, const char* with);
 
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
 	constexpr static length_type StringLength(const char* In);

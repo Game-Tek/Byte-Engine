@@ -3,7 +3,7 @@
 
 void Camera::SetFocusDistance(const Vector3& Object)
 {
-	FocusDistance = GSM::Length(Transform.Position - Object);
+	focusDistance = GSM::Length(Transform.Position - Object);
 
 	return;
 }

@@ -195,16 +195,27 @@ void Renderer::OnUpdate()
 
 void Renderer::DrawMesh(const DrawInfo& _DrawInfo, MeshRenderResource* Mesh_)
 {
-	CB->BindMesh(Mesh_->mesh);
-	CB->DrawIndexed(_DrawInfo);
+	CommandBuffer::BindMeshInfo bind_mesh_info;
+	bind_mesh_info.Mesh = Mesh_->mesh;
+	CB->BindMesh(bind_mesh_info);
+
+	CommandBuffer::DrawIndexedInfo draw_indexed_info;
+	draw_indexed_info.IndexCount;
+	draw_indexed_info.InstanceCount = 1;
+	CB->DrawIndexed(draw_indexed_info);
+	
 	GS_DEBUG_ONLY(++DrawCalls)
-	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
+	GS_DEBUG_ONLY(InstanceDraws += 1)
 }
 
 void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 {
-	CB->BindGraphicsPipeline(_Pipeline);
-	GS_DEBUG_ONLY(++PipelineSwitches);
+	CommandBuffer::BindGraphicsPipelineInfo bind_graphics_pipeline_info;
+	bind_graphics_pipeline_info.GraphicsPipeline = _Pipeline;
+	bind_graphics_pipeline_info.RenderExtent = Win->GetWindowExtent();
+	
+	CB->BindGraphicsPipeline(bind_graphics_pipeline_info);
+	GS_DEBUG_ONLY(++PipelineSwitches)
 }
 
 RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)

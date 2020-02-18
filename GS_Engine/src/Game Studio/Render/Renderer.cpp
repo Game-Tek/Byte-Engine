@@ -207,7 +207,7 @@ void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 	GS_DEBUG_ONLY(++PipelineSwitches);
 }
 
-RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
+RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 {
 	MeshRenderResource* NewMesh = nullptr;
 
@@ -249,7 +249,7 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 	{
 		auto texture_resource = Material_->GetTextures()[i]->GetTextureResource();
 		
-		RAPI::TextureCreateInfo texture_create_info;
+		TextureCreateInfo texture_create_info;
 		texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
 		texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
 		texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;

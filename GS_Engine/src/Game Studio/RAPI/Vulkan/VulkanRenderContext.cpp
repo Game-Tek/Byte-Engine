@@ -23,7 +23,7 @@ uint8 ScorePresentMode(VkPresentModeKHR _PresentMode)
 	}
 }
 
-VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window)
+VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window)
 {
 	return VKSurfaceCreator(_Device, _Instance, _Window);
 }
@@ -104,7 +104,7 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const vkPhysicalDevice& _P
 }
 
 VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
-                                         RAPI::Window* _Window) :
+                                         Window* _Window) :
 	RenderExtent(_Window->GetWindowExtent()),
 	Surface(CreateSurface(&device->GetVKDevice(), _Instance, _Window)),
 	Format(FindFormat(_PD, Surface)),

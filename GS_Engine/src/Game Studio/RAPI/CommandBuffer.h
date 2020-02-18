@@ -7,6 +7,7 @@ struct Extent3D;
 
 namespace RAPI
 {
+	class BindingsSet;
 	class RenderPass;
 	class Framebuffer;
 	struct RenderPassBeginInfo;
@@ -52,14 +53,16 @@ namespace RAPI
 
 		struct BindBindingsSetInfo
 		{
-			FVector<RAPI::BindingsSet*>* BindingsSets = nullptr;
-			RAPI::Pipeline* Pipeline = nullptr;
+			FVector<BindingsSet*>* BindingsSets = nullptr;
+			FVector<uint32>* Offsets = nullptr;
+			Pipeline* Pipeline = nullptr;
+			uint8 BindingsSetIndex = 0;
 		};
 		virtual void BindBindingsSet(const BindBindingsSetInfo& bindBindingsSetInfo) = 0;
 
 		struct UpdatePushConstantsInfo
 		{
-			RAPI::GraphicsPipeline* Pipeline = nullptr;
+			GraphicsPipeline* Pipeline = nullptr;
 			size_t Offset = 0;
 			size_t Size = 0;
 			byte* Data = nullptr;
@@ -68,7 +71,7 @@ namespace RAPI
 
 		struct BindGraphicsPipelineInfo
 		{
-			RAPI::GraphicsPipeline* GraphicsPipeline = nullptr;
+			GraphicsPipeline* GraphicsPipeline = nullptr;
 			Extent2D RenderExtent;
 		};
 		//Adds a BindGraphicsPipeline command to the command queue.

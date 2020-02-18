@@ -218,7 +218,7 @@ Image* VulkanRenderDevice::CreateImage(const ImageCreateInfo& _ICI)
 	return new VulkanImage(this, _ICI);
 }
 
-RAPI::Texture* VulkanRenderDevice::CreateTexture(const RAPI::TextureCreateInfo& TCI_)
+Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 {
 	auto device = Device.GetVkDevice();
 
@@ -410,12 +410,12 @@ RAPI::Texture* VulkanRenderDevice::CreateTexture(const RAPI::TextureCreateInfo& 
 	return new VulkanTexture(TCI_, vulkan_texture_create_info);
 }
 
-BindingsPool* VulkanRenderDevice::CreateBindingsPool(const RAPI::BindingsPoolCreateInfo& bindingsPoolCreateInfo)
+BindingsPool* VulkanRenderDevice::CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo)
 {
 	return new VulkanBindingsPool(this, bindingsPoolCreateInfo);
 }
 
-BindingsSet* VulkanRenderDevice::CreateBindingsSet(const RAPI::BindingsSetCreateInfo& bindingsSetCreateInfo)
+BindingsSet* VulkanRenderDevice::CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo)
 {
 	return new VulkanBindingsSet(this, bindingsSetCreateInfo);
 }

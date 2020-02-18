@@ -4,7 +4,7 @@
 
 #include "Vulkan.h"
 
-class VulkanCommandBuffer : public RAPI::CommandBuffer
+class VulkanCommandBuffer : public CommandBuffer
 {
 	VkCommandBuffer commandBuffer = nullptr;
 	

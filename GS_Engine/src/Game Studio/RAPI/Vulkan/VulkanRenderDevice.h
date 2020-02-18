@@ -50,9 +50,9 @@ public:
 	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
 	Image* CreateImage(const ImageCreateInfo& _ICI) override;
-	RAPI::Texture* CreateTexture(const RAPI::TextureCreateInfo& TCI_) override;
-	BindingsPool* CreateBindingsPool(const RAPI::BindingsPoolCreateInfo& bindingsPoolCreateInfo) override;
-	BindingsSet* CreateBindingsSet(const RAPI::BindingsSetCreateInfo& bindingsSetCreateInfo) override;
+	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;
+	BindingsPool* CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo) override;
+	BindingsSet* CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo) override;
 	GraphicsPipeline* CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) override;
 	RAPI::RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) override;
 	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) override;

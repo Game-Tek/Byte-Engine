@@ -57,15 +57,14 @@ namespace RAPI
 
 		uint8 ImageIndex = 0;
 
-		static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, RAPI::Window* _Window);
+		static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
 		VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
 		VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
 
 		SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 		static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
 	public:
-		VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD,
-			RAPI::Window* _Window);
+		VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
 		~VulkanRenderContext();
 
 		void OnResize(const ResizeInfo& _RI) override;

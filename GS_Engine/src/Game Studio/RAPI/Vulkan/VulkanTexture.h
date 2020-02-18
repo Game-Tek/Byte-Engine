@@ -12,7 +12,7 @@ struct VulkanTextureCreateInfo
 	VkSampler TextureSampler = nullptr;
 };
 
-class VulkanTexture : public RAPI::Texture
+class VulkanTexture : public Texture
 {
 	VkImage textureImage = nullptr;
 	VkDeviceMemory textureImageMemory = nullptr;
@@ -20,7 +20,7 @@ class VulkanTexture : public RAPI::Texture
 	VkSampler textureSampler = nullptr;
 
 public:
-	explicit VulkanTexture(const RAPI::TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
+	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
 		Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory),
 		textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
 	{

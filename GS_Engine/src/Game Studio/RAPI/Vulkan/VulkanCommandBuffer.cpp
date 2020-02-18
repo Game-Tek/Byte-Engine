@@ -92,14 +92,13 @@ void VulkanCommandBuffer::Dispatch(const DispatchInfo& dispatchInfo)
 
 void VulkanCommandBuffer::BindBindingsSet(const BindBindingsSetInfo& bindBindingsSetInfo)
 {
-	Array<VkDescriptorSet, 8> descriptor_sets(bindBindingsSetInfo.BindingsSets.getLength());
+	Array<VkDescriptorSet, 8> descriptor_sets(bindBindingsSetInfo.BindingsSets->getLength());
 	{
 		uint8 i = 0;
 
 		for (auto& e : descriptor_sets)
 		{
-			e = static_cast<VulkanBindingsSet*>(bindBindingsSetInfo.BindingsSets[i])->GetVkDescriptorSets()[bindBindingsSet.BindingSetIndex];
-
+			e = static_cast<VulkanBindingsSet*>((*bindBindingsSetInfo.BindingsSets)[i])->GetVkDescriptorSets()[bindBindingsSetInfo.BindingsSetIndex];
 			++i;
 		}
 	}

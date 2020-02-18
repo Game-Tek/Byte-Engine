@@ -36,13 +36,6 @@ public:
 	[[nodiscard]] uint8 GetBindingsCount() const { return bindings.getLength(); }
 
 	[[nodiscard]] RAPI::ShaderType GetShaderType() const { return shaderType; }
-
-	[[nodiscard]] uint16 GetDataSize() const
-	{
-		for(auto& e : bindings)
-		{
-		}
-	}
 	
 	const BindingDescriptor& operator[](const uint8 i) const { return bindings[i]; }
 };

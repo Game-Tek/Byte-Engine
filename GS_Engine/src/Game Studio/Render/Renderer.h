@@ -89,6 +89,7 @@ protected:
 	RAPI::Image* depthTexture = nullptr;
 
 	RAPI::RenderContext* RC = nullptr;
+	RAPI::CommandBuffer* CB = nullptr;
 	RAPI::RenderPass* RP = nullptr;
 	RAPI::UniformBuffer* UB = nullptr;
 	RAPI::BindingLayout* UL = nullptr;

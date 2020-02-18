@@ -13,6 +13,7 @@
 #include "RenderingCore.h"
 
 namespace RAPI {
+    class CommandBuffer;
     class RenderDevice;
 	class UniformBuffer;
 }
@@ -45,50 +46,26 @@ class BindingsGroup : public RenderGroupBase
 {
     RAPI::BindingsPool* bindingsPool = nullptr;
     RAPI::BindingsSet* bindingsSet = nullptr;
-
-    RAPI::UniformBuffer* uniformBuffers;
-    uint32 bufferOffset[MAX_FRAMES_IN_FLIGHT];
 	
 public:
     struct BindingsGroupCreateInfo
     {
         RAPI::RenderDevice* RenderDevice = nullptr;
-        BindingsSetDescriptor BindingsSetDescriptor;
+        BindingsSetDescriptor& BindingsSetDescriptor;
         uint8 MaxFramesInFlight = 0;
     };
     explicit BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateInfo);
 
     struct BindingsGroupBindInfo
     {
-	    
+        RAPI::CommandBuffer* CommandBuffer = nullptr;
     };
     void Bind(const BindingsGroupBindInfo& bindInfo) const;
-};
-
-class BindingsDependencyGroup : public RenderGroupBase
-{
-    RAPI::BindingsPool* bindingsPool = nullptr;
-    RAPI::BindingsSet* bindingsSet = nullptr;
-
-public:
-    struct BindingsDependencyGroupCreateInfo
-    {
-        BindingsSetDescriptor BindingsSetDescriptor;
-    };
-
-    explicit BindingsDependencyGroup(const BindingsDependencyGroupCreateInfo& BindingsDependencyGroupCreateInfo);
-
-    struct BindingsDependencyGroupBindInfo
-    {
-
-    };
-    void Bind(const BindingsDependencyGroupBindInfo& bindInfo) const;
 };
 
 class BindingsGroupManager
 {
     std::unordered_map<Id::HashType, BindingsGroup> bindingsGroups;
-    std::unordered_map<Id::HashType, BindingsDependencyGroup> bindingsDependencyGroups;
 	
     uint8 maxFramesInFlight = 0;
 	
@@ -103,9 +80,6 @@ public:
 	
     const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
     [[nodiscard]] const BindingsGroup& GetBindingsGroup(const Id& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
-
-    const BindingsDependencyGroup& AddBindingsDependencyGroup(const Id& bindingsGroupId, const BindingsDependencyGroup::BindingsDependencyGroupCreateInfo& bindingsDependecyGroupCreateInfo);
-    [[nodiscard]] const BindingsDependencyGroup& GetBindingsDependencyGroup(const Id& bindingsDependencyGroupId) const { return bindingsDependencyGroups.at(bindingsDependencyGroupId); }
 	
     struct BindBindingsGroupInfo
     {

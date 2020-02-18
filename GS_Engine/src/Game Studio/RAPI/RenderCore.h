@@ -256,6 +256,27 @@ namespace RAPI
 
 	enum class UniformType : uint8
 	{
+		FLOAT,
+		FLOAT2,
+		FLOAT3,
+		FLOAT4,
+
+		INT,
+		INT2,
+		INT3,
+		INT4,
+
+		BOOL,
+
+		MAT3,
+		MAT4,
+
+		TEXTURE_1D,
+		TEXTURE_2D,
+		TEXTURE_3D,
+
+		TEXTURE_2D_CUBE,
+		
 		SAMPLER,
 		COMBINED_IMAGE_SAMPLER,
 		SAMPLED_IMAGE,

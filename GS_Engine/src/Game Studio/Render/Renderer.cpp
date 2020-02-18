@@ -170,40 +170,40 @@ void Renderer::OnUpdate()
 
 	UpdateRenderables();
 
-	RC->BeginRecording();
+	CB->BeginRecording();
 
 	RenderPassBeginInfo RPBI;
 	RPBI.RenderPass = RP;
 	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
 
-	RC->BeginRenderPass(RPBI);
+	CB->BeginRenderPass(RPBI);
 
 	//BindPipeline(FullScreenRenderingPipeline);
 	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 
 	RenderRenderables();
 
-	RC->EndRenderPass(RP);
+	CB->EndRenderPass(RP);
 
-	RC->EndRecording();
+	CB->EndRecording();
 
-	RC->AcquireNextImage();
+	CB->AcquireNextImage();
 
-	RC->Flush();
-	RC->Present();
+	CB->Flush();
+	CB->Present();
 }
 
 void Renderer::DrawMesh(const DrawInfo& _DrawInfo, MeshRenderResource* Mesh_)
 {
-	RC->BindMesh(Mesh_->mesh);
-	RC->DrawIndexed(_DrawInfo);
+	CB->BindMesh(Mesh_->mesh);
+	CB->DrawIndexed(_DrawInfo);
 	GS_DEBUG_ONLY(++DrawCalls)
 	GS_DEBUG_ONLY(InstanceDraws += _DrawInfo.InstanceCount)
 }
 
 void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 {
-	RC->BindGraphicsPipeline(_Pipeline);
+	CB->BindGraphicsPipeline(_Pipeline);
 	GS_DEBUG_ONLY(++PipelineSwitches);
 }
 
@@ -364,15 +364,8 @@ void Renderer::RenderRenderables()
 
 	uint32 i = 0;
 
-	PushConstantsInfo push_constants_info;
-	push_constants_info.Offset = 0;
-	push_constants_info.Size = sizeof(uint32);
-
 	for (auto& e : ComponentToInstructionsMap)
 	{
-		push_constants_info.Data = &i;
-		RC->UpdatePushConstant(push_constants_info);
-
 		++i;
 	}
 }

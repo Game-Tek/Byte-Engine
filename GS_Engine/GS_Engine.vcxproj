@@ -135,6 +135,7 @@
     <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
     <ClInclude Include="src\Game Studio\PlayableAsset.h" />
     <ClInclude Include="src\Game Studio\RAPI\CommandBuffer.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
     <ClInclude Include="src\Game Studio\Render\BindingsSetDescriptor.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
@@ -282,6 +283,7 @@
     <ClCompile Include="src\Game Studio\Math\Vector3.cpp" />
     <ClCompile Include="src\Game Studio\PointLight.cpp" />
     <ClCompile Include="src\Game Studio\Light.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.cpp" />
     <ClCompile Include="src\Game Studio\Render\BindingsGroup.cpp" />
     <ClCompile Include="src\Game Studio\Render\MaterialRenderResource.cpp" />

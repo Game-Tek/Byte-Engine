@@ -1,33 +1,38 @@
 #pragma once
 
+#include "Containers/FVector.hpp"
+#include "Utility/Extent.h"
+
 struct Extent3D;
 
 namespace RAPI
 {
 	class RenderPass;
+	class Framebuffer;
 	struct RenderPassBeginInfo;
 	struct DrawInfo;
-	class ComputePipeline;
+	class Pipeline;
 	class GraphicsPipeline;
+	class ComputePipeline;
 	struct PushConstantsInfo;
 	struct BindBindingsSet;
 	class RenderMesh;
 
 	class CommandBuffer
 	{
-	public:
+	public:		
+		struct BeginRecordingInfo
+		{};
 		//Starts recording of commands.
-		virtual void BeginRecording() = 0;
+		virtual void BeginRecording(const BeginRecordingInfo& beginRecordingInfo) = 0;
+
+		
+		struct EndRecordingInfo
+		{
+			
+		};
 		//Ends recording of commands.
-		virtual void EndRecording() = 0;
-
-		virtual void AcquireNextImage() = 0;
-
-		//Sends all commands to the GPU.
-		virtual void Flush() = 0;
-
-		//Swaps buffers and sends new image to the screen.
-		virtual void Present() = 0;
+		virtual void EndRecording(const EndRecordingInfo& endRecordingInfo) = 0;
 
 		// COMMANDS
 
@@ -35,36 +40,90 @@ namespace RAPI
 		//    BIND BUFFER COMMANDS
 
 		//Adds a BindMesh command to the command queue.
-		virtual void BindMesh(RenderMesh* _Mesh) = 0;
+		struct BindMeshInfo
+		{
+			RenderMesh* Mesh = nullptr;
+		};
+		virtual void BindMesh(const BindMeshInfo& bindMeshInfo) = 0;
 
 		//    BIND PIPELINE COMMANDS
 
 		//Adds a BindBindingsSet to the command queue.
-		virtual void BindBindingsSet(const BindBindingsSet& bindBindingsSet) = 0;
-		virtual void UpdatePushConstant(const PushConstantsInfo& _PCI) = 0;
+
+		struct BindBindingsSetInfo
+		{
+			FVector<RAPI::BindingsSet*>* BindingsSets = nullptr;
+			RAPI::Pipeline* Pipeline = nullptr;
+		};
+		virtual void BindBindingsSet(const BindBindingsSetInfo& bindBindingsSetInfo) = 0;
+
+		struct UpdatePushConstantsInfo
+		{
+			RAPI::GraphicsPipeline* Pipeline = nullptr;
+			size_t Offset = 0;
+			size_t Size = 0;
+			byte* Data = nullptr;
+		};
+		virtual void UpdatePushConstant(const UpdatePushConstantsInfo& updatePushConstantsInfo) = 0;
+
+		struct BindGraphicsPipelineInfo
+		{
+			RAPI::GraphicsPipeline* GraphicsPipeline = nullptr;
+			Extent2D RenderExtent;
+		};
 		//Adds a BindGraphicsPipeline command to the command queue.
-		virtual void BindGraphicsPipeline(GraphicsPipeline* _GP) = 0;
+		virtual void BindGraphicsPipeline(const BindGraphicsPipelineInfo& bindGraphicsPipelineInfo) = 0;
+
+		struct BindComputePipelineInfo
+		{
+			ComputePipeline* Pipeline = nullptr;
+		};
 		//Adds a BindComputePipeline to the command queue.
-		virtual void BindComputePipeline(ComputePipeline* _CP) = 0;
+		virtual void BindComputePipeline(const BindComputePipelineInfo& bindComputePipelineInfo) = 0;
 
 
 		//  DRAW COMMANDS
 
 		//Adds a DrawIndexed command to the command queue.
-		virtual void DrawIndexed(const DrawInfo& _DrawInfo) = 0;
+		struct DrawIndexedInfo
+		{
+			uint32 IndexCount = 0;
+			uint32 InstanceCount = 0;
+		};
+		virtual void DrawIndexed(const DrawIndexedInfo& drawIndexedInfo) = 0;
 
 		//  COMPUTE COMMANDS
 
+		struct DispatchInfo
+		{
+			Extent3D WorkGroups;
+		};
 		//Adds a Dispatch command to the command queue.
-		virtual void Dispatch(const Extent3D& _WorkGroups) = 0;
+		virtual void Dispatch(const DispatchInfo& dispatchInfo) = 0;
 
 		//  RENDER PASS COMMANDS
 
+		struct BeginRenderPassInfo
+		{
+			RenderPass* RenderPass = nullptr;
+			Framebuffer* Framebuffer = nullptr;
+			Extent2D RenderArea;
+		};
 		//Adds a BeginRenderPass command to the command queue.
-		virtual void BeginRenderPass(const RenderPassBeginInfo& _RPBI) = 0;
+		virtual void BeginRenderPass(const BeginRenderPassInfo& beginRenderPassInfo) = 0;
+
+		struct AdvanceSubpassInfo
+		{
+			
+		};
 		//Adds a AdvanceSubPass command to the command buffer.
-		virtual void AdvanceSubPass() = 0;
+		virtual void AdvanceSubPass(const AdvanceSubpassInfo& advanceSubpassInfo) = 0;
+
+		struct EndRenderPassInfo
+		{
+			
+		};
 		//Adds a EndRenderPass command to the command queue.
-		virtual void EndRenderPass(RenderPass* _RP) = 0;
+		virtual void EndRenderPass(const EndRenderPassInfo& endRenderPassInfo) = 0;
 	};
 }

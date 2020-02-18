@@ -5,7 +5,6 @@
 #include <cstring>
 #include <type_traits>
 #include <initializer_list>
-#include "Pair.h"
 
 template <typename T>
 class FVector
@@ -100,6 +99,11 @@ public:
 		}
 	}
 
+	FVector(const length_type length, const T* array) : capacity(length), length(length), data(allocate(this->capacity))
+	{
+		copyArray(array, array + length);
+	}
+	
 	FVector(const std::initializer_list<T>& _InitializerList) :
 		capacity(_InitializerList.end() - _InitializerList.begin()), length(this->capacity),
 		data(allocate(this->capacity))
@@ -111,12 +115,6 @@ public:
 	                                                      data(allocate(this->capacity))
 	{
 		copyArray(_Start, this->data);
-	}
-
-	//Constructs a new FVector filling the internal array with the contents of the passed in array.
-	FVector(const length_type _Length, T _Array[]) : capacity(_Length), length(_Length), data(allocate(this->capacity))
-	{
-		copyArray(_Array, this->data, this->length);
 	}
 
 	//Constructs a new FVector from another FVector.

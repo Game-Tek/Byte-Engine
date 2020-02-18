@@ -70,24 +70,6 @@ namespace RAPI
 
 		void OnResize(const ResizeInfo& _RI) override;
 
-		void AcquireNextImage() override;
-		void Flush() override;
-		void Present() override;
-		void BeginRecording() override;
-		void EndRecording() override;
-		void BeginRenderPass(const RenderPassBeginInfo& _RPBI) override;
-		void AdvanceSubPass() override;
-		void EndRenderPass(RAPI::RenderPass* _RP) override;
-		void BindMesh(RenderMesh* _Mesh) override;
-		void BindBindingsSet(const ::BindBindingsSet& bindBindingsSet) override;
-		void UpdatePushConstant(const PushConstantsInfo& _PCI) override;
-		void BindGraphicsPipeline(GraphicsPipeline* _GP) override;
-		void BindComputePipeline(ComputePipeline* _CP) override;
-		void DrawIndexed(const DrawInfo& _DrawInfo) override;
-		void Dispatch(const Extent3D& _WorkGroups) override;
-
-		void CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo) override;
-
 		[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
 	};
 }

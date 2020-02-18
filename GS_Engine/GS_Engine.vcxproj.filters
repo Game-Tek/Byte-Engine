@@ -281,6 +281,7 @@
     <ClInclude Include="src\Game Studio\Render\BindingsGroup.h" />
     <ClInclude Include="src\Game Studio\Render\RenderGroup.h" />
     <ClInclude Include="src\Game Studio\Render\RenderingCore.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -380,6 +381,7 @@
     <ClCompile Include="src\Game Studio\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Sound\SoundManager.cpp" />
     <ClCompile Include="src\Game Studio\Render\BindingsGroup.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

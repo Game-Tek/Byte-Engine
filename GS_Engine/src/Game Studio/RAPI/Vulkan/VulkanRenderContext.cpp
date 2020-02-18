@@ -5,12 +5,9 @@
 #include "VulkanRenderContext.h"
 #include "VulkanRenderPass.h"
 #include "VulkanFramebuffer.h"
-#include "VulkanPipelines.h"
-#include "VulkanMesh.h"
 
 #include "RAPI/Window.h"
 #include "Native/vkPhysicalDevice.h"
-#include "VulkanBindings.h"
 
 //  VULKAN RENDER CONTEXT
 
@@ -218,119 +215,6 @@ void VulkanRenderContext::Present()
 	CurrentImage = (CurrentImage + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void VulkanRenderContext::BeginRecording()
-{
-	VkCommandBufferBeginInfo BeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-	BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-	//Hint to primary buffer if this is secondary.
-	BeginInfo.pInheritanceInfo = nullptr;
-
-	CommandBuffers[CurrentImage].Begin(&BeginInfo);
-}
-
-void VulkanRenderContext::EndRecording()
-{
-	CommandBuffers[CurrentImage].End();
-}
-
-void VulkanRenderContext::BeginRenderPass(const RenderPassBeginInfo& _RPBI)
-{
-	VkRenderPassBeginInfo RenderPassBeginInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-	RenderPassBeginInfo.renderPass = SCAST(VulkanRenderPass*, _RPBI.RenderPass)->GetVKRenderPass().GetHandle();
-	RenderPassBeginInfo.pClearValues = static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)->GetClearValues().getData();
-	RenderPassBeginInfo.clearValueCount = static_cast<uint32>(static_cast<VulkanFramebuffer*>(_RPBI.Framebuffer)
-	                                                          ->GetClearValues().getLength());
-	RenderPassBeginInfo.framebuffer = SCAST(VulkanFramebuffer*, _RPBI.Framebuffer)->GetVkFramebuffer();
-	RenderPassBeginInfo.renderArea.extent = Extent2DToVkExtent2D(RenderExtent);
-	RenderPassBeginInfo.renderArea.offset = {0, 0};
-
-	vkCmdBeginRenderPass(CommandBuffers[CurrentImage], &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-}
-
-void VulkanRenderContext::AdvanceSubPass()
-{
-	vkCmdNextSubpass(CommandBuffers[CurrentImage], VK_SUBPASS_CONTENTS_INLINE);
-}
-
-void VulkanRenderContext::EndRenderPass(RAPI::RenderPass* _RP)
-{
-	vkCmdEndRenderPass(CommandBuffers[CurrentImage]);
-}
-
-void VulkanRenderContext::BindMesh(RenderMesh* _Mesh)
-{
-	const auto l_Mesh = SCAST(VulkanMesh*, _Mesh);
-	VkDeviceSize Offset = 0;
-
-	VkBuffer pVertexBuffers = l_Mesh->GetVertexBuffer().GetHandle();
-
-	vkCmdBindVertexBuffers(CommandBuffers[CurrentImage], 0, 1, &pVertexBuffers, &Offset);
-	vkCmdBindIndexBuffer(CommandBuffers[CurrentImage], l_Mesh->GetIndexBuffer().GetHandle(), 0, VK_INDEX_TYPE_UINT16);
-}
-
-void VulkanRenderContext::BindBindingsSet(const ::BindBindingsSet& bindBindingsSet)
-{
-	Array<VkDescriptorSet, 8> descriptor_sets(bindBindingsSet.BindingsSets.First);
-	{
-		uint8 i = 0;
-
-		for (auto& e : descriptor_sets)
-		{
-			e = static_cast<VulkanBindingsSet*>(bindBindingsSet.BindingsSets.Second[i])->GetVkDescriptorSets()[
-				bindBindingsSet.BindingSetIndex];
-
-			++i;
-		}
-	}
-
-	vkCmdBindDescriptorSets(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS,
-	                        static_cast<VulkanGraphicsPipeline*>(bindBindingsSet.Pipeline)->GetVkPipelineLayout(), 0,
-	                        descriptor_sets.getLength(), descriptor_sets.getData(), 0, 0);
-}
-
-void VulkanRenderContext::UpdatePushConstant(const PushConstantsInfo& _PCI)
-{
-	vkCmdPushConstants(CommandBuffers[CurrentImage],
-	                   SCAST(VulkanGraphicsPipeline*, _PCI.Pipeline)->GetVkPipelineLayout(),
-	                   VK_SHADER_STAGE_ALL_GRAPHICS, _PCI.Offset, _PCI.Size, _PCI.Data);
-}
-
-void VulkanRenderContext::BindGraphicsPipeline(GraphicsPipeline* _GP)
-{
-	VkViewport Viewport = {};
-	Viewport.x = 0;
-	Viewport.y = 0;
-	Viewport.minDepth = 0;
-	Viewport.maxDepth = 1.0f;
-	Viewport.width = RenderExtent.Width;
-	Viewport.height = RenderExtent.Height;
-	vkCmdSetViewport(CommandBuffers[CurrentImage], 0, 1, &Viewport);
-
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_GRAPHICS,
-	                  SCAST(VulkanGraphicsPipeline*, _GP)->GetVkGraphicsPipeline());
-}
-
-void VulkanRenderContext::BindComputePipeline(ComputePipeline* _CP)
-{
-	vkCmdBindPipeline(CommandBuffers[CurrentImage], VK_PIPELINE_BIND_POINT_COMPUTE, static_cast<VulkanComputePipeline*>(_CP)->GetVkPipeline());
-}
-
-void VulkanRenderContext::DrawIndexed(const DrawInfo& _DrawInfo)
-{
-	vkCmdDrawIndexed(CommandBuffers[CurrentImage], _DrawInfo.IndexCount, _DrawInfo.InstanceCount, 0, 0, 0);
-}
-
-void VulkanRenderContext::Dispatch(const Extent3D& _WorkGroups)
-{
-	vkCmdDispatch(CommandBuffers[CurrentImage], _WorkGroups.Width, _WorkGroups.Height, _WorkGroups.Depth);
-}
-
-void VulkanRenderContext::CopyToSwapchain(const CopyToSwapchainInfo& copyToSwapchainInfo)
-{
-	vkCmdCopyImage(CommandBuffers[CurrentImage], static_cast<VulkanImage*>(copyToSwapchainInfo.Image)->GetVkImage(),
-	               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SwapchainImages[CurrentImage],
-	               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, nullptr);
-}
 
 FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
 {

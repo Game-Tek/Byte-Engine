@@ -13,6 +13,10 @@ namespace RAPI
 		Extent2D NewWindowSize;
 	};
 
+	struct RenderContextCreateInfo
+	{
+	};
+	
 	class RenderContext
 	{
 	protected:

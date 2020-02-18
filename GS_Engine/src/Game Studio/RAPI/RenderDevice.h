@@ -15,7 +15,7 @@
 
 namespace RAPI
 {
-	enum class RAPIs : uint8
+	enum class RenderAPI : uint8
 	{
 		NONE,
 		VULKAN
@@ -30,23 +30,16 @@ namespace RAPI
 
 	class RenderDevice
 	{
-		static RAPIs RenderAPI;
-		static RenderDevice* RenderDeviceInstance;
-
-		static RenderDevice* CreateRAPI();
-		static RAPIs GetRAPIs();
-	protected:
 		RenderDevice() = default;
 
-		virtual ~RenderDevice()
-		{
-			delete RenderDeviceInstance;
-		}
-
+		virtual ~RenderDevice() = default;
+		
 	public:
-		static INLINE RAPIs GetRenderAPI() { return RenderAPI; }
-		static INLINE RenderDevice* Get() { return RenderDeviceInstance; }
-
+		static void GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis);
+		
+		static RenderDevice* CreateRenderDevice(RenderAPI renderApi);
+		static void DestroyRenderDevice(const RenderDevice* renderDevice);
+		
 		virtual GPUInfo GetGPUInfo() = 0;
 
 		virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;

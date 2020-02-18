@@ -26,7 +26,7 @@ class StaticMeshResource;
 class RenderProxy;
 class PointLightRenderProxy;
 
-//Stores all the data necessary for the RAPI to work. It's the RAPIs representation of the game world.
+//Stores all the data necessary for the RAPI to work. It's the RenderAPI representation of the game world.
 class Renderer : public SubWorld
 {
 public:

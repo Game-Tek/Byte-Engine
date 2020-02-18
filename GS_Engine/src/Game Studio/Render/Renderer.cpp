@@ -381,39 +381,27 @@ void Renderer::RenderRenderables()
 	}
 }
 
-void Renderer::BuildPerspectiveMatrix(Matrix4& matrix, const float fov, const float aspectRatio, const float near,
-                                      const float far)
+void Renderer::BuildPerspectiveMatrix(Matrix4& matrix, const float fov, const float aspectRatio, const float near, const float far)
 {
-	const auto tan_half_fov = GSM::Tangent(GSM::Clamp(fov * 0.5f, 0.0f, 90.0f));
 	//Tangent of half the vertical view angle.
-	const auto f = 1 / tan_half_fov;
+	const auto f = 1 / GSM::Tangent(fov * 0.5f);
+
+	const auto far_m_near = far - near;
 
 	//Zero to one
 	//Left handed
 
 	matrix(0, 0) = f / aspectRatio;
-	matrix(0, 1) = 0.f;
-	matrix(0, 2) = 0.f;
-	matrix(0, 3) = 0.f;
 
-	matrix(1, 0) = 0.f;
 	matrix(1, 1) = -f;
-	matrix(1, 2) = 0.f;
-	matrix(1, 3) = 0.f;
 
-	matrix(2, 0) = 0.f;
-	matrix(2, 1) = 0.f;
-	matrix(2, 2) = -((far + near) / (far - near));
-	matrix(2, 3) = -((2.f * far * near) / (far - near));
+	matrix(2, 2) = -((far + near) / far_m_near);
+	matrix(2, 3) = -((2.f * far * near) / far_m_near);
 
-	matrix(3, 0) = 0.f;
-	matrix(3, 1) = 0.f;
-	matrix(3, 2) = -1.f;
-	matrix(3, 3) = 0.f;
+	matrix(3, 2) = -1.0f;
 }
 
-void Renderer::MakeOrthoMatrix(Matrix4& matrix, const float right, const float left, const float top,
-                               const float bottom, const float near, const float far)
+void Renderer::MakeOrthoMatrix(Matrix4& matrix, const float right, const float left, const float top, const float bottom, const float near, const float far)
 {
 	//Zero to one
 	//Left handed

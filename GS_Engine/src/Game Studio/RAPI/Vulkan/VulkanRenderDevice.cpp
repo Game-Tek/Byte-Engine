@@ -6,7 +6,7 @@
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
 #include "VulkanMesh.h"
-#include "VulkanImage.h"
+#include "VulkanRenderTarget.h"
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
 
@@ -206,7 +206,7 @@ UniformBuffer* VulkanRenderDevice::CreateUniformBuffer(const UniformBufferCreate
 	return new VulkanUniformBuffer(&Device, _BCI);
 }
 
-Image* VulkanRenderDevice::CreateImage(const ImageCreateInfo& _ICI)
+RenderTarget* VulkanRenderDevice::CreateImage(const RenderTargetCreateInfo& _ICI)
 {
 	// CREATE STAGING BUFFER (AND DEVICE MEMORY)
 	// COPY IMAGE DATA TO STAGING BUFFER
@@ -215,7 +215,7 @@ Image* VulkanRenderDevice::CreateImage(const ImageCreateInfo& _ICI)
 	// COPY STAGING BUFFER TO IMAGE
 	// TRANSITION LAYOUT FROM TRANSFER_DST TO { DESIRED USE }
 
-	return new VulkanImage(this, _ICI);
+	return new VulkanRenderTarget(this, _ICI);
 }
 
 Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)

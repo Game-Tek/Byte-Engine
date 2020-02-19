@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "RenderCore.h"
-#include "Image.h"
+#include "RenderTarget.h"
 #include "Containers/Array.hpp"
 
 #define ATTACHMENT_UNUSED 255
@@ -23,7 +23,7 @@ namespace RAPI
 	struct AttachmentDescriptor
 	{
 		//Pointer to the image this attachment refers to.
-		Image* AttachmentImage = nullptr;
+		RenderTarget* AttachmentImage = nullptr;
 		//Defines the operation that should be run when the attachment is loaded for rendering.
 		LoadOperations LoadOperation = LoadOperations::UNDEFINED;
 		//Defines the operation that should be run when the attachment is done being rendered to.

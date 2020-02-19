@@ -2,28 +2,28 @@
 
 #include "Core.h"
 
-#include "RAPI/Image.h"
+#include "RAPI/RenderTarget.h"
 
 #include <RAPI/Vulkan/Vulkan.h>
 
 class VulkanRenderDevice;
 
-class VulkanImageBase : public Image
+class VulkanRenderTargetBase : public RenderTarget
 {
 protected:
 	VkImageView imageView = nullptr;
 public:
-	VulkanImageBase(const ImageCreateInfo& imageCreateInfo);
+	VulkanRenderTargetBase(const RenderTargetCreateInfo& imageCreateInfo);
 	[[nodiscard]] virtual const VkImageView& GetVkImageView() const { return imageView; }
 };
 
-class VulkanImage final : public VulkanImageBase
+class VulkanRenderTarget final : public VulkanRenderTargetBase
 {
 	VkImage image = nullptr;
 	VkDeviceMemory imageMemory = nullptr;
 
 public:
-	VulkanImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo);
+	VulkanRenderTarget(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo);
 
 	[[nodiscard]] VkImage GetVkImage() const { return image; }
 };

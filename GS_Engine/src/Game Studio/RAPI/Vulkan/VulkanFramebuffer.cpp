@@ -6,7 +6,7 @@
 
 #include "VulkanRenderDevice.h"
 
-#include "VulkanImage.h"
+#include "VulkanRenderTarget.h"
 
 VulkanFramebuffer::
 VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& framebufferCreateInfo) : Framebuffer(
@@ -16,7 +16,7 @@ VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& fram
 
 	for (uint8 i = 0; i < Result.getCapacity(); ++i)
 	{
-		Result.push_back(SCAST(VulkanImageBase*, framebufferCreateInfo.Images[i])->GetVkImageView());
+		Result.push_back(SCAST(VulkanRenderTargetBase*, framebufferCreateInfo.Images[i])->GetVkImageView());
 	}
 
 	for (uint8 i = 0; i < framebufferCreateInfo.ClearValues.getLength(); ++i)

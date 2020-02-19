@@ -69,6 +69,6 @@ namespace RAPI
 
 		void OnResize(const ResizeInfo& _RI) override;
 
-		[[nodiscard]] FVector<Image*> GetSwapchainImages() const override;
+		[[nodiscard]] FVector<RenderTarget*> GetSwapchainImages() const override;
 	};
 }

@@ -35,7 +35,7 @@ class VulkanRenderDevice final : public RenderDevice
 
 protected:
 	friend class VulkanTexture;
-	friend class VulkanImage;
+	friend class VulkanRenderTarget;
 
 	[[nodiscard]] const VkPhysicalDeviceProperties& getPhysicalDeviceProperties() const { return deviceProperties; }
 	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag,
@@ -49,7 +49,7 @@ public:
 
 	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
-	Image* CreateImage(const ImageCreateInfo& _ICI) override;
+	RenderTarget* CreateImage(const RenderTargetCreateInfo& _ICI) override;
 	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;
 	BindingsPool* CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo) override;
 	BindingsSet* CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo) override;

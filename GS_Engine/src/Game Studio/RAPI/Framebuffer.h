@@ -12,7 +12,7 @@
 namespace RAPI
 {
 	class RenderPass;
-	class Image;
+	class RenderTarget;
 
 	struct FramebufferAttachments
 	{
@@ -21,14 +21,14 @@ namespace RAPI
 
 		Format DepthStencilFormat = Format::DEPTH16_STENCIL8;
 
-		Image* Images = nullptr;
+		RenderTarget* Images = nullptr;
 	};
 
 	struct FramebufferCreateInfo
 	{
 		RenderPass* RenderPass = nullptr;
 		Extent2D Extent = { 1280, 720 };
-		DArray<Image*> Images;
+		DArray<RenderTarget*> Images;
 		FVector<RGBA> ClearValues;
 	};
 

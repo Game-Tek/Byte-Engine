@@ -135,7 +135,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, VKInstance*
 		InFlightFences.emplace_back(VKFenceCreator(&device->GetVKDevice(), &FenceCreateInfo));
 		CommandBuffers.emplace_back(CommandPool.CreateCommandBuffer());
 
-		ImageCreateInfo image_create_info;
+		RenderTargetCreateInfo image_create_info;
 		image_create_info.Extent = {RenderExtent.Width, RenderExtent.Height, 0};
 		image_create_info.ImageFormat = VkFormatToFormat(Format.format);
 
@@ -216,13 +216,13 @@ void VulkanRenderContext::Present()
 }
 
 
-FVector<Image*> VulkanRenderContext::GetSwapchainImages() const
+FVector<RenderTarget*> VulkanRenderContext::GetSwapchainImages() const
 {
-	FVector<Image*> l_Images(MAX_FRAMES_IN_FLIGHT);
+	FVector<RenderTarget*> l_Images(MAX_FRAMES_IN_FLIGHT);
 
 	for (uint8 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		l_Images.push_back(static_cast<Image*>(&swapchainImages[i]));
+		l_Images.push_back(static_cast<RenderTarget*>(&swapchainImages[i]));
 	}
 
 	return l_Images;

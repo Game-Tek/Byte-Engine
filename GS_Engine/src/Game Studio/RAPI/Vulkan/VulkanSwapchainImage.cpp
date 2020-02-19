@@ -4,8 +4,8 @@
 
 #include "RAPI/Vulkan/VulkanRenderDevice.h"
 
-VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo,
-                                           VkImage image) : VulkanImageBase(imageCreateInfo)
+VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo,
+                                           VkImage image) : VulkanRenderTargetBase(imageCreateInfo)
 {
 	VkImageViewCreateInfo vk_image_view_create_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
 	vk_image_view_create_info.format = FormatToVkFormat(imageCreateInfo.ImageFormat);

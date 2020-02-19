@@ -20,22 +20,24 @@
 using namespace RAPI;
 
 Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
-{	
+{
+	renderDevice = RenderDevice::CreateRenderDevice(RenderAPI::VULKAN);
+	
 	Win = GS::Application::Get()->GetActiveWindow();
 
 	RenderContextCreateInfo RCCI;
 	RCCI.Window = Win;
-	RC = RenderDevice::Get()->CreateRenderContext(RCCI);
+	RC = renderDevice->CreateRenderContext(RCCI);
 
 	auto SCImages = RC->GetSwapchainImages();
 
-	ImageCreateInfo CACI;
+	RenderTargetCreateInfo CACI;
 	CACI.Extent = Extent3D{Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1};
 	CACI.Dimensions = ImageDimensions::IMAGE_2D;
 	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
 	CACI.Type = ImageType::DEPTH_STENCIL;
 	CACI.ImageFormat = Format::DEPTH24_STENCIL8;
-	depthTexture = RenderDevice::Get()->CreateImage(CACI);
+	depthTexture = renderDevice->CreateImage(CACI);
 
 
 	RenderPassCreateInfo RPCI;
@@ -81,7 +83,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 	RPD.SubPasses.push_back(&SPD);
 	RPCI.Descriptor = RPD;
-	RP = RenderDevice::Get()->CreateRenderPass(RPCI);
+	RP = renderDevice->CreateRenderPass(RPCI);
 
 
 	BindingLayoutCreateInfo ULCI;
@@ -101,7 +103,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 	UniformBufferCreateInfo UBCI;
 	UBCI.Size = sizeof(Matrix4);
-	UB = RenderDevice::Get()->CreateUniformBuffer(UBCI);
+	UB = renderDevice->CreateUniformBuffer(UBCI);
 
 	Framebuffers.resize(SCImages.getLength());
 	for (uint8 i = 0; i < SCImages.getLength(); ++i)
@@ -109,9 +111,9 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 		FramebufferCreateInfo FBCI;
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
-		FBCI.Images = DArray<Image*>() = {SCImages[i], depthTexture};
+		FBCI.Images = DArray<RenderTarget*>() = {SCImages[i], depthTexture};
 		FBCI.ClearValues = {{0, 0, 0, 0}, {1, 0, 0, 0}};
-		Framebuffers[i] = RenderDevice::Get()->CreateFramebuffer(FBCI);
+		Framebuffers[i] = renderDevice->CreateFramebuffer(FBCI);
 	}
 
 	MeshCreateInfo MCI;
@@ -120,10 +122,10 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	MCI.VertexData = ScreenQuad::Vertices;
 	MCI.IndexData = ScreenQuad::Indices;
 	MCI.VertexLayout = &ScreenQuad::VD;
-	FullScreenQuad = RenderDevice::Get()->CreateMesh(MCI);
+	FullScreenQuad = renderDevice->CreateMesh(MCI);
 
 	GraphicsPipelineCreateInfo gpci;
-	gpci.RenderDevice = RenderDevice::Get();
+	gpci.RenderDevice = renderDevice;
 	gpci.RenderPass = RP;
 	gpci.UniformLayout = UL;
 	gpci.VDescriptor = &ScreenQuad::VD;
@@ -138,7 +140,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 		"#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(binding = 1) uniform sampler2D texSampler;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ShaderType::FRAGMENT_SHADER, &FS});
 
-	FullScreenRenderingPipeline = RenderDevice::Get()->CreateGraphicsPipeline(gpci);
+	FullScreenRenderingPipeline = renderDevice->CreateGraphicsPipeline(gpci);
 }
 
 Renderer::~Renderer()
@@ -155,6 +157,8 @@ Renderer::~Renderer()
 
 	delete RP;
 	delete RC;
+
+	RenderDevice::DestroyRenderDevice(renderDevice);
 }
 
 void Renderer::OnUpdate()
@@ -170,22 +174,21 @@ void Renderer::OnUpdate()
 
 	UpdateRenderables();
 
-	CB->BeginRecording();
+	CommandBuffer::BeginRecordingInfo begin_recording_info;
+	CB->BeginRecording(begin_recording_info);
 
-	RenderPassBeginInfo RPBI;
+	CommandBuffer::BeginRenderPassInfo RPBI;
 	RPBI.RenderPass = RP;
 	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
-
 	CB->BeginRenderPass(RPBI);
-
-	//BindPipeline(FullScreenRenderingPipeline);
-	//DrawMesh(DrawInfo{ ScreenQuad::IndexCount, 1 }, FullScreenQuad);
 
 	RenderRenderables();
 
-	CB->EndRenderPass(RP);
+	CommandBuffer::EndRenderPassInfo end_render_pass_info;
+	CB->EndRenderPass(end_render_pass_info);
 
-	CB->EndRecording();
+	CommandBuffer::EndRecordingInfo end_recording_info;
+	CB->EndRecording(end_recording_info);
 
 	CB->AcquireNextImage();
 
@@ -232,7 +235,7 @@ RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 		MCI.VertexData = m.VertexArray;
 		MCI.IndexData = m.IndexArray;
 		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
-		Meshes[_SM] = RenderDevice::Get()->CreateMesh(MCI);
+		Meshes[_SM] = renderDevice->CreateMesh(MCI);
 	}
 	else
 	{
@@ -267,7 +270,7 @@ MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
 		texture_create_info.ImageFormat = texture_resource->GetTextureData().TextureFormat;
 		texture_create_info.Layout = ImageLayout::SHADER_READ;
 	
-		auto texture = RenderDevice::Get()->CreateTexture(texture_create_info);
+		auto texture = renderDevice->CreateTexture(texture_create_info);
 	
 		material_render_resource_create_info.textures.push_back(texture);
 	}
@@ -298,7 +301,7 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 	GPCI.UniformLayout = UL;
 	GPCI.ActiveWindow = Win;
 
-	return RenderDevice::Get()->CreateGraphicsPipeline(GPCI);
+	return renderDevice->CreateGraphicsPipeline(GPCI);
 }
 
 void Renderer::UpdateViews()

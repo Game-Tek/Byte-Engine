@@ -6,7 +6,7 @@
 
 namespace RAPI
 {
-	class Image;
+	class RenderTarget;
 
 	struct ResizeInfo
 	{
@@ -30,7 +30,7 @@ namespace RAPI
 
 		virtual void OnResize(const ResizeInfo& _RI) = 0;
 
-		[[nodiscard]] virtual FVector<Image*> GetSwapchainImages() const = 0;
+		[[nodiscard]] virtual FVector<RenderTarget*> GetSwapchainImages() const = 0;
 
 		[[nodiscard]] uint8 GetCurrentImage() const { return CurrentImage; }
 		[[nodiscard]] uint8 GetMaxFramesInFlight() const { return MAX_FRAMES_IN_FLIGHT; }

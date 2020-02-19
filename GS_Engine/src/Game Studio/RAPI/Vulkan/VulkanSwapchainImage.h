@@ -2,13 +2,13 @@
 
 #include "Core.h"
 
-#include "RAPI/Image.h"
+#include "RAPI/RenderTarget.h"
 
-#include "VulkanImage.h"
+#include "VulkanRenderTarget.h"
 
-class VulkanSwapchainImage final : public VulkanImageBase
+class VulkanSwapchainImage final : public VulkanRenderTargetBase
 {
 public:
-	VulkanSwapchainImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo, VkImage image);
+	VulkanSwapchainImage(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo, VkImage image);
 	~VulkanSwapchainImage() = default;
 };

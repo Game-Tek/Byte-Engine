@@ -1,14 +1,14 @@
-﻿#include "VulkanImage.h"
+﻿#include "VulkanRenderTarget.h"
 
 #include "Vulkan.h"
 
 #include "VulkanRenderDevice.h"
 
-VulkanImageBase::VulkanImageBase(const ImageCreateInfo& imageCreateInfo) : Image(imageCreateInfo)
+VulkanRenderTargetBase::VulkanRenderTargetBase(const RenderTargetCreateInfo& imageCreateInfo) : RenderTarget(imageCreateInfo)
 {
 }
 
-VulkanImage::VulkanImage(VulkanRenderDevice* device, const ImageCreateInfo& imageCreateInfo) : VulkanImageBase(
+VulkanRenderTarget::VulkanRenderTarget(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo) : VulkanRenderTargetBase(
 	imageCreateInfo)
 {
 	const auto image_format = FormatToVkFormat(imageCreateInfo.ImageFormat);

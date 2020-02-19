@@ -10,7 +10,7 @@
 
 class VulkanRenderDevice;
 class VulkanRenderPass;
-class VulkanImage;
+class VulkanRenderTarget;
 
 struct VkExtent2D;
 

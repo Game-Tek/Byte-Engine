@@ -17,7 +17,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 			//Loop through all color attachments(skip extra element for depth/stencil)
 		{
 			Attachments[i].format = FormatToVkFormat(
-				_RPD.RenderPassColorAttachments[i]->AttachmentImage->GetImageFormat());
+				_RPD.RenderPassColorAttachments[i]->AttachmentImage->GetFormat());
 			Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT; //Should match that of the SwapChain images.
 			Attachments[i].loadOp = LoadOperationsToVkAttachmentLoadOp(
 				_RPD.RenderPassColorAttachments[i]->LoadOperation);
@@ -34,7 +34,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 		{
 			//Set depth/stencil element.
 			Attachments[Attachments.getCapacity() - 1].format = FormatToVkFormat(
-				_RPD.DepthStencilAttachment.AttachmentImage->GetImageFormat());
+				_RPD.DepthStencilAttachment.AttachmentImage->GetFormat());
 			Attachments[Attachments.getCapacity() - 1].samples = VK_SAMPLE_COUNT_1_BIT;
 			Attachments[Attachments.getCapacity() - 1].loadOp = LoadOperationsToVkAttachmentLoadOp(
 				_RPD.DepthStencilAttachment.LoadOperation);

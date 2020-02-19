@@ -86,8 +86,10 @@ protected:
 	RAPI::Window* Win = nullptr;
 	FVector<RAPI::Framebuffer*> Framebuffers;
 
-	RAPI::Image* depthTexture = nullptr;
+	RAPI::RenderTarget* depthTexture = nullptr;
 
+	RAPI::RenderDevice* renderDevice = nullptr;
+	
 	RAPI::RenderContext* RC = nullptr;
 	RAPI::CommandBuffer* CB = nullptr;
 	RAPI::RenderPass* RP = nullptr;

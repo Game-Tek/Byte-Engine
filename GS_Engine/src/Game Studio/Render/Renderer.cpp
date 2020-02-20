@@ -31,12 +31,12 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 	auto SCImages = RC->GetSwapchainImages();
 
-	RenderTargetCreateInfo CACI;
+	RenderTarget::RenderTargetCreateInfo CACI;
 	CACI.Extent = Extent3D{Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1};
 	CACI.Dimensions = ImageDimensions::IMAGE_2D;
 	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
 	CACI.Type = ImageType::DEPTH_STENCIL;
-	CACI.ImageFormat = Format::DEPTH24_STENCIL8;
+	CACI.Format = Format::DEPTH24_STENCIL8;
 	depthTexture = renderDevice->CreateRenderTarget(CACI);
 
 

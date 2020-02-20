@@ -13,7 +13,7 @@ namespace RAPI
 		void* ImageData = nullptr;
 		size_t ImageDataSize = 0;
 		ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;
-		Format ImageFormat = Format::RGBA_I8;
+		ImageFormat ImageFormat = ImageFormat::RGBA_I8;
 		Extent2D Extent = { 1280, 720 };
 
 		uint8 Anisotropy = 0;

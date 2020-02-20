@@ -10,8 +10,8 @@ namespace RAPI
 	class RenderTarget
 	{
 	protected:
-		Extent3D Extent{ 0, 0, 0 };
-		Format Format{ Format::RGBA_I8 };
+		Extent3D Extent{ 0, 0, 1 };
+		ImageFormat Format{ ImageFormat::RGBA_I8 };
 		ImageType Type{ ImageType::COLOR };
 		ImageDimensions Dimensions{ ImageDimensions::IMAGE_1D };
 
@@ -20,7 +20,7 @@ namespace RAPI
 		struct RenderTargetCreateInfo
 		{
 			Extent3D		Extent		{ 0, 0, 0 };
-			RAPI::Format	Format		{ Format::RGBA_I8 };
+			ImageFormat		Format		{ ImageFormat::RGBA_I8 };
 			ImageType		Type		{ ImageType::COLOR };
 			ImageDimensions Dimensions	{ ImageDimensions::IMAGE_2D };
 			ImageUse		Use			{ ImageUse::INPUT_ATTACHMENT };
@@ -35,9 +35,9 @@ namespace RAPI
 
 		RenderTarget() = default;
 
-		INLINE Extent3D			GetExtent()		const { return Extent; }
-		INLINE RAPI::Format		GetFormat()		const { return Format; }
-		INLINE ImageType		GetType()		const { return Type; }
-		INLINE ImageDimensions	GetDimensions() const { return Dimensions; }
+		[[nodiscard]] Extent3D GetExtent() const { return Extent; }
+		[[nodiscard]] ImageFormat GetFormat() const { return Format; }
+		[[nodiscard]] ImageType	GetType() const { return Type; }
+		[[nodiscard]] ImageDimensions GetDimensions() const { return Dimensions; }
 	};
 }

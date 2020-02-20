@@ -16,7 +16,7 @@ public:
 		byte* ImageData = nullptr;
 		size_t imageDataSize = 0;
 		Extent2D TextureDimensions;
-		RAPI::Format TextureFormat;
+		RAPI::ImageFormat TextureFormat;
 
 		~TextureResourceData();
 

@@ -18,7 +18,7 @@ namespace RAPI
 		 * \brief If binding is an array how many elements does it have.
 		 */
 		uint8 ArrayLength = 0;
-		UniformType BindingType = UniformType::UNIFORM_BUFFER;
+		BindingType BindingType = BindingType::UNIFORM_BUFFER;
 		ShaderType ShaderStage = ShaderType::ALL_STAGES;
 		void* BindingResource = nullptr;
 	};

@@ -56,7 +56,7 @@ namespace RAPI
 
 	//Specifies all available color formats and depth/stencil formats.
 	//Usually you'll use the DEPTH16_STENCIL8 since it is sufficient form most use cases. If that is not precise enough use the DEPTH24_STENCIL8.
-	enum class Format : uint8
+	enum class ImageFormat : uint8
 	{
 		//INTEGER
 
@@ -132,7 +132,7 @@ namespace RAPI
 	// ATTACHMENTS
 
 	//Describes all possible operations a RAPI can perform when loading a render target onto a render pass.
-	enum class LoadOperations : uint8
+	enum class RenderTargetLoadOperations : uint8
 	{
 		//We don't care about the previous content of the render target. Behavior is unknown.
 		UNDEFINED,
@@ -143,7 +143,7 @@ namespace RAPI
 	};
 
 	//Describes all possible operations a RAPI can perform when saving to a render target from a render pass.
-	enum class StoreOperations : uint8
+	enum class RenderTargetStoreOperations : uint8
 	{
 		//We don't care about the outcome of the render target.
 		UNDEFINED,
@@ -254,7 +254,7 @@ namespace RAPI
 		DECREMENT_AND_WRAP
 	};
 
-	enum class UniformType : uint8
+	enum class BindingType : uint8
 	{
 		FLOAT,
 		FLOAT2,

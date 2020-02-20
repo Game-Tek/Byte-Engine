@@ -106,9 +106,9 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 	{
 		switch (uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingType)
 		{
-		case UniformType::SAMPLER:
-		case UniformType::COMBINED_IMAGE_SAMPLER:
-		case UniformType::SAMPLED_IMAGE:
+		case BindingType::SAMPLER:
+		case BindingType::COMBINED_IMAGE_SAMPLER:
+		case BindingType::SAMPLED_IMAGE:
 
 			VkDescriptorImageInfo DescriptorImageInfo;
 			DescriptorImageInfo.imageView = static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].
@@ -133,13 +133,13 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 
 			break;
 
-			//case UniformType::STORAGE_IMAGE: break;
+			//case BindingType::STORAGE_IMAGE: break;
 
-			//case UniformType::UNIFORM_TEXEL_BUFFER: break;
-			//case UniformType::STORAGE_TEXEL_BUFFER: break;
+			//case BindingType::UNIFORM_TEXEL_BUFFER: break;
+			//case BindingType::STORAGE_TEXEL_BUFFER: break;
 
-		case UniformType::UNIFORM_BUFFER:
-		case UniformType::STORAGE_BUFFER:
+		case BindingType::UNIFORM_BUFFER:
+		case BindingType::STORAGE_BUFFER:
 
 			VkDescriptorBufferInfo DescriptorBufferInfo;
 			DescriptorBufferInfo.buffer = static_cast<VulkanUniformBuffer*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].
@@ -161,9 +161,9 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 
 			break;
 
-			//case UniformType::UNIFORM_BUFFER_DYNAMIC: break;
-			//case UniformType::STORAGE_BUFFER_DYNAMIC: break;
-			//case UniformType::INPUT_ATTACHMENT: break;
+			//case BindingType::UNIFORM_BUFFER_DYNAMIC: break;
+			//case BindingType::STORAGE_BUFFER_DYNAMIC: break;
+			//case BindingType::INPUT_ATTACHMENT: break;
 		default: ;
 		}
 	}

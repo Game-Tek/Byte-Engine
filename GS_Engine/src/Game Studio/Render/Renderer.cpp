@@ -36,7 +36,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	CACI.Dimensions = ImageDimensions::IMAGE_2D;
 	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
 	CACI.Type = ImageType::DEPTH_STENCIL;
-	CACI.Format = Format::DEPTH24_STENCIL8;
+	CACI.Format = ImageFormat::DEPTH24_STENCIL8;
 	depthTexture = renderDevice->CreateRenderTarget(CACI);
 
 
@@ -47,8 +47,8 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	SIAD.AttachmentImage = SCImages[0]; //Only first because it gets only properties, doesn't access actual data.
 	SIAD.InitialLayout = ImageLayout::UNDEFINED;
 	SIAD.FinalLayout = ImageLayout::PRESENTATION;
-	SIAD.StoreOperation = StoreOperations::STORE;
-	SIAD.LoadOperation = LoadOperations::CLEAR;
+	SIAD.StoreOperation = RenderTargetStoreOperations::STORE;
+	SIAD.LoadOperation = RenderTargetLoadOperations::CLEAR;
 
 
 	RPD.RenderPassColorAttachments.push_back(&SIAD);
@@ -57,8 +57,8 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	depth_attachment.AttachmentImage = depthTexture;
 	depth_attachment.InitialLayout = ImageLayout::UNDEFINED;
 	depth_attachment.FinalLayout = ImageLayout::DEPTH_STENCIL_ATTACHMENT;
-	depth_attachment.LoadOperation = LoadOperations::CLEAR;
-	depth_attachment.StoreOperation = StoreOperations::UNDEFINED;
+	depth_attachment.LoadOperation = RenderTargetLoadOperations::CLEAR;
+	depth_attachment.StoreOperation = RenderTargetStoreOperations::UNDEFINED;
 
 	RPD.DepthStencilAttachment = depth_attachment;
 
@@ -88,12 +88,12 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 	BindingLayoutCreateInfo ULCI;
 	ULCI.DescriptorCount = 3;
-	ULCI.BindingsSetLayout[0].BindingType = UniformType::UNIFORM_BUFFER;
+	ULCI.BindingsSetLayout[0].BindingType = BindingType::UNIFORM_BUFFER;
 	ULCI.BindingsSetLayout[0].ShaderStage = ShaderType::VERTEX_SHADER;
 	ULCI.BindingsSetLayout[0].ArrayLength = 1;
 	RAPI::BindingDescriptor uniform_set;
 	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
-	uniform_set.BindingType = UniformType::COMBINED_IMAGE_SAMPLER;
+	uniform_set.BindingType = BindingType::COMBINED_IMAGE_SAMPLER;
 	uniform_set.ArrayLength = 1;
 	ULCI.BindingsSetLayout[1] = uniform_set;
 	ULCI.BindingsSetLayout.resize(2);

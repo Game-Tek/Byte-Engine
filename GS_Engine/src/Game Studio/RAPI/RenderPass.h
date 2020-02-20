@@ -6,7 +6,7 @@
 #include "RenderTarget.h"
 #include "Containers/Array.hpp"
 
-#define ATTACHMENT_UNUSED 255
+constexpr uint8 ATTACHMENT_UNUSED = 255;
 
 namespace RAPI
 {
@@ -25,9 +25,9 @@ namespace RAPI
 		//Pointer to the image this attachment refers to.
 		RenderTarget* AttachmentImage = nullptr;
 		//Defines the operation that should be run when the attachment is loaded for rendering.
-		LoadOperations LoadOperation = LoadOperations::UNDEFINED;
+		RenderTargetLoadOperations LoadOperation = RenderTargetLoadOperations::UNDEFINED;
 		//Defines the operation that should be run when the attachment is done being rendered to.
-		StoreOperations StoreOperation = StoreOperations::STORE;
+		RenderTargetStoreOperations StoreOperation = RenderTargetStoreOperations::STORE;
 		//Layout of the attachment when first used in the render pass.
 		ImageLayout InitialLayout = ImageLayout::GENERAL;
 		//Layout of the attachment after use in the render pass.

@@ -16,10 +16,10 @@ namespace RAPI
 
 	struct FramebufferAttachments
 	{
-		Format ColorAttachmentsFormat[8] = {};
+		ImageFormat ColorAttachmentsFormat[8] = {};
 		uint8 ColorAttachmentsCount = 0;
 
-		Format DepthStencilFormat = Format::DEPTH16_STENCIL8;
+		ImageFormat DepthStencilFormat = ImageFormat::DEPTH16_STENCIL8;
 
 		RenderTarget* Images = nullptr;
 	};

@@ -17,7 +17,7 @@ struct BindingDescriptor
 	/**
 	 * \brief Defines the type of the binding.
 	 */
-	RAPI::UniformType Type;
+	RAPI::BindingType Type;
 };
 
 class BindingsSetDescriptor

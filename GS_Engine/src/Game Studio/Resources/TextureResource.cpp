@@ -24,7 +24,7 @@ bool TextureResource::loadResource(const LoadResourceData& LRD_)
 
 		data.TextureDimensions.Width = X;
 		data.TextureDimensions.Height = Y;
-		data.TextureFormat = NofChannels == 4 ? Format::RGBA_I8 : Format::RGB_I8;
+		data.TextureFormat = NofChannels == 4 ? ImageFormat::RGBA_I8 : ImageFormat::RGB_I8;
 		data.imageDataSize = NofChannels * X * Y;
 
 		return true;
@@ -40,7 +40,7 @@ void TextureResource::loadFallbackResource(const FString& _Path)
 	data.TextureDimensions.Width = 256;
 	data.TextureDimensions.Height = 256;
 
-	data.TextureFormat = Format::RGB_I8;
+	data.TextureFormat = ImageFormat::RGB_I8;
 
 	for (uint16 X = 0; X < 256; ++X)
 	{

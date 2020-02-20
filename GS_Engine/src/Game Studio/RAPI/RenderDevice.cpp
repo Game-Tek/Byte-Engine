@@ -6,7 +6,9 @@ using namespace RAPI;
 
 void RenderDevice::GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis)
 {
+#ifdef GS_PLATFORM_WIN
 	renderApis.emplace_back(RenderAPI::VULKAN);
+#endif
 }
 
 RenderDevice* RenderDevice::CreateRenderDevice(const RenderAPI renderApi)

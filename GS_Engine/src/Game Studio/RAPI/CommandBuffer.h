@@ -21,7 +21,16 @@ namespace RAPI
 
 	class CommandBuffer
 	{
-	public:		
+	public:
+		virtual ~CommandBuffer() = default;
+
+		struct CommandBufferCreateInfo
+		{
+			bool IsPrimary = true;
+		};
+
+		explicit CommandBuffer(const CommandBufferCreateInfo& commandBufferCreateInfo);
+		
 		struct BeginRecordingInfo
 		{};
 		//Starts recording of commands.

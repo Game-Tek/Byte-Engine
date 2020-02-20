@@ -37,7 +37,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	CACI.Use = ImageUse::DEPTH_STENCIL_ATTACHMENT;
 	CACI.Type = ImageType::DEPTH_STENCIL;
 	CACI.ImageFormat = Format::DEPTH24_STENCIL8;
-	depthTexture = renderDevice->CreateImage(CACI);
+	depthTexture = renderDevice->CreateRenderTarget(CACI);
 
 
 	RenderPassCreateInfo RPCI;

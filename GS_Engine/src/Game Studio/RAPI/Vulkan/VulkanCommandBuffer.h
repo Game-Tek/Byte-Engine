@@ -4,11 +4,16 @@
 
 #include "Vulkan.h"
 
-class VulkanCommandBuffer : public CommandBuffer
+class VulkanRenderDevice;
+
+class VulkanCommandBuffer final : public CommandBuffer
 {
+	VkCommandPool commandPool = nullptr;
 	VkCommandBuffer commandBuffer = nullptr;
 	
 public:
+	explicit VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const CommandBufferCreateInfo& commandBufferCreateInfo);
+	
 	void BeginRecording(const BeginRecordingInfo& beginRecordingInfo) override;
 	void EndRecording(const EndRecordingInfo& endRecordingInfo) override;
 

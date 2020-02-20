@@ -22,49 +22,35 @@ enum VkPresentModeKHR;
 enum VkFormat;
 enum VkColorSpaceKHR;
 
-struct SurfaceFormat
-{
-	VkFormat format;
-	VkColorSpaceKHR colorSpace;
-};
-
 namespace RAPI
 {
 	class Window;
 
 	class VulkanRenderContext final : public RenderContext
 	{
-		Extent2D RenderExtent;
+		VkSurfaceKHR surface = nullptr;
+		VkSwapchainKHR swapchain = nullptr;
 
-		VKSurface Surface;
+		VkSurfaceFormatKHR surfaceFormat{};
+		VkPresentModeKHR presentMode{};
 
-		SurfaceFormat Format;
-		VkPresentModeKHR PresentMode;
+		Array<VkImage, 5, uint8> vulkanSwapchainImages;
 
-		VKSwapchain Swapchain;
-		FVector<VkImage> SwapchainImages;
+		Array<VkSemaphore, 5, uint8> imagesAvailable;
+		Array<VkSemaphore, 5, uint8> rendersFinished;
+		Array<VkFence, 5, uint8> inFlightFences;
+		
 		mutable FVector<VulkanSwapchainImage> swapchainImages;
-		FVector<VKSemaphore> ImagesAvailable;
-		FVector<VKSemaphore> RendersFinished;
-		FVector<VKFence> InFlightFences;
-
-		vkQueue PresentationQueue;
-
-		VKCommandPool CommandPool;
-
-		FVector<VKCommandBuffer> CommandBuffers;
-		FVector<VKFramebuffer> FrameBuffers;
+		FVector<VkSemaphore> ImagesAvailable;
+		FVector<VkSemaphore> RendersFinished;
+		FVector<VkFence> InFlightFences;
 
 		uint8 ImageIndex = 0;
 
-		static VKSurfaceCreator CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window);
-		VKSwapchainCreator CreateSwapchain(VKDevice* _Device, VkSwapchainKHR _OldSwapchain) const;
-		VKCommandPoolCreator CreateCommandPool(VKDevice* _Device);
-
-		SurfaceFormat FindFormat(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
-		static VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, const VKSurface& _Surface);
+		VkSurfaceFormatKHR FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface);
+		VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
 	public:
-		VulkanRenderContext(VulkanRenderDevice* device, VKInstance* _Instance, const vkPhysicalDevice& _PD, Window* _Window);
+		VulkanRenderContext(VulkanRenderDevice* device, const RenderContextCreateInfo& renderContextCreateInfo);
 		~VulkanRenderContext();
 
 		void OnResize(const ResizeInfo& _RI) override;

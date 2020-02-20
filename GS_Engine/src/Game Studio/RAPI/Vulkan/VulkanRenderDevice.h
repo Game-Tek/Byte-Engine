@@ -49,7 +49,7 @@ public:
 
 	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
-	RenderTarget* CreateImage(const RenderTargetCreateInfo& _ICI) override;
+	RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) override;
 	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;
 	BindingsPool* CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo) override;
 	BindingsSet* CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo) override;
@@ -60,4 +60,6 @@ public:
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) override;
 
 	INLINE VKDevice& GetVKDevice() { return Device; }
+	const vkPhysicalDevice& GetPhysicalDevice() const { return PhysicalDevice; }
+	[[nodiscard]] VkInstance GetVkInstance() const { return Instance.GetVkInstance(); }
 };

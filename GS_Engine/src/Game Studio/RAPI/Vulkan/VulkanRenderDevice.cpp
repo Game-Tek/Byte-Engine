@@ -386,7 +386,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
-	samplerInfo.anisotropyEnable = bool(TCI_.Anisotropy);
+	samplerInfo.anisotropyEnable = VkBool32(TCI_.Anisotropy);
 	samplerInfo.maxAnisotropy = static_cast<float>(TCI_.Anisotropy == 0 ? 1 : TCI_.Anisotropy);
 
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;

@@ -6,22 +6,29 @@
 
 namespace RAPI
 {
+	class Window;
+	class RenderDevice;
 	class RenderTarget;
 
 	struct ResizeInfo
 	{
+		RenderDevice* RenderDevice = nullptr;
 		Extent2D NewWindowSize;
 	};
 
 	struct RenderContextCreateInfo
 	{
+		Window* Window = nullptr;
+		uint8 DesiredFramesInFlight = 0;
 	};
 	
 	class RenderContext
 	{
 	protected:
-		uint8 CurrentImage = 0;
-		uint8 MAX_FRAMES_IN_FLIGHT = 0;
+		uint8 currentImage = 0;
+		uint8 maxFramesInFlight = 0;
+
+		Extent2D extent{ 0, 0 };
 
 	public:
 		virtual ~RenderContext()
@@ -32,7 +39,7 @@ namespace RAPI
 
 		[[nodiscard]] virtual FVector<RenderTarget*> GetSwapchainImages() const = 0;
 
-		[[nodiscard]] uint8 GetCurrentImage() const { return CurrentImage; }
-		[[nodiscard]] uint8 GetMaxFramesInFlight() const { return MAX_FRAMES_IN_FLIGHT; }
+		[[nodiscard]] uint8 GetCurrentImage() const { return currentImage; }
+		[[nodiscard]] uint8 GetMaxFramesInFlight() const { return maxFramesInFlight; }
 	};
 }

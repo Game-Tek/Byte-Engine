@@ -44,7 +44,7 @@ namespace RAPI
 
 		virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
 		virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
-		virtual RenderTarget* CreateImage(const RenderTarget::RenderTargetCreateInfo& _ICI) = 0;
+		virtual RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) = 0;
 		virtual Texture* CreateTexture(const TextureCreateInfo& TCI_) = 0;
 		virtual BindingsPool* CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo) = 0;
 		virtual BindingsSet* CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo) = 0;

@@ -282,6 +282,8 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderTarget.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.h" />
+    <ClInclude Include="src\Game Studio\Containers\FlatHashMap.h" />
+    <ClInclude Include="src\Game Studio\Containers\KVector.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

@@ -185,28 +185,28 @@ public:
 	}
 
 	//Places the passed in element at the end of the array.
-	void push_back(const T& _Obj)
+	length_type push_back(const T& _Obj)
 	{
 		reallocIfExceeds(1);
 		//copyArray(&_Obj, getElement(this->length), 1);
 		::new(this->data + this->length) T(_Obj);
-		this->length += 1;
+		return this->length += 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	void push_back(const length_type _Length, const T _Arr[])
+	length_type push_back(const length_type _Length, const T _Arr[])
 	{
 		reallocIfExceeds(_Length);
 		copyArray(_Arr, getElement(this->length), _Length);
-		this->length += _Length;
+		return this->length += _Length;
 	}
 
 	//Places the passed in FVector at the end of the array.
-	void push_back(const FVector& _Other)
+	length_type push_back(const FVector& _Other)
 	{
 		reallocIfExceeds(this->length - _Other.length);
 		copyArray(_Other.data, getElement(this->length), _Other.length);
-		this->length += _Other.length;
+		return this->length += _Other.length;
 	}
 
 	template <typename... Args>
@@ -222,16 +222,17 @@ public:
 	{
 		if (this->length != 0)
 		{
+			this->data[this->length].~T();
 			this->length -= 1;
 		}
 	}
 
-	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
-	length_type insert(length_type index, length_type length)
+	//Makes space at the specified index.
+	void make_space(length_type index, length_type length)
 	{
 		reallocIfExceeds(length);
 		copyArray(getElement(index), getElement(index + length), this->length - index);
-		return this->length += length;
+		this->length += length;
 	}
 	
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
@@ -269,9 +270,15 @@ public:
 		return;
 	}
 
+	void place(const length_type index, const T& obj) { ::new(this->data + index) T(obj); }
+	template <typename... Args>
+	void emplace(const length_type index, Args&&... args) { ::new(this->data + index) T(std::forward<Args>(args) ...); }
+	void destroy(const length_type index) { this->data[index].~T(); }
+	
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
 	void pop(const length_type _Index)
 	{
+		this->data[_Index].~T();
 		copyArray(getElement(_Index + 1), getElement(_Index), this->length - _Index);
 		this->length -= 1;
 	}

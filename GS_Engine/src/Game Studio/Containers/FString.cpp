@@ -177,7 +177,7 @@ void FString::ReplaceAll(const char* a, const char* with)
 					}
 				}
 
-				if (j == a_length - 1) //if loop found word insert occurrence and jump i by a's length
+				if (j == a_length - 1) //if loop found word make_space occurrence and jump i by a's length
 				{
 					ocurrences.emplace_back(i + 1 - a_length);
 					i += a_length;
@@ -198,7 +198,7 @@ void FString::ReplaceAll(const char* a, const char* with)
 
 		for (auto& e : ocurrences)
 		{
-			Data.insert(e, with_length - a_length);
+			Data.make_space(e, with_length - a_length);
 			Data.overwrite(with_length, const_cast<string_type*>(with), e);
 		}
 

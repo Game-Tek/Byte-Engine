@@ -91,14 +91,6 @@ public:
 	{
 	}
 
-	FVector(const length_type _Length, const T& _Obj) : capacity(_Length), length(_Length), data(allocate(this->capacity))
-	{
-		for (length_type i = 0; i < this->length; ++i)
-		{
-			copyArray(&_Obj, getElement(i), 1);
-		}
-	}
-
 	FVector(const length_type length, const T* array) : capacity(length), length(length), data(allocate(this->capacity))
 	{
 		copyArray(array, array + length);

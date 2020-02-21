@@ -290,6 +290,21 @@ namespace RAPI
 		INPUT_ATTACHMENT
 	};
 
+	/**
+	 * \brief Enumeration of all possible presentation modes, which define the order at which the rendered images are presented to the screen.
+	 */
+	enum class PresentMode : uint8
+	{
+		/**
+		 * \brief All rendered images are queued in FIFO fashion and presented at V-BLANK. Best for when latency is not that important and energy consumption is.
+		 */
+		FIFO,
+		/**
+		 * \brief The last rendered image is the one which will be presented. Best for when latency is important and energy consumption is not.
+		 */
+		SWAP,
+	};
+
 	INLINE uint8 ShaderDataTypesSize(ShaderDataTypes _SDT)
 	{
 		switch (_SDT)

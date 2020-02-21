@@ -144,7 +144,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 
 		RenderTarget::RenderTargetCreateInfo image_create_info;
 		image_create_info.Extent = { extent.Width, extent.Height, 0};
-		image_create_info.Format = VkFormatToFormat(surfaceFormat.format);
+		image_create_info.Format = VkFormatToImageFormat(surfaceFormat.format);
 		swapchainImages.emplace_back(device, image_create_info, vulkanSwapchainImages[i]);
 	}
 }

@@ -24,9 +24,9 @@ if ((func) != VK_SUCCESS)\
 
 using namespace RAPI;
 
-INLINE ImageFormat VkFormatToFormat(VkFormat _Format)
+INLINE ImageFormat VkFormatToImageFormat(const VkFormat format)
 {
-	switch (_Format)
+	switch (format)
 	{
 	case VK_FORMAT_R8_UNORM: return ImageFormat::R_I8;
 	case VK_FORMAT_R16_UNORM: return ImageFormat::R_I16;
@@ -67,9 +67,9 @@ INLINE ImageFormat VkFormatToFormat(VkFormat _Format)
 	}
 }
 
-INLINE VkFormat FormatToVkFormat(ImageFormat _PF)
+INLINE VkFormat FormatToVkFormat(const ImageFormat imageFormat)
 {
-	switch (_PF)
+	switch (imageFormat)
 	{
 	case ImageFormat::R_I8: return VK_FORMAT_R8_UNORM;
 	case ImageFormat::R_I16: return VK_FORMAT_R16_UNORM;
@@ -110,9 +110,9 @@ INLINE VkFormat FormatToVkFormat(ImageFormat _PF)
 	}
 }
 
-INLINE VkAttachmentLoadOp LoadOperationsToVkAttachmentLoadOp(RenderTargetLoadOperations _LOp)
+INLINE VkAttachmentLoadOp RenderTargetLoadOperationsToVkAttachmentLoadOp(const RenderTargetLoadOperations renderTargetLoadOperations)
 {
-	switch (_LOp)
+	switch (renderTargetLoadOperations)
 	{
 	case RenderTargetLoadOperations::UNDEFINED: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	case RenderTargetLoadOperations::LOAD: return VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -121,9 +121,9 @@ INLINE VkAttachmentLoadOp LoadOperationsToVkAttachmentLoadOp(RenderTargetLoadOpe
 	}
 }
 
-INLINE VkAttachmentStoreOp StoreOperationsToVkAttachmentStoreOp(RenderTargetStoreOperations _SOp)
+INLINE VkAttachmentStoreOp RenderTargetStoreOperationsToVkAttachmentStoreOp(const RenderTargetStoreOperations renderTargetStoreOperations)
 {
-	switch (_SOp)
+	switch (renderTargetStoreOperations)
 	{
 	case RenderTargetStoreOperations::UNDEFINED: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	case RenderTargetStoreOperations::STORE: return VK_ATTACHMENT_STORE_OP_STORE;
@@ -131,9 +131,9 @@ INLINE VkAttachmentStoreOp StoreOperationsToVkAttachmentStoreOp(RenderTargetStor
 	}
 }
 
-INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
+INLINE VkImageLayout ImageLayoutToVkImageLayout(const ImageLayout imageLayout)
 {
-	switch (_IL)
+	switch (imageLayout)
 	{
 	case ImageLayout::UNDEFINED: return VK_IMAGE_LAYOUT_UNDEFINED;
 	case ImageLayout::SHADER_READ: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -149,9 +149,9 @@ INLINE VkImageLayout ImageLayoutToVkImageLayout(ImageLayout _IL)
 	}
 }
 
-INLINE VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
+INLINE VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(const ShaderType shaderType)
 {
-	switch (_ST)
+	switch (shaderType)
 	{
 	case ShaderType::ALL_STAGES: return VK_SHADER_STAGE_ALL_GRAPHICS;
 	case ShaderType::VERTEX_SHADER: return VK_SHADER_STAGE_VERTEX_BIT;
@@ -164,19 +164,19 @@ INLINE VkShaderStageFlagBits ShaderTypeToVkShaderStageFlagBits(ShaderType _ST)
 	}
 }
 
-INLINE VkExtent3D Extent3DToVkExtent3D(Extent3D extent)
+INLINE VkExtent2D Extent2DToVkExtent2D(const Extent2D extent)
 {
-	return {extent.Width, extent.Height, extent.Depth};
+	return {extent.Width, extent.Height};
 }
 
-INLINE VkExtent2D Extent2DToVkExtent2D(Extent2D _Extent)
+INLINE VkExtent3D Extent3DToVkExtent3D(const Extent3D extent)
 {
-	return {_Extent.Width, _Extent.Height};
+	return { extent.Width, extent.Height, extent.Depth };
 }
 
-INLINE VkImageViewType ImageDimensionsToVkImageViewType(ImageDimensions _ID)
+INLINE VkImageViewType ImageDimensionsToVkImageViewType(const ImageDimensions imageDimensions)
 {
-	switch (_ID)
+	switch (imageDimensions)
 	{
 	case ImageDimensions::IMAGE_1D: return VK_IMAGE_VIEW_TYPE_1D;
 	case ImageDimensions::IMAGE_2D: return VK_IMAGE_VIEW_TYPE_2D;
@@ -185,9 +185,9 @@ INLINE VkImageViewType ImageDimensionsToVkImageViewType(ImageDimensions _ID)
 	}
 }
 
-INLINE VkImageType ImageDimensionsToVkImageType(ImageDimensions _ID)
+INLINE VkImageType ImageDimensionsToVkImageType(const ImageDimensions imageDimensions)
 {
-	switch (_ID)
+	switch (imageDimensions)
 	{
 	case ImageDimensions::IMAGE_1D: return VK_IMAGE_TYPE_1D;
 	case ImageDimensions::IMAGE_2D: return VK_IMAGE_TYPE_2D;
@@ -196,9 +196,9 @@ INLINE VkImageType ImageDimensionsToVkImageType(ImageDimensions _ID)
 	}
 }
 
-INLINE uint32 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
+INLINE uint32 ImageTypeToVkImageAspectFlagBits(const ImageType imageType)
 {
-	switch (_IT)
+	switch (imageType)
 	{
 	case ImageType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
 	case ImageType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -208,9 +208,9 @@ INLINE uint32 ImageTypeToVkImageAspectFlagBits(ImageType _IT)
 	}
 }
 
-INLINE VkFormat ShaderDataTypesToVkFormat(ShaderDataTypes _SDT)
+INLINE VkFormat ShaderDataTypesToVkFormat(const ShaderDataTypes shaderDataTypes)
 {
-	switch (_SDT)
+	switch (shaderDataTypes)
 	{
 	case ShaderDataTypes::FLOAT: return VK_FORMAT_R32_SFLOAT;
 	case ShaderDataTypes::FLOAT2: return VK_FORMAT_R32G32_SFLOAT;
@@ -225,9 +225,9 @@ INLINE VkFormat ShaderDataTypesToVkFormat(ShaderDataTypes _SDT)
 	}
 }
 
-INLINE VkImageUsageFlagBits ImageUseToVkImageUsageFlagBits(ImageUse _IU)
+INLINE VkImageUsageFlagBits ImageUseToVkImageUsageFlagBits(const ImageUse imageUse)
 {
-	switch (_IU)
+	switch (imageUse)
 	{
 	case ImageUse::TRANSFER_SOURCE: return VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	case ImageUse::TRANSFER_DESTINATION: return VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -241,9 +241,9 @@ INLINE VkImageUsageFlagBits ImageUseToVkImageUsageFlagBits(ImageUse _IU)
 	}
 }
 
-INLINE VkDescriptorType UniformTypeToVkDescriptorType(BindingType _UT)
+INLINE VkDescriptorType UniformTypeToVkDescriptorType(const BindingType uniformType)
 {
-	switch (_UT)
+	switch (uniformType)
 	{
 	case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
 	case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -260,16 +260,17 @@ INLINE VkDescriptorType UniformTypeToVkDescriptorType(BindingType _UT)
 	}
 };
 
-INLINE VkCullModeFlagBits CullModeToVkCullModeFlagBits(CullMode cullMode)
+INLINE VkCullModeFlagBits CullModeToVkCullModeFlagBits(const CullMode cullMode)
 {
 	switch (cullMode)
 	{
-	case CullMode::CULL_BACK:
-		return VK_CULL_MODE_BACK_BIT;
+	case CullMode::CULL_BACK: return VK_CULL_MODE_BACK_BIT;
+	case CullMode::CULL_FRONT: return VK_CULL_MODE_FRONT_BIT;
+	default: return VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
 	}
 }
 
-INLINE VkCompareOp CompareOperationToVkCompareOp(CompareOperation compareOperation)
+INLINE VkCompareOp CompareOperationToVkCompareOp(const CompareOperation compareOperation)
 {
 	switch (compareOperation)
 	{
@@ -284,4 +285,14 @@ INLINE VkCompareOp CompareOperationToVkCompareOp(CompareOperation compareOperati
 	default: ;
 	}
 	return {};
+}
+
+INLINE VkPresentModeKHR PresentModeToVkPresentModeKHR(const PresentMode presentMode)
+{
+	switch (presentMode)
+	{
+	case PresentMode::FIFO: return VK_PRESENT_MODE_FIFO_KHR;
+	case PresentMode::SWAP: return VK_PRESENT_MODE_MAILBOX_KHR;
+	default: return VK_PRESENT_MODE_MAX_ENUM_KHR;
+	}
 }

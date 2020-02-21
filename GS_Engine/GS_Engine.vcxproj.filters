@@ -261,7 +261,6 @@
     <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
     <ClInclude Include="src\Game Studio\Utility\Delegate.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
-    <ClInclude Include="src\Game Studio\Core\JobSystem.h" />
     <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\Game Studio\PlayableAsset.h" />
     <ClInclude Include="src\Game Studio\Core\System.h" />
@@ -284,6 +283,11 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.h" />
     <ClInclude Include="src\Game Studio\Containers\FlatHashMap.h" />
     <ClInclude Include="src\Game Studio\Containers\KVector.h" />
+    <ClInclude Include="src\Game Studio\Core\Mutex.h" />
+    <ClInclude Include="src\Game Studio\Core\Semaphore.h" />
+    <ClInclude Include="src\Game Studio\Core\Events.h" />
+    <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
+    <ClInclude Include="src\Game Studio\Core\ThreadPool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -369,7 +373,6 @@
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
-    <ClCompile Include="src\Game Studio\Core\JobSystem.cpp" />
     <ClCompile Include="src\Game Studio\Render\MaterialRenderResource.cpp" />
     <ClCompile Include="src\Game Studio\Math\Vector3.cpp" />
     <ClCompile Include="src\Game Studio\Math\Rotator.cpp" />

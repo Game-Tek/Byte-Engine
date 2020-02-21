@@ -4,6 +4,7 @@
 
 #include <thread>
 #include <mutex>
+#include <atomic>
 
 class Thread
 {
@@ -19,15 +20,4 @@ public:
 	INLINE void Detach() { thread.detach(); }
 
 	[[nodiscard]] INLINE bool CanBeJoined() const { return thread.joinable(); }
-};
-
-class Mutex
-{
-	std::mutex mutex;
-
-public:
-
-	INLINE void Lock() { mutex.lock(); }
-	INLINE bool TryLock() { return mutex.try_lock(); }
-	INLINE void Unlock() { mutex.unlock(); }
 };

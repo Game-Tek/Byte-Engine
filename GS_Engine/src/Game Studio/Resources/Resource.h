@@ -41,7 +41,7 @@ void operator>>(InStream& inStream, FVector<T>& vector)
 
 	inStream.Read(&length);
 
-	vector.forceRealloc(length);
+	vector.forceAlloc(length);
 	vector.resize(length);
 
 	for (uint_64 i = 0; i < length; ++i)

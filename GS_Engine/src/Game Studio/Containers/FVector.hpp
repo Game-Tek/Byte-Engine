@@ -11,6 +11,10 @@ class FVector
 {
 public:
 	typedef uint32 length_type;
+
+	typedef T* iterator;
+	typedef const T* const_iterator;
+	typedef T value_type;
 private:
 	length_type capacity = 0;
 	length_type length = 0;
@@ -18,75 +22,71 @@ private:
 	T* data = nullptr;
 
 	/**
-	 * \brief Copies data from _from to _to.
-	 * \param _from Pointer from where to grab the data.
-	 * \param _to Pointer to write the data to.
-	 * \param _ElementCount How many elements of this vector's T to write to _to.
+	 * \brief Copies data from from to to.
+	 * \param from Pointer from where to grab the data.
+	 * \param to Pointer to write the data to.
+	 * \param elementCount How many elements of this vector's T to write to to.
 	 */
-	static void copyArray(const T* _from, T* _to, const length_type _ElementCount)
+	static void copyArray(const T* from, T* to, const length_type elementCount)
 	{
-		memcpy(_to, _from, _ElementCount * sizeof(T));
+		memcpy(to, from, elementCount * sizeof(T));
 	}
 
 	/**
-	 * \brief Allocates a new a array of type T with enough space to hold _ElementCount elements.
-	 * \param _ElementCount How many elements of this vector's T to allocate space for.
+	 * \brief Allocates a new a array of type T with enough space to hold elementCount elements.
+	 * \param elementCount How many elements of this vector's T to allocate space for.
 	 * \return T pointer to the newly allocated memory.
 	 */
-	static T* allocate(const length_type _ElementCount)
-	{
-		return SCAST(T*, malloc(_ElementCount * sizeof(T)));
-	}
+	static T* allocate(const length_type elementCount) { return static_cast<T*>(malloc(elementCount * sizeof(T))); }
 
 	/**
 	 * \brief Deletes the data found at this vector's data and sets data as nullptr.
 	 */
 	void freeData()
 	{
-		if (this->data)
-		{
-			free(this->data);
-		}
-
+		GS_ASSERT(this->data == nullptr, "Data is nullptr.")
+		free(this->data);
 		this->data = nullptr;
 	}
 
 	/**
-	 * \brief Reallocates this->data to a new array if (this->length + _AdditionalElements) exceeds the allocated space.\n
+	 * \brief Reallocates this->data to a new array if (this->length + additionalElements) exceeds the allocated space.\n
 	 * Also deletes the data found at the old data.
 	 * Growth of the array is geometric.
-	 * \param _AdditionalElements How many elements of this vector's T are you trying to check if fit in the already allocated array.\n
+	 * \param additionalElements How many elements of this vector's T are you trying to check if fit in the already allocated array.\n
 	 * Number can be negative.
 	 */
-	void reallocIfExceeds(const int_64 _AdditionalElements)
+	void reallocIfExceeds(const int_64 additionalElements)
 	{
-		if (this->length + _AdditionalElements > this->capacity)
+		if (this->length + additionalElements > this->capacity)
 		{
-			const length_type newCapacity = (this->length * 2) + _AdditionalElements;
-			T* newData = allocate(newCapacity);
-			copyArray(this->data, newData, this->capacity);
+			const length_type new_capacity = this->length * 1.5;
+			const T* new_data = allocate(new_capacity);
+			copyArray(this->data, new_data, this->capacity);
 			freeData();
-			this->capacity = newCapacity;
-			this->data = newData;
+			this->capacity = new_capacity;
+			this->data = new_data;
 		}
 	}
-
+	
+	/**
+	 * \brief Returns an iterator to an specified index. DOES NOT CHECK FOR BOUNDS, but underlying getter does, only in debug builds.
+	 * \param index Index to the element to be retrieved.
+	 * \return iterator to the element at index.
+	 */
+	iterator getIterator(const length_type index) { return &this->data[index]; }
 public:
-	typedef T* iterator;
-	typedef const T* const_iterator;
-	typedef T value_type;
-
 	//Constructs a new FVector.
 	FVector() : capacity(10), length(0), data(allocate(this->capacity))
 	{
 	}
 
 	//Constructs a new FVector allocating space for the quantity of elements specified in length.
-	explicit FVector(const length_type _Capacity) : capacity(_Capacity), length(0), data(allocate(this->capacity))
+	explicit FVector(const length_type capacity) : capacity(capacity), length(0), data(allocate(this->capacity))
 	{
 	}
 
-	explicit FVector(const length_type _Capacity, const length_type length) : capacity(_Capacity), length(length),
+	explicit FVector(const length_type capacity, const length_type length) : capacity(capacity), length(length),
 	                                                                data(allocate(this->capacity))
 	{
 	}
@@ -96,31 +96,31 @@ public:
 		copyArray(array, array + length);
 	}
 	
-	FVector(const std::initializer_list<T>& _InitializerList) :
-		capacity(_InitializerList.end() - _InitializerList.begin()), length(this->capacity),
+	constexpr FVector(const std::initializer_list<T>& initializerList) : capacity(initializerList.end() - initializerList.begin()),
+		length(this->capacity),
 		data(allocate(this->capacity))
 	{
-		copyArray(_InitializerList.begin(), this->data, this->length);
+		copyArray(initializerList.begin(), this->data, this->length);
 	}
 
-	FVector(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(_End - _Start),
-	                                                      data(allocate(this->capacity))
+	FVector(const_iterator start, const_iterator end) : capacity(end - start), length(end - start), data(allocate(this->capacity))
 	{
-		copyArray(_Start, this->data);
+		copyArray(start, this->data);
 	}
 
 	//Constructs a new FVector from another FVector.
-	FVector(const FVector& _Other) : capacity(_Other.capacity), length(_Other.length), data(allocate(this->capacity))
+	FVector(const FVector& other) : capacity(other.capacity), length(other.length), data(allocate(this->capacity))
 	{
-		copyArray(_Other.data, this->data, this->length);
+		copyArray(other.data, this->data, this->length);
 	}
 
 	//Assigns this object the data of the passed in FVector.
-	FVector& operator=(const FVector& _Other)
+	FVector& operator=(const FVector& other)
 	{
-		reallocIfExceeds(_Other.length - this->length);
-		copyArray(_Other.data, this->data, _Other.length);
-		this->length = _Other.length;
+		GS_ASSERT(this == &other, "Assigning to self is not allowed!")
+		reallocIfExceeds(other.length - this->length);
+		copyArray(other.data, this->data, other.length);
+		this->length = other.length;
 		return *this;
 	}
 
@@ -150,14 +150,14 @@ public:
 
 	[[nodiscard]] const T& back() const { return this->data[this->length]; }
 
-	void resize(const length_type _Count)
+	void resize(const length_type count)
 	{
-		reallocIfExceeds(_Count - this->length);
-		this->length = _Count;
+		reallocIfExceeds(count - this->length);
+		this->length = count;
 		return;
 	}
 
-	void forceRealloc(const length_type count)
+	void forceAlloc(const length_type count)
 	{
 		this->data = allocate(count);
 		this->capacity = count;
@@ -165,10 +165,10 @@ public:
 		return;
 	}
 
-	void shrink(const length_type _Count)
+	void shrink(const length_type count)
 	{
-		this->capacity = _Count;
-		this->length = _Count;
+		this->capacity = count;
+		this->length = count;
 		T* buffer = allocate(this->capacity);
 		copyArray(this->data, buffer, this->length);
 		freeData();
@@ -177,35 +177,35 @@ public:
 	}
 
 	//Places the passed in element at the end of the array.
-	length_type push_back(const T& _Obj)
+	length_type push_back(const T& obj)
 	{
 		reallocIfExceeds(1);
-		//copyArray(&_Obj, getElement(this->length), 1);
-		::new(this->data + this->length) T(_Obj);
+		//copyArray(&obj, getIterator(this->length), 1);
+		::new(this->data + this->length) T(obj);
 		return this->length += 1;
 	}
 
 	//Places the passed in array at the end of the array.
-	length_type push_back(const length_type _Length, const T _Arr[])
+	length_type push_back(const length_type length, const T arr[])
 	{
-		reallocIfExceeds(_Length);
-		copyArray(_Arr, getElement(this->length), _Length);
-		return this->length += _Length;
+		reallocIfExceeds(length);
+		copyArray(arr, getIterator(this->length), length);
+		return this->length += length;
 	}
 
 	//Places the passed in FVector at the end of the array.
-	length_type push_back(const FVector& _Other)
+	length_type push_back(const FVector& other)
 	{
-		reallocIfExceeds(this->length - _Other.length);
-		copyArray(_Other.data, getElement(this->length), _Other.length);
-		return this->length += _Other.length;
+		reallocIfExceeds(this->length - other.length);
+		copyArray(other.data, getIterator(this->length), other.length);
+		return this->length += other.length;
 	}
 
 	template <typename... Args>
-	length_type emplace_back(Args&&... _Args)
+	length_type emplace_back(Args&&... args)
 	{
 		reallocIfExceeds(1);
-		::new(this->data + this->length) T(std::forward<Args>(_Args) ...);
+		::new(this->data + this->length) T(std::forward<Args>(args) ...);
 		return this->length += 1;
 	}
 
@@ -223,42 +223,42 @@ public:
 	void make_space(length_type index, length_type length)
 	{
 		reallocIfExceeds(length);
-		copyArray(getElement(index), getElement(index + length), this->length - index);
+		copyArray(getIterator(index), getIterator(index + length), this->length - index);
 		this->length += length;
 	}
 	
 	//Places the passed in element at the specified index and shifts the rest of the array forward to fit it in.
-	length_type push(length_type _Index, const T& _Obj)
+	length_type push(length_type index, const T& obj)
 	{
 		reallocIfExceeds(1);
-		copyArray(getElement(_Index), getElement(_Index + 1), this->length - _Index);
-		::new(this->data + this->length) T(_Obj);
+		copyArray(getIterator(index), getIterator(index + 1), this->length - index);
+		::new(this->data + this->length) T(obj);
 		return this->length += 1;
 	}
 
 	//Places the passed array at the specified index and shifts the rest of the array forward to fit it in.
-	void push(const length_type _Length, T _Arr[], const length_type _Index)
+	void push(const length_type length, T arr[], const length_type index)
 	{
-		reallocIfExceeds(_Length);
-		copyArray(getElement(_Index), getElement(_Index + _Length), this->length - _Index);
-		copyArray(_Arr, getElement(_Index), _Length);
-		this->length += _Length;
+		reallocIfExceeds(length);
+		copyArray(getIterator(index), getIterator(index + length), this->length - index);
+		copyArray(arr, getIterator(index), length);
+		this->length += length;
 	}
 
 	//Overwrites existing data with the data from the passed array.
-	void overwrite(const length_type _Length, T _Arr[], const length_type _Index)
+	void overwrite(const length_type length, T arr[], const length_type index)
 	{
-		reallocIfExceeds((this->length - _Length) + _Index);
-		copyArray(_Arr, getElement(_Index), _Length);
-		this->length += (this->length - _Length) + _Index;
+		reallocIfExceeds((this->length - length) + index);
+		copyArray(arr, getIterator(index), length);
+		this->length += (this->length - length) + index;
 	}
 
 	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
-	void recreate(const length_type _Length, T _Arr[])
+	void recreate(const length_type length, T arr[])
 	{
-		reallocIfExceeds(_Length - this->length);
-		copyArray(_Arr, this->data, _Length);
-		this->length = _Length;
+		reallocIfExceeds(length - this->length);
+		copyArray(arr, this->data, length);
+		this->length = length;
 		return;
 	}
 
@@ -268,27 +268,27 @@ public:
 	void destroy(const length_type index) { this->data[index].~T(); }
 	
 	//Deletes the element at the specified index and shifts the array backwards to fill the empty space.
-	void pop(const length_type _Index)
+	void pop(const length_type index)
 	{
-		this->data[_Index].~T();
-		copyArray(getElement(_Index + 1), getElement(_Index), this->length - _Index);
+		this->data[index].~T();
+		copyArray(getIterator(index + 1), getIterator(index), this->length - index);
 		this->length -= 1;
 	}
 
 	//Deletes all elements between index and index + length and shifts the entire array backwards to fill the empty space.
-	void popRange(const length_type _Index, const length_type _Length)
+	void popRange(const length_type index, const length_type length)
 	{
-		copyArray(getElement(_Index + _Length), getElement(_Index), this->length - _Index);
-		this->length -= _Length;
+		copyArray(getIterator(index + length), getIterator(index), this->length - index);
+		this->length -= length;
 	}
 
-	iterator find(const T& _Obj)
+	iterator find(const T& obj)
 	{
 		for (length_type i = 0; i < this->length; i++)
 		{
-			if (_Obj == data[i])
+			if (obj == data[i])
 			{
-				return getElement(i);
+				return getIterator(i);
 			}
 		}
 
@@ -296,46 +296,26 @@ public:
 	}
 
 	//Looks for object inside of the array and when it finds it, it deletes it.
-	void eraseObject(T& _Obj)
+	void eraseObject(T& obj)
 	{
-		auto res = find(_Obj);
+		auto res = find(obj);
 		if (res != this->end())
 		{
 			pop(res);
-			this->length -= 1;
 		}
 	}
-
-	/**
-	 * \brief Returns an iterator to an specified index. DOES NOT CHECK FOR BOUNDS, but underlying getter does, only in debug builds.
-	 * \param _I Index to the element to be retrieved.
-	 * \return iterator to the element at _I.
-	 */
-	iterator getElement(const length_type _I) { return &this->data[_I]; }
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE T& operator[](const length_type index)
 	{
-#ifdef GS_DEBUG
-		if (index > this->capacity)
-		{
-			throw "Out of bounds!";
-		}
-#endif
-
+		GS_ASSERT(index < this->length, "Entered index is not accessible, array is not as large.")
 		return this->data[index];
 	}
 
 	//Returns the element at the specified index. ONLY CHECKS FOR OUT OF BOUNDS IN DEBUG BUILDS.
 	INLINE const T& operator[](const length_type index) const
 	{
-#ifdef GS_DEBUG
-		if (index > this->capacity)
-		{
-			throw "Entered index is not accessible, array is not as large.";
-		}
-#endif
-
+		GS_ASSERT(index < this->length, "Entered index is not accessible, array is not as large.")
 		return this->data[index];
 	}
 

@@ -171,7 +171,7 @@ public:
 	typename std::enable_if<std::is_nothrow_copy_constructible<Q>::value, void>::type
 		push(const T& item) noexcept
 	{
-		m_openSlots.wait();
+		m_openSlots.Wait();
 
 		auto pushIndex = m_pushIndex.fetch_add(1);
 		new (m_data + (pushIndex % m_size)) T(item);
@@ -181,14 +181,14 @@ public:
 		while (!m_pushIndex.compare_exchange_weak(expected, m_pushIndex % m_size))
 			expected = m_pushIndex.load();
 
-		m_fullSlots.post();
+		m_fullSlots.Post();
 	}
 
 	template<typename Q = T>
 	typename std::enable_if<std::is_nothrow_move_constructible<Q>::value, void>::type
 		push(T&& item) noexcept
 	{
-		m_openSlots.wait();
+		m_openSlots.Wait();
 
 		auto pushIndex = m_pushIndex.fetch_add(1);
 		new (m_data + (pushIndex % m_size)) T(std::move(item));
@@ -198,7 +198,7 @@ public:
 		while (!m_pushIndex.compare_exchange_weak(expected, m_pushIndex % m_size))
 			expected = m_pushIndex.load();
 
-		m_fullSlots.post();
+		m_fullSlots.Post();
 	}
 
 	template<typename Q = T>
@@ -217,7 +217,7 @@ public:
 		while (!m_pushIndex.compare_exchange_weak(expected, m_pushIndex % m_size))
 			expected = m_pushIndex.load();
 
-		m_fullSlots.post();
+		m_fullSlots.Post();
 		return true;
 	}
 
@@ -237,7 +237,7 @@ public:
 		while (!m_pushIndex.compare_exchange_weak(expected, m_pushIndex % m_size))
 			expected = m_pushIndex.load();
 
-		m_fullSlots.post();
+		m_fullSlots.Post();
 		return true;
 	}
 
@@ -247,7 +247,7 @@ public:
 		std::is_nothrow_copy_assignable<Q>::value, void>::type
 		pop(T& item) noexcept
 	{
-		m_fullSlots.wait();
+		m_fullSlots.Wait();
 
 		auto popIndex = m_popIndex.fetch_add(1);
 		item = m_data[popIndex % m_size];
@@ -258,7 +258,7 @@ public:
 		while (!m_popIndex.compare_exchange_weak(expected, m_popIndex % m_size))
 			expected = m_popIndex.load();
 
-		m_openSlots.post();
+		m_openSlots.Post();
 	}
 
 	template<typename Q = T>
@@ -267,7 +267,7 @@ public:
 		std::is_nothrow_move_assignable<Q>::value, void>::type
 		pop(T& item) noexcept
 	{
-		m_fullSlots.wait();
+		m_fullSlots.Wait();
 
 		auto popIndex = m_popIndex.fetch_add(1);
 		item = std::move(m_data[popIndex % m_size]);
@@ -278,7 +278,7 @@ public:
 		while (!m_popIndex.compare_exchange_weak(expected, m_popIndex % m_size))
 			expected = m_popIndex.load();
 
-		m_openSlots.post();
+		m_openSlots.Post();
 	}
 
 	template<typename Q = T>
@@ -300,7 +300,7 @@ public:
 		while (!m_popIndex.compare_exchange_weak(expected, m_popIndex % m_size))
 			expected = m_popIndex.load();
 
-		m_openSlots.post();
+		m_openSlots.Post();
 		return true;
 	}
 
@@ -323,7 +323,7 @@ public:
 		while (!m_popIndex.compare_exchange_weak(expected, m_popIndex % m_size))
 			expected = m_popIndex.load();
 
-		m_openSlots.post();
+		m_openSlots.Post();
 		return true;
 	}
 
@@ -354,6 +354,6 @@ private:
 	std::atomic_uint m_count;
 	T* m_data;
 
-	semaphore m_openSlots;
-	semaphore m_fullSlots;
+	Semaphore m_openSlots;
+	Semaphore m_fullSlots;
 };

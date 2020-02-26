@@ -4,58 +4,58 @@
 #include <atomic>
 #include <condition_variable>
 
-class semaphore
+class Semaphore
 {
 public:
-	explicit semaphore(const int32 count) noexcept : m_count(count)
+	explicit Semaphore(const int32 count) noexcept : count(count)
 	{
         GS_ASSERT(count > -1, "Count must be more than -1.")
     }
 
-    void post() noexcept
+    void Post() noexcept
     {
         {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            ++m_count;
+            std::unique_lock<std::mutex> lock(mutex);
+            ++count;
         }
-        m_cv.notify_one();
+        cv.notify_one();
     }
 
-    void wait() noexcept
+    void Wait() noexcept
     {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_cv.wait(lock, [&]() { return m_count != 0; });
-        --m_count;
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&]() { return count != 0; });
+        --count;
     }
 
 private:
-    int32 m_count = 0;
-    std::mutex m_mutex;
-    std::condition_variable m_cv;
+    int32 count = 0;
+    std::mutex mutex;
+    std::condition_variable cv;
 };
 
-class fast_semaphore
+class FastSemaphore
 {
 public:
-	explicit fast_semaphore(const int32 count) noexcept : m_count(count), m_semaphore(0) {}
+	explicit FastSemaphore(const int32 count) noexcept : count(count), semaphore(0) {}
 
-    void post()
+    void Post()
     {
         std::atomic_thread_fence(std::memory_order_release);
-        const auto count = m_count.fetch_add(1, std::memory_order_relaxed);
-        if (count < 0)
-            m_semaphore.post();
+        const auto new_count = count.fetch_add(1, std::memory_order_relaxed);
+        if (new_count < 0)
+            semaphore.Post();
     }
 
-    void wait()
+    void Wait()
     {
-	    const auto count = m_count.fetch_sub(1, std::memory_order_relaxed);
-        if (count < 1)
-            m_semaphore.wait();
+	    const auto new_count = count.fetch_sub(1, std::memory_order_relaxed);
+        if (new_count < 1)
+            semaphore.Wait();
         std::atomic_thread_fence(std::memory_order_acquire);
     }
 
 private:
-    std::atomic<int32> m_count;
-    semaphore m_semaphore;
+    std::atomic<int32> count;
+    Semaphore semaphore;
 };

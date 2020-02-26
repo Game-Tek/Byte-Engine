@@ -2,20 +2,20 @@
 
 #include <condition_variable>
 
-class auto_event
+class Signal
 {
     //https://vorbrodt.blog/2019/02/08/event-objects/
 public:
-    explicit auto_event(const bool signaled = false) noexcept : signaled(signaled) {}
+    explicit Signal(const bool signaled = false) noexcept : signaled(signaled) {}
 
-    void signal() noexcept
+    void Flag() noexcept
     {
         std::unique_lock<std::mutex> lock(mutex);
         signaled = true;
         cv.notify_one();
     }
 
-    void wait() noexcept
+    void Wait() noexcept
     {
         std::unique_lock<std::mutex> lock(mutex);
         cv.wait(lock, [&]() { return signaled != false; });

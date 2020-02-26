@@ -285,10 +285,10 @@
     <ClInclude Include="src\Game Studio\Containers\KVector.h" />
     <ClInclude Include="src\Game Studio\Core\Mutex.h" />
     <ClInclude Include="src\Game Studio\Core\Semaphore.h" />
-    <ClInclude Include="src\Game Studio\Core\Events.h" />
     <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
     <ClInclude Include="src\Game Studio\Core\ThreadPool.h" />
     <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
+    <ClInclude Include="src\Game Studio\Core\Signal.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

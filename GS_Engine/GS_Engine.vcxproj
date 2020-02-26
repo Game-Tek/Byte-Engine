@@ -131,6 +131,7 @@
     <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Game\Texture.h" />
+    <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
     <ClInclude Include="src\Game Studio\Math\Frustum.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
     <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />
@@ -280,6 +281,7 @@
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Game\World.cpp" />
+    <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
     <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
     <ClCompile Include="src\Game Studio\Math\Plane.cpp" />

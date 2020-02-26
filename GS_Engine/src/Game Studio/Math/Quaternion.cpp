@@ -3,6 +3,8 @@
 #include "SIMD/float4.h"
 #include "GSM.hpp"
 
+#include "AxisAngle.h"
+
 //CODE IS CORRECT
 Quaternion::Quaternion(const Rotator& rotator)
 {
@@ -18,6 +20,14 @@ Quaternion::Quaternion(const Rotator& rotator)
 	Y = sy * cp * sr + cy * sp * cr;
 	Z = cy * cp * sr - sy * sp * cr;
 	Q = cy * cp * cr + sy * sp * sr;
+}
+
+Quaternion::Quaternion(const AxisAngle& axisAngle) :
+	X(axisAngle.X * GSM::Sine(axisAngle.Angle / 2)),
+	Y(axisAngle.Y * GSM::Sine(axisAngle.Angle / 2)),
+	Z(axisAngle.Z * GSM::Sine(axisAngle.Angle / 2)),
+	Q(GSM::Cosine(axisAngle.Angle / 2))
+{
 }
 
 Quaternion Quaternion::operator*(const Quaternion& other) const

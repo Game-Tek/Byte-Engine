@@ -288,6 +288,7 @@
     <ClInclude Include="src\Game Studio\Core\Events.h" />
     <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
     <ClInclude Include="src\Game Studio\Core\ThreadPool.h" />
+    <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -387,6 +388,7 @@
     <ClCompile Include="src\Game Studio\Render\BindingsGroup.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.cpp" />
+    <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -124,6 +124,8 @@ public:
 	 */
 	[[nodiscard]] const float* GetData() const { return Array; }
 
+	void Transpose();
+
 	Matrix4 operator+(const float Other) const
 	{
 		Matrix4 Result;

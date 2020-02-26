@@ -61,6 +61,16 @@ Matrix4::Matrix4(const Rotator& rotator) : Matrix4(1)
 	Array[15] = 1;
 }
 
+void Matrix4::Transpose()
+{
+	auto a{ float4::MakeFromUnaligned(&Array[0]) }, b{ float4::MakeFromUnaligned(&Array[4]) }, c{ float4::MakeFromUnaligned(&Array[8]) }, d{ float4::MakeFromUnaligned(&Array[12]) };
+	float4::Transpose(a, b, c, d);
+	a.CopyToUnalignedData(&Array[0]);
+	b.CopyToUnalignedData(&Array[4]);
+	c.CopyToUnalignedData(&Array[8]);
+	d.CopyToUnalignedData(&Array[12]);
+}
+
 Vector4 Matrix4::operator*(const Vector4& Other) const
 {
 	alignas(16) Vector4 Result;

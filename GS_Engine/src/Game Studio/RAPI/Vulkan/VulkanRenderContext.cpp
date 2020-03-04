@@ -176,28 +176,31 @@ void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 	vkCreateSwapchainKHR(static_cast<VulkanRenderDevice*>(_RI.RenderDevice)->GetVKDevice(), &vk_swapchain_create_info_khr, ALLOCATOR, &swapchain);
 }
 
-void VulkanRenderContext::AcquireNextImage()
+void VulkanRenderContext::AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo)
 {
-	const auto lImageIndex = Swapchain.AcquireNextImage(ImagesAvailable[currentImage]);
+	uint32 image_index = 0;
+
+	vkAcquireNextImageKHR(static_cast<VulkanRenderDevice*>(acquireNextImageInfo.RenderDevice)->GetVKDevice().GetVkDevice, swapchain, ~0ULL, imagesAvailable[currentImage], nullptr, &image_index);
+
 	//This signals the semaphore when the image becomes available
-	ImageIndex = lImageIndex;
+	imageIndex = image_index;
 }
 
-void VulkanRenderContext::Flush()
+void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 {
 	InFlightFences[currentImage].Wait(); //Get current's frame fences and wait for it.
 	InFlightFences[currentImage].Reset(); //Then reset it.
 
-	VkPipelineStageFlags WaitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
-	VkSemaphore WaitSemaphores[] = {ImagesAvailable[currentImage]};
+	VkSemaphore WaitSemaphores[] = { ImagesAvailable[currentImage] };
 	//Set current's frame ImageAvaiable semaphore as the semaphore to wait for to start rendering to.
-	VkSemaphore SignalSemaphores[] = {RendersFinished[currentImage]};
+	VkSemaphore SignalSemaphores[] = { RendersFinished[currentImage] };
 	//Set current's frame RenderFinished semaphore as the semaphore to signal once rendering has finished.
-	VkCommandBuffer lCommandBuffers[] = {CommandBuffers[currentImage]};
+	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[currentImage] };
 
 	/* Submit signal semaphore to graphics queue */
-	VkSubmitInfo SubmitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	{
 		SubmitInfo.waitSemaphoreCount = 1;
 		SubmitInfo.pWaitSemaphores = WaitSemaphores;
@@ -216,16 +219,16 @@ void VulkanRenderContext::Flush()
 	CommandBuffers[currentImage].Reset();
 }
 
-void VulkanRenderContext::Present()
+void RAPI::VulkanRenderContext::Present(const PresentInfo& presentInfo)
 {
-	VkSemaphore WaitSemaphores[] = {RendersFinished[currentImage]};
+	VkSemaphore WaitSemaphores[] = { RendersFinished[currentImage] };
 
 	/* Present result on screen */
-	const VkSwapchainKHR Swapchains[] = {Swapchain};
+	const VkSwapchainKHR Swapchains[] = { Swapchain };
 
 	uint32 lImageIndex = ImageIndex;
 
-	VkPresentInfoKHR PresentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	{
 		PresentInfo.waitSemaphoreCount = 1;
 		PresentInfo.pWaitSemaphores = WaitSemaphores;
@@ -239,7 +242,6 @@ void VulkanRenderContext::Present()
 
 	currentImage = (currentImage + 1) % maxFramesInFlight;
 }
-
 
 FVector<RenderTarget*> VulkanRenderContext::GetSwapchainImages() const
 {

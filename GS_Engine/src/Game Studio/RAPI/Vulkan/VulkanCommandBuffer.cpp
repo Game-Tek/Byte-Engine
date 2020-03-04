@@ -16,7 +16,7 @@ VulkanCommandBuffer::VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const
 	VkCommandPoolCreateInfo vk_command_pool_create_info{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	vk_command_pool_create_info;
 
-	vkCreateCommandPool(renderDevice->GetVKDevice().GetVkDevice(), ALLOCATOR, &commandPool);
+	vkCreateCommandPool(renderDevice->GetVKDevice().GetVkDevice(), &vk_command_pool_create_info, ALLOCATOR, &commandPool);
 
 	VkCommandBufferAllocateInfo vk_command_buffer_allocate_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 	vk_command_buffer_allocate_info.commandPool = commandPool;

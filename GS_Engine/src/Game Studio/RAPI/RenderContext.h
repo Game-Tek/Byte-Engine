@@ -37,6 +37,21 @@ namespace RAPI
 
 		virtual void OnResize(const ResizeInfo& _RI) = 0;
 
+		struct AcquireNextImageInfo : RenderInfo
+		{
+		};
+		virtual void AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo);
+
+		struct FlushInfo : RenderInfo
+		{
+		};
+		virtual void Flush(const FlushInfo& flushInfo);
+
+		struct PresentInfo : RenderInfo
+		{
+		};
+		virtual void Present(const PresentInfo& presentInfo);
+
 		[[nodiscard]] virtual FVector<RenderTarget*> GetSwapchainImages() const = 0;
 
 		[[nodiscard]] uint8 GetCurrentImage() const { return currentImage; }

@@ -45,7 +45,7 @@ namespace RAPI
 		FVector<VkSemaphore> RendersFinished;
 		FVector<VkFence> InFlightFences;
 
-		uint8 ImageIndex = 0;
+		uint8 imageIndex = 0;
 
 		VkSurfaceFormatKHR FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface);
 		VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
@@ -54,6 +54,9 @@ namespace RAPI
 		~VulkanRenderContext();
 
 		void OnResize(const ResizeInfo& _RI) override;
+		void AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo) override;
+		void Flush(const FlushInfo& flushInfo) override;
+		void Present(const PresentInfo& presentInfo) override;
 
 		[[nodiscard]] FVector<RenderTarget*> GetSwapchainImages() const override;
 	};

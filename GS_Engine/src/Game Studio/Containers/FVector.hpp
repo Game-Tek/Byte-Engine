@@ -93,7 +93,7 @@ public:
 
 	FVector(const length_type length, const T* array) : capacity(length), length(length), data(allocate(this->capacity))
 	{
-		copyArray(array, array + length);
+		copyArray(array, array + length, length);
 	}
 	
 	constexpr FVector(const std::initializer_list<T>& initializerList) : capacity(initializerList.end() - initializerList.begin()),

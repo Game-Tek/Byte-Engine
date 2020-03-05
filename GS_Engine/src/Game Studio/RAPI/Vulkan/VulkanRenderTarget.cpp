@@ -11,7 +11,7 @@ VulkanRenderTargetBase::VulkanRenderTargetBase(const RenderTargetCreateInfo& ima
 VulkanRenderTarget::VulkanRenderTarget(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo) : VulkanRenderTargetBase(
 	imageCreateInfo)
 {
-	const auto image_format = FormatToVkFormat(imageCreateInfo.ImageFormat);
+	const auto image_format = FormatToVkFormat(imageCreateInfo.Format);
 	const auto image_extent = Extent3DToVkExtent3D(imageCreateInfo.Extent);
 
 	VkImageCreateInfo vk_image_create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};

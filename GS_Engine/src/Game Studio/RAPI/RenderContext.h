@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core.h"
+#include "RenderCore.h"
 #include "Utility/Extent.h"
 #include "Containers/FVector.hpp"
 
@@ -8,6 +9,7 @@ namespace RAPI
 {
 	class Window;
 	class RenderDevice;
+	class RenderDevice::Queue;
 	class RenderTarget;
 
 	struct ResizeInfo
@@ -44,11 +46,14 @@ namespace RAPI
 
 		struct FlushInfo : RenderInfo
 		{
+			RenderDevice::Queue* Queue = nullptr;
+			class CommandBuffer* CommandBuffer = nullptr;
 		};
 		virtual void Flush(const FlushInfo& flushInfo);
 
 		struct PresentInfo : RenderInfo
 		{
+			RenderDevice::Queue* Queue = nullptr;
 		};
 		virtual void Present(const PresentInfo& presentInfo);
 

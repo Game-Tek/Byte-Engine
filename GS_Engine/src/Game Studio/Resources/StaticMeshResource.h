@@ -5,6 +5,7 @@
 #include "Resource.h"
 
 #include "Vertex.h"
+#include "RAPI/RenderMesh.h"
 
 class FString;
 

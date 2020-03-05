@@ -32,4 +32,6 @@ public:
 	void Dispatch(const DispatchInfo& dispatchInfo) override;
 
 	void BindBindingsSet(const BindBindingsSetInfo& bindBindingsSetInfo) override;
+
+	VkCommandBuffer GetVkCommandBuffer() const { return commandBuffer; }
 };

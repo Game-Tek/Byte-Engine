@@ -21,7 +21,9 @@ using namespace RAPI;
 
 Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
 {
-	renderDevice = RenderDevice::CreateRenderDevice(RenderAPI::VULKAN);
+	RAPI::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
+	render_device_create_info.RenderingAPI = RenderAPI::VULKAN;
+	renderDevice = RAPI::RenderDevice::CreateRenderDevice(render_device_create_info);
 	
 	Win = GS::Application::Get()->GetActiveWindow();
 
@@ -190,10 +192,16 @@ void Renderer::OnUpdate()
 	CommandBuffer::EndRecordingInfo end_recording_info;
 	CB->EndRecording(end_recording_info);
 
-	CB->AcquireNextImage();
+	RAPI::RenderContext::AcquireNextImageInfo acquire_info;
+	acquire_info.RenderDevice = renderDevice;
+	RC->AcquireNextImage(acquire_info);
 
-	CB->Flush();
-	CB->Present();
+	RenderContext::FlushInfo flush_info;
+	flush_info.RenderDevice = renderDevice;
+	RC->Flush(flush_info);
+	RenderContext::PresentInfo present_info;
+	present_info.RenderDevice = renderDevice;
+	RC->Present(present_info);
 }
 
 void Renderer::DrawMesh(const DrawInfo& _DrawInfo, MeshRenderResource* Mesh_)

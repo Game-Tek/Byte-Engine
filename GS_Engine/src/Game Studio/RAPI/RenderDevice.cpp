@@ -11,10 +11,10 @@ void RenderDevice::GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis)
 #endif
 }
 
-RenderDevice* RenderDevice::CreateRenderDevice(const RenderAPI renderApi)
+RenderDevice* RAPI::RenderDevice::CreateRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo)
 {
-	GS_ASSERT(renderApi == RenderAPI::NONE, "renderApi is RenderAPI::NONE, which is not a valid API, please select another option preferably one of those returned by RenderDevice::GetAvailableRenderAPIs()")
-	
+	GS_ASSERT(renderDeviceCreateInfo.RenderingAPI == RenderAPI::NONE, "renderApi is RenderAPI::NONE, which is not a valid API, please select another option preferably one of those returned by RenderDevice::GetAvailableRenderAPIs()")
+
 #ifdef GS_DEBUG
 
 	FVector<RenderAPI> available_render_apis;
@@ -23,7 +23,7 @@ RenderDevice* RenderDevice::CreateRenderDevice(const RenderAPI renderApi)
 	auto supported = false;
 	for (auto& e : available_render_apis)
 	{
-		if (e == renderApi)
+		if (e == renderDeviceCreateInfo.RenderingAPI)
 		{
 			supported = true;
 			break;
@@ -34,13 +34,13 @@ RenderDevice* RenderDevice::CreateRenderDevice(const RenderAPI renderApi)
 
 #endif
 
-	
-	switch (renderApi)
-	{
-	case RenderAPI::NONE: return nullptr;
-	case RenderAPI::VULKAN: return new VulkanRenderDevice();
-	default: return nullptr;
-	}
+
+		switch (renderDeviceCreateInfo.RenderingAPI)
+		{
+		case RenderAPI::NONE: return nullptr;
+		case RenderAPI::VULKAN: return new VulkanRenderDevice();
+		default: return nullptr;
+		}
 }
 
 void RenderDevice::DestroyRenderDevice(const RenderDevice* renderDevice)

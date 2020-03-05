@@ -45,6 +45,16 @@ public:
 	VulkanRenderDevice();
 	~VulkanRenderDevice();
 
+	class VulkanQueue : public Queue
+	{
+		VkQueue queue = nullptr;
+		uint32 queueIndex = 0;
+	public:
+		void Submit(const SubmitInfo& submitInfo) override;
+		void Dispatch(const DispatchInfo& dispatchInfo) override;
+		void Present(const PresentInfo& presentInfo) override;
+	};
+
 	GPUInfo GetGPUInfo() override;
 
 	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;

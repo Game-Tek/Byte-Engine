@@ -41,9 +41,6 @@ namespace RAPI
 		Array<VkFence, 5, uint8> inFlightFences;
 		
 		mutable FVector<VulkanSwapchainImage> swapchainImages;
-		FVector<VkSemaphore> ImagesAvailable;
-		FVector<VkSemaphore> RendersFinished;
-		FVector<VkFence> InFlightFences;
 
 		uint8 imageIndex = 0;
 

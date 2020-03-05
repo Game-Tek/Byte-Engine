@@ -206,20 +206,20 @@ UniformBuffer* VulkanRenderDevice::CreateUniformBuffer(const UniformBufferCreate
 	return new VulkanUniformBuffer(&Device, _BCI);
 }
 
-RenderTarget* VulkanRenderDevice::CreateImage(const RenderTargetCreateInfo& _ICI)
+RenderTarget* VulkanRenderDevice::CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI)
 {
-	// CREATE STAGING BUFFER (AND DEVICE MEMORY)
-	// COPY IMAGE DATA TO STAGING BUFFER
-	// CREATE IMAGE (AND DEVICE MEMORY)
-	// TRANSITION LAYOUT FROM UNDEFINED TO TRANSFER_DST
-	// COPY STAGING BUFFER TO IMAGE
-	// TRANSITION LAYOUT FROM TRANSFER_DST TO { DESIRED USE }
-
 	return new VulkanRenderTarget(this, _ICI);
 }
 
 Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 {
+	// CREATE STAGING BUFFER (AND DEVICE MEMORY)
+// COPY IMAGE DATA TO STAGING BUFFER
+// CREATE IMAGE (AND DEVICE MEMORY)
+// TRANSITION LAYOUT FROM UNDEFINED TO TRANSFER_DST
+// COPY STAGING BUFFER TO IMAGE
+// TRANSITION LAYOUT FROM TRANSFER_DST TO { DESIRED USE }
+
 	auto device = Device.GetVkDevice();
 
 	VkBuffer staging_buffer = VK_NULL_HANDLE;
@@ -442,5 +442,13 @@ Framebuffer* VulkanRenderDevice::CreateFramebuffer(const FramebufferCreateInfo& 
 
 RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
 {
-	return new VulkanRenderContext(this, &Instance, PhysicalDevice, _RCCI.Window);
+	return new VulkanRenderContext(this, _RCCI);
+}
+
+void VulkanRenderDevice::VulkanQueue::Submit(const SubmitInfo& submitInfo)
+{
+	VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	submit_info.commandBufferCount = 1;
+	submit_info.pCommandBuffers = submitInfo.CommandBuffer;
+	vkQueueSubmit(queue, 1, &submit_info, nullptr);
 }

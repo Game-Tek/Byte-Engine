@@ -8,8 +8,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 {
 	bool DSAA = _RPD.DepthStencilAttachment.AttachmentImage;
 
-	FVector<VkAttachmentDescription> Attachments(_RPD.RenderPassColorAttachments.getLength() + DSAA,
-	                                             VkAttachmentDescription{});
+	FVector<VkAttachmentDescription> Attachments(_RPD.RenderPassColorAttachments.getLength() + DSAA, _RPD.RenderPassColorAttachments.getLength() + DSAA);
 	//Take into account depth/stencil attachment
 	{
 		//Set color attachments.
@@ -19,14 +18,11 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 			Attachments[i].format = FormatToVkFormat(
 				_RPD.RenderPassColorAttachments[i]->AttachmentImage->GetFormat());
 			Attachments[i].samples = VK_SAMPLE_COUNT_1_BIT; //Should match that of the SwapChain images.
-			Attachments[i].loadOp = LoadOperationsToVkAttachmentLoadOp(
-				_RPD.RenderPassColorAttachments[i]->LoadOperation);
-			Attachments[i].storeOp = StoreOperationsToVkAttachmentStoreOp(
-				_RPD.RenderPassColorAttachments[i]->StoreOperation);
+			Attachments[i].loadOp = RenderTargetLoadOperationsToVkAttachmentLoadOp(_RPD.RenderPassColorAttachments[i]->LoadOperation);
+			Attachments[i].storeOp = RenderTargetStoreOperationsToVkAttachmentStoreOp(_RPD.RenderPassColorAttachments[i]->StoreOperation);
 			Attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			Attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			Attachments[i].initialLayout =
-				ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->InitialLayout);
+			Attachments[i].initialLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->InitialLayout);
 			Attachments[i].finalLayout = ImageLayoutToVkImageLayout(_RPD.RenderPassColorAttachments[i]->FinalLayout);
 		}
 
@@ -36,18 +32,12 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 			Attachments[Attachments.getCapacity() - 1].format = FormatToVkFormat(
 				_RPD.DepthStencilAttachment.AttachmentImage->GetFormat());
 			Attachments[Attachments.getCapacity() - 1].samples = VK_SAMPLE_COUNT_1_BIT;
-			Attachments[Attachments.getCapacity() - 1].loadOp = LoadOperationsToVkAttachmentLoadOp(
-				_RPD.DepthStencilAttachment.LoadOperation);
-			Attachments[Attachments.getCapacity() - 1].storeOp = StoreOperationsToVkAttachmentStoreOp(
-				_RPD.DepthStencilAttachment.StoreOperation);
-			Attachments[Attachments.getCapacity() - 1].stencilLoadOp = LoadOperationsToVkAttachmentLoadOp(
-				_RPD.DepthStencilAttachment.LoadOperation);
-			Attachments[Attachments.getCapacity() - 1].stencilStoreOp = StoreOperationsToVkAttachmentStoreOp(
-				_RPD.DepthStencilAttachment.StoreOperation);
-			Attachments[Attachments.getCapacity() - 1].initialLayout = ImageLayoutToVkImageLayout(
-				_RPD.DepthStencilAttachment.InitialLayout);
-			Attachments[Attachments.getCapacity() - 1].finalLayout = ImageLayoutToVkImageLayout(
-				_RPD.DepthStencilAttachment.FinalLayout);
+			Attachments[Attachments.getCapacity() - 1].loadOp = RenderTargetLoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
+			Attachments[Attachments.getCapacity() - 1].storeOp = RenderTargetStoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
+			Attachments[Attachments.getCapacity() - 1].stencilLoadOp = RenderTargetLoadOperationsToVkAttachmentLoadOp(_RPD.DepthStencilAttachment.LoadOperation);
+			Attachments[Attachments.getCapacity() - 1].stencilStoreOp = RenderTargetStoreOperationsToVkAttachmentStoreOp(_RPD.DepthStencilAttachment.StoreOperation);
+			Attachments[Attachments.getCapacity() - 1].initialLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.InitialLayout);
+			Attachments[Attachments.getCapacity() - 1].finalLayout = ImageLayoutToVkImageLayout(_RPD.DepthStencilAttachment.FinalLayout);
 		}
 	}
 
@@ -133,7 +123,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 
 
 	//Describe each subpass.
-	FVector<VkSubpassDescription> Subpasses(_RPD.SubPasses.getLength(), VkSubpassDescription{});
+	FVector<VkSubpassDescription> Subpasses(_RPD.SubPasses.getLength(), _RPD.SubPasses.getLength());
 	for (uint8 SUBPASS = 0; SUBPASS < Subpasses.getLength(); SUBPASS++) //Loop through each subpass.
 	{
 		Subpasses[SUBPASS].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;

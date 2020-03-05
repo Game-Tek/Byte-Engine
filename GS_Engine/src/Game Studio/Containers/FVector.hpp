@@ -61,7 +61,7 @@ private:
 		if (this->length + additionalElements > this->capacity)
 		{
 			const length_type new_capacity = this->length * 1.5;
-			const T* new_data = allocate(new_capacity);
+			T* new_data = allocate(new_capacity);
 			copyArray(this->data, new_data, this->capacity);
 			freeData();
 			this->capacity = new_capacity;

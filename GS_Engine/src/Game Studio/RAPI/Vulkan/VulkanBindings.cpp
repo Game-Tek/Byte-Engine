@@ -87,7 +87,7 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 		BindingsPool)->GetVkDescriptorPool();
 	vk_descriptor_set_allocate_info.descriptorSetCount = descriptorSetCreateInfo.BindingsSetCount;
 
-	FVector<VkDescriptorSetLayout> SetLayouts(descriptorSetCreateInfo.BindingsSetCount, vkDescriptorSetLayout);
+	FVector<VkDescriptorSetLayout> SetLayouts(descriptorSetCreateInfo.BindingsSetCount, descriptorSetCreateInfo.BindingsSetCount);
 
 	vk_descriptor_set_allocate_info.pSetLayouts = SetLayouts.getData();
 

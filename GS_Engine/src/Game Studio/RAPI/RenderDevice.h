@@ -18,7 +18,8 @@ namespace RAPI
 	enum class RenderAPI : uint8
 	{
 		NONE,
-		VULKAN
+		VULKAN,
+		DIRECTX12
 	};
 
 	struct GPUInfo
@@ -37,9 +38,33 @@ namespace RAPI
 	public:
 		static void GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis);
 		
-		static RenderDevice* CreateRenderDevice(RenderAPI renderApi);
+		class Queue
+		{
+		public:
+			enum class Capabilities : uint8
+			{
+				GRAPHICS = 1, COMPUTE = 2, TRANSFER = 4
+			};
+
+		private:
+			Capabilities capabilities;
+
+		public:
+			struct SubmitInfo
+			{};
+			virtual void Submit(const SubmitInfo& submitInfo) = 0;
+			struct DispatchInfo
+			{};
+			virtual void Dispatch(const DispatchInfo& dispatchInfo) = 0;
+		};
+
+		struct RenderDeviceCreateInfo
+		{
+			RenderAPI RenderingAPI;
+		};
+		static RenderDevice* CreateRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
 		static void DestroyRenderDevice(const RenderDevice* renderDevice);
-		
+
 		virtual GPUInfo GetGPUInfo() = 0;
 
 		virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;

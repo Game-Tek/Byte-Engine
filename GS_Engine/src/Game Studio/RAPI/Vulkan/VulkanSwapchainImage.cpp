@@ -8,7 +8,7 @@ VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const Ren
                                            VkImage image) : VulkanRenderTargetBase(imageCreateInfo)
 {
 	VkImageViewCreateInfo vk_image_view_create_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-	vk_image_view_create_info.format = FormatToVkFormat(imageCreateInfo.ImageFormat);
+	vk_image_view_create_info.format = FormatToVkFormat(imageCreateInfo.Format);
 	vk_image_view_create_info.image = image;
 	vk_image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
 	vk_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

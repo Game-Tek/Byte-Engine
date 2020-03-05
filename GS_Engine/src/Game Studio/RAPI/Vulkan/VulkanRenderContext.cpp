@@ -15,23 +15,11 @@
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 #endif
+#include <RAPI\Vulkan\VulkanCommandBuffer.h>
 
 //  VULKAN RENDER CONTEXT
 
 using namespace RAPI;
-
-VKSurfaceCreator VulkanRenderContext::CreateSurface(VKDevice* _Device, VKInstance* _Instance, Window* _Window)
-{
-	return VKSurfaceCreator(_Device, _Instance, _Window);
-}
-
-VKCommandPoolCreator VulkanRenderContext::CreateCommandPool(VKDevice* _Device)
-{
-	VkCommandPoolCreateInfo CommandPoolCreateInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-	CommandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-	return VKCommandPoolCreator(_Device, &CommandPoolCreateInfo);
-}
 
 VkSurfaceFormatKHR VulkanRenderContext::FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface)
 {
@@ -138,9 +126,9 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 
 	for (uint8 i = 0; i < maxFramesInFlight; ++i)
 	{
-		ImagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
-		RendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
-		InFlightFences.emplace_back(VKFenceCreator(&device->GetVKDevice(), &FenceCreateInfo));
+		imagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
+		rendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVKDevice(), &SemaphoreCreateInfo));
+		inFlightFences.emplace_back(VKFenceCreator(&device->GetVKDevice(), &FenceCreateInfo));
 
 		RenderTarget::RenderTargetCreateInfo image_create_info;
 		image_create_info.Extent = { extent.Width, extent.Height, 0};
@@ -180,7 +168,7 @@ void VulkanRenderContext::AcquireNextImage(const AcquireNextImageInfo& acquireNe
 {
 	uint32 image_index = 0;
 
-	vkAcquireNextImageKHR(static_cast<VulkanRenderDevice*>(acquireNextImageInfo.RenderDevice)->GetVKDevice().GetVkDevice, swapchain, ~0ULL, imagesAvailable[currentImage], nullptr, &image_index);
+	vkAcquireNextImageKHR(static_cast<VulkanRenderDevice*>(acquireNextImageInfo.RenderDevice)->GetVKDevice().GetVkDevice(), swapchain, ~0ULL, imagesAvailable[currentImage], nullptr, &image_index);
 
 	//This signals the semaphore when the image becomes available
 	imageIndex = image_index;
@@ -188,57 +176,54 @@ void VulkanRenderContext::AcquireNextImage(const AcquireNextImageInfo& acquireNe
 
 void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 {
-	InFlightFences[currentImage].Wait(); //Get current's frame fences and wait for it.
-	InFlightFences[currentImage].Reset(); //Then reset it.
+	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVKDevice().GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);//Get current's frame fences and wait for it.
+	vkResetFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVKDevice().GetVkDevice(), 1, &inFlightFences[currentImage]); //Then reset it.
 
-	VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
-	VkSemaphore WaitSemaphores[] = { ImagesAvailable[currentImage] };
 	//Set current's frame ImageAvaiable semaphore as the semaphore to wait for to start rendering to.
-	VkSemaphore SignalSemaphores[] = { RendersFinished[currentImage] };
 	//Set current's frame RenderFinished semaphore as the semaphore to signal once rendering has finished.
-	VkCommandBuffer lCommandBuffers[] = { CommandBuffers[currentImage] };
+
+	auto command_buffer = static_cast<VulkanCommandBuffer*>(flushInfo.CommandBuffer)->GetVkCommandBuffer();
 
 	/* Submit signal semaphore to graphics queue */
 	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	{
 		SubmitInfo.waitSemaphoreCount = 1;
-		SubmitInfo.pWaitSemaphores = WaitSemaphores;
+		SubmitInfo.pWaitSemaphores = &imagesAvailable[currentImage];
 		SubmitInfo.commandBufferCount = 1;
-		SubmitInfo.pCommandBuffers = lCommandBuffers;
+		SubmitInfo.pCommandBuffers = &command_buffer;
 		SubmitInfo.signalSemaphoreCount = 1;
-		SubmitInfo.pSignalSemaphores = SignalSemaphores;
+		SubmitInfo.pSignalSemaphores = &rendersFinished[currentImage];
 
-		SubmitInfo.pWaitDstStageMask = WaitStages;
+		SubmitInfo.pWaitDstStageMask = wait_stages;
 	}
 
-	PresentationQueue.Submit(&SubmitInfo, InFlightFences[currentImage]);
+	PresentationQueue.Submit(&SubmitInfo, inFlightFences[currentImage]);
 	//Signal fence when execution of this queue has finished.
 
-	InFlightFences[currentImage].Wait();
-	CommandBuffers[currentImage].Reset();
+	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVKDevice().GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);
+
+	vkResetCommandBuffer(command_buffer, 0);
 }
 
 void RAPI::VulkanRenderContext::Present(const PresentInfo& presentInfo)
 {
-	VkSemaphore WaitSemaphores[] = { RendersFinished[currentImage] };
+	VkSemaphore WaitSemaphores[] = { rendersFinished[currentImage] };
 
-	/* Present result on screen */
-	const VkSwapchainKHR Swapchains[] = { Swapchain };
-
-	uint32 lImageIndex = ImageIndex;
+	uint32 image_index = imageIndex;
 
 	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	{
 		PresentInfo.waitSemaphoreCount = 1;
 		PresentInfo.pWaitSemaphores = WaitSemaphores;
 		PresentInfo.swapchainCount = 1;
-		PresentInfo.pSwapchains = Swapchains;
-		PresentInfo.pImageIndices = &lImageIndex;
+		PresentInfo.pSwapchains = &swapchain;
+		PresentInfo.pImageIndices = &image_index;
 		PresentInfo.pResults = nullptr;
 	}
 
-	PresentationQueue.Present(&PresentInfo);
+	presentationQueue.Present(&PresentInfo);
 
 	currentImage = (currentImage + 1) % maxFramesInFlight;
 }

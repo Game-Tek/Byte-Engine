@@ -187,21 +187,21 @@ void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 	auto command_buffer = static_cast<VulkanCommandBuffer*>(flushInfo.CommandBuffer)->GetVkCommandBuffer();
 
 	/* Submit signal semaphore to graphics queue */
-	VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkSubmitInfo submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	{
-		SubmitInfo.waitSemaphoreCount = 1;
-		SubmitInfo.pWaitSemaphores = &imagesAvailable[currentImage];
-		SubmitInfo.commandBufferCount = 1;
-		SubmitInfo.pCommandBuffers = &command_buffer;
-		SubmitInfo.signalSemaphoreCount = 1;
-		SubmitInfo.pSignalSemaphores = &rendersFinished[currentImage];
+		submit_info.waitSemaphoreCount = 1;
+		submit_info.pWaitSemaphores = &imagesAvailable[currentImage];
+		submit_info.commandBufferCount = 1;
+		submit_info.pCommandBuffers = &command_buffer;
+		submit_info.signalSemaphoreCount = 1;
+		submit_info.pSignalSemaphores = &rendersFinished[currentImage];
 
-		SubmitInfo.pWaitDstStageMask = wait_stages;
+		submit_info.pWaitDstStageMask = wait_stages;
 	}
 
-	PresentationQueue.Submit(&SubmitInfo, inFlightFences[currentImage]);
-	//Signal fence when execution of this queue has finished.
+	vkQueueSubmit(reinterpret_cast<VulkanRenderDevice::VulkanQueue*>(flushInfo.Queue)->GetVkQueue(), 1, &submit_info, inFlightFences[currentImage]);
 
+	//Signal fence when execution of this queue has finished.
 	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVKDevice().GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);
 
 	vkResetCommandBuffer(command_buffer, 0);
@@ -209,21 +209,21 @@ void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 
 void RAPI::VulkanRenderContext::Present(const PresentInfo& presentInfo)
 {
-	VkSemaphore WaitSemaphores[] = { rendersFinished[currentImage] };
+	VkSemaphore wait_semaphores[] = { rendersFinished[currentImage] };
 
 	uint32 image_index = imageIndex;
 
-	VkPresentInfoKHR PresentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+	VkPresentInfoKHR present_info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	{
-		PresentInfo.waitSemaphoreCount = 1;
-		PresentInfo.pWaitSemaphores = WaitSemaphores;
-		PresentInfo.swapchainCount = 1;
-		PresentInfo.pSwapchains = &swapchain;
-		PresentInfo.pImageIndices = &image_index;
-		PresentInfo.pResults = nullptr;
+		present_info.waitSemaphoreCount = 1;
+		present_info.pWaitSemaphores = wait_semaphores;
+		present_info.swapchainCount = 1;
+		present_info.pSwapchains = &swapchain;
+		present_info.pImageIndices = &image_index;
+		present_info.pResults = nullptr;
 	}
 
-	presentationQueue.Present(&PresentInfo);
+	vkQueuePresentKHR(reinterpret_cast<VulkanRenderDevice::VulkanQueue*>(presentInfo.Queue)->GetVkQueue(), &present_info);
 
 	currentImage = (currentImage + 1) % maxFramesInFlight;
 }

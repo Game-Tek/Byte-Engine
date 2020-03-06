@@ -229,9 +229,9 @@ void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 	GS_DEBUG_ONLY(++PipelineSwitches)
 }
 
-RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
+RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 {
-	MeshRenderResource* NewMesh = nullptr;
+	RAPI::RenderMesh* NewMesh = nullptr;
 
 	if (Meshes.find(_SM) == Meshes.end())
 	{

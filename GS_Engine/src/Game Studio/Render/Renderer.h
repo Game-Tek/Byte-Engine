@@ -57,7 +57,7 @@ public:
 	void BindPipeline(RAPI::GraphicsPipeline* _Pipeline);
 
 
-	class MeshRenderResource* CreateMesh(StaticMesh* _SM);
+	class RenderMesh* CreateMesh(StaticMesh* _SM);
 	class MaterialRenderResource* CreateMaterial(Material* Material_);
 protected:
 	//Used to count the amount of draw calls in a frame.

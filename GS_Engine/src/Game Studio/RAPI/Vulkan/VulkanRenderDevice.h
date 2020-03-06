@@ -23,6 +23,10 @@ class VulkanRenderDevice final : public RenderDevice
 	vkPhysicalDevice PhysicalDevice;
 	VKDevice Device;
 
+	VkInstance instance = nullptr;
+	VkPhysicalDevice physicalDevice = nullptr;
+	VkDevice device = nullptr;
+
 	VkCommandPool ImageTransferCommandPool = nullptr;
 
 	VKCommandPool TransientCommandPool;
@@ -41,9 +45,9 @@ protected:
 	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag,
 	                    VkDeviceMemory* deviceMemory);
 
-public:
-	VulkanRenderDevice();
+	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
 	~VulkanRenderDevice();
+public:
 
 	class VulkanQueue : public Queue
 	{
@@ -60,9 +64,6 @@ public:
 		};
 		VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo);
 		~VulkanQueue() = delete;
-
-		void Submit(const SubmitInfo& submitInfo) override;
-		void Dispatch(const DispatchInfo& dispatchInfo) override;
 
 		VkQueue GetVkQueue() const { return queue; }
 		uint32 GetQueueIndex() const { return queueIndex; }

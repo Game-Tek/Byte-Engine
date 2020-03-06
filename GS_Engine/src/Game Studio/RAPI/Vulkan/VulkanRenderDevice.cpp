@@ -172,7 +172,7 @@ void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements
 	            "Failed to allocate memory!");
 }
 
-VulkanRenderDevice::VulkanRenderDevice() : Instance("Game Studio"),
+VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo) : Instance("Game Studio"),
                                            PhysicalDevice(Instance),
                                            Device(Instance, PhysicalDevice),
                                            TransientCommandPool(CreateCommandPool())
@@ -447,16 +447,4 @@ RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreate
 
 VulkanRenderDevice::VulkanQueue::VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo) : queue(vulkanQueueCreateInfo.Queue), queueIndex(vulkanQueueCreateInfo.QueueIndex), familyIndex(vulkanQueueCreateInfo.FamilyIndex)
 {
-}
-
-VulkanRenderDevice::VulkanQueue::~VulkanQueue()
-{
-}
-
-void VulkanRenderDevice::VulkanQueue::Submit(const SubmitInfo& submitInfo)
-{
-	VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	submit_info.commandBufferCount = 1;
-	submit_info.pCommandBuffers = submitInfo.CommandBuffer;
-	vkQueueSubmit(queue, 1, &submit_info, nullptr);
 }

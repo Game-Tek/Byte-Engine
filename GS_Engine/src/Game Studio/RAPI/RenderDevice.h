@@ -31,6 +31,7 @@ namespace RAPI
 
 	class RenderDevice
 	{
+	protected:
 		RenderDevice() = default;
 
 		virtual ~RenderDevice() = default;
@@ -54,13 +55,6 @@ namespace RAPI
 			{
 				QueueCapabilities Capabilities;
 			};
-
-			struct SubmitInfo
-			{};
-			virtual void Submit(const SubmitInfo& submitInfo) = 0;
-			struct DispatchInfo
-			{};
-			virtual void Dispatch(const DispatchInfo& dispatchInfo) = 0;
 		};
 
 		struct RenderDeviceCreateInfo

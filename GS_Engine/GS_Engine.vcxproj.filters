@@ -255,10 +255,7 @@
     <ClInclude Include="src\Game Studio\Core\Network\NetworkCore.h" />
     <ClInclude Include="src\Game Studio\Core\Network\NetConnection.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderMesh.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderResource.h" />
     <ClInclude Include="src\Game Studio\Render\Renderer.h" />
-    <ClInclude Include="src\Game Studio\Render\MeshRenderResource.h" />
-    <ClInclude Include="src\Game Studio\Render\MaterialRenderResource.h" />
     <ClInclude Include="src\Game Studio\Utility\Delegate.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
@@ -374,7 +371,6 @@
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
-    <ClCompile Include="src\Game Studio\Render\MaterialRenderResource.cpp" />
     <ClCompile Include="src\Game Studio\Math\Vector3.cpp" />
     <ClCompile Include="src\Game Studio\Math\Rotator.cpp" />
     <ClCompile Include="src\Game Studio\Core\System.cpp" />

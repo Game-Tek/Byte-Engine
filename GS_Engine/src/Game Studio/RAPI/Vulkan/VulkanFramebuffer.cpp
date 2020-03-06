@@ -8,9 +8,7 @@
 
 #include "VulkanRenderTarget.h"
 
-VulkanFramebuffer::
-VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& framebufferCreateInfo) : Framebuffer(
-	framebufferCreateInfo)
+VulkanFramebuffer::VulkanFramebuffer(VulkanRenderDevice* vulkanRenderDevice, const FramebufferCreateInfo& framebufferCreateInfo) : Framebuffer(framebufferCreateInfo)
 {
 	FVector<VkImageView> Result(framebufferCreateInfo.Images.getLength());
 
@@ -30,16 +28,13 @@ VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& fram
 
 	attachmentCount = framebufferCreateInfo.Images.getLength();
 
-	VkFramebufferCreateInfo FramebufferCreateInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-	FramebufferCreateInfo.attachmentCount = framebufferCreateInfo.Images.getLength();
-	FramebufferCreateInfo.width = framebufferCreateInfo.Extent.Width;
-	FramebufferCreateInfo.height = framebufferCreateInfo.Extent.Height;
-	FramebufferCreateInfo.layers = 1;
-	FramebufferCreateInfo.renderPass = static_cast<VulkanRenderPass*>(framebufferCreateInfo.RenderPass)
-	                                   ->GetVKRenderPass().GetHandle();
-	FramebufferCreateInfo.pAttachments = Result.getData();
+	VkFramebufferCreateInfo vk_framebuffer_create_info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+	vk_framebuffer_create_info.attachmentCount = framebufferCreateInfo.Images.getLength();
+	vk_framebuffer_create_info.width = framebufferCreateInfo.Extent.Width;
+	vk_framebuffer_create_info.height = framebufferCreateInfo.Extent.Height;
+	vk_framebuffer_create_info.layers = 1;
+	vk_framebuffer_create_info.renderPass = static_cast<VulkanRenderPass*>(framebufferCreateInfo.RenderPass)->GetVkRenderPass();
+	vk_framebuffer_create_info.pAttachments = Result.getData();
 
-	GS_VK_CHECK(
-		vkCreateFramebuffer(_Device->GetVkDevice().GetVkDevice(), &FramebufferCreateInfo, ALLOCATOR, &framebuffer),
-		"Failed to create framebuffer!");
+	GS_VK_CHECK(vkCreateFramebuffer(vulkanRenderDevice->GetVkDevice(), &vk_framebuffer_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &framebuffer), "Failed to create framebuffer!");
 }

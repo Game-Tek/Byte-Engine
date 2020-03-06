@@ -137,5 +137,15 @@ namespace RAPI
 		};
 		//Adds a EndRenderPass command to the command queue.
 		virtual void EndRenderPass(const EndRenderPassInfo& endRenderPassInfo) = 0;
+
+		struct CopyImageInfo
+		{};
+		virtual void CopyImage(const CopyImageInfo& copyImageInfo) = 0;
+
+		struct SubmitInfo
+		{
+			Queue* Queue = nullptr;
+		};
+		virtual void Submit(const SubmitInfo& submiInfo) = 0;
 	};
 }

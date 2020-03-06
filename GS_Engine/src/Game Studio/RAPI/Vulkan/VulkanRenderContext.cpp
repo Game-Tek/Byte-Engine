@@ -230,12 +230,12 @@ void RAPI::VulkanRenderContext::Present(const PresentInfo& presentInfo)
 
 FVector<RenderTarget*> VulkanRenderContext::GetSwapchainImages() const
 {
-	FVector<RenderTarget*> l_Images(maxFramesInFlight);
+	FVector<RenderTarget*> images(maxFramesInFlight);
 
 	for (uint8 i = 0; i < maxFramesInFlight; ++i)
 	{
-		l_Images.push_back(static_cast<RenderTarget*>(&swapchainImages[i]));
+		images.push_back(static_cast<RenderTarget*>(&swapchainImages[i]));
 	}
 
-	return l_Images;
+	return images;
 }

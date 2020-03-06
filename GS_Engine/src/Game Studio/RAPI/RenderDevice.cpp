@@ -16,7 +16,6 @@ RenderDevice* RAPI::RenderDevice::CreateRenderDevice(const RenderDeviceCreateInf
 	GS_ASSERT(renderDeviceCreateInfo.RenderingAPI == RenderAPI::NONE, "renderApi is RenderAPI::NONE, which is not a valid API, please select another option preferably one of those returned by RenderDevice::GetAvailableRenderAPIs()")
 
 #ifdef GS_DEBUG
-
 	FVector<RenderAPI> available_render_apis;
 	GetAvailableRenderAPIs(available_render_apis);
 
@@ -31,14 +30,13 @@ RenderDevice* RAPI::RenderDevice::CreateRenderDevice(const RenderDeviceCreateInf
 	}
 
 	GS_ASSERT(supported, "Chosen Render API is not available. Please query supported APIs with RenderDevice::GetAvailableRenderAPIs()")
-
 #endif
 
 
 		switch (renderDeviceCreateInfo.RenderingAPI)
 		{
 		case RenderAPI::NONE: return nullptr;
-		case RenderAPI::VULKAN: return new VulkanRenderDevice();
+		case RenderAPI::VULKAN: return new VulkanRenderDevice(renderDeviceCreateInfo);
 		default: return nullptr;
 		}
 }

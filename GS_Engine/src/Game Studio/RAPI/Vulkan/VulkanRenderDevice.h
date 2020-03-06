@@ -45,9 +45,9 @@ protected:
 	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag,
 	                    VkDeviceMemory* deviceMemory);
 
+public:
 	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
 	~VulkanRenderDevice();
-public:
 
 	class VulkanQueue : public Queue
 	{

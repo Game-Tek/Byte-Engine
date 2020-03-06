@@ -17,7 +17,9 @@ class VulkanBindingsPool final : public BindingsPool
 public:
 	VulkanBindingsPool(class VulkanRenderDevice* device, const BindingsPoolCreateInfo& descriptorPoolCreateInfo);
 
-	void FreeBindingsSet() override;
+	void Destroy(class RenderDevice* renderDevice) override;
+
+	void FreeBindingsSet(const FreeBindingsSetInfo& freeBindingsSetInfo) override;
 	void FreePool(const FreeBindingsPoolInfo& freeDescriptorPoolInfo) override;
 
 	[[nodiscard]] VkDescriptorPool GetVkDescriptorPool() const { return vkDescriptorPool; }
@@ -30,6 +32,8 @@ class VulkanBindingsSet final : public BindingsSet
 
 public:
 	VulkanBindingsSet(class VulkanRenderDevice* device, const BindingsSetCreateInfo& descriptorSetCreateInfo);
+
+	void Destroy(class RenderDevice* renderDevice) override;
 
 	void Update(const BindingsSetUpdateInfo& uniformLayoutUpdateInfo) override;
 

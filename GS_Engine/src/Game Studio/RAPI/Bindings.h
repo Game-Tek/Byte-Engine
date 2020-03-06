@@ -8,7 +8,7 @@
 namespace RAPI
 {
 
-#define MAX_BINDINGS_PER_SET 8
+	constexpr uint8 MAX_BINDINGS_PER_SET = 10;
 
 	class RenderContext;
 
@@ -45,7 +45,7 @@ namespace RAPI
 		uint8 BindingsSetCount = 0;
 	};
 
-	class BindingsPool
+	class BindingsPool : public RAPIObject
 	{
 	public:
 		virtual ~BindingsPool() = default;
@@ -55,7 +55,11 @@ namespace RAPI
 		};
 
 		virtual void FreePool(const FreeBindingsPoolInfo& freeDescriptorPoolInfo) = 0;
-		virtual void FreeBindingsSet() = 0;
+		struct FreeBindingsSetInfo : RenderInfo
+		{
+			class BindingsSet* BindingsSet = nullptr;
+		};
+		virtual void FreeBindingsSet(const FreeBindingsSetInfo& freeBindingsSetInfo) = 0;
 	};
 
 	struct BindingsSetCreateInfo : RenderInfo
@@ -71,7 +75,7 @@ namespace RAPI
 		uint8 BindingsSetCount = 0;
 	};
 
-	class BindingsSet
+	class BindingsSet : public RAPIObject
 	{
 	public:
 		virtual ~BindingsSet() = default;

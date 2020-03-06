@@ -2,13 +2,10 @@
 
 #include "VulkanRenderDevice.h"
 
-#include "Native/VKDevice.h"
-
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
 
-VulkanBindingsPool::VulkanBindingsPool(VulkanRenderDevice* device,
-                                       const BindingsPoolCreateInfo& descriptorPoolCreateInfo)
+VulkanBindingsPool::VulkanBindingsPool(VulkanRenderDevice* vulkanRenderDevice, const BindingsPoolCreateInfo& descriptorPoolCreateInfo)
 {
 	Array<VkDescriptorPoolSize, MAX_BINDINGS_PER_SET> descriptor_pool_sizes;
 	descriptor_pool_sizes.resize(descriptorPoolCreateInfo.BindingsSetLayout.getLength());
@@ -18,8 +15,7 @@ VulkanBindingsPool::VulkanBindingsPool(VulkanRenderDevice* device,
 		for (auto& descriptor_pool_size : descriptor_pool_sizes)
 		{
 			//Type of the descriptor pool.
-			descriptor_pool_size.type = UniformTypeToVkDescriptorType(
-				descriptorPoolCreateInfo.BindingsSetLayout[i].BindingType);
+			descriptor_pool_size.type = UniformTypeToVkDescriptorType(descriptorPoolCreateInfo.BindingsSetLayout[i].BindingType);
 			//Max number of descriptors of VkDescriptorPoolSize::type we can allocate.
 			descriptor_pool_size.descriptorCount = descriptorPoolCreateInfo.BindingsSetCount;
 
@@ -27,27 +23,29 @@ VulkanBindingsPool::VulkanBindingsPool(VulkanRenderDevice* device,
 		}
 	}
 
-	VkDescriptorPoolCreateInfo vk_descriptor_pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+	VkDescriptorPoolCreateInfo vk_descriptor_pool_create_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 	//Is the total number of sets that can be allocated from the pool.
 	vk_descriptor_pool_create_info.maxSets = descriptorPoolCreateInfo.BindingsSetCount;
 	vk_descriptor_pool_create_info.poolSizeCount = descriptor_pool_sizes.getLength();
 	vk_descriptor_pool_create_info.pPoolSizes = descriptor_pool_sizes.getData();
 
-	vkCreateDescriptorPool(
-		static_cast<VulkanRenderDevice*>(descriptorPoolCreateInfo.RenderDevice)->GetVkDevice().GetVkDevice(),
-		&vk_descriptor_pool_create_info, ALLOCATOR, &vkDescriptorPool);
+	vkCreateDescriptorPool(static_cast<VulkanRenderDevice*>(descriptorPoolCreateInfo.RenderDevice)->GetVkDevice(), &vk_descriptor_pool_create_info, static_cast<VulkanRenderDevice*>(descriptorPoolCreateInfo.RenderDevice)->GetVkAllocationCallbacks(), &vkDescriptorPool);
 }
 
-void VulkanBindingsPool::FreeBindingsSet()
+void VulkanBindingsPool::Destroy(RenderDevice* renderDevice)
 {
-	//vkFreeDescriptorSets(, vkDescriptorPool, );
+	auto vk_render_device = static_cast<VulkanRenderDevice*>(renderDevice);
+	vkDestroyDescriptorPool(vk_render_device->GetVkDevice(), vkDescriptorPool, vk_render_device->GetVkAllocationCallbacks());
+}
+
+void VulkanBindingsPool::FreeBindingsSet(const FreeBindingsSetInfo& freeBindingsSetInfo)
+{
+	vkFreeDescriptorSets(static_cast<VulkanRenderDevice*>(freeBindingsSetInfo.RenderDevice)->GetVkDevice(), vkDescriptorPool, static_cast<VulkanBindingsSet*>(freeBindingsSetInfo.BindingsSet)->GetVkDescriptorSets().getLength(), static_cast<VulkanBindingsSet*>(freeBindingsSetInfo.BindingsSet)->GetVkDescriptorSets().getData());
 }
 
 void VulkanBindingsPool::FreePool(const FreeBindingsPoolInfo& freeDescriptorPoolInfo)
 {
-	vkResetDescriptorPool(
-		static_cast<VulkanRenderDevice*>(freeDescriptorPoolInfo.RenderDevice)->GetVkDevice().GetVkDevice(),
-		vkDescriptorPool, 0);
+	vkResetDescriptorPool(static_cast<VulkanRenderDevice*>(freeDescriptorPoolInfo.RenderDevice)->GetVkDevice(), vkDescriptorPool, 0);
 }
 
 VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsSetCreateInfo& descriptorSetCreateInfo)
@@ -98,6 +96,12 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 		&vk_descriptor_set_allocate_info, vkDescriptorSets.getData());
 }
 
+void VulkanBindingsSet::Destroy(RenderDevice * renderDevice)
+{
+	auto vk_render_device = static_cast<VulkanRenderDevice*>(renderDevice);
+	vkDestroyDescriptorSetLayout(vk_render_device->GetVkDevice(), vkDescriptorSetLayout, vk_render_device->GetVkAllocationCallbacks());
+}
+
 void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateInfo)
 {
 	DArray<VkWriteDescriptorSet> write_descriptors(uniformLayoutUpdateInfo.BindingsSetLayout.getLength());
@@ -110,14 +114,10 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 		case BindingType::COMBINED_IMAGE_SAMPLER:
 		case BindingType::SAMPLED_IMAGE:
 
-			VkDescriptorImageInfo DescriptorImageInfo;
-			DescriptorImageInfo.imageView = static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].
-				BindingResource)->GetImageView();
-			DescriptorImageInfo.imageLayout = ImageLayoutToVkImageLayout(
-				static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingResource)->
-				GetImageLayout());
-			DescriptorImageInfo.sampler = static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].
-				BindingResource)->GetImageSampler();
+			VkDescriptorImageInfo vk_descriptor_image_info;
+			vk_descriptor_image_info.imageView = static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingResource)->GetImageView();
+			vk_descriptor_image_info.imageLayout = ImageLayoutToVkImageLayout(static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingResource)->GetImageLayout());
+			vk_descriptor_image_info.sampler = static_cast<VulkanTexture*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingResource)->GetImageSampler();
 
 			write_descriptors[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			write_descriptors[i].pNext = nullptr;
@@ -125,9 +125,8 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 			write_descriptors[i].dstBinding = i;
 			write_descriptors[i].dstArrayElement = 0;
 			write_descriptors[i].descriptorCount = uniformLayoutUpdateInfo.BindingsSetLayout[i].ArrayLength;
-			write_descriptors[i].descriptorType = UniformTypeToVkDescriptorType(
-				uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingType);
-			write_descriptors[i].pImageInfo = &DescriptorImageInfo;
+			write_descriptors[i].descriptorType = UniformTypeToVkDescriptorType(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingType);
+			write_descriptors[i].pImageInfo = &vk_descriptor_image_info;
 			write_descriptors[i].pTexelBufferView = nullptr;
 			write_descriptors[i].pBufferInfo = nullptr;
 
@@ -141,11 +140,10 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 		case BindingType::UNIFORM_BUFFER:
 		case BindingType::STORAGE_BUFFER:
 
-			VkDescriptorBufferInfo DescriptorBufferInfo;
-			DescriptorBufferInfo.buffer = static_cast<VulkanUniformBuffer*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].
-				BindingResource)->GetVKBuffer().GetHandle();
-			DescriptorBufferInfo.offset = 0; //TODO: Get offset from buffer itself
-			DescriptorBufferInfo.range = VK_WHOLE_SIZE;
+			VkDescriptorBufferInfo vk_descriptor_buffer_info;
+			vk_descriptor_buffer_info.buffer = static_cast<VulkanUniformBuffer*>(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingResource)->GetVkBuffer();
+			vk_descriptor_buffer_info.offset = 0; //TODO: Get offset from buffer itself
+			vk_descriptor_buffer_info.range = VK_WHOLE_SIZE;
 
 			write_descriptors[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			write_descriptors[i].pNext = nullptr;
@@ -153,11 +151,10 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 			write_descriptors[i].dstBinding = i;
 			write_descriptors[i].dstArrayElement = 0;
 			write_descriptors[i].descriptorCount = uniformLayoutUpdateInfo.BindingsSetLayout[i].ArrayLength;
-			write_descriptors[i].descriptorType = UniformTypeToVkDescriptorType(
-				uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingType);
+			write_descriptors[i].descriptorType = UniformTypeToVkDescriptorType(uniformLayoutUpdateInfo.BindingsSetLayout[i].BindingType);
 			write_descriptors[i].pImageInfo = nullptr;
 			write_descriptors[i].pTexelBufferView = nullptr;
-			write_descriptors[i].pBufferInfo = &DescriptorBufferInfo;
+			write_descriptors[i].pBufferInfo = &vk_descriptor_buffer_info;
 
 			break;
 
@@ -168,7 +165,5 @@ void VulkanBindingsSet::Update(const BindingsSetUpdateInfo& uniformLayoutUpdateI
 		}
 	}
 
-	vkUpdateDescriptorSets(
-		static_cast<VulkanRenderDevice*>(uniformLayoutUpdateInfo.RenderDevice)->GetVkDevice().GetVkDevice(),
-		write_descriptors.getCapacity(), write_descriptors.getData(), 0, nullptr);
+	vkUpdateDescriptorSets(static_cast<VulkanRenderDevice*>(uniformLayoutUpdateInfo.RenderDevice)->GetVkDevice(), write_descriptors.getCapacity(), write_descriptors.getData(), 0, nullptr);
 }

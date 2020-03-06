@@ -160,7 +160,7 @@ VkFormat VulkanRenderDevice::findSupportedFormat(const DArray<VkFormat>& formats
 	return VK_FORMAT_UNDEFINED;
 }
 
-uint32 VulkanRenderDevice::findMemorytype(uint32 memoryType, uint32 memoryFlags) const
+uint32 VulkanRenderDevice::FindMemorytype(uint32 memoryType, uint32 memoryFlags) const
 {
 	for (uint32 i = 0; i < memoryProperties.memoryTypeCount; ++i)
 	{

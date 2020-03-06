@@ -324,4 +324,10 @@ namespace RAPI
 		}
 	}
 
+	class RAPIObject
+	{
+	public:
+		virtual void Destroy(class RenderDevice* renderDevice);
+	};
+
 }

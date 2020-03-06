@@ -14,6 +14,8 @@ public:
 	VulkanUniformBuffer(class VulkanRenderDevice* _Device, const RAPI::UniformBufferCreateInfo& _BCI);
 	~VulkanUniformBuffer();
 
+	void Destroy(RenderDevice* renderDevice) override;
+
 	void UpdateBuffer(const RAPI::UniformBufferUpdateInfo& uniformBufferUpdateInfo) const override;
 
 	VkBuffer GetVkBuffer() const { return buffer; }

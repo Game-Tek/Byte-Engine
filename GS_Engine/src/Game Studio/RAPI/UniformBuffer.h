@@ -24,9 +24,10 @@ namespace RAPI
 		size_t Offset = 0;
 	};
 
-	class UniformBuffer
+	class UniformBuffer : public RAPIObject
 	{
 	public:
 		virtual void UpdateBuffer(const UniformBufferUpdateInfo& _BUI) const = 0;
+		void Destroy(RenderDevice* renderDevice) = 0;
 	};
 }

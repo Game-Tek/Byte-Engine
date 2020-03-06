@@ -17,16 +17,11 @@ inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 {
 	switch (messageSeverity)
 	{
-	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage)
-		break;
-	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage)
-		break;
-	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: GS_BASIC_LOG_WARNING("Vulkan: %s", pCallbackData->pMessage)
-		break;
-	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: GS_BASIC_LOG_ERROR(
-			"Vulkan: %s, %s", pCallbackData->pObjects->pObjectName, pCallbackData->pMessage)
-		break;
-	default: ;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: GS_BASIC_LOG_WARNING("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: GS_BASIC_LOG_ERROR("Vulkan: %s, %s", pCallbackData->pObjects->pObjectName, pCallbackData->pMessage) break;
+	default: break;
 	}
 
 	return VK_FALSE;
@@ -36,8 +31,7 @@ VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMes
                                       const VkAllocationCallbacks* pAllocator,
                                       VkDebugUtilsMessengerEXT* pDebugMessenger)
 {
-	const auto func = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-		instance, "vkCreateDebugUtilsMessengerEXT"));
+	const auto func = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
 
 	if (func != nullptr)
 	{
@@ -52,13 +46,9 @@ VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMes
 void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
                                    const VkAllocationCallbacks* pAllocator)
 {
-	auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-		instance, "vkDestroyDebugUtilsMessengerEXT"));
+	auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
 
-	if (func != nullptr)
-	{
-		func(instance, debugMessenger, pAllocator);
-	}
+	if (func != nullptr) { func(instance, debugMessenger, pAllocator); }
 }
 
 VKInstance::VKInstance(const char* _AppName)
@@ -95,10 +85,8 @@ VKInstance::VKInstance(const char* _AppName)
 
 	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
 	createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-	createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-	createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+	createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 	createInfo.pfnUserCallback = debugCallback;
 	createInfo.pUserData = nullptr; // Optional
 

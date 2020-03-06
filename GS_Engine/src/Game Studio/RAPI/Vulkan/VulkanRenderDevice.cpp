@@ -182,6 +182,10 @@ VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDevic
 
 VulkanRenderDevice::~VulkanRenderDevice()
 {
+	//vkDeviceWaitIdle(device);
+	//vkDestroyDevice(device, ALLOCATOR);
+	//DestroyDebugUtilsMessengerEXT(Instance, debugMessenger, ALLOCATOR);
+	//vkDestroyInstance(instance, ALLOCATOR);
 }
 
 GPUInfo VulkanRenderDevice::GetGPUInfo()

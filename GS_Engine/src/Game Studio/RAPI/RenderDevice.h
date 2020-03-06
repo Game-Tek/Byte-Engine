@@ -60,6 +60,9 @@ namespace RAPI
 		struct RenderDeviceCreateInfo
 		{
 			RenderAPI RenderingAPI;
+			FString ApplicationName;
+			uint16 ApplicationVersion[3];
+			//FVector<RAPIExtensions>* Extensions = nullptr;
 		};
 		static RenderDevice* CreateRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
 		static void DestroyRenderDevice(const RenderDevice* renderDevice);

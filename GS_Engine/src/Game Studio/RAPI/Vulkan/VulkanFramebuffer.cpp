@@ -40,6 +40,6 @@ VulkanFramebuffer(VulkanRenderDevice* _Device, const FramebufferCreateInfo& fram
 	FramebufferCreateInfo.pAttachments = Result.getData();
 
 	GS_VK_CHECK(
-		vkCreateFramebuffer(_Device->GetVKDevice().GetVkDevice(), &FramebufferCreateInfo, ALLOCATOR, &framebuffer),
+		vkCreateFramebuffer(_Device->GetVkDevice().GetVkDevice(), &FramebufferCreateInfo, ALLOCATOR, &framebuffer),
 		"Failed to create framebuffer!");
 }

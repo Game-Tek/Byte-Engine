@@ -171,7 +171,7 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const GraphicsPipelineCreateInfo&
 		VSMCI[i].codeSize = TT.getLengthSize();
 		VSMCI[i].pCode = TT.getData();
 
-		auto T = vkCreateShaderModule(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVKDevice().GetVkDevice(),
+		auto T = vkCreateShaderModule(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVkDevice().GetVkDevice(),
 		                              &VSMCI[i], ALLOCATOR, &SMS[i]);
 
 		PSSCI[i].module = SMS[i];
@@ -213,7 +213,7 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const GraphicsPipelineCreateInfo&
 	//What sets this pipeline layout uses.
 	vk_pipeline_layout_create_info.pSetLayouts = vk_descriptor_set_layouts.getData();
 
-	vkCreatePipelineLayout(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVKDevice().GetVkDevice(),
+	vkCreatePipelineLayout(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVkDevice().GetVkDevice(),
 	                       &vk_pipeline_layout_create_info, ALLOCATOR, &vkPipelineLayout);
 
 	VkGraphicsPipelineCreateInfo CreateInfo = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -237,6 +237,6 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const GraphicsPipelineCreateInfo&
 		                                : nullptr; // Optional
 	CreateInfo.basePipelineIndex = _GPCI.ParentPipeline ? 0 : -1;
 
-	vkCreateGraphicsPipelines(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVKDevice().GetVkDevice(),
+	vkCreateGraphicsPipelines(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVkDevice().GetVkDevice(),
 	                          nullptr, 1, &CreateInfo, ALLOCATOR, &vkPipeline);
 }

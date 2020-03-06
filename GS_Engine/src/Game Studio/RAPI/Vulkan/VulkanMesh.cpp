@@ -3,7 +3,7 @@
 #include "VulkanRenderDevice.h"
 #include <vulkan/vulkan_core.h>
 
-VKBufferCreator VulkanMesh::CreateVKBufferCreator(VKDevice* _Device, unsigned _BufferUsage, size_t _BufferSize)
+VKBufferCreator VulkanMesh::CreateVKBufferCreator(VkDevice* _Device, unsigned _BufferUsage, size_t _BufferSize)
 {
 	VkBufferCreateInfo BufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 	BufferCreateInfo.size = _BufferSize;
@@ -13,7 +13,7 @@ VKBufferCreator VulkanMesh::CreateVKBufferCreator(VKDevice* _Device, unsigned _B
 	return VKBufferCreator(_Device, &BufferCreateInfo);
 }
 
-VKMemoryCreator VulkanMesh::CreateVKMemoryCreator(VKDevice* _Device, VkMemoryRequirements _MemReqs,
+VKMemoryCreator VulkanMesh::CreateVKMemoryCreator(VkDevice* _Device, VkMemoryRequirements _MemReqs,
                                                   unsigned _MemoryProps)
 {
 	VkMemoryAllocateInfo MemoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -23,7 +23,7 @@ VKMemoryCreator VulkanMesh::CreateVKMemoryCreator(VKDevice* _Device, VkMemoryReq
 	return VKMemoryCreator(_Device, &MemoryAllocateInfo);
 }
 
-VulkanMesh::VulkanMesh(VKDevice* _Device, const VKCommandPool& _CP, void* _VertexData, size_t _VertexDataSize,
+VulkanMesh::VulkanMesh(VkDevice* _Device, const VKCommandPool& _CP, void* _VertexData, size_t _VertexDataSize,
                        uint16* _IndexData, uint16 _IndexCount) :
 	VertexBuffer(CreateVKBufferCreator(_Device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	                                   _VertexDataSize)),

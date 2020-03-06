@@ -160,6 +160,16 @@ VkFormat VulkanRenderDevice::findSupportedFormat(const DArray<VkFormat>& formats
 	return VK_FORMAT_UNDEFINED;
 }
 
+uint32 VulkanRenderDevice::findMemorytype(uint32 memoryType, uint32 memoryFlags) const
+{
+	for (uint32 i = 0; i < memoryProperties.memoryTypeCount; ++i)
+	{
+		if (memoryType & (1 << i)) { return i; }
+	}
+
+	GS_ASSERT(true, "Failed to find a suitable memory type!")
+}
+
 void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements,
                                         VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory)
 {
@@ -239,6 +249,65 @@ VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDevic
 #endif
 
 	vkGetPhysicalDeviceProperties(PhysicalDevice, &deviceProperties);
+
+	VkPhysicalDeviceFeatures vk_device_features = {}; //COME BACK TO
+	vk_device_features.samplerAnisotropy = VK_TRUE;
+	vk_device_features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
+
+	const char* device_extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+	auto queue_create_infos = renderDeviceCreateInfo.QueueCreateInfos;
+
+	FVector<VkDeviceQueueCreateInfo> vk_device_queue_create_infos(queue_create_infos->getLength(), queue_create_infos->getLength());
+
+	uint32_t queue_families_count = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queue_families_count, nullptr);
+	//Get the amount of queue families there are in the physical device.
+	FVector<VkQueueFamilyProperties> vk_queue_families_properties(queue_families_count);
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queue_families_count, vk_queue_families_properties.getData());
+
+	FVector<bool> used_families(queue_families_count);
+	FVector<VkQueueFlagBits> vk_queues_flag_bits(queue_families_count, queue_families_count);
+	{
+		uint8 i = 0;
+		for (auto& e : vk_queues_flag_bits)
+		{
+			e == VkQueueFlagBits(queue_create_infos->at(i).Capabilities);
+			++i;
+		}
+	}
+
+	for (uint8 q = 0; q < queue_create_infos->getLength(); ++q)
+	{
+		for (uint8 f = 0; f < queue_families_count; ++f)
+		{
+			if (vk_queue_families_properties[f].queueCount > 0 && vk_queue_families_properties[f].queueFlags & vk_queues_flag_bits[f])
+			{
+				if (used_families[f])
+				{
+					++vk_device_queue_create_infos[f].queueCount;
+					vk_device_queue_create_infos[f].pQueuePriorities = &queue_create_infos->at(q).QueuePriority;
+					break;
+				}
+
+				vk_device_queue_create_infos[f].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;				used_families[f] = true;
+				vk_device_queue_create_infos[f].pNext = nullptr;
+				vk_device_queue_create_infos[f].flags = 0;
+				vk_device_queue_create_infos[f].queueFamilyIndex = f;
+				vk_device_queue_create_infos[f].queueCount = 1;
+				break;
+			}
+		}
+	}
+
+	VkDeviceCreateInfo vk_device_create_info = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+	vk_device_create_info.queueCreateInfoCount = vk_device_queue_create_infos.getLength();
+	vk_device_create_info.pQueueCreateInfos = vk_device_queue_create_infos.getData();
+	vk_device_create_info.enabledExtensionCount = 1;
+	vk_device_create_info.pEnabledFeatures = &vk_device_features;
+	vk_device_create_info.ppEnabledExtensionNames = device_extensions;
+
+	GS_VK_CHECK(vkCreateDevice(physicalDevice, &vk_device_create_info, ALLOCATOR, &device), "Failed to create Device!");
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()
@@ -246,7 +315,7 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	vkDeviceWaitIdle(device);
 	vkDestroyDevice(device, ALLOCATOR);
 #ifdef GS_DEBUG
-	destroyDebugUtilsFunction(Instance, debugMessenger, ALLOCATOR);
+	destroyDebugUtilsFunction(instance, debugMessenger, ALLOCATOR);
 #endif
 	vkDestroyInstance(instance, ALLOCATOR);
 }

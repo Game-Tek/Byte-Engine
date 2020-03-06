@@ -8,9 +8,9 @@ class VulkanRenderPass final : public RAPI::RenderPass
 {
 	VKRenderPass RenderPass;
 
-	static VKRenderPassCreator CreateInfo(VKDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
+	static VKRenderPassCreator CreateInfo(VkDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
 public:
-	VulkanRenderPass(VKDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
+	VulkanRenderPass(VkDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
 	~VulkanRenderPass() = default;
 
 	INLINE const VKRenderPass& GetVKRenderPass() const { return RenderPass; }

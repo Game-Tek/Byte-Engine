@@ -2,36 +2,27 @@
 
 #include "RAPI/Vulkan/Vulkan.h"
 
-#include "RAPI/Vulkan/Native/VKDevice.h"
+#include "VulkanRenderDevice.h"
 
-VKBufferCreator VulkanUniformBuffer::CreateBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI)
+VulkanUniformBuffer::VulkanUniformBuffer(VulkanRenderDevice* vulkanRenderDevice, const UniformBufferCreateInfo& _BCI)
 {
-	VkBufferCreateInfo BufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+	VkBufferCreateInfo BufferCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	BufferCreateInfo.size = _BCI.Size;
 	BufferCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
 	BufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	return VKBufferCreator(_Device, &BufferCreateInfo);
-}
+	VkMemoryRequirements vk_memory_requirements;
 
-VKMemoryCreator VulkanUniformBuffer::CreateMemory(VKDevice* _Device)
-{
-	const auto MemReqs = Buffer.GetMemoryRequirements();
+	vkGetBufferMemoryRequirements(vulkanRenderDevice->GetVkDevice(), buffer, &vk_memory_requirements);
 
-	VkMemoryAllocateInfo MemoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-	MemoryAllocateInfo.allocationSize = MemReqs.size;
-	MemoryAllocateInfo.memoryTypeIndex = _Device->FindMemoryType(MemReqs.memoryTypeBits,
-	                                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-	                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VkMemoryAllocateInfo vk_memory_allocate_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	vk_memory_allocate_info.allocationSize = vk_memory_requirements.size;
+	vk_memory_allocate_info.memoryTypeIndex = vulkanRenderDevice->findMemorytype(vk_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-	return VKMemoryCreator(_Device, &MemoryAllocateInfo);
-}
+	vkBindBufferMemory(vulkanRenderDevice->GetVkDevice(), buffer, memory, 0/*offset*/);
 
-VulkanUniformBuffer::VulkanUniformBuffer(VKDevice* _Device, const UniformBufferCreateInfo& _BCI) : Buffer(CreateBuffer(_Device, _BCI)),
-	Memory(CreateMemory(_Device))
-{
-	Memory.BindBufferMemory(Buffer);
-	MappedMemoryPointer = static_cast<byte*>(Memory.MapMemory(0, _BCI.Size));
+
+	vkMapMemory(vulkanRenderDevice->GetVkDevice(), memory, 0/*offset*/, vk_memory_requirements.size, 0/*flags*/, (void**)&mappedMemoryPointer);
 }
 
 VulkanUniformBuffer::~VulkanUniformBuffer()
@@ -41,5 +32,5 @@ VulkanUniformBuffer::~VulkanUniformBuffer()
 
 void VulkanUniformBuffer::UpdateBuffer(const UniformBufferUpdateInfo& uniformBufferUpdateInfo) const
 {
-	Memory.CopyToMappedMemory(uniformBufferUpdateInfo.Data, MappedMemoryPointer + uniformBufferUpdateInfo.Offset, uniformBufferUpdateInfo.Size);
+	Memory.CopyToMappedMemory(uniformBufferUpdateInfo.Data, mappedMemoryPointer + uniformBufferUpdateInfo.Offset, uniformBufferUpdateInfo.Size);
 }

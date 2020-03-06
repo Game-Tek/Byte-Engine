@@ -6,16 +6,16 @@
 
 #define VK_NULL_HANDLE 0
 
-class VKDevice;
+class VkDevice;
 
 template <typename T>
 struct VKObjectCreator
 {
-	VKObjectCreator(VKDevice* _Device) : m_Device(_Device)
+	VKObjectCreator(VkDevice* _Device) : m_Device(_Device)
 	{
 	}
 
-	VKDevice* m_Device = nullptr;
+	VkDevice* m_Device = nullptr;
 	T Handle = VK_NULL_HANDLE;
 };
 
@@ -23,7 +23,7 @@ template <typename T>
 class VKObject
 {
 protected:
-	VKDevice* m_Device = nullptr;
+	VkDevice* m_Device = nullptr;
 	T Handle = VK_NULL_HANDLE;
 
 public:

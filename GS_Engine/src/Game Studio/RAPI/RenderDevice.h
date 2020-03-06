@@ -54,6 +54,7 @@ namespace RAPI
 			struct QueueCreateInfo
 			{
 				QueueCapabilities Capabilities;
+				float QueuePriority = 1.0f;
 			};
 		};
 
@@ -62,6 +63,7 @@ namespace RAPI
 			RenderAPI RenderingAPI;
 			FString ApplicationName;
 			uint16 ApplicationVersion[3];
+			FVector<Queue::QueueCreateInfo>* QueueCreateInfos = nullptr;
 			//FVector<RAPIExtensions>* Extensions = nullptr;
 		};
 		static RenderDevice* CreateRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);

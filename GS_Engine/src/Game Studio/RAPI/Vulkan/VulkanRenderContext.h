@@ -5,18 +5,9 @@
 #include "RAPI/RenderContext.h"
 
 #include "Containers/FVector.hpp"
-#include "Native/VKSurface.h"
-#include "Native/VKSwapchain.h"
-#include "Native/VKCommandPool.h"
-#include "Native/VKCommandBuffer.h"
-#include "Native/VKSemaphore.h"
-#include "Native/VKFence.h"
-#include "Native/vkQueue.h"
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
 #include "VulkanBindings.h"
-
-class VKDevice;
 
 enum VkPresentModeKHR;
 enum VkFormat;
@@ -45,7 +36,7 @@ namespace RAPI
 		uint8 imageIndex = 0;
 
 		VkSurfaceFormatKHR FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface);
-		VkPresentModeKHR FindPresentMode(const vkPhysicalDevice& _PD, VkSurfaceKHR _Surface);
+		VkPresentModeKHR FindPresentMode(const VkPhysicalDevice _PD, VkSurfaceKHR _Surface);
 	public:
 		VulkanRenderContext(VulkanRenderDevice* device, const RenderContextCreateInfo& renderContextCreateInfo);
 		~VulkanRenderContext();

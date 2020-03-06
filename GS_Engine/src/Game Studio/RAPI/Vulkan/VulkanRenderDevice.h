@@ -6,23 +6,11 @@
 
 #include "VulkanFramebuffer.h"
 #include "VulkanRenderContext.h"
-#include "Native/VKInstance.h"
-#include "Native/VKDevice.h"
-#include "Native/VKCommandPool.h"
-#include "Native/vkPhysicalDevice.h"
 
 #include "Vulkan.h"
 
-struct VkDeviceQueueCreateInfo;
-struct QueueInfo;
-enum VkPhysicalDeviceType;
-
 class VulkanRenderDevice final : public RenderDevice
 {
-	VKInstance Instance;
-	vkPhysicalDevice PhysicalDevice;
-	VKDevice Device;
-
 #ifdef GS_DEBUG
 	PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsFunction = nullptr;
 	VkDebugUtilsMessengerEXT debugMessenger = nullptr;
@@ -33,15 +21,11 @@ class VulkanRenderDevice final : public RenderDevice
 	VkPhysicalDevice physicalDevice = nullptr;
 	VkDevice device = nullptr;
 
-	VkCommandPool ImageTransferCommandPool = nullptr;
-
-	VKCommandPool TransientCommandPool;
-
-	VKCommandPoolCreator CreateCommandPool();
-
 	VkPhysicalDeviceProperties deviceProperties;
+	VkPhysicalDeviceMemoryProperties memoryProperties;
 	VkFormat findSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags,
 	                             VkImageTiling imageTiling);
+
 
 protected:
 	friend class VulkanTexture;
@@ -89,7 +73,9 @@ public:
 	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) override;
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) override;
 
-	INLINE VKDevice& GetVKDevice() { return Device; }
-	const vkPhysicalDevice& GetPhysicalDevice() const { return PhysicalDevice; }
-	[[nodiscard]] VkInstance GetVkInstance() const { return Instance.GetVkInstance(); }
+	VkInstance GetVkInstance() const { return instance; }
+	VkPhysicalDevice GetVkPhysicalDevice() const { return physicalDevice; }
+	VkDevice GetVkDevice() const { return device; }
+
+	uint32 findMemorytype(uint32 memoryType, uint32 memoryFlags) const;
 };

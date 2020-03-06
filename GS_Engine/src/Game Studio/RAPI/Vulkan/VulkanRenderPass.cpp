@@ -4,7 +4,7 @@
 #include "Containers/FVector.hpp"
 #include "RAPI/RenderDevice.h"
 
-VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const RenderPassDescriptor& _RPD)
+VKRenderPassCreator VulkanRenderPass::CreateInfo(VkDevice* _Device, const RenderPassDescriptor& _RPD)
 {
 	bool DSAA = _RPD.DepthStencilAttachment.AttachmentImage;
 
@@ -175,7 +175,7 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VKDevice* _Device, const Render
 	return VKRenderPassCreator(_Device, &RPCI);
 }
 
-VulkanRenderPass::VulkanRenderPass(VKDevice* _Device, const RenderPassDescriptor& _RPD) : RenderPass(
+VulkanRenderPass::VulkanRenderPass(VkDevice* _Device, const RenderPassDescriptor& _RPD) : RenderPass(
 	CreateInfo(_Device, _RPD))
 {
 }

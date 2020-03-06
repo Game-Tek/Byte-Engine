@@ -16,14 +16,14 @@ VulkanCommandBuffer::VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const
 	VkCommandPoolCreateInfo vk_command_pool_create_info{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	vk_command_pool_create_info;
 
-	vkCreateCommandPool(renderDevice->GetVKDevice().GetVkDevice(), &vk_command_pool_create_info, ALLOCATOR, &commandPool);
+	vkCreateCommandPool(renderDevice->GetVkDevice().GetVkDevice(), &vk_command_pool_create_info, ALLOCATOR, &commandPool);
 
 	VkCommandBufferAllocateInfo vk_command_buffer_allocate_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 	vk_command_buffer_allocate_info.commandPool = commandPool;
 	vk_command_buffer_allocate_info.commandBufferCount = 1;
 	vk_command_buffer_allocate_info.level = commandBufferCreateInfo.IsPrimary ? VK_COMMAND_BUFFER_LEVEL_PRIMARY : VK_COMMAND_BUFFER_LEVEL_SECONDARY;
 	
-	vkAllocateCommandBuffers(renderDevice->GetVKDevice().GetVkDevice(), &vk_command_buffer_allocate_info, &commandBuffer);
+	vkAllocateCommandBuffers(renderDevice->GetVkDevice().GetVkDevice(), &vk_command_buffer_allocate_info, &commandBuffer);
 }
 
 void VulkanCommandBuffer::BeginRecording(const BeginRecordingInfo& beginRecordingInfo)

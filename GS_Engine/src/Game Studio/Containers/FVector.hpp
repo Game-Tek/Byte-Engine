@@ -319,6 +319,8 @@ public:
 		return this->data[index];
 	}
 
+	T& at(const length_type index) { return this->data[index]; }
+
 	//Returns the occupied elements count.
 	INLINE length_type getLength() const { return this->length; }
 

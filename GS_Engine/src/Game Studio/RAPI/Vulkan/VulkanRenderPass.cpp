@@ -2,9 +2,9 @@
 
 #include "Vulkan.h"
 #include "Containers/FVector.hpp"
-#include "RAPI/RenderDevice.h"
+#include "RAPI/Vulkan/VulkanRenderDevice.h"
 
-VKRenderPassCreator VulkanRenderPass::CreateInfo(VkDevice* _Device, const RenderPassDescriptor& _RPD)
+VulkanRenderPass::VulkanRenderPass(VulkanRenderDevice * vulkanRenderDevice, const RAPI::RenderPassDescriptor & _RPD)
 {
 	bool DSAA = _RPD.DepthStencilAttachment.AttachmentImage;
 
@@ -142,15 +142,15 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VkDevice* _Device, const Render
 	for (uint8 i = 0; i < _RPD.SubPasses.getLength(); ++i)
 	{
 		ArrayLength += _RPD.SubPasses[i]->ReadColorAttachments.getLength() + _RPD.SubPasses[i]
-		                                                                     ->WriteColorAttachments.getLength();
+			->WriteColorAttachments.getLength();
 	}
 
 	DArray<VkSubpassDependency> SubpassDependencies(ArrayLength);
 	for (uint8 SUBPASS = 0; SUBPASS < _RPD.SubPasses.getLength(); ++SUBPASS)
 	{
 		for (uint8 ATT = 0; ATT < _RPD.SubPasses[SUBPASS]->ReadColorAttachments.getLength() + _RPD.SubPasses[SUBPASS]
-		                                                                                      ->WriteColorAttachments.
-		                                                                                      getLength(); ++ATT)
+			->WriteColorAttachments.
+			getLength(); ++ATT)
 		{
 			SubpassDependencies[SUBPASS + ATT].srcSubpass = VK_SUBPASS_EXTERNAL;
 			SubpassDependencies[SUBPASS + ATT].dstSubpass = SUBPASS;
@@ -164,18 +164,13 @@ VKRenderPassCreator VulkanRenderPass::CreateInfo(VkDevice* _Device, const Render
 	}
 
 
-	VkRenderPassCreateInfo RPCI = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-	RPCI.attachmentCount = _RPD.RenderPassColorAttachments.getLength() + DSAA;
-	RPCI.pAttachments = Attachments.getData();
-	RPCI.subpassCount = _RPD.SubPasses.getLength();
-	RPCI.pSubpasses = Subpasses.getData();
-	RPCI.dependencyCount = ArrayLength;
-	RPCI.pDependencies = SubpassDependencies.getData();
+	VkRenderPassCreateInfo vk_renderpass_create_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+	vk_renderpass_create_info.attachmentCount = _RPD.RenderPassColorAttachments.getLength() + DSAA;
+	vk_renderpass_create_info.pAttachments = Attachments.getData();
+	vk_renderpass_create_info.subpassCount = _RPD.SubPasses.getLength();
+	vk_renderpass_create_info.pSubpasses = Subpasses.getData();
+	vk_renderpass_create_info.dependencyCount = ArrayLength;
+	vk_renderpass_create_info.pDependencies = SubpassDependencies.getData();
 
-	return VKRenderPassCreator(_Device, &RPCI);
-}
-
-VulkanRenderPass::VulkanRenderPass(VkDevice* _Device, const RenderPassDescriptor& _RPD) : RenderPass(
-	CreateInfo(_Device, _RPD))
-{
+	vkCreateRenderPass(vulkanRenderDevice->GetVkDevice(), &vk_renderpass_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &renderPass);
 }

@@ -2,16 +2,13 @@
 
 #include "RAPI/RenderPass.h"
 
-#include "Native/VKRenderPass.h"
-
 class VulkanRenderPass final : public RAPI::RenderPass
 {
-	VKRenderPass RenderPass;
+	VkRenderPass renderPass = nullptr;
 
-	static VKRenderPassCreator CreateInfo(VkDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
 public:
-	VulkanRenderPass(VkDevice* _Device, const RAPI::RenderPassDescriptor& _RPD);
+	VulkanRenderPass(class VulkanRenderDevice* vulkanRenderDevice, const RAPI::RenderPassDescriptor& renderPassDescriptor);
 	~VulkanRenderPass() = default;
 
-	INLINE const VKRenderPass& GetVKRenderPass() const { return RenderPass; }
+	VkRenderPass GetVkRenderPass() const { return renderPass; }
 };

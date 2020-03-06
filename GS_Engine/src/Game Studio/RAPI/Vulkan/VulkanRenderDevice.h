@@ -77,6 +77,6 @@ public:
 	VkPhysicalDevice GetVkPhysicalDevice() const { return physicalDevice; }
 	VkDevice GetVkDevice() const { return device; }
 
-	uint32 FindMemorytype(uint32 memoryType, uint32 memoryFlags) const;
+	uint32 FindMemoryType(uint32 memoryType, uint32 memoryFlags) const;
 	VkAllocationCallbacks* GetVkAllocationCallbacks() const { return nullptr; }
 };

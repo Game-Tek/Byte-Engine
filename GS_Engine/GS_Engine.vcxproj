@@ -201,7 +201,7 @@
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBase.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
@@ -289,7 +289,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />

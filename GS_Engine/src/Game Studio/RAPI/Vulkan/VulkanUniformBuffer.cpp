@@ -19,7 +19,7 @@ VulkanUniformBuffer::VulkanUniformBuffer(VulkanRenderDevice* vulkanRenderDevice,
 
 	VkMemoryAllocateInfo vk_memory_allocate_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
 	vk_memory_allocate_info.allocationSize = vk_memory_requirements.size;
-	vk_memory_allocate_info.memoryTypeIndex = vulkanRenderDevice->FindMemorytype(vk_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	vk_memory_allocate_info.memoryTypeIndex = vulkanRenderDevice->FindMemoryType(vk_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 	vkBindBufferMemory(vulkanRenderDevice->GetVkDevice(), buffer, memory, 0/*offset*/);
 

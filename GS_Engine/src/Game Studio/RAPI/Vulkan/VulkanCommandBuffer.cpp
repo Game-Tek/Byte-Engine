@@ -85,7 +85,7 @@ void VulkanCommandBuffer::BindComputePipeline(const BindComputePipelineInfo& bin
 
 void VulkanCommandBuffer::BindMesh(const BindMeshInfo& bindMeshInfo)
 {
-	const auto mesh = static_cast<VulkanMesh*>(bindMeshInfo.Mesh);
+	const auto mesh = static_cast<VulkanRenderMesh*>(bindMeshInfo.Mesh);
 	VkDeviceSize offset = 0;
 
 	VkBuffer vertex_buffers = mesh->GetVertexBuffer().GetHandle();

@@ -52,34 +52,26 @@ namespace RAPI
 		[[nodiscard]] uint8 GetAttributeCount() const { return Elements.getCapacity(); }
 	};
 
-	//Describes all data necessary to create a mesh.
-	//    Pointer to an array holding the vertices that describe the mesh.
-	//        Vertex* VertexData;
-	//    Total number of vertices found in the VertexData array.
-	//        uint16 VertexCount;
-	//    Pointer to an array holding the indices that describe the mesh.
-	//        uint16* IndexData;
-	//    Total number of indices found in the IndexData array.
-	//        uint16 IndexCount;
-	//    A vertex descriptor that defines the layout of the vertices found in VertexData.
-	//        VertexDescriptor VertexLayout;
-	struct MeshCreateInfo
-	{
-		//Pointer to an array holding the vertices that describe the mesh.
-		void* VertexData = nullptr;
-		//Total number of vertices found in the VertexData array.
-		uint16 VertexCount = 0;
-		//Pointer to an array holding the indices that describe the mesh.
-		uint16* IndexData = nullptr;
-		//Total number of indices found in the IndexData array.
-		uint16 IndexCount = 0;
-		//A vertex descriptor that defines the layout of the vertices found in VertexData.
-		VertexDescriptor* VertexLayout = nullptr;
-	};
-
-	class RenderMesh
+	class RenderMesh : public RAPIObject
 	{
 	public:
+		struct RenderMeshCreateInfo
+		{
+			//Pointer to an array holding the vertices that describe the mesh.
+			void* VertexData = nullptr;
+			//Total number of vertices found in the VertexData array.
+			uint16 VertexCount = 0;
+			//Pointer to an array holding the indices that describe the mesh.
+			uint16* IndexData = nullptr;
+			//Total number of indices found in the IndexData array.
+			uint16 IndexCount = 0;
+			//A vertex descriptor that defines the layout of the vertices found in VertexData.
+			VertexDescriptor* VertexLayout = nullptr;
+
+			class CommandBuffer* CommandBuffer = nullptr;
+		};
+
+		void Destroy(class RenderDevice* renderDevice) override;
 	};
 
 }

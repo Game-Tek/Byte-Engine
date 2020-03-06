@@ -118,7 +118,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 		Framebuffers[i] = renderDevice->CreateFramebuffer(FBCI);
 	}
 
-	MeshCreateInfo MCI;
+	RenderMeshCreateInfo MCI;
 	MCI.IndexCount = ScreenQuad::IndexCount;
 	MCI.VertexCount = ScreenQuad::VertexCount;
 	MCI.VertexData = ScreenQuad::Vertices;
@@ -237,7 +237,7 @@ RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 	{
 		Model m = _SM->GetModel();
 
-		MeshCreateInfo MCI;
+		RenderMeshCreateInfo MCI;
 		MCI.IndexCount = m.IndexCount;
 		MCI.VertexCount = m.VertexCount;
 		MCI.VertexData = m.VertexArray;

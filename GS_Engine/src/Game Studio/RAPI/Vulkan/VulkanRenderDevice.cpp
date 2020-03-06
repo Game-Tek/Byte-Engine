@@ -160,7 +160,7 @@ VkFormat VulkanRenderDevice::findSupportedFormat(const DArray<VkFormat>& formats
 	return VK_FORMAT_UNDEFINED;
 }
 
-uint32 VulkanRenderDevice::FindMemorytype(uint32 memoryType, uint32 memoryFlags) const
+uint32 VulkanRenderDevice::FindMemoryType(uint32 memoryType, uint32 memoryFlags) const
 {
 	for (uint32 i = 0; i < memoryProperties.memoryTypeCount; ++i)
 	{
@@ -331,9 +331,9 @@ GPUInfo VulkanRenderDevice::GetGPUInfo()
 	return result;
 }
 
-RenderMesh* VulkanRenderDevice::CreateMesh(const MeshCreateInfo& _MCI)
+RenderMesh* VulkanRenderDevice::CreateMesh(const RenderMeshCreateInfo& _MCI)
 {
-	return new VulkanMesh(&Device, TransientCommandPool, _MCI.VertexData,
+	return new VulkanRenderMesh(&Device, TransientCommandPool, _MCI.VertexData,
 	                      _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
 }
 

@@ -137,7 +137,6 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
     <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
     <ClInclude Include="src\Game Studio\RAPI\Window.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.h" />
     <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
@@ -263,6 +262,7 @@
     <ClInclude Include="src\Game Studio\Core\ThreadPool.h" />
     <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
     <ClInclude Include="src\Game Studio\Core\Signal.h" />
+    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -280,7 +280,6 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanMesh.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>
@@ -339,6 +338,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.cpp" />
     <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
+    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

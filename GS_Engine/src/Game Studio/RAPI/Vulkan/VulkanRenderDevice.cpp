@@ -172,20 +172,83 @@ void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements
 	            "Failed to allocate memory!");
 }
 
+inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT messageType,
+	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+	void* pUserData)
+{
+	switch (messageSeverity)
+	{
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: GS_BASIC_LOG_MESSAGE("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: GS_BASIC_LOG_WARNING("Vulkan: %s", pCallbackData->pMessage) break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: GS_BASIC_LOG_ERROR("Vulkan: %s, %s", pCallbackData->pObjects->pObjectName, pCallbackData->pMessage) break;
+	default: break;
+	}
+
+	return VK_FALSE;
+}
+
 VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo) : Instance("Game Studio"),
                                            PhysicalDevice(Instance),
                                            Device(Instance, PhysicalDevice),
                                            TransientCommandPool(CreateCommandPool())
 {
+	VkApplicationInfo vk_application_info = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+	vk_application_info.pNext = nullptr;
+	vk_application_info.apiVersion = VK_MAKE_VERSION(1, 1, 2);
+	//Should check if version is available vi vkEnumerateInstanceVersion().
+	vk_application_info.applicationVersion = VK_MAKE_VERSION(renderDeviceCreateInfo.ApplicationVersion[0], renderDeviceCreateInfo.ApplicationVersion[1], renderDeviceCreateInfo.ApplicationVersion[2]);
+	vk_application_info.engineVersion = VK_MAKE_VERSION(0, 0, 1);
+	vk_application_info.pApplicationName = renderDeviceCreateInfo.ApplicationName.c_str();
+	vk_application_info.pEngineName = "Game-Tek | RAPI";
+
+#ifdef GS_DEBUG
+	const char* InstanceLayers[] = {
+		"VK_LAYER_LUNARG_standard_validation", "VK_LAYER_LUNARG_parameter_validation", "VK_LAYER_LUNARG_monitor"
+	};
+#else
+	const char* InstanceLayers[] = nullptr;
+#endif // GS_DEBUG
+
+	const char* Extensions[] = {
+		VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+	};
+
+	VkInstanceCreateInfo vk_instance_create_info = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+	vk_instance_create_info.pApplicationInfo = &vk_application_info;
+	vk_instance_create_info.enabledLayerCount = 1;
+	vk_instance_create_info.ppEnabledLayerNames = InstanceLayers;
+	vk_instance_create_info.enabledExtensionCount = 3;
+	vk_instance_create_info.ppEnabledExtensionNames = Extensions;
+
+	GS_VK_CHECK(vkCreateInstance(&vk_instance_create_info, ALLOCATOR, &Instance), "Failed to create Instance!")
+
+	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+	createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+	createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+	createInfo.pfnUserCallback = debugCallback;
+	createInfo.pUserData = nullptr; // Optional
+
+#ifdef GS_DEBUG
+	createDebugUtilsFunction = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+	destroyDebugUtilsFunction = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+	createDebugUtilsFunction(Instance, &createInfo, ALLOCATOR, &debugMessenger);
+#endif
+
 	vkGetPhysicalDeviceProperties(PhysicalDevice, &deviceProperties);
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()
 {
-	//vkDeviceWaitIdle(device);
-	//vkDestroyDevice(device, ALLOCATOR);
-	//DestroyDebugUtilsMessengerEXT(Instance, debugMessenger, ALLOCATOR);
-	//vkDestroyInstance(instance, ALLOCATOR);
+	vkDeviceWaitIdle(device);
+	vkDestroyDevice(device, ALLOCATOR);
+#ifdef GS_DEBUG
+	destroyDebugUtilsFunction(Instance, debugMessenger, ALLOCATOR);
+#endif
+	vkDestroyInstance(instance, ALLOCATOR);
 }
 
 GPUInfo VulkanRenderDevice::GetGPUInfo()

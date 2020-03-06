@@ -23,6 +23,12 @@ class VulkanRenderDevice final : public RenderDevice
 	vkPhysicalDevice PhysicalDevice;
 	VKDevice Device;
 
+#ifdef GS_DEBUG
+	PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsFunction = nullptr;
+	VkDebugUtilsMessengerEXT debugMessenger = nullptr;
+	PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsFunction = nullptr;
+#endif
+
 	VkInstance instance = nullptr;
 	VkPhysicalDevice physicalDevice = nullptr;
 	VkDevice device = nullptr;

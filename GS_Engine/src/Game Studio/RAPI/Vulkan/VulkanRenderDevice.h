@@ -49,10 +49,23 @@ public:
 	{
 		VkQueue queue = nullptr;
 		uint32 queueIndex = 0;
+		uint32 familyIndex = 0;
+
 	public:
+		struct VulkanQueueCreateInfo
+		{
+			VkQueue Queue = nullptr;
+			uint32 QueueIndex = 0;
+			uint32 FamilyIndex = 0;
+		};
+		VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo);
+		~VulkanQueue() = delete;
+
 		void Submit(const SubmitInfo& submitInfo) override;
 		void Dispatch(const DispatchInfo& dispatchInfo) override;
-		void Present(const PresentInfo& presentInfo) override;
+
+		VkQueue GetVkQueue() const { return queue; }
+		uint32 GetQueueIndex() const { return queueIndex; }
 	};
 
 	GPUInfo GetGPUInfo() override;

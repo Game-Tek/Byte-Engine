@@ -445,6 +445,14 @@ RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreate
 	return new VulkanRenderContext(this, _RCCI);
 }
 
+VulkanRenderDevice::VulkanQueue::VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo) : queue(vulkanQueueCreateInfo.Queue), queueIndex(vulkanQueueCreateInfo.QueueIndex), familyIndex(vulkanQueueCreateInfo.FamilyIndex)
+{
+}
+
+VulkanRenderDevice::VulkanQueue::~VulkanQueue()
+{
+}
+
 void VulkanRenderDevice::VulkanQueue::Submit(const SubmitInfo& submitInfo)
 {
 	VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };

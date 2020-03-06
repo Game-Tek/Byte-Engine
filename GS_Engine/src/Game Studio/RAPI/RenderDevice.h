@@ -41,15 +41,20 @@ namespace RAPI
 		class Queue
 		{
 		public:
-			enum class Capabilities : uint8
+			enum class QueueCapabilities : uint8
 			{
 				GRAPHICS = 1, COMPUTE = 2, TRANSFER = 4
 			};
 
 		private:
-			Capabilities capabilities;
+			QueueCapabilities capabilities;
 
 		public:
+			struct QueueCreateInfo
+			{
+				QueueCapabilities Capabilities;
+			};
+
 			struct SubmitInfo
 			{};
 			virtual void Submit(const SubmitInfo& submitInfo) = 0;

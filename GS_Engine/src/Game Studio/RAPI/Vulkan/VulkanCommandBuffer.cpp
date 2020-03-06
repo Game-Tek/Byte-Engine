@@ -16,19 +16,19 @@ VulkanCommandBuffer::VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const
 	VkCommandPoolCreateInfo vk_command_pool_create_info{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	vk_command_pool_create_info;
 
-	vkCreateCommandPool(renderDevice->GetVkDevice().GetVkDevice(), &vk_command_pool_create_info, ALLOCATOR, &commandPool);
+	vkCreateCommandPool(renderDevice->GetVkDevice(), &vk_command_pool_create_info, renderDevice->GetVkAllocationCallbacks(), &commandPool);
 
 	VkCommandBufferAllocateInfo vk_command_buffer_allocate_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 	vk_command_buffer_allocate_info.commandPool = commandPool;
 	vk_command_buffer_allocate_info.commandBufferCount = 1;
 	vk_command_buffer_allocate_info.level = commandBufferCreateInfo.IsPrimary ? VK_COMMAND_BUFFER_LEVEL_PRIMARY : VK_COMMAND_BUFFER_LEVEL_SECONDARY;
 	
-	vkAllocateCommandBuffers(renderDevice->GetVkDevice().GetVkDevice(), &vk_command_buffer_allocate_info, &commandBuffer);
+	vkAllocateCommandBuffers(renderDevice->GetVkDevice(), &vk_command_buffer_allocate_info, &commandBuffer);
 }
 
 void VulkanCommandBuffer::BeginRecording(const BeginRecordingInfo& beginRecordingInfo)
 {
-	VkCommandBufferBeginInfo vk_command_buffer_begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VkCommandBufferBeginInfo vk_command_buffer_begin_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 	vk_command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 	//Hint to primary buffer if this is secondary.
 	vk_command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -44,7 +44,7 @@ void VulkanCommandBuffer::EndRecording(const EndRecordingInfo& endRecordingInfo)
 void VulkanCommandBuffer::BeginRenderPass(const BeginRenderPassInfo& beginRenderPassInfo)
 {
 	VkRenderPassBeginInfo RenderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-	RenderPassBeginInfo.renderPass = static_cast<VulkanRenderPass*>(beginRenderPassInfo.RenderPass)->GetVKRenderPass().GetHandle();
+	RenderPassBeginInfo.renderPass = static_cast<VulkanRenderPass*>(beginRenderPassInfo.RenderPass)->GetVkRenderPass();
 	RenderPassBeginInfo.pClearValues = static_cast<VulkanFramebuffer*>(beginRenderPassInfo.Framebuffer)->GetClearValues().getData();
 	RenderPassBeginInfo.clearValueCount = static_cast<uint32>(static_cast<VulkanFramebuffer*>(beginRenderPassInfo.Framebuffer)->GetClearValues().getLength());
 	RenderPassBeginInfo.framebuffer = static_cast<VulkanFramebuffer*>(beginRenderPassInfo.Framebuffer)->GetVkFramebuffer();

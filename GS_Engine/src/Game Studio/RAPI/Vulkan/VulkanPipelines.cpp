@@ -236,3 +236,10 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(VulkanRenderDevice* vulkanRenderD
 	vkCreateGraphicsPipelines(static_cast<VulkanRenderDevice*>(_GPCI.RenderDevice)->GetVkDevice(), nullptr, 1, &vk_graphics_pipeline_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &vkPipeline);
 }
 
+void VulkanGraphicsPipeline::Destroy(RenderDevice* renderDevice)
+{
+	auto vk_render_device = static_cast<VulkanRenderDevice*>(renderDevice);
+	vkDestroyPipeline(vk_render_device->GetVkDevice(), vkPipeline, vk_render_device->GetVkAllocationCallbacks());
+	vkDestroyPipelineLayout(vk_render_device->GetVkDevice(), vkPipelineLayout, vk_render_device->GetVkAllocationCallbacks());
+}
+

@@ -23,6 +23,8 @@ public:
 	VulkanGraphicsPipeline(VulkanRenderDevice* vulkanRenderDevice, const GraphicsPipelineCreateInfo& _GPCI);
 	~VulkanGraphicsPipeline() = default;
 
+	void Destroy(RenderDevice* renderDevice) override;
+
 	INLINE VkPipeline GetVkGraphicsPipeline() const { return vkPipeline; }
 	INLINE VkPipelineLayout GetVkPipelineLayout() const { return vkPipelineLayout; }
 };

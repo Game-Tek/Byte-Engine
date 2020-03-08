@@ -45,7 +45,7 @@ namespace RAPI
 	class RenderPass;
 	class BindingLayout;
 
-	class Pipeline
+	class Pipeline : public RAPIObject
 	{
 	};
 

@@ -4,14 +4,13 @@
 
 #include "RAPI/RenderContext.h"
 
+#include "RAPI/Vulkan/Vulkan.h"
+
 #include "Containers/FVector.hpp"
 #include "VulkanPipelines.h"
 #include "VulkanSwapchainImage.h"
 #include "VulkanBindings.h"
 
-enum VkPresentModeKHR;
-enum VkFormat;
-enum VkColorSpaceKHR;
 
 namespace RAPI
 {

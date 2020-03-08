@@ -7,7 +7,6 @@
 #include "VulkanFramebuffer.h"
 
 #include "RAPI/Window.h"
-#include "Native/vkPhysicalDevice.h"
 #include "RAPI/Platform/Windows/WindowsWindow.h"
 
 #ifdef GS_PLATFORM_WIN
@@ -15,6 +14,7 @@
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 #endif
+
 #include <RAPI\Vulkan\VulkanCommandBuffer.h>
 
 //  VULKAN RENDER CONTEXT
@@ -23,7 +23,7 @@ using namespace RAPI;
 
 VkSurfaceFormatKHR VulkanRenderContext::FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface)
 {
-	VkPhysicalDevice pd = device->GetPhysicalDevice();
+	VkPhysicalDevice pd = device->GetVkPhysicalDevice();
 	
 	uint32 formats_count = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(pd, surface, &formats_count, nullptr);
@@ -82,7 +82,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	
 	extent = renderContextCreateInfo.Window->GetWindowExtent();
 	
-	VkWin32SurfaceCreateInfoKHR vk_win32_surface_create_info_khr = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+	VkWin32SurfaceCreateInfoKHR vk_win32_surface_create_info_khr{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	vk_win32_surface_create_info_khr.hwnd = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetWindowObject();
 	vk_win32_surface_create_info_khr.hinstance = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetHInstance();
 	GS_VK_CHECK(vkCreateWin32SurfaceKHR(device->GetVkInstance(), &vk_win32_surface_create_info_khr, ALLOCATOR, &surface), "Failed to create Win32 Surface!");
@@ -91,7 +91,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	
 	presentMode = FindPresentMode(device->GetVkPhysicalDevice(), surface);
 	
-	VkSwapchainCreateInfoKHR vk_swapchain_create_info_khr = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+	VkSwapchainCreateInfoKHR vk_swapchain_create_info_khr{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 	vk_swapchain_create_info_khr.surface = surface;
 	vk_swapchain_create_info_khr.minImageCount = renderContextCreateInfo.DesiredFramesInFlight;
 	vk_swapchain_create_info_khr.imageFormat = surfaceFormat.format;
@@ -109,7 +109,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	vk_swapchain_create_info_khr.clipped = VK_TRUE;
 	vk_swapchain_create_info_khr.oldSwapchain = nullptr;
 
-	vkCreateSwapchainKHR(device->GetVkDevice(), &vk_swapchain_create_info_khr, ALLOCATOR, &swapchain);
+	vkCreateSwapchainKHR(device->GetVkDevice(), &vk_swapchain_create_info_khr, device->GetVkAllocationCallbacks(), &swapchain);
 
 	uint32 swapchain_image_count = 0;
 	vkGetSwapchainImagesKHR(device->GetVkDevice(), swapchain, &swapchain_image_count, nullptr);
@@ -119,19 +119,19 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	
 	maxFramesInFlight = static_cast<uint8>(vulkanSwapchainImages.getCapacity());
 	
-	VkSemaphoreCreateInfo SemaphoreCreateInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+	VkSemaphoreCreateInfo vk_semaphore_create_info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 
-	VkFenceCreateInfo FenceCreateInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-	FenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+	VkFenceCreateInfo vk_fence_create_info{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	vk_fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
 	for (uint8 i = 0; i < maxFramesInFlight; ++i)
 	{
-		imagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &SemaphoreCreateInfo));
-		rendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &SemaphoreCreateInfo));
-		inFlightFences.emplace_back(VKFenceCreator(&device->GetVkDevice(), &FenceCreateInfo));
+		imagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &vk_semaphore_create_info));
+		rendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &vk_semaphore_create_info));
+		inFlightFences.emplace_back(VKFenceCreator(&device->GetVkDevice(), &vk_fence_create_info));
 
 		RenderTarget::RenderTargetCreateInfo image_create_info;
-		image_create_info.Extent = { extent.Width, extent.Height, 0};
+		image_create_info.Extent = { extent.Width, extent.Height, 0 };
 		image_create_info.Format = VkFormatToImageFormat(surfaceFormat.format);
 		swapchainImages.emplace_back(device, image_create_info, vulkanSwapchainImages[i]);
 	}

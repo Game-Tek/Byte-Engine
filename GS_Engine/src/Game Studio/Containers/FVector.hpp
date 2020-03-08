@@ -77,7 +77,7 @@ private:
 	iterator getIterator(const length_type index) { return &this->data[index]; }
 public:
 	//Constructs a new FVector.
-	FVector() : capacity(10), length(0), data(allocate(this->capacity))
+	FVector() : capacity(0), length(0), data(nullptr)
 	{
 	}
 
@@ -157,11 +157,20 @@ public:
 		return;
 	}
 
-	void forceAlloc(const length_type count)
+	void init(const length_type count)
 	{
 		this->data = allocate(count);
 		this->capacity = count;
 		this->length = 0;
+		return;
+	}
+
+	void init(const length_type count, const T* data)
+	{
+		this->data = allocate(count);
+		copyArray(data, this->data, count);
+		this->capacity = count;
+		this->length = count;
 		return;
 	}
 
@@ -246,7 +255,7 @@ public:
 	}
 
 	//Overwrites existing data with the data from the passed array.
-	void overwrite(const length_type length, T arr[], const length_type index)
+	void overwrite(const length_type length, const T arr[], const length_type index)
 	{
 		reallocIfExceeds((this->length - length) + index);
 		copyArray(arr, getIterator(index), length);
@@ -254,7 +263,7 @@ public:
 	}
 
 	//Adjusts the array's size to only fit the passed array and overwrites all existing data.
-	void recreate(const length_type length, T arr[])
+	void recreate(const length_type length, const T arr[])
 	{
 		reallocIfExceeds(length - this->length);
 		copyArray(arr, this->data, length);
@@ -332,4 +341,6 @@ public:
 
 	//Returns a pointer to the allocated array.
 	INLINE const T* getData() const { return this->data; }
+
+	INLINE size_t getLengthSize() const { return this->length * sizeof(T); }
 };

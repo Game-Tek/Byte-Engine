@@ -5,8 +5,14 @@
 #include "RAPI/GraphicsPipeline.h"
 #include "RAPI/ComputePipeline.h"
 
-class VKRenderPass;
-class RenderPass;
+#include "Vulkan.h"
+
+class VulkanShaders
+{
+public:
+	//takes an unitialized fvector
+	static void CompileShader(const FString& code, const FString& shaderName, uint32 shaderStage, FVector<uint32>& result);
+};
 
 class VulkanGraphicsPipeline final : public GraphicsPipeline
 {
@@ -14,7 +20,7 @@ class VulkanGraphicsPipeline final : public GraphicsPipeline
 	VkPipeline vkPipeline = nullptr;
 
 public:
-	VulkanGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI);
+	VulkanGraphicsPipeline(VulkanRenderDevice* vulkanRenderDevice, const GraphicsPipelineCreateInfo& _GPCI);
 	~VulkanGraphicsPipeline() = default;
 
 	INLINE VkPipeline GetVkGraphicsPipeline() const { return vkPipeline; }
@@ -26,7 +32,7 @@ class VulkanComputePipeline final : public ComputePipeline
 	VkPipeline vkPipeline = nullptr;
 
 public:
-	explicit VulkanComputePipeline(VKDevice* _Device);
+	VulkanComputePipeline(VulkanRenderDevice* vulkanRenderDevice, const ComputePipelineCreateInfo& computePipelineCreateInfo);
 	~VulkanComputePipeline() = default;
 
 	[[nodiscard]] VkPipeline GetVkPipeline() const { return vkPipeline; }

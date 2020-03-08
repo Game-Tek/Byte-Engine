@@ -5,6 +5,8 @@
 namespace RAPI
 {
 
+	constexpr uint8 MAX_SHADER_STAGES = 8;
+
 	struct RenderInfo
 	{
 		class RenderDevice* RenderDevice = nullptr;

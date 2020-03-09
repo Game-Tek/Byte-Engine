@@ -17,10 +17,12 @@ namespace RAPI
 		Extent2D Extent = { 1280, 720 };
 
 		uint8 Anisotropy = 0;
+
+		CommandBuffer* CommandBuffer = nullptr;
 	};
 
 	//Represents a resource utilized by the rendering API for storing and referencing textures. Which are images which hold some information loaded from memory.
-	class Texture
+	class Texture : public RAPIObject
 	{
 		ImageLayout layout;
 	public:

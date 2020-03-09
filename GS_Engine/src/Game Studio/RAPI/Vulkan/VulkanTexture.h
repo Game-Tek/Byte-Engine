@@ -4,14 +4,6 @@
 
 #include "Vulkan.h"
 
-struct VulkanTextureCreateInfo
-{
-	VkImage TextureImage = nullptr;
-	VkDeviceMemory TextureImageMemory = nullptr;
-	VkImageView TextureImageView = nullptr;
-	VkSampler TextureSampler = nullptr;
-};
-
 class VulkanTexture : public Texture
 {
 	VkImage textureImage = nullptr;
@@ -20,11 +12,9 @@ class VulkanTexture : public Texture
 	VkSampler textureSampler = nullptr;
 
 public:
-	explicit VulkanTexture(const TextureCreateInfo& textureCreateInfo, const VulkanTextureCreateInfo& VTCI_) :
-		Texture(textureCreateInfo), textureImage(VTCI_.TextureImage), textureImageMemory(VTCI_.TextureImageMemory),
-		textureImageView(VTCI_.TextureImageView), textureSampler(VTCI_.TextureSampler)
-	{
-	}
+	VulkanTexture(class VulkanRenderDevice* vulkanRenderDevice, const TextureCreateInfo& textureCreateInfo);
+
+	void Destroy(class RenderDevice* renderDevice) override;
 
 	[[nodiscard]] VkImageView GetImageView() const { return textureImageView; }
 	[[nodiscard]] VkSampler GetImageSampler() const { return textureSampler; }

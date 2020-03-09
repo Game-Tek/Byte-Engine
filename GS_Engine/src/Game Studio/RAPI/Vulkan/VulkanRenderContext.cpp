@@ -1,5 +1,3 @@
-#include "Vulkan.h"
-
 #include "VulkanRenderDevice.h"
 
 #include "VulkanRenderContext.h"
@@ -21,9 +19,9 @@
 
 using namespace RAPI;
 
-VkSurfaceFormatKHR VulkanRenderContext::FindFormat(const VulkanRenderDevice* device, VkSurfaceKHR surface)
+VkSurfaceFormatKHR VulkanRenderContext::FindFormat(const VulkanRenderDevice* vulkanRenderDevice, VkSurfaceKHR surface)
 {
-	VkPhysicalDevice pd = device->GetVkPhysicalDevice();
+	VkPhysicalDevice pd = vulkanRenderDevice->GetVkPhysicalDevice();
 	
 	uint32 formats_count = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(pd, surface, &formats_count, nullptr);
@@ -76,7 +74,7 @@ VkPresentModeKHR VulkanRenderContext::FindPresentMode(const VkPhysicalDevice _PD
 	return best_present_mode;
 }
 
-VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const RenderContextCreateInfo& renderContextCreateInfo)
+VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* vulkanRenderDevice, const RenderContextCreateInfo& renderContextCreateInfo)
 {
 	GS_ASSERT(renderContextCreateInfo.DesiredFramesInFlight > vulkanSwapchainImages.getCapacity(), "Requested swapchain image count is more than what the engine can handle, please request less.")
 	
@@ -85,11 +83,11 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	VkWin32SurfaceCreateInfoKHR vk_win32_surface_create_info_khr{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	vk_win32_surface_create_info_khr.hwnd = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetWindowObject();
 	vk_win32_surface_create_info_khr.hinstance = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetHInstance();
-	GS_VK_CHECK(vkCreateWin32SurfaceKHR(device->GetVkInstance(), &vk_win32_surface_create_info_khr, ALLOCATOR, &surface), "Failed to create Win32 Surface!");
+	GS_VK_CHECK(vkCreateWin32SurfaceKHR(vulkanRenderDevice->GetVkInstance(), &vk_win32_surface_create_info_khr, ALLOCATOR, &surface), "Failed to create Win32 Surface!");
 
-	surfaceFormat = FindFormat(device, surface);
+	surfaceFormat = FindFormat(vulkanRenderDevice, surface);
 	
-	presentMode = FindPresentMode(device->GetVkPhysicalDevice(), surface);
+	presentMode = FindPresentMode(vulkanRenderDevice->GetVkPhysicalDevice(), surface);
 	
 	VkSwapchainCreateInfoKHR vk_swapchain_create_info_khr{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 	vk_swapchain_create_info_khr.surface = surface;
@@ -109,13 +107,13 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	vk_swapchain_create_info_khr.clipped = VK_TRUE;
 	vk_swapchain_create_info_khr.oldSwapchain = nullptr;
 
-	vkCreateSwapchainKHR(device->GetVkDevice(), &vk_swapchain_create_info_khr, device->GetVkAllocationCallbacks(), &swapchain);
+	vkCreateSwapchainKHR(vulkanRenderDevice->GetVkDevice(), &vk_swapchain_create_info_khr, vulkanRenderDevice->GetVkAllocationCallbacks(), &swapchain);
 
 	uint32 swapchain_image_count = 0;
-	vkGetSwapchainImagesKHR(device->GetVkDevice(), swapchain, &swapchain_image_count, nullptr);
+	vkGetSwapchainImagesKHR(vulkanRenderDevice->GetVkDevice(), swapchain, &swapchain_image_count, nullptr);
 	GS_ASSERT(swapchain_image_count > vulkanSwapchainImages.getCapacity(), "Created swapchain images are more than what the engine can handle, please create less.")
 	vulkanSwapchainImages.resize(swapchain_image_count);
-	vkGetSwapchainImagesKHR(device->GetVkDevice(), swapchain, &swapchain_image_count, vulkanSwapchainImages.getData());
+	vkGetSwapchainImagesKHR(vulkanRenderDevice->GetVkDevice(), swapchain, &swapchain_image_count, vulkanSwapchainImages.getData());
 	
 	maxFramesInFlight = static_cast<uint8>(vulkanSwapchainImages.getCapacity());
 	
@@ -125,19 +123,24 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* device, const Rende
 	vk_fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
 	for (uint8 i = 0; i < maxFramesInFlight; ++i)
-	{
-		imagesAvailable.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &vk_semaphore_create_info));
-		rendersFinished.emplace_back(VKSemaphoreCreator(&device->GetVkDevice(), &vk_semaphore_create_info));
-		inFlightFences.emplace_back(VKFenceCreator(&device->GetVkDevice(), &vk_fence_create_info));
+	{		
+		GS_VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &imagesAvailable[i]), "Failed to create a semaphore!");
+		GS_VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &rendersFinished[i]), "Failed to create a semaphore!");
+		GS_VK_CHECK(vkCreateFence(vulkanRenderDevice->GetVkDevice(), &vk_fence_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &inFlightFences[i]), "Failed to create a fence!");
 
 		RenderTarget::RenderTargetCreateInfo image_create_info;
 		image_create_info.Extent = { extent.Width, extent.Height, 0 };
 		image_create_info.Format = VkFormatToImageFormat(surfaceFormat.format);
-		swapchainImages.emplace_back(device, image_create_info, vulkanSwapchainImages[i]);
+		swapchainImages.emplace_back(vulkanRenderDevice, image_create_info, vulkanSwapchainImages[i]);
 	}
 }
 
-VulkanRenderContext::~VulkanRenderContext() = default;
+void RAPI::VulkanRenderContext::Destroy(RenderDevice* renderDevice)
+{
+	auto vk_render_device = static_cast<VulkanRenderDevice*>(renderDevice);
+	vkDestroySwapchainKHR(vk_render_device->GetVkDevice(), swapchain, vk_render_device->GetVkAllocationCallbacks());
+	vkDestroySurfaceKHR(vk_render_device->GetVkInstance(), surface, vk_render_device->GetVkAllocationCallbacks());
+}
 
 void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 {

@@ -24,7 +24,7 @@ namespace RAPI
 		uint8 DesiredFramesInFlight = 0;
 	};
 	
-	class RenderContext
+	class RenderContext : public RAPIObject
 	{
 	protected:
 		uint8 currentImage = 0;

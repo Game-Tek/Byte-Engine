@@ -11,7 +11,6 @@
 #include "VulkanSwapchainImage.h"
 #include "VulkanBindings.h"
 
-
 namespace RAPI
 {
 	class Window;
@@ -38,7 +37,9 @@ namespace RAPI
 		VkPresentModeKHR FindPresentMode(const VkPhysicalDevice _PD, VkSurfaceKHR _Surface);
 	public:
 		VulkanRenderContext(VulkanRenderDevice* device, const RenderContextCreateInfo& renderContextCreateInfo);
-		~VulkanRenderContext();
+		~VulkanRenderContext() = default;
+
+		void Destroy(RenderDevice* renderDevice) override;
 
 		void OnResize(const ResizeInfo& _RI) override;
 		void AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo) override;

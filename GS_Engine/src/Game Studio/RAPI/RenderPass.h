@@ -66,7 +66,7 @@ namespace RAPI
 		RenderPassDescriptor Descriptor;
 	};
 
-	class RenderPass
+	class RenderPass : public RAPIObject
 	{
 	public:
 		RenderPass() = default;

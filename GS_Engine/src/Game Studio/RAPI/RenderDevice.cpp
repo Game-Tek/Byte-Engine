@@ -6,9 +6,13 @@ using namespace RAPI;
 
 void RenderDevice::GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis)
 {
-#ifdef GS_PLATFORM_WIN
-	renderApis.emplace_back(RenderAPI::VULKAN);
-#endif
+#if (GS_PLATFORM_WIN) // PLATFORMS WHICH SUPPORT VULKAN
+	if (VulkanRenderDevice::IsVulkanSupported())
+	{
+		renderApis.emplace_back(RenderAPI::VULKAN);
+	}
+#endif // (GS_PLATFORM_WIN) // PLATFORMS WHICH SUPPORT VULKAN
+
 }
 
 RenderDevice* RAPI::RenderDevice::CreateRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo)

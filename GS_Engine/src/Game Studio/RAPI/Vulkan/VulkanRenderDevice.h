@@ -21,6 +21,8 @@ class VulkanRenderDevice final : public RenderDevice
 	VkPhysicalDevice physicalDevice = nullptr;
 	VkDevice device = nullptr;
 
+	VkAllocationCallbacks allocationCallbacks;
+
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 
@@ -55,9 +57,11 @@ public:
 		uint32 GetQueueIndex() const { return queueIndex; }
 	};
 
+	static bool IsVulkanSupported();
+
 	GPUInfo GetGPUInfo() override;
 
-	RenderMesh* CreateMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) override;
+	RenderMesh* CreateRenderMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
 	RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) override;
 	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;

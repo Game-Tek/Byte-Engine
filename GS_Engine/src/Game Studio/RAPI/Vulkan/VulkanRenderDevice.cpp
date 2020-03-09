@@ -1,22 +1,20 @@
 #include "Vulkan.h"
 
+#ifdef GS_PLATFORM_WIN
+#include "windows.h"
+#include "Vulkan/vulkan_win32.h"
+#endif // GS_PLATFORM_WIN
+
+
 #include "VulkanRenderDevice.h"
 
 #include "VulkanRenderContext.h"
 #include "VulkanPipelines.h"
 #include "VulkanRenderPass.h"
-#include "VulkanMesh.h"
+#include "VulkanRenderMesh.h"
 #include "VulkanRenderTarget.h"
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
-
-VKCommandPoolCreator VulkanRenderDevice::CreateCommandPool()
-{
-	VkCommandPoolCreateInfo CommandPoolCreateInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-	CommandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-
-	return VKCommandPoolCreator(&Device, &CommandPoolCreateInfo);
-}
 
 void AllocateCommandBuffer(VkDevice* device_, VkCommandPool* command_pool_,
                            VkCommandBuffer* command_buffer_, VkCommandBufferLevel command_buffer_level_,
@@ -61,7 +59,7 @@ void CreateBuffer(VkDevice* device_, VkBuffer* buffer_, VkDeviceSize buffer_size
 	bufferInfo.usage = buffer_usage_;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	VK_CHECK(vkCreateBuffer(*device_, &bufferInfo, ALLOCATOR, buffer_), "Failed to create buffer!");
+	VK_CHECK(vkCreateBuffer(*device_, &bufferInfo, ALLOCATOR, buffer_));
 }
 
 static void CreateVkImage(VkDevice* device_, VkImage* image_, Extent2D image_extent_, VkFormat image_format_,
@@ -130,8 +128,7 @@ void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_fo
 	vkCmdPipelineBarrier(*command_buffer_, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-VkFormat VulkanRenderDevice::FindSupportedFormat(const DArray<VkFormat>& formats,
-                                                 VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling)
+VkFormat VulkanRenderDevice::FindSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling)
 {
 	VkFormatProperties format_properties;
 
@@ -139,7 +136,7 @@ VkFormat VulkanRenderDevice::FindSupportedFormat(const DArray<VkFormat>& formats
 
 	for (auto& e : formats)
 	{
-		vkGetPhysicalDeviceFormatProperties(PhysicalDevice, e, &format_properties);
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, e, &format_properties);
 
 		switch (imageTiling)
 		{
@@ -175,17 +172,13 @@ void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements
 {
 	VkMemoryAllocateInfo vk_memory_allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	vk_memory_allocate_info.allocationSize = memoryRequirements->size;
-	vk_memory_allocate_info.memoryTypeIndex = Device.FindMemoryType(memoryRequirements->memoryTypeBits,
-	                                                                memoryPropertyFlag);
+	vk_memory_allocate_info.memoryTypeIndex = FindMemoryType(memoryRequirements->memoryTypeBits, memoryPropertyFlag);
 
-	VK_CHECK(vkAllocateMemory(Device.GetVkDevice(), &vk_memory_allocate_info, ALLOCATOR, deviceMemory),
-	            "Failed to allocate memory!");
+	VK_CHECK(vkAllocateMemory(device, &vk_memory_allocate_info, ALLOCATOR, deviceMemory), "Failed to allocate memory!");
 }
 
-inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-	void* pUserData)
+#ifdef GS_DEBUG
+inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,	void* pUserData)
 {
 	switch (messageSeverity)
 	{
@@ -198,69 +191,76 @@ inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 
 	return VK_FALSE;
 }
+#endif // GS_DEBUG
 
-VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo) : Instance("Game Studio"),
-                                           PhysicalDevice(Instance),
-                                           Device(Instance, PhysicalDevice),
-                                           TransientCommandPool(CreateCommandPool())
+
+VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo)
 {
-	VkApplicationInfo vk_application_info = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+	VkApplicationInfo vk_application_info{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	vk_application_info.pNext = nullptr;
-	vk_application_info.apiVersion = VK_MAKE_VERSION(1, 1, 2);
-	//Should check if version is available vi vkEnumerateInstanceVersion().
+	vkEnumerateInstanceVersion(&vk_application_info.apiVersion);
 	vk_application_info.applicationVersion = VK_MAKE_VERSION(renderDeviceCreateInfo.ApplicationVersion[0], renderDeviceCreateInfo.ApplicationVersion[1], renderDeviceCreateInfo.ApplicationVersion[2]);
 	vk_application_info.engineVersion = VK_MAKE_VERSION(0, 0, 1);
 	vk_application_info.pApplicationName = renderDeviceCreateInfo.ApplicationName.c_str();
 	vk_application_info.pEngineName = "Game-Tek | RAPI";
 
+	Array<const char*, 32, uint8> instance_layers = {
 #ifdef GS_DEBUG
-	const char* InstanceLayers[] = {
-		"VK_LAYER_LUNARG_standard_validation", "VK_LAYER_LUNARG_parameter_validation", "VK_LAYER_LUNARG_monitor"
+		"VK_LAYER_LUNARG_standard_validation",
+		"VK_LAYER_LUNARG_parameter_validation",
 	};
 #else
-	const char* InstanceLayers[] = nullptr;
+	};
 #endif // GS_DEBUG
 
-	const char* Extensions[] = {
-		VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+	Array<const char*, 32, uint8> extensions = {
+#ifdef GS_DEBUG
+		VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+#endif // GS_DEBUG
+
+		VK_KHR_SURFACE_EXTENSION_NAME,
+
+#ifdef GS_PLATFORM_WIN
+		VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#endif // GS_PLATFORM_WIN
 	};
 
-	VkInstanceCreateInfo vk_instance_create_info = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+	VkInstanceCreateInfo vk_instance_create_info{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 	vk_instance_create_info.pApplicationInfo = &vk_application_info;
-	vk_instance_create_info.enabledLayerCount = 1;
-	vk_instance_create_info.ppEnabledLayerNames = InstanceLayers;
-	vk_instance_create_info.enabledExtensionCount = 3;
-	vk_instance_create_info.ppEnabledExtensionNames = Extensions;
+	vk_instance_create_info.enabledLayerCount = instance_layers.getLength();
+	vk_instance_create_info.ppEnabledLayerNames = instance_layers.getData();
+	vk_instance_create_info.enabledExtensionCount = extensions.getLength();
+	vk_instance_create_info.ppEnabledExtensionNames = extensions.getData();
 
-	VK_CHECK(vkCreateInstance(&vk_instance_create_info, ALLOCATOR, &Instance), "Failed to create Instance!")
+	VK_CHECK(vkCreateInstance(&vk_instance_create_info, GetVkAllocationCallbacks(), &instance))
 
-	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
-	createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-	createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-	createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-	createInfo.pfnUserCallback = debugCallback;
-	createInfo.pUserData = nullptr; // Optional
+	VkDebugUtilsMessengerCreateInfoEXT vk_debug_utils_messenger_create_info_EXT{};
+	vk_debug_utils_messenger_create_info_EXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+	vk_debug_utils_messenger_create_info_EXT.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	vk_debug_utils_messenger_create_info_EXT.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+	vk_debug_utils_messenger_create_info_EXT.pfnUserCallback = debugCallback;
+	vk_debug_utils_messenger_create_info_EXT.pUserData = nullptr; // Optional
 
 #ifdef GS_DEBUG
 	createDebugUtilsFunction = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
 	destroyDebugUtilsFunction = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
 
-	createDebugUtilsFunction(Instance, &createInfo, ALLOCATOR, &debugMessenger);
+	createDebugUtilsFunction(instance, &vk_debug_utils_messenger_create_info_EXT, GetVkAllocationCallbacks(), &debugMessenger);
 #endif
 
-	vkGetPhysicalDeviceProperties(PhysicalDevice, &deviceProperties);
+	vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
 
-	VkPhysicalDeviceFeatures vk_device_features = {}; //COME BACK TO
-	vk_device_features.samplerAnisotropy = VK_TRUE;
-	vk_device_features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
+	VkPhysicalDeviceFeatures vk_physical_device_features{};
+	vk_physical_device_features.samplerAnisotropy = VK_TRUE;
+	vk_physical_device_features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 
-	const char* device_extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+	Array<const char*, 32, uint8> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 	auto queue_create_infos = renderDeviceCreateInfo.QueueCreateInfos;
 
 	FVector<VkDeviceQueueCreateInfo> vk_device_queue_create_infos(queue_create_infos->getLength(), queue_create_infos->getLength());
 
-	uint32_t queue_families_count = 0;
+	uint32 queue_families_count = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queue_families_count, nullptr);
 	//Get the amount of queue families there are in the physical device.
 	FVector<VkQueueFamilyProperties> vk_queue_families_properties(queue_families_count);
@@ -300,24 +300,31 @@ VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDevic
 		}
 	}
 
-	VkDeviceCreateInfo vk_device_create_info = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+	VkDeviceCreateInfo vk_device_create_info{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 	vk_device_create_info.queueCreateInfoCount = vk_device_queue_create_infos.getLength();
 	vk_device_create_info.pQueueCreateInfos = vk_device_queue_create_infos.getData();
-	vk_device_create_info.enabledExtensionCount = 1;
-	vk_device_create_info.pEnabledFeatures = &vk_device_features;
-	vk_device_create_info.ppEnabledExtensionNames = device_extensions;
+	vk_device_create_info.pEnabledFeatures = &vk_physical_device_features;
+	vk_device_create_info.enabledExtensionCount = device_extensions.getLength();
+	vk_device_create_info.ppEnabledExtensionNames = device_extensions.getData();
 
-	VK_CHECK(vkCreateDevice(physicalDevice, &vk_device_create_info, ALLOCATOR, &device), "Failed to create Device!");
+	VK_CHECK(vkCreateDevice(physicalDevice, &vk_device_create_info, GetVkAllocationCallbacks(), &device));
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()
 {
 	vkDeviceWaitIdle(device);
-	vkDestroyDevice(device, ALLOCATOR);
+	vkDestroyDevice(device, GetVkAllocationCallbacks());
 #ifdef GS_DEBUG
-	destroyDebugUtilsFunction(instance, debugMessenger, ALLOCATOR);
+	destroyDebugUtilsFunction(instance, debugMessenger, GetVkAllocationCallbacks());
 #endif
-	vkDestroyInstance(instance, ALLOCATOR);
+	vkDestroyInstance(instance, GetVkAllocationCallbacks());
+}
+
+bool VulkanRenderDevice::IsVulkanSupported()
+{
+#ifdef GS_PLATFORM_WIN
+	return true;
+#endif // GS_PLATFORM_WIN
 }
 
 GPUInfo VulkanRenderDevice::GetGPUInfo()
@@ -331,21 +338,11 @@ GPUInfo VulkanRenderDevice::GetGPUInfo()
 	return result;
 }
 
-RenderMesh* VulkanRenderDevice::CreateMesh(const RenderMeshCreateInfo& _MCI)
-{
-	return new VulkanRenderMesh(&Device, TransientCommandPool, _MCI.VertexData,
-	                      _MCI.VertexCount * _MCI.VertexLayout->GetSize(), _MCI.IndexData, _MCI.IndexCount);
-}
+RenderMesh* VulkanRenderDevice::CreateRenderMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) { return new VulkanRenderMesh(this, _MCI); }
 
-UniformBuffer* VulkanRenderDevice::CreateUniformBuffer(const UniformBufferCreateInfo& _BCI)
-{
-	return new VulkanUniformBuffer(&Device, _BCI);
-}
+UniformBuffer* VulkanRenderDevice::CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) { return new VulkanUniformBuffer(this, _BCI); }
 
-RenderTarget* VulkanRenderDevice::CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI)
-{
-	return new VulkanRenderTarget(this, _ICI);
-}
+RenderTarget* VulkanRenderDevice::CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) { return new VulkanRenderTarget(this, _ICI); }
 
 Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 {
@@ -355,8 +352,6 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 // TRANSITION LAYOUT FROM UNDEFINED TO TRANSFER_DST
 // COPY STAGING BUFFER TO IMAGE
 // TRANSITION LAYOUT FROM TRANSFER_DST TO { DESIRED USE }
-
-	auto device = Device.GetVkDevice();
 
 	VkBuffer staging_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory staging_buffer_memory = VK_NULL_HANDLE;
@@ -387,7 +382,7 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 
 	{
 		VkMemoryRequirements memRequirements;
-		vkGetBufferMemoryRequirements(Device, staging_buffer, &memRequirements);
+		vkGetBufferMemoryRequirements(device, staging_buffer, &memRequirements);
 
 
 		VkMemoryAllocateInfo allocInfo = {};
@@ -398,14 +393,13 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 		                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 
-		VK_CHECK(vkAllocateMemory(Device, &allocInfo, nullptr, &staging_buffer_memory),
-		            "failed to allocate buffer memory!");
+		VK_CHECK(vkAllocateMemory(device, &allocInfo, GetVkAllocationCallbacks(), &staging_buffer_memory));
 
-		vkBindBufferMemory(Device, staging_buffer, staging_buffer_memory, 0);
+		vkBindBufferMemory(device, staging_buffer, staging_buffer_memory, 0);
 	}
 
 	void* data = nullptr;
-	vkMapMemory(Device, staging_buffer_memory, 0, supportedTextureSize, 0, &data);
+	vkMapMemory(device, staging_buffer_memory, 0, supportedTextureSize, 0, &data);
 
 	if (originalFormat != supportedFormat)
 	{
@@ -449,19 +443,18 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
-		allocInfo.memoryTypeIndex = Device.FindMemoryType(memRequirements.memoryTypeBits,
-		                                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		VK_CHECK(vkAllocateMemory(Device, &allocInfo, nullptr, &image_memory), "failed to allocate buffer memory!");
+		VK_CHECK(vkAllocateMemory(device, &allocInfo, GetVkAllocationCallbacks(), &image_memory));
 
-		vkBindImageMemory(Device, image, image_memory, 0);
+		vkBindImageMemory(device, image, image_memory, 0);
 	}
 
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
-	ImageTransferCommandPool = TransientCommandPool.GetHandle();
+	//ImageTransferCommandPool = TransientCommandPool.GetHandle();
 
-	AllocateCommandBuffer(&device, &ImageTransferCommandPool, &commandBuffer, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
+	//AllocateCommandBuffer(&device, &ImageTransferCommandPool, &commandBuffer, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
 
 	StartCommandBuffer(&commandBuffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
@@ -476,8 +469,8 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	region.imageSubresource.mipLevel = 0;
 	region.imageSubresource.baseArrayLayer = 0;
 	region.imageSubresource.layerCount = 1;
-	region.imageOffset = {0, 0, 0};
-	region.imageExtent = {TCI_.Extent.Width, TCI_.Extent.Height, 1};
+	region.imageOffset = { 0, 0, 0 };
+	region.imageExtent = { TCI_.Extent.Width, TCI_.Extent.Height, 1 };
 
 	vkCmdCopyBufferToImage(commandBuffer, staging_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
@@ -546,40 +539,19 @@ Texture* VulkanRenderDevice::CreateTexture(const TextureCreateInfo& TCI_)
 	return new VulkanTexture(TCI_, vulkan_texture_create_info);
 }
 
-BindingsPool* VulkanRenderDevice::CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo)
-{
-	return new VulkanBindingsPool(this, bindingsPoolCreateInfo);
-}
+BindingsPool* VulkanRenderDevice::CreateBindingsPool(const BindingsPoolCreateInfo& bindingsPoolCreateInfo) { return new VulkanBindingsPool(this, bindingsPoolCreateInfo); }
 
-BindingsSet* VulkanRenderDevice::CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo)
-{
-	return new VulkanBindingsSet(this, bindingsSetCreateInfo);
-}
+BindingsSet* VulkanRenderDevice::CreateBindingsSet(const BindingsSetCreateInfo& bindingsSetCreateInfo) { return new VulkanBindingsSet(this, bindingsSetCreateInfo); }
 
-GraphicsPipeline* VulkanRenderDevice::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI)
-{
-	return new VulkanGraphicsPipeline(_GPCI);
-}
+GraphicsPipeline* VulkanRenderDevice::CreateGraphicsPipeline(const GraphicsPipelineCreateInfo& _GPCI) { return new VulkanGraphicsPipeline(this, _GPCI); }
 
-RAPI::RenderPass* VulkanRenderDevice::CreateRenderPass(const RenderPassCreateInfo& _RPCI)
-{
-	return new VulkanRenderPass(&Device, _RPCI.Descriptor);
-}
+RAPI::RenderPass* VulkanRenderDevice::CreateRenderPass(const RenderPassCreateInfo& _RPCI) {	return new VulkanRenderPass(this, _RPCI.Descriptor); }
 
-ComputePipeline* VulkanRenderDevice::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI)
-{
-	return new ComputePipeline();
-}
+ComputePipeline* VulkanRenderDevice::CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) { return new ComputePipeline(); }
 
-Framebuffer* VulkanRenderDevice::CreateFramebuffer(const FramebufferCreateInfo& _FCI)
-{
-	return new VulkanFramebuffer(this, _FCI);
-}
+Framebuffer* VulkanRenderDevice::CreateFramebuffer(const FramebufferCreateInfo& _FCI) {	return new VulkanFramebuffer(this, _FCI); }
 
-RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI)
-{
-	return new VulkanRenderContext(this, _RCCI);
-}
+RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI) { return new VulkanRenderContext(this, _RCCI); }
 
 VulkanRenderDevice::VulkanQueue::VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo) : queue(vulkanQueueCreateInfo.Queue), queueIndex(vulkanQueueCreateInfo.QueueIndex), familyIndex(vulkanQueueCreateInfo.FamilyIndex)
 {

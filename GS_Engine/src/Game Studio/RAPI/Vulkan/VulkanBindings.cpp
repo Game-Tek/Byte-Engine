@@ -50,9 +50,7 @@ void VulkanBindingsPool::FreePool(const FreeBindingsPoolInfo& freeDescriptorPool
 
 VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsSetCreateInfo& descriptorSetCreateInfo)
 {
-	VkDescriptorSetLayoutCreateInfo vk_descriptor_set_layout_create_info = {
-		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
-	};
+	VkDescriptorSetLayoutCreateInfo vk_descriptor_set_layout_create_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
 
 	Array<VkDescriptorSetLayoutBinding, MAX_BINDINGS_PER_SET> descriptor_set_layout_bindings;
 	descriptor_set_layout_bindings.resize(descriptorSetCreateInfo.BindingsSetLayout.getLength());
@@ -76,13 +74,10 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 	vk_descriptor_set_layout_create_info.bindingCount = descriptor_set_layout_bindings.getLength();
 	vk_descriptor_set_layout_create_info.pBindings = descriptor_set_layout_bindings.getData();
 
-	vkCreateDescriptorSetLayout(
-		static_cast<VulkanRenderDevice*>(descriptorSetCreateInfo.RenderDevice)->GetVkDevice().GetVkDevice(),
-		&vk_descriptor_set_layout_create_info, ALLOCATOR, &vkDescriptorSetLayout);
+	vkCreateDescriptorSetLayout(static_cast<VulkanRenderDevice*>(descriptorSetCreateInfo.RenderDevice)->GetVkDevice(), &vk_descriptor_set_layout_create_info, static_cast<VulkanRenderDevice*>(descriptorSetCreateInfo.RenderDevice)->GetVkAllocationCallbacks(), &vkDescriptorSetLayout);
 
-	VkDescriptorSetAllocateInfo vk_descriptor_set_allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-	vk_descriptor_set_allocate_info.descriptorPool = static_cast<VulkanBindingsPool*>(descriptorSetCreateInfo.
-		BindingsPool)->GetVkDescriptorPool();
+	VkDescriptorSetAllocateInfo vk_descriptor_set_allocate_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	vk_descriptor_set_allocate_info.descriptorPool = static_cast<VulkanBindingsPool*>(descriptorSetCreateInfo.BindingsPool)->GetVkDescriptorPool();
 	vk_descriptor_set_allocate_info.descriptorSetCount = descriptorSetCreateInfo.BindingsSetCount;
 
 	FVector<VkDescriptorSetLayout> SetLayouts(descriptorSetCreateInfo.BindingsSetCount, descriptorSetCreateInfo.BindingsSetCount);
@@ -91,12 +86,10 @@ VulkanBindingsSet::VulkanBindingsSet(VulkanRenderDevice* device, const BindingsS
 
 	vkDescriptorSets.resize(vk_descriptor_set_allocate_info.descriptorSetCount);
 
-	vkAllocateDescriptorSets(
-		static_cast<VulkanRenderDevice*>(descriptorSetCreateInfo.RenderDevice)->GetVkDevice().GetVkDevice(),
-		&vk_descriptor_set_allocate_info, vkDescriptorSets.getData());
+	vkAllocateDescriptorSets(static_cast<VulkanRenderDevice*>(descriptorSetCreateInfo.RenderDevice)->GetVkDevice(),	&vk_descriptor_set_allocate_info, vkDescriptorSets.getData());
 }
 
-void VulkanBindingsSet::Destroy(RenderDevice * renderDevice)
+void VulkanBindingsSet::Destroy(RenderDevice* renderDevice)
 {
 	auto vk_render_device = static_cast<VulkanRenderDevice*>(renderDevice);
 	vkDestroyDescriptorSetLayout(vk_render_device->GetVkDevice(), vkDescriptorSetLayout, vk_render_device->GetVkAllocationCallbacks());

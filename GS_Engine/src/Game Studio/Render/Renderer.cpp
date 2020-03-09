@@ -122,7 +122,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	MCI.VertexData = ScreenQuad::Vertices;
 	MCI.IndexData = ScreenQuad::Indices;
 	MCI.VertexLayout = &ScreenQuad::VD;
-	FullScreenQuad = renderDevice->CreateMesh(MCI);
+	FullScreenQuad = renderDevice->CreateRenderMesh(MCI);
 
 	GraphicsPipelineCreateInfo gpci;
 	gpci.RenderDevice = renderDevice;
@@ -241,7 +241,7 @@ RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 		MCI.VertexData = m.VertexArray;
 		MCI.IndexData = m.IndexArray;
 		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
-		Meshes[_SM] = renderDevice->CreateMesh(MCI);
+		Meshes[_SM] = renderDevice->CreateRenderMesh(MCI);
 	}
 	else
 	{

@@ -71,7 +71,7 @@ namespace RAPI
 
 		virtual GPUInfo GetGPUInfo() = 0;
 
-		virtual RenderMesh* CreateMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) = 0;
+		virtual RenderMesh* CreateRenderMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) = 0;
 		virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
 		virtual RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) = 0;
 		virtual Texture* CreateTexture(const TextureCreateInfo& TCI_) = 0;

@@ -9,6 +9,8 @@ VulkanRenderMesh::VulkanRenderMesh(VulkanRenderDevice* vulkanRenderDevice, const
 	size_t index_buffer_size = renderMeshCreateInfo.IndexCount * sizeof(uint16);
 	size_t buffer_size = vertex_buffer_size + index_buffer_size;
 
+	indexBufferOffset = vertex_buffer_size;
+
 	VkBuffer staging_buffer = nullptr;
 	VkDeviceMemory staging_memory = nullptr;
 

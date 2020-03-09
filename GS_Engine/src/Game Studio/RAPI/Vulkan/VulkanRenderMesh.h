@@ -10,6 +10,7 @@ class VulkanRenderMesh final : public RAPI::RenderMesh
 {
 	VkBuffer buffer = nullptr;
 	VkDeviceMemory memory = nullptr;
+	size_t indexBufferOffset = 0;
 
 public:
 	VulkanRenderMesh(class VulkanRenderDevice* vulkanRenderDevice, const RAPI::RenderMesh::RenderMeshCreateInfo& renderMeshCreateInfo);
@@ -18,4 +19,5 @@ public:
 	void Destroy(class RAPI::RenderDevice* renderDevice) override;
 
 	VkBuffer GetVkBuffer() const { return buffer; }
+	size_t GetIndexBufferOffset() const { return indexBufferOffset; }
 };

@@ -166,7 +166,7 @@ uint32 VulkanRenderDevice::FindMemoryType(uint32 memoryType, uint32 memoryFlags)
 	GS_ASSERT(true, "Failed to find a suitable memory type!")
 }
 
-void VulkanRenderDevice::allocateMemory(VkMemoryRequirements* memoryRequirements,
+void VulkanRenderDevice::AllocateMemory(VkMemoryRequirements* memoryRequirements,
                                         VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory)
 {
 	VkMemoryAllocateInfo vk_memory_allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};

@@ -18,7 +18,7 @@ namespace RAPI
 
 		uint8 Anisotropy = 0;
 
-		CommandBuffer* CommandBuffer = nullptr;
+		class CommandBuffer* CommandBuffer = nullptr;
 	};
 
 	//Represents a resource utilized by the rendering API for storing and referencing textures. Which are images which hold some information loaded from memory.

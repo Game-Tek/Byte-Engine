@@ -40,7 +40,7 @@ VulkanRenderTarget::VulkanRenderTarget(VulkanRenderDevice* device, const RenderT
 	vk_image_view_create_info.subresourceRange.layerCount = 1;
 	vk_image_view_create_info.subresourceRange.levelCount = 1;
 
-	device->allocateMemory(&vk_memory_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &imageMemory);
+	device->AllocateMemory(&vk_memory_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &imageMemory);
 
 	vkBindImageMemory(device->GetVkDevice(), image, imageMemory, 0);
 

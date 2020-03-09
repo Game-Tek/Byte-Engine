@@ -24,9 +24,9 @@ public:
 
 	[[nodiscard]] iterator end() { return reinterpret_cast<iterator>(&this->data[this->length]); }
 
-	[[nodiscard]] const_iterator begin() const { return reinterpret_cast<iterator>(this->data); }
+	[[nodiscard]] const_iterator begin() const { return reinterpret_cast<const_iterator>(this->data); }
 
-	[[nodiscard]] const_iterator end() const { return reinterpret_cast<iterator>(&this->data[this->length]); }
+	[[nodiscard]] const_iterator end() const { return reinterpret_cast<const_iterator>(&this->data[this->length]); }
 
 	T& front() { return this->data[0]; }
 
@@ -80,7 +80,7 @@ public:
 
 	T* getData() { return reinterpret_cast<T*>(&this->data); }
 
-	[[nodiscard]] const T* getData() const { return reinterpret_cast<T*>(this->data); }
+	[[nodiscard]] const T* getData() const { return reinterpret_cast<const T*>(this->data); }
 
 	LT push_back(const T& obj)
 	{

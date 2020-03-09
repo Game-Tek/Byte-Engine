@@ -26,13 +26,6 @@ class VulkanRenderDevice final : public RenderDevice
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 
-protected:
-	friend class VulkanTexture;
-	friend class VulkanRenderTarget;
-
-	[[nodiscard]] const VkPhysicalDeviceProperties& getPhysicalDeviceProperties() const { return deviceProperties; }
-	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory);
-
 public:
 	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
 	~VulkanRenderDevice();
@@ -79,6 +72,12 @@ public:
 
 	uint32 FindMemoryType(uint32 memoryType, uint32 memoryFlags) const;
 	VkFormat FindSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling);
+
+	[[nodiscard]] const VkPhysicalDeviceProperties& GetPhysicalDeviceProperties() const { return deviceProperties; }
+	void AllocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory);
+
+	void AllocateAndBindBuffer();
+	void AllocateAndBindImage();
 
 	VkAllocationCallbacks* GetVkAllocationCallbacks() const { return nullptr; }
 };

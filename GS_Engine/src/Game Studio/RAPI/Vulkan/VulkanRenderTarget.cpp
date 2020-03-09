@@ -25,8 +25,7 @@ VulkanRenderTarget::VulkanRenderTarget(VulkanRenderDevice* device, const RenderT
 	vk_image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
 	vk_image_create_info.mipLevels = 1;
 
-	GS_VK_CHECK(vkCreateImage(device->GetVkDevice().GetVkDevice(), &vk_image_create_info, ALLOCATOR, &image),
-	            "Failed to allocate image!");
+	VK_CHECK(vkCreateImage(device->GetVkDevice().GetVkDevice(), &vk_image_create_info, ALLOCATOR, &image), "Failed to allocate image!");
 
 	VkMemoryRequirements vk_memory_requirements;
 	vkGetImageMemoryRequirements(device->GetVkDevice().GetVkDevice(), image, &vk_memory_requirements);
@@ -45,7 +44,7 @@ VulkanRenderTarget::VulkanRenderTarget(VulkanRenderDevice* device, const RenderT
 
 	vkBindImageMemory(device->GetVkDevice().GetVkDevice(), image, imageMemory, 0);
 
-	GS_VK_CHECK(
+	VK_CHECK(
 		vkCreateImageView(device->GetVkDevice().GetVkDevice(), &vk_image_view_create_info, ALLOCATOR, &imageView),
 		"Failed to create image view!");
 }

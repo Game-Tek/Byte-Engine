@@ -4,7 +4,7 @@
 
 #include "VulkanRenderPass.h"
 #include "VulkanFramebuffer.h"
-#include "VulkanMesh.h"
+#include "VulkanRenderMesh.h"
 #include "VulkanPipelines.h"
 #include "VulkanBindings.h"
 

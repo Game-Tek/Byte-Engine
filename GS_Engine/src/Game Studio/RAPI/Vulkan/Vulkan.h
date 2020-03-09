@@ -5,15 +5,9 @@
 #include <stdexcept>
 
 #ifdef GS_DEBUG
-#define GS_VK_CHECK(func, text)\
-{\
-if ((func) != VK_SUCCESS)\
-{\
-	throw std::runtime_error(text);\
-}\
-}
+#define VK_CHECK(func) { if ((func) != VK_SUCCESS) { __debugbreak(); } }
 #else
-#define GS_VK_CHECK(func, text) func
+#define GS_VK_CHECK(func) func
 #endif // GS_DEBUG
 
 #define ALLOCATOR nullptr

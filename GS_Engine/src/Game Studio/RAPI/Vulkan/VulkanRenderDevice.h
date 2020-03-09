@@ -23,17 +23,13 @@ class VulkanRenderDevice final : public RenderDevice
 
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceMemoryProperties memoryProperties;
-	VkFormat findSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags,
-	                             VkImageTiling imageTiling);
-
 
 protected:
 	friend class VulkanTexture;
 	friend class VulkanRenderTarget;
 
 	[[nodiscard]] const VkPhysicalDeviceProperties& getPhysicalDeviceProperties() const { return deviceProperties; }
-	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag,
-	                    VkDeviceMemory* deviceMemory);
+	void allocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory);
 
 public:
 	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
@@ -61,7 +57,7 @@ public:
 
 	GPUInfo GetGPUInfo() override;
 
-	RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) override;
+	RenderMesh* CreateMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) override;
 	UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) override;
 	RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) override;
 	Texture* CreateTexture(const TextureCreateInfo& TCI_) override;
@@ -78,5 +74,7 @@ public:
 	VkDevice GetVkDevice() const { return device; }
 
 	uint32 FindMemoryType(uint32 memoryType, uint32 memoryFlags) const;
+	VkFormat FindSupportedFormat(const DArray<VkFormat>& formats, VkFormatFeatureFlags formatFeatureFlags, VkImageTiling imageTiling);
+
 	VkAllocationCallbacks* GetVkAllocationCallbacks() const { return nullptr; }
 };

@@ -17,7 +17,7 @@ VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const Ren
 	vk_image_view_create_info.subresourceRange.layerCount = 1;
 	vk_image_view_create_info.subresourceRange.levelCount = 1;
 
-	GS_VK_CHECK(
+	VK_CHECK(
 		vkCreateImageView(device->GetVkDevice().GetVkDevice(), &vk_image_view_create_info, ALLOCATOR, &imageView),
 		"Failed to create image view!");
 }

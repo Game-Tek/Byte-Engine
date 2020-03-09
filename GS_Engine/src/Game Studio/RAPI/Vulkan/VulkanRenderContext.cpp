@@ -83,7 +83,7 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* vulkanRenderDevice,
 	VkWin32SurfaceCreateInfoKHR vk_win32_surface_create_info_khr{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 	vk_win32_surface_create_info_khr.hwnd = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetWindowObject();
 	vk_win32_surface_create_info_khr.hinstance = static_cast<WindowsWindow*>(renderContextCreateInfo.Window)->GetHInstance();
-	GS_VK_CHECK(vkCreateWin32SurfaceKHR(vulkanRenderDevice->GetVkInstance(), &vk_win32_surface_create_info_khr, ALLOCATOR, &surface), "Failed to create Win32 Surface!");
+	VK_CHECK(vkCreateWin32SurfaceKHR(vulkanRenderDevice->GetVkInstance(), &vk_win32_surface_create_info_khr, vulkanRenderDevice->GetVkAllocationCallbacks(), &surface));
 
 	surfaceFormat = FindFormat(vulkanRenderDevice, surface);
 	
@@ -107,13 +107,13 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* vulkanRenderDevice,
 	vk_swapchain_create_info_khr.clipped = VK_TRUE;
 	vk_swapchain_create_info_khr.oldSwapchain = nullptr;
 
-	vkCreateSwapchainKHR(vulkanRenderDevice->GetVkDevice(), &vk_swapchain_create_info_khr, vulkanRenderDevice->GetVkAllocationCallbacks(), &swapchain);
+	VK_CHECK(vkCreateSwapchainKHR(vulkanRenderDevice->GetVkDevice(), &vk_swapchain_create_info_khr, vulkanRenderDevice->GetVkAllocationCallbacks(), &swapchain));
 
 	uint32 swapchain_image_count = 0;
 	vkGetSwapchainImagesKHR(vulkanRenderDevice->GetVkDevice(), swapchain, &swapchain_image_count, nullptr);
 	GS_ASSERT(swapchain_image_count > vulkanSwapchainImages.getCapacity(), "Created swapchain images are more than what the engine can handle, please create less.")
 	vulkanSwapchainImages.resize(swapchain_image_count);
-	vkGetSwapchainImagesKHR(vulkanRenderDevice->GetVkDevice(), swapchain, &swapchain_image_count, vulkanSwapchainImages.getData());
+	VK_CHECK(vkGetSwapchainImagesKHR(vulkanRenderDevice->GetVkDevice(), swapchain, &swapchain_image_count, vulkanSwapchainImages.getData()));
 	
 	maxFramesInFlight = static_cast<uint8>(vulkanSwapchainImages.getCapacity());
 	
@@ -124,9 +124,9 @@ VulkanRenderContext::VulkanRenderContext(VulkanRenderDevice* vulkanRenderDevice,
 
 	for (uint8 i = 0; i < maxFramesInFlight; ++i)
 	{		
-		GS_VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &imagesAvailable[i]), "Failed to create a semaphore!");
-		GS_VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &rendersFinished[i]), "Failed to create a semaphore!");
-		GS_VK_CHECK(vkCreateFence(vulkanRenderDevice->GetVkDevice(), &vk_fence_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &inFlightFences[i]), "Failed to create a fence!");
+		VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &imagesAvailable[i]));
+		VK_CHECK(vkCreateSemaphore(vulkanRenderDevice->GetVkDevice(), &vk_semaphore_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &rendersFinished[i]));
+		VK_CHECK(vkCreateFence(vulkanRenderDevice->GetVkDevice(), &vk_fence_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &inFlightFences[i]));
 
 		RenderTarget::RenderTargetCreateInfo image_create_info;
 		image_create_info.Extent = { extent.Width, extent.Height, 0 };
@@ -164,14 +164,14 @@ void VulkanRenderContext::OnResize(const ResizeInfo& _RI)
 	vk_swapchain_create_info_khr.clipped = VK_TRUE;
 	vk_swapchain_create_info_khr.oldSwapchain = swapchain;
 
-	vkCreateSwapchainKHR(static_cast<VulkanRenderDevice*>(_RI.RenderDevice)->GetVkDevice(), &vk_swapchain_create_info_khr, ALLOCATOR, &swapchain);
+	vkCreateSwapchainKHR(static_cast<VulkanRenderDevice*>(_RI.RenderDevice)->GetVkDevice(), &vk_swapchain_create_info_khr, static_cast<VulkanRenderDevice*>(_RI.RenderDevice)->GetVkAllocationCallbacks(), &swapchain);
 }
 
 void VulkanRenderContext::AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo)
 {
 	uint32 image_index = 0;
 
-	vkAcquireNextImageKHR(static_cast<VulkanRenderDevice*>(acquireNextImageInfo.RenderDevice)->GetVkDevice().GetVkDevice(), swapchain, ~0ULL, imagesAvailable[currentImage], nullptr, &image_index);
+	vkAcquireNextImageKHR(static_cast<VulkanRenderDevice*>(acquireNextImageInfo.RenderDevice)->GetVkDevice(), swapchain, ~0ULL, imagesAvailable[currentImage], nullptr, &image_index);
 
 	//This signals the semaphore when the image becomes available
 	imageIndex = image_index;
@@ -179,8 +179,8 @@ void VulkanRenderContext::AcquireNextImage(const AcquireNextImageInfo& acquireNe
 
 void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 {
-	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice().GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);//Get current's frame fences and wait for it.
-	vkResetFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice().GetVkDevice(), 1, &inFlightFences[currentImage]); //Then reset it.
+	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);//Get current's frame fences and wait for it.
+	vkResetFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice(), 1, &inFlightFences[currentImage]); //Then reset it.
 
 	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
@@ -205,7 +205,7 @@ void RAPI::VulkanRenderContext::Flush(const FlushInfo& flushInfo)
 	vkQueueSubmit(reinterpret_cast<VulkanRenderDevice::VulkanQueue*>(flushInfo.Queue)->GetVkQueue(), 1, &submit_info, inFlightFences[currentImage]);
 
 	//Signal fence when execution of this queue has finished.
-	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice().GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);
+	vkWaitForFences(static_cast<VulkanRenderDevice*>(flushInfo.RenderDevice)->GetVkDevice(), 1, &inFlightFences[currentImage], true, ~0ULL);
 
 	vkResetCommandBuffer(command_buffer, 0);
 }
@@ -226,7 +226,7 @@ void RAPI::VulkanRenderContext::Present(const PresentInfo& presentInfo)
 		present_info.pResults = nullptr;
 	}
 
-	vkQueuePresentKHR(reinterpret_cast<VulkanRenderDevice::VulkanQueue*>(presentInfo.Queue)->GetVkQueue(), &present_info);
+	vkQueuePresentKHR(static_cast<VulkanRenderDevice::VulkanQueue*>(presentInfo.Queue)->GetVkQueue(), &present_info);
 
 	currentImage = (currentImage + 1) % maxFramesInFlight;
 }

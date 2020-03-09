@@ -18,6 +18,7 @@ namespace RAPI
 	struct PushConstantsInfo;
 	struct BindBindingsSet;
 	class RenderMesh;
+	class Queue;
 
 	class CommandBuffer
 	{

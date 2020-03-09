@@ -29,6 +29,25 @@ namespace RAPI
 		uint32 APIVersion;
 	};
 
+	class Queue
+	{
+	public:
+		enum class QueueCapabilities : uint8
+		{
+			GRAPHICS = 1, COMPUTE = 2, TRANSFER = 4
+		};
+
+	private:
+		QueueCapabilities capabilities;
+
+	public:
+		struct QueueCreateInfo
+		{
+			QueueCapabilities Capabilities;
+			float QueuePriority = 1.0f;
+		};
+	};
+
 	class RenderDevice
 	{
 	protected:
@@ -38,25 +57,6 @@ namespace RAPI
 		
 	public:
 		static void GetAvailableRenderAPIs(FVector<RenderAPI>& renderApis);
-		
-		class Queue
-		{
-		public:
-			enum class QueueCapabilities : uint8
-			{
-				GRAPHICS = 1, COMPUTE = 2, TRANSFER = 4
-			};
-
-		private:
-			QueueCapabilities capabilities;
-
-		public:
-			struct QueueCreateInfo
-			{
-				QueueCapabilities Capabilities;
-				float QueuePriority = 1.0f;
-			};
-		};
 
 		struct RenderDeviceCreateInfo
 		{
@@ -71,7 +71,7 @@ namespace RAPI
 
 		virtual GPUInfo GetGPUInfo() = 0;
 
-		virtual RenderMesh* CreateMesh(const MeshCreateInfo& _MCI) = 0;
+		virtual RenderMesh* CreateMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) = 0;
 		virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;
 		virtual RenderTarget* CreateRenderTarget(const RenderTarget::RenderTargetCreateInfo& _ICI) = 0;
 		virtual Texture* CreateTexture(const TextureCreateInfo& TCI_) = 0;

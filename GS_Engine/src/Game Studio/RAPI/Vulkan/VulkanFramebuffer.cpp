@@ -36,5 +36,5 @@ VulkanFramebuffer::VulkanFramebuffer(VulkanRenderDevice* vulkanRenderDevice, con
 	vk_framebuffer_create_info.renderPass = static_cast<VulkanRenderPass*>(framebufferCreateInfo.RenderPass)->GetVkRenderPass();
 	vk_framebuffer_create_info.pAttachments = Result.getData();
 
-	GS_VK_CHECK(vkCreateFramebuffer(vulkanRenderDevice->GetVkDevice(), &vk_framebuffer_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &framebuffer), "Failed to create framebuffer!");
+	VK_CHECK(vkCreateFramebuffer(vulkanRenderDevice->GetVkDevice(), &vk_framebuffer_create_info, vulkanRenderDevice->GetVkAllocationCallbacks(), &framebuffer), "Failed to create framebuffer!");
 }

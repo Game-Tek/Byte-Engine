@@ -1,5 +1,7 @@
 #pragma once
 
+#include "RenderCore.h"
+
 namespace RAPI
 {
 
@@ -28,6 +30,6 @@ namespace RAPI
 	{
 	public:
 		virtual void UpdateBuffer(const UniformBufferUpdateInfo& _BUI) const = 0;
-		void Destroy(RenderDevice* renderDevice) = 0;
+		void Destroy(class RenderDevice* renderDevice) = 0;
 	};
 }

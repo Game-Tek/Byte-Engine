@@ -20,7 +20,7 @@ class VulkanGraphicsPipeline final : public GraphicsPipeline
 	VkPipeline vkPipeline = nullptr;
 
 public:
-	VulkanGraphicsPipeline(VulkanRenderDevice* vulkanRenderDevice, const GraphicsPipelineCreateInfo& _GPCI);
+	VulkanGraphicsPipeline(class VulkanRenderDevice* vulkanRenderDevice, const GraphicsPipelineCreateInfo& _GPCI);
 	~VulkanGraphicsPipeline() = default;
 
 	void Destroy(RenderDevice* renderDevice) override;
@@ -34,7 +34,7 @@ class VulkanComputePipeline final : public ComputePipeline
 	VkPipeline vkPipeline = nullptr;
 
 public:
-	VulkanComputePipeline(VulkanRenderDevice* vulkanRenderDevice, const ComputePipelineCreateInfo& computePipelineCreateInfo);
+	VulkanComputePipeline(class VulkanRenderDevice* vulkanRenderDevice, const ComputePipelineCreateInfo& computePipelineCreateInfo);
 	~VulkanComputePipeline() = default;
 
 	[[nodiscard]] VkPipeline GetVkPipeline() const { return vkPipeline; }

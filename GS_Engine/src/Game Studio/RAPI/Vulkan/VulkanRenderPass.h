@@ -2,6 +2,8 @@
 
 #include "RAPI/RenderPass.h"
 
+#include "RAPI/Vulkan/Vulkan.h"
+
 class VulkanRenderPass final : public RAPI::RenderPass
 {
 	VkRenderPass renderPass = nullptr;

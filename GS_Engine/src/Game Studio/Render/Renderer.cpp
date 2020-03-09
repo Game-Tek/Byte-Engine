@@ -8,8 +8,6 @@
 
 #include "Material.h"
 #include "Game/StaticMesh.h"
-#include "MeshRenderResource.h"
-#include "MaterialRenderResource.h"
 #include "Resources/TextureResource.h"
 
 #include "Game/Texture.h"
@@ -118,7 +116,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 		Framebuffers[i] = renderDevice->CreateFramebuffer(FBCI);
 	}
 
-	RenderMeshCreateInfo MCI;
+	RAPI::RenderMesh::RenderMeshCreateInfo MCI;
 	MCI.IndexCount = ScreenQuad::IndexCount;
 	MCI.VertexCount = ScreenQuad::VertexCount;
 	MCI.VertexData = ScreenQuad::Vertices;
@@ -237,7 +235,7 @@ RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 	{
 		Model m = _SM->GetModel();
 
-		RenderMeshCreateInfo MCI;
+		RAPI::RenderMesh::RenderMeshCreateInfo MCI;
 		MCI.IndexCount = m.IndexCount;
 		MCI.VertexCount = m.VertexCount;
 		MCI.VertexData = m.VertexArray;

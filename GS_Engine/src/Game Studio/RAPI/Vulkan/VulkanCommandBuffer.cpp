@@ -88,10 +88,10 @@ void VulkanCommandBuffer::BindMesh(const BindMeshInfo& bindMeshInfo)
 	const auto mesh = static_cast<VulkanRenderMesh*>(bindMeshInfo.Mesh);
 	VkDeviceSize offset = 0;
 
-	VkBuffer vertex_buffers = mesh->GetVertexBuffer().GetHandle();
+	VkBuffer vertex_buffers = mesh->GetVkBuffer();
 
 	vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertex_buffers, &offset);
-	vkCmdBindIndexBuffer(commandBuffer, mesh->GetIndexBuffer().GetHandle(), 0, VK_INDEX_TYPE_UINT16);
+	vkCmdBindIndexBuffer(commandBuffer, mesh->GetVkBuffer(), mesh->GetIndexBufferOffset(), VK_INDEX_TYPE_UINT16);
 }
 
 void VulkanCommandBuffer::UpdatePushConstant(const UpdatePushConstantsInfo& updatePushConstantsInfo)

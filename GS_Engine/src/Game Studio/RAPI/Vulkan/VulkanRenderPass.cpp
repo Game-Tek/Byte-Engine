@@ -1,6 +1,5 @@
 #include "VulkanRenderPass.h"
 
-#include "Vulkan.h"
 #include "Containers/FVector.hpp"
 #include "RAPI/Vulkan/VulkanRenderDevice.h"
 

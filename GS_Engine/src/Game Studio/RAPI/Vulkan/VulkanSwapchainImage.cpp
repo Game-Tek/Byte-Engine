@@ -7,7 +7,7 @@
 VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const RenderTargetCreateInfo& imageCreateInfo,
                                            VkImage image) : VulkanRenderTargetBase(imageCreateInfo)
 {
-	VkImageViewCreateInfo vk_image_view_create_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+	VkImageViewCreateInfo vk_image_view_create_info{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 	vk_image_view_create_info.format = FormatToVkFormat(imageCreateInfo.Format);
 	vk_image_view_create_info.image = image;
 	vk_image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -17,7 +17,5 @@ VulkanSwapchainImage::VulkanSwapchainImage(VulkanRenderDevice* device, const Ren
 	vk_image_view_create_info.subresourceRange.layerCount = 1;
 	vk_image_view_create_info.subresourceRange.levelCount = 1;
 
-	VK_CHECK(
-		vkCreateImageView(device->GetVkDevice().GetVkDevice(), &vk_image_view_create_info, ALLOCATOR, &imageView),
-		"Failed to create image view!");
+	VK_CHECK(vkCreateImageView(device->GetVkDevice(), &vk_image_view_create_info, device->GetVkAllocationCallbacks(), &imageView));
 }

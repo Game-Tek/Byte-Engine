@@ -21,6 +21,10 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 {
 	RAPI::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
 	render_device_create_info.RenderingAPI = RenderAPI::VULKAN;
+	render_device_create_info.ApplicationName = GS::Application::Get()->GetApplicationName();
+	
+	FVector<Queue::QueueCreateInfo> queue_create_infos = { { Queue::QueueCapabilities::GRAPHICS, 1.0f, &graphicsQueue }, { Queue::QueueCapabilities::TRANSFER, 1.0f, &transferQueue } };
+	render_device_create_info.QueueCreateInfos = &queue_create_infos;
 	renderDevice = RAPI::RenderDevice::CreateRenderDevice(render_device_create_info);
 	
 	Win = GS::Application::Get()->GetActiveWindow();

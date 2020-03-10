@@ -88,6 +88,9 @@ protected:
 
 	RAPI::RenderDevice* renderDevice = nullptr;
 	
+	RAPI::Queue* graphicsQueue = nullptr;
+	RAPI::Queue* transferQueue = nullptr;
+
 	RAPI::RenderContext* RC = nullptr;
 	RAPI::CommandBuffer* CB = nullptr;
 	RAPI::RenderPass* RP = nullptr;

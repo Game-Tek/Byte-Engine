@@ -16,73 +16,6 @@
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
 
-void AllocateCommandBuffer(VkDevice* device_, VkCommandPool* command_pool_,
-                           VkCommandBuffer* command_buffer_, VkCommandBufferLevel command_buffer_level_,
-                           uint8 command_buffer_count_)
-{
-	VkCommandBufferAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandPool = *command_pool_;
-	allocInfo.commandBufferCount = command_buffer_count_;
-
-	vkAllocateCommandBuffers(*device_, &allocInfo, command_buffer_);
-}
-
-void StartCommandBuffer(VkCommandBuffer* command_buffer_,
-                        VkCommandBufferUsageFlagBits command_buffer_usage_)
-{
-	VkCommandBufferBeginInfo beginInfo = {};
-	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = command_buffer_usage_;
-
-	vkBeginCommandBuffer(*command_buffer_, &beginInfo);
-}
-
-void SubmitCommandBuffer(VkCommandBuffer* command_buffer_, uint8 command_buffer_count_,
-                         VkQueue* queue_, VkFence* fence_)
-{
-	VkSubmitInfo submitInfo = {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = command_buffer_count_;
-	submitInfo.pCommandBuffers = command_buffer_;
-
-	vkQueueSubmit(*queue_, 1, &submitInfo, *fence_);
-}
-
-void CreateBuffer(VkDevice* device_, VkBuffer* buffer_, VkDeviceSize buffer_size_, VkBufferUsageFlagBits buffer_usage_,
-                  VkSharingMode buffer_sharing_mode_)
-{
-	VkBufferCreateInfo bufferInfo = {};
-	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bufferInfo.size = buffer_size_;
-	bufferInfo.usage = buffer_usage_;
-	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VK_CHECK(vkCreateBuffer(*device_, &bufferInfo, ALLOCATOR, buffer_));
-}
-
-static void CreateVkImage(VkDevice* device_, VkImage* image_, Extent2D image_extent_, VkFormat image_format_,
-                          VkImageTiling image_tiling_, int image_usage_)
-{
-	VkImageCreateInfo imageInfo = {};
-	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	imageInfo.imageType = VK_IMAGE_TYPE_2D;
-	imageInfo.extent.width = image_extent_.Width;
-	imageInfo.extent.height = image_extent_.Height;
-	imageInfo.extent.depth = 1;
-	imageInfo.mipLevels = 1;
-	imageInfo.arrayLayers = 1;
-	imageInfo.format = image_format_;
-	imageInfo.tiling = image_tiling_;
-	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	imageInfo.usage = image_usage_;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VK_CHECK(vkCreateImage(*device_, &imageInfo, ALLOCATOR, image_), "failed to create image!");
-}
-
 void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_format_,
                            VkImageLayout from_image_layout_, VkImageLayout to_image_layout_,
                            VkCommandBuffer* command_buffer_)
@@ -193,7 +126,7 @@ inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 #endif // GS_DEBUG
 
 
-VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo)
+VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo) : vulkanQueues(renderDeviceCreateInfo.QueueCreateInfos->getLength())
 {
 	VkApplicationInfo vk_application_info{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	vk_application_info.pNext = nullptr;
@@ -307,6 +240,19 @@ VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDevic
 	vk_device_create_info.ppEnabledExtensionNames = device_extensions.getData();
 
 	VK_CHECK(vkCreateDevice(physicalDevice, &vk_device_create_info, GetVkAllocationCallbacks(), &device));
+
+	for (uint8 i = 0; i < renderDeviceCreateInfo.QueueCreateInfos->getLength(); ++i)
+	{
+		for (uint8 j = 0; j < vk_device_queue_create_infos[i].queueCount; ++j)
+		{
+			VulkanQueue::VulkanQueueCreateInfo vulkan_queue_create_info;
+			vulkan_queue_create_info.FamilyIndex = vk_device_queue_create_infos[i].queueFamilyIndex;
+			vulkan_queue_create_info.QueueIndex = j;
+			vkGetDeviceQueue(device, vk_device_queue_create_infos[i].queueFamilyIndex, j, &vulkan_queue_create_info.Queue);
+			vulkanQueues.emplace_back(vulkan_queue_create_info);
+			*renderDeviceCreateInfo.QueueCreateInfos->at(i).QueueToSet = &vulkanQueues[i + j];
+		}
+	}
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()

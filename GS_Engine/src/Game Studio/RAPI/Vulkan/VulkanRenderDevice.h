@@ -11,25 +11,7 @@
 
 class VulkanRenderDevice final : public RenderDevice
 {
-#ifdef GS_DEBUG
-	PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsFunction = nullptr;
-	VkDebugUtilsMessengerEXT debugMessenger = nullptr;
-	PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsFunction = nullptr;
-#endif
-
-	VkInstance instance = nullptr;
-	VkPhysicalDevice physicalDevice = nullptr;
-	VkDevice device = nullptr;
-
-	VkAllocationCallbacks allocationCallbacks;
-
-	VkPhysicalDeviceProperties deviceProperties;
-	VkPhysicalDeviceMemoryProperties memoryProperties;
-
 public:
-	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
-	~VulkanRenderDevice();
-
 	class VulkanQueue : public Queue
 	{
 		VkQueue queue = nullptr;
@@ -49,6 +31,28 @@ public:
 		VkQueue GetVkQueue() const { return queue; }
 		uint32 GetQueueIndex() const { return queueIndex; }
 	};
+
+private:
+#ifdef GS_DEBUG
+	PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsFunction = nullptr;
+	VkDebugUtilsMessengerEXT debugMessenger = nullptr;
+	PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsFunction = nullptr;
+#endif
+
+	VkInstance instance = nullptr;
+	VkPhysicalDevice physicalDevice = nullptr;
+	VkDevice device = nullptr;
+
+	FVector<VulkanQueue> vulkanQueues;
+
+	VkAllocationCallbacks allocationCallbacks;
+
+	VkPhysicalDeviceProperties deviceProperties;
+	VkPhysicalDeviceMemoryProperties memoryProperties;
+
+public:
+	VulkanRenderDevice(const RenderDeviceCreateInfo& renderDeviceCreateInfo);
+	~VulkanRenderDevice();
 
 	static bool IsVulkanSupported();
 

@@ -23,24 +23,19 @@ Id::HashType Id::HashString(const FString& fstring) { return hashString(fstring.
 Id::HashType Id::hashString(const uint32 length, const char* text)
 {
 	HashType primaryHash(525201411107845655ull);
+	HashType secondaryHash(0xAAAAAAAAAAAAAAAA);
 	
 	for (auto& c : Ranger(length, text))
 	{
 		primaryHash ^= c;
-		primaryHash *= 0x5bd1e9955bd1e995;
-		primaryHash ^= primaryHash >> 47;
-	}
-
-	HashType secondaryHash(0xAAAAAAAAAAAAAAAA);
-
-	for (auto& c : Ranger(length, text))
-	{
 		secondaryHash ^= c;
+		primaryHash *= 0x5bd1e9955bd1e995;
 		secondaryHash *= 0x80638e;
-		secondaryHash ^= primaryHash >> 35;
+		primaryHash ^= primaryHash >> 47;
+		secondaryHash ^= secondaryHash >> 35;
 	}
 
-	primaryHash ^= secondaryHash + 0x9e3779b9 + (primaryHash << 6) + (primaryHash >> 2);
+	//primaryHash ^= secondaryHash + 0x9e3779b9 + (primaryHash << 6) + (primaryHash >> 2);
 	
-	return primaryHash;
+	return ((primaryHash & 0xFFFFFFFF00000000) ^ (secondaryHash & 0x00000000FFFFFFFF));
 }

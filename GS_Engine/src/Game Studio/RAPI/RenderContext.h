@@ -33,29 +33,27 @@ namespace RAPI
 		Extent2D extent{ 0, 0 };
 
 	public:
-		virtual ~RenderContext()
-		{
-		};
+		virtual ~RenderContext() = default;
 
 		virtual void OnResize(const ResizeInfo& _RI) = 0;
 
 		struct AcquireNextImageInfo : RenderInfo
 		{
 		};
-		virtual void AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo);
+		virtual void AcquireNextImage(const AcquireNextImageInfo& acquireNextImageInfo) = 0;
 
 		struct FlushInfo : RenderInfo
 		{
 			Queue* Queue = nullptr;
 			class CommandBuffer* CommandBuffer = nullptr;
 		};
-		virtual void Flush(const FlushInfo& flushInfo);
+		virtual void Flush(const FlushInfo& flushInfo) = 0;
 
 		struct PresentInfo : RenderInfo
 		{
 			Queue* Queue = nullptr;
 		};
-		virtual void Present(const PresentInfo& presentInfo);
+		virtual void Present(const PresentInfo& presentInfo) = 0;
 
 		[[nodiscard]] virtual FVector<RenderTarget*> GetSwapchainImages() const = 0;
 

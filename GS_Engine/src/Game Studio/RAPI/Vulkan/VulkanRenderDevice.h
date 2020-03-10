@@ -44,7 +44,7 @@ public:
 			uint32 FamilyIndex = 0;
 		};
 		VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo);
-		~VulkanQueue() = delete;
+		~VulkanQueue() = default;
 
 		VkQueue GetVkQueue() const { return queue; }
 		uint32 GetQueueIndex() const { return queueIndex; }

@@ -3,7 +3,6 @@
 #include "RAPI/Vulkan/Vulkan.h"
 
 #include "VulkanRenderDevice.h"
-#include <RAPI\Vulkan\VulkanRenderDevice.cpp>
 #include <RAPI\Vulkan\VulkanCommandBuffer.h>
 
 VulkanTexture::VulkanTexture(VulkanRenderDevice* vulkanRenderDevice, const TextureCreateInfo& textureCreateInfo) : Texture(textureCreateInfo)

@@ -70,8 +70,6 @@ namespace RAPI
 
 			class CommandBuffer* CommandBuffer = nullptr;
 		};
-
-		void Destroy(class RenderDevice* renderDevice) override;
 	};
 
 }

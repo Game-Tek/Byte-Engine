@@ -250,7 +250,7 @@ VulkanRenderDevice::VulkanRenderDevice(const RenderDeviceCreateInfo& renderDevic
 			vulkan_queue_create_info.FamilyIndex = vk_device_queue_create_infos[i].queueFamilyIndex;
 			vulkan_queue_create_info.QueueIndex = j;
 			vkGetDeviceQueue(device, vk_device_queue_create_infos[i].queueFamilyIndex, j, &vulkan_queue_create_info.Queue);
-			vulkanQueues.emplace_back(vulkan_queue_create_info);
+			vulkanQueues.emplace_back(renderDeviceCreateInfo.QueueCreateInfos->at(i + j), vulkan_queue_create_info);
 			*renderDeviceCreateInfo.QueueCreateInfos->at(i).QueueToSet = &vulkanQueues[i + j];
 		}
 	}

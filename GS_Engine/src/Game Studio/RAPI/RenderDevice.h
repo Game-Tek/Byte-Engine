@@ -12,6 +12,7 @@
 #include "UniformBuffer.h"
 #include "Bindings.h"
 #include "Texture.h"
+#include "CommandBuffer.h"
 
 namespace RAPI
 {
@@ -77,8 +78,6 @@ namespace RAPI
 		static void DestroyRenderDevice(const RenderDevice* renderDevice);
 
 		virtual GPUInfo GetGPUInfo() = 0;
-
-		virtual void GetQueues(FVector<Queue*>& queues) = 0;
 
 		virtual RenderMesh* CreateRenderMesh(const RenderMesh::RenderMeshCreateInfo& _MCI) = 0;
 		virtual UniformBuffer* CreateUniformBuffer(const UniformBufferCreateInfo& _BCI) = 0;

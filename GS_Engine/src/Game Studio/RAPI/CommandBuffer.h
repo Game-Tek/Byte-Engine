@@ -29,8 +29,8 @@ namespace RAPI
 		{
 			bool IsPrimary = true;
 		};
-
-		explicit CommandBuffer(const CommandBufferCreateInfo& commandBufferCreateInfo);
+		explicit CommandBuffer(const CommandBufferCreateInfo& commandBufferCreateInfo)
+		{};
 		
 		struct BeginRecordingInfo
 		{};

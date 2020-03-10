@@ -10,8 +10,7 @@
 
 #include "VulkanRenderDevice.h"
 
-VulkanCommandBuffer::VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const CommandBufferCreateInfo& commandBufferCreateInfo):
-	CommandBuffer(commandBufferCreateInfo)
+VulkanCommandBuffer::VulkanCommandBuffer(VulkanRenderDevice* renderDevice, const CommandBufferCreateInfo& commandBufferCreateInfo) : CommandBuffer(commandBufferCreateInfo)
 {
 	VkCommandPoolCreateInfo vk_command_pool_create_info{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	vk_command_pool_create_info;

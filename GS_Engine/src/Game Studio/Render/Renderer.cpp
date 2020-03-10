@@ -294,8 +294,7 @@ void Renderer::UpdateViews()
 
 		auto& nfp = GetActiveCamera()->GetNearFarPair();
 
-		BuildPerspectiveMatrix(view.ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First,
-		                       nfp.Second);
+		GSM::BuildPerspectiveMatrix(view.ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
 
 		view.ViewProjectionMatrix = view.ProjectionMatrix * view.ViewMatrix;
 	}
@@ -345,37 +344,4 @@ void Renderer::RenderRenderables()
 	{
 		++i;
 	}
-}
-
-void Renderer::BuildPerspectiveMatrix(Matrix4& matrix, const float fov, const float aspectRatio, const float near, const float far)
-{
-	//Tangent of half the vertical view angle.
-	const auto f = 1 / GSM::Tangent(fov * 0.5f);
-
-	const auto far_m_near = far - near;
-
-	//Zero to one
-	//Left handed
-
-	matrix(0, 0) = f / aspectRatio;
-
-	matrix(1, 1) = -f;
-
-	matrix(2, 2) = -((far + near) / far_m_near);
-	matrix(2, 3) = -((2.f * far * near) / far_m_near);
-
-	matrix(3, 2) = -1.0f;
-}
-
-void Renderer::MakeOrthoMatrix(Matrix4& matrix, const float right, const float left, const float top, const float bottom, const float near, const float far)
-{
-	//Zero to one
-	//Left handed
-
-	matrix(0, 0) = static_cast<float>(2) / (right - left);
-	matrix(1, 1) = static_cast<float>(2) / (top - bottom);
-	matrix(2, 2) = static_cast<float>(1) / (far - near);
-	matrix(3, 0) = -(right + left) / (right - left);
-	matrix(3, 1) = -(top + bottom) / (top - bottom);
-	matrix(3, 2) = -near / (far - near);
 }

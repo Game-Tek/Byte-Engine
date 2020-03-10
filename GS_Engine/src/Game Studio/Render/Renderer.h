@@ -52,19 +52,17 @@ public:
 		return static_cast<T*>(NRC);
 	}
 
-
-	void DrawMesh(const RAPI::DrawInfo& _DrawInfo, class MeshRenderResource* Mesh_);
+	void DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& _DrawInfo, RAPI::RenderMesh* Mesh_);
 	void BindPipeline(RAPI::GraphicsPipeline* _Pipeline);
 
+	RAPI::RenderMesh* CreateMesh(StaticMesh* _SM);
 
-	class RenderMesh* CreateMesh(StaticMesh* _SM);
-	class MaterialRenderResource* CreateMaterial(Material* Material_);
 protected:
 	//Used to count the amount of draw calls in a frame.
-	GS_DEBUG_ONLY(uint32 DrawCalls = 0)
-	GS_DEBUG_ONLY(uint32 InstanceDraws = 0)
-	GS_DEBUG_ONLY(uint32 PipelineSwitches = 0)
-	GS_DEBUG_ONLY(uint32 DrawnComponents = 0)
+	GS_DEBUG_ONLY(uint64 DrawCalls = 0)
+	GS_DEBUG_ONLY(uint64 InstanceDraws = 0)
+	GS_DEBUG_ONLY(uint64 PipelineSwitches = 0)
+	GS_DEBUG_ONLY(uint64 DrawnComponents = 0)
 
 	friend RenderableTypeManager;
 	

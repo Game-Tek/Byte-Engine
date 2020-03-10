@@ -5,6 +5,8 @@
 #include "Containers/FVector.hpp"
 #include "RAPI/Bindings.h"
 
+#include "Containers/Id.h"
+
 class RenderComponent;
 
 class StaticMeshRenderableManager final : public RenderableTypeManager
@@ -20,6 +22,6 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderableManager"; }
 	
 	void DrawObjects(const DrawObjectsInfo& drawObjectsInfo) override;
-	void GetRenderableTypeName(FString& name) override;
+	Id GetRenderableTypeName() const override { return Id("Static Mesh"); }
 	uint32 RegisterComponent(Renderer* renderer, RenderComponent* renderComponent) override;
 };

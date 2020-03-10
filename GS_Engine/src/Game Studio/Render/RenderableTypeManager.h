@@ -3,7 +3,8 @@
 #include "Object.h"
 
 class Renderer;
-class FString;
+
+class Id;
 
 namespace RAPI
 {
@@ -51,7 +52,7 @@ public:
      * \brief Returns the name of the RenderableType this instance of the class takes care of rendering.
      * \param name Reference to an FString in which the name will be stored.
      */
-    virtual void GetRenderableTypeName(FString& name) = 0;
+    virtual Id GetRenderableTypeName() const = 0;
 
     virtual uint32 RegisterComponent(Renderer* renderer, class RenderComponent* renderComponent);
 };

@@ -202,19 +202,19 @@ void Renderer::OnUpdate()
 	RC->Present(present_info);
 }
 
-void Renderer::DrawMesh(const DrawInfo& _DrawInfo, MeshRenderResource* Mesh_)
+void Renderer::DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& drawInfo, RAPI::RenderMesh* Mesh_)
 {
 	CommandBuffer::BindMeshInfo bind_mesh_info;
-	bind_mesh_info.Mesh = Mesh_->mesh;
+	bind_mesh_info.Mesh = Mesh_;
 	CB->BindMesh(bind_mesh_info);
 
 	CommandBuffer::DrawIndexedInfo draw_indexed_info;
-	draw_indexed_info.IndexCount;
-	draw_indexed_info.InstanceCount = 1;
+	draw_indexed_info.IndexCount = drawInfo.IndexCount;
+	draw_indexed_info.InstanceCount = drawInfo.InstanceCount;
 	CB->DrawIndexed(draw_indexed_info);
 	
 	GS_DEBUG_ONLY(++DrawCalls)
-	GS_DEBUG_ONLY(InstanceDraws += 1)
+	GS_DEBUG_ONLY(InstanceDraws += draw_indexed_info.InstanceCount)
 }
 
 void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
@@ -250,38 +250,6 @@ RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 
 
 	return NewMesh;
-}
-
-MaterialRenderResource* Renderer::CreateMaterial(Material* Material_)
-{
-	auto Res = Pipelines.find(Id(Material_->GetMaterialType()));
-
-	if (Res == Pipelines.end())
-	{
-		auto NP = CreatePipelineFromMaterial(Material_);
-		Pipelines.insert({Id(Material_->GetMaterialType()).GetID(), NP});
-	}
-
-	MaterialRenderResourceCreateInfo material_render_resource_create_info;
-	material_render_resource_create_info.ParentMaterial = Material_;
-
-	for (uint8 i = 0; i < Material_->GetTextures().getLength(); ++i)
-	{
-		auto texture_resource = Material_->GetTextures()[i]->GetTextureResource();
-		
-		TextureCreateInfo texture_create_info;
-		texture_create_info.ImageData = texture_resource->GetTextureData().ImageData;
-		texture_create_info.ImageDataSize = texture_resource->GetTextureData().imageDataSize;
-		texture_create_info.Extent = texture_resource->GetTextureData().TextureDimensions;
-		texture_create_info.ImageFormat = texture_resource->GetTextureData().TextureFormat;
-		texture_create_info.Layout = ImageLayout::SHADER_READ;
-	
-		auto texture = renderDevice->CreateTexture(texture_create_info);
-	
-		material_render_resource_create_info.textures.push_back(texture);
-	}
-
-	return new MaterialRenderResource(material_render_resource_create_info);
 }
 
 GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
@@ -342,15 +310,11 @@ void Renderer::UpdateViews()
 
 void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
 {
-	FString name(64);
-	
 	for(auto& manager : renderableTypeManagers)
 	{
-		manager->GetRenderableTypeName(name);
-
-		if(name == _RC->GetRenderableType())
+		if(manager->GetRenderableTypeName() == _RC->GetRenderableType())
 		{
-			manager->RegisterComponent(_RC);
+			manager->RegisterComponent(this, _RC);
 		}
 	}
 }

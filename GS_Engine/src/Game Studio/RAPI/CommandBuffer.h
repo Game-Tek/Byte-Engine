@@ -142,11 +142,5 @@ namespace RAPI
 		struct CopyImageInfo
 		{};
 		virtual void CopyImage(const CopyImageInfo& copyImageInfo) = 0;
-
-		struct SubmitInfo
-		{
-			Queue* Queue = nullptr;
-		};
-		virtual void Submit(const SubmitInfo& submiInfo) = 0;
 	};
 }

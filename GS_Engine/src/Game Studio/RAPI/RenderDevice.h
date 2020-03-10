@@ -47,6 +47,12 @@ namespace RAPI
 			float QueuePriority = 1.0f;
 			Queue** QueueToSet = nullptr;
 		};
+
+		struct DispatchInfo : RenderInfo
+		{
+			class CommandBuffer* CommandBuffer = nullptr;
+		};
+		virtual void Dispatch(const DispatchInfo& dispatchInfo) = 0;
 	};
 
 	class RenderDevice
@@ -85,5 +91,6 @@ namespace RAPI
 		virtual RenderPass* CreateRenderPass(const RenderPassCreateInfo& _RPCI) = 0;
 		virtual Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) = 0;
 		virtual RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) = 0;
+		virtual CommandBuffer* CreateCommandBuffer(const CommandBuffer::CommandBufferCreateInfo& commandBufferCreateInfo) = 0;
 	};
 }

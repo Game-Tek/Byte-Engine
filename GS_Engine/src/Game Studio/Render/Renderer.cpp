@@ -22,7 +22,6 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	RAPI::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
 	render_device_create_info.RenderingAPI = RenderAPI::VULKAN;
 	render_device_create_info.ApplicationName = GS::Application::Get()->GetApplicationName();
-	
 	FVector<Queue::QueueCreateInfo> queue_create_infos = { { Queue::QueueCapabilities::GRAPHICS, 1.0f, &graphicsQueue }, { Queue::QueueCapabilities::TRANSFER, 1.0f, &transferQueue } };
 	render_device_create_info.QueueCreateInfos = &queue_create_infos;
 	renderDevice = RAPI::RenderDevice::CreateRenderDevice(render_device_create_info);
@@ -32,8 +31,11 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	RenderContextCreateInfo RCCI;
 	RCCI.Window = Win;
 	RC = renderDevice->CreateRenderContext(RCCI);
-
 	auto SCImages = RC->GetSwapchainImages();
+
+	CommandBuffer::CommandBufferCreateInfo command_buffers_create_info;
+	graphicsCommandBuffer = renderDevice->CreateCommandBuffer(command_buffers_create_info);
+	transferCommandBuffer = renderDevice->CreateCommandBuffer(command_buffers_create_info);
 
 	RenderTarget::RenderTargetCreateInfo CACI;
 	CACI.Extent = Extent3D{Win->GetWindowExtent().Width, Win->GetWindowExtent().Height, 1};
@@ -89,25 +91,8 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	RPCI.Descriptor = RPD;
 	RP = renderDevice->CreateRenderPass(RPCI);
 
-
-	BindingLayoutCreateInfo ULCI;
-	ULCI.DescriptorCount = 3;
-	ULCI.BindingsSetLayout[0].BindingType = BindingType::UNIFORM_BUFFER;
-	ULCI.BindingsSetLayout[0].ShaderStage = ShaderType::VERTEX_SHADER;
-	ULCI.BindingsSetLayout[0].ArrayLength = 1;
-	RAPI::BindingDescriptor uniform_set;
-	uniform_set.ShaderStage = ShaderType::FRAGMENT_SHADER;
-	uniform_set.BindingType = BindingType::COMBINED_IMAGE_SAMPLER;
-	uniform_set.ArrayLength = 1;
-	ULCI.BindingsSetLayout[1] = uniform_set;
-	ULCI.BindingsSetLayout.resize(2);
-
 	PushConstant MyPushConstant;
 	MyPushConstant.Size = sizeof(uint32);
-
-	UniformBufferCreateInfo UBCI;
-	UBCI.Size = sizeof(Matrix4);
-	UB = renderDevice->CreateUniformBuffer(UBCI);
 
 	Framebuffers.resize(SCImages.getLength());
 	for (uint8 i = 0; i < SCImages.getLength(); ++i)
@@ -115,7 +100,7 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 		FramebufferCreateInfo FBCI;
 		FBCI.RenderPass = RP;
 		FBCI.Extent = Win->GetWindowExtent();
-		FBCI.Images = DArray<RenderTarget*>() = {SCImages[i], depthTexture};
+		FBCI.Images = DArray<RenderTarget*>() = { SCImages[i], depthTexture };
 		FBCI.ClearValues = {{0, 0, 0, 0}, {1, 0, 0, 0}};
 		Framebuffers[i] = renderDevice->CreateFramebuffer(FBCI);
 	}
@@ -131,7 +116,6 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 	GraphicsPipelineCreateInfo gpci;
 	gpci.RenderDevice = renderDevice;
 	gpci.RenderPass = RP;
-	gpci.UniformLayout = UL;
 	gpci.VDescriptor = &ScreenQuad::VD;
 	gpci.PipelineDescriptor.BlendEnable = false;
 	gpci.ActiveWindow = Win;
@@ -179,28 +163,34 @@ void Renderer::OnUpdate()
 	UpdateRenderables();
 
 	CommandBuffer::BeginRecordingInfo begin_recording_info;
-	CB->BeginRecording(begin_recording_info);
+	graphicsCommandBuffer->BeginRecording(begin_recording_info);
 
 	CommandBuffer::BeginRenderPassInfo RPBI;
 	RPBI.RenderPass = RP;
 	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
-	CB->BeginRenderPass(RPBI);
+	graphicsCommandBuffer->BeginRenderPass(RPBI);
 
 	RenderRenderables();
 
 	CommandBuffer::EndRenderPassInfo end_render_pass_info;
-	CB->EndRenderPass(end_render_pass_info);
+	graphicsCommandBuffer->EndRenderPass(end_render_pass_info);
 
 	CommandBuffer::EndRecordingInfo end_recording_info;
-	CB->EndRecording(end_recording_info);
+	graphicsCommandBuffer->EndRecording(end_recording_info);
 
 	RAPI::RenderContext::AcquireNextImageInfo acquire_info;
 	acquire_info.RenderDevice = renderDevice;
 	RC->AcquireNextImage(acquire_info);
 
-	RenderContext::FlushInfo flush_info;
-	flush_info.RenderDevice = renderDevice;
-	RC->Flush(flush_info);
+	//RenderContext::FlushInfo flush_info;
+	//flush_info.RenderDevice = renderDevice;
+	//RC->Flush(flush_info);
+
+	Queue::DispatchInfo dispatch_info;
+	dispatch_info.RenderDevice = renderDevice;
+	dispatch_info.CommandBuffer = graphicsCommandBuffer;
+	graphicsQueue->Dispatch(dispatch_info);
+
 	RenderContext::PresentInfo present_info;
 	present_info.RenderDevice = renderDevice;
 	RC->Present(present_info);
@@ -210,12 +200,12 @@ void Renderer::DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& drawInfo, 
 {
 	CommandBuffer::BindMeshInfo bind_mesh_info;
 	bind_mesh_info.Mesh = Mesh_;
-	CB->BindMesh(bind_mesh_info);
+	graphicsCommandBuffer->BindMesh(bind_mesh_info);
 
 	CommandBuffer::DrawIndexedInfo draw_indexed_info;
 	draw_indexed_info.IndexCount = drawInfo.IndexCount;
 	draw_indexed_info.InstanceCount = drawInfo.InstanceCount;
-	CB->DrawIndexed(draw_indexed_info);
+	graphicsCommandBuffer->DrawIndexed(draw_indexed_info);
 	
 	GS_DEBUG_ONLY(++DrawCalls)
 	GS_DEBUG_ONLY(InstanceDraws += draw_indexed_info.InstanceCount)
@@ -227,7 +217,7 @@ void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 	bind_graphics_pipeline_info.GraphicsPipeline = _Pipeline;
 	bind_graphics_pipeline_info.RenderExtent = Win->GetWindowExtent();
 	
-	CB->BindGraphicsPipeline(bind_graphics_pipeline_info);
+	graphicsCommandBuffer->BindGraphicsPipeline(bind_graphics_pipeline_info);
 	GS_DEBUG_ONLY(++PipelineSwitches)
 }
 
@@ -276,7 +266,6 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::LESS;
 
 	GPCI.RenderPass = RP;
-	GPCI.UniformLayout = UL;
 	GPCI.ActiveWindow = Win;
 
 	return renderDevice->CreateGraphicsPipeline(GPCI);

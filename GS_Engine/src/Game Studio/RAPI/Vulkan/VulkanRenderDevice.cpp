@@ -15,6 +15,7 @@
 #include "VulkanRenderTarget.h"
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
+#include <RAPI\Vulkan\VulkanCommandBuffer.h>
 
 void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_format_,
                            VkImageLayout from_image_layout_, VkImageLayout to_image_layout_,
@@ -303,8 +304,21 @@ ComputePipeline* VulkanRenderDevice::CreateComputePipeline(const ComputePipeline
 
 Framebuffer* VulkanRenderDevice::CreateFramebuffer(const FramebufferCreateInfo& _FCI) {	return new VulkanFramebuffer(this, _FCI); }
 
-RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI) { return new VulkanRenderContext(this, _RCCI); }
+RAPI::RenderContext* VulkanRenderDevice::CreateRenderContext(const RenderContextCreateInfo& _RCCI) { return new VulkanRenderContext(this, _RCCI); }
+
+RAPI::CommandBuffer* VulkanRenderDevice::CreateCommandBuffer(const CommandBuffer::CommandBufferCreateInfo& commandBufferCreateInfo) { return new VulkanCommandBuffer(this, commandBufferCreateInfo); }
 
 VulkanRenderDevice::VulkanQueue::VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo) : queue(vulkanQueueCreateInfo.Queue), queueIndex(vulkanQueueCreateInfo.QueueIndex), familyIndex(vulkanQueueCreateInfo.FamilyIndex)
 {
+}
+
+void VulkanRenderDevice::VulkanQueue::Dispatch(const DispatchInfo& dispatchInfo)
+{
+	VkSubmitInfo vk_submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	vk_submit_info.commandBufferCount = 1;
+	auto vk_command_buffer = static_cast<VulkanCommandBuffer*>(dispatchInfo.CommandBuffer)->GetVkCommandBuffer();
+	vk_submit_info.pCommandBuffers = &vk_command_buffer;
+	uint32 vk_pipeline_stage = VkPipelineStageFlagBits::VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	vk_submit_info.pWaitDstStageMask = &vk_pipeline_stage;
+	vkQueueSubmit(queue, 1, &vk_submit_info, nullptr);
 }

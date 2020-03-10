@@ -124,3 +124,8 @@ void VulkanCommandBuffer::BindBindingsSet(const BindBindingsSetInfo& bindBinding
 
 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,	static_cast<VulkanGraphicsPipeline*>(bindBindingsSetInfo.Pipeline)->GetVkPipelineLayout(), 0, descriptor_sets.getLength(), descriptor_sets.getData(), 0, 0);
 }
+
+void VulkanCommandBuffer::CopyImage(const CopyImageInfo& copyImageInfo)
+{
+	//vkCmdCopyImage(commandBuffer, copyImageInfo, , , , , );
+}

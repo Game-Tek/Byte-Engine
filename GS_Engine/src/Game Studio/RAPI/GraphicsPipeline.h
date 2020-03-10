@@ -43,7 +43,6 @@ namespace RAPI
 	};
 
 	class RenderPass;
-	class BindingLayout;
 
 	class Pipeline : public RAPIObject
 	{
@@ -66,7 +65,6 @@ namespace RAPI
 		class Window* ActiveWindow = nullptr;
 		VertexDescriptor* VDescriptor = nullptr;
 		PipelineDescriptor PipelineDescriptor;
-		BindingLayout* UniformLayout = nullptr;
 		GraphicsPipeline* ParentPipeline = nullptr;
 
 		PushConstant* PushConstant = nullptr;

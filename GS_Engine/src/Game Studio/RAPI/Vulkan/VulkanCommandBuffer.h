@@ -33,5 +33,7 @@ public:
 
 	void BindBindingsSet(const BindBindingsSetInfo& bindBindingsSetInfo) override;
 
+	void CopyImage(const CopyImageInfo& copyImageInfo) override;
+
 	VkCommandBuffer GetVkCommandBuffer() const { return commandBuffer; }
 };

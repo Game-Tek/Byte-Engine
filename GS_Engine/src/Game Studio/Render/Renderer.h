@@ -81,21 +81,20 @@ protected:
 	mutable Camera* ActiveCamera = nullptr;
 
 	//Render elements
+	RAPI::RenderDevice* renderDevice = nullptr;
+
+	RAPI::Queue* graphicsQueue = nullptr;
+	RAPI::Queue* transferQueue = nullptr;
+
 	RAPI::Window* Win = nullptr;
 	FVector<RAPI::Framebuffer*> Framebuffers;
 
 	RAPI::RenderTarget* depthTexture = nullptr;
-
-	RAPI::RenderDevice* renderDevice = nullptr;
 	
-	RAPI::Queue* graphicsQueue = nullptr;
-	RAPI::Queue* transferQueue = nullptr;
-
 	RAPI::RenderContext* RC = nullptr;
-	RAPI::CommandBuffer* CB = nullptr;
+	RAPI::CommandBuffer* graphicsCommandBuffer = nullptr;
+	RAPI::CommandBuffer* transferCommandBuffer = nullptr;
 	RAPI::RenderPass* RP = nullptr;
-	RAPI::UniformBuffer* UB = nullptr;
-	RAPI::BindingLayout* UL = nullptr;
 
 	RAPI::RenderMesh* FullScreenQuad = nullptr;
 	RAPI::GraphicsPipeline* FullScreenRenderingPipeline = nullptr;

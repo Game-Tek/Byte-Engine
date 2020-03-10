@@ -28,6 +28,8 @@ public:
 		VulkanQueue(const QueueCreateInfo& queueCreateInfo, const VulkanQueueCreateInfo& vulkanQueueCreateInfo);
 		~VulkanQueue() = default;
 
+		void Dispatch(const DispatchInfo& dispatchInfo) override;
+
 		VkQueue GetVkQueue() const { return queue; }
 		uint32 GetQueueIndex() const { return queueIndex; }
 	};
@@ -69,6 +71,7 @@ public:
 	ComputePipeline* CreateComputePipeline(const ComputePipelineCreateInfo& _CPCI) override;
 	Framebuffer* CreateFramebuffer(const FramebufferCreateInfo& _FCI) override;
 	RenderContext* CreateRenderContext(const RenderContextCreateInfo& _RCCI) override;
+	CommandBuffer* CreateCommandBuffer(const CommandBuffer::CommandBufferCreateInfo& commandBufferCreateInfo) override;
 
 	VkInstance GetVkInstance() const { return instance; }
 	VkPhysicalDevice GetVkPhysicalDevice() const { return physicalDevice; }

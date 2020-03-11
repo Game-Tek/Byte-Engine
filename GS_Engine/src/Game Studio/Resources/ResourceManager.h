@@ -72,6 +72,7 @@ public:
 	}
 
 	void ReleaseResource(Resource* _Resource) const;
+	void ReleaseResource(const Id& resourceType, const Id& resourceName);
 
 	void* CreateFile();
 

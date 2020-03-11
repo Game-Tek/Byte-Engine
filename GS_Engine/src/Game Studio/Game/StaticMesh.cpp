@@ -3,14 +3,14 @@
 #include "Resources/StaticMeshResource.h"
 #include "Application/Application.h"
 
-StaticMesh::StaticMesh(const FString& _Name) : staticMeshResource(
-	GS::Application::Get()->GetResourceManager()->GetResource<StaticMeshResource>(_Name))
+StaticMesh::StaticMesh(const FString& _Name)
 {
+	GS::Application::Get()->GetResourceManager()->GetResource(_Name, "Static Mesh");
 }
 
 StaticMesh::~StaticMesh()
 {
-	GS::Application::Get()->GetResourceManager()->ReleaseResource(staticMeshResource);
+	GS::Application::Get()->GetResourceManager()->ReleaseResource("Static Mesh", "name");
 }
 
 Model StaticMesh::GetModel() const

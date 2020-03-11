@@ -46,6 +46,8 @@ public:
 	 */
 	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 
+	virtual void ReleaseResource(const Id& resourceName) = 0;
+
 	/**
 	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
 	 * \return A string containing the type name.

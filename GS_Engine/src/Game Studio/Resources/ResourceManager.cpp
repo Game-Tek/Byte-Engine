@@ -31,6 +31,11 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	}
 }
 
+void ResourceManager::ReleaseResource(const Id& resourceType, const Id& resourceName)
+{
+	resourceManagers[resourceType]->ReleaseResource(resourceName);
+}
+
 void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_)
 {
 	auto full_path = System::GetRunningPath() + "resources/" + fileName;

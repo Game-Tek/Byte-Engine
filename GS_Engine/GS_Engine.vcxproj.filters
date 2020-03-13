@@ -195,7 +195,6 @@
     </ClInclude>
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
-    <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
     <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
@@ -313,7 +312,6 @@
     </ClCompile>
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\MaterialResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
@@ -342,6 +340,7 @@
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.cpp" />
     <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\MaterialResourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

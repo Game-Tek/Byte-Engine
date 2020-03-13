@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ResourceReference.h"
+#include "Containers/FString.h"
 
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
@@ -22,7 +23,9 @@ public:
 	 */
 	struct LoadResourceInfo
 	{
-		const char* ResourceName = nullptr;
+		//const char* ResourceName = nullptr;
+		FString ResourcePath;
+		Id ResourceName;
 	};
 
 	struct OnResourceLoadInfo

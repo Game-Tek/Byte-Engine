@@ -16,13 +16,14 @@ protected:
 	
 
 public:
-	virtual ~AudioDevice()
-	{
-	};
-
 	AudioDevice();
+	virtual ~AudioDevice() =default;
 
-	static AudioDevice* CreateAudioDevice();
+	struct AudioDeviceCreateInfo
+	{
+		StreamShareMode ShareMode;
+	};
+	static AudioDevice* CreateAudioDevice(const AudioDeviceCreateInfo& audioDeviceCreateinfo);
 
 	/**
 	 * \brief Initializes the audio device to start receiving audio. Must be called before any other function.

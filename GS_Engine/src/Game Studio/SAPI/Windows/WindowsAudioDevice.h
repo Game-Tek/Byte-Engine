@@ -13,17 +13,17 @@ class WindowsAudioDevice : public AudioDevice
 	IMMDevice* endPoint = nullptr;
 	IAudioClient* audioClient = nullptr;
 	IAudioRenderClient* renderClient = nullptr;
-	WAVEFORMATEX* pwfx = nullptr;
+	PWAVEFORMATEXTENSIBLE pwfx = nullptr;
 
 	uint32 bufferFrameCount = 0;
 	void* data = nullptr;
 public:
-	WindowsAudioDevice();
+	WindowsAudioDevice(const AudioDeviceCreateInfo& audioDeviceCreateInfo);
 	virtual ~WindowsAudioDevice();
 
 	void Start() override;
-	void GetAvailableBufferSize(uint64* available_buffer_size_) override;
-	void GetBufferSize(uint32* total_buffer_size_) override;
-	void PushAudioData(void* data_, uint64 pushed_samples_) override;
+	void GetAvailableBufferSize(uint64* availableBufferSize) override;
+	void GetBufferSize(uint32* totalBufferSize) override;
+	void PushAudioData(void* data_, uint64 pushedSamples) override;
 	void Stop() override;
 };

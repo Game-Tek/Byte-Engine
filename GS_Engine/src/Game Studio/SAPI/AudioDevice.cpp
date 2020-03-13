@@ -6,7 +6,7 @@ AudioDevice::AudioDevice()
 {
 }
 
-AudioDevice* AudioDevice::CreateAudioDevice()
+AudioDevice* AudioDevice::CreateAudioDevice(const AudioDeviceCreateInfo& audioDeviceCreateinfo)
 {
 #ifdef GS_PLATFORM_WIN
 	return new WindowsAudioDevice();

@@ -8,15 +8,14 @@
                 { (punk)->Release(); (punk) = NULL; }
 
 
-WindowsAudioDevice::WindowsAudioDevice()
+WindowsAudioDevice::WindowsAudioDevice(const AudioDeviceCreateInfo& audioDeviceCreateInfo)
 {
 	const auto CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
 	const auto IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
 	const auto IID_IAudioClient = __uuidof(IAudioClient);
 	const auto IID_IAudioRenderClient = __uuidof(IAudioRenderClient);
 
-	HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,
-	                              reinterpret_cast<void**>(&enumerator));
+	HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, reinterpret_cast<void**>(&enumerator));
 
 	//IMMDeviceCollection* audio_endpoints = nullptr;
 	//enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &audio_endpoints);
@@ -25,7 +24,13 @@ WindowsAudioDevice::WindowsAudioDevice()
 
 	endPoint->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, reinterpret_cast<void**>(&audioClient));
 
-	audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, pwfx, NULL);
+	_AUDCLNT_SHAREMODE win_share_mode{};
+	switch (audioDeviceCreateInfo.ShareMode)
+	{
+	case StreamShareMode::EXCLUSIVE: win_share_mode = _AUDCLNT_SHAREMODE::AUDCLNT_SHAREMODE_EXCLUSIVE; break;
+	case StreamShareMode::SHARED: win_share_mode = _AUDCLNT_SHAREMODE::AUDCLNT_SHAREMODE_SHARED; break;
+	}
+	audioClient->Initialize(win_share_mode, 0, 0, 0, &pwfx->Format, nullptr);
 
 	audioClient->GetService(IID_IAudioRenderClient, reinterpret_cast<void**>(&renderClient));
 
@@ -33,7 +38,7 @@ WindowsAudioDevice::WindowsAudioDevice()
 	
 	renderClient->GetBuffer(bufferFrameCount, reinterpret_cast<BYTE**>(&data));
 
-	switch (pwfx->nChannels)
+	switch (pwfx->Format.nChannels)
 	{
 	case 1: channelCount = AudioChannelCount::CHANNELS_MONO; break;
 	case 2: channelCount = AudioChannelCount::CHANNELS_STEREO; break;
@@ -42,7 +47,7 @@ WindowsAudioDevice::WindowsAudioDevice()
 	default: throw std::exception("Channel count not supported!");
 	}
 
-	switch (pwfx->nSamplesPerSec)
+	switch (pwfx->Format.nSamplesPerSec)
 	{
 	case 44100: sampleRate = AudioSampleRate::KHZ_44_1; break;
 	case 48000: sampleRate = AudioSampleRate::KHZ_48; break;
@@ -50,7 +55,7 @@ WindowsAudioDevice::WindowsAudioDevice()
 	default: throw std::exception("Sample rate not supported!");
 	}
 
-	switch (pwfx->wBitsPerSample)
+	switch (pwfx->Format.wBitsPerSample)
 	{
 	case 8: bitDepth = AudioBitDepth::BIT_DEPTH_8; break;
 	case 16:bitDepth = AudioBitDepth::BIT_DEPTH_16; break;
@@ -68,38 +73,32 @@ WindowsAudioDevice::~WindowsAudioDevice()
 	SAFE_RELEASE(enumerator)
 }
 
-void WindowsAudioDevice::Start()
-{
-	audioClient->Start();
-}
+void WindowsAudioDevice::Start() { audioClient->Start(); }
 
-void WindowsAudioDevice::GetAvailableBufferSize(uint64* available_buffer_size_)
+void WindowsAudioDevice::GetAvailableBufferSize(uint64* availableBufferSize)
 {
 	UINT32 numFramesPadding = 0;
 	audioClient->GetCurrentPadding(&numFramesPadding);
 
-	*available_buffer_size_ = bufferFrameCount - numFramesPadding;
+	*availableBufferSize = bufferFrameCount - numFramesPadding;
 }
 
-void WindowsAudioDevice::GetBufferSize(uint32* total_buffer_size_)
+void WindowsAudioDevice::GetBufferSize(uint32* totalBufferSize)
 {
-	audioClient->GetBufferSize(total_buffer_size_);
+	audioClient->GetBufferSize(totalBufferSize);
 }
 
-void WindowsAudioDevice::PushAudioData(void* data_, uint64 pushed_samples_)
+void WindowsAudioDevice::PushAudioData(void* data, uint64 pushedSamples)
 {
 	UINT32 numFramesPadding = 0;
 	audioClient->GetCurrentPadding(&numFramesPadding);
 
 	const auto abs = bufferFrameCount - numFramesPadding;
 
-	BYTE* data = nullptr;
-	renderClient->GetBuffer(static_cast<uint32>(abs), &data);
-	memcpy(data, data_, pwfx->nBlockAlign);
+	BYTE* buffer_address = nullptr;
+	renderClient->GetBuffer(static_cast<uint32>(abs), &buffer_address);
+	memcpy(buffer_address, data, pwfx->Format.nBlockAlign);
 	renderClient->ReleaseBuffer(abs, 0);
 }
 
-void WindowsAudioDevice::Stop()
-{
-	audioClient->Stop();
-}
+void WindowsAudioDevice::Stop() { audioClient->Stop(); }

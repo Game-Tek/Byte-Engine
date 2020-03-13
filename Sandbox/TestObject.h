@@ -36,13 +36,17 @@ public:
 
 		MyCamera.SetPosition(Vector3(0, 50, -250));
 		GetWorld()->GetScene().SetCamera(&MyCamera);
-
 	}
 
 	~TestObject()
 	{
 	}
 
+	void Destroy(World* ownerWorld) override
+	{
+		
+	}
+	
 	void OnUpdate() override
 	{
 		auto i_m = GS::Application::Get()->GetInputManager();

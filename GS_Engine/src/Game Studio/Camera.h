@@ -14,6 +14,9 @@ public:
 	explicit Camera(const float FOV);
 	~Camera() = default;
 
+	void Destroy(World* ownerWorld) override
+	{}
+	
 	[[nodiscard]] const char* GetName() const override { return "Camera"; }
 
 	[[nodiscard]] float GetAperture() const { return aperture; }

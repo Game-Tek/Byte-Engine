@@ -65,22 +65,6 @@ void DeserializeFVector(InStream& inStream, FVector<T>& vector)
 	}
 }
 
-class ResourceData
-{
-	friend class Resource;
-
-public:
-	FString ResourceName;
-
-	ResourceData() = default;
-
-	virtual ~ResourceData()
-	{
-	}
-
-	const FString& GetResourceName() const { return ResourceName; }
-};
-
 struct LoadResourceData
 {
 	FString FullPath;

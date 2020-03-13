@@ -20,6 +20,8 @@ public:
 	WorldObject() = default;
 	virtual ~WorldObject() = default;
 
+	virtual void Destroy(class World* ownerWorld) = 0;
+	
 	void SetID(WorldObjectID _ID) { ID = _ID; }
 
 	[[nodiscard]] WorldObjectID GetID() const { return ID; }

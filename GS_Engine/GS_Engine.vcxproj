@@ -159,6 +159,9 @@
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
     <ClInclude Include="src\Game Studio\Resources\AudioResource.h" />
     <ClInclude Include="src\Game Studio\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\ResourceData.h" />
+    <ClInclude Include="src\Game Studio\Resources\ResourceReference.h" />
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResource.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />

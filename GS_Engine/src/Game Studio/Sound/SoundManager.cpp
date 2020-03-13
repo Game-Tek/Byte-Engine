@@ -6,7 +6,8 @@ SoundManager::SoundManager()
 	auto result = GS::Application::Get()->GetResourceManager()->GetResource("sax", "Audio");
 	sound = static_cast<AudioResourceManager::AudioResourceData*>(result.ResourceData);
 
-	audioDevice = AudioDevice::CreateAudioDevice();
+	struct AudioDevice::AudioDeviceCreateInfo audio_device_create_info { StreamShareMode::SHARED };
+	audioDevice = AudioDevice::CreateAudioDevice(audio_device_create_info);
 	audioDevice->Start();
 
 	audioDevice->GetBufferSize(&bufferSize);

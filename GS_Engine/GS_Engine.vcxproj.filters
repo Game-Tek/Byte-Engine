@@ -263,6 +263,9 @@
     <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
     <ClInclude Include="src\Game Studio\Core\Signal.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.h" />
+    <ClInclude Include="src\Game Studio\Resources\ResourceReference.h" />
+    <ClInclude Include="src\Game Studio\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\ResourceData.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

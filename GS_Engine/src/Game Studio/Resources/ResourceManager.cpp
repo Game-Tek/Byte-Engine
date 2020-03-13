@@ -5,7 +5,7 @@
 #include "Core/System.h"
 #include "Debug/Logger.h"
 
-SubResourceManager::OnResourceLoadInfo ResourceManager::GetResource(const FString& name, const Id& type)
+ResourceReference ResourceManager::GetResource(const FString& name, const Id& type)
 {
 	auto resource_manager = resourceManagers.find(type);
 
@@ -18,7 +18,7 @@ SubResourceManager::OnResourceLoadInfo ResourceManager::GetResource(const FStrin
 	
 	resource_manager->second->LoadResource(load_resource_info, on_resource_load_info);
 
-	return on_resource_load_info;
+	return ResourceReference(type, Id(name), on_resource_load_info.ResourceData);
 }
 
 void ResourceManager::ReleaseResource(Resource* _Resource) const
@@ -29,6 +29,11 @@ void ResourceManager::ReleaseResource(Resource* _Resource) const
 	{
 		delete ResourceMap[_Resource->resourceName.GetID()];
 	}
+}
+
+void ResourceManager::ReleaseResource(const ResourceReference& resourceReference) const
+{
+	resourceManagers.at(resourceReference.resourceType)->ReleaseResource(resourceReference.resourceName);
 }
 
 void ResourceManager::ReleaseResource(const Id& resourceType, const Id& resourceName)

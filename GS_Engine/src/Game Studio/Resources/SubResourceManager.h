@@ -1,20 +1,19 @@
 #pragma once
 
+#include "ResourceReference.h"
+
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
  * from the ResourceManager.
  *
  * This class will be instanced sometime during the application's lifetime to allow loading of some type of resource made possible by extension of this class.
  * 
- * Every extension will allow for loading of 1 type of resource specified with a pretty name by the GetResourceTypeName() function. Users will request loading of
+ * Every extension will allow for loading of 1 type of resource specified with a pretty name by the GetResourceType() function. Users will request loading of
  * some type of resource by asking for a resource of this "pretty" name type.
  */
 class SubResourceManager
 {
-public:
-
-	struct ResourceData{};
-	
+public:	
 	SubResourceManager() = default;
 	virtual ~SubResourceManager() = default;
 	
@@ -28,7 +27,7 @@ public:
 
 	struct OnResourceLoadInfo
 	{
-		ResourceData* ResourceData = nullptr;
+		ResourceData* ResourceData = nullptr;		
 	};
 	
 	/**
@@ -52,5 +51,5 @@ public:
 	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
 	 * \return A string containing the type name.
 	 */
-	[[nodiscard]] virtual const char* GetResourceTypeName() const = 0;
+	[[nodiscard]] virtual Id GetResourceType() const = 0;
 };

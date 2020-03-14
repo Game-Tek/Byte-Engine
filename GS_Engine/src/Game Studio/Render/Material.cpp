@@ -5,9 +5,9 @@
 
 using namespace RAPI;
 
-Material::Material(const FString& _Name) : materialMaterialResource(GS::Application::Get()->GetResourceManager()->GetResource(_Name, "Material"))
+Material::Material(const FString& _Name) : materialMaterialResource(GS::Application::Get()->GetResourceManager()->TryGetResource(_Name, "Material"))
 {
-	static_cast<MaterialResourceData*>(materialMaterialResource.GetResourceData());
+	//static_cast<MaterialResourceData*>(GS::Application::Get()->GetResourceManager()->GetResource(materialMaterialResource))->Roughness;
 }
 
 Material::~Material()

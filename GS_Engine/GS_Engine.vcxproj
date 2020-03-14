@@ -162,10 +162,11 @@
     <ClInclude Include="src\Game Studio\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceData.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceReference.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\SubResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
+    <ClInclude Include="src\Game Studio\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
     <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Game Studio\Sound\SoundMixer.h" />
@@ -231,7 +232,6 @@
     <ClInclude Include="src\Game Studio\Object.h" />
     <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
     <ClInclude Include="src\Game Studio\ScreenQuad.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
     <ClInclude Include="src\Game Studio\Containers\FString.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
@@ -246,7 +246,6 @@
     <ClInclude Include="src\Game Studio\Texture.h" />
     <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h" />
     <ClInclude Include="src\Game Studio\Math\Vector4.h" />
-    <ClInclude Include="src\Game Studio\Resources\TextureResource.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.h" />
     <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.h" />
@@ -276,10 +275,10 @@
     <ClCompile Include="src\Game Studio\Resources\AudioResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioCore.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
     <ClCompile Include="src\Game Studio\Sound\SoundManager.cpp" />
@@ -304,9 +303,7 @@
     <ClCompile Include="src\Game Studio\Application\Clock.cpp" />
     <ClCompile Include="src\Game Studio\Application\Application.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp" />
     <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp" />
     <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />

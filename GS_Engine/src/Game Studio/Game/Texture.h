@@ -11,7 +11,7 @@ class Texture : public Object
 public:
 
 	explicit Texture(const FString& name) : textureResource(
-		GS::Application::Get()->GetResourceManager()->GetResource<TextureResource>(name))
+		GS::Application::Get()->GetResourceManager()->TryGetResource<TextureResource>(name))
 	{
 	}
 

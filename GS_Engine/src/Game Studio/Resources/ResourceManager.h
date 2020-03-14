@@ -37,19 +37,9 @@ public:
 		}
 	}
 
-	ResourceReference GetResource(const FString& name, const Id& type);
-
-	template <class T>
-	void CreateResource(const FString& _Name, ResourceData& ResourceData_)
-	{
-		Resource* resource = new T();
-		resource->makeFromData(ResourceData_);
-		//auto path = _Name + "." + resource->getResourceTypeExtension();
-		//SaveFile(_Name, path, ResourceData_);
-		//LoadResource(_Name, resource);
-	}
-
-	void ReleaseResource(Resource* _Resource) const;
+	ResourceReference TryGetResource(const FString& name, const Id& type);
+	ResourceData* GetResource(const ResourceReference& resourceReference);
+	
 	void ReleaseResource(const ResourceReference& resourceReference) const;
 	void ReleaseResource(const Id& resourceType, const Id& resourceName);
 

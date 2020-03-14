@@ -17,7 +17,8 @@ class SubResourceManager
 public:	
 	SubResourceManager() = default;
 	virtual ~SubResourceManager() = default;
-	
+	virtual const char* GetResourceExtension() = 0;
+
 	/**
 	 * \brief Struct specifying how a resource will be loaded.
 	 */
@@ -48,6 +49,8 @@ public:
 	 */
 	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 
+	virtual ResourceData* GetResource(const Id& name) = 0;
+	
 	virtual void ReleaseResource(const Id& resourceName) = 0;
 
 	/**

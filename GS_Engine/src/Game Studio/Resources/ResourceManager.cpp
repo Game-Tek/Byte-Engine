@@ -5,14 +5,15 @@
 #include "Core/System.h"
 #include "Debug/Logger.h"
 
-ResourceReference ResourceManager::GetResource(const FString& name, const Id& type)
+ResourceReference ResourceManager::TryGetResource(const FString& name, const Id& type)
 {
 	auto resource_manager = resourceManagers.find(type);
 
 	GS_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
 
 	SubResourceManager::LoadResourceInfo load_resource_info;
-	load_resource_info.ResourceName = name.c_str();
+	load_resource_info.ResourceName = Id(name);
+	load_resource_info.ResourcePath = System::GetRunningPath() + "resources/" + name + "." + resource_manager->second->GetResourceExtension();
 
 	SubResourceManager::OnResourceLoadInfo on_resource_load_info;
 	
@@ -21,14 +22,11 @@ ResourceReference ResourceManager::GetResource(const FString& name, const Id& ty
 	return ResourceReference(type, Id(name), on_resource_load_info.ResourceData);
 }
 
-void ResourceManager::ReleaseResource(Resource* _Resource) const
+ResourceData* ResourceManager::GetResource(const ResourceReference& resourceReference)
 {
-	_Resource->decrementReferences();
-
-	if (_Resource->getReferenceCount() == 0)
-	{
-		delete ResourceMap[_Resource->resourceName.GetID()];
-	}
+	auto resource_manager = resourceManagers.find(resourceReference.resourceType);
+	GS_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
+	return resource_manager->second->GetResource(resourceReference.resourceName);
 }
 
 void ResourceManager::ReleaseResource(const ResourceReference& resourceReference) const

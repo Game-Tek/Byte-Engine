@@ -5,7 +5,7 @@
 
 StaticMesh::StaticMesh(const FString& _Name)
 {
-	GS::Application::Get()->GetResourceManager()->GetResource(_Name, "Static Mesh");
+	GS::Application::Get()->GetResourceManager()->TryGetResource(_Name, "Static Mesh");
 }
 
 StaticMesh::~StaticMesh()

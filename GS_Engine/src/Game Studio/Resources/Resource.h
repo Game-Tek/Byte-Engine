@@ -2,10 +2,7 @@
 
 #include "Core.h"
 
-#include "Object.h"
-
 #include "Containers/FString.h"
-#include "Containers/Id.h"
 
 #include "Stream.h"
 
@@ -64,53 +61,3 @@ void DeserializeFVector(InStream& inStream, FVector<T>& vector)
 		inStream >> vector[i];
 	}
 }
-
-struct LoadResourceData
-{
-	FString FullPath;
-	class ResourceManager* Caller = nullptr;
-};
-
-/**
- * \brief Base class representation of all types of resources that can be loaded into the engine.
- */
-class Resource : public Object
-{
-	friend class ResourceManager;
-
-	Id resourceName;
-
-	uint16 references = 0;
-
-	void incrementReferences() { ++references; }
-	void decrementReferences() { --references; }
-	[[nodiscard]] uint16 getReferenceCount() const { return references; }
-
-	virtual bool loadResource(const LoadResourceData& loadResourceData) = 0;
-	virtual void makeFromData(ResourceData& resourceData) {}
-	virtual void loadFallbackResource(const FString& fullPath) = 0;
-
-	//Must return the extension name for the extension type.
-	[[nodiscard]] virtual const char* getResourceTypeExtension() const = 0;
-
-public:
-	Resource() = default;
-
-	virtual ~Resource() = default;
-};
-
-struct ResourceElementDescriptor
-{
-	uint64 Bytes = 0;
-	//void* Data = nullptr;
-};
-
-struct SaveResourceElementDescriptor
-{
-	SaveResourceElementDescriptor(ResourceSegmentType _Bytes, void* _Data) : Bytes(_Bytes), Data(_Data)
-	{
-	}
-
-	ResourceSegmentType Bytes = 0;
-	void* Data = nullptr;
-};

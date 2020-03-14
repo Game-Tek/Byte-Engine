@@ -6,23 +6,23 @@
 #include <cstring>
 #include <initializer_list>
 
-template <typename _T>
-class DArray
+template <typename T>
+class DArray final
 {
 	uint32 capacity = 0;
 	uint32 length = 0;
-	_T* data = nullptr;
+	T* data = nullptr;
 
-	static _T* allocate(const uint32 _elements)
+	static constexpr T* allocate(const uint32 _elements)
 	{
 		//auto align = alignof(T);
-		return SCAST(_T*, malloc(sizeof(_T) * _elements));
+		return SCAST(T*, malloc(sizeof(T) * _elements));
 		//return SCAST(T*, _aligned_malloc(_elements * sizeof(T), alignof(T)));
 	}
 
 	void copyLength(const uint32 _elements, void* _from)
 	{
-		memcpy(this->data, _from, sizeof(_T) * _elements);
+		memcpy(this->data, _from, sizeof(T) * _elements);
 	}
 
 	void copyToData(const void* _from, size_t _size)
@@ -39,8 +39,8 @@ class DArray
 	}
 
 public:
-	typedef _T* iterator;
-	typedef const _T* const_iterator;
+	typedef T* iterator;
+	typedef const T* const_iterator;
 
 	[[nodiscard]] iterator begin() { return this->data; }
 
@@ -50,27 +50,26 @@ public:
 
 	[[nodiscard]] const_iterator end() const { return &this->data[this->length]; }
 
-	_T& front() { return this->data[0]; }
+	T& front() { return this->data[0]; }
 
-	_T& back() { return this->data[this->length]; }
+	T& back() { return this->data[this->length]; }
 
-	[[nodiscard]] const _T& front() const { return this->data[0]; }
+	[[nodiscard]] const T& front() const { return this->data[0]; }
 
-	[[nodiscard]] const _T& back() const { return this->data[this->length]; }
+	[[nodiscard]] const T& back() const { return this->data[this->length]; }
 
 	DArray() = default;
 
-	DArray(const std::initializer_list<_T>& _List) : capacity(_List.size()), length(_List.size()),
-	                                                 data(allocate(_List.size()))
+	constexpr DArray(const std::initializer_list<T>& _List) : capacity(_List.size()), length(_List.size()), data(allocate(_List.size()))
 	{
-		copyLength(this->length, CCAST(_T*, _List.begin()));
+		copyLength(this->length, CCAST(T*, _List.begin()));
 	}
 
 	explicit DArray(const uint32 _Length) : capacity(_Length), length(0), data(allocate(_Length))
 	{
 	}
 
-	DArray(_T _Data[], const uint32 _Length) : data(allocate(_Length)), capacity(_Length), length(_Length)
+	DArray(T _Data[], const uint32 _Length) : data(allocate(_Length)), capacity(_Length), length(_Length)
 	{
 		copyLength(_Length, _Data);
 	}
@@ -78,10 +77,10 @@ public:
 	DArray(const_iterator _Start, const_iterator _End) : capacity(_End - _Start), length(this->capacity),
 	                                                     data(allocate(this->capacity))
 	{
-		copyToData(_Start, (_End - _Start) * sizeof(_T));
+		copyToData(_Start, (_End - _Start) * sizeof(T));
 	}
 
-	DArray(const DArray<_T>& _Other) : capacity(_Other.capacity), length(_Other.length),
+	DArray(const DArray<T>& _Other) : capacity(_Other.capacity), length(_Other.length),
 	                                   data(allocate(this->capacity))
 	{
 		copyLength(this->capacity, _Other.data);
@@ -92,7 +91,7 @@ public:
 		freeArray();
 	}
 
-	DArray& operator=(const DArray<_T>& _Other)
+	DArray& operator=(const DArray<T>& _Other)
 	{
 		freeArray();
 		this->capacity = _Other.capacity;
@@ -102,36 +101,36 @@ public:
 		return *this;
 	}
 
-	_T& operator[](const uint32 i)
+	T& operator[](const uint32 i)
 	{
 		GS_ASSERT(i > this->capacity, "Out of Bounds! Requested index is greater than the array's allocated(current) size!")
 		return this->data[i];
 	}
 
-	const _T& operator[](const uint32 i) const
+	const T& operator[](const uint32 i) const
 	{
 		GS_ASSERT(i > this->capacity, "Out of Bounds! Requested index is greater than the array's allocated(current) size!")
 		return this->data[i];
 	}
 
-	_T* getData()
+	T* getData()
 	{
 		return this->data;
 	}
 
-	[[nodiscard]] const _T* getData() const
+	[[nodiscard]] const T* getData() const
 	{
 		return this->data;
 	}
 
-	uint32 push_back(const _T& _obj)
+	uint32 push_back(const T& _obj)
 	{
 		this->data[this->length] = _obj;
 
 		return this->length++;
 	}
 
-	uint32 push_back(const _T* _obj)
+	uint32 push_back(const T* _obj)
 	{
 		this->data[this->length] = *_obj;
 
@@ -154,7 +153,7 @@ public:
 	}
 
 	//Returns the size in bytes the currently allocated array takes up.
-	[[nodiscard]] size_t getSize() const { return this->capacity * sizeof(_T); }
+	[[nodiscard]] size_t getSize() const { return this->capacity * sizeof(T); }
 	//Returns the size in bytes the current length of the array takes up.
-	[[nodiscard]] size_t getLengthSize() const { return this->length * sizeof(_T); }
+	[[nodiscard]] size_t getLengthSize() const { return this->length * sizeof(T); }
 };

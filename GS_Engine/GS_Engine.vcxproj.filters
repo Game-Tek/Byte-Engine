@@ -145,9 +145,6 @@
       <Filter>Engine\InputManager</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Resources\Resource.h" />
-    <ClInclude Include="src\Game Studio\Resources\TextureResource.h">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
     <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
     <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
@@ -190,13 +187,9 @@
     <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
     <ClInclude Include="src\Game Studio\Render\Material.h" />
     <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResource.h">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
     <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
-    <ClInclude Include="src\Game Studio\Resources\TextResource.h" />
     <ClInclude Include="src\Game Studio\Containers\Pair.h" />
     <ClInclude Include="src\Game Studio\Resources\Stream.h" />
     <ClInclude Include="src\Game Studio\Math\Frustum.h" />
@@ -265,6 +258,8 @@
     <ClInclude Include="src\Game Studio\Resources\ResourceReference.h" />
     <ClInclude Include="src\Game Studio\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceData.h" />
+    <ClInclude Include="src\Game Studio\Resources\TextureResourceManager.h" />
+    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -286,9 +281,6 @@
     <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Resources\TextureResource.cpp">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Application\Input\InputEnums.h" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
@@ -307,9 +299,6 @@
     <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp">
       <Filter>Engine\Render\Renderer</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Resources\StaticMeshResource.cpp">
-      <Filter>Engine\Resource Manager\Resources</Filter>
-    </ClCompile>
     <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
     <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
@@ -317,14 +306,12 @@
     <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
     <ClCompile Include="src\Game Studio\Render\Material.cpp" />
     <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\TextResource.cpp" />
     <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.cpp" />
     <ClCompile Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.cpp" />
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\Resource.cpp" />
     <ClCompile Include="src\Game Studio\Math\Vector3.cpp" />
     <ClCompile Include="src\Game Studio\Math\Rotator.cpp" />
     <ClCompile Include="src\Game Studio\Core\System.cpp" />
@@ -341,6 +328,8 @@
     <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.cpp" />
     <ClCompile Include="src\Game Studio\Resources\MaterialResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\TextureResourceManager.cpp" />
+    <ClCompile Include="src\Game Studio\Resources\StaticMeshResourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

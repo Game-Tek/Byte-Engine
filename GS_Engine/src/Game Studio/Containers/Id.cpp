@@ -58,7 +58,7 @@ uint32 Id32::hashString(const uint32 stringLength, const char* str)
 	return ((primaryHash & 0xFFFF0000) ^ (secondaryHash & 0x0000FFFF));
 }
 
-Id32::Id32(const char* text) : hash(hashString(FString::StringLength(text), text))
+Id32::Id32(const char* text) : hash(hashString(FString::StringLength(text) - 1, text))
 {
 }
 
@@ -80,6 +80,6 @@ uint16 Id16::hashString(const uint32 stringLength, const char* str)
 	return ((primaryHash & 0xFF00) ^ (secondaryHash & 0x00FF));
 }
 
-Id16::Id16(const char* text) : hash(hashString(FString::StringLength(text), text))
+Id16::Id16(const char* text) : hash(hashString(FString::StringLength(text) - 1, text))
 {
 }

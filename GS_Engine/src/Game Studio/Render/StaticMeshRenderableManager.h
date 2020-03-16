@@ -22,6 +22,6 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderableManager"; }
 	
 	void DrawObjects(const DrawObjectsInfo& drawObjectsInfo) override;
-	Id GetRenderableTypeName() const override { return Id("Static Mesh"); }
+	Id64 GetRenderableTypeName() const override { return Id64("Static Mesh"); }
 	uint32 RegisterComponent(Renderer* renderer, RenderComponent* renderComponent) override;
 };

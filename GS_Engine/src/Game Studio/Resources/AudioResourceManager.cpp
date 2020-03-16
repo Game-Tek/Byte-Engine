@@ -6,7 +6,7 @@
 
 bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
 {
-	auto search_result = resources.find(Id(loadResourceInfo.ResourceName));
+	auto search_result = resources.find(Id64(loadResourceInfo.ResourceName));
 
 	if (search_result == resources.end())
 	{

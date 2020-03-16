@@ -16,14 +16,14 @@ struct SkinnableVertex
 
 struct Joint
 {
-	Id Name;
+	Id64 Name;
 	uint16 Parent;
 	Matrix4 Offset;
 };
 
 class Skeleton
 {
-	std::map<Id, Joint> bones;
+	std::map<Id64, Joint> bones;
 
 public:
 };

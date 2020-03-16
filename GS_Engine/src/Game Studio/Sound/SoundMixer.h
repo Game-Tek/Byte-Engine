@@ -14,7 +14,7 @@ class SoundMixerChannelEffect
 	/**
 	* \brief Defines the effect's name. Used to refer to it.
 	*/
-	Id effectName;
+	Id64 effectName;
 
 	/**
 	 * \brief Determines the effects intensity when used in a channel.
@@ -65,7 +65,7 @@ class SoundMixer
 		/**
 		 * \brief Defines the channel's name. Used to refer to it from the mixer.
 		 */
-		Id channelName;
+		Id64 channelName;
 
 		/**
 		 * \brief Holds an array of sounds which are to be played.
@@ -118,7 +118,7 @@ public:
 		//channels.Get(0).effects;
 	}
 
-	SoundMixerChannel& GetChannel(const Id& _Id)
+	SoundMixerChannel& GetChannel(const Id64& _Id)
 	{
 		//return channels.Get(_Id.GetID());
 	}

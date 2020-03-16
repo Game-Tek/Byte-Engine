@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Object.h"
+#include "Resources/ResourceReference.h"
 
 class FString;
 struct Model;
@@ -9,16 +10,12 @@ class Material;
 
 class StaticMesh : public Object
 {
-	StaticMeshResource* staticMeshResource = nullptr;
-	Material* staticMeshMaterial = nullptr;
+	ResourceReference staticMeshResource;
 public:
 	explicit StaticMesh(const FString& _Name);
 	~StaticMesh();
 
 	[[nodiscard]] const char* GetName() const override { return "Static Mesh"; }
 
-	[[nodiscard]] Material* GetMaterial() const { return staticMeshMaterial; }
 	[[nodiscard]] Model GetModel() const;
-
-	void SetMaterial(Material* _NewMaterial) { staticMeshMaterial = _NewMaterial; }
 };

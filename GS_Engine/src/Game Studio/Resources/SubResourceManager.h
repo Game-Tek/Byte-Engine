@@ -26,7 +26,7 @@ public:
 	{
 		//const char* ResourceName = nullptr;
 		FString ResourcePath;
-		Id ResourceName;
+		Id64 ResourceName;
 	};
 
 	struct OnResourceLoadInfo
@@ -49,13 +49,13 @@ public:
 	 */
 	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 
-	virtual ResourceData* GetResource(const Id& name) = 0;
+	virtual ResourceData* GetResource(const Id64& name) = 0;
 	
-	virtual void ReleaseResource(const Id& resourceName) = 0;
+	virtual void ReleaseResource(const Id64& resourceName) = 0;
 
 	/**
 	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
 	 * \return A string containing the type name.
 	 */
-	[[nodiscard]] virtual Id GetResourceType() const = 0;
+	[[nodiscard]] virtual Id64 GetResourceType() const = 0;
 };

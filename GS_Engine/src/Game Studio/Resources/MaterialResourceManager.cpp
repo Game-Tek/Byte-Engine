@@ -3,9 +3,9 @@
 #include <fstream>
 #include "Stream.h"
 
-void MaterialResourceManager::ReleaseResource(const Id& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
+void MaterialResourceManager::ReleaseResource(const Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
 
-ResourceData* MaterialResourceManager::GetResource(const Id& name) { return &resources[name]; }
+ResourceData* MaterialResourceManager::GetResource(const Id64& name) { return &resources[name]; }
 
 bool MaterialResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
 {

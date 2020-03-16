@@ -2,15 +2,14 @@
 
 #include "Core.h"
 
+/**
+ * \brief Base class for most non-data only classes in the engine.
+ */
 class Object
 {
 public:
 	Object() = default;
 	virtual ~Object() = default;
-
-	virtual void OnUpdate()
-	{
-	}
 
 	[[nodiscard]] virtual const char* GetName() const = 0;
 };

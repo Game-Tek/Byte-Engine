@@ -17,22 +17,19 @@ class TestObject : public WorldObject
 	StaticMesh MyStaticMesh;
 	Texture MyTexture;
 	StaticMeshRenderComponent* MeshRender = nullptr;
-	Material* MyMaterial = nullptr;
+	Material MyMaterial;
 	Camera MyCamera;
 	Rotator accumRotation;
 
 public:
-	TestObject() : MyStaticMesh("hydrant"), MyTexture("hydrant_Albedo")
+	TestObject() : MyStaticMesh("hydrant"), MyTexture("hydrant_Albedo"), MyMaterial("M_Base")
 	{
-		MyMaterial = new Material("M_Base");
-		MyStaticMesh.SetMaterial(MyMaterial);
-
-		MyMaterial->SetTexture(Id(0ULL), &MyTexture);
+		MyMaterial;
 		
-		//StaticMeshRenderComponentCreateInfo SMRCCI;
-		//SMRCCI.StaticMesh = &MyStaticMesh;
-		//SMRCCI.Owner = this;
- 		//MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
+		StaticMeshRenderComponentCreateInfo SMRCCI;
+		SMRCCI.StaticMesh = MyStaticMesh;
+		SMRCCI.Owner = this;
+ 		MeshRender = GetWorld()->GetScene().CreateRenderComponent<StaticMeshRenderComponent>(&SMRCCI);
 
 		MyCamera.SetPosition(Vector3(0, 50, -250));
 		GetWorld()->GetScene().SetCamera(&MyCamera);

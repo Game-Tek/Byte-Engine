@@ -1,23 +1,24 @@
 #pragma once
 
 #include "Core.h"
+#include "FString.h"
 
 class FString;
 
-class Id
+class Id64
 {
 public:
 	using HashType = GS_HASH_TYPE;
 
-	Id() = default;
+	Id64() = default;
 
-	Id(const char* Text);
+	Id64(const char* Text);
 
-	explicit Id(HashType id);
+	explicit Id64(HashType id);
 	
-	explicit Id(const FString& _Text);
+	explicit Id64(const FString& _Text);
 
-	~Id() = default;
+	~Id64() = default;
 
 	INLINE HashType GetID() { return hashValue; }
 	INLINE HashType GetID() const { return hashValue; }
@@ -27,10 +28,30 @@ public:
 	static HashType HashString(const char* text);
 	static HashType HashString(const FString& fstring);
 
-	bool operator==(const Id& other) { return hashValue == other.hashValue; }
+	bool operator==(const Id64& other) { return hashValue == other.hashValue; }
 	
 private:
 	HashType hashValue = 0;
-
+	
 	static HashType hashString(uint32 length, const char* text);
+};
+
+class Id32
+{
+	uint32 hash = 0;
+	static uint32 hashString(uint32 stringLength, const char* str);
+public:
+	Id32(const char* text);
+
+	operator uint32() const { return hash; }
+};
+
+class Id16
+{
+	uint16 hash = 0;
+	static uint16 hashString(uint32 stringLength, const char* str);
+public:
+	Id16(const char* text);
+
+	operator uint16() const { return hash; }
 };

@@ -15,7 +15,7 @@ Material::~Material()
 	GS::Application::Get()->GetResourceManager()->ReleaseResource(materialMaterialResource);
 }
 
-Id Material::GetMaterialType() const { return materialMaterialResource.GetName(); }
+Id64 Material::GetMaterialType() const { return materialMaterialResource.GetName(); }
 
 //void Material::GetRenderingCode(FVector<ShaderInfo>& shaders_) const
 //{
@@ -28,7 +28,7 @@ Id Material::GetMaterialType() const { return materialMaterialResource.GetName()
 //}
 //
 //
-//void Material::SetParameter(const Id& parameter_name_, ShaderDataTypes data_type_, void* data_)
+//void Material::SetParameter(const Id64& parameter_name_, ShaderDataTypes data_type_, void* data_)
 //{
 //	for (auto& e : parameters)
 //	{
@@ -43,7 +43,7 @@ Id Material::GetMaterialType() const { return materialMaterialResource.GetName()
 //	GS_THROW("No parameter with such name!")
 //}
 //
-//void Material::SetTexture(const Id& textureName, Texture* texturePointer)
+//void Material::SetTexture(const Id64& textureName, Texture* texturePointer)
 //{
 //	textures[textureName.GetID()] = texturePointer;
 //	textures.resize(1);

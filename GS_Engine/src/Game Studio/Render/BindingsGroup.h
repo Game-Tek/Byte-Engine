@@ -28,7 +28,7 @@ class RenderGroupBase
      */
     uint32 maxInstanceCount = 0;
 
-    Array<Id, 8>parentGroups;
+    Array<Id64, 8>parentGroups;
 
 protected:
     static Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor);
@@ -38,7 +38,7 @@ public:
     void SetMaxInstanceCount(const uint32 instanceCount) { maxInstanceCount = instanceCount; }
 	[[nodiscard]] uint32 GetMaxInstanceCount() const { return maxInstanceCount; }
 	
-    void AddParentGroup(const Id& parentId) { parentGroups.push_back(parentId); }
+    void AddParentGroup(const Id64& parentId) { parentGroups.push_back(parentId); }
 	[[nodiscard]] const decltype(parentGroups)& GetParentGroups() const { return parentGroups; }
 };
 
@@ -65,7 +65,7 @@ public:
 
 class BindingsGroupManager
 {
-    std::unordered_map<Id::HashType, BindingsGroup> bindingsGroups;
+    std::unordered_map<Id64::HashType, BindingsGroup> bindingsGroups;
 	
     uint8 maxFramesInFlight = 0;
 	
@@ -78,19 +78,19 @@ public:
     {
     }
 	
-    const BindingsGroup& AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
-    [[nodiscard]] const BindingsGroup& GetBindingsGroup(const Id& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
+    const BindingsGroup& AddBindingsGroup(const Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
+    [[nodiscard]] const BindingsGroup& GetBindingsGroup(const Id64& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
 	
     struct BindBindingsGroupInfo
     {
         RAPI::CommandBuffer* CommandBuffer = nullptr;
-        Id BindingsGroup = 0;
+        Id64 BindingsGroup = 0;
     };
     void BindBindingsGroup(const BindBindingsGroupInfo& bindBindingsGroupInfo);
 
     struct BindDependencyGroupInfo
     {
-        Id DependencyGroup = 0;
+        Id64 DependencyGroup = 0;
     };
     void BindDependencyGroups(const BindDependencyGroupInfo& bindDependencyGroupInfo);
 	

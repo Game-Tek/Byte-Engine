@@ -35,6 +35,6 @@ void TextureResourceManager::LoadFallback(const LoadResourceInfo& loadResourceIn
 {
 }
 
-ResourceData* TextureResourceManager::GetResource(const Id& name) { return &resources[name]; }
+ResourceData* TextureResourceManager::GetResource(const Id64& name) { return &resources[name]; }
 
-void TextureResourceManager::ReleaseResource(const Id& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
+void TextureResourceManager::ReleaseResource(const Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }

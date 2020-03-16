@@ -14,7 +14,7 @@ namespace RAPI
 	//Describes the reference to a render pass attachment for a sub pass.
 	struct AttachmentReference
 	{
-		//Id of the attachment (Index into RenderpassDescriptor::RenderPassColorAttachments).
+		//Id64 of the attachment (Index into RenderpassDescriptor::RenderPassColorAttachments).
 		uint8 Index = ATTACHMENT_UNUSED;
 		//Layout of the attachment during the sub pass.
 		ImageLayout Layout = ImageLayout::COLOR_ATTACHMENT;

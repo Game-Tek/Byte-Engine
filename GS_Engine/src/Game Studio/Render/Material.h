@@ -6,21 +6,15 @@
 class FString;
 class MaterialResource;
 
-/**
- * \brief Every instance of this class represents an individual material instance.
- * Which means material parameters can be modified and they will only affect this particular instance, not the material as a whole.
- *
- * Each material can reference up to 8 textures, and hold up to 32 bytes of dynamic parameter data.
- */
-class Material
+class Material final
 {
 	ResourceReference materialMaterialResource;
 	
 public:
 	explicit Material(const FString& _Name);
-	virtual ~Material();
+	~Material();
 
-	[[nodiscard]] Id GetMaterialType() const;
+	[[nodiscard]] Id64 GetMaterialType() const;
 
 	[[nodiscard]] const ResourceReference& GetMaterialResource() const { return materialMaterialResource; }
 };
@@ -46,7 +40,7 @@ public:
 //	explicit Material(const FString& _Name);
 //	virtual ~Material();
 //
-//	[[nodiscard]] Id GetMaterialType() const;
+//	[[nodiscard]] Id64 GetMaterialType() const;
 //
 //	//Writes the vertex shader code and fragment shader code to the passed in variables.
 //	void GetRenderingCode(FVector<RAPI::ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
@@ -56,8 +50,8 @@ public:
 //	//Returns true if there is uniform set info and sets the size to the passed in int.
 //	bool GetUniformSetSize(size_t& _Size); //TEMPORAL: manual for now, should then be automated.
 //
-//	void SetParameter(const Id& parameter_name_, RAPI::ShaderDataTypes data_type_, void* data_);
-//	void SetTexture(const Id& textureName, class Texture* texturePointer);
+//	void SetParameter(const Id64& parameter_name_, RAPI::ShaderDataTypes data_type_, void* data_);
+//	void SetTexture(const Id64& textureName, class Texture* texturePointer);
 //
 //	MaterialResource* GetMaterialResource() { return materialMaterialResource; }
 //	[[nodiscard]] const decltype(textures)& GetTextures() const { return textures; }

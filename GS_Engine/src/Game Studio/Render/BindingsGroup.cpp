@@ -50,7 +50,7 @@ void BindingsGroup::Bind(const BindingsGroupBindInfo& bindInfo) const
 	bindInfo.CommandBuffer->BindBindingsSet(bind_bindings_set_info);
 }
 
-const BindingsGroup& BindingsGroupManager::AddBindingsGroup(const Id& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo)
+const BindingsGroup& BindingsGroupManager::AddBindingsGroup(const Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo)
 {
 	auto bg = bindingsGroups.emplace(bindingsGroupId, bindingsGroupCreateInfo);
 	GS_ASSERT(!bg.second, "The Binding Group could not be inserted! Either the binding group already exists or a hash collision ocurred.")

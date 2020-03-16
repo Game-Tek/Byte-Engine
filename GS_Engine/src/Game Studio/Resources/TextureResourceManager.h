@@ -20,10 +20,10 @@ public:
 	const char* GetResourceExtension() override { return "png"; }
 	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
-	ResourceData* GetResource(const Id& name) override;
-	void ReleaseResource(const Id& resourceName) override;
-	[[nodiscard]] Id GetResourceType() const override { return "Texture"; }
+	ResourceData* GetResource(const Id64& name) override;
+	void ReleaseResource(const Id64& resourceName) override;
+	[[nodiscard]] Id64 GetResourceType() const override { return "Texture"; }
 private:
-	std::unordered_map<Id, TextureResourceData> resources;
+	std::unordered_map<Id64, TextureResourceData> resources;
 	
 };

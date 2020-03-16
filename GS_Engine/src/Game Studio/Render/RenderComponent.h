@@ -23,5 +23,5 @@ public:
 	//Returns whether this render component should be rendered on the current update.
 	[[nodiscard]] bool GetShouldRender() const { return ShouldRender; }
 
-	[[nodiscard]] virtual Id GetRenderableType() const = 0;
+	[[nodiscard]] virtual Id64 GetRenderableType() const = 0;
 };

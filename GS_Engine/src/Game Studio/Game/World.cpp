@@ -2,16 +2,15 @@
 #include "Application/Application.h"
 
 
-World::World() : WorldObjects(10)
+World::World()
 {
 }
 
-
 World::~World()
 {
-	for (auto& WOBJECT : WorldObjects)
+	for(auto& e : types)
 	{
-		delete WOBJECT;
+		delete e.second;
 	}
 }
 
@@ -20,17 +19,18 @@ void World::OnUpdate()
 	levelRunningTime += GS::Application::Get()->GetClock().GetDeltaTime();
 	levelAdjustedRunningTime += GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier;
 
-	for (auto& WorldObject : WorldObjects)
+	for(auto& e : types)
 	{
-		WorldObject->OnUpdate();
+		TypeManager::UpdateInstancesInfo update_instances_info;
+		e.second->UpdateInstances(update_instances_info);
 	}
+}
 
-	WorldScene.OnUpdate();
+void World::Pause()
+{
+	worldTimeMultiplier = 0;
 }
 
 double World::GetRealRunningTime() { return GS::Application::Get()->GetClock().GetElapsedTime(); }
 
-float World::GetWorldDeltaTime() const
-{
-	return GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier;
-}
+float World::GetWorldDeltaTime() const { return static_cast<float>(GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier); }

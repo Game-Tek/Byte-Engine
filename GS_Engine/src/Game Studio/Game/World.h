@@ -2,51 +2,43 @@
 
 #include "Object.h"
 
-#include "Containers/FVector.hpp"
 #include "WorldObject.h"
-#include "Render/Renderer.h"
+#include "Containers/Id.h"
+#include "TypeManager.h"
+#include <unordered_map>
 
 class World : public Object
 {
-	FVector<WorldObject*> WorldObjects;
-
-	Renderer WorldScene;
-
 	double levelRunningTime = 0;
 	double levelAdjustedRunningTime = 0;
 	float worldTimeMultiplier = 1;
 
+	std::unordered_map<Id32, TypeManager*> types;
 public:
 	World();
 	virtual ~World();
 
-	void OnUpdate() override;
+	template<class T>
+	void AddTypeManager(const Id32& name) { types.insert({ name, new T() }); }
+	
+	virtual void OnUpdate();
 
-	template <class T>
-	T* CreateWorldObject()
-	{
-		WorldObject* Obj = new T();
+	virtual void Pause();
 
-		Obj->SetID(static_cast<WorldObjectID>(WorldObjects.getLength()));
+	struct CreateWorldObject
+	{};
+	virtual void CreateWorldObject(const CreateWorldObject& createWorldObject);
 
-		WorldObjects.push_back(Obj);
-
-		return static_cast<T*>(Obj);
-	}
-
-	void DestroyWorldObject(WorldObject* _Object)
-	{
-		delete WorldObjects[_Object->GetID()];
-	}
+	struct DestroyWorldObject
+	{};
+	virtual void DestroyWorldObject(const DestroyWorldObject& destroyWorldObject);
 
 	[[nodiscard]] const char* GetName() const override { return "World"; }
 
-	[[nodiscard]] Renderer& GetScene() { return WorldScene; }
-
 	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
 
-	double GetWorldRunningTime() const { return levelRunningTime; }
-	double GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
 	static double GetRealRunningTime();
-	float GetWorldDeltaTime() const;
+	[[nodiscard]] double GetWorldRunningTime() const { return levelRunningTime; }
+	[[nodiscard]] double GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
+	[[nodiscard]] float GetWorldDeltaTime() const;
 };

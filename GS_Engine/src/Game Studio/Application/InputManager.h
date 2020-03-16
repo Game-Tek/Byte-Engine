@@ -21,7 +21,7 @@ namespace RAPI
 
 struct InputAction
 {
-	Id Name;
+	Id64 Name;
 	FVector<FString> FiringInputEvents;
 };
 
@@ -35,8 +35,8 @@ class InputManager : public Object
 
 	Array<JoystickState, 4> JoystickStates;
 
-	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> SingleActions;
-	//std::multimap<Id::HashType, Pair<Action, FVector<Functor<void()>>>> ContinuousActions;
+	//std::multimap<Id64::HashType, Pair<Action, FVector<Functor<void()>>>> SingleActions;
+	//std::multimap<Id64::HashType, Pair<Action, FVector<Functor<void()>>>> ContinuousActions;
 
 	//Mouse vars
 

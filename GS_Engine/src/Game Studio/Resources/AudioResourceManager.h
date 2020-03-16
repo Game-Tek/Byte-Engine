@@ -32,5 +32,5 @@ public:
 	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 
-	[[nodiscard]] Id GetResourceType() const override { return "Audio"; }
+	[[nodiscard]] Id64 GetResourceType() const override { return "Audio"; }
 };

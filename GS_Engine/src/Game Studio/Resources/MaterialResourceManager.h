@@ -10,13 +10,13 @@ struct MaterialResourceData final : ResourceData
 
 class MaterialResourceManager final : public SubResourceManager
 {
-	std::unordered_map<Id, MaterialResourceData> resources;
+	std::unordered_map<Id64, MaterialResourceData> resources;
 	
 public:
-	[[nodiscard]] Id GetResourceType() const override { return "Material"; }
+	[[nodiscard]] Id64 GetResourceType() const override { return "Material"; }
 	const char* GetResourceExtension() override { return "gsmat"; }
-	void ReleaseResource(const Id& resourceName) override;
-	ResourceData* GetResource(const Id& name) override;
+	void ReleaseResource(const Id64& resourceName) override;
+	ResourceData* GetResource(const Id64& name) override;
 	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 };

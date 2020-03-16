@@ -69,7 +69,7 @@ protected:
 	FVector<RenderableTypeManager*> renderableTypeManagers;
 	
 	/* ---- RAPI Resources ---- */
-	std::map<Id::HashType, RAPI::GraphicsPipeline*> Pipelines;
+	std::map<Id64::HashType, RAPI::GraphicsPipeline*> Pipelines;
 	FVector<class MaterialRenderResource*> materialRenderResources;
 	std::map<StaticMesh*, RAPI::RenderMesh*> Meshes;
 	std::map<GS_HASH_TYPE, RenderComponent*> ComponentToInstructionsMap;

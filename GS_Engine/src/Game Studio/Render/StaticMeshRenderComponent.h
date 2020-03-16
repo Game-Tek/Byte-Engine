@@ -10,13 +10,13 @@ namespace RAPI {
 
 struct StaticMeshRenderComponentCreateInfo : RenderComponentCreateInfo
 {
-	StaticMesh* StaticMesh = nullptr;
+	StaticMesh StaticMesh;
 };
 
 class StaticMeshRenderComponent final : public RenderComponent
 {
-	StaticMesh* staticMesh = nullptr;
-	class MaterialRenderResource* renderMaterial = nullptr;
+	StaticMesh staticMesh;
+	MaterialRenderResource* renderMaterial = nullptr;
 	RAPI::RenderMesh* renderMesh = nullptr;
 	
 public:
@@ -24,7 +24,7 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderComponent"; }
 
-	[[nodiscard]] Id GetRenderableType() const override { return "StaticMesh"; }
+	[[nodiscard]] Id64 GetRenderableType() const override { return "StaticMesh"; }
 
 	[[nodiscard]] StaticMesh* GetStaticMesh() const { return staticMesh; }
 };

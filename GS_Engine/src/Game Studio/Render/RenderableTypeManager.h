@@ -4,7 +4,7 @@
 
 class Renderer;
 
-class Id;
+class Id64;
 
 namespace RAPI
 {
@@ -52,7 +52,7 @@ public:
      * \brief Returns the name of the RenderableType this instance of the class takes care of rendering.
      * \param name Reference to an FString in which the name will be stored.
      */
-    virtual Id GetRenderableTypeName() const = 0;
+    virtual Id64 GetRenderableTypeName() const = 0;
 
     virtual uint32 RegisterComponent(Renderer* renderer, class RenderComponent* renderComponent);
 };

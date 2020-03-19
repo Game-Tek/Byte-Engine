@@ -262,6 +262,7 @@
     <ClInclude Include="src\Game Studio\Game\TypeManager.h" />
     <ClInclude Include="src\Game Studio\Containers\Id.h" />
     <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
+    <ClInclude Include="src\Game Studio\Application\Console.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

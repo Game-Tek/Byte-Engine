@@ -42,6 +42,7 @@ class Id32
 	static uint32 hashString(uint32 stringLength, const char* str);
 public:
 	Id32(const char* text);
+	Id32(uint32 length, const char* text);
 
 	operator uint32() const { return hash; }
 };

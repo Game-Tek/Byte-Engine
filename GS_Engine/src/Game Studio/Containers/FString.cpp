@@ -31,7 +31,7 @@ FString::FString(char* const _In) : Data(StringLength(_In), CCAST(char*, _In))
 {
 }
 
-FString::FString(length_type _Length) : Data(_Length)
+FString::FString(length_type length) : Data(length)
 {
 }
 
@@ -131,6 +131,19 @@ int64 FString::FindLast(char _Char) const
 	}
 
 	return -1;
+}
+
+FString::length_type FString::FindFirst(const char c) const
+{
+	length_type i = 0;
+	for(auto& e : Data)
+	{
+		if (e == c)	{ return i; }
+
+		++i;
+	}
+
+	return npos();
 }
 
 void FString::Drop(int64 from)

@@ -19,14 +19,20 @@ public:
 	//}
 
 	explicit FString(char* const _In);
-
-	//Constructs an FString from a C-String.
+	
 	FString(const char* In);
 
-	explicit FString(length_type _Length);
+	explicit FString(length_type length);
 
-	//Constructs a FString from a non null terminated character array.
 	FString(length_type Length, const char* In);
+
+	FString(const length_type length, const FString& string) : Data(length, string.Data.getData())
+	{
+	}
+
+	FString(const length_type length, const FString& string, const length_type offset) : Data(length, string.Data.getData() + offset)
+	{
+	}
 
 	FString(const FString& Other) = default;
 
@@ -46,6 +52,8 @@ public:
 	auto end() { return Data.end(); }
 	[[nodiscard]] auto end() const { return Data.end(); }
 
+	[[nodiscard]] length_type npos() const { return Data.getLength() + 1; }
+	
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
 	bool operator==(const FString& Other) const;
 
@@ -74,6 +82,8 @@ public:
 	//Returns the index to the last character in the string that is equal to _Char, if no matching character is found -1 is returned.
 	[[nodiscard]] int64 FindLast(char _Char) const;
 
+	length_type FindFirst(char c) const;
+	
 	/**
 	 * \brief Drops/removes the parts of the string from from forward.
 	 * \param from index to cut forward from.

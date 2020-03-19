@@ -62,6 +62,10 @@ Id32::Id32(const char* text) : hash(hashString(FString::StringLength(text) - 1, 
 {
 }
 
+Id32::Id32(uint32 length, const char* text) : hash(hashString(length, text))
+{
+}
+
 uint16 Id16::hashString(const uint32 stringLength, const char* str)
 {
 	uint16 primaryHash(52541);

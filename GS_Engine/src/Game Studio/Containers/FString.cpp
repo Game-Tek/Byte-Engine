@@ -7,76 +7,63 @@
 
 OutStream& operator<<(OutStream& _Archive, FString& _String)
 {
-	_Archive << _String.Data;
+	_Archive << _String.data;
 
 	return _Archive;
 }
 
 InStream& operator>>(InStream& _Archive, FString& _String)
 {
-	_Archive >> _String.Data;
+	_Archive >> _String.data;
 
 	return _Archive;
 }
 
-FString::FString() : Data(10)
+FString::FString() : data(10)
 {
 }
 
-FString::FString(const char* _In) : Data(StringLength(_In), CCAST(char*, _In))
+FString::FString(char* const cstring) : data(StringLength(cstring), CCAST(char*, cstring))
 {
-}
-
-FString::FString(char* const _In) : Data(StringLength(_In), CCAST(char*, _In))
-{
-}
-
-FString::FString(length_type length) : Data(length)
-{
-}
-
-FString::FString(const length_type _Length, const char* _In) : Data(_Length + 1, const_cast<char*>(_In))
-{
-	Data.push_back('\0');
 }
 
 FString& FString::operator=(const char* _In)
 {
-	Data.recreate(StringLength(_In), const_cast<char*>(_In));
+	data.recreate(StringLength(_In), const_cast<char*>(_In));
 	return *this;
 }
 
-FString FString::operator+(const char* _In) const
+FString FString::operator+(const char* cstring) const
 {
 	FString result;
-	result.Data.push_back(Data.getLength() - 1, Data.getData());
-	result.Data.push_back(StringLength(_In), _In);
+	result.data.push_back(data.getLength() - 1, data.getData());
+	result.data.push_back(StringLength(cstring), cstring);
 	return result;
 }
 
-FString& FString::operator+=(const char* _In)
+FString& FString::operator+=(const char* cstring)
 {
-	Data.pop_back();
-	Data.push_back(StringLength(_In), _In);
+	data.pop_back();
+	data.push_back(StringLength(cstring), cstring);
 	return *this;
 }
 
 FString FString::operator+(const FString& _Other) const
 {
 	FString result;
-	result.Data.push_back(Data.getLength() - 1, Data.getData());
-	result.Data.push_back(_Other.Data.getLength(), _Other.Data.getData());
+	result.data.push_back(data.getLength() - 1, data.getData());
+	result.data.push_back(_Other.data.getLength(), _Other.data.getData());
 	return result;
 }
 
 bool FString::operator==(const FString& _Other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (Data.getLength() != _Other.Data.getLength()) return false;
+	if (data.getLength() != _Other.data.getLength()) return false;
 
-	for (size_t i = 0; i < Data.getLength(); i++)
+	for (size_t i = 0; i < data.getLength(); i++)
 	{
-		if (Data[i] != _Other.Data[i])
+		if (data[i] != _Other.data[i])
 		{
 			return false;
 		}
@@ -88,11 +75,11 @@ bool FString::operator==(const FString& _Other) const
 bool FString::NonSensitiveComp(const FString& _Other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (Data.getLength() != _Other.Data.getLength()) return false;
+	if (data.getLength() != _Other.data.getLength()) return false;
 
-	for (size_t i = 0; i < Data.getLength(); i++)
+	for (size_t i = 0; i < data.getLength(); i++)
 	{
-		if (Data[i] != (ToLowerCase(_Other.Data[i]) || ToUpperCase(_Other.Data[i])))
+		if (data[i] != (ToLowerCase(_Other.data[i]) || ToUpperCase(_Other.data[i])))
 		{
 			return false;
 		}
@@ -103,40 +90,40 @@ bool FString::NonSensitiveComp(const FString& _Other) const
 
 void FString::Append(const char* _In)
 {
-	Data.pop_back(); //Get rid of null terminator.
-	Data.push_back(' '); //Push space.
-	Data.push_back(StringLength(_In), const_cast<char*>(_In));
+	data.pop_back(); //Get rid of null terminator.
+	data.push_back(' '); //Push space.
+	data.push_back(StringLength(_In), const_cast<char*>(_In));
 	return;
 }
 
 void FString::Append(const FString& _In)
 {
-	Data.pop_back(); //Get rid of null terminator.
-	Data.push_back(' '); //Push space.
-	Data.push_back(_In.Data); //Push new string.
+	data.pop_back(); //Get rid of null terminator.
+	data.push_back(' '); //Push space.
+	data.push_back(_In.data); //Push new string.
 	return;
 }
 
 void FString::Insert(const char* _In, const size_t _Index)
 {
-	Data.push(_Index, const_cast<char*>(_In), StringLength(_In));
+	data.push(_Index, const_cast<char*>(_In), StringLength(_In));
 	return;
 }
 
-int64 FString::FindLast(char _Char) const
+FString::length_type FString::FindLast(char _Char) const
 {
-	for (int32 i = Data.getLength(); i > 0; --i)
+	for (int32 i = data.getLength(); i > 0; --i)
 	{
-		if (Data[i] == _Char) return i;
+		if (data[i] == _Char) return i;
 	}
 
-	return -1;
+	return npos();
 }
 
 FString::length_type FString::FindFirst(const char c) const
 {
 	length_type i = 0;
-	for(auto& e : Data)
+	for(auto& e : data)
 	{
 		if (e == c)	{ return i; }
 
@@ -148,17 +135,17 @@ FString::length_type FString::FindFirst(const char c) const
 
 void FString::Drop(int64 from)
 {
-	Data.resize(from + 1);
-	Data[from + 1] = '\0';
+	data.resize(from + 1);
+	data[from + 1] = '\0';
 }
 
 void FString::ReplaceAll(char a, char with)
 {
-	for (uint32 i = 0; i < Data.getLength() - 1; ++i)
+	for (uint32 i = 0; i < data.getLength() - 1; ++i)
 	{
-		if (Data[i] == a)
+		if (data[i] == a)
 		{
-			Data[i] = with;
+			data[i] = with;
 		}
 	}
 }
@@ -176,15 +163,15 @@ void FString::ReplaceAll(const char* a, const char* with)
 	{
 		ocurrences.resize(0); //every time we enter loop set occurrences to 0
 
-		while(ocurrences.getLength() < ocurrences.getCapacity() && i < Data.getLength() - 1) //while we don't exceed the occurrences array capacity and we are not at the end of the array(because we might hit the end in the first caching iteration)
+		while(ocurrences.getLength() < ocurrences.getCapacity() && i < data.getLength() - 1) //while we don't exceed the occurrences array capacity and we are not at the end of the array(because we might hit the end in the first caching iteration)
 		{
-			if (Data [i] == a[0]) //if current char matches the a's first character enter whole word loop check
+			if (data [i] == a[0]) //if current char matches the a's first character enter whole word loop check
 			{
 				uint32 j = 1;
 				
 				for (; j < a_length; ++j) //if the a text is matched add occurrence else quickly escape loop and go to next whole string loop
 				{
-					if (Data[i + j] != a[j]) 
+					if (data[i + j] != a[j]) 
 					{
 						break;
 					}
@@ -206,16 +193,16 @@ void FString::ReplaceAll(const char* a, const char* with)
 
 		if (resize_size > 0)
 		{
-			Data.resize(Data.getLength() + resize_size);
+			data.resize(data.getLength() + resize_size);
 		}
 
 		for (auto& e : ocurrences)
 		{
-			Data.make_space(e, with_length - a_length);
-			Data.overwrite(with_length, const_cast<string_type*>(with), e);
+			data.make_space(e, with_length - a_length);
+			data.overwrite(with_length, const_cast<string_type*>(with), e);
 		}
 
-		if (i == Data.getLength() - 1) //if current index is last index in whole string break out of the loop
+		if (i == data.getLength() - 1) //if current index is last index in whole string break out of the loop
 		{
 			break;
 		}
@@ -224,15 +211,12 @@ void FString::ReplaceAll(const char* a, const char* with)
 
 constexpr FString::length_type FString::StringLength(const char* In)
 {
-	length_type Length = 0;
+	length_type length = 0;
 
-	while (In[Length] != '\0')
-	{
-		Length++;
-	}
+	while (In[length] != '\0') { length++; }
 
 	//We return Length + 1 to take into account for the null terminator character.
-	return Length + 1;
+	return length + 1;
 }
 
 #define FSTRING_MAKESTRING_DEFAULT_SIZE 256
@@ -243,13 +227,13 @@ FString FString::MakeString(const char* _Text, ...)
 
 	va_list vaargs;
 	va_start(vaargs, _Text);
-	const auto Count = snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs) + 1;
+	const auto Count = snprintf(Return.data.getData(), Return.data.getLength(), _Text, vaargs) + 1;
 	//Take into account null terminator.
-	if (Count > Return.Data.getLength())
+	if (Count > Return.data.getLength())
 	{
-		Return.Data.resize(Count);
+		Return.data.resize(Count);
 
-		snprintf(Return.Data.getData(), Return.Data.getLength(), _Text, vaargs);
+		snprintf(Return.data.getData(), Return.data.getLength(), _Text, vaargs);
 	}
 	va_end(vaargs);
 

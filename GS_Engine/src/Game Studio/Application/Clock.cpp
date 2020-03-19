@@ -13,15 +13,13 @@ Clock::Clock()
 	QueryPerformanceFrequency(&WinProcessorFrequency);
 	QueryPerformanceCounter(&WinProcessorTicks);
 
-	ProcessorFrequency = WinProcessorFrequency.QuadPart;
-	StartSystemTicks = WinProcessorTicks.QuadPart;
-	SystemTicks = WinProcessorTicks.QuadPart;
+	processorFrequency = WinProcessorFrequency.QuadPart;
+	startPerformanceCounterTicks = WinProcessorTicks.QuadPart;
+	performanceCounterTicks = WinProcessorTicks.QuadPart;
 #endif
 }
 
-Clock::~Clock()
-{
-}
+Clock::~Clock() = default;
 
 void Clock::OnUpdate()
 {
@@ -30,75 +28,56 @@ void Clock::OnUpdate()
 
 	QueryPerformanceCounter(&win_processor_ticks);
 
-	const uint_64 delta = win_processor_ticks.QuadPart - SystemTicks;
+	//Set system ticks as this frame's ticks so in the next update we can work with it.
+	performanceCounterTicks = win_processor_ticks.QuadPart;
+	
+	auto delta_ticks = win_processor_ticks.QuadPart - performanceCounterTicks;
 
+	win_processor_ticks.QuadPart *= 1000000;
+	win_processor_ticks.QuadPart /= processorFrequency;
+	
+	const auto current_time = TimePoint::CreateFromMicroSeconds(win_processor_ticks.QuadPart);
+	
+	delta_ticks *= 1000000; //to microseconds
+	delta_ticks /= processorFrequency;
 
-	//Calculate delta time.
-	const auto delta_time = delta / static_cast<double>(ProcessorFrequency);
-
-
-	//Check if loc_DeltaTime exceed 1 seconds.
+	//Check if delta_ticks exceeds 1 seconds.
 	//This is done to prevent possible problems caused by large time deltas,
 	//which could be caused by checking breakpoints during development
 	//or by occasional freezes during normal game-play.
 
-	if (delta_time > 1.0)
+	if (delta_ticks > 1000000)
 	{
 		//Leave delta time as is. Assume last frame's delta time.
 	}
 	else
 	{
 		//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
-		DeltaTime = delta_time;
+		deltaTime = current_time - elapsedTime;
 	}
-
-	//Set system ticks as this frame's ticks so in the next update we can work with it.
-	SystemTicks = win_processor_ticks.QuadPart;
-
-	//Update elapsed time counter.
-	ElapsedTime += DeltaTime;
-
-	//Update elapsed game time counter.
-	ElapsedGameTime += GetGameDeltaTime();
+	
+	elapsedTime = current_time;
 #endif
-
-	++GameTicks;
+	
+	//Update elapsed time counter.
+	++applicationTicks;
 
 	return;
 }
 
-//CLOCK FUNCTIONALITY GETTERS
+#undef GetCurrentTime
 
-double Clock::GetDeltaTime() const
+TimePoint Clock::GetCurrentTime() const
 {
-	return DeltaTime;
-}
+	LARGE_INTEGER win_processor_ticks;
 
-double Clock::GetGameDeltaTime() const
-{
-	return DeltaTime * TimeDivisor * ShouldUpdateGameTime;
-}
+	QueryPerformanceCounter(&win_processor_ticks);
 
-double Clock::GetElapsedTime() const
-{
-	return (SystemTicks - StartSystemTicks) / static_cast<double>(ProcessorFrequency);
-}
-
-double Clock::GetElapsedGameTime() const
-{
-	return ElapsedGameTime;
+	return TimePoint::CreateFromMicroSeconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
 }
 
 //UTILITY GETTERS
 
-Nanoseconds Clock::GetCurrentNanoseconds() const
-{
-	LARGE_INTEGER WinProcessorTicks;
-
-	QueryPerformanceCounter(&WinProcessorTicks);
-
-	return (WinProcessorTicks.QuadPart * 1000000000) / ProcessorFrequency;
-}
 
 uint16 Clock::GetYear()
 {

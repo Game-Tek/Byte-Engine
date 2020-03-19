@@ -3,10 +3,7 @@
 #include "Core.h"
 
 #include "Object.h"
-
-using Nanoseconds = uint_64;
-using Microseconds = uint_64;
-using Miliseconds = uint_64;
+#include "Containers/TimePoint.h"
 
 //Used to specify time(Hour, Minute, Second).
 struct Time
@@ -45,37 +42,26 @@ enum class Months : uint8
 	December,
 };
 
+
 class Clock : public Object
 {
 public:
 	Clock();
 	~Clock();
 
-	void OnUpdate() override;
+	void OnUpdate();
+	
 	[[nodiscard]] const char* GetName() const override { return "Clock"; }
 
-	//CLOCK FUNCTIONALITY GETTERS
-
 	//Returns the real seconds elapsed since the last game update (tick).
-	[[nodiscard]] double GetDeltaTime() const;
-
-	//Returns the delta time adjusted for time dilation.
-	[[nodiscard]] double GetGameDeltaTime() const;
+	[[nodiscard]] TimePoint GetDeltaTime() const { return deltaTime; }
 
 	//Returns the time the game has been running in real seconds.
-	[[nodiscard]] double GetElapsedTime() const;
+	[[nodiscard]] TimePoint GetElapsedTime() const { return elapsedTime; }
 
-	//Returns the elapsed game time adjusted for time dilations and game pauses.
-	[[nodiscard]] double GetElapsedGameTime() const;
+	[[nodiscard]] uint_64 GetApplicationTicks() const { return applicationTicks; }
 
-	[[nodiscard]] uint_64 GetGameTicks() const { return GameTicks; }
-
-	[[nodiscard]] Nanoseconds GetCurrentNanoseconds() const;
-
-	[[nodiscard]] double GetFPS() const { return 1.0 / GetDeltaTime(); }
-	[[nodiscard]] double GetGameFPS() const { return 1.0 / GetGameDeltaTime(); }
-
-	//UTILITY GETTERS
+	[[nodiscard]] TimePoint GetCurrentTime() const;
 
 	//Returns the current local year of the computer.
 	static uint16 GetYear();
@@ -92,36 +78,14 @@ public:
 	//Returns the current local time (Hour, Minute, Second) of the computer.
 	static Time GetTime();
 
-
-	//CLOCK FUNCTIONALITY SETTERS
-
-	//Sets the percentage by which time should be divided.
-	void SetTimeDilation(double _Dilation) { TimeDivisor = _Dilation; }
-
-	//Sets if (game)time should be updated.
-	void SetIsPaused(bool _IsPaused) { ShouldUpdateGameTime = _IsPaused; }
-
-	// CALC
-
-	static INLINE Miliseconds SecondsToMilliseconds(const float seconds_) { return 1000.0 / seconds_; }
-	static INLINE double MillisecondsToSeconds(const Miliseconds _In) { return _In / 1000; }
-	static INLINE double MicrosecondsToSeconds(const Microseconds _In) { return _In / 1000000; }
-	static INLINE double NanosecondsToSeconds(const Nanoseconds _In) { return _In / 1000000000; }
-	static INLINE uint16 SecondsToFPS(const float _Seconds) { return 1 / _Seconds; }
-
 private:
-	bool ShouldUpdateGameTime = true;
+	uint_64 applicationTicks = 0;
 
-	double DeltaTime = 0.0f; //Stores the real seconds elapsed since the last game update (tick).
-
-	uint_64 GameTicks = 0;
-	double ElapsedTime = 0.0f; //Stores the time the game has been running in real microseconds. 1,000,000.
-	double ElapsedGameTime = 0.0f; //Stores the elapsed game time adjusted for time dilation and game pauses.
-
-	double TimeDivisor = 1.0f; //Stores the percentage by which time should be divided.
-
-	uint_64 StartSystemTicks = 0;
-	uint_64 SystemTicks = 0;
-	uint_64 ProcessorFrequency = 0;
+	uint_64 startPerformanceCounterTicks = 0;
+	uint_64 performanceCounterTicks = 0;
 	//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
+	uint_64 processorFrequency = 0;
+
+	TimePoint deltaTime;
+	TimePoint elapsedTime;
 };

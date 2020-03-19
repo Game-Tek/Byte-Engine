@@ -261,6 +261,7 @@
     <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Game Studio\Game\TypeManager.h" />
     <ClInclude Include="src\Game Studio\Containers\Id.h" />
+    <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />

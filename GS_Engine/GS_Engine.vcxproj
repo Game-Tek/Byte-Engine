@@ -114,6 +114,7 @@
     <ClInclude Include="src\Game Studio\Containers\KVector.h" />
     <ClInclude Include="src\Game Studio\Containers\Ranger.h" />
     <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
+    <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
     <ClInclude Include="src\Game Studio\Core\Allocator.h" />
     <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
     <ClInclude Include="src\Game Studio\Core\Signal.h" />

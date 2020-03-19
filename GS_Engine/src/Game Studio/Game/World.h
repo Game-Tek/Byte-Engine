@@ -2,7 +2,6 @@
 
 #include "Object.h"
 
-#include "WorldObject.h"
 #include "Containers/Id.h"
 #include "TypeManager.h"
 #include <unordered_map>
@@ -13,13 +12,13 @@ class World : public Object
 	double levelAdjustedRunningTime = 0;
 	float worldTimeMultiplier = 1;
 
-	std::unordered_map<Id32, TypeManager*> types;
+	std::unordered_map<Id16, TypeManager*> types;
 public:
 	World();
 	virtual ~World();
 
 	template<class T>
-	void AddTypeManager(const Id32& name) { types.insert({ name, new T() }); }
+	void AddTypeManager(const Id16& name) { types.insert({ name, new T() }); }
 	
 	virtual void OnUpdate();
 

@@ -18,15 +18,13 @@ public:
 	//{
 	//}
 
-	explicit FString(char* const cstring);
+	FString(const char* cstring) : data(StringLength(cstring), const_cast<char*>(cstring)) {}
 
-	FString(const char* cstring) : data(StringLength(cstring), const_cast<char*>(cstring))
-	{
-	}
-
-	explicit FString(const length_type length) : data(length)
-	{
-	}
+	/**
+	 * \brief Creates an FString with enough space allocated for length elements.
+	 * \param length Amount of elements to allocate.
+	 */
+	explicit FString(const length_type length) : data(length) {}
 
 	/**
 	 * \brief Creates an FString from a length and an array. Assumes the array has no null terminator character. If the array you pass happens to have a null terminator you should insert one character less.
@@ -54,11 +52,10 @@ public:
 
 	~FString() = default;
 
-	FString& operator=(const char*);
+	FString& operator=(const char* cstring);
 	FString& operator=(const FString& string) = default;
-	FString operator+(const char* cstring) const;
 	FString& operator+=(const char* cstring);
-	FString operator+(const FString& string) const;
+	FString& operator+=(const FString& string);
 
 	string_type operator[](const length_type i) { return data[i]; }
 	string_type operator[](const length_type i) const { return data[i]; }
@@ -71,10 +68,10 @@ public:
 	[[nodiscard]] length_type npos() const { return data.getLength() + 1; }
 	
 	//Returns true if the two FString's contents are the same. Comparison is case sensitive.
-	bool operator==(const FString& Other) const;
+	bool operator==(const FString& other) const;
 
 	//Returns true if the two FString's contents are the same. Comparison is case insensitive.
-	[[nodiscard]] bool NonSensitiveComp(const FString& _Other) const;
+	[[nodiscard]] bool NonSensitiveComp(const FString& other) const;
 
 	//Returns the contents of this FString as a C-String.
 	char* c_str() { return data.getData(); }
@@ -83,46 +80,66 @@ public:
 	[[nodiscard]] const char* c_str() const { return data.getData(); }
 
 	//Return the length of this FString. Does not take into account the null terminator character.
-	INLINE length_type GetLength() const { return data.getLength() - 1; }
+	[[nodiscard]] length_type GetLength() const { return data.getLength() - 1; }
 	//Returns whether this FString is empty.
-	INLINE bool IsEmpty() const { return data.getLength() == 0; }
+	[[nodiscard]] bool IsEmpty() const { return data.getLength() == 0; }
 
 	//Places a the c-string after this FString with a space in the middle.
 	void Append(const char* cstring);
 	//Places the FString after this FString with a space in the middle.
 	void Append(const FString& string);
 
+	void Append(uint8 number);
+	void Append(int8 number);
+	void Append(uint16 number);
+	void Append(int16 number);
+	void Append(uint32 number);
+	void Append(int32 number);
+	void Append(uint_64 number);
 	void Append(int_64 number);
 	void Append(float number);
+	void Append(double number);
 
-	//Places the passed in FString at the specified Index.
-	void Insert(const char* In, size_t Index);
+	/**
+	 * \brief Places cstring at the specified index.
+	 * \param cstring C-String to insert in the string.
+	 * \param index Index at which to place the cstring.
+	 */
+	void Insert(const char* cstring, const length_type index);
 
-	//Returns the index to the last character in the string that is equal to _Char, if no matching character is found -1 is returned.
-	[[nodiscard]] length_type FindLast(char _Char) const;
-
+	/**
+	* \brief Returns an index to the first char in the string that is equal to c. If no such character is found npos() is returned.
+	* \param c Char to find.
+	* \return Index to found char.
+	*/
 	[[nodiscard]] length_type FindFirst(char c) const;
+	
+	/**
+	 * \brief Returns an index to the last char in the string that is equal to c. If no such character is found npos() is returned.
+	 * \param c Char to find.
+	 * \return Index to found char.
+	 */
+	[[nodiscard]] length_type FindLast(char c) const;
 	
 	/**
 	 * \brief Drops/removes the parts of the string from from forward.
 	 * \param from index to cut forward from.
 	 */
-	void Drop(int64 from);
+	void Drop(length_type from);
 
 	void ReplaceAll(char a, char with);
 	void ReplaceAll(const char* a, const char* with);
 
 	//Returns the length of the C-String accounting for the null terminator character. C-String MUST BE NULL TERMINATED.
-	constexpr static length_type StringLength(const char* In);
+	constexpr static length_type StringLength(const char* cstring);
 
-	static FString MakeString(const char* _Text, ...);
+	static FString MakeString(const char* cstring, ...);
 private:
-	friend OutStream& operator<<(OutStream& _Archive, FString& _String);
-
-	friend InStream& operator>>(InStream& _Archive, FString& _String);
+	friend OutStream& operator<<(OutStream& archive, FString& string);
+	friend InStream& operator>>(InStream& archive, FString& string);
 
 	FVector<string_type> data;
 
-	static char ToLowerCase(char _Char);
-	static char ToUpperCase(char _Char);
+	static char toLowerCase(char c);
+	static char toUpperCase(char c);
 };

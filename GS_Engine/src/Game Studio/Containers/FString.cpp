@@ -4,42 +4,30 @@
 
 #include "Resources/Resource.h"
 #include "Array.hpp"
-#include <string>
+#include "Ranger.h"
 
-OutStream& operator<<(OutStream& _Archive, FString& _String)
+OutStream& operator<<(OutStream& archive, FString& string)
 {
-	_Archive << _String.data;
+	archive << string.data;
 
-	return _Archive;
+	return archive;
 }
 
-InStream& operator>>(InStream& _Archive, FString& _String)
+InStream& operator>>(InStream& archive, FString& string)
 {
-	_Archive >> _String.data;
+	archive >> string.data;
 
-	return _Archive;
+	return archive;
 }
 
 FString::FString() : data(10)
 {
 }
 
-FString::FString(char* const cstring) : data(StringLength(cstring), CCAST(char*, cstring))
+FString& FString::operator=(const char* cstring)
 {
-}
-
-FString& FString::operator=(const char* _In)
-{
-	data.recreate(StringLength(_In), const_cast<char*>(_In));
+	data.recreate(StringLength(cstring), const_cast<char*>(cstring));
 	return *this;
-}
-
-FString FString::operator+(const char* cstring) const
-{
-	FString result;
-	result.data.push_back(data.getLength() - 1, data.getData());
-	result.data.push_back(StringLength(cstring), cstring);
-	return result;
 }
 
 FString& FString::operator+=(const char* cstring)
@@ -49,124 +37,157 @@ FString& FString::operator+=(const char* cstring)
 	return *this;
 }
 
-FString FString::operator+(const FString& _Other) const
+FString& FString::operator+=(const FString& string)
 {
-	FString result;
-	result.data.push_back(data.getLength() - 1, data.getData());
-	result.data.push_back(_Other.data.getLength(), _Other.data.getData());
-	return result;
+	data.pop_back(); data.push_back(string.data); return *this;
 }
 
-bool FString::operator==(const FString& _Other) const
+bool FString::operator==(const FString& other) const
 {
 	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (data.getLength() != _Other.data.getLength()) return false;
+	if (data.getLength() != other.data.getLength()) return false;
 
-	for (size_t i = 0; i < data.getLength(); i++)
-	{
-		if (data[i] != _Other.data[i])
-		{
-			return false;
-		}
-	}
+	length_type i = 0;
+	for (const auto& c : data) { if (c != other.data[i]) { return false; } ++i; }
+	return true;
+}
+
+bool FString::NonSensitiveComp(const FString& other) const
+{
+	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
+	if (data.getLength() != other.data.getLength()) return false;
+
+	length_type i = 0;
+	for (const auto& c : data) { if (c != (toLowerCase(other.data[i]) || toUpperCase(other.data[i]))) { return false; } ++i; }
 
 	return true;
 }
 
-bool FString::NonSensitiveComp(const FString& _Other) const
-{
-	//Discard if Length of strings is not equal, first because it helps us discard before even starting, second because we can't compare strings of different sizes.
-	if (data.getLength() != _Other.data.getLength()) return false;
-
-	for (size_t i = 0; i < data.getLength(); i++)
-	{
-		if (data[i] != (ToLowerCase(_Other.data[i]) || ToUpperCase(_Other.data[i])))
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-void FString::Append(const char* _In)
+void FString::Append(const char* cstring)
 {
 	data.pop_back(); //Get rid of null terminator.
 	data.push_back(' '); //Push space.
-	data.push_back(StringLength(_In), const_cast<char*>(_In));
+	data.push_back(StringLength(cstring), const_cast<char*>(cstring));
 	return;
 }
 
-void FString::Append(const FString& _In)
+void FString::Append(const FString& string)
 {
 	data.pop_back(); //Get rid of null terminator.
 	data.push_back(' '); //Push space.
-	data.push_back(_In.data); //Push new string.
+	data.push_back(string.data); //Push new string.
 	return;
 }
 
-#include <stdlib.h>
+void FString::Append(const uint8 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 3 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%d", number) + 1);
+}
+
+void FString::Append(const int8 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 4 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%d", number) + 1);
+}
+
+void FString::Append(const uint16 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 6 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%hu", number) + 1);
+}
+
+void FString::Append(const int16 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 7 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%hi", number) + 1);
+}
+
+void FString::Append(const uint32 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 10 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%lu", number) + 1);
+}
+
+void FString::Append(const int32 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 11 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%d", number) + 1);
+}
+
+void FString::Append(const uint_64 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 20 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%llu", number) + 1);
+}
 
 void FString::Append(const int_64 number)
 {
 	data.pop_back();
 	data.push_back(' ');
-	data.resize(data.getLength() + 50);
+	data.resize(data.getLength() + 21 + 1);
 	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%lld", number) + 1);
 }
 
-void FString::Append(float number)
+void FString::Append(const float number)
 {
 	data.pop_back();
 	data.push_back(' ');
-	data.resize(data.getLength() + 50);
+	data.resize(data.getLength() + 31 + 1);
 	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%f", number) + 1);
 }
 
-void FString::Insert(const char* _In, const size_t _Index)
+void FString::Append(const double number)
 {
-	data.push(_Index, const_cast<char*>(_In), StringLength(_In));
-	return;
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 61 + 1);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%lf", number) + 1);
 }
 
-FString::length_type FString::FindLast(char _Char) const
+void FString::Insert(const char* cstring, const length_type index)
 {
-	for (int32 i = data.getLength(); i > 0; --i)
-	{
-		if (data[i] == _Char) return i;
-	}
-
-	return npos();
+	data.push(index, const_cast<char*>(cstring), StringLength(cstring));
+	return;
 }
 
 FString::length_type FString::FindFirst(const char c) const
 {
 	length_type i = 0;
-	for(auto& e : data)
-	{
-		if (e == c)	{ return i; }
-
-		++i;
-	}
-
+	for (const auto& e : data) { if (e == c) { return i; } ++i; }
 	return npos();
 }
 
-void FString::Drop(int64 from)
+FString::length_type FString::FindLast(const char c) const
+{
+	length_type i = 0;
+	for (auto& e : Ranger(data.end(), data.begin())) { if (e == c) { return i; } ++i; }
+	return npos();
+}
+
+void FString::Drop(const length_type from)
 {
 	data.resize(from + 1);
 	data[from + 1] = '\0';
 }
 
-void FString::ReplaceAll(char a, char with)
+void FString::ReplaceAll(const char a, const char with)
 {
-	for (uint32 i = 0; i < data.getLength() - 1; ++i)
-	{
-		if (data[i] == a)
-		{
-			data[i] = with;
-		}
-	}
+	for (auto& c : data) { if (c == a) { c = with; } }
 }
 
 void FString::ReplaceAll(const char* a, const char* with)
@@ -228,11 +249,9 @@ void FString::ReplaceAll(const char* a, const char* with)
 	}
 }
 
-constexpr FString::length_type FString::StringLength(const char* In)
+constexpr FString::length_type FString::StringLength(const char* cstring)
 {
-	length_type length = 0;
-
-	while (In[length] != '\0') { length++; }
+	length_type length = 0;	while (*cstring) { ++length; }
 
 	//We return Length + 1 to take into account for the null terminator character.
 	return length + 1;
@@ -240,33 +259,33 @@ constexpr FString::length_type FString::StringLength(const char* In)
 
 #define FSTRING_MAKESTRING_DEFAULT_SIZE 256
 
-FString FString::MakeString(const char* _Text, ...)
+FString FString::MakeString(const char* cstring, ...)
 {
 	FString Return(FSTRING_MAKESTRING_DEFAULT_SIZE);
 
 	va_list vaargs;
-	va_start(vaargs, _Text);
-	const auto Count = snprintf(Return.data.getData(), Return.data.getLength(), _Text, vaargs) + 1;
+	va_start(vaargs, cstring);
+	const auto Count = snprintf(Return.data.getData(), Return.data.getLength(), cstring, vaargs) + 1;
 	//Take into account null terminator.
 	if (Count > Return.data.getLength())
 	{
 		Return.data.resize(Count);
 
-		snprintf(Return.data.getData(), Return.data.getLength(), _Text, vaargs);
+		snprintf(Return.data.getData(), Return.data.getLength(), cstring, vaargs);
 	}
 	va_end(vaargs);
 
 	return Return;
 }
 
-char FString::ToLowerCase(char _Char)
+char FString::toLowerCase(char c)
 {
-	if ('A' <= _Char && _Char <= 'Z') return _Char += ('a' - 'A');
-	return _Char;
+	if ('A' <= c && c <= 'Z') return c += ('a' - 'A');
+	return c;
 }
 
-char FString::ToUpperCase(char _Char)
+char FString::toUpperCase(char c)
 {
-	if ('a' <= _Char && _Char <= 'z') return _Char += ('a' - 'A');
-	return _Char;
+	if ('a' <= c && c <= 'z') return c += ('a' - 'A');
+	return c;
 }

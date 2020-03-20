@@ -4,12 +4,12 @@
 #include "Containers/Id.h"
 #include "Delegate.h"
 
-class Console
+class CommandMap
 {
 	std::unordered_map<Id32, Delegate<void(const FString&)>> commands;
 public:
-	Console() = default;
-	~Console() = default;
+	CommandMap() = default;
+	~CommandMap() = default;
 	
 	void RegisterCommand(const char* name, const Delegate<void(const FString&)>& function) { commands.insert({ name, function }); }
 	bool DoCommand(const FString& line)

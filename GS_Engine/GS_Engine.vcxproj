@@ -108,7 +108,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\Game Studio\Application\Console.h" />
+    <ClInclude Include="src\Game Studio\Application\CommandMap.h" />
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Containers\FlatHashMap.h" />

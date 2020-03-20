@@ -20,8 +20,8 @@ public:
 
 	~Id64() = default;
 
-	INLINE HashType GetID() { return hashValue; }
-	INLINE HashType GetID() const { return hashValue; }
+	HashType GetID() { return hashValue; }
+	[[nodiscard]] HashType GetID() const { return hashValue; }
 
 	operator HashType() const { return hashValue; }
 

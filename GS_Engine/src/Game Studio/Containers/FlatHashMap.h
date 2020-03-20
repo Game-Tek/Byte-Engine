@@ -5,7 +5,7 @@
 template<typename T>
 class FlatHashMap
 {
-	using key_type = uint_64;
+	using key_type = uint64;
 	
 	uint32 size = 0;
 	

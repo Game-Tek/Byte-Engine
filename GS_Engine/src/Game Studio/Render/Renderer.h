@@ -108,14 +108,6 @@ protected:
 		uint32 textureIndices[8];
 	};
 
-	struct ViewData
-	{
-		GS_ALIGN(16) Matrix4 ViewMatrix;
-		GS_ALIGN(16) Matrix4 ProjectionMatrix;
-		GS_ALIGN(16) Matrix4 ViewProjectionMatrix;
-	};
-
-	FVector<ViewData> perViewData;
 	FVector<InstanceData> perInstanceData;
 	FVector<Matrix4> perInstanceTransform;
 	FVector<MaterialData> perMaterialInstanceData;

@@ -14,7 +14,7 @@ void SerializeFVector(OutStream& outStream, FVector<T>& vector)
 {
 	outStream.Write(vector.getLength());
 
-	for (uint_64 i = 0; i < vector.getLength(); ++i)
+	for (uint64 i = 0; i < vector.getLength(); ++i)
 	{
 		outStream << vector[i];
 	}
@@ -25,7 +25,7 @@ void operator<<(OutStream& outStream, FVector<T>& vector)
 {
 	outStream.Write(vector.getLength());
 
-	for (uint_64 i = 0; i < vector.getLength(); ++i)
+	for (uint64 i = 0; i < vector.getLength(); ++i)
 	{
 		outStream << vector[i];
 	}
@@ -41,7 +41,7 @@ void operator>>(InStream& inStream, FVector<T>& vector)
 	vector.init(length);
 	vector.resize(length);
 
-	for (uint_64 i = 0; i < length; ++i)
+	for (uint64 i = 0; i < length; ++i)
 	{
 		inStream >> vector[i];
 	}
@@ -56,7 +56,7 @@ void DeserializeFVector(InStream& inStream, FVector<T>& vector)
 
 	vector.resize(length);
 
-	for (uint_64 i = 0; i < length; ++i)
+	for (uint64 i = 0; i < length; ++i)
 	{
 		inStream >> vector[i];
 	}

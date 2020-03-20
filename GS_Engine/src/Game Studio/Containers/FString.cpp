@@ -127,7 +127,7 @@ void FString::Append(const int32 number)
 	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%d", number) + 1);
 }
 
-void FString::Append(const uint_64 number)
+void FString::Append(const uint64 number)
 {
 	data.pop_back();
 	data.push_back(' ');
@@ -135,7 +135,7 @@ void FString::Append(const uint_64 number)
 	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%llu", number) + 1);
 }
 
-void FString::Append(const int_64 number)
+void FString::Append(const int64 number)
 {
 	data.pop_back();
 	data.push_back(' ');

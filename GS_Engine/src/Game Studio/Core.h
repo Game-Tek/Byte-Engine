@@ -1,6 +1,5 @@
 #pragma once
 
-
 // TYPEDEFS
 
 typedef unsigned char byte;
@@ -10,12 +9,10 @@ typedef unsigned short uint16;
 typedef short int16;
 typedef unsigned int uint32;
 typedef int int32;
-typedef unsigned long uint64;
-typedef long int64;
-typedef unsigned long long uint_64;
-typedef long long int_64;
+typedef unsigned long long uint64;
+typedef long long int64;
 
-using GS_HASH_TYPE = uint_64;
+using GS_HASH_TYPE = uint64;
 
 #ifdef GS_PLATFORM_WIN
 #define INLINE __forceinline
@@ -44,14 +41,5 @@ using GS_HASH_TYPE = uint_64;
 #define GS_THROW(text)
 #endif
 
-//  CASTS
-
-#define DCAST(to, from) dynamic_cast<to>(from)
-#define SCAST(to, from) static_cast<to>(from)
-#define RCAST(to, from) reinterpret_cast<to>(from)
-#define CCAST(to, from) const_cast<to>(from)
-
-#define GS_ALIGN(x) __declspec(align(x))
-
 constexpr uint8 uint8MAX = 0xff;
-constexpr uint_64 uint_64MAX = 0xffffffffffffffff;
+constexpr uint64 uint_64MAX = 0xffffffffffffffff;

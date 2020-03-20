@@ -197,7 +197,7 @@ public:
 	//////////////////////////////////////////////////////////////
 
 	//Returns 1 if A is bigger than 0. 0 if A is equal to 0. and -1 if A is less than 0.
-	INLINE static int8 Sign(const int_64 _A)
+	INLINE static int8 Sign(const int64 _A)
 	{
 		if (_A > 0)
 		{

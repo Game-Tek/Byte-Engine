@@ -95,8 +95,8 @@ public:
 	void Append(int16 number);
 	void Append(uint32 number);
 	void Append(int32 number);
-	void Append(uint_64 number);
-	void Append(int_64 number);
+	void Append(uint64 number);
+	void Append(int64 number);
 	void Append(float number);
 	void Append(double number);
 

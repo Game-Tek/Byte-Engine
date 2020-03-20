@@ -59,7 +59,7 @@ public:
 	//Returns the time the game has been running in real seconds.
 	[[nodiscard]] TimePoint GetElapsedTime() const { return elapsedTime; }
 
-	[[nodiscard]] uint_64 GetApplicationTicks() const { return applicationTicks; }
+	[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 
 	[[nodiscard]] TimePoint GetCurrentTime() const;
 
@@ -79,12 +79,12 @@ public:
 	static Time GetTime();
 
 private:
-	uint_64 applicationTicks = 0;
+	uint64 applicationTicks = 0;
 
-	uint_64 startPerformanceCounterTicks = 0;
-	uint_64 performanceCounterTicks = 0;
+	uint64 startPerformanceCounterTicks = 0;
+	uint64 performanceCounterTicks = 0;
 	//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
-	uint_64 processorFrequency = 0;
+	uint64 processorFrequency = 0;
 
 	TimePoint deltaTime;
 	TimePoint elapsedTime;

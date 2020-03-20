@@ -56,7 +56,7 @@ private:
 	 * \param additionalElements How many elements of this vector's T are you trying to check if fit in the already allocated array.\n
 	 * Number can be negative.
 	 */
-	void reallocIfExceeds(const int_64 additionalElements)
+	void reallocIfExceeds(const int64 additionalElements)
 	{
 		if (this->length + additionalElements > this->capacity)
 		{

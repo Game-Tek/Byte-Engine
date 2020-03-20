@@ -109,6 +109,8 @@
   <ItemGroup>
     <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\Game Studio\Application\CommandMap.h" />
+    <ClInclude Include="src\Game Studio\Application\Console.h" />
+    <ClInclude Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
     <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
     <ClInclude Include="src\Game Studio\Containers\FlatHashMap.h" />
@@ -254,6 +256,7 @@
     <ClInclude Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\Game Studio\Core\System.cpp" />
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
     <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />

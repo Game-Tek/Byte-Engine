@@ -263,6 +263,8 @@
     <ClInclude Include="src\Game Studio\Containers\Id.h" />
     <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
     <ClInclude Include="src\Game Studio\Application\CommandMap.h" />
+    <ClInclude Include="src\Game Studio\Application\Console.h" />
+    <ClInclude Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Camera.cpp" />
@@ -333,6 +335,7 @@
     <ClCompile Include="src\Game Studio\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
+    <ClCompile Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -53,10 +53,10 @@ public:
 	
 	[[nodiscard]] const char* GetName() const override { return "Clock"; }
 
-	//Returns the real seconds elapsed since the last game update (tick).
+	//Returns the time elapsed since the last application update (tick).
 	[[nodiscard]] TimePoint GetDeltaTime() const { return deltaTime; }
 
-	//Returns the time the game has been running in real seconds.
+	//Returns the time the game has been running.
 	[[nodiscard]] TimePoint GetElapsedTime() const { return elapsedTime; }
 
 	[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }

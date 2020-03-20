@@ -27,16 +27,16 @@ void Clock::OnUpdate()
 	LARGE_INTEGER win_processor_ticks;
 
 	QueryPerformanceCounter(&win_processor_ticks);
-
-	//Set system ticks as this frame's ticks so in the next update we can work with it.
-	performanceCounterTicks = win_processor_ticks.QuadPart;
 	
 	auto delta_ticks = win_processor_ticks.QuadPart - performanceCounterTicks;
+	
+	//Set system ticks as this frame's ticks so in the next update we can work with it.
+	performanceCounterTicks = win_processor_ticks.QuadPart;
 
 	win_processor_ticks.QuadPart *= 1000000;
 	win_processor_ticks.QuadPart /= processorFrequency;
 	
-	const auto current_time = TimePoint::CreateFromMicroSeconds(win_processor_ticks.QuadPart);
+	const auto current_time = TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart);
 	
 	delta_ticks *= 1000000; //to microseconds
 	delta_ticks /= processorFrequency;
@@ -52,7 +52,6 @@ void Clock::OnUpdate()
 	}
 	else
 	{
-		//If loc_DeltaTime is less than one second set DeltaTime as loc_DeltaTime.
 		deltaTime = current_time - elapsedTime;
 	}
 	
@@ -65,15 +64,13 @@ void Clock::OnUpdate()
 	return;
 }
 
-#undef GetCurrentTime
 
+#undef GetCurrentTime
 TimePoint Clock::GetCurrentTime() const
 {
-	LARGE_INTEGER win_processor_ticks;
-
-	QueryPerformanceCounter(&win_processor_ticks);
-
-	return TimePoint::CreateFromMicroSeconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
+#ifdef GS_PLATFORM_WIN
+	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
+#endif
 }
 
 //UTILITY GETTERS
@@ -83,9 +80,7 @@ uint16 Clock::GetYear()
 {
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
-
 	GetLocalTime(&WinTimeStructure);
-
 	return WinTimeStructure.wYear;
 #endif
 }
@@ -94,9 +89,7 @@ Months Clock::GetMonth()
 {
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
-
 	GetLocalTime(&WinTimeStructure);
-
 	return static_cast<Months>(WinTimeStructure.wMonth);
 #endif
 }
@@ -105,9 +98,7 @@ uint8 Clock::GetDayOfMonth()
 {
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
-
 	GetLocalTime(&WinTimeStructure);
-
 	return WinTimeStructure.wDay;
 #endif
 }
@@ -116,9 +107,7 @@ Days Clock::GetDayOfWeek()
 {
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
-
 	GetLocalTime(&WinTimeStructure);
-
 	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
 #endif
 }
@@ -127,12 +116,7 @@ Time Clock::GetTime()
 {
 #ifdef GS_PLATFORM_WIN
 	SYSTEMTIME WinTimeStructure;
-
 	GetLocalTime(&WinTimeStructure);
-
-	return {
-		static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute),
-		static_cast<uint8>(WinTimeStructure.wSecond)
-	};
+	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
 #endif
 }

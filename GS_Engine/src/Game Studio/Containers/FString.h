@@ -87,23 +87,13 @@ public:
 	//Returns whether this FString is empty.
 	INLINE bool IsEmpty() const { return data.getLength() == 0; }
 
-	//Places a the C-FString after this FString with a space in the middle.
+	//Places a the c-string after this FString with a space in the middle.
 	void Append(const char* cstring);
 	//Places the FString after this FString with a space in the middle.
 	void Append(const FString& string);
 
-	void Append(const int_64 number);
-	//{
-	//	if (number < 0) { data.push_back('-'); }
-	//
-	//	for (uint8 i = 0; i < 64; ++i)
-	//	{
-	//		if((number >> i) & 0x1)
-	//		{
-	//			
-	//		}
-	//	}
-	//}
+	void Append(int_64 number);
+	void Append(float number);
 
 	//Places the passed in FString at the specified Index.
 	void Insert(const char* In, size_t Index);

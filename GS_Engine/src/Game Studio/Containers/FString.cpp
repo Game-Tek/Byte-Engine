@@ -4,6 +4,7 @@
 
 #include "Resources/Resource.h"
 #include "Array.hpp"
+#include <string>
 
 OutStream& operator<<(OutStream& _Archive, FString& _String)
 {
@@ -102,6 +103,24 @@ void FString::Append(const FString& _In)
 	data.push_back(' '); //Push space.
 	data.push_back(_In.data); //Push new string.
 	return;
+}
+
+#include <stdlib.h>
+
+void FString::Append(const int_64 number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 50);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%lld", number) + 1);
+}
+
+void FString::Append(float number)
+{
+	data.pop_back();
+	data.push_back(' ');
+	data.resize(data.getLength() + 50);
+	data.resize(sprintf_s(data.getData() + data.getLength() - 1, data.getCapacity() - data.getLength() - 1, "%f", number) + 1);
 }
 
 void FString::Insert(const char* _In, const size_t _Index)

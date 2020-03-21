@@ -119,7 +119,9 @@
     <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
     <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
     <ClInclude Include="src\Game Studio\Core\Allocator.h" />
+    <ClInclude Include="src\Game Studio\Core\Application.h" />
     <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
+    <ClInclude Include="src\Game Studio\Core\Platform\Windows\WindowsApplication.h" />
     <ClInclude Include="src\Game Studio\Core\Platform\Windows\WindowsWindow.h" />
     <ClInclude Include="src\Game Studio\Core\Signal.h" />
     <ClInclude Include="src\Game Studio\Core\Mutex.h" />
@@ -259,6 +261,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.cpp" />
+    <ClCompile Include="src\Game Studio\Core\Platform\Windows\WindowsApplication.cpp" />
     <ClCompile Include="src\Game Studio\Core\Platform\Windows\WindowsWindow.cpp" />
     <ClCompile Include="src\Game Studio\Core\System.cpp" />
     <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />

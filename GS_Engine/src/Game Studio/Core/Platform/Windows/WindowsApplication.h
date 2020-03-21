@@ -7,13 +7,15 @@
 
 #include "Xinput.h"
 
-class WindowsApplication : public nApplication
+class WindowsApplication final : public nApplication
 {
 	HINSTANCE instance = nullptr;
 
 	uint8 connectedControllers = 0;
 
 	XINPUT_STATE input_states[XUSER_MAX_COUNT];
+
+	static constexpr GamepadButtonState intToGamepadButtonState(const int a) {	return static_cast<GamepadButtonState>(!a); }
 public:
 	explicit WindowsApplication(const ApplicationCreateInfo& applicationCreateInfo);
 

@@ -13,5 +13,7 @@ public:
 
 	virtual void Update() = 0;
 
+	virtual void CheckForNewControllers() = 0;
+	
 	virtual void Close() = 0;
 };

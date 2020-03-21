@@ -5,16 +5,23 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include "Xinput.h"
+
 class WindowsApplication : public nApplication
 {
 	HINSTANCE instance = nullptr;
-	
+
+	uint8 connectedControllers = 0;
+
+	XINPUT_STATE input_states[XUSER_MAX_COUNT];
 public:
 	explicit WindowsApplication(const ApplicationCreateInfo& applicationCreateInfo);
 
 	void Update() override;
 
 	void Close() override;
+
+	void CheckForNewControllers() override;
 	
 	[[nodiscard]] HINSTANCE GetInstance() const { return instance; }
 };

@@ -254,7 +254,6 @@
     <ClInclude Include="src\Byte Engine\Core.h">
       <Filter>Engine</Filter>
     </ClInclude>
-    <ClInclude Include="src\Byte Engine\Delegate.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Light.h" />
     <ClInclude Include="src\Byte Engine\Object.h">

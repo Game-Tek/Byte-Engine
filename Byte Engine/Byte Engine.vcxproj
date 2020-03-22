@@ -133,7 +133,6 @@
     <ClInclude Include="src\Byte Engine\Core\Thread.h" />
     <ClInclude Include="src\Byte Engine\Core\Window.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
-    <ClInclude Include="src\Byte Engine\Delegate.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />

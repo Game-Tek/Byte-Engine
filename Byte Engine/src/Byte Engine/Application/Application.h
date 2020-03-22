@@ -53,7 +53,7 @@ namespace BE
 		//Updates the window the application gets it's context information from.
 		void SetActiveWindow(RAPI::Window* _NewWindow);
 
-		//Fires a delegate to signal that the application has been requested to close.
+		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();
 		//Flags the application to close on the next update.
 		void Close(const char* _Reason);

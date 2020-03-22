@@ -13,7 +13,7 @@ StaticMesh::~StaticMesh()
 	BE::Application::Get()->GetResourceManager()->ReleaseResource(staticMeshResource);
 }
 
-Model StaticMesh::GetModel() const
-{
-	return Model{ staticMeshResource->GetStaticMeshData().VertexArray, staticMeshResource->GetStaticMeshData().IndexArray, staticMeshResource->GetStaticMeshData().VertexCount, staticMeshResource->GetStaticMeshData().IndexCount };
-}
+//Model StaticMesh::GetModel() const
+//{
+//	return Model{ staticMeshResource->GetStaticMeshData().VertexArray, staticMeshResource->GetStaticMeshData().IndexArray, staticMeshResource->GetStaticMeshData().VertexCount, staticMeshResource->GetStaticMeshData().IndexCount };
+//}

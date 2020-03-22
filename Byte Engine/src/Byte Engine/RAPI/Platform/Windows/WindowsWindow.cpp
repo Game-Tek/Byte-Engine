@@ -59,15 +59,15 @@ void WindowsWindow::Update()
 	{
 		int32 X, Y;
 		glfwGetWindowSize(GLFWWindow, &X, &Y);
-		Extent.Width = SCAST(uint16, X);
-		Extent.Height = SCAST(uint16, Y);
+		Extent.Width = static_cast<uint16>(X);
+		Extent.Height = static_cast<uint16>(Y);
 	}
 
 	{
 		double X, Y;
 		glfwGetCursorPos(GLFWWindow, &X, &Y);
-		WindowMouseState.MousePosition.X = SCAST(float, (X - Extent.Width / 2) / Extent.Width * 2);
-		WindowMouseState.MousePosition.Y = SCAST(float, (Y - Extent.Height / 2) / Extent.Height * -2);
+		WindowMouseState.MousePosition.X = static_cast<float>((X - Extent.Width / 2) / Extent.Width * 2);
+		WindowMouseState.MousePosition.Y = static_cast<float>((Y - Extent.Height / 2) / Extent.Height * -2);
 
 		WindowMouseState.MouseWheelMove = ScrollValue;
 	}
@@ -86,7 +86,7 @@ void WindowsWindow::Update()
 
 	for (uint8 i = 0; i < MAX_KEYBOARD_KEYS; ++i)
 	{
-		Keys[i] = glfwGetKey(GLFWWindow, KeyboardKeysToGLFWKeys(SCAST(KeyboardKeys, i)));
+		Keys[i] = glfwGetKey(GLFWWindow, KeyboardKeysToGLFWKeys(static_cast<KeyboardKeys>(i)));
 	}
 
 	for (uint8 i = 0; i < JoystickCount; ++i)

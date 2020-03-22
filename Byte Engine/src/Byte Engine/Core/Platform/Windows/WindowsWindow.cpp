@@ -44,12 +44,14 @@ void nWindowsWindow::SetState(const WindowState windowState)
 	{
 	case WindowState::MAXIMIZED: ShowWindow(windowHandle, SW_SHOWMAXIMIZED); break;
 	case WindowState::FULLSCREEN:
+	{
 		DWORD dwStyle = ::GetWindowLong(windowHandle, GWL_STYLE);
 		DWORD dwRemove = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 		DWORD dwNewStyle = dwStyle & ~dwRemove;
 		SetWindowLongPtrA(windowHandle, GWL_STYLE, dwNewStyle);
 		SetWindowPos(windowHandle, HWND_TOP, 0, 0, 500, 500, SWP_FRAMECHANGED);
 		ShowWindow(windowHandle, SW_SHOWMAXIMIZED);
+	}
 		break;
 	case WindowState::MINIMIZED: ShowWindow(windowHandle, SW_MINIMIZE); break;
 	}

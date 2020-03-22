@@ -31,7 +31,7 @@ namespace BE
 		while (!ShouldClose())
 		{
 			ClockInstance.OnUpdate();
-			InputManagerInstance.OnUpdate();
+			InputManagerInstance.Update();
 
 			ActiveWindow->Update();
 

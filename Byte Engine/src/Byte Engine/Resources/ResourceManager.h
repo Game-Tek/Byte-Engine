@@ -13,12 +13,8 @@
 
 class ResourceManager : public Object
 {
-	mutable std::unordered_map<Id64::HashType, Resource*> ResourceMap;
-
 	static FString GetBaseResourcePath() { return FString("resources/"); }
 	void SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_);
-
-	void LoadResource(const FString& _ResourceName, Resource* _Resource);
 
 	std::unordered_map<Id64::HashType, SubResourceManager*> resourceManagers;
 	
@@ -29,11 +25,6 @@ public:
 		for (auto& resource_manager : resourceManagers)
 		{
 			delete resource_manager.second;
-		}
-		
-		for (auto& element : ResourceMap)
-		{
-			delete element.second;
 		}
 	}
 

@@ -35,22 +35,11 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "Scene"; }
 
-	void OnUpdate() override;
-
 	//Returns a pointer to the active camera.
 	[[nodiscard]] Camera* GetActiveCamera() const { return ActiveCamera; }
 
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera* NewCamera) const { ActiveCamera = NewCamera; }
-
-	template <class T>
-	T* CreateRenderComponent(RenderComponentCreateInfo* _RCCI)
-	{
-		RenderComponent* NRC = new T();
-		NRC->SetOwner(_RCCI->Owner);
-		this->RegisterRenderComponent(NRC, _RCCI);
-		return static_cast<T*>(NRC);
-	}
 
 	void DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& _DrawInfo, RAPI::RenderMesh* Mesh_);
 	void BindPipeline(RAPI::GraphicsPipeline* _Pipeline);
@@ -114,8 +103,6 @@ protected:
 
 
 	void UpdateViews();
-
-	void RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI);
 
 	void UpdateRenderables();
 	void RenderRenderables();

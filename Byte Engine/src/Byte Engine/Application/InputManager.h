@@ -31,4 +31,5 @@ public:
 	~InputManager() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
+	void Update();
 };

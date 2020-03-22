@@ -10,7 +10,10 @@ bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo
 
 	if (search_result == resources.end())
 	{
-		auto path = System::GetRunningPath() + "resources/" + loadResourceInfo.ResourceName + ".wav";
+		auto path = System::GetRunningPath();
+		path += "resources/";
+		path += loadResourceInfo.ResourceName;
+		path +=".wav";
 		
 		std::ifstream Input(path.c_str(), std::ios::in | std::ios::binary); //Open file as binary
 		

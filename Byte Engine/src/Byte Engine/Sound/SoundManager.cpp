@@ -4,7 +4,7 @@
 SoundManager::SoundManager()
 {
 	auto result = BE::Application::Get()->GetResourceManager()->TryGetResource("sax", "Audio");
-	sound = static_cast<AudioResourceManager::AudioResourceData*>(result.ResourceData);
+	//sound = static_cast<AudioResourceManager::AudioResourceData*>(result);
 
 	struct AudioDevice::AudioDeviceCreateInfo audio_device_create_info { StreamShareMode::SHARED };
 	audioDevice = AudioDevice::CreateAudioDevice(audio_device_create_info);

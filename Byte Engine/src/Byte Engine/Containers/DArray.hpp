@@ -13,12 +13,7 @@ class DArray final
 	uint32 length = 0;
 	T* data = nullptr;
 
-	static constexpr T* allocate(const uint32 _elements)
-	{
-		//auto align = alignof(T);
-		return SCAST(T*, malloc(sizeof(T) * _elements));
-		//return SCAST(T*, _aligned_malloc(_elements * sizeof(T), alignof(T)));
-	}
+	static constexpr T* allocate(const uint32 _elements) { return static_cast<T*>(malloc(sizeof(T) * _elements)); }
 
 	void copyLength(const uint32 _elements, void* _from)
 	{
@@ -62,7 +57,7 @@ public:
 
 	constexpr DArray(const std::initializer_list<T>& _List) : capacity(_List.size()), length(_List.size()), data(allocate(_List.size()))
 	{
-		copyLength(this->length, CCAST(T*, _List.begin()));
+		copyLength(this->length, const_cast<T*>(_List.begin()));
 	}
 
 	explicit DArray(const uint32 _Length) : capacity(_Length), length(0), data(allocate(_Length))

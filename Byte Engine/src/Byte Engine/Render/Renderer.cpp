@@ -4,20 +4,15 @@
 #include "Application/Application.h"
 #include "Math/BEM.hpp"
 
-#include "Resources/StaticMeshResource.h"
-
 #include "Material.h"
 #include "Game/StaticMesh.h"
-#include "Resources/TextureResource.h"
-
-#include "Game/Texture.h"
 
 #include "ScreenQuad.h"
 #include "StaticMeshRenderableManager.h"
 
 using namespace RAPI;
 
-Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), perInstanceTransform(1)
+Renderer::Renderer() : Framebuffers(3), perInstanceData(1), perInstanceTransform(1)
 {
 	RAPI::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
 	render_device_create_info.RenderingAPI = RenderAPI::VULKAN;
@@ -133,11 +128,6 @@ Renderer::Renderer() : Framebuffers(3), perViewData(1, 1), perInstanceData(1), p
 
 Renderer::~Renderer()
 {
-	for (auto& Element : ComponentToInstructionsMap)
-	{
-		delete Element.second;
-	}
-
 	for (auto const& x : Pipelines)
 	{
 		delete x.second;
@@ -149,52 +139,52 @@ Renderer::~Renderer()
 	RenderDevice::DestroyRenderDevice(renderDevice);
 }
 
-void Renderer::OnUpdate()
-{
-	/*Update debug vars*/
-	BE_DEBUG_ONLY(DrawCalls = 0)
-	BE_DEBUG_ONLY(InstanceDraws = 0)
-	BE_DEBUG_ONLY(PipelineSwitches = 0)
-	BE_DEBUG_ONLY(DrawnComponents = 0)
-	/*Update debug vars*/
-
-	UpdateViews();
-
-	UpdateRenderables();
-
-	CommandBuffer::BeginRecordingInfo begin_recording_info;
-	graphicsCommandBuffer->BeginRecording(begin_recording_info);
-
-	CommandBuffer::BeginRenderPassInfo RPBI;
-	RPBI.RenderPass = RP;
-	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
-	graphicsCommandBuffer->BeginRenderPass(RPBI);
-
-	RenderRenderables();
-
-	CommandBuffer::EndRenderPassInfo end_render_pass_info;
-	graphicsCommandBuffer->EndRenderPass(end_render_pass_info);
-
-	CommandBuffer::EndRecordingInfo end_recording_info;
-	graphicsCommandBuffer->EndRecording(end_recording_info);
-
-	RAPI::RenderContext::AcquireNextImageInfo acquire_info;
-	acquire_info.RenderDevice = renderDevice;
-	RC->AcquireNextImage(acquire_info);
-
-	//RenderContext::FlushInfo flush_info;
-	//flush_info.RenderDevice = renderDevice;
-	//RC->Flush(flush_info);
-
-	Queue::DispatchInfo dispatch_info;
-	dispatch_info.RenderDevice = renderDevice;
-	dispatch_info.CommandBuffer = graphicsCommandBuffer;
-	graphicsQueue->Dispatch(dispatch_info);
-
-	RenderContext::PresentInfo present_info;
-	present_info.RenderDevice = renderDevice;
-	RC->Present(present_info);
-}
+//void Renderer::OnUpdate()
+//{
+//	/*Update debug vars*/
+//	BE_DEBUG_ONLY(DrawCalls = 0)
+//	BE_DEBUG_ONLY(InstanceDraws = 0)
+//	BE_DEBUG_ONLY(PipelineSwitches = 0)
+//	BE_DEBUG_ONLY(DrawnComponents = 0)
+//	/*Update debug vars*/
+//
+//	UpdateViews();
+//
+//	UpdateRenderables();
+//
+//	CommandBuffer::BeginRecordingInfo begin_recording_info;
+//	graphicsCommandBuffer->BeginRecording(begin_recording_info);
+//
+//	CommandBuffer::BeginRenderPassInfo RPBI;
+//	RPBI.RenderPass = RP;
+//	RPBI.Framebuffer = Framebuffers[RC->GetCurrentImage()];
+//	graphicsCommandBuffer->BeginRenderPass(RPBI);
+//
+//	RenderRenderables();
+//
+//	CommandBuffer::EndRenderPassInfo end_render_pass_info;
+//	graphicsCommandBuffer->EndRenderPass(end_render_pass_info);
+//
+//	CommandBuffer::EndRecordingInfo end_recording_info;
+//	graphicsCommandBuffer->EndRecording(end_recording_info);
+//
+//	RAPI::RenderContext::AcquireNextImageInfo acquire_info;
+//	acquire_info.RenderDevice = renderDevice;
+//	RC->AcquireNextImage(acquire_info);
+//
+//	//RenderContext::FlushInfo flush_info;
+//	//flush_info.RenderDevice = renderDevice;
+//	//RC->Flush(flush_info);
+//
+//	Queue::DispatchInfo dispatch_info;
+//	dispatch_info.RenderDevice = renderDevice;
+//	dispatch_info.CommandBuffer = graphicsCommandBuffer;
+//	graphicsQueue->Dispatch(dispatch_info);
+//
+//	RenderContext::PresentInfo present_info;
+//	present_info.RenderDevice = renderDevice;
+//	RC->Present(present_info);
+//}
 
 void Renderer::DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& drawInfo, RAPI::RenderMesh* Mesh_)
 {
@@ -273,75 +263,12 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 
 void Renderer::UpdateViews()
 {
-	for (auto& view : perViewData)
-	{
-		//We get and store the camera's position so as to not access it several times.
-		const Vector3 CamPos = GetActiveCamera()->GetPosition();
-
-		view.ViewMatrix.MakeIdentity(); //Reset view matrix or it will accumulate operation over time(BAD).
-
-		Transform3 camera_transform;
-		camera_transform.Position.X = -CamPos.X;
-		camera_transform.Position.Y = -CamPos.Y;
-		camera_transform.Position.Z = CamPos.Z;
-		camera_transform.Rotation = GetActiveCamera()->GetTransform().Rotation;
-
-		auto t = GetActiveCamera()->GetTransform().Rotation;
-
-		//BEM::Rotate(view.ViewMatrix, t);
-
-		BEM::Translate(view.ViewMatrix, camera_transform.Position);
-
-		auto& nfp = GetActiveCamera()->GetNearFarPair();
-
-		BEM::BuildPerspectiveMatrix(view.ProjectionMatrix, GetActiveCamera()->GetFOV(), Win->GetAspectRatio(), nfp.First, nfp.Second);
-
-		view.ViewProjectionMatrix = view.ProjectionMatrix * view.ViewMatrix;
-	}
-}
-
-void Renderer::RegisterRenderComponent(RenderComponent* _RC, RenderComponentCreateInfo* _RCCI)
-{
-	for(auto& manager : renderableTypeManagers)
-	{
-		if(manager->GetRenderableTypeName() == _RC->GetRenderableType())
-		{
-			manager->RegisterComponent(this, _RC);
-		}
-	}
 }
 
 void Renderer::UpdateRenderables()
 {
-	//for (auto& e : ComponentToInstructionsMap)
-	//{
-	//	auto ri = e.second->GetRenderableInstructions();
-	//
-	//	BindTypeResourcesInfo btpi{ this };
-	//	ri->BindTypeResources(btpi);
-	//}
-
-	uint32 i = 0;
-
-	for (auto& e : ComponentToInstructionsMap)
-	{
-		BEM::Translate(perInstanceTransform[i], e.second->GetOwner()->GetPosition());
-		perInstanceTransform[i] = perViewData[0].ViewProjectionMatrix * perInstanceTransform[i];
-
-		++i;
-	}
-
-	//UL->UpdateBindingSet()
 }
 
 void Renderer::RenderRenderables()
 {
-	//BindPipeline(Pipelines.begin()->second);
-
-	uint32 i = 0;
-
-	for (auto& e : ComponentToInstructionsMap)
-	{
-		++i;
-	}
 }

@@ -23,7 +23,7 @@ public:
 		PRESSED, RELEASED
 	};
 protected:
-	Delegate<void()> onCloseDelegate;
+	Delegate<void(void)> onCloseDelegate;
 	Delegate<void(const Extent2D&)> onResizeDelegate;
 	Delegate<void(MouseButton, MouseButtonState)> onMouseButtonClick;
 	Delegate<void(Vector2)> onMouseMove;

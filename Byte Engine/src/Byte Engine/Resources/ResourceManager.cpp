@@ -11,15 +11,19 @@ ResourceReference ResourceManager::TryGetResource(const FString& name, const Id6
 
 	BE_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
 
-	SubResourceManager::LoadResourceInfo load_resource_info;
+	SubResourceManager::LoadResourceInfo load_resource_info{};
 	load_resource_info.ResourceName = Id64(name);
-	load_resource_info.ResourcePath = System::GetRunningPath() + "resources/" + name + "." + resource_manager->second->GetResourceExtension();
+	load_resource_info.ResourcePath += System::GetRunningPath();
+	load_resource_info.ResourcePath += "resources/";
+	load_resource_info.ResourcePath += name;
+	load_resource_info.ResourcePath += '.';
+	load_resource_info.ResourcePath += resource_manager->second->GetResourceExtension();
 
 	SubResourceManager::OnResourceLoadInfo on_resource_load_info;
 	
 	resource_manager->second->LoadResource(load_resource_info, on_resource_load_info);
 
-	return ResourceReference(type, Id64(name), on_resource_load_info.ResourceData);
+	return ResourceReference(type, Id64(name));
 }
 
 ResourceData* ResourceManager::GetResource(const ResourceReference& resourceReference)
@@ -41,7 +45,9 @@ void ResourceManager::ReleaseResource(const Id64& resourceType, const Id64& reso
 
 void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_)
 {
-	auto full_path = System::GetRunningPath() + "resources/" + fileName;
+	auto full_path = System::GetRunningPath();
+	full_path += "resources/";
+	full_path += _ResourceName;
 
 	std::ofstream Outfile(full_path.c_str(), std::ios::out | std::ios::binary);
 
@@ -55,25 +61,4 @@ void ResourceManager::SaveFile(const FString& _ResourceName, FString& fileName, 
 	OutStream out_archive(&Outfile);
 
 	Outfile.close();
-}
-
-void ResourceManager::LoadResource(const FString& _ResourceName, Resource* _Resource)
-{
-	const auto FullPath = System::GetRunningPath() + "resources/" + _ResourceName + "." + _Resource->
-		getResourceTypeExtension();
-	LoadResourceData load_resource_data;
-	load_resource_data.Caller = this;
-	load_resource_data.FullPath = FullPath;
-	const auto Result = _Resource->loadResource(load_resource_data);
-
-	if (Result)
-	{
-		BE_LOG_SUCCESS("Loaded resource %s succesfully!", FullPath.c_str())
-	}
-	else
-	{
-		BE_LOG_WARNING("Failed to load %s resource of type %s! Loading fallback resource.", _ResourceName.c_str(),
-		               _Resource->getResourceTypeExtension())
-		_Resource->loadFallbackResource(FullPath);
-	}
 }

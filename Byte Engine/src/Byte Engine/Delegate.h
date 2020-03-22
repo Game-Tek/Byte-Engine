@@ -1,5 +1,5 @@
 #pragma once
-#include "Core.h"
+
 /*
 
 	Copyright (C) 2017 by Sergey A Kryukov: derived work
@@ -55,8 +55,8 @@ protected:
 	};
 };
 
-template <typename T>
-class Delegate;
+//template <typename T>
+//class Delegate;
 
 template <typename RET, typename... PARAMS>
 class Delegate<RET(PARAMS ...)> final : DelegateBase<RET(PARAMS ...)>

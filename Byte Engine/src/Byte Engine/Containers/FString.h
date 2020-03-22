@@ -54,6 +54,7 @@ public:
 
 	FString& operator=(const char* cstring);
 	FString& operator=(const FString& string) = default;
+	FString& operator+=(char c);	
 	FString& operator+=(const char* cstring);
 	FString& operator+=(const FString& string);
 

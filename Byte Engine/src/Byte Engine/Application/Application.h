@@ -38,6 +38,8 @@ namespace BE
 		explicit Application(const ApplicationCreateInfo& ACI);
 		virtual ~Application();
 
+		virtual void OnUpdate() = 0;
+		
 		int Run(int argc, char** argv);
 
 		[[nodiscard]] const char* GetName() const override { return "Application"; }

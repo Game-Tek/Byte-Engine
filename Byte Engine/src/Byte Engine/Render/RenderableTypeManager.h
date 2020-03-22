@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core.h"
+
 #include "Object.h"
 
 class Renderer;

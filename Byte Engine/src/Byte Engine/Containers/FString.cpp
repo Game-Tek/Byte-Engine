@@ -30,6 +30,13 @@ FString& FString::operator=(const char* cstring)
 	return *this;
 }
 
+FString& FString::operator+=(char c)
+{
+	data.pop_back();
+	data.push_back(c);
+	data.push_back('\0');
+}
+
 FString& FString::operator+=(const char* cstring)
 {
 	data.pop_back();

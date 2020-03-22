@@ -84,6 +84,6 @@ namespace RAPI
 		[[nodiscard]] const Array<bool, MAX_KEYBOARD_KEYS>& GetKeyboardKeys() const { return Keys; }
 
 		INLINE bool GetShouldClose() const { return ShouldClose; }
-		INLINE float GetAspectRatio() const { return SCAST(float, Extent.Width) / SCAST(float, Extent.Height); }
+		INLINE float GetAspectRatio() const { return static_cast<float>(Extent.Width) / static_cast<float>(Extent.Height); }
 	};
 }

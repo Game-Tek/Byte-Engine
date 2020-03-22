@@ -82,18 +82,6 @@ public:
 	INLINE void Read(uint64* _In) const { readInternal(sizeof(uint64), _In); }
 
 	/**
-	* \brief Writes an int64 to memory from disk.
-	* \param _In Pointer to an int64 the data will be read to.
-	*/
-	INLINE void Read(int64* _In) const { readInternal(sizeof(int64), _In); }
-
-	/**
-	* \brief Writes an uint64 to memory from disk.
-	* \param _In Pointer to an uint64 the data will be read to.
-	*/
-	INLINE void Read(uint64* _In) const { readInternal(sizeof(uint64), _In); }
-
-	/**
 	* \brief Writes the data starting at _In up to _Size bytes from disk to memory.
 	* \param _Size Bytes to be read from disk.
 	* \param _Data Pointer to data to be read from disk to memory.
@@ -184,18 +172,6 @@ public:
 	* \param _In uint32 to be written to disk.
 	*/
 	INLINE void Write(uint32 _In) const { writeInternal(sizeof(uint32), &_In); }
-
-	/**
-	* \brief Writes an int64 to disk.
-	* \param _In int64 to be written to disk.
-	*/
-	INLINE void Write(int64 _In) const { writeInternal(sizeof(int64), &_In); }
-
-	/**
-	* \brief Writes an uint64 to disk.
-	* \param _In uint64 to be written to disk.
-	*/
-	INLINE void Write(uint64 _In) const { writeInternal(sizeof(uint64), &_In); }
 
 	/**
 	* \brief Writes an int64 to disk.

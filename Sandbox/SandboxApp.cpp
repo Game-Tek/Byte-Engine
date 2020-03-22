@@ -1,12 +1,10 @@
-#include <Game Studio/Utility/FlipFlop.h>
-#include "Game Studio/Game/World.h"
-#include "TestObject.h"
-#include "Game Studio/Debug/Timer.h"
+#include "Byte Engine/Application/Application.h"
+#include "Byte Engine/Game/World.h"
 
-class Sandbox final : public GS::Application
+class Sandbox final : public BE::Application
 {
 public:
-	Sandbox() : Application(GS::ApplicationCreateInfo{"Sandbox"})
+	Sandbox() : Application(BE::ApplicationCreateInfo{"Sandbox"})
 	{
 		//MaterialResource::MaterialData material_data;
 		//
@@ -85,7 +83,7 @@ public:
 		ActiveWorld = MyWorld;
 
 		
- 		MyObject = MyWorld->CreateWorldObject<TestObject>();
+ 		//MyObject = MyWorld->CreateWorldObject<TestObject>();
 	}
 
 	void OnUpdate() override
@@ -103,11 +101,9 @@ public:
 	const char* GetApplicationName() override { return "Sandbox"; }
 
 	World* MyWorld = nullptr;
-	TestObject* MyObject = nullptr;
-	FlipFlop Flip;
 };
 
-GS::Application	* GS::CreateApplication()
+BE::Application	* BE::CreateApplication()
 {
 	return new Sandbox();
 }

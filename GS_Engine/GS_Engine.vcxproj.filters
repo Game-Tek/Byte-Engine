@@ -66,279 +66,279 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\Vertex.h">
-      <Filter>Engine\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Object.h">
-      <Filter>Game Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Game Studio\GL.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
     <ClInclude Include="src\Game Studio\Texture.h">
       <Filter>Engine\Render\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\GameStudio.h" />
-    <ClInclude Include="src\Game Studio\Core.h">
-      <Filter>Engine</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Camera.h" />
-    <ClInclude Include="src\Game Studio\Light.h" />
-    <ClInclude Include="src\Game Studio\PointLight.h" />
-    <ClInclude Include="src\Game Studio\Math\GSM.hpp">
-      <Filter>Misc\Math</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Matrix4.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Vector2.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Vector3.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Vector4.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Transform2.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Transform3.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Quaternion.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Application\Application.h">
+    <ClInclude Include="src\Byte Engine\Animation\Skeletal Mesh.h" />
+    <ClInclude Include="src\Byte Engine\Application\Input\JoystickState.h" />
+    <ClInclude Include="src\Byte Engine\Application\Input\MouseState.h" />
+    <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
+    <ClInclude Include="src\Byte Engine\Application\Application.h">
       <Filter>Engine\Application</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Application\EntryPoint.h">
+    <ClInclude Include="src\Byte Engine\Application\Clock.h">
+      <Filter>Engine\Clock</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
+    <ClInclude Include="src\Byte Engine\Application\Console.h" />
+    <ClInclude Include="src\Byte Engine\Application\EntryPoint.h">
       <Filter>Engine\Application</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Containers\FVector.hpp">
+    <ClInclude Include="src\Byte Engine\Application\InputManager.h">
+      <Filter>Engine\InputManager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Containers\Array.hpp" />
+    <ClInclude Include="src\Byte Engine\Containers\DArray.hpp" />
+    <ClInclude Include="src\Byte Engine\Containers\FlatHashMap.h" />
+    <ClInclude Include="src\Byte Engine\Containers\FString.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Containers\FVector.hpp">
       <Filter>Misc\Array</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Containers\Array.hpp" />
-    <ClInclude Include="src\Game Studio\Containers\Octree.h" />
-    <ClInclude Include="src\Game Studio\Containers\SinglyLinkedList.hpp" />
-    <ClInclude Include="src\Game Studio\Containers\FString.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\Vulkan.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBase.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderContext.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderCore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderPass.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Window.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Texture.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.h" />
-    <ClInclude Include="src\Game Studio\ScreenQuad.h" />
-    <ClInclude Include="src\Game Studio\Containers\DArray.hpp" />
-    <ClInclude Include="src\Game Studio\Application\InputManager.h">
-      <Filter>Engine\InputManager</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Resources\Resource.h" />
-    <ClInclude Include="src\Game Studio\Application\Input\JoystickState.h" />
-    <ClInclude Include="src\Game Studio\Application\Input\MouseState.h" />
-    <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
-    <ClInclude Include="src\Game Studio\RAPI\GraphicsPipeline.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\UniformBuffer.h" />
-    <ClInclude Include="src\Game Studio\Debug\Timer.h" />
-    <ClInclude Include="src\Game Studio\Application\Clock.h">
-      <Filter>Engine\Clock</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Debug\Logger.h">
+    <ClInclude Include="src\Byte Engine\Containers\Id.h" />
+    <ClInclude Include="src\Byte Engine\Containers\KVector.h" />
+    <ClInclude Include="src\Byte Engine\Containers\Octree.h" />
+    <ClInclude Include="src\Byte Engine\Containers\Pair.h" />
+    <ClInclude Include="src\Byte Engine\Containers\Ranger.h" />
+    <ClInclude Include="src\Byte Engine\Containers\SHashMap.h" />
+    <ClInclude Include="src\Byte Engine\Containers\SinglyLinkedList.hpp" />
+    <ClInclude Include="src\Byte Engine\Containers\TimePoint.h" />
+    <ClInclude Include="src\Byte Engine\Core\Network\NetConnection.h" />
+    <ClInclude Include="src\Byte Engine\Core\Network\NetSocket.h" />
+    <ClInclude Include="src\Byte Engine\Core\Network\NetworkCore.h" />
+    <ClInclude Include="src\Byte Engine\Core\Platform\Windows\WindowsApplication.h" />
+    <ClInclude Include="src\Byte Engine\Core\Platform\Windows\WindowsWindow.h" />
+    <ClInclude Include="src\Byte Engine\Core\Allocator.h" />
+    <ClInclude Include="src\Byte Engine\Core\Application.h" />
+    <ClInclude Include="src\Byte Engine\Core\BlockingQueue.h" />
+    <ClInclude Include="src\Byte Engine\Core\Mutex.h" />
+    <ClInclude Include="src\Byte Engine\Core\Semaphore.h" />
+    <ClInclude Include="src\Byte Engine\Core\Signal.h" />
+    <ClInclude Include="src\Byte Engine\Core\System.h" />
+    <ClInclude Include="src\Byte Engine\Core\Thread.h" />
+    <ClInclude Include="src\Byte Engine\Core\ThreadPool.h" />
+    <ClInclude Include="src\Byte Engine\Core\Window.h" />
+    <ClInclude Include="src\Byte Engine\Debug\Logger.h">
       <Filter>Engine\Log</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Math\Line.h">
-      <Filter>Misc\Math\Math Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\FlipFlop.h" />
-    <ClInclude Include="src\Game Studio\Game\WorldObject.h">
+    <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
+    <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
+    <ClInclude Include="src\Byte Engine\Game\SubWorlds.h" />
+    <ClInclude Include="src\Byte Engine\Game\Texture.h" />
+    <ClInclude Include="src\Byte Engine\Game\TypeManager.h" />
+    <ClInclude Include="src\Byte Engine\Game\World.h" />
+    <ClInclude Include="src\Byte Engine\Game\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\RGB.h">
-      <Filter>Misc</Filter>
+    <ClInclude Include="src\Byte Engine\Math\SIMD\float4.h" />
+    <ClInclude Include="src\Byte Engine\Math\AxisAngle.h" />
+    <ClInclude Include="src\Byte Engine\Math\BEM.hpp">
+      <Filter>Misc\Math</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\RGBA.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\TextureCoordinates.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Utility\Shapes\Cone.h" />
-    <ClInclude Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.h" />
-    <ClInclude Include="src\Game Studio\Utility\Extent.h" />
-    <ClInclude Include="src\Game Studio\Game\World.h" />
-    <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
-    <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Math\Plane.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderDevice.h" />
-    <ClInclude Include="src\Game Studio\Render\Material.h" />
-    <ClInclude Include="src\Game Studio\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
-    <ClInclude Include="src\Game Studio\Render\MaterialInfo.h" />
-    <ClInclude Include="src\Game Studio\Math\SIMD\float4.h" />
-    <ClInclude Include="src\Game Studio\Containers\Pair.h" />
-    <ClInclude Include="src\Game Studio\Resources\Stream.h" />
-    <ClInclude Include="src\Game Studio\Math\Frustum.h" />
-    <ClInclude Include="src\Game Studio\Math\Rotator.h">
+    <ClInclude Include="src\Byte Engine\Math\Frustum.h" />
+    <ClInclude Include="src\Byte Engine\Math\Line.h">
       <Filter>Misc\Math\Math Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Dispatcher.h" />
-    <ClInclude Include="src\Game Studio\SAPI\AudioDevice.h" />
-    <ClInclude Include="src\Game Studio\Sound\ReverbVolume.h" />
-    <ClInclude Include="src\Game Studio\Utility\Shapes\Box.h" />
-    <ClInclude Include="src\Game Studio\Sound\SoundListener.h" />
-    <ClInclude Include="src\Game Studio\SAPI\AudioCore.h" />
-    <ClInclude Include="src\Game Studio\Sound\SoundPlayer.h" />
-    <ClInclude Include="src\Game Studio\Sound\SoundManager.h" />
-    <ClInclude Include="src\Game Studio\Sound\SoundMixer.h" />
-    <ClInclude Include="src\Game Studio\Physics\PhysicsWorld.h" />
-    <ClInclude Include="src\Game Studio\Physics\RigidBody.h" />
-    <ClInclude Include="src\Game Studio\Physics\HitResult.h" />
-    <ClInclude Include="src\Game Studio\Physics\ForceGenerator.h" />
-    <ClInclude Include="src\Game Studio\Physics\Queries.h" />
-    <ClInclude Include="src\Game Studio\Physics\ForceGenerators.h" />
-    <ClInclude Include="src\Game Studio\Utility\Shapes\SphereWithFallof.h" />
-    <ClInclude Include="src\Game Studio\Utility\Shapes\BoxWithFalloff.h" />
-    <ClInclude Include="src\Game Studio\Core\Thread.h" />
-    <ClInclude Include="src\Game Studio\Core\Allocator.h" />
-    <ClInclude Include="src\Game Studio\Containers\SHashMap.h" />
-    <ClInclude Include="src\Game Studio\Game\Texture.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.h" />
-    <ClInclude Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.h" />
-    <ClInclude Include="src\Game Studio\Core\Network\NetSocket.h" />
-    <ClInclude Include="src\Game Studio\Core\Network\NetworkCore.h" />
-    <ClInclude Include="src\Game Studio\Core\Network\NetConnection.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderMesh.h" />
-    <ClInclude Include="src\Game Studio\Render\Renderer.h" />
-    <ClInclude Include="src\Game Studio\Utility\Delegate.h" />
-    <ClInclude Include="src\Game Studio\Delegate.h" />
-    <ClInclude Include="src\Game Studio\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\Game Studio\PlayableAsset.h" />
-    <ClInclude Include="src\Game Studio\Core\System.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Bindings.h" />
-    <ClInclude Include="src\Game Studio\Resources\AudioResource.h" />
-    <ClInclude Include="src\Game Studio\Resources\SubResourceManager.h" />
-    <ClInclude Include="src\Game Studio\RAPI\CommandBuffer.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderableTypeManager.h" />
-    <ClInclude Include="src\Game Studio\Render\StaticMeshRenderableManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\AudioResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Render\BindingsSetDescriptor.h" />
-    <ClInclude Include="src\Game Studio\Containers\Ranger.h" />
-    <ClInclude Include="src\Game Studio\Render\BindingsGroup.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderGroup.h" />
-    <ClInclude Include="src\Game Studio\Render\RenderingCore.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.h" />
-    <ClInclude Include="src\Game Studio\RAPI\RenderTarget.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.h" />
-    <ClInclude Include="src\Game Studio\Containers\FlatHashMap.h" />
-    <ClInclude Include="src\Game Studio\Containers\KVector.h" />
-    <ClInclude Include="src\Game Studio\Core\Mutex.h" />
-    <ClInclude Include="src\Game Studio\Core\Semaphore.h" />
-    <ClInclude Include="src\Game Studio\Core\BlockingQueue.h" />
-    <ClInclude Include="src\Game Studio\Core\ThreadPool.h" />
-    <ClInclude Include="src\Game Studio\Math\AxisAngle.h" />
-    <ClInclude Include="src\Game Studio\Core\Signal.h" />
-    <ClInclude Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.h" />
-    <ClInclude Include="src\Game Studio\Resources\ResourceReference.h" />
-    <ClInclude Include="src\Game Studio\Resources\MaterialResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\ResourceData.h" />
-    <ClInclude Include="src\Game Studio\Resources\TextureResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Resources\StaticMeshResourceManager.h" />
-    <ClInclude Include="src\Game Studio\Game\TypeManager.h" />
-    <ClInclude Include="src\Game Studio\Containers\Id.h" />
-    <ClInclude Include="src\Game Studio\Containers\TimePoint.h" />
-    <ClInclude Include="src\Game Studio\Application\CommandMap.h" />
-    <ClInclude Include="src\Game Studio\Application\Console.h" />
-    <ClInclude Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.h" />
-    <ClInclude Include="src\Game Studio\Core\Window.h" />
-    <ClInclude Include="src\Game Studio\Core\Platform\Windows\WindowsWindow.h" />
-    <ClInclude Include="src\Game Studio\Core\Application.h" />
-    <ClInclude Include="src\Game Studio\Core\Platform\Windows\WindowsApplication.h" />
+    <ClInclude Include="src\Byte Engine\Math\Matrix4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Plane.h" />
+    <ClInclude Include="src\Byte Engine\Math\Quaternion.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Rotator.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Transform2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Transform3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Vector2.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Vector3.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Math\Vector4.h">
+      <Filter>Misc\Math\Math Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Physics\ForceGenerator.h" />
+    <ClInclude Include="src\Byte Engine\Physics\ForceGenerators.h" />
+    <ClInclude Include="src\Byte Engine\Physics\HitResult.h" />
+    <ClInclude Include="src\Byte Engine\Physics\PhysicsWorld.h" />
+    <ClInclude Include="src\Byte Engine\Physics\Queries.h" />
+    <ClInclude Include="src\Byte Engine\Physics\RigidBody.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Platform\Windows\WindowsWindow.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\Vulkan.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanBase.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanBindings.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanCommandBuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanFramebuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanPipelines.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderContext.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderDevice.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderMesh.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderPass.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderTarget.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanSwapchainImage.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanTexture.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanUniformBuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Bindings.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\CommandBuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\ComputePipeline.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Framebuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\GraphicsPipeline.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderContext.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderCore.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderDevice.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderMesh.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderPass.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\RenderTarget.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Texture.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\UniformBuffer.h" />
+    <ClInclude Include="src\Byte Engine\RAPI\Window.h" />
+    <ClInclude Include="src\Byte Engine\Render\BindingsGroup.h" />
+    <ClInclude Include="src\Byte Engine\Render\BindingsSetDescriptor.h" />
+    <ClInclude Include="src\Byte Engine\Render\Material.h" />
+    <ClInclude Include="src\Byte Engine\Render\MaterialInfo.h" />
+    <ClInclude Include="src\Byte Engine\Render\RenderableTypeManager.h" />
+    <ClInclude Include="src\Byte Engine\Render\RenderComponent.h" />
+    <ClInclude Include="src\Byte Engine\Render\Renderer.h" />
+    <ClInclude Include="src\Byte Engine\Render\RenderGroup.h" />
+    <ClInclude Include="src\Byte Engine\Render\RenderingCore.h" />
+    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderableManager.h" />
+    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderComponent.h" />
+    <ClInclude Include="src\Byte Engine\Resources\AudioResource.h" />
+    <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Resources\Resource.h" />
+    <ClInclude Include="src\Byte Engine\Resources\ResourceData.h" />
+    <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Resources\ResourceReference.h" />
+    <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Resources\Stream.h" />
+    <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.h" />
+    <ClInclude Include="src\Byte Engine\SAPI\AudioCore.h" />
+    <ClInclude Include="src\Byte Engine\SAPI\AudioDevice.h" />
+    <ClInclude Include="src\Byte Engine\Sound\ReverbVolume.h" />
+    <ClInclude Include="src\Byte Engine\Sound\SoundListener.h" />
+    <ClInclude Include="src\Byte Engine\Sound\SoundManager.h" />
+    <ClInclude Include="src\Byte Engine\Sound\SoundMixer.h" />
+    <ClInclude Include="src\Byte Engine\Sound\SoundPlayer.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Shapes\Box.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Shapes\BoxWithFalloff.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Shapes\Cone.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Shapes\SphereWithFallof.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Delegate.h" />
+    <ClInclude Include="src\Byte Engine\Utility\Extent.h" />
+    <ClInclude Include="src\Byte Engine\Utility\FlipFlop.h" />
+    <ClInclude Include="src\Byte Engine\Utility\RGB.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Utility\RGBA.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Utility\TextureCoordinates.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Camera.h" />
+    <ClInclude Include="src\Byte Engine\Core.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\Delegate.h" />
+    <ClInclude Include="src\Byte Engine\Dispatcher.h" />
+    <ClInclude Include="src\Byte Engine\Light.h" />
+    <ClInclude Include="src\Byte Engine\Object.h">
+      <Filter>Game Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Byte Engine\PlayableAsset.h" />
+    <ClInclude Include="src\Byte Engine\PointLight.h" />
+    <ClInclude Include="src\Byte Engine\ScreenQuad.h" />
+    <ClInclude Include="src\Byte Engine\Vertex.h">
+      <Filter>Engine\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Game Studio\Camera.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\Game Studio\Light.cpp" />
-    <ClCompile Include="src\Game Studio\PointLight.cpp" />
-    <ClCompile Include="src\Game Studio\Application\Application.cpp">
+    <ClCompile Include="src\Byte Engine\Application\Input\InputEnums.h" />
+    <ClCompile Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\Application.cpp">
       <Filter>Engine\Application</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanPipelines.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderContext.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderPass.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Window.cpp" />
-    <ClCompile Include="src\Game Studio\Containers\FString.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
-    <ClCompile Include="src\Game Studio\Application\InputManager.cpp">
-      <Filter>Engine\InputManager</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Game Studio\Application\Input\InputEnums.h" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
-    <ClCompile Include="src\Game Studio\Debug\Timer.cpp" />
-    <ClCompile Include="src\Game Studio\Application\Clock.cpp">
+    <ClCompile Include="src\Byte Engine\Application\Clock.cpp">
       <Filter>Engine\Clock</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Debug\Logger.cpp">
+    <ClCompile Include="src\Byte Engine\Application\InputManager.cpp">
+      <Filter>Engine\InputManager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Byte Engine\Containers\FString.cpp" />
+    <ClCompile Include="src\Byte Engine\Containers\Id.cpp" />
+    <ClCompile Include="src\Byte Engine\Core\Network\NetSocket.cpp" />
+    <ClCompile Include="src\Byte Engine\Core\Platform\Windows\WindowsApplication.cpp" />
+    <ClCompile Include="src\Byte Engine\Core\Platform\Windows\WindowsWindow.cpp" />
+    <ClCompile Include="src\Byte Engine\Core\System.cpp" />
+    <ClCompile Include="src\Byte Engine\Debug\Logger.cpp">
       <Filter>Engine\Log</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />
-    <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
-    <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\Game Studio\Game\World.cpp" />
-    <ClCompile Include="src\Game Studio\Math\Plane.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\RenderDevice.cpp">
+    <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
+    <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
+    <ClCompile Include="src\Byte Engine\Game\World.cpp" />
+    <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\AxisAngle.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\BEM.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\Matrix4.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\Plane.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\Quaternion.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\Rotator.cpp" />
+    <ClCompile Include="src\Byte Engine\Math\Vector3.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Platform\Windows\WindowsWindow.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanBindings.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanFramebuffer.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanPipelines.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderContext.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderDevice.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderMesh.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderPass.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderTarget.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanTexture.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\RenderDevice.cpp">
       <Filter>Engine\Render\Renderer</Filter>
     </ClCompile>
-    <ClCompile Include="src\Game Studio\Render\StaticMeshRenderComponent.cpp" />
-    <ClCompile Include="src\Game Studio\Game\StaticMesh.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\ResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Math\GSM.cpp" />
-    <ClCompile Include="src\Game Studio\Math\Matrix4.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Material.cpp" />
-    <ClCompile Include="src\Game Studio\Math\Quaternion.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\Stream.cpp" />
-    <ClCompile Include="src\Game Studio\SAPI\AudioDevice.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanTexture.cpp" />
-    <ClCompile Include="src\Game Studio\SAPI\Windows\WindowsAudioDevice.cpp" />
-    <ClCompile Include="src\Game Studio\Core\Network\NetSocket.cpp" />
-    <ClCompile Include="src\Game Studio\Render\Renderer.cpp" />
-    <ClCompile Include="src\Game Studio\Math\Vector3.cpp" />
-    <ClCompile Include="src\Game Studio\Math\Rotator.cpp" />
-    <ClCompile Include="src\Game Studio\Core\System.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanBindings.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderDevice.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\AudioResource.cpp" />
-    <ClCompile Include="src\Game Studio\SAPI\AudioCore.cpp" />
-    <ClCompile Include="src\Game Studio\Render\StaticMeshRenderableManager.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\AudioResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Sound\SoundManager.cpp" />
-    <ClCompile Include="src\Game Studio\Render\BindingsGroup.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderTarget.cpp" />
-    <ClCompile Include="src\Game Studio\Math\AxisAngle.cpp" />
-    <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanRenderMesh.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\MaterialResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Resources\StaticMeshResourceManager.cpp" />
-    <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
-    <ClCompile Include="src\Game Studio\Application\Platform\Windows\WindowsConsole.cpp" />
-    <ClCompile Include="src\Game Studio\Core\Platform\Windows\WindowsWindow.cpp" />
-    <ClCompile Include="src\Game Studio\Core\Platform\Windows\WindowsApplication.cpp" />
+    <ClCompile Include="src\Byte Engine\RAPI\Window.cpp" />
+    <ClCompile Include="src\Byte Engine\Render\BindingsGroup.cpp" />
+    <ClCompile Include="src\Byte Engine\Render\Material.cpp" />
+    <ClCompile Include="src\Byte Engine\Render\Renderer.cpp" />
+    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderableManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderComponent.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\AudioResource.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\Stream.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.cpp" />
+    <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />
+    <ClCompile Include="src\Byte Engine\SAPI\AudioDevice.cpp" />
+    <ClCompile Include="src\Byte Engine\Sound\SoundManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Utility\Shapes\Cone.cpp" />
+    <ClCompile Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.cpp" />
+    <ClCompile Include="src\Byte Engine\Camera.cpp" />
+    <ClCompile Include="src\Byte Engine\Light.cpp" />
+    <ClCompile Include="src\Byte Engine\PointLight.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

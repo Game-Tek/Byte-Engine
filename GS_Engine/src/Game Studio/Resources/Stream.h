@@ -112,10 +112,10 @@ private:
 	/**
 	 * \brief Actual implementation of the reading from disk functionality.
 	 * Library code should be inside this function.
-	 * \param _Size Size of the data being read into memory.
-	 * \param _Data Pointer to the location the read data must be copied to.
+	 * \param size Size of the data being read into memory.
+	 * \param data Pointer to the location the read data must be copied to.
 	 */
-	void readInternal(size_t _Size, void* _Data) const;
+	void readInternal(size_t size, void* data) const;
 };
 
 /**
@@ -228,8 +228,8 @@ private:
 	/**
 	 * \brief Actual implementation of the writing to disk functionality.
 	 * Library code should be inside this function.
-	 * \param _Size Size of the data being written.
-	 * \param _Data Pointer to the data being copied.
+	 * \param size Size of the data being written.
+	 * \param data Pointer to the data being copied.
 	 */
-	void writeInternal(size_t _Size, void* _Data) const;
+	void writeInternal(size_t size, void* data) const;
 };

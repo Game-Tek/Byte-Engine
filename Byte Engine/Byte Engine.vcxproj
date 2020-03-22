@@ -12,7 +12,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
-    <ProjectGuid>{3086AB51-E516-40F6-A741-5BD94F6BA720}</ProjectGuid>
+    <ProjectGuid>{62643626-74F8-447C-8EA9-44518063920B}</ProjectGuid>
     <RootNamespace>GSEngine</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <ProjectName>Byte Engine</ProjectName>

@@ -102,11 +102,6 @@
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ProjectReference Include="..\GS_Engine\GS_Engine.vcxproj">
-      <Project>{3086ab51-e516-40f6-a741-5bd94f6ba720}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
     <ClCompile Include="SandboxApp.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

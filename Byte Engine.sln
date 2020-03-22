@@ -1,11 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.28010.2026
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.29905.134
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GS_Engine", "GS_Engine\GS_Engine.vcxproj", "{3086AB51-E516-40F6-A741-5BD94F6BA720}"
-EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Sandbox", "Sandbox\Sandbox.vcxproj", "{E632332E-1D2A-45D8-A04A-8777A7E5FA90}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Byte Engine", "Byte Engine\Byte Engine.vcxproj", "{62643626-74F8-447C-8EA9-44518063920B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -13,14 +13,14 @@ Global
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{3086AB51-E516-40F6-A741-5BD94F6BA720}.Debug|x64.ActiveCfg = Debug|x64
-		{3086AB51-E516-40F6-A741-5BD94F6BA720}.Debug|x64.Build.0 = Debug|x64
-		{3086AB51-E516-40F6-A741-5BD94F6BA720}.Release|x64.ActiveCfg = Debug|x64
-		{3086AB51-E516-40F6-A741-5BD94F6BA720}.Release|x64.Build.0 = Debug|x64
 		{E632332E-1D2A-45D8-A04A-8777A7E5FA90}.Debug|x64.ActiveCfg = Debug|x64
 		{E632332E-1D2A-45D8-A04A-8777A7E5FA90}.Debug|x64.Build.0 = Debug|x64
 		{E632332E-1D2A-45D8-A04A-8777A7E5FA90}.Release|x64.ActiveCfg = Debug|x64
 		{E632332E-1D2A-45D8-A04A-8777A7E5FA90}.Release|x64.Build.0 = Debug|x64
+		{62643626-74F8-447C-8EA9-44518063920B}.Debug|x64.ActiveCfg = Debug|x64
+		{62643626-74F8-447C-8EA9-44518063920B}.Debug|x64.Build.0 = Debug|x64
+		{62643626-74F8-447C-8EA9-44518063920B}.Release|x64.ActiveCfg = Release|x64
+		{62643626-74F8-447C-8EA9-44518063920B}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

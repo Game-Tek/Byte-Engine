@@ -32,7 +32,7 @@ namespace RAPI
 		FVector<RGBA> ClearValues;
 	};
 
-	class Framebuffer
+	class Framebuffer : public RAPIObject
 	{
 	protected:
 		Extent2D Extent;

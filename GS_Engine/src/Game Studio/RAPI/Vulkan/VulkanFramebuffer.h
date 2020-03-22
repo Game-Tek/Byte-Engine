@@ -16,6 +16,8 @@ public:
 	VulkanFramebuffer(class VulkanRenderDevice* vulkanRenderDevice, const FramebufferCreateInfo& framebufferCreateInfo);
 	~VulkanFramebuffer() = default;
 
-	VkFramebuffer GetVkFramebuffer() const { return framebuffer; }
+	void Destroy(RenderDevice* renderDevice) override;
+
+	[[nodiscard]] VkFramebuffer GetVkFramebuffer() const { return framebuffer; }
 	[[nodiscard]] const FVector<VkClearValue>& GetClearValues() const { return clearValues; }
 };

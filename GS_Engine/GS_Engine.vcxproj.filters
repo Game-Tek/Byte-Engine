@@ -164,7 +164,6 @@
     <ClInclude Include="src\Game Studio\Game\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Game Studio\Game\Actor.h" />
     <ClInclude Include="src\Game Studio\Utility\RGB.h">
       <Filter>Misc</Filter>
     </ClInclude>
@@ -179,7 +178,6 @@
     <ClInclude Include="src\Game Studio\Utility\Extent.h" />
     <ClInclude Include="src\Game Studio\Game\World.h" />
     <ClInclude Include="src\Game Studio\Game\SubWorlds.h" />
-    <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Resources\ResourceManager.h" />
     <ClInclude Include="src\Game Studio\Render\RenderComponent.h" />
     <ClInclude Include="src\Game Studio\Math\Plane.h" />
@@ -299,7 +297,6 @@
       <Filter>Engine\Log</Filter>
     </ClCompile>
     <ClCompile Include="src\Game Studio\Game\WorldObject.cpp" />
-    <ClCompile Include="src\Game Studio\Game\Actor.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Game\World.cpp" />

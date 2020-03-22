@@ -22,7 +22,10 @@ class ResourceReference
 	Id64 resourceName;
 	Id64 resourceType;
 
+	
 	ResourceReference(const Id64& type, const Id64& name) : resourceType(type), resourceName(name)
 	{}
 public:
+	ResourceReference() = default;
+	
 	[[nodiscard]] Id64 GetName() const { return resourceName; }};

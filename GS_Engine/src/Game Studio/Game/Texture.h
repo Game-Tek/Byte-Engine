@@ -2,16 +2,14 @@
 
 #include "Object.h"
 
-#include "Resources/TextureResource.h"
 #include "Application/Application.h"
 
 class Texture : public Object
 {
-	TextureResource* textureResource = nullptr;
+	ResourceReference textureResource;
 public:
 
-	explicit Texture(const FString& name) : textureResource(
-		GS::Application::Get()->GetResourceManager()->TryGetResource<TextureResource>(name))
+	explicit Texture(const FString& name) : textureResource(GS::Application::Get()->GetResourceManager()->TryGetResource(name, "Texture"))
 	{
 	}
 
@@ -19,8 +17,6 @@ public:
 	{
 		GS::Application::Get()->GetResourceManager()->ReleaseResource(textureResource);
 	}
-
-	const TextureResource* GetTextureResource() const { return textureResource; }
 	
 	[[nodiscard]] const char* GetName() const override { return "Texture"; }
 };

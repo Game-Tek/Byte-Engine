@@ -51,6 +51,7 @@ public:
 	TimePoint& operator+=(const TimePoint& other) { time += other.time; return *this; }
 	TimePoint operator-(const TimePoint& other) const { return time - other.time; }
 	TimePoint& operator-=(const TimePoint& other) { time -= other.time; return *this; }
+	TimePoint operator*(const float other) const { return time * other; }
 	bool operator>(const TimePoint& other) const { return time > other.time; }
 	bool operator<(const TimePoint& other) const { return time < other.time; }
 

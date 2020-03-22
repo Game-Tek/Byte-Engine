@@ -20,7 +20,7 @@ class Logger
 public:
 	static void PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...);
 	static void PrintBasicLog(LogLevel _Level, const char* Text, ...);
-	static void SetMinLogLevel(LogLevel _Level) { MinLogLevel = _Level; }
+	static void SetMinLogLevel(const LogLevel _Level) { MinLogLevel = _Level; }
 
 #ifdef GS_DEBUG
 

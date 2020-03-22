@@ -136,7 +136,6 @@
     <ClInclude Include="src\Game Studio\Debug\Timer.h" />
     <ClInclude Include="src\Game Studio\Delegate.h" />
     <ClInclude Include="src\Game Studio\Dispatcher.h" />
-    <ClInclude Include="src\Game Studio\Game\Component.h" />
     <ClInclude Include="src\Game Studio\Game\StaticMesh.h" />
     <ClInclude Include="src\Game Studio\Game\Texture.h" />
     <ClInclude Include="src\Game Studio\Game\TypeManager.h" />
@@ -196,7 +195,6 @@
     <ClInclude Include="src\Game Studio\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.h" />
-    <ClInclude Include="src\Game Studio\Game\Actor.h" />
     <ClInclude Include="src\Game Studio\Containers\Octree.h" />
     <ClInclude Include="src\Game Studio\RAPI\ComputePipeline.h" />
     <ClInclude Include="src\Game Studio\RAPI\Framebuffer.h" />
@@ -297,7 +295,6 @@
     <ClCompile Include="src\Game Studio\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Game Studio\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\Game Studio\Containers\Id.cpp" />
-    <ClCompile Include="src\Game Studio\Game\Actor.cpp" />
     <ClCompile Include="src\Game Studio\Application\Input\InputEnums.h" />
     <ClCompile Include="src\Game Studio\RAPI\Platform\Windows\WindowsWindow.cpp" />
     <ClCompile Include="src\Game Studio\RAPI\Vulkan\VulkanFramebuffer.cpp" />

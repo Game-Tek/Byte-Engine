@@ -5,10 +5,8 @@
 
 class FString;
 struct Model;
-class StaticMeshResource;
-class Material;
 
-class StaticMesh : public Object
+class StaticMesh final : public Object
 {
 	ResourceReference staticMeshResource;
 public:

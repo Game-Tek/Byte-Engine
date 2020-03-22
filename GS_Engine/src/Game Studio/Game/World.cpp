@@ -1,7 +1,6 @@
 #include "World.h"
 #include "Application/Application.h"
 
-
 World::World()
 {
 }
@@ -31,6 +30,6 @@ void World::Pause()
 	worldTimeMultiplier = 0;
 }
 
-double World::GetRealRunningTime() { return GS::Application::Get()->GetClock().GetElapsedTime(); }
+double World::GetRealRunningTime() { return GS::Application::Get()->GetClock().GetElapsedTime().Seconds<double>(); }
 
-float World::GetWorldDeltaTime() const { return static_cast<float>(GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier); }
+TimePoint World::GetWorldDeltaTime() const { return GS::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier; }

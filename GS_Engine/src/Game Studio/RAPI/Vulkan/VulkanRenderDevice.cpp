@@ -5,7 +5,6 @@
 #include "Vulkan/vulkan_win32.h"
 #endif // GS_PLATFORM_WIN
 
-
 #include "VulkanRenderDevice.h"
 
 #include "VulkanRenderContext.h"
@@ -15,11 +14,9 @@
 #include "VulkanRenderTarget.h"
 #include "VulkanUniformBuffer.h"
 #include "VulkanTexture.h"
-#include <RAPI\Vulkan\VulkanCommandBuffer.h>
+#include <RAPI/Vulkan/VulkanCommandBuffer.h>
 
-void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_format_,
-                           VkImageLayout from_image_layout_, VkImageLayout to_image_layout_,
-                           VkCommandBuffer* command_buffer_)
+void TransitionImageLayout(VkDevice* device_, VkImage* image_, VkFormat image_format_, VkImageLayout from_image_layout_, VkImageLayout to_image_layout_, VkCommandBuffer* command_buffer_)
 {
 	VkImageMemoryBarrier barrier = {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -100,18 +97,17 @@ uint32 VulkanRenderDevice::FindMemoryType(uint32 memoryType, uint32 memoryFlags)
 	GS_ASSERT(true, "Failed to find a suitable memory type!")
 }
 
-void VulkanRenderDevice::AllocateMemory(VkMemoryRequirements* memoryRequirements,
-                                        VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory)
+void VulkanRenderDevice::AllocateMemory(VkMemoryRequirements* memoryRequirements, VkMemoryPropertyFlagBits memoryPropertyFlag, VkDeviceMemory* deviceMemory) const
 {
-	VkMemoryAllocateInfo vk_memory_allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+	VkMemoryAllocateInfo vk_memory_allocate_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	vk_memory_allocate_info.allocationSize = memoryRequirements->size;
 	vk_memory_allocate_info.memoryTypeIndex = FindMemoryType(memoryRequirements->memoryTypeBits, memoryPropertyFlag);
 
-	VK_CHECK(vkAllocateMemory(device, &vk_memory_allocate_info, ALLOCATOR, deviceMemory), "Failed to allocate memory!");
+	VK_CHECK(vkAllocateMemory(device, &vk_memory_allocate_info, GetVkAllocationCallbacks(), deviceMemory));
 }
 
 #ifdef GS_DEBUG
-inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,	void* pUserData)
+inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(const VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
 {
 	switch (messageSeverity)
 	{

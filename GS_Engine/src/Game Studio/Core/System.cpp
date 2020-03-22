@@ -4,13 +4,6 @@
 #include <windows.h>
 #endif
 
-#define INCLDIF(x, y)
-#if x
-#include y
-#else
-#define INCLDIF(x, y)
-#endif
-
 FString System::GetRunningPath()
 {
 	char a[512];

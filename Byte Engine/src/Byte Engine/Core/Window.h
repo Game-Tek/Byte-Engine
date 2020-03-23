@@ -28,7 +28,7 @@ public:
 		TITLE_BAR = 0, 
 	};
 protected:
-	Delegate<void(void)> onCloseDelegate;
+	Delegate<void()> onCloseDelegate;
 	Delegate<void(const Extent2D&)> onResizeDelegate;
 	Delegate<void(MouseButton, MouseButtonState)> onMouseButtonClick;
 	Delegate<void(Vector2)> onMouseMove;
@@ -58,7 +58,7 @@ public:
 	virtual void GetFramebufferSize(Extent2D& extent) = 0;
 	virtual void GetExtent(Extent2D& extent) = 0;
 
-	static void GetAspectRatio(const Extent2D& extent, float& aspectRatio) { aspectRatio = extent.Width / extent.Height; }
+	static void GetAspectRatio(const Extent2D& extent, float& aspectRatio) { aspectRatio = static_cast<float>(extent.Width) / static_cast<float>(extent.Height); }
 	
 	void SetOnCloseDelegate(const decltype(onCloseDelegate)& delegate) { onCloseDelegate = delegate; }
 	void SetOnMouseMoveDelegate(const decltype(onMouseMove)& delegate) { onMouseMove = delegate; }

@@ -2,7 +2,7 @@
 #include "Containers/FString.h"
 #include "Utility/Extent.h"
 
-#include "Delegate.h"
+#include "Utility/Delegate.h"
 #include "Math/Vector2.h"
 
 class nWindow

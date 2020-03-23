@@ -47,7 +47,6 @@ namespace BE
 	{
 		BE_DEBUG_ONLY(if (ActiveWindow) BE_LOG_WARNING("An active window is already set!\nAlthough the recently input window will be regarded as the new active window make sure you are doing what you intend."))
 		ActiveWindow = _NewWindow;
-		InputManagerInstance.SetActiveWindow(ActiveWindow);
 	}
 
 	void Application::Close(const char* _Reason)

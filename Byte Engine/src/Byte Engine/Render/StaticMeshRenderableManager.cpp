@@ -19,4 +19,5 @@ void StaticMeshRenderableManager::DrawObjects(const DrawObjectsInfo& drawObjects
 
 uint32 StaticMeshRenderableManager::RegisterComponent(Renderer* renderer, RenderComponent* renderComponent)
 {
+	return 0;
 }

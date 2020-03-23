@@ -217,14 +217,14 @@ RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 
 	if (Meshes.find(_SM) == Meshes.end())
 	{
-		Model m = _SM->GetModel();
+		//Model m = _SM->GetModel();
 
 		RAPI::RenderMesh::RenderMeshCreateInfo MCI;
-		MCI.IndexCount = m.IndexCount;
-		MCI.VertexCount = m.VertexCount;
-		MCI.VertexData = m.VertexArray;
-		MCI.IndexData = m.IndexArray;
-		MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
+		//MCI.IndexCount = m.IndexCount;
+		//MCI.VertexCount = m.VertexCount;
+		//MCI.VertexData = m.VertexArray;
+		//MCI.IndexData = m.IndexArray;
+		//MCI.VertexLayout = StaticMeshResource::GetVertexDescriptor();
 		Meshes[_SM] = renderDevice->CreateRenderMesh(MCI);
 	}
 	else
@@ -240,23 +240,23 @@ GraphicsPipeline* Renderer::CreatePipelineFromMaterial(Material* _Mat) const
 {
 	GraphicsPipelineCreateInfo GPCI;
 
-	GPCI.VDescriptor = StaticMeshResource::GetVertexDescriptor();
-
-	FVector<ShaderInfo> si;
-	_Mat->GetRenderingCode(si);
-
-	for (auto& e : si)
-	{
-		GPCI.PipelineDescriptor.Stages.push_back(e);
-	}
-
-	GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
-	GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
-	GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
-	GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::LESS;
-
-	GPCI.RenderPass = RP;
-	GPCI.ActiveWindow = Win;
+	//GPCI.VDescriptor = StaticMeshResource::GetVertexDescriptor();
+	//
+	//FVector<ShaderInfo> si;
+	//_Mat->GetRenderingCode(si);
+	//
+	//for (auto& e : si)
+	//{
+	//	GPCI.PipelineDescriptor.Stages.push_back(e);
+	//}
+	//
+	//GPCI.PipelineDescriptor.BlendEnable = _Mat->GetHasTransparency();
+	//GPCI.PipelineDescriptor.ColorBlendOperation = BlendOperation::ADD;
+	//GPCI.PipelineDescriptor.CullMode = _Mat->GetIsTwoSided() ? CullMode::CULL_NONE : CullMode::CULL_BACK;
+	//GPCI.PipelineDescriptor.DepthCompareOperation = CompareOperation::LESS;
+	//
+	//GPCI.RenderPass = RP;
+	//GPCI.ActiveWindow = Win;
 
 	return renderDevice->CreateGraphicsPipeline(GPCI);
 }

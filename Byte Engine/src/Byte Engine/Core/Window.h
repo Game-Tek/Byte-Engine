@@ -18,9 +18,14 @@ public:
 		PRESSED, RELEASED
 	};
 
-	enum class KeyboardKeyState
+	enum class KeyboardKeyState : uint8
 	{
 		PRESSED, RELEASED
+	};
+
+	enum class WindowStyle
+	{
+		TITLE_BAR = 0, 
 	};
 protected:
 	Delegate<void(void)> onCloseDelegate;
@@ -40,6 +45,21 @@ public:
 	};
 	nWindow(const WindowCreateInfo& windowCreateInfo);
 
+	virtual void SetTitle(const char* title) = 0;
+	virtual void Notify() = 0;
+
+	struct WindowIconInfo
+	{
+		byte* Data = nullptr;
+		Extent2D Extent;
+	};
+	virtual void SetIcon(const WindowIconInfo& windowIconInfo) = 0;
+
+	virtual void GetFramebufferSize(Extent2D& extent) = 0;
+	virtual void GetExtent(Extent2D& extent) = 0;
+
+	static void GetAspectRatio(const Extent2D& extent, float& aspectRatio) { aspectRatio = extent.Width / extent.Height; }
+	
 	void SetOnCloseDelegate(const decltype(onCloseDelegate)& delegate) { onCloseDelegate = delegate; }
 	void SetOnMouseMoveDelegate(const decltype(onMouseMove)& delegate) { onMouseMove = delegate; }
 	void SetOnMouseWheelMoveDelegate(const decltype(onMouseWheelMove)& delegate) { onMouseWheelMove = delegate; }

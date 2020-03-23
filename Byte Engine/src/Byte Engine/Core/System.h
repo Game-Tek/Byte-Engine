@@ -6,6 +6,7 @@ struct RAMInfo
 {
 	size_t TotalPhysicalMemory = 0;
 	size_t FreePhysicalMemory = 0;
+	size_t ProcessAvailableMemory = 0;
 };
 
 struct VectorInfo

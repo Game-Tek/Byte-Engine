@@ -8,6 +8,7 @@ FString System::GetRunningPath()
 {
 	char a[512];
 	GetModuleFileNameA(NULL, a, 512);
+	//BE_ASSERT(GetModuleFileNameA(NULL, a, 512), "Failed to get Win32 module file name!")
 	FString result(a);
 	result.Drop(result.FindLast('\\') + 1);
 	result.ReplaceAll('\\', '/');
@@ -16,12 +17,15 @@ FString System::GetRunningPath()
 
 RAMInfo System::GetRAMInfo()
 {
-	LPMEMORYSTATUSEX memory_status{};
-	GlobalMemoryStatusEx(memory_status);
+	MEMORYSTATUSEX memory_status{};
+	GlobalMemoryStatusEx(&memory_status);
+
+	//BE_ASSERT(memory_status, "Failed to get Win32 memory status!");
 
 	RAMInfo ram_info;
-	ram_info.FreePhysicalMemory = memory_status->ullAvailPhys;
-	ram_info.TotalPhysicalMemory = memory_status->ullTotalPhys;
+	ram_info.FreePhysicalMemory = memory_status.ullAvailPhys;
+	ram_info.TotalPhysicalMemory = memory_status.ullTotalPhys;
+	ram_info.ProcessAvailableMemory = memory_status.ullAvailPageFile;
 	return ram_info;
 }
 
@@ -33,7 +37,7 @@ VectorInfo System::GetVectorInfo()
 	bool OS_AVX;
 	bool OS_AVX512;
 
-	VectorInfo vector_info = {};
+	VectorInfo vector_info{};
 
 	int info[4];
 	__cpuidex(info, 0, 0);

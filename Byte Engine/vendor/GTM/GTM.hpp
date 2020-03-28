@@ -13,7 +13,7 @@
 #include "Plane.h"
 #include "Rotator.h"
 
-class BEM
+class GTM
 {
 	// +  float
 	// += float
@@ -657,8 +657,7 @@ public:
 		Normalize(tangent0);
 		// Find another vector in the plane
 		Vector3 tangent1 = Normalized(Cross(normal, tangent0));
-		return Matrix4(tangent0.X, tangent0.Y, tangent0.Z, 0.0f, tangent1.X, tangent1.Y, tangent1.Z, 0.0f, normal.X,
-		               normal.Y, normal.Z, 0.0f, 0, 0, 0, 0);
+		return Matrix4(tangent0.X, tangent0.Y, tangent0.Z, 0.0f, tangent1.X, tangent1.Y, tangent1.Z, 0.0f, normal.X, normal.Y, normal.Z, 0.0f, 0, 0, 0, 0);
 	}
 
 	INLINE static void Rotate(Matrix4& A, const Quaternion& Q)
@@ -807,7 +806,7 @@ public:
 	static void BuildPerspectiveMatrix(Matrix4& matrix, float fov, float aspectRatio, float near, float far)
 	{
 		//Tangent of half the vertical view angle.
-		const auto f = 1 / BEM::Tangent(fov * 0.5f);
+		const auto f = 1 / GTM::Tangent(fov * 0.5f);
 
 		const auto far_m_near = far - near;
 
@@ -881,8 +880,7 @@ public:
 		return DotProduct(AC, AC) - E * E / f;
 	}
 
-	INLINE static Vector3 ClosestPointOnTriangleToPoint(const Vector3& _A, const Vector3& _P1, const Vector3& _P2,
-	                                                    const Vector3& _P3)
+	INLINE static Vector3 ClosestPointOnTriangleToPoint(const Vector3& _A, const Vector3& _P1, const Vector3& _P2, const Vector3& _P3)
 	{
 		// Check if P in vertex region outside A
 		const Vector3 AP = _A - _P1;
@@ -993,7 +991,7 @@ public:
 		return ClosestPoint;
 	}
 
-	INLINE static void SinCos(float* sp, float* cp, float degrees)
+	INLINE static void SinCos(float* sp, float* cp, const float degrees)
 	{
 		*sp = Sine(degrees);
 		*cp = Cosine(degrees);

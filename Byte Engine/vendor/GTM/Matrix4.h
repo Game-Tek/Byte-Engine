@@ -1,10 +1,8 @@
 #pragma once
 
-#pragma once
-
-#define MATRIX_SIZE 16
-
 #include "Core.h"
+
+constexpr uint8 MATRIX_SIZE = 16;
 
 #include "Vector4.h"
 #include "Vector3.h"
@@ -13,7 +11,7 @@
 
 /**
  * \brief Defines a 4x4 matrix with floating point precision.\n
- * Data is stored in row major order.
+ * vector is stored in row major order.
  * E.J:\n
  * 
  * Matrix:\n
@@ -33,7 +31,7 @@ public:
 	/**
 	 * \brief Default constructor. Sets all of the matrices' components as 0.
 	 */
-	Matrix4() : Array{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	Matrix4() : array{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 	{
 	}
 
@@ -49,7 +47,7 @@ public:
 	 * 
 	 * \param _A float to set each of the matrix identity elements value as.
 	 */
-	explicit Matrix4(const float _A) : Array{_A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A}
+	explicit Matrix4(const float _A) : array{_A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A, 0, 0, 0, 0, _A}
 	{
 	}
 
@@ -72,16 +70,16 @@ public:
 	 * \param _Row3_Column2 float to set the matrices' Row3_Column2	component as.
 	 * \param _Row3_Column3 float to set the matrices' Row3_Column3	component as.
 	 */
-	Matrix4(const float _Row0_Column0, const float _Row0_Column1, const float _Row0_Column2, const float _Row0_Column3,
-	        const float _Row1_Column0, const float _Row1_Column1, const float _Row1_Column2, const float _Row1_Column3,
-	        const float _Row2_Column0, const float _Row2_Column1, const float _Row2_Column2, const float _Row2_Column3,
-	        const float _Row3_Column0, const float _Row3_Column1, const float _Row3_Column2,
-	        const float _Row3_Column3) :
-		Array{
-			_Row0_Column0, _Row0_Column1, _Row0_Column2, _Row0_Column3,
-			_Row1_Column0, _Row1_Column1, _Row1_Column2, _Row1_Column3,
-			_Row2_Column0, _Row2_Column1, _Row2_Column2, _Row2_Column3,
-			_Row3_Column0, _Row3_Column1, _Row3_Column2, _Row3_Column3
+	Matrix4(const float row0_Column0, const float row0_Column1, const float row0_Column2, const float row0_Column3,
+	        const float row1_Column0, const float row1_Column1, const float row1_Column2, const float row1_Column3,
+	        const float row2_Column0, const float row2_Column1, const float row2_Column2, const float row2_Column3,
+	        const float row3_Column0, const float row3_Column1, const float row3_Column2,
+	        const float row3_Column3) :
+		array{
+			row0_Column0, row0_Column1, row0_Column2, row0_Column3,
+			row1_Column0, row1_Column1, row1_Column2, row1_Column3,
+			row2_Column0, row2_Column1, row2_Column2, row2_Column3,
+			row3_Column0, row3_Column1, row3_Column2, row3_Column3
 		}
 	{
 	}
@@ -101,15 +99,15 @@ public:
 	 */
 	void MakeIdentity()
 	{
-		for (auto& element : Array)
+		for (auto& element : array)
 		{
 			element = 0.0f;
 		}
 
-		Array[0] = 1.0f;
-		Array[5] = 1.0f;
-		Array[10] = 1.0f;
-		Array[15] = 1.0f;
+		array[0] = 1.0f;
+		array[5] = 1.0f;
+		array[10] = 1.0f;
+		array[15] = 1.0f;
 
 		return;
 	}
@@ -122,136 +120,136 @@ public:
 	 * \brief Returns a pointer to the matrices' data array.
 	 * \return const float* to the matrices' data.
 	 */
-	[[nodiscard]] const float* GetData() const { return Array; }
+	[[nodiscard]] const float* GetData() const { return array; }
 
 	void Transpose();
 
-	Matrix4 operator+(const float Other) const
+	Matrix4 operator+(const float other) const
 	{
 		Matrix4 Result;
 
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Result[i] += Other;
+			Result[i] += other;
 		}
 
 		return Result;
 	}
 
-	Matrix4 operator+(const Matrix4& Other) const
+	Matrix4 operator+(const Matrix4& other) const
 	{
 		Matrix4 Result;
 
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Result[i] += Other[i];
+			Result[i] += other[i];
 		}
 
 		return Result;
 	}
 
-	Matrix4& operator+=(const float Other)
+	Matrix4& operator+=(const float other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Array[i] += Other;
+			array[i] += other;
 		}
 
 		return *this;
 	}
 
-	Matrix4& operator+=(const Matrix4& Other)
+	Matrix4& operator+=(const Matrix4& other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Array[i] += Other[i];
+			array[i] += other[i];
 		}
 
 		return *this;
 	}
 
-	Matrix4 operator-(const float Other) const
+	Matrix4 operator-(const float other) const
 	{
 		Matrix4 Result;
 
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Result[i] -= Other;
+			Result[i] -= other;
 		}
 
 		return Result;
 	}
 
-	Matrix4 operator-(const Matrix4& Other) const
+	Matrix4 operator-(const Matrix4& other) const
 	{
 		Matrix4 Result;
 
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Result[i] -= Other[i];
+			Result[i] -= other[i];
 		}
 
 		return Result;
 	}
 
-	Matrix4& operator-=(const float Other)
+	Matrix4& operator-=(const float other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Array[i] -= Other;
+			array[i] -= other;
 		}
 
 		return *this;
 	}
 
-	Matrix4& operator-=(const Matrix4& Other)
+	Matrix4& operator-=(const Matrix4& other)
 	{
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Array[i] -= Other[i];
+			array[i] -= other[i];
 		}
 
 		return *this;
 	}
 
-	Matrix4 operator*(const float Other) const
+	Matrix4 operator*(const float other) const
 	{
 		Matrix4 Result;
 
 		for (uint8 i = 0; i < MATRIX_SIZE; i++)
 		{
-			Result[i] *= Other;
+			Result[i] *= other;
 		}
 
 		return Result;
 	}
 
-	Vector3 operator*(const Vector3& Other) const
+	Vector3 operator*(const Vector3& other) const
 	{
 		Vector3 Result;
 
-		Result.X = Array[0] * Other.X + Array[1] * Other.X + Array[2] * Other.X + Array[3] * Other.X;
-		Result.Y = Array[4] * Other.Y + Array[5] * Other.Y + Array[6] * Other.Y + Array[7] * Other.Y;
-		Result.Z = Array[8] * Other.Z + Array[9] * Other.Z + Array[10] * Other.Z + Array[11] * Other.Z;
+		Result.X = array[0] * other.X + array[1] * other.X + array[2] * other.X + array[3] * other.X;
+		Result.Y = array[4] * other.Y + array[5] * other.Y + array[6] * other.Y + array[7] * other.Y;
+		Result.Z = array[8] * other.Z + array[9] * other.Z + array[10] * other.Z + array[11] * other.Z;
 
 		return Result;
 	}
 
-	Vector4 operator*(const Vector4& Other) const;
+	Vector4 operator*(const Vector4& other) const;
 	//{
 	//	Vector4 Result;
 	//
-	//	Result.X = Array[0] * Other.X + Array[1] * Other.X + Array[2] * Other.X + Array[3] * Other.X;
-	//	Result.Y = Array[4] * Other.Y + Array[5] * Other.Y + Array[6] * Other.Y+ Array[7] * Other.Y;
-	//	Result.Z = Array[8] * Other.Z + Array[9] * Other.Z + Array[10] * Other.Z + Array[11] * Other.Z;
-	//	Result.W = Array[12] * Other.W + Array[13] * Other.W + Array[14] * Other.W + Array[15] * Other.W;
+	//	Result.X = Array[0] * other.X + Array[1] * other.X + Array[2] * other.X + Array[3] * other.X;
+	//	Result.Y = Array[4] * other.Y + Array[5] * other.Y + Array[6] * other.Y+ Array[7] * other.Y;
+	//	Result.Z = Array[8] * other.Z + Array[9] * other.Z + Array[10] * other.Z + Array[11] * other.Z;
+	//	Result.W = Array[12] * other.W + Array[13] * other.W + Array[14] * other.W + Array[15] * other.W;
 	//
 	//	return Result;
 	//}
 
-	Matrix4 operator*(const Matrix4& Other) const;
+	Matrix4 operator*(const Matrix4& other) const;
 
-	//Matrix4 operator* (const Matrix4& Other) const
+	//Matrix4 operator* (const Matrix4& other) const
 	//{
 	//	Matrix4 Result(1);
 	//
@@ -262,7 +260,7 @@ public:
 	//			Result[i + j] = 0;
 	//			for (int k = 0; k < 4; k++)
 	//			{
-	//				Result[i + j] += Array[i + k] * Other[k + j];
+	//				Result[i + j] += Array[i + k] * other[k + j];
 	//			}
 	//		}
 	//	}
@@ -270,17 +268,17 @@ public:
 	//	return Result;
 	//}
 
-	Matrix4& operator*=(const float Other);
+	Matrix4& operator*=(const float other);
 	//{
 	//	for (uint8 i = 0; i < MATRIX_SIZE; i++)
 	//	{
-	//		Array[i] *= Other;
+	//		Array[i] *= other;
 	//	}
 	//
 	//	return *this;
 	//}
 
-	Matrix4& operator*=(const Matrix4& Other);
+	Matrix4& operator*=(const Matrix4& other);
 	//{
 	//	for (uint8 y = 0; y < 4; y++)
 	//	{
@@ -290,7 +288,7 @@ public:
 	//
 	//			for (uint8 e = 0; e < 4; e++)
 	//			{
-	//				Sum += Array[e + y * 4] * Other[x + e * 4];
+	//				Sum += Array[e + y * 4] * other[x + e * 4];
 	//			}
 	//
 	//			Array[x + y * 4] = Sum;
@@ -300,12 +298,12 @@ public:
 	//	return *this;
 	//}
 
-	float& operator[](const uint8 Index) { return Array[Index]; }
-	float operator[](const uint8 Index) const { return Array[Index]; }
+	float& operator[](const uint8 index) { return array[index]; }
+	float operator[](const uint8 index) const { return array[index]; }
 
-	float operator()(const uint8 _Row, const uint8 _Column) const { return Array[_Row * 4 + _Column]; }
-	float& operator()(const uint8 _Row, const uint8 _Column) { return Array[_Row * 4 + _Column]; }
+	float operator()(const uint8 row, const uint8 column) const { return array[row * 4 + column]; }
+	float& operator()(const uint8 row, const uint8 column) { return array[row * 4 + column]; }
 
 private:
-	float Array[MATRIX_SIZE];
+	float array[MATRIX_SIZE];
 };

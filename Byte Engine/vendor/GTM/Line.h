@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include "BEM.hpp"
+#include "GTM.hpp"
 #include "Vector3.h"
 
 class Line3
@@ -13,12 +13,12 @@ public:
 
 	[[nodiscard]] float Length() const
 	{
-		return BEM::Length(Segment());
+		return GTM::Length(Segment());
 	}
 
 	[[nodiscard]] float LengthSquared() const
 	{
-		return BEM::LengthSquared(Segment());
+		return GTM::LengthSquared(Segment());
 	}
 
 private:

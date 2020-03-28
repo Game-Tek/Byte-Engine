@@ -76,7 +76,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -102,7 +102,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -137,9 +137,6 @@
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />
     <ClInclude Include="src\Byte Engine\Game\TypeManager.h" />
-    <ClInclude Include="src\Byte Engine\Math\AxisAngle.h" />
-    <ClInclude Include="src\Byte Engine\Math\Frustum.h" />
-    <ClInclude Include="src\Byte Engine\Math\Plane.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\Byte Engine\Physics\HitResult.h" />
@@ -222,16 +219,11 @@
     <ClInclude Include="src\Byte Engine\Application\InputManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\Resource.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
-    <ClInclude Include="src\Byte Engine\Math\Line.h" />
-    <ClInclude Include="src\Byte Engine\Math\Matrix4.h" />
-    <ClInclude Include="src\Byte Engine\Math\Quaternion.h" />
     <ClInclude Include="src\Byte Engine\Utility\RGB.h" />
     <ClInclude Include="src\Byte Engine\Utility\RGBA.h" />
-    <ClInclude Include="src\Byte Engine\Math\Rotator.h" />
     <ClInclude Include="src\Byte Engine\Debug\Logger.h" />
     <ClInclude Include="src\Byte Engine\Application\Clock.h" />
     <ClInclude Include="src\Byte Engine\Application\EntryPoint.h" />
-    <ClInclude Include="src\Byte Engine\Math\BEM.hpp" />
     <ClInclude Include="src\Byte Engine\Application\Application.h" />
     <ClInclude Include="src\Byte Engine\Core.h" />
     <ClInclude Include="src\Byte Engine\Object.h" />
@@ -243,14 +235,9 @@
     <ClInclude Include="src\Byte Engine\Utility\Shapes\SphereWithFallof.h" />
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\Byte Engine\Vertex.h" />
-    <ClInclude Include="src\Byte Engine\Math\Vector2.h" />
     <ClInclude Include="src\Byte Engine\Game\WorldObject.h" />
-    <ClInclude Include="src\Byte Engine\Math\Transform2.h" />
-    <ClInclude Include="src\Byte Engine\Math\Transform3.h" />
-    <ClInclude Include="src\Byte Engine\Math\Vector3.h" />
     <ClInclude Include="src\Game Studio\Texture.h" />
     <ClInclude Include="src\Byte Engine\Utility\TextureCoordinates.h" />
-    <ClInclude Include="src\Byte Engine\Math\Vector4.h" />
     <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderDevice.h" />
     <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanSwapchainImage.h" />
     <ClInclude Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.h" />
@@ -264,13 +251,6 @@
     <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\AxisAngle.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\BEM.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\Matrix4.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\Plane.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\Quaternion.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\Rotator.cpp" />
-    <ClCompile Include="src\Byte Engine\Math\Vector3.cpp" />
     <ClCompile Include="src\Byte Engine\PointLight.cpp" />
     <ClCompile Include="src\Byte Engine\Light.cpp" />
     <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanCommandBuffer.cpp" />

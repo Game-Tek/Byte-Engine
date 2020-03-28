@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Core.h"
-
 //Used to specify a location in 2D space with floating point precision.
 class Vector2
 {

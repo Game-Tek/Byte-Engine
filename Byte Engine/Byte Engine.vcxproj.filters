@@ -90,38 +90,6 @@
     <ClInclude Include="src\Byte Engine\Application\InputManager.h">
       <Filter>Engine\InputManager</Filter>
     </ClInclude>
-    <ClInclude Include="src\Byte Engine\Containers\Array.hpp" />
-    <ClInclude Include="src\Byte Engine\Containers\DArray.hpp" />
-    <ClInclude Include="src\Byte Engine\Containers\FlatHashMap.h" />
-    <ClInclude Include="src\Byte Engine\Containers\FString.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Byte Engine\Containers\FVector.hpp">
-      <Filter>Misc\Array</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Byte Engine\Containers\Id.h" />
-    <ClInclude Include="src\Byte Engine\Containers\KVector.h" />
-    <ClInclude Include="src\Byte Engine\Containers\Octree.h" />
-    <ClInclude Include="src\Byte Engine\Containers\Pair.h" />
-    <ClInclude Include="src\Byte Engine\Containers\Ranger.h" />
-    <ClInclude Include="src\Byte Engine\Containers\SHashMap.h" />
-    <ClInclude Include="src\Byte Engine\Containers\SinglyLinkedList.hpp" />
-    <ClInclude Include="src\Byte Engine\Containers\TimePoint.h" />
-    <ClInclude Include="src\Byte Engine\Core\Network\NetConnection.h" />
-    <ClInclude Include="src\Byte Engine\Core\Network\NetSocket.h" />
-    <ClInclude Include="src\Byte Engine\Core\Network\NetworkCore.h" />
-    <ClInclude Include="src\Byte Engine\Core\Platform\Windows\WindowsApplication.h" />
-    <ClInclude Include="src\Byte Engine\Core\Platform\Windows\WindowsWindow.h" />
-    <ClInclude Include="src\Byte Engine\Core\Allocator.h" />
-    <ClInclude Include="src\Byte Engine\Core\Application.h" />
-    <ClInclude Include="src\Byte Engine\Core\BlockingQueue.h" />
-    <ClInclude Include="src\Byte Engine\Core\Mutex.h" />
-    <ClInclude Include="src\Byte Engine\Core\Semaphore.h" />
-    <ClInclude Include="src\Byte Engine\Core\Signal.h" />
-    <ClInclude Include="src\Byte Engine\Core\System.h" />
-    <ClInclude Include="src\Byte Engine\Core\Thread.h" />
-    <ClInclude Include="src\Byte Engine\Core\ThreadPool.h" />
-    <ClInclude Include="src\Byte Engine\Core\Window.h" />
     <ClInclude Include="src\Byte Engine\Debug\Logger.h">
       <Filter>Engine\Log</Filter>
     </ClInclude>
@@ -205,18 +173,6 @@
     <ClInclude Include="src\Byte Engine\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\SphereWithFallof.h" />
-    <ClInclude Include="src\Byte Engine\Utility\Delegate.h" />
-    <ClInclude Include="src\Byte Engine\Utility\Extent.h" />
-    <ClInclude Include="src\Byte Engine\Utility\FlipFlop.h" />
-    <ClInclude Include="src\Byte Engine\Utility\RGB.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Byte Engine\Utility\RGBA.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Byte Engine\Utility\TextureCoordinates.h">
-      <Filter>Misc</Filter>
-    </ClInclude>
     <ClInclude Include="src\Byte Engine\Camera.h" />
     <ClInclude Include="src\Byte Engine\Core.h">
       <Filter>Engine</Filter>
@@ -247,12 +203,6 @@
     <ClCompile Include="src\Byte Engine\Application\InputManager.cpp">
       <Filter>Engine\InputManager</Filter>
     </ClCompile>
-    <ClCompile Include="src\Byte Engine\Containers\FString.cpp" />
-    <ClCompile Include="src\Byte Engine\Containers\Id.cpp" />
-    <ClCompile Include="src\Byte Engine\Core\Network\NetSocket.cpp" />
-    <ClCompile Include="src\Byte Engine\Core\Platform\Windows\WindowsApplication.cpp" />
-    <ClCompile Include="src\Byte Engine\Core\Platform\Windows\WindowsWindow.cpp" />
-    <ClCompile Include="src\Byte Engine\Core\System.cpp" />
     <ClCompile Include="src\Byte Engine\Debug\Logger.cpp">
       <Filter>Engine\Log</Filter>
     </ClCompile>

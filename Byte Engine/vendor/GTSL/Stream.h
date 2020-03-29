@@ -37,56 +37,56 @@ public:
 	 * \brief Writes an int8 to memory from disk.
 	 * \param _In Pointer to an int8 the data will be read to.
 	 */
-	INLINE void Read(int8* _In) const { readInternal(sizeof(int8), _In); }
+	void Read(int8* _In) const { readInternal(sizeof(int8), _In); }
 
 	/**
 	* \brief Writes an uint8 to memory from disk.
 	* \param _In Pointer to an uint8 the data will be read to.
 	*/
-	INLINE void Read(uint8* _In) const { readInternal(sizeof(uint8), _In); }
+	void Read(uint8* _In) const { readInternal(sizeof(uint8), _In); }
 
 	/**
 	* \brief Writes an int16 to memory from disk.
 	* \param _In Pointer to an int16 the data will be read to.
 	*/
-	INLINE void Read(int16* _In) const { readInternal(sizeof(int16), _In); }
+	void Read(int16* _In) const { readInternal(sizeof(int16), _In); }
 
 	/**
 	* \brief Writes an uint16 to memory from disk.
 	* \param _In Pointer to an uint16 the data will be read to.
 	*/
-	INLINE void Read(uint16* _In) const { readInternal(sizeof(uint16), _In); }
+	void Read(uint16* _In) const { readInternal(sizeof(uint16), _In); }
 
 	/**
 	* \brief Writes an int32 to memory from disk.
 	* \param _In Pointer to an int32 the data will be read to.
 	*/
-	INLINE void Read(int32* _In) const { readInternal(sizeof(int32), _In); }
+	void Read(int32* _In) const { readInternal(sizeof(int32), _In); }
 
 	/**
 	* \brief Writes an uint32 to memory from disk.
 	* \param _In Pointer to an uint32 the data will be read to.
 	*/
-	INLINE void Read(uint32* _In) const { readInternal(sizeof(uint32), _In); }
+	void Read(uint32* _In) const { readInternal(sizeof(uint32), _In); }
 
 	/**
 	* \brief Writes an int64 to memory from disk.
 	* \param _In Pointer to an int64 the data will be read to.
 	*/
-	INLINE void Read(int64* _In) const { readInternal(sizeof(int64), _In); }
+	void Read(int64* _In) const { readInternal(sizeof(int64), _In); }
 
 	/**
 	* \brief Writes an uint64 to memory from disk.
 	* \param _In Pointer to an uint64 the data will be read to.
 	*/
-	INLINE void Read(uint64* _In) const { readInternal(sizeof(uint64), _In); }
+	void Read(uint64* _In) const { readInternal(sizeof(uint64), _In); }
 
 	/**
 	* \brief Writes the data starting at _In up to _Size bytes from disk to memory.
 	* \param _Size Bytes to be read from disk.
 	* \param _Data Pointer to data to be read from disk to memory.
 	*/
-	INLINE void Read(const size_t _Size, void* _Data) const { readInternal(_Size, _Data); }
+	void Read(const size_t _Size, void* _Data) const { readInternal(_Size, _Data); }
 
 private:
 	/**
@@ -141,56 +141,56 @@ public:
 	 * \brief Writes an int8 to disk.
 	 * \param _In int8 to be written to disk.
 	 */
-	INLINE void Write(int8 _In) const { writeInternal(sizeof(int8), &_In); }
+	void Write(int8 _In) const { writeInternal(sizeof(int8), &_In); }
 
 	/**
 	* \brief Writes an uint8 to disk.
 	* \param _In uint8 to be written to disk.
 	*/
-	INLINE void Write(uint8 _In) const { writeInternal(sizeof(uint8), &_In); }
+	void Write(uint8 _In) const { writeInternal(sizeof(uint8), &_In); }
 
 	/**
 	* \brief Writes an int16 to disk.
 	* \param _In int16 to be written to disk.
 	*/
-	INLINE void Write(int16 _In) const { writeInternal(sizeof(int16), &_In); }
+	void Write(int16 _In) const { writeInternal(sizeof(int16), &_In); }
 
 	/**
 	* \brief Writes an uint16 to disk.
 	* \param _In uint16 to be written to disk.
 	*/
-	INLINE void Write(uint16 _In) const { writeInternal(sizeof(uint16), &_In); }
+	void Write(uint16 _In) const { writeInternal(sizeof(uint16), &_In); }
 
 	/**
 	* \brief Writes an int32 to disk.
 	* \param _In int32 to be written to disk.
 	*/
-	INLINE void Write(int32 _In) const { writeInternal(sizeof(int32), &_In); }
+	void Write(int32 _In) const { writeInternal(sizeof(int32), &_In); }
 
 	/**
 	* \brief Writes an uint32 to disk.
 	* \param _In uint32 to be written to disk.
 	*/
-	INLINE void Write(uint32 _In) const { writeInternal(sizeof(uint32), &_In); }
+	void Write(uint32 _In) const { writeInternal(sizeof(uint32), &_In); }
 
 	/**
 	* \brief Writes an int64 to disk.
 	* \param _In int64 to be written to disk.
 	*/
-	INLINE void Write(int64 _In) const { writeInternal(sizeof(int64), &_In); }
+	void Write(int64 _In) const { writeInternal(sizeof(int64), &_In); }
 
 	/**
 	* \brief Writes an uint64 to disk.
 	* \param _In uint64 to be written to disk.
 	*/
-	INLINE void Write(uint64 _In) const { writeInternal(sizeof(uint64), &_In); }
+	void Write(uint64 _In) const { writeInternal(sizeof(uint64), &_In); }
 
 	/**
 	* \brief Writes the data starting at _In up to _Size bytes to disk.
 	* \param _Size Bytes to be written to disk.
 	* \param _In Pointer to data to be written to disk.
 	*/
-	INLINE void Write(const size_t _Size, void* _In) const { writeInternal(_Size, _In); }
+	void Write(const size_t _Size, void* _In) const { writeInternal(_Size, _In); }
 
 private:
 	/**

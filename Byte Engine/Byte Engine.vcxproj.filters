@@ -152,12 +152,10 @@
     <ClInclude Include="src\Byte Engine\Resources\AudioResource.h" />
     <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\MaterialResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\Resources\Resource.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceData.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceReference.h" />
     <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\Resources\Stream.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.h" />
@@ -237,7 +235,6 @@
     <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
-    <ClCompile Include="src\Byte Engine\Resources\Stream.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.cpp" />
     <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />

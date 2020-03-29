@@ -76,7 +76,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL.lib;Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -102,7 +102,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL.lib;Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -144,7 +144,6 @@
     <ClInclude Include="src\Byte Engine\Resources\ResourceData.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceReference.h" />
     <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\Resources\Stream.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
@@ -189,7 +188,6 @@
     <ClInclude Include="src\Byte Engine\Render\Renderer.h" />
     <ClInclude Include="src\Byte Engine\Camera.h" />
     <ClInclude Include="src\Byte Engine\Application\InputManager.h" />
-    <ClInclude Include="src\Byte Engine\Resources\Resource.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
     <ClInclude Include="src\Byte Engine\Debug\Logger.h" />
     <ClInclude Include="src\Byte Engine\Application\Clock.h" />
@@ -226,7 +224,6 @@
     <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
-    <ClCompile Include="src\Byte Engine\Resources\Stream.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />

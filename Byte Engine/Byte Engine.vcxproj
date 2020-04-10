@@ -109,6 +109,7 @@
     <ClInclude Include="src\Byte Engine\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
     <ClInclude Include="src\Byte Engine\Application\Console.h" />
+    <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />

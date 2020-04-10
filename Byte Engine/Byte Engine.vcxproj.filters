@@ -187,6 +187,7 @@
       <Filter>Engine\Render</Filter>
     </ClInclude>
     <ClInclude Include="src\ByteEngine.h" />
+    <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />

@@ -1,17 +1,17 @@
 #include "BindingsGroup.h"
 
-#include "RAPI/RenderDevice.h"
+#include "GAL/RenderDevice.h"
 
-#include "RAPI/CommandBuffer.h"
+#include "GAL/CommandBuffer.h"
 
-Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> RenderGroupBase::bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor)
+Pair<GAL::BindingsPoolCreateInfo, GAL::BindingsSetCreateInfo> RenderGroupBase::bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor)
 {
-	RAPI::BindingsPoolCreateInfo bindings_pool_create_info;
-	RAPI::BindingsSetCreateInfo bindings_set_create_info;
+	GAL::BindingsPoolCreateInfo bindings_pool_create_info;
+	GAL::BindingsSetCreateInfo bindings_set_create_info;
 	
 	for (auto& e : bindingsSetDescriptor)
 	{
-		RAPI::BindingDescriptor binding_descriptor;
+		GAL::BindingDescriptor binding_descriptor;
 		binding_descriptor.ArrayLength = e.Count;
 		binding_descriptor.BindingType = e.Type;
 		binding_descriptor.ShaderStage = bindingsSetDescriptor.GetShaderType();
@@ -42,15 +42,15 @@ BindingsGroup::BindingsGroup(const BindingsGroupCreateInfo& bindingsGroupCreateI
 
 void BindingsGroup::Bind(const BindingsGroupBindInfo& bindInfo) const
 {
-	RAPI::CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
+	GAL::CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
 
-	FVector<RAPI::BindingsSet*> a(1, &bindingsSet);
+	FVector<GAL::BindingsSet*> a(1, &bindingsSet);
 	bind_bindings_set_info.BindingsSets = &a;
 	
 	bindInfo.CommandBuffer->BindBindingsSet(bind_bindings_set_info);
 }
 
-const BindingsGroup& BindingsGroupManager::AddBindingsGroup(const Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo)
+const BindingsGroup& BindingsGroupManager::AddBindingsGroup(const GTSL::Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo)
 {
 	auto bg = bindingsGroups.emplace(bindingsGroupId, bindingsGroupCreateInfo);
 	BE_ASSERT(!bg.second, "The Binding Group could not be inserted! Either the binding group already exists or a hash collision ocurred.")

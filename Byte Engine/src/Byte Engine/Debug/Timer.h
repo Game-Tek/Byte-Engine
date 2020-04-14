@@ -4,7 +4,7 @@
 
 class Timer
 {
-	TimePoint startingTime;
+	GTSL::TimePoint startingTime;
 	const char* name = "unnamed";
 public:
 	Timer(const char* name);

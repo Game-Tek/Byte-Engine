@@ -1,18 +1,18 @@
 #pragma once
 
-#include "Containers/Array.hpp"
+#include <GTSL/Array.hpp>
 
 #include <unordered_map>
 
 #include "BindingsSetDescriptor.h"
-#include "Containers/Id.h"
-#include "RAPI/Bindings.h"
-#include "RAPI/CommandBuffer.h"
-#include "Containers/Pair.h"
+#include <GTSL/Id.h>
+#include "GAL/Bindings.h"
+#include "GAL/CommandBuffer.h"
+#include <GTSL/Pair.h>
 
 #include "RenderingCore.h"
 
-namespace RAPI {
+namespace GAL {
     class CommandBuffer;
     class RenderDevice;
 	class UniformBuffer;
@@ -28,29 +28,29 @@ class RenderGroupBase
      */
     uint32 maxInstanceCount = 0;
 
-    Array<Id64, 8>parentGroups;
+    Array<GTSL::Id64, 8>parentGroups;
 
 protected:
-    static Pair<RAPI::BindingsPoolCreateInfo, RAPI::BindingsSetCreateInfo> bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor);
+    static Pair<GAL::BindingsPoolCreateInfo, GAL::BindingsSetCreateInfo> bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor);
 	
 public:
 
     void SetMaxInstanceCount(const uint32 instanceCount) { maxInstanceCount = instanceCount; }
 	[[nodiscard]] uint32 GetMaxInstanceCount() const { return maxInstanceCount; }
 	
-    void AddParentGroup(const Id64& parentId) { parentGroups.push_back(parentId); }
+    void AddParentGroup(const GTSL::Id64& parentId) { parentGroups.push_back(parentId); }
 	[[nodiscard]] const decltype(parentGroups)& GetParentGroups() const { return parentGroups; }
 };
 
 class BindingsGroup : public RenderGroupBase
 {
-    RAPI::BindingsPool* bindingsPool = nullptr;
-    RAPI::BindingsSet* bindingsSet = nullptr;
+    GAL::BindingsPool* bindingsPool = nullptr;
+    GAL::BindingsSet* bindingsSet = nullptr;
 	
 public:
     struct BindingsGroupCreateInfo
     {
-        RAPI::RenderDevice* RenderDevice = nullptr;
+        GAL::RenderDevice* RenderDevice = nullptr;
         BindingsSetDescriptor& BindingsSetDescriptor;
         uint8 MaxFramesInFlight = 0;
     };
@@ -58,14 +58,14 @@ public:
 
     struct BindingsGroupBindInfo
     {
-        RAPI::CommandBuffer* CommandBuffer = nullptr;
+        GAL::CommandBuffer* CommandBuffer = nullptr;
     };
     void Bind(const BindingsGroupBindInfo& bindInfo) const;
 };
 
 class BindingsGroupManager
 {
-    std::unordered_map<Id64::HashType, BindingsGroup> bindingsGroups;
+    std::unordered_map<GTSL::Id64::HashType, BindingsGroup> bindingsGroups;
 	
     uint8 maxFramesInFlight = 0;
 	
@@ -78,19 +78,19 @@ public:
     {
     }
 	
-    const BindingsGroup& AddBindingsGroup(const Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
-    [[nodiscard]] const BindingsGroup& GetBindingsGroup(const Id64& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
+    const BindingsGroup& AddBindingsGroup(const GTSL::Id64& bindingsGroupId, const BindingsGroup::BindingsGroupCreateInfo& bindingsGroupCreateInfo);
+    [[nodiscard]] const BindingsGroup& GetBindingsGroup(const GTSL::Id64& bindingsGroupId) const { return bindingsGroups.at(bindingsGroupId); }
 	
     struct BindBindingsGroupInfo
     {
-        RAPI::CommandBuffer* CommandBuffer = nullptr;
-        Id64 BindingsGroup = 0;
+        GAL::CommandBuffer* CommandBuffer = nullptr;
+        GTSL::Id64 BindingsGroup = 0;
     };
     void BindBindingsGroup(const BindBindingsGroupInfo& bindBindingsGroupInfo);
 
     struct BindDependencyGroupInfo
     {
-        Id64 DependencyGroup = 0;
+        GTSL::Id64 DependencyGroup = 0;
     };
     void BindDependencyGroups(const BindDependencyGroupInfo& bindDependencyGroupInfo);
 	

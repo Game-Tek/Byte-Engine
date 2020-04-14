@@ -2,7 +2,7 @@
 
 #include "Math/Vector3.h"
 #include "Utility/TextureCoordinates.h"
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 #include "Math/Matrix4.h"
 #include <map>
 
@@ -16,14 +16,14 @@ struct SkinnableVertex
 
 struct Joint
 {
-	Id64 Name;
+	GTSL::Id64 Name;
 	uint16 Parent;
 	Matrix4 Offset;
 };
 
 class Skeleton
 {
-	std::map<Id64, Joint> bones;
+	std::map<GTSL::Id64, Joint> bones;
 
 public:
 };

@@ -4,7 +4,7 @@
 
 #include "Game/StaticMesh.h"
 
-namespace RAPI {
+namespace GAL {
 	class RenderMesh;
 }
 

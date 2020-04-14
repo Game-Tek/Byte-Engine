@@ -20,7 +20,7 @@ bool TextureResourceManager::LoadResource(const LoadResourceInfo& loadResourceIn
 
 		data.TextureDimensions.Width = X;
 		data.TextureDimensions.Height = Y;
-		data.TextureFormat = NofChannels == 4 ? RAPI::ImageFormat::RGBA_I8 : RAPI::ImageFormat::RGB_I8;
+		data.TextureFormat = NofChannels == 4 ? GAL::ImageFormat::RGBA_I8 : GAL::ImageFormat::RGB_I8;
 		data.ImageDataSize = NofChannels * X * Y;
 
 		return true;
@@ -35,6 +35,6 @@ void TextureResourceManager::LoadFallback(const LoadResourceInfo& loadResourceIn
 {
 }
 
-ResourceData* TextureResourceManager::GetResource(const Id64& name) { return &resources[name]; }
+ResourceData* TextureResourceManager::GetResource(const GTSL::Id64& name) { return &resources[name]; }
 
-void TextureResourceManager::ReleaseResource(const Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
+void TextureResourceManager::ReleaseResource(const GTSL::Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }

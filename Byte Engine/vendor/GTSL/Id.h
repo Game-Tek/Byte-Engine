@@ -1,58 +1,61 @@
 #pragma once
 
 #include "Core.h"
-#include "FString.h"
 
-class FString;
-
-class Id64
+namespace GTSL
 {
-public:
-	using HashType = uint64;
+	class String;
 
-	Id64() = default;
+	class Id64
+	{
+	public:
+		using HashType = uint64;
 
-	Id64(const char* Text);
+		constexpr Id64() = default;
+		constexpr Id64(const char* cstring) noexcept;
+		constexpr explicit Id64(HashType id) noexcept;
+		explicit Id64(const String& string);
+		constexpr Id64(const Id64& other) = default;
+		constexpr Id64(Id64&& other) noexcept : hashValue(other.hashValue) { other.hashValue = 0; }
 
-	explicit Id64(HashType id);
-	
-	explicit Id64(const FString& _Text);
+		~Id64() noexcept = default;
 
-	~Id64() = default;
+		constexpr Id64& operator=(const Id64& other) noexcept = default;
+		constexpr bool operator==(const Id64& other) const noexcept { return hashValue == other.hashValue; }
+		constexpr Id64& operator=(Id64&& other) noexcept { hashValue = other.hashValue; other.hashValue = 0; return *this; }
 
-	HashType GetID() { return hashValue; }
-	[[nodiscard]] HashType GetID() const { return hashValue; }
+		constexpr HashType GetID() noexcept { return hashValue; }
+		[[nodiscard]] constexpr HashType GetID() const noexcept { return hashValue; }
 
-	operator HashType() const { return hashValue; }
+		constexpr operator HashType() const { return hashValue; }
 
-	static HashType HashString(const char* text);
-	static HashType HashString(const FString& fstring);
+		constexpr static HashType HashString(const char* text) noexcept;
+		static HashType HashString(const String& string) noexcept;
 
-	bool operator==(const Id64& other) { return hashValue == other.hashValue; }
-	
-private:
-	HashType hashValue = 0;
-	
-	static HashType hashString(uint32 length, const char* text);
-};
+	private:
+		HashType hashValue = 0;
 
-class Id32
-{
-	uint32 hash = 0;
-	static uint32 hashString(uint32 stringLength, const char* str);
-public:
-	Id32(const char* text);
-	Id32(uint32 length, const char* text);
+		constexpr static HashType hashString(uint32 length, const char* text) noexcept;
+	};
 
-	operator uint32() const { return hash; }
-};
+	class Id32
+	{
+		uint32 hash = 0;
+		constexpr static uint32 hashString(uint32 stringLength, const char* str) noexcept;
+	public:
+		constexpr Id32(const char* text) noexcept;
+		constexpr Id32(uint32 length, const char* text) noexcept;
 
-class Id16
-{
-	uint16 hash = 0;
-	static uint16 hashString(uint32 stringLength, const char* str);
-public:
-	Id16(const char* text);
+		constexpr operator uint32() const noexcept { return hash; }
+	};
 
-	operator uint16() const { return hash; }
-};
+	class Id16
+	{
+		uint16 hash = 0;
+		static uint16 hashString(uint32 stringLength, const char* str);
+	public:
+		Id16(const char* text);
+
+		operator uint16() const { return hash; }
+	};
+}

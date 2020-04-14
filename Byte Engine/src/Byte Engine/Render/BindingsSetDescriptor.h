@@ -2,10 +2,10 @@
 
 #include "Core.h"
 
-#include "RAPI/RenderCore.h"
+#include "GAL/RenderCore.h"
 
 #include <initializer_list>
-#include "Containers/DArray.hpp"
+#include <GTSL/FixedVector.hpp>
 
 struct BindingDescriptor
 {
@@ -17,25 +17,25 @@ struct BindingDescriptor
 	/**
 	 * \brief Defines the type of the binding.
 	 */
-	RAPI::BindingType Type;
+	GAL::BindingType Type;
 };
 
 class BindingsSetDescriptor
 {
-	DArray<BindingDescriptor> bindings;
-	RAPI::ShaderType shaderType;
+	GTSL::FixedVector<BindingDescriptor> bindings;
+	GAL::ShaderType shaderType;
 	
 public:
-	BindingsSetDescriptor(const std::initializer_list<BindingDescriptor>& initializerList, RAPI::ShaderType shader) : bindings(initializerList), shaderType(shader)
+	BindingsSetDescriptor(const std::initializer_list<BindingDescriptor>& initializerList, GAL::ShaderType shader) : bindings(initializerList), shaderType(shader)
 	{
 	}
 
 	[[nodiscard]] auto begin() const { return bindings.begin(); }
 	[[nodiscard]] auto end() const { return bindings.end(); }
 	
-	[[nodiscard]] uint8 GetBindingsCount() const { return bindings.getLength(); }
+	[[nodiscard]] uint8 GetBindingsCount() const { return bindings.GetLength(); }
 
-	[[nodiscard]] RAPI::ShaderType GetShaderType() const { return shaderType; }
+	[[nodiscard]] GAL::ShaderType GetShaderType() const { return shaderType; }
 	
 	const BindingDescriptor& operator[](const uint8 i) const { return bindings[i]; }
 };

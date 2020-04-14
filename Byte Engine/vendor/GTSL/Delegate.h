@@ -18,21 +18,21 @@ class Delegate;
 template <typename RET, typename... PARAMS>
 class Delegate<RET(PARAMS ...)> final
 {
-	RET(*callerFunction)(void*, PARAMS...) = nullptr;
-	void* callee = nullptr;
+	RET(*callerFunction)(void*, PARAMS...) { nullptr };
+	void* callee{ nullptr };
 	
 public:
+	typedef decltype(callerFunction) call_signature;
+	
 	Delegate() = default;
 	~Delegate() = default;
 
-	[[nodiscard]] bool isNull() const { return callerFunction == nullptr; }
-
-	bool operator ==(void* ptr) const { return (ptr == nullptr) && this->isNull(); }
-
-	bool operator !=(void* ptr) const { return (ptr != nullptr) || (!this->isNull()); }
+	operator bool() const noexcept { return callerFunction; }
 
 	template <typename LAMBDA>
-	Delegate(const LAMBDA& lambda) { assign(static_cast<void*>(&lambda), lambdaCaller<LAMBDA>); }
+	Delegate(LAMBDA& lambda) : callerFunction(&lambdaCaller<LAMBDA>), callee(reinterpret_cast<void*>(&lambda))
+	{
+	}
 
 	Delegate& operator =(const Delegate& another) = default;
 

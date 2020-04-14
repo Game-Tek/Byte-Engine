@@ -1,31 +1,31 @@
 #pragma once
 
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 
 #include "ResourceData.h"
 
 //class ResourceReference
 //{
 //	friend class ResourceManager;
-//	Id64 resourceName;
-//	Id64 resourceType;
+//	GTSL::Id64 resourceName;
+//	GTSL::Id64 resourceType;
 //
-//	ResourceReference(const Id64& type, const Id64& name) : resourceType(type), resourceName(name)
+//	ResourceReference(const GTSL::Id64& type, const GTSL::Id64& name) : resourceType(type), resourceName(name)
 //	{}
 //public:
-//	[[nodiscard]] Id64 GetName() const { return resourceName; }
+//	[[nodiscard]] GTSL::Id64 GetName() const { return resourceName; }
 //};
 
 class ResourceReference
 {
 	friend class ResourceManager;
-	Id64 resourceName;
-	Id64 resourceType;
+	GTSL::Id64 resourceName;
+	GTSL::Id64 resourceType;
 
 	
-	ResourceReference(const Id64& type, const Id64& name) : resourceType(type), resourceName(name)
+	ResourceReference(const GTSL::Id64& type, const GTSL::Id64& name) : resourceType(type), resourceName(name)
 	{}
 public:
 	ResourceReference() = default;
 	
-	[[nodiscard]] Id64 GetName() const { return resourceName; }};
+	[[nodiscard]] GTSL::Id64 GetName() const { return resourceName; }};

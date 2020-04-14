@@ -4,11 +4,13 @@
 
 #include "Object.h"
 
+namespace GTSL {
+	class Id64;
+}
+
 class Renderer;
 
-class Id64;
-
-namespace RAPI
+namespace GAL
 {
     class CommandBuffer;
 }
@@ -37,7 +39,7 @@ public:
 	    /**
          * \brief Command buffer to submit all commands to.
          */
-        RAPI::CommandBuffer* CommandBuffer = nullptr;
+        GAL::CommandBuffer* CommandBuffer = nullptr;
 
 	    /**
          * \brief Pointer to the active view projection matrix.
@@ -52,9 +54,9 @@ public:
 
     /**
      * \brief Returns the name of the RenderableType this instance of the class takes care of rendering.
-     * \param name Reference to an FString in which the name will be stored.
+     * \param name Reference to an GTSL::String in which the name will be stored.
      */
-    virtual Id64 GetRenderableTypeName() const = 0;
+	[[nodiscard]] virtual GTSL::Id64 GetRenderableTypeName() const = 0;
 
     virtual uint32 RegisterComponent(Renderer* renderer, class RenderComponent* renderComponent);
 };

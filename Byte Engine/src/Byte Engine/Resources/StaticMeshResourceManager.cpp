@@ -91,6 +91,6 @@ void StaticMeshResourceManager::LoadFallback(const LoadResourceInfo& loadResourc
 {
 }
 
-ResourceData* StaticMeshResourceManager::GetResource(const Id64& name) { return &resources[name]; }
+ResourceData* StaticMeshResourceManager::GetResource(const GTSL::Id64& name) { return &resources[name]; }
 
-void StaticMeshResourceManager::ReleaseResource(const Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
+void StaticMeshResourceManager::ReleaseResource(const GTSL::Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }

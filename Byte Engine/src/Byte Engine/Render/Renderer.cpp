@@ -1,5 +1,5 @@
 #include "Renderer.h"
-#include "RAPI/RenderDevice.h"
+#include "GAL/RenderDevice.h"
 
 #include "Application/Application.h"
 #include "Math/BEM.hpp"
@@ -10,16 +10,16 @@
 #include "ScreenQuad.h"
 #include "StaticMeshRenderableManager.h"
 
-using namespace RAPI;
+using namespace GAL;
 
 Renderer::Renderer() : Framebuffers(3), perInstanceData(1), perInstanceTransform(1)
 {
-	RAPI::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
+	GAL::RenderDevice::RenderDeviceCreateInfo render_device_create_info;
 	render_device_create_info.RenderingAPI = RenderAPI::VULKAN;
 	render_device_create_info.ApplicationName = BE::Application::Get()->GetApplicationName();
 	FVector<Queue::QueueCreateInfo> queue_create_infos = { { Queue::QueueCapabilities::GRAPHICS, 1.0f, &graphicsQueue }, { Queue::QueueCapabilities::TRANSFER, 1.0f, &transferQueue } };
 	render_device_create_info.QueueCreateInfos = &queue_create_infos;
-	renderDevice = RAPI::RenderDevice::CreateRenderDevice(render_device_create_info);
+	renderDevice = GAL::RenderDevice::CreateRenderDevice(render_device_create_info);
 	
 	Win = BE::Application::Get()->GetActiveWindow();
 
@@ -100,7 +100,7 @@ Renderer::Renderer() : Framebuffers(3), perInstanceData(1), perInstanceTransform
 		Framebuffers[i] = renderDevice->CreateFramebuffer(FBCI);
 	}
 
-	RAPI::RenderMesh::RenderMeshCreateInfo MCI;
+	GAL::RenderMesh::RenderMeshCreateInfo MCI;
 	MCI.IndexCount = ScreenQuad::IndexCount;
 	MCI.VertexCount = ScreenQuad::VertexCount;
 	MCI.VertexData = ScreenQuad::Vertices;
@@ -115,11 +115,11 @@ Renderer::Renderer() : Framebuffers(3), perInstanceData(1), perInstanceTransform
 	gpci.PipelineDescriptor.BlendEnable = false;
 	gpci.ActiveWindow = Win;
 
-	FString VS(
+	GTSL::String VS(
 		"#version 450\nlayout(push_constant) uniform Push {\nmat4 Mat;\n} inPush;\nlayout(binding = 0, row_major) uniform Data {\nmat4 Pos;\n} inData;\nlayout(location = 0)in vec3 inPos;\nlayout(location = 1)in vec3 inTexCoords;\nlayout(location = 0)out vec4 tPos;\nvoid main()\n{\ngl_Position = inData.Pos * vec4(inPos, 1.0);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ShaderType::VERTEX_SHADER, &VS});
 
-	FString FS(
+	GTSL::String FS(
 		"#version 450\nlayout(location = 0)in vec4 tPos;\nlayout(binding = 1) uniform sampler2D texSampler;\nlayout(location = 0) out vec4 outColor;\nvoid main()\n{\noutColor = vec4(1, 1, 1, 1);\n}");
 	gpci.PipelineDescriptor.Stages.push_back(ShaderInfo{ShaderType::FRAGMENT_SHADER, &FS});
 
@@ -168,7 +168,7 @@ Renderer::~Renderer()
 //	CommandBuffer::EndRecordingInfo end_recording_info;
 //	graphicsCommandBuffer->EndRecording(end_recording_info);
 //
-//	RAPI::RenderContext::AcquireNextImageInfo acquire_info;
+//	GAL::RenderContext::AcquireNextImageInfo acquire_info;
 //	acquire_info.RenderDevice = renderDevice;
 //	RC->AcquireNextImage(acquire_info);
 //
@@ -186,7 +186,7 @@ Renderer::~Renderer()
 //	RC->Present(present_info);
 //}
 
-void Renderer::DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& drawInfo, RAPI::RenderMesh* Mesh_)
+void Renderer::DrawMeshes(const GAL::CommandBuffer::DrawIndexedInfo& drawInfo, GAL::RenderMesh* Mesh_)
 {
 	CommandBuffer::BindMeshInfo bind_mesh_info;
 	bind_mesh_info.Mesh = Mesh_;
@@ -211,15 +211,15 @@ void Renderer::BindPipeline(GraphicsPipeline* _Pipeline)
 	BE_DEBUG_ONLY(++PipelineSwitches)
 }
 
-RAPI::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
+GAL::RenderMesh* Renderer::CreateMesh(StaticMesh* _SM)
 {
-	RAPI::RenderMesh* NewMesh = nullptr;
+	GAL::RenderMesh* NewMesh = nullptr;
 
 	if (Meshes.find(_SM) == Meshes.end())
 	{
 		//Model m = _SM->GetModel();
 
-		RAPI::RenderMesh::RenderMeshCreateInfo MCI;
+		GAL::RenderMesh::RenderMeshCreateInfo MCI;
 		//MCI.IndexCount = m.IndexCount;
 		//MCI.VertexCount = m.VertexCount;
 		//MCI.VertexData = m.VertexArray;

@@ -2,15 +2,15 @@
 
 // TYPEDEFS
 
-typedef unsigned char byte;
-typedef unsigned char uint8;
-typedef char int8;
-typedef unsigned short uint16;
-typedef short int16;
-typedef unsigned int uint32;
-typedef int int32;
-typedef unsigned long long uint64;
-typedef long long int64;
+using byte = unsigned char;
+using uint8 = unsigned char;
+using int8 = char;
+using uint16 = unsigned short;
+using int16 = short;
+using uint32 = unsigned int;
+using int32 = int;
+using uint64 = unsigned long long;
+using int64 = long long;
 
 #ifdef BE_PLATFORM_WIN
 #define INLINE __forceinline
@@ -38,6 +38,3 @@ typedef long long int64;
 #else
 #define BE_THROW(text)
 #endif
-
-constexpr uint8 uint8MAX = 0xff;
-constexpr uint64 uint_64MAX = 0xffffffffffffffff;

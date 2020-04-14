@@ -9,7 +9,7 @@ class Texture : public Object
 	ResourceReference textureResource;
 public:
 
-	explicit Texture(const FString& name) : textureResource(BE::Application::Get()->GetResourceManager()->TryGetResource(name, "Texture"))
+	explicit Texture(const GTSL::String& name) : textureResource(BE::Application::Get()->GetResourceManager()->TryGetResource(name, "Texture"))
 	{
 	}
 

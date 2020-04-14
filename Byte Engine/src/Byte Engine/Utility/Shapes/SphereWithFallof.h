@@ -19,5 +19,5 @@ struct SphereWithFalloff
 
 //float BoundingSpherewithFallout::GetLinearIntensityAt(const Vector3& Position)
 //{
-//	return BEM::MapToRangeClamped(BEM::VectorLengthSquared(Transform.Location, Position), 0, DistToOuterLimit * DistToOuterLimit, 0, 1);
+//	return GTM::MapToRangeClamped(GTM::VectorLengthSquared(Transform.Location, Position), 0, DistToOuterLimit * DistToOuterLimit, 0, 1);
 //}

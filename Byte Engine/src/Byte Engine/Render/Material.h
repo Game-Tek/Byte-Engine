@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Resources/SubResourceManager.h"
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 
-class FString;
+class GTSL::String;
 class MaterialResource;
 
 class Material final
@@ -11,10 +11,10 @@ class Material final
 	ResourceReference materialMaterialResource;
 	
 public:
-	explicit Material(const FString& _Name);
+	explicit Material(const GTSL::String& _Name);
 	~Material();
 
-	[[nodiscard]] Id64 GetMaterialType() const;
+	[[nodiscard]] GTSL::Id64 GetMaterialType() const;
 
 	[[nodiscard]] const ResourceReference& GetMaterialResource() const { return materialMaterialResource; }
 };
@@ -37,21 +37,21 @@ public:
 //
 //	byte vars[32];
 //public:
-//	explicit Material(const FString& _Name);
+//	explicit Material(const GTSL::String& _Name);
 //	virtual ~Material();
 //
-//	[[nodiscard]] Id64 GetMaterialType() const;
+//	[[nodiscard]] GTSL::Id64 GetMaterialType() const;
 //
 //	//Writes the vertex shader code and fragment shader code to the passed in variables.
-//	void GetRenderingCode(FVector<RAPI::ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
+//	void GetRenderingCode(FVector<GAL::ShaderInfo>& shaders_) const; //TEMPORAL: manual for now, should then be automated.
 //
 //	//Returns true if there is uniform set info and writes said info to the passed in string.
-//	bool GetUniformSetCode(FString& _Code); //TEMPORAL: manual for now, should then be automated.
+//	bool GetUniformSetCode(GTSL::String& _Code); //TEMPORAL: manual for now, should then be automated.
 //	//Returns true if there is uniform set info and sets the size to the passed in int.
 //	bool GetUniformSetSize(size_t& _Size); //TEMPORAL: manual for now, should then be automated.
 //
-//	void SetParameter(const Id64& parameter_name_, RAPI::ShaderDataTypes data_type_, void* data_);
-//	void SetTexture(const Id64& textureName, class Texture* texturePointer);
+//	void SetParameter(const GTSL::Id64& parameter_name_, GAL::ShaderDataTypes data_type_, void* data_);
+//	void SetTexture(const GTSL::Id64& textureName, class Texture* texturePointer);
 //
 //	MaterialResource* GetMaterialResource() { return materialMaterialResource; }
 //	[[nodiscard]] const decltype(textures)& GetTextures() const { return textures; }

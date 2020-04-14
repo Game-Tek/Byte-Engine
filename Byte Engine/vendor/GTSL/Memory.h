@@ -1,9 +1,15 @@
 #pragma once
 
-class Memory
+#include "Core.h"
+
+namespace GTSL
 {
-public:
-	static void Allocate();
-	static void Deallocate();
-	static void SetZero();
-};
+	class Memory
+	{
+	public:
+		static void Allocate(uint64 size, void** data);
+		static void Deallocate(uint64 size, void* data);
+		static void CopyMemory(uint64 size, const void* from, void* to);
+		static void SetZero(uint64 size, void* data);
+	};
+}

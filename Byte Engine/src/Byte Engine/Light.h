@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "Game/WorldObject.h"
-#include "Utility/RGB.h"
+#include <GTSL/RGB.h>
 
 class Light : public WorldObject
 {
@@ -12,9 +12,9 @@ public:
 	~Light() = default;
 
 	//Returns the value of lumens for this light.
-	float GetLumens() const { return Lumens; }
+	[[nodiscard]] float GetLumens() const { return Lumens; }
 	//Returns the color for this light.
-	RGB GetRGB() const { return Color; }
+	[[nodiscard]] RGB GetRGB() const { return Color; }
 
 	//Sets Lumens as NewLumens.
 	void SetLumens(const float NewLumens) { Lumens = NewLumens; }

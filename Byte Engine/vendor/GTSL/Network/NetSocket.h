@@ -2,33 +2,33 @@
 
 #include "NetworkCore.h"
 
-
-struct NetSocketCreateInfo
-{
-	uint16 Port = 0;
-};
-
-struct NetSocketSendInfo
-{
-	IpEndpoint Endpoint;
-	void* Data = nullptr;
-	uint32 Size = 0;
-};
-
-struct NetSocketReceiveInfo
-{
-	IpEndpoint* Sender = nullptr;
-	void* Buffer = nullptr;
-	uint32 BufferSize = 0;
-};
-
 class NetSocket
 {
 	uint64 handle = 0;
 public:
-	NetSocket(const NetSocketCreateInfo& NSCI_);
+	struct CreateInfo
+	{
+		uint16 Port = 0;
+		bool Blocking = false;
+	};
+	
+	NetSocket(const CreateInfo& createInfo);
 	~NetSocket();
 
-	bool Send(const NetSocketSendInfo& NSSI_);
-	bool Receive(const NetSocketReceiveInfo& NSRI_);
+	struct SendInfo
+	{
+		IpEndpoint Endpoint;
+		void* Data = nullptr;
+		uint32 Size = 0;
+	};
+	bool Send(const SendInfo& sendInfo) const;
+
+
+	struct ReceiveInfo
+	{
+		IpEndpoint* Sender = nullptr;
+		void* Buffer = nullptr;
+		uint32 BufferSize = 0;
+	};
+	bool Receive(const ReceiveInfo& receiveInfo) const;
 };

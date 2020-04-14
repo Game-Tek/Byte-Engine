@@ -2,10 +2,7 @@
 
 #include "RenderableTypeManager.h"
 
-#include "Containers/FVector.hpp"
-#include "RAPI/Bindings.h"
-
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 
 class RenderComponent;
 
@@ -22,6 +19,6 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderableManager"; }
 	
 	void DrawObjects(const DrawObjectsInfo& drawObjectsInfo) override;
-	Id64 GetRenderableTypeName() const override { return Id64("Static Mesh"); }
+	[[nodiscard]] GTSL::Id64 GetRenderableTypeName() const override { return GTSL::Id64("Static Mesh"); }
 	uint32 RegisterComponent(Renderer* renderer, RenderComponent* renderComponent) override;
 };

@@ -1,14 +1,9 @@
 #pragma once
 
-#include "Core.h"
-
-#include "Math/Vector2.h"
-#include "Math/Vector3.h"
-#include "Utility/TextureCoordinates.h"
-
-#include "RAPI/RenderCore.h"
-#include "Containers/DArray.hpp"
-#include "RAPI/RenderMesh.h"
+#include <GTM/Vector2.h>
+#include <GTM/Vector3.h>
+#include <GTSL/TextureCoordinates.h>
+#include <GAL/RenderMesh.h>
 
 using Index = uint16;
 
@@ -26,6 +21,6 @@ struct Vertex
 	Vector3 Tangent;
 	Vector3 BiTangent;
 
-	inline static const RAPI::VertexDescriptor Descriptor{ { RAPI::ShaderDataTypes::FLOAT3, RAPI::ShaderDataTypes::FLOAT3, RAPI::ShaderDataTypes::FLOAT2, RAPI::ShaderDataTypes::FLOAT3, RAPI::ShaderDataTypes::FLOAT3 } };
+	inline static const GAL::VertexDescriptor Descriptor{ { GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT2, GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT3 } };
 };
 

@@ -3,7 +3,7 @@
 #include "Resources/StaticMeshResourceManager.h"
 #include "Application/Application.h"
 
-StaticMesh::StaticMesh(const FString& _Name)
+StaticMesh::StaticMesh(const GTSL::String& _Name)
 {
 	staticMeshResource = BE::Application::Get()->GetResourceManager()->TryGetResource(_Name, "Static Mesh");
 }

@@ -36,7 +36,7 @@ void Clock::OnUpdate()
 	win_processor_ticks.QuadPart *= 1000000;
 	win_processor_ticks.QuadPart /= processorFrequency;
 	
-	const auto current_time = TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart);
+	const auto current_time = GTSL::TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart);
 	
 	delta_ticks *= 1000000; //to microseconds
 	delta_ticks /= processorFrequency;
@@ -66,10 +66,10 @@ void Clock::OnUpdate()
 
 
 #undef GetCurrentTime
-TimePoint Clock::GetCurrentTime() const
+GTSL::TimePoint Clock::GetCurrentTime() const
 {
 #ifdef BE_PLATFORM_WIN
-	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
+	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return GTSL::TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
 #endif
 }
 

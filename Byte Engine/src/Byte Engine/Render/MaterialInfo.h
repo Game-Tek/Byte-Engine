@@ -1,14 +1,14 @@
 #pragma once
 
-#include "RAPI/RenderCore.h"
-#include "Containers/Id.h"
+#include "GAL/RenderCore.h"
+#include <GTSL/Id.h>
 
 //Specifies a single shader parameter. Used to build uniform sets and to specify shader information.
 struct MaterialParameter
 {
-	Id64 ParameterName;
+	GTSL::Id64 ParameterName;
 	//Specifies the type of the variable being referred to so we can build uniform sets and copy information.
-	RAPI::ShaderDataTypes ParameterDataType;
+	GAL::ShaderDataTypes ParameterDataType;
 	//Pointer to the variable holding the data to be copied to the GPU.
 	void* Data = nullptr;
 };

@@ -2,21 +2,20 @@
 
 #include "Core.h"
 #include "Camera.h"
-#include "Containers/FVector.hpp"
-#include "Math/Matrix4.h"
+#include <GTSL/Vector.hpp>
 #include "Game/SubWorlds.h"
 #include "RenderComponent.h"
 
-#include "RAPI/Window.h"
-#include "RAPI/Framebuffer.h"
-#include "RAPI/GraphicsPipeline.h"
-#include "RAPI/UniformBuffer.h"
-#include "RAPI/RenderContext.h"
-#include "RAPI/RenderPass.h"
+#include "GAL/Window.h"
+#include "GAL/Framebuffer.h"
+#include "GAL/GraphicsPipeline.h"
+#include "GAL/UniformBuffer.h"
+#include "GAL/RenderContext.h"
+#include "GAL/RenderPass.h"
 
 #include <map>
-#include "Containers/Id.h"
-#include "RAPI/Bindings.h"
+#include <GTSL/Id.h>
+#include "GAL/Bindings.h"
 #include "Game/StaticMesh.h"
 #include "RenderableTypeManager.h"
 #include "BindingsGroup.h"
@@ -26,7 +25,7 @@ class StaticMeshResource;
 class RenderProxy;
 class PointLightRenderProxy;
 
-//Stores all the data necessary for the RAPI to work. It's the RenderAPI representation of the game world.
+//Stores all the data necessary for the GAL to work. It's the RenderAPI representation of the game world.
 class Renderer : public SubWorld
 {
 public:
@@ -41,10 +40,10 @@ public:
 	//Sets the active camera as the NewCamera.
 	void SetCamera(Camera* NewCamera) const { ActiveCamera = NewCamera; }
 
-	void DrawMeshes(const RAPI::CommandBuffer::DrawIndexedInfo& _DrawInfo, RAPI::RenderMesh* Mesh_);
-	void BindPipeline(RAPI::GraphicsPipeline* _Pipeline);
+	void DrawMeshes(const GAL::CommandBuffer::DrawIndexedInfo& _DrawInfo, GAL::RenderMesh* Mesh_);
+	void BindPipeline(GAL::GraphicsPipeline* _Pipeline);
 
-	RAPI::RenderMesh* CreateMesh(StaticMesh* _SM);
+	GAL::RenderMesh* CreateMesh(StaticMesh* _SM);
 
 protected:
 	//Used to count the amount of draw calls in a frame.
@@ -55,38 +54,38 @@ protected:
 
 	friend RenderableTypeManager;
 	
-	FVector<RenderableTypeManager*> renderableTypeManagers;
+	GTSL::Vector<RenderableTypeManager*> renderableTypeManagers;
 	
-	/* ---- RAPI Resources ---- */
-	std::map<Id64::HashType, RAPI::GraphicsPipeline*> Pipelines;
-	FVector<class MaterialRenderResource*> materialRenderResources;
-	std::map<StaticMesh*, RAPI::RenderMesh*> Meshes;
+	/* ---- GAL Resources ---- */
+	std::map<GTSL::Id64::HashType, GAL::GraphicsPipeline*> Pipelines;
+	GTSL::Vector<class MaterialRenderResource*> materialRenderResources;
+	std::map<StaticMesh*, GAL::RenderMesh*> Meshes;
 	std::map<uint64, RenderComponent*> ComponentToInstructionsMap;
-	FVector<Pair<RAPI::BindingsPool*, RAPI::BindingsSet*>> bindings;
+	GTSL::Vector<Pair<GAL::BindingsPool*, GAL::BindingsSet*>> bindings;
 
-	RAPI::GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
+	GAL::GraphicsPipeline* CreatePipelineFromMaterial(Material* _Mat) const;
 
 	//Pointer to the active camera.
 	mutable Camera* ActiveCamera = nullptr;
 
 	//Render elements
-	RAPI::RenderDevice* renderDevice = nullptr;
+	GAL::RenderDevice* renderDevice = nullptr;
 
-	RAPI::Queue* graphicsQueue = nullptr;
-	RAPI::Queue* transferQueue = nullptr;
+	GAL::Queue* graphicsQueue = nullptr;
+	GAL::Queue* transferQueue = nullptr;
 
-	RAPI::Window* Win = nullptr;
-	FVector<RAPI::Framebuffer*> Framebuffers;
+	GAL::Window* Win = nullptr;
+	GTSL::Vector<GAL::Framebuffer*> Framebuffers;
 
-	RAPI::RenderTarget* depthTexture = nullptr;
+	GAL::RenderTarget* depthTexture = nullptr;
 	
-	RAPI::RenderContext* RC = nullptr;
-	RAPI::CommandBuffer* graphicsCommandBuffer = nullptr;
-	RAPI::CommandBuffer* transferCommandBuffer = nullptr;
-	RAPI::RenderPass* RP = nullptr;
+	GAL::RenderContext* RC = nullptr;
+	GAL::CommandBuffer* graphicsCommandBuffer = nullptr;
+	GAL::CommandBuffer* transferCommandBuffer = nullptr;
+	GAL::RenderPass* RP = nullptr;
 
-	RAPI::RenderMesh* FullScreenQuad = nullptr;
-	RAPI::GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
+	GAL::RenderMesh* FullScreenQuad = nullptr;
+	GAL::GraphicsPipeline* FullScreenRenderingPipeline = nullptr;
 
 	struct InstanceData
 	{
@@ -97,9 +96,9 @@ protected:
 		uint32 textureIndices[8];
 	};
 
-	FVector<InstanceData> perInstanceData;
-	FVector<Matrix4> perInstanceTransform;
-	FVector<MaterialData> perMaterialInstanceData;
+	GTSL::Vector<InstanceData> perInstanceData;
+	GTSL::Vector<GTM::Matrix4> perInstanceTransform;
+	GTSL::Vector<MaterialData> perMaterialInstanceData;
 
 
 	void UpdateViews();

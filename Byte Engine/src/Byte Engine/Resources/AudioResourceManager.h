@@ -5,7 +5,7 @@
 #include "SubResourceManager.h"
 #include <map>
 #include "SAPI/AudioCore.h"
-#include "Containers/DArray.hpp"
+#include <GTSL/FixedVector.hpp>
 
 class AudioResourceManager final : public SubResourceManager
 {
@@ -14,8 +14,8 @@ public:
 	{
 	protected:
 		friend AudioResourceManager;
-		
-		DArray<byte> Bytes;
+
+		GTSL::FixedVector<byte> Bytes;
 		AudioChannelCount AudioChannelCount;
 		AudioSampleRate AudioSampleRate;
 		AudioBitDepth AudioBitDepth;
@@ -32,5 +32,5 @@ public:
 	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
 
-	[[nodiscard]] Id64 GetResourceType() const override { return "Audio"; }
+	[[nodiscard]] GTSL::Id64 GetResourceType() const override { return "Audio"; }
 };

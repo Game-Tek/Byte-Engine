@@ -4,21 +4,10 @@
 
 class Allocator
 {
-	class Block
-	{
-		size_t size = 0;
-		void* data = nullptr;
-		size_t marker = 0;
-
-	public:
-		Block(const size_t size, const void* data);
-	};
-
 public:
 	static void* AlignForward(void* address, const uint8 alignment)
 	{
-		return reinterpret_cast<void*>((reinterpret_cast<uint8>(address) + static_cast<uint8>(alignment - 1)) &
-			static_cast<uint8>(~(alignment - 1)));
+		return reinterpret_cast<void*>((reinterpret_cast<uint8>(address) + static_cast<uint8>(alignment - 1)) & static_cast<uint8>(~(alignment - 1)));
 	}
 
 	static inline uint8 alignForwardAdjustment(const void* address, const uint8 alignment)
@@ -45,7 +34,25 @@ public:
 
 			if (neededSpace % alignment > 0) adjustment += alignment;
 		}
-
+		
 		return adjustment;
 	}
+};
+
+struct AllocatorReference
+{
+	/**
+	 * \brief Allocates memory.
+	 * \param size Number of bytes to allocate.
+	 * \param alignment Alignment of the allocation.
+	 * \param memory Pointer to a pointer to store the allocation.
+	 * \param allocatedSize Pointer to store the allocated size, this will be at least as big as size. This is Done as sometimes allocators allocate more space than what it was asked to, this way the client can take advantage of this and less memory is wasted.
+	 */
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+	/**
+	 * \brief Deallocates allocated memory.
+	 * \param size Size of the allocation being freed, can be the original size asked for, not necessarily the returned allocatedSize when allocating.
+	 * \param memory Pointer to the memory block being freed.
+	 */
+	void Deallocate(uint64 size, void* memory) const;
 };

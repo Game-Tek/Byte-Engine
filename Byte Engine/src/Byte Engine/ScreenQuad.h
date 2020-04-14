@@ -18,6 +18,6 @@ struct ScreenQuad
 	inline static uint8 VertexCount = 4;
 	inline static uint8 IndexCount = 6;
 
-	inline static const DArray<RAPI::ShaderDataTypes> Elements = { RAPI::ShaderDataTypes::FLOAT2, RAPI::ShaderDataTypes::FLOAT2 };
-	inline static RAPI::VertexDescriptor VD{Elements};
+	inline static const DArray<GAL::ShaderDataTypes> Elements = { GAL::ShaderDataTypes::FLOAT2, GAL::ShaderDataTypes::FLOAT2 };
+	inline static GAL::VertexDescriptor VD{Elements};
 };

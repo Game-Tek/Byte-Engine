@@ -1,30 +1,21 @@
 #pragma once
 
-#include "Core.h"
-
 #include "Object.h"
 
-#include "Math/Vector2.h"
-#include "Containers/Array.hpp"
-#include "Input/MouseState.h"
-#include "Input/InputEnums.h"
-#include "Input/JoystickState.h"
-#include "Containers/Id.h"
-#include "Containers/FVector.hpp"
-#include "Utility/Delegate.h"
-#include <map>
+#include <GTSL/Array.hpp>
+#include <GTSL/Id.h>
+#include <GTSL/Delegate.h>
 #include <unordered_map>
-#include "Core/Window.h"
 
-namespace RAPI
+namespace GAL
 {
 	class Window;
 }
 
 class InputManager : public Object
 {
-	std::unordered_map<Id16, Delegate<void(float)>> axisActions;
-	std::unordered_map<Id16, Delegate<void(bool)>>	buttonActions;
+	std::unordered_map<GTSL::Id16, Delegate<void(float)>> axisActions;
+	std::unordered_map<GTSL::Id16, Delegate<void(bool)>>	buttonActions;
 
 public:
 	InputManager() = default;

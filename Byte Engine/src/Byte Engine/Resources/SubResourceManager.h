@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ResourceReference.h"
-#include "Containers/FString.h"
+#include <GTSL/String.hpp>
 
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
@@ -25,8 +25,8 @@ public:
 	struct LoadResourceInfo
 	{
 		//const char* ResourceName = nullptr;
-		FString ResourcePath;
-		Id64 ResourceName;
+		GTSL::String ResourcePath;
+		GTSL::Id64 ResourceName;
 	};
 
 	struct OnResourceLoadInfo
@@ -49,13 +49,13 @@ public:
 	 */
 	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
 
-	virtual ResourceData* GetResource(const Id64& name) = 0;
+	virtual ResourceData* GetResource(const GTSL::Id64& name) = 0;
 	
-	virtual void ReleaseResource(const Id64& resourceName) = 0;
+	virtual void ReleaseResource(const GTSL::Id64& resourceName) = 0;
 
 	/**
 	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
 	 * \return A string containing the type name.
 	 */
-	[[nodiscard]] virtual Id64 GetResourceType() const = 0;
+	[[nodiscard]] virtual GTSL::Id64 GetResourceType() const = 0;
 };

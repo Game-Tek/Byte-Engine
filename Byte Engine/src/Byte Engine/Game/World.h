@@ -2,18 +2,18 @@
 
 #include "Object.h"
 
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 #include "TypeManager.h"
 #include <unordered_map>
-#include "Containers/TimePoint.h"
+#include <GTSL/TimePoint.h>
 
 class World : public Object
 {
-	TimePoint levelRunningTime;
-	TimePoint levelAdjustedRunningTime;
+	GTSL::TimePoint levelRunningTime;
+	GTSL::TimePoint levelAdjustedRunningTime;
 	float worldTimeMultiplier = 1;
 
-	std::unordered_map<Id16, TypeManager*> types;
+	std::unordered_map<GTSL::Id16, TypeManager*> types;
 public:
 	World();
 	virtual ~World();
@@ -21,7 +21,7 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "World"; }
 	
 	template<class T>
-	void AddTypeManager(const Id16& name) { types.insert({ name, new T() }); }
+	void AddTypeManager(const GTSL::Id16& name) { types.insert({ name, new T() }); }
 	
 	virtual void OnUpdate();
 
@@ -39,7 +39,7 @@ public:
 	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
 
 	static double GetRealRunningTime();
-	[[nodiscard]] TimePoint GetWorldRunningTime() const { return levelRunningTime; }
-	[[nodiscard]] TimePoint GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
-	[[nodiscard]] TimePoint GetWorldDeltaTime() const;
+	[[nodiscard]] GTSL::TimePoint GetWorldRunningTime() const { return levelRunningTime; }
+	[[nodiscard]] GTSL::TimePoint GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
+	[[nodiscard]] GTSL::TimePoint GetWorldDeltaTime() const;
 };

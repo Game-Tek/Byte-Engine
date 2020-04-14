@@ -1,6 +1,6 @@
 #include "Cone.h"
 
-#include "Math\BEM.hpp"
+#include <GTM/GTM.hpp>
 
 Cone::Cone(const float Radius, const float Length) : Radius(Radius), Length(Length)
 {
@@ -8,5 +8,5 @@ Cone::Cone(const float Radius, const float Length) : Radius(Radius), Length(Leng
 
 float Cone::GetInnerAngle() const
 {
-	return BEM::ArcTangent(Radius / Length);
+	return GTM::ArcTangent(Radius / Length);
 }

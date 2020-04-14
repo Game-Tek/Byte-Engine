@@ -1,16 +1,16 @@
 #include "AudioResourceManager.h"
 #include <fstream>
-#include "Stream.h"
-#include "Containers/Id.h"
-#include "Core/System.h"
+#include <GTSL/Id.h>
+#include <GTSL/System.h>
 
 bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
 {
-	auto search_result = resources.find(Id64(loadResourceInfo.ResourceName));
+	auto search_result = resources.find(GTSL::Id64(loadResourceInfo.ResourceName));
 
 	if (search_result == resources.end())
 	{
-		auto path = System::GetRunningPath();
+		GTSL::String path(255);
+		GTSL::System::GetRunningPath(path);
 		path += "resources/";
 		path += loadResourceInfo.ResourceName;
 		path +=".wav";
@@ -44,23 +44,12 @@ bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo
 			in_archive.Read(4, riff);
 			if (riff[0] != 'r' || riff[1] != 'i' || riff[2] != 'f' || riff[3] != 'f')
 			{
-				throw std::exception("No riff found!");
+				return false;
 			}
 
 			in_archive.Read(&overall_size);
-
 			in_archive.Read(4, wave);
-			if (wave[0] != 'w' || wave[1] != 'a' || wave[2] != 'v' || wave[3] != 'e')
-			{
-				throw std::exception("No wave found!");
-			}
-
 			in_archive.Read(4, fmt_chunk_marker);
-			if (fmt_chunk_marker[0] != 'f' || fmt_chunk_marker[1] != 'm' || fmt_chunk_marker[2] != 't' || fmt_chunk_marker[3] != '\0')
-			{
-				throw std::exception("No fmt found!");
-			}
-
 			in_archive.Read(&length_of_fmt);
 			in_archive.Read(&format_type);
 			in_archive.Read(&channels);
@@ -96,9 +85,9 @@ bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo
 			in_archive.Read(4, data_chunk_header);
 			in_archive.Read(&data_size);
 
-			data.Bytes = DArray<byte>(data_size);
+			data.Bytes = GTSL::FixedVector<byte>(data_size);
 
-			in_archive.Read(data_size, data.Bytes.getData());
+			in_archive.Read(data_size, data.Bytes.GetData());
 
 			return true;
 		}
@@ -112,7 +101,6 @@ bool AudioResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo
 	return true;
 }
 
-void AudioResourceManager::LoadFallback(const LoadResourceInfo& loadResourceInfo,
-	OnResourceLoadInfo& onResourceLoadInfo)
+void AudioResourceManager::LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
 {
 }

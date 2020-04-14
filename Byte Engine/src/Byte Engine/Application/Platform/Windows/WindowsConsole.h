@@ -2,6 +2,10 @@
 
 #include "Application/Console.h"
 
+namespace GTSL {
+	class String;
+}
+
 class WindowsConsole final : public Console
 {
 	void* inputHandle = nullptr;
@@ -10,6 +14,6 @@ class WindowsConsole final : public Console
 public:
 	WindowsConsole();
 	~WindowsConsole();
-	void GetLine(FString& line) override;
-	void PutLine(const FString& line) override;
+	void GetLine(GTSL::String& line) override;
+	void PutLine(const GTSL::String& line) override;
 };

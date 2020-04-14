@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RAPI/GraphicsPipeline.h"
+#include "GAL/GraphicsPipeline.h"
 
 /**
  * \brief A render group represents a group of meshes that share the same pipeline, hence can be rendered together.
@@ -8,12 +8,12 @@
  */
 class RenderGroup
 {
-    RAPI::Pipeline* pipeline = nullptr;
+    GAL::Pipeline* pipeline = nullptr;
 
 public:
     struct RenderGroupCreateInfo
     {
-        RAPI::Pipeline* Pipeline = nullptr;
+        GAL::Pipeline* Pipeline = nullptr;
     };
 
     explicit RenderGroup(const RenderGroupCreateInfo& renderGroupCreateInfo);

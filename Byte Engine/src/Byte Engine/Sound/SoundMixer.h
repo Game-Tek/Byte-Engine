@@ -1,11 +1,11 @@
 #pragma once
 
-#include "Containers/Id.h"
+#include <GTSL/Id.h>
 
 #include "SoundPlayer.h"
-#include "Containers/Pair.h"
-#include "Containers/Array.hpp"
-#include "Containers/FVector.hpp"
+#include <GTSL/Vector.hpp>
+#include <GTSL/Pair.h>
+#include <GTSL/Array.hpp>
 
 class AudioBuffer;
 
@@ -14,7 +14,7 @@ class SoundMixerChannelEffect
 	/**
 	* \brief Defines the effect's name. Used to refer to it.
 	*/
-	Id64 effectName;
+	GTSL::Id64 effectName;
 
 	/**
 	 * \brief Determines the effects intensity when used in a channel.
@@ -65,17 +65,17 @@ class SoundMixer
 		/**
 		 * \brief Defines the channel's name. Used to refer to it from the mixer.
 		 */
-		Id64 channelName;
+		GTSL::Id64 channelName;
 
 		/**
 		 * \brief Holds an array of sounds which are to be played.
 		 */
-		FVector<PlayingSounds> playingSounds;
+		GTSL::Vector<PlayingSounds> playingSounds;
 
 		/**
 		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.
 		 */
-		Array<SoundMixerChannelEffect*, 10> effects;
+		GTSL::Array<SoundMixerChannelEffect*, 10> effects;
 
 	public:
 		~SoundMixerChannel()
@@ -97,7 +97,7 @@ class SoundMixer
 		SoundMixerChannelEffect* AddEffect()
 		{
 			SoundMixerChannelEffect* new_effect = new _T();
-			effects.push_back(new_effect);
+			effects.PushBack(new_effect);
 			return new_effect;
 		}
 
@@ -118,7 +118,7 @@ public:
 		//channels.Get(0).effects;
 	}
 
-	SoundMixerChannel& GetChannel(const Id64& _Id)
+	SoundMixerChannel& GetChannel(const GTSL::Id64& _Id)
 	{
 		//return channels.Get(_Id.GetID());
 	}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core.h"
+#include "../Core.h"
 
 /**
  * \brief Specifies and IP endpoint. This is an address and a port.
@@ -28,13 +28,12 @@ struct IpEndpoint
 	}
 
 	/**
-	 * \brief Sets this IpEndpoint's address as the passed in int_address_ uint32.
-	 * \param int_address_ IP address packed in uint32 from which to build the address.
+	 * \brief Sets this IpEndpoint's address as the passed in int_address uint32.
+	 * \param int_address IP address packed in uint32 from which to build the address.
 	 */
-	void AddressFromInt(const uint32 int_address_)
+	void AddressFromInt(const uint32 int_address)
 	{
-		Address[0] = ((int_address_ >> 24) & 0xFF), Address[1] = ((int_address_ >> 16) & 0xFF), Address[2] = ((
-			int_address_ >> 8) & 0xFF), Address[3] = (int_address_ & 0xFF);
+		Address[0] = ((int_address >> 24) & 0xFF), Address[1] = ((int_address >> 16) & 0xFF), Address[2] = ((int_address >> 8) & 0xFF), Address[3] = (int_address & 0xFF);
 	}
 };
 

@@ -1,91 +1,83 @@
 #pragma once
 
-#include "Containers/FVector.hpp"
 #include "Thread.h"
-#include <vector>
-#include <functional>
 #include "BlockingQueue.h"
 #include <future>
+#include "Array.hpp"
+#include "Delegate.h"
 
-class ThreadPool
+namespace GTSL
 {
-public:
-	explicit ThreadPool(const uint32 threads = std::thread::hardware_concurrency())
-		: m_queues(threads), m_count(threads)
+	//https://github.com/mvorbrodt/blog
+	
+	class ThreadPool
 	{
-		if (!threads)
-			throw std::invalid_argument("Invalid thread count!");
-
-		auto worker = [this](auto i)
+	public:
+		explicit ThreadPool(const uint32 numberOfThreads = Thread::ThreadCount()) : queues(numberOfThreads), threadCount(numberOfThreads)
 		{
-			while (true)
+			if (!numberOfThreads) { throw std::invalid_argument("Invalid thread count!"); }
+
+			//lambda
+			auto worker_pop_function = [this](const uint8 i)
 			{
-				Proc f;
-				for (auto n = 0; n < m_count * K; ++n)
-					if (m_queues[(i + n) % m_count].try_pop(f))
-						break;
-				if (!f && !m_queues[i].pop(f))
-					break;
-				f();
+				while (true)
+				{
+					Proc f;
+					for (auto n = 0; n < threadCount * K; ++n)
+					{
+						if (queues[(i + n) % threadCount].TryPop(f)) { break; }
+					}
+					
+					if (!f && !queues[i].Pop(f)) { break; }
+					f();
+				}
+			};
+
+			for (uint8 i = 0; i < numberOfThreads; ++i)
+			{
+				//Constructing threads with function and I parameter
+				threads.EmplaceBack(worker_pop_function, i);
 			}
-		};
+		}
 
-		for (auto i = 0; i < threads; ++i)
-			m_threads.emplace_back(worker, i);
-	}
+		~ThreadPool()
+		{
+			for (auto& queue : queues) { queue.Done(); }
+			for (auto& thread : threads) { thread.Join(); }
+		}
 
-	~ThreadPool()
-	{
-		for (auto& queue : m_queues)
-			queue.done();
-		for (auto& thread : m_threads)
-			thread.join();
-	}
+		template<typename F, typename... ARGS>
+		void EnqueueWork(F&& f, ARGS&&... args)
+		{
+			auto work = [function = GTSL::MakeForwardReference<F>(f), arguments = std::make_tuple(GTSL::MakeForwardReference<ARGS>(args)...)]()
+			{
+				std::apply(function, arguments);
+			};
+			
+			const auto currentIndex = index++;
 
-	template<typename F, typename... Args>
-	void enqueue_work(F&& f, Args&&... args)
-	{
-		auto work = [p = std::forward<F>(f), t = std::make_tuple(std::forward<Args>(args)...)]() { std::apply(p, t); };
-		auto i = m_index++;
+			for (auto n = 0; n < threadCount * K; ++n)
+			{
+				//Try to Push work into queues, if success return else when Done looping place into some queue.
+				
+				if (queues[(currentIndex + n) % threadCount].TryPush(work)) { return; }
+			}
 
-		for (auto n = 0; n < m_count * K; ++n)
-			if (m_queues[(i + n) % m_count].try_push(work))
-				return;
+			queues[currentIndex % threadCount].Push(GTSL::MakeTransferReference(work));
+		}
 
-		m_queues[i % m_count].push(std::move(work));
-	}
+	private:
+		using Proc = Delegate<void()>;
+		Array<BlockingQueue<Proc>, 64, uint8> queues;
 
-	template<typename F, typename... Args>
-	[[nodiscard]] auto enqueue_task(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>>
-	{
-		using task_return_type = std::invoke_result_t<F, Args...>;
-		using task_type = std::packaged_task<task_return_type()>;
+		Array<Thread, 64, uint8> threads;
 
-		auto task = std::make_shared<task_type>(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
-		auto work = [task]() { (*task)(); };
-		auto result = task->get_future();
-		auto i = m_index++;
+		const uint8 threadCount{ 0 };
+		std::atomic_uint index{ 0 };
 
-		for (auto n = 0; n < m_count * K; ++n)
-			if (m_queues[(i + n) % m_count].try_push(work))
-				return result;
-
-		m_queues[i % m_count].push(std::move(work));
-
-		return result;
-	}
-
-private:
-	using Proc = std::function<void(void)>;
-	using Queue = blocking_queue<Proc>;
-	using Queues = std::vector<Queue>;
-	Queues m_queues;
-
-	using Threads = std::vector<std::thread>;
-	Threads m_threads;
-
-	const unsigned int m_count;
-	std::atomic_uint m_index = 0;
-
-	inline static constexpr uint32 K = 2;
-};
+		/**
+		 * \brief Number of times to loop around the queues to find one that is free.
+		 */
+		inline static constexpr uint8 K{ 2 };
+	};
+}

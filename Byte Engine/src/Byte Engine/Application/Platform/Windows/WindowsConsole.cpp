@@ -1,6 +1,6 @@
 #include "WindowsConsole.h"
 
-#include "Containers/FString.h"
+#include <GTSL/String.hpp>
 
 #include "Windows.h"
 
@@ -12,7 +12,7 @@ WindowsConsole::~WindowsConsole()
 {
 }
 
-void WindowsConsole::GetLine(FString& line)
+void WindowsConsole::GetLine(GTSL::String& line)
 {
 	char buffer[255];
 	unsigned long chars_read = 0;
@@ -21,7 +21,7 @@ void WindowsConsole::GetLine(FString& line)
 	line.Drop(chars_read - 2);
 }
 
-void WindowsConsole::PutLine(const FString& line)
+void WindowsConsole::PutLine(const GTSL::String& line)
 {
 	unsigned long chars_read = 0;
 	WriteConsoleA(outputHandle, line.c_str(), line.GetLength(), &chars_read, nullptr);

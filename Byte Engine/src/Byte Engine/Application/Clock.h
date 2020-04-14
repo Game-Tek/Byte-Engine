@@ -3,7 +3,7 @@
 #include "Core.h"
 
 #include "Object.h"
-#include "Containers/TimePoint.h"
+#include <GTSL/TimePoint.h>
 
 //Used to specify time(Hour, Minute, Second).
 struct Time
@@ -54,14 +54,14 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "Clock"; }
 
 	//Returns the time elapsed since the last application update (tick).
-	[[nodiscard]] TimePoint GetDeltaTime() const { return deltaTime; }
+	[[nodiscard]] GTSL::TimePoint GetDeltaTime() const { return deltaTime; }
 
 	//Returns the time the game has been running.
-	[[nodiscard]] TimePoint GetElapsedTime() const { return elapsedTime; }
+	[[nodiscard]] GTSL::TimePoint GetElapsedTime() const { return elapsedTime; }
 
 	[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 
-	[[nodiscard]] TimePoint GetCurrentTime() const;
+	[[nodiscard]] GTSL::TimePoint GetCurrentTime() const;
 
 	//Returns the current local year of the computer.
 	static uint16 GetYear();
@@ -86,6 +86,6 @@ private:
 	//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.
 	uint64 processorFrequency = 0;
 
-	TimePoint deltaTime;
-	TimePoint elapsedTime;
+	GTSL::TimePoint deltaTime;
+	GTSL::TimePoint elapsedTime;
 };

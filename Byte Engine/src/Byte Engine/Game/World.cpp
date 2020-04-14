@@ -32,4 +32,4 @@ void World::Pause()
 
 double World::GetRealRunningTime() { return BE::Application::Get()->GetClock().GetElapsedTime().Seconds<double>(); }
 
-TimePoint World::GetWorldDeltaTime() const { return BE::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier; }
+GTSL::TimePoint World::GetWorldDeltaTime() const { return BE::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier; }

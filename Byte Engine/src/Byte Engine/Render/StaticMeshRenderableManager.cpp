@@ -1,12 +1,12 @@
 #include "StaticMeshRenderableManager.h"
 
-#include "Containers/FString.h"
+#include <GTSL/String.hpp>
 
-#include "RAPI/CommandBuffer.h"
+#include "GAL/CommandBuffer.h"
 
 #include "Renderer.h"
 
-#include "RAPI/RenderDevice.h"
+#include "GAL/RenderDevice.h"
 #include "StaticMeshRenderComponent.h"
 
 StaticMeshRenderableManager::StaticMeshRenderableManager(const StaticMeshRenderableManagerCreateInfo& staticMeshRenderableManagerCreateInfo)

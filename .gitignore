@@ -2,7 +2,13 @@
 .vs/
 bin/
 bin-int/
-
+.git/
+.github/
+vendor/
 
 # Files
 *.user
+*.DotSettings
+*.sln.DotSettings
+*.DotSettings.user
+*.sln.DotSettings.user

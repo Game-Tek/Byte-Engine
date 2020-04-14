@@ -82,7 +82,7 @@ public:
 	void Read(uint64* _In) const { readInternal(sizeof(uint64), _In); }
 
 	/**
-	* \brief Writes the data starting at _In up to _Size bytes from disk to memory.
+	* \brief Writes the data starting At _In up to _Size bytes from disk to memory.
 	* \param _Size Bytes to be read from disk.
 	* \param _Data Pointer to data to be read from disk to memory.
 	*/
@@ -186,7 +186,7 @@ public:
 	void Write(uint64 _In) const { writeInternal(sizeof(uint64), &_In); }
 
 	/**
-	* \brief Writes the data starting at _In up to _Size bytes to disk.
+	* \brief Writes the data starting At _In up to _Size bytes to disk.
 	* \param _Size Bytes to be written to disk.
 	* \param _In Pointer to data to be written to disk.
 	*/

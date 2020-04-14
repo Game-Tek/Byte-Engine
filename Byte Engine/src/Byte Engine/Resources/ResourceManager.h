@@ -4,19 +4,16 @@
 
 #include "Object.h"
 
-#include "Resource.h"
-
 #include <unordered_map>
-#include "Containers/FString.h"
-#include "Containers/Id.h"
+#include <GTSL/String.hpp>
+#include <GTSL/Id.h>
 #include "SubResourceManager.h"
 
 class ResourceManager : public Object
 {
-	static FString GetBaseResourcePath() { return FString("resources/"); }
-	void SaveFile(const FString& _ResourceName, FString& fileName, ResourceData& ResourceData_);
+	void SaveFile(const GTSL::String& _ResourceName, GTSL::String& fileName, ResourceData& ResourceData_);
 
-	std::unordered_map<Id64::HashType, SubResourceManager*> resourceManagers;
+	std::unordered_map<GTSL::Id64::HashType, SubResourceManager*> resourceManagers;
 	
 public:
 	
@@ -28,11 +25,11 @@ public:
 		}
 	}
 
-	ResourceReference TryGetResource(const FString& name, const Id64& type);
+	ResourceReference TryGetResource(const GTSL::String& name, const GTSL::Id64& type);
 	ResourceData* GetResource(const ResourceReference& resourceReference);
 	
 	void ReleaseResource(const ResourceReference& resourceReference) const;
-	void ReleaseResource(const Id64& resourceType, const Id64& resourceName);
+	void ReleaseResource(const GTSL::Id64& resourceType, const GTSL::Id64& resourceName);
 
 	void* CreateFile();
 
@@ -41,7 +38,7 @@ public:
 	{
 		auto new_resource_manager = static_cast<SubResourceManager*>(new T());
 		
-		resourceManagers.insert({ Id64(new_resource_manager->GetResourceType()), new_resource_manager });
+		resourceManagers.insert({ GTSL::Id64(new_resource_manager->GetResourceType()), new_resource_manager });
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }

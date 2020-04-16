@@ -4,15 +4,11 @@
 
 class Sound;
 
-#include "SAPI/AudioDevice.h"
-
 #include "Resources/AudioResourceManager.h"
 
 class SoundManager
 {
 	SoundMixer* activeSoundMixer = nullptr;
-
-	AudioDevice* audioDevice = nullptr;
 
 	AudioResourceManager::AudioResourceData* sound = nullptr;
 

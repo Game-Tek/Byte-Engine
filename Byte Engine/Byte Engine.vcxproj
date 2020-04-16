@@ -76,7 +76,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vendor/GTSL.lib;vendor/Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>vendor/GTSL.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -102,7 +102,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vendor/GTSL.lib;vendor/Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>vendor/GTSL.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -135,8 +135,6 @@
     <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\AudioCore.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Byte Engine\Sound\SoundMixer.h" />
     <ClInclude Include="src\Byte Engine\Sound\SoundManager.h" />
     <ClInclude Include="src\Byte Engine\Sound\SoundPlayer.h" />
@@ -164,7 +162,6 @@
     <ClInclude Include="src\Byte Engine\Vertex.h" />
     <ClInclude Include="src\Byte Engine\Game\WorldObject.h" />
     <ClInclude Include="src\Game Studio\Texture.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.cpp" />
@@ -179,8 +176,6 @@
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\AudioDevice.cpp" />
     <ClCompile Include="src\Byte Engine\Sound\SoundManager.cpp" />
     <ClCompile Include="src\Byte Engine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.cpp" />
@@ -192,7 +187,6 @@
     <ClCompile Include="src\Byte Engine\Application\Application.cpp" />
     <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -114,9 +114,6 @@
     <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\AudioCore.h" />
-    <ClInclude Include="src\Byte Engine\SAPI\AudioDevice.h" />
     <ClInclude Include="src\Byte Engine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\Byte Engine\Sound\SoundListener.h" />
     <ClInclude Include="src\Byte Engine\Sound\SoundManager.h" />
@@ -170,9 +167,6 @@
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\Windows\WindowsAudioDevice.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />
-    <ClCompile Include="src\Byte Engine\SAPI\AudioDevice.cpp" />
     <ClCompile Include="src\Byte Engine\Sound\SoundManager.cpp" />
     <ClCompile Include="src\Byte Engine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.cpp" />

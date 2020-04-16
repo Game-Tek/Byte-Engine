@@ -2,6 +2,7 @@
 
 #include "SubResourceManager.h"
 #include <unordered_map>
+#include "ResourceData.h"
 
 struct MaterialResourceData final : ResourceData
 {
@@ -10,13 +11,27 @@ struct MaterialResourceData final : ResourceData
 
 class MaterialResourceManager final : public SubResourceManager
 {
-	std::unordered_map<GTSL::Id64, MaterialResourceData> resources;
+	std::unordered_map<GTSL::Id64::HashType, MaterialResourceData> resources;
 	
 public:
-	[[nodiscard]] GTSL::Id64 GetResourceType() const override { return "Material"; }
-	const char* GetResourceExtension() override { return "gsmat"; }
-	void ReleaseResource(const GTSL::Id64& resourceName) override;
-	ResourceData* GetResource(const GTSL::Id64& name) override;
-	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
-	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
+	inline static constexpr GTSL::Id64 type{ "Material" };
+	
+	MaterialResourceManager() : SubResourceManager("Material")
+	{
+	}
+
+	MaterialResourceData* GetResource(const GTSL::Id64& resourceName)
+	{
+		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		return &resources[resourceName];
+	}
+	
+	MaterialResourceData* TryGetResource(const GTSL::String& name);
+	
+	void ReleaseResource(const GTSL::Id64& resourceName)
+	{
+		resourceMapMutex.WriteLock();
+		if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); }
+		resourceMapMutex.WriteUnlock();
+	}
 };

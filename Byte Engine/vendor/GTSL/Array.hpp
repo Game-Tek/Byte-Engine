@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include "Memory.h"
 #include "Assert.h"
+#include <new>
 
 namespace GTSL
 {
@@ -50,7 +51,7 @@ namespace GTSL
 		{
 		}
 
-		constexpr Array(const LT length, T array[]) noexcept : length(length)
+		constexpr Array(const LT length, const T array[]) noexcept : length(length)
 		{
 			copyToData(array, length);
 		}
@@ -107,7 +108,14 @@ namespace GTSL
 		constexpr LT PushBack(const T& obj) noexcept
 		{
 			GTSL_ASSERT((this->length + 1) > CAPACITY, "Array is not long enough to insert any more elements!");
-			::new(this->data + this->length) T(obj);
+			::new(static_cast<void*>(this->data + this->length)) T(obj);
+			return ++this->length;
+		}
+
+		constexpr LT PushBack(T&& obj) noexcept
+		{
+			GTSL_ASSERT((this->length + 1) > CAPACITY, "Array is not long enough to insert any more elements!");
+			::new(static_cast<void*>(this->data + this->length)) T(GTSL::MakeTransferReference(obj));
 			return ++this->length;
 		}
 
@@ -115,7 +123,7 @@ namespace GTSL
 		constexpr LT EmplaceBack(ARGS&&... args)
 		{
 			GTSL_ASSERT((this->length + 1) > CAPACITY, "Array is not long enough to insert any more elements!");
-			::new(this->data + this->length) T(GTSL::MakeForwardReference<ARGS>(args) ...);
+			::new(static_cast<void*>(this->data + this->length)) T(GTSL::MakeForwardReference<ARGS>(args) ...);
 			return ++this->length;
 		}
 

@@ -13,7 +13,7 @@ class World : public Object
 	GTSL::TimePoint levelAdjustedRunningTime;
 	float worldTimeMultiplier = 1;
 
-	std::unordered_map<GTSL::Id16, TypeManager*> types;
+	std::unordered_map<GTSL::Id64::HashType, TypeManager*> types;
 public:
 	World();
 	virtual ~World();
@@ -21,7 +21,7 @@ public:
 	[[nodiscard]] const char* GetName() const override { return "World"; }
 	
 	template<class T>
-	void AddTypeManager(const GTSL::Id16& name) { types.insert({ name, new T() }); }
+	void AddTypeManager(const GTSL::Id64& name) { types.insert({ name, new T() }); }
 	
 	virtual void OnUpdate();
 

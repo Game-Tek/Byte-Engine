@@ -23,13 +23,15 @@ namespace BE
 	{
 		while (!ShouldClose())
 		{
+			transientAllocator.Clear();
+			
 			ClockInstance.OnUpdate();
 			InputManagerInstance.Update();
 
 			OnUpdate(); //Update instanced engine class
 		}
 
-		BE_LOG_WARNING("Shutting down application!\nReason: %s", CloseReason.c_str())
+		//BE_LOG_WARNING("Shutting down application!\nReason: %s", CloseReason.c_str())
 
 		return 0;
 	}

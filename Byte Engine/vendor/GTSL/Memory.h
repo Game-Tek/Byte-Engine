@@ -4,6 +4,10 @@
 
 namespace GTSL
 {
+#undef CopyMemory
+#undef Allocate
+#undef Allocate
+	
 	class Memory
 	{
 	public:

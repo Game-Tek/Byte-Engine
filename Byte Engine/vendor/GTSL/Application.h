@@ -16,5 +16,11 @@ namespace GTSL
 		virtual void Update() = 0;
 
 		virtual void Close() = 0;
+
+		struct Win32NativeHandles
+		{
+			void* HINSTANCE{ nullptr };
+		};
+		virtual void GetNativeHandles(void* nativeHandles) = 0;
 	};
 }

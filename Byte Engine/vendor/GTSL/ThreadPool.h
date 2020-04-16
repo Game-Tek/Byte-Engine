@@ -13,30 +13,28 @@ namespace GTSL
 	class ThreadPool
 	{
 	public:
-		explicit ThreadPool(const uint32 numberOfThreads = Thread::ThreadCount()) : queues(numberOfThreads), threadCount(numberOfThreads)
-		{
-			if (!numberOfThreads) { throw std::invalid_argument("Invalid thread count!"); }
-
+		explicit ThreadPool() : queues(threadCount)
+		{	
 			//lambda
-			auto worker_pop_function = [this](const uint8 i)
+			auto workers_loop = [this](const uint8 i)
 			{
 				while (true)
 				{
-					Proc f;
+					Delegate<void()> work;
 					for (auto n = 0; n < threadCount * K; ++n)
 					{
-						if (queues[(i + n) % threadCount].TryPop(f)) { break; }
+						if (queues[(i + n) % threadCount].TryPop(work)) { break; }
 					}
 					
-					if (!f && !queues[i].Pop(f)) { break; }
-					f();
+					if (!work && !queues[i].Pop(work)) { break; }
+					work();
 				}
 			};
 
-			for (uint8 i = 0; i < numberOfThreads; ++i)
+			for (uint8 i = 0; i < threadCount; ++i)
 			{
 				//Constructing threads with function and I parameter
-				threads.EmplaceBack(worker_pop_function, i);
+				threads.EmplaceBack(workers_loop, i);
 			}
 		}
 
@@ -66,13 +64,59 @@ namespace GTSL
 			queues[currentIndex % threadCount].Push(GTSL::MakeTransferReference(work));
 		}
 
+		template<typename F, typename... ARGS>
+		void EnqueueWork(const Delegate<F>& delegate, ARGS&&... args)
+		{
+			auto work = [delegate, arguments = GTSL::MakeForwardReference<ARGS>(args)...]()
+			{
+				delegate(GTSL::MakeForwardReference<ARGS>(arguments)...);
+			};
+			
+			const auto currentIndex = index++;
+
+			for (auto n = 0; n < threadCount * K; ++n)
+			{
+				//Try to Push work into queues, if success return else when Done looping place into some queue.
+				
+				if (queues[(currentIndex + n) % threadCount].TryPush(work)) { return; }
+			}
+
+			queues[currentIndex % threadCount].Push(GTSL::MakeTransferReference(work));
+		}
+
+		template<typename F, typename... ARGS>
+		[[nodiscard]] auto EnqueueTask(F&& f, ARGS&&... args) -> std::future<std::invoke_result_t<F, ARGS...>>
+		{
+			using task_return_type = std::invoke_result_t<F, ARGS...>;
+			using task_type = std::packaged_task<task_return_type()>;
+
+			auto task = std::make_shared<task_type>(std::bind(GTSL::MakeForwardReference<F>(f), GTSL::MakeForwardReference<ARGS>(args)...));
+			auto work = [task]()
+			{
+				(*task)();
+			};
+			auto result = task->get_future();
+			auto i = index++;
+
+			for (auto n = 0; n < threadCount * K; ++n)
+			{
+				if (queues[(i + n) % threadCount].TryPush(work))
+				{
+					return result;
+				}
+			}
+
+			queues[i % threadCount].Push(GTSL::MakeTransferReference(work));	
+
+			return result;
+		}
+		
 	private:
-		using Proc = Delegate<void()>;
-		Array<BlockingQueue<Proc>, 64, uint8> queues;
+		Array<BlockingQueue<Delegate<void()>>, 64, uint8> queues;
 
 		Array<Thread, 64, uint8> threads;
 
-		const uint8 threadCount{ 0 };
+		inline const static uint8 threadCount{ Thread::ThreadCount() };
 		std::atomic_uint index{ 0 };
 
 		/**

@@ -19,6 +19,8 @@ namespace GTSL
 
 		void Close() override;
 
+		void GetNativeHandles(void* nativeHandles) override;
+		
 		[[nodiscard]] HINSTANCE GetInstance() const { return instance; }
 	};
 }

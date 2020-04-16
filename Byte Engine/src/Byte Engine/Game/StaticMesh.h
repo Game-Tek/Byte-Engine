@@ -1,14 +1,15 @@
 #pragma once
 
 #include "Object.h"
-#include "Resources/ResourceReference.h"
 
-class GTSL::String;
+namespace GTSL {
+	class String;
+}
+
 struct Model;
 
 class StaticMesh final : public Object
 {
-	ResourceReference staticMeshResource;
 public:
 	explicit StaticMesh(const GTSL::String& _Name);
 	~StaticMesh();

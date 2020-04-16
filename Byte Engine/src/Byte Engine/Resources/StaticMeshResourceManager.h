@@ -3,6 +3,7 @@
 #include "SubResourceManager.h"
 #include <unordered_map>
 #include "Vertex.h"
+#include "ResourceData.h"
 
 struct StaticMeshResourceData final : ResourceData
 {
@@ -26,13 +27,27 @@ struct StaticMeshResourceData final : ResourceData
 class StaticMeshResourceManager final : public SubResourceManager
 {
 public:
-	const char* GetResourceExtension() override { return "obj"; }
-	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
-	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
-	ResourceData* GetResource(const GTSL::Id64& name) override;
-	void ReleaseResource(const GTSL::Id64& resourceName) override;
-	[[nodiscard]] GTSL::Id64 GetResourceType() const override { return "Static Mesh"; }
+	inline static constexpr GTSL::Id64 type{"Static Mesh"};
+	
+	StaticMeshResourceManager() : SubResourceManager("Static Mesh")
+	{
+	}
+
+	StaticMeshResourceData* GetResource(const GTSL::Id64& resourceName)
+	{
+		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		return &resources[resourceName];
+	}
+	
+	StaticMeshResourceData* TryGetResource(const GTSL::String& name);
+	
+	void ReleaseResource(const GTSL::Id64& resourceName)
+	{
+		resourceMapMutex.WriteLock();
+		if(resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); }
+		resourceMapMutex.WriteUnlock();
+	}
 	
 private:
-	std::unordered_map<GTSL::Id64, StaticMeshResourceData> resources;
+	std::unordered_map<GTSL::Id64::HashType, StaticMeshResourceData> resources;
 };

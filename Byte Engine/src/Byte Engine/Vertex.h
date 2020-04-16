@@ -3,7 +3,6 @@
 #include <GTM/Vector2.h>
 #include <GTM/Vector3.h>
 #include <GTSL/TextureCoordinates.h>
-#include <GAL/RenderMesh.h>
 
 using Index = uint16;
 
@@ -20,7 +19,5 @@ struct Vertex
 	TextureCoordinates TextCoord;
 	Vector3 Tangent;
 	Vector3 BiTangent;
-
-	inline static const GAL::VertexDescriptor Descriptor{ { GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT2, GAL::ShaderDataTypes::FLOAT3, GAL::ShaderDataTypes::FLOAT3 } };
 };
 

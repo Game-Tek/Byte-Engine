@@ -28,7 +28,7 @@ class RenderGroupBase
      */
     uint32 maxInstanceCount = 0;
 
-    Array<GTSL::Id64, 8>parentGroups;
+	GTSL::Array<GTSL::Id64, 8>parentGroups;
 
 protected:
     static Pair<GAL::BindingsPoolCreateInfo, GAL::BindingsSetCreateInfo> bindingDescriptorToRAPIBindings(const BindingsSetDescriptor& bindingsSetDescriptor);

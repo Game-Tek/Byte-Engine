@@ -3,24 +3,46 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <GTSL/System.h>
 
-bool StaticMeshResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
+StaticMeshResourceData* StaticMeshResourceManager::TryGetResource(const GTSL::String& name)
 {
-	StaticMeshResourceData data;
-
-	//Create Importer.
-	Assimp::Importer Importer;
-
-	//Create Scene and import file.
-	const aiScene* Scene = Importer.ReadFile(loadResourceInfo.ResourcePath.c_str(),	aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices	| aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals |	aiProcess_ImproveCacheLocality);
-
-	if (!Scene || Scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !Scene->mRootNode)
+	GTSL::Id64 hashed_name(name);
+	
 	{
-		auto Res = Importer.GetErrorString();
-		return false;
+		resourceMapMutex.ReadLock();
+		if (resources.contains(hashed_name))
+		{
+			resourceMapMutex.ReadUnlock();
+			resourceMapMutex.WriteLock();
+			auto& res = resources.at(hashed_name);
+			res.IncrementReferences();
+			resourceMapMutex.WriteUnlock();
+			return &res;
+		}
+		resourceMapMutex.ReadUnlock();
 	}
 
-	aiMesh* InMesh = Scene->mMeshes[0];
+	StaticMeshResourceData data;
+
+	Assimp::Importer importer;
+
+	GTSL::String path(255, &transientAllocator);
+	GTSL::System::GetRunningPath(path);
+	path += "resources/";
+	path += name;
+	path += '.';
+	path += "obj";
+
+	const auto ai_scene = importer.ReadFile(path.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+
+	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode)
+	{
+		auto res = importer.GetErrorString();
+		return nullptr;
+	}
+
+	auto InMesh = ai_scene->mMeshes[0];
 
 	data.VertexArray = new Vertex[InMesh->mNumVertices];
 	//Set this mesh's vertex count as the number of vertices found in this mesh.
@@ -50,17 +72,13 @@ bool StaticMeshResourceManager::LoadResource(const LoadResourceInfo& loadResourc
 			data.VertexArray[i].TextCoord.V = InMesh->mTextureCoords[0][i].y;
 		}
 
-		// Tangent
-		//Result.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
-		//Result.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
-		//Result.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
+		data.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
+		data.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
+		data.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
 
-		/*
-		// BiTangent
-		Result.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
-		Result.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;
-		Result.VertexArray[i].BiTangent.Z = InMesh->mBitangents[i].z;
-		*/
+		data.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
+		data.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;
+		data.VertexArray[i].BiTangent.Z = InMesh->mBitangents[i].z;
 	}
 
 	//We allocate a new array of unsigned ints big enough to hold the number of indices in this mesh and assign it to the
@@ -68,9 +86,9 @@ bool StaticMeshResourceManager::LoadResource(const LoadResourceInfo& loadResourc
 	data.IndexArray = new uint16[InMesh->mNumFaces * 3];
 
 	//Wow loop through each of the mesh's faces and retrieve the corresponding vertex indices.
-	for (uint32 f = 0; f < InMesh->mNumFaces; f++)
+	for (uint32 f = 0; f < InMesh->mNumFaces; ++f)
 	{
-		const aiFace Face = InMesh->mFaces[f];
+		const auto Face = InMesh->mFaces[f];
 
 		// Retrieve all indices of the face and store them in the indices array.
 		for (uint32 i = 0; i < Face.mNumIndices; i++)
@@ -82,15 +100,9 @@ bool StaticMeshResourceManager::LoadResource(const LoadResourceInfo& loadResourc
 		data.IndexCount += Face.mNumIndices;
 	}
 
-	resources.insert({ loadResourceInfo.ResourceName, data });
-	
-	return true;
+	resourceMapMutex.WriteLock();
+	resources.emplace(hashed_name, GTSL::MakeTransferReference(data)).first->second.IncrementReferences();
+	resourceMapMutex.WriteUnlock();
+	return nullptr;
+
 }
-
-void StaticMeshResourceManager::LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
-{
-}
-
-ResourceData* StaticMeshResourceManager::GetResource(const GTSL::Id64& name) { return &resources[name]; }
-
-void StaticMeshResourceManager::ReleaseResource(const GTSL::Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }

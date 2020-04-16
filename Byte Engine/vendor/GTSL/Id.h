@@ -12,7 +12,10 @@ namespace GTSL
 		using HashType = uint64;
 
 		constexpr Id64() = default;
-		constexpr Id64(const char* cstring) noexcept;
+		constexpr Id64(const char* cstring) noexcept
+		{
+			
+		}
 		constexpr explicit Id64(HashType id) noexcept;
 		explicit Id64(const String& string);
 		constexpr Id64(const Id64& other) = default;

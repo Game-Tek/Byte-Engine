@@ -5,12 +5,12 @@
 
 StaticMesh::StaticMesh(const GTSL::String& _Name)
 {
-	staticMeshResource = BE::Application::Get()->GetResourceManager()->TryGetResource(_Name, "Static Mesh");
+	BE::Application::Get()->GetResourceManager()->GetSubResourceManager<StaticMeshResourceManager>()->TryGetResource(_Name);
 }
 
 StaticMesh::~StaticMesh()
 {
-	BE::Application::Get()->GetResourceManager()->ReleaseResource(staticMeshResource);
+	BE::Application::Get()->GetResourceManager()->GetSubResourceManager<StaticMeshResourceManager>()->ReleaseResource("Name");
 }
 
 //Model StaticMesh::GetModel() const

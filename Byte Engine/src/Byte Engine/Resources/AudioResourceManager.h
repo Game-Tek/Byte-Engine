@@ -3,34 +3,48 @@
 #include "Core.h"
 
 #include "SubResourceManager.h"
-#include <map>
 #include "SAPI/AudioCore.h"
 #include <GTSL/FixedVector.hpp>
+#include <unordered_map>
+#include "ResourceData.h"
 
 class AudioResourceManager final : public SubResourceManager
 {
 public:
 	struct AudioResourceData final : ResourceData
 	{
-	protected:
 		friend AudioResourceManager;
 
 		GTSL::FixedVector<byte> Bytes;
 		AudioChannelCount AudioChannelCount;
 		AudioSampleRate AudioSampleRate;
 		AudioBitDepth AudioBitDepth;
-
-	public:
 	};
 	
 private:
-	std::map<uint64, AudioResourceData> resources;
+	std::unordered_map<GTSL::Id64::HashType, AudioResourceData> resources;
 	
 public:
-	~AudioResourceManager() = default;
+	inline static constexpr GTSL::Id64 type{ "Audio" };
 	
-	bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
-	void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) override;
+	AudioResourceManager() : SubResourceManager("Audio")
+	{
+	}
+	
+	~AudioResourceManager() = default;
 
-	[[nodiscard]] GTSL::Id64 GetResourceType() const override { return "Audio"; }
+	AudioResourceData* GetResource(const GTSL::String& resourceName)
+	{
+		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		return &resources[GTSL::Id64(resourceName)];
+	}
+	
+	AudioResourceData* TryGetResource(const GTSL::String& name);
+	
+	void ReleaseResource(const GTSL::Id64& resourceName)
+	{
+		resourceMapMutex.WriteLock();
+		if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); }
+		resourceMapMutex.WriteUnlock();
+	}
 };

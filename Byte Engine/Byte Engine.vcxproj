@@ -65,7 +65,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
       <ShowIncludes>false</ShowIncludes>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>W:\Game Studio\GS_Engine\vendor\vulkan\shaderc;$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -76,7 +76,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL.lib;Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>vendor/GTSL.lib;vendor/Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -89,7 +89,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>NOMINMAX;BE_PLATFORM_WIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor</AdditionalIncludeDirectories>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -102,20 +102,23 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL.lib;Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>vendor/GTSL.lib;vendor/Game-Tek-Math-Library.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Byte Engine\Animation\Skeletal Mesh.h" />
+    <ClInclude Include="src\Byte Engine\Application\BigAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
     <ClInclude Include="src\Byte Engine\Application\Console.h" />
     <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
+    <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />
     <ClInclude Include="src\Byte Engine\Game\TypeManager.h" />
+    <ClInclude Include="src\Byte Engine\Object.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\Byte Engine\Physics\HitResult.h" />
@@ -123,23 +126,11 @@
     <ClInclude Include="src\Byte Engine\Physics\Queries.h" />
     <ClInclude Include="src\Byte Engine\Physics\RigidBody.h" />
     <ClInclude Include="src\Byte Engine\PlayableAsset.h" />
-    <ClInclude Include="src\Byte Engine\Render\BindingsSetDescriptor.h" />
-    <ClInclude Include="src\Byte Engine\Render\MaterialInfo.h" />
-    <ClInclude Include="src\Byte Engine\Render\Material.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderableTypeManager.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderComponent.h" />
     <ClInclude Include="src\Byte Engine\Game\SubWorlds.h" />
     <ClInclude Include="src\Byte Engine\Game\World.h" />
-    <ClInclude Include="src\Byte Engine\Render\BindingsGroup.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderGroup.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderingCore.h" />
-    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderableManager.h" />
-    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Byte Engine\Resources\AudioResource.h" />
     <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceData.h" />
-    <ClInclude Include="src\Byte Engine\Resources\ResourceReference.h" />
     <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
@@ -158,7 +149,6 @@
     <ClInclude Include="src\Byte Engine\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\ConeWithFalloff.h" />
-    <ClInclude Include="src\Byte Engine\Render\Renderer.h" />
     <ClInclude Include="src\Byte Engine\Camera.h" />
     <ClInclude Include="src\Byte Engine\Application\InputManager.h" />
     <ClInclude Include="src\Game Studio\GL.h" />
@@ -167,7 +157,6 @@
     <ClInclude Include="src\Byte Engine\Application\EntryPoint.h" />
     <ClInclude Include="src\Byte Engine\Application\Application.h" />
     <ClInclude Include="src\Byte Engine\Core.h" />
-    <ClInclude Include="src\Byte Engine\Object.h" />
     <ClInclude Include="src\Byte Engine\ScreenQuad.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\Box.h" />
     <ClInclude Include="src\Byte Engine\Utility\Shapes\SphereWithFallof.h" />
@@ -184,16 +173,11 @@
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />
     <ClCompile Include="src\Byte Engine\PointLight.cpp" />
     <ClCompile Include="src\Byte Engine\Light.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\BindingsGroup.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\Renderer.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\Material.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderableManager.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderComponent.cpp" />
-    <ClCompile Include="src\Byte Engine\Resources\AudioResource.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\SAPI\AudioCore.cpp" />
     <ClCompile Include="src\Byte Engine\SAPI\AudioDevice.cpp" />

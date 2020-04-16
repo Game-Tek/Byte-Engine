@@ -102,59 +102,15 @@
     <ClInclude Include="src\Byte Engine\Game\WorldObject.h">
       <Filter>Game Objects</Filter>
     </ClInclude>
-    <ClInclude Include="src\Byte Engine\Math\SIMD\float4.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\Byte Engine\Physics\HitResult.h" />
     <ClInclude Include="src\Byte Engine\Physics\PhysicsWorld.h" />
     <ClInclude Include="src\Byte Engine\Physics\Queries.h" />
     <ClInclude Include="src\Byte Engine\Physics\RigidBody.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Platform\Windows\WindowsWindow.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\Vulkan.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanBase.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanBindings.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanCommandBuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanFramebuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanPipelines.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderContext.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderDevice.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderMesh.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderPass.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderTarget.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanSwapchainImage.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanTexture.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Vulkan\VulkanUniformBuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Bindings.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\CommandBuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\ComputePipeline.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Framebuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\GraphicsPipeline.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderContext.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderCore.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderDevice.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderMesh.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderPass.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\RenderTarget.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Texture.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\UniformBuffer.h" />
-    <ClInclude Include="src\Byte Engine\RAPI\Window.h" />
-    <ClInclude Include="src\Byte Engine\Render\BindingsGroup.h" />
-    <ClInclude Include="src\Byte Engine\Render\BindingsSetDescriptor.h" />
-    <ClInclude Include="src\Byte Engine\Render\Material.h" />
-    <ClInclude Include="src\Byte Engine\Render\MaterialInfo.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderableTypeManager.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderComponent.h" />
-    <ClInclude Include="src\Byte Engine\Render\Renderer.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderGroup.h" />
-    <ClInclude Include="src\Byte Engine\Render\RenderingCore.h" />
-    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderableManager.h" />
-    <ClInclude Include="src\Byte Engine\Render\StaticMeshRenderComponent.h" />
-    <ClInclude Include="src\Byte Engine\Resources\AudioResource.h" />
-    <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceData.h" />
     <ClInclude Include="src\Byte Engine\Resources\ResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\Resources\ResourceReference.h" />
     <ClInclude Include="src\Byte Engine\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Resources\TextureResourceManager.h" />
@@ -177,9 +133,6 @@
     </ClInclude>
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Light.h" />
-    <ClInclude Include="src\Byte Engine\Object.h">
-      <Filter>Game Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Byte Engine\PlayableAsset.h" />
     <ClInclude Include="src\Byte Engine\PointLight.h" />
     <ClInclude Include="src\Byte Engine\ScreenQuad.h" />
@@ -188,6 +141,10 @@
     </ClInclude>
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Object.h" />
+    <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\Byte Engine\Application\BigAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -209,30 +166,6 @@
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />
     <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Platform\Windows\WindowsWindow.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanBindings.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanCommandBuffer.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanFramebuffer.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanPipelines.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderContext.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderDevice.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderMesh.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderPass.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanRenderTarget.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanSwapchainImage.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanTexture.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\Vulkan\VulkanUniformBuffer.cpp" />
-    <ClCompile Include="src\Byte Engine\RAPI\RenderDevice.cpp">
-      <Filter>Engine\Render\Renderer</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Byte Engine\RAPI\Window.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\BindingsGroup.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\Material.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\Renderer.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderableManager.cpp" />
-    <ClCompile Include="src\Byte Engine\Render\StaticMeshRenderComponent.cpp" />
-    <ClCompile Include="src\Byte Engine\Resources\AudioResource.cpp" />
-    <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />
@@ -246,6 +179,8 @@
     <ClCompile Include="src\Byte Engine\Camera.cpp" />
     <ClCompile Include="src\Byte Engine\Light.cpp" />
     <ClCompile Include="src\Byte Engine\PointLight.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
+    <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

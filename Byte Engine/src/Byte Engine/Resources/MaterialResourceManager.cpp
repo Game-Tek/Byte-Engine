@@ -2,41 +2,49 @@
 
 #include <fstream>
 #include <GTSL/Stream.h>
+#include <GTSL/System.h>
 
-void MaterialResourceManager::ReleaseResource(const GTSL::Id64& resourceName) { if (resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); } }
-
-ResourceData* MaterialResourceManager::GetResource(const GTSL::Id64& name) { return &resources[name]; }
-
-bool MaterialResourceManager::LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
+MaterialResourceData* MaterialResourceManager::TryGetResource(const GTSL::String& name)
 {
-	std::ifstream input(loadResourceInfo.ResourcePath.c_str(), std::ios::in); //Open file as binary
+	const GTSL::Id64 hashed_name(name);
+
+	{
+		resourceMapMutex.ReadLock();
+		if (resources.contains(hashed_name))
+		{
+			resourceMapMutex.ReadUnlock();
+			resourceMapMutex.WriteLock();
+			auto& res = resources.at(hashed_name);
+			res.IncrementReferences();
+			resourceMapMutex.WriteUnlock();
+			return &res;
+		}
+		resourceMapMutex.ReadUnlock();
+	}
+
+	GTSL::String path(255, &transientAllocator);
+	GTSL::System::GetRunningPath(path);
+	path += "resources/";
+	path += name;
+	path += '.';
+	path += "gsmat";
+	
+	std::ifstream input(path.c_str(), std::ios::in);
 
 	MaterialResourceData data;
-	
+
 	if (input.is_open()) //If file is valid
 	{
-		input.seekg(0, std::ios::end); //Search for end
-		uint64 FileLength = input.tellg(); //Get file length
-		input.seekg(0, std::ios::beg); //Move file pointer back to beginning
-
 		InStream in_archive(&input);
 
 		//in_archive >> data.VertexShaderCode;
 		//in_archive >> data.FragmentShaderCode;
-	}
-	else
-	{
-		input.close();
-		return false;
+		//
+
+		resourceMapMutex.WriteLock();
+		resources.emplace(hashed_name, GTSL::MakeTransferReference(data)).first->second.IncrementReferences();
+		resourceMapMutex.WriteUnlock();
 	}
 
 	input.close();
-	
-	resources.insert({ loadResourceInfo.ResourceName, data });
-
-	return true;
-}
-
-void MaterialResourceManager::LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo)
-{
 }

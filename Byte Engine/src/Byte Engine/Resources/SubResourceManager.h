@@ -1,7 +1,37 @@
 #pragma once
 
-#include "ResourceReference.h"
 #include <GTSL/String.hpp>
+#include <GTSL/Array.hpp>
+#include <GTSL/Mutex.h>
+#include <GTSL/Id.h>
+
+struct ResourceManagerBigAllocatorReference final : AllocatorReference
+{
+	explicit ResourceManagerBigAllocatorReference(const char* name) : name(GTSL::String::StringLength(name), name)
+	{
+	}
+	
+	virtual ~ResourceManagerBigAllocatorReference() = default;
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override;
+	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
+	
+protected:
+	GTSL::Array<char, 255> name;
+};
+
+struct ResourceManagerTransientAllocatorReference final : AllocatorReference
+{
+	explicit ResourceManagerTransientAllocatorReference(const char* name) : name(GTSL::String::StringLength(name), name)
+	{
+	}
+	
+	virtual ~ResourceManagerTransientAllocatorReference() = default;
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override;
+	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
+	
+protected:
+	GTSL::Array<char, 255> name;
+};
 
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
@@ -14,48 +44,15 @@
  */
 class SubResourceManager
 {
-public:	
-	SubResourceManager() = default;
-	virtual ~SubResourceManager() = default;
-	virtual const char* GetResourceExtension() = 0;
+protected:
+	ResourceManagerBigAllocatorReference bigAllocator;
+	ResourceManagerTransientAllocatorReference transientAllocator;
 
-	/**
-	 * \brief Struct specifying how a resource will be loaded.
-	 */
-	struct LoadResourceInfo
-	{
-		//const char* ResourceName = nullptr;
-		GTSL::String ResourcePath;
-		GTSL::Id64 ResourceName;
-	};
-
-	struct OnResourceLoadInfo
-	{
-		ResourceData* ResourceData = nullptr;		
-	};
+	ReadWriteMutex resourceMapMutex;
+public:
+	explicit SubResourceManager(const char* resourceType) : bigAllocator(resourceType), transientAllocator(resourceType)
+	{	
+	}
 	
-	/**
-	 * \brief Loads a resource specified by the loadResourceInfo parameter.
-	 * \param loadResourceInfo Struct holding the data for how this resource will be loaded.
-	 * \param onResourceLoadInfo Struct for detailing the results of this load operation.
-	 * \return Boolean to indicate whether loading of this resource was successful or not.
-	 */
-	virtual bool LoadResource(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
-	/**
-	 * \brief Creates a resource and fills it with fallback data. This function should be called by the superior ResourceManager if the "real" resource load operation failed.
-	 * Usually the resource created by this function will contain exotic data that will draw attention to itself once utilized and will alert the developer of the failed resource load. Besides it may print and error message to the console.
-	 * \param loadResourceInfo Struct holding the data for how this resource will be loaded.
-	 * \param onResourceLoadInfo Struct for detailing the results of this load operation.
-	 */
-	virtual void LoadFallback(const LoadResourceInfo& loadResourceInfo, OnResourceLoadInfo& onResourceLoadInfo) = 0;
-
-	virtual ResourceData* GetResource(const GTSL::Id64& name) = 0;
-	
-	virtual void ReleaseResource(const GTSL::Id64& resourceName) = 0;
-
-	/**
-	 * \brief Returns a string containing the name of the type of resource the SubResourceManager child class can load.
-	 * \return A string containing the type name.
-	 */
-	[[nodiscard]] virtual GTSL::Id64 GetResourceType() const = 0;
+	~SubResourceManager() = default;
 };

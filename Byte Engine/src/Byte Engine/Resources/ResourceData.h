@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core.h"
+
 struct ResourceData
 {
 	uint32 references = 0;

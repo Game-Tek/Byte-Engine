@@ -1,5 +1,5 @@
 #include "Camera.h"
-#include "Math/BEM.hpp"
+#include <GTM/GTM.hpp>
 
 void Camera::SetFocusDistance(const Vector3& Object)
 {

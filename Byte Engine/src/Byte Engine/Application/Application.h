@@ -4,6 +4,8 @@
 #include "InputManager.h"
 #include "Resources/ResourceManager.h"
 #include "Game/World.h"
+#include "BigAllocator.h"
+#include "StackAllocator.h"
 
 namespace BE
 {
@@ -15,7 +17,7 @@ namespace BE
 		const char* ApplicationName = nullptr;
 	};
 
-	class Application : public Object
+	class Application
 	{
 		static Application* ApplicationInstance;
 
@@ -23,7 +25,10 @@ namespace BE
 		Clock ClockInstance;
 		InputManager InputManagerInstance;
 		ResourceManager* ResourceManagerInstance = nullptr;
-
+		
+		BigAllocator bigAllocator;
+		StackAllocator transientAllocator;
+		
 		World* ActiveWorld = nullptr;
 
 		bool flaggedForClose = false;
@@ -38,9 +43,7 @@ namespace BE
 		virtual void OnUpdate() = 0;
 		
 		int Run(int argc, char** argv);
-
-		[[nodiscard]] const char* GetName() const override { return "Application"; }
-
+		
 		virtual const char* GetApplicationName() = 0;
 		[[nodiscard]] static const char* GetEngineName() { return "Byte Engine"; }
 		static const char* GetEngineVersion() { return "0.0.1"; }
@@ -56,6 +59,8 @@ namespace BE
 		[[nodiscard]] const InputManager& GetInputManager() const { return InputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() { return ResourceManagerInstance; }
 		[[nodiscard]] World* GetActiveWorld() const { return ActiveWorld; }
+		[[nodiscard]] BigAllocator* GetBigAllocator() { return &bigAllocator; }
+		StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 	};
 
 	Application* CreateApplication();

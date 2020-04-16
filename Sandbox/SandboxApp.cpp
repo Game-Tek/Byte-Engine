@@ -1,5 +1,6 @@
+#include "ByteEngine.h"
+
 #include "Byte Engine/Application/Application.h"
-#include "Byte Engine/Game/World.h"
 
 class Sandbox final : public BE::Application
 {
@@ -88,19 +89,14 @@ public:
 
 	void OnUpdate() override
 	{
-		MyWorld->OnUpdate();
 	}
 
 	~Sandbox()
 	{
-		delete MyWorld;
-		delete GetActiveWindow();
 	}
 
-	[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
+	//[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
 	const char* GetApplicationName() override { return "Sandbox"; }
-
-	World* MyWorld = nullptr;
 };
 
 BE::Application	* BE::CreateApplication()

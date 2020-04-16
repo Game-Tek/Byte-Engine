@@ -27,9 +27,9 @@ namespace GTSL
 		template<>
 		[[nodiscard]] uint64 Microseconds() const { return time; }
 		template<>
-		[[nodiscard]] float  Microseconds() const { return time; }
+		[[nodiscard]] float  Microseconds() const { return static_cast<float>(time); }
 		template<>
-		[[nodiscard]] double Microseconds() const { return time; }
+		[[nodiscard]] double Microseconds() const { return static_cast<double>(time); }
 
 		template<typename T>
 		T Milliseconds() const;

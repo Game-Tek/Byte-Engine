@@ -11,12 +11,12 @@
 
 class ResourceManager : public Object
 {
-	void SaveFile(const GTSL::String& _ResourceName, GTSL::String& fileName, ResourceData& ResourceData_);
+	//void SaveFile(const GTSL::String& _ResourceName, GTSL::String& fileName, ResourceData& ResourceData_);
 
 	std::unordered_map<GTSL::Id64::HashType, SubResourceManager*> resourceManagers;
+	AllocatorReference* allocatorReference{ nullptr };
 	
 public:
-	
 	ResourceManager()
 	{
 		for (auto& resource_manager : resourceManagers)
@@ -25,20 +25,21 @@ public:
 		}
 	}
 
-	ResourceReference TryGetResource(const GTSL::String& name, const GTSL::Id64& type);
-	ResourceData* GetResource(const ResourceReference& resourceReference);
-	
-	void ReleaseResource(const ResourceReference& resourceReference) const;
-	void ReleaseResource(const GTSL::Id64& resourceType, const GTSL::Id64& resourceName);
+	template<class T>
+	T* GetSubResourceManager()
+	{
+		const auto resource_manager = resourceManagers.find(T::type);
+		BE_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
+		return static_cast<T*>(resource_manager->second);
+	}
 
 	void* CreateFile();
 
 	template<class T>
 	void CreateSubResourceManager()
 	{
-		auto new_resource_manager = static_cast<SubResourceManager*>(new T());
-		
-		resourceManagers.insert({ GTSL::Id64(new_resource_manager->GetResourceType()), new_resource_manager });
+		const auto new_resource_manager = static_cast<SubResourceManager*>(new T());
+		resourceManagers.insert({ T::type, new_resource_manager });
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }

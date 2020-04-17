@@ -1,13 +1,13 @@
 #pragma once
 
-#include <GTSL/String.hpp>
-#include <GTSL/Array.hpp>
-#include <GTSL/Mutex.h>
-#include <GTSL/Id.h>
+#include "Byte Engine/Core.h"
 
-struct ResourceManagerBigAllocatorReference final : AllocatorReference
+#include <GTSL/Mutex.h>
+#include <GTSL/Allocator.h>
+
+struct ResourceManagerBigAllocatorReference final : GTSL::AllocatorReference
 {
-	explicit ResourceManagerBigAllocatorReference(const char* name) : name(GTSL::String::StringLength(name), name)
+	explicit ResourceManagerBigAllocatorReference(const char* name) : name(name)
 	{
 	}
 	
@@ -16,12 +16,12 @@ struct ResourceManagerBigAllocatorReference final : AllocatorReference
 	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
 	
 protected:
-	GTSL::Array<char, 255> name;
+	const char* name{ nullptr };
 };
 
-struct ResourceManagerTransientAllocatorReference final : AllocatorReference
+struct ResourceManagerTransientAllocatorReference final : GTSL::AllocatorReference
 {
-	explicit ResourceManagerTransientAllocatorReference(const char* name) : name(GTSL::String::StringLength(name), name)
+	explicit ResourceManagerTransientAllocatorReference(const char* name) : name(name)
 	{
 	}
 	
@@ -30,7 +30,7 @@ struct ResourceManagerTransientAllocatorReference final : AllocatorReference
 	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
 	
 protected:
-	GTSL::Array<char, 255> name;
+	const char* name{ nullptr };
 };
 
 /**
@@ -48,7 +48,7 @@ protected:
 	ResourceManagerBigAllocatorReference bigAllocator;
 	ResourceManagerTransientAllocatorReference transientAllocator;
 
-	ReadWriteMutex resourceMapMutex;
+	GTSL::ReadWriteMutex resourceMapMutex;
 public:
 	explicit SubResourceManager(const char* resourceType) : bigAllocator(resourceType), transientAllocator(resourceType)
 	{	

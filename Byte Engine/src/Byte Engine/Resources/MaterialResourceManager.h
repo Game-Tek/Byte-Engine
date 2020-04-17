@@ -3,6 +3,7 @@
 #include "SubResourceManager.h"
 #include <unordered_map>
 #include "ResourceData.h"
+#include <GTSL/Id.h>
 
 struct MaterialResourceData final : ResourceData
 {
@@ -22,7 +23,7 @@ public:
 
 	MaterialResourceData* GetResource(const GTSL::Id64& resourceName)
 	{
-		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(resourceMapMutex);
 		return &resources[resourceName];
 	}
 	

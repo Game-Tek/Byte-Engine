@@ -3,7 +3,7 @@
 #include <ostream>
 #include <fstream>
 #include <GTSL/System.h>
-#include "Debug/Logger.h"
+#include "Byte Engine/Debug/Logger.h"
 
 //void ResourceManager::SaveFile(const GTSL::String& _ResourceName, GTSL::String& fileName, ResourceData& ResourceData_)
 //{
@@ -21,7 +21,7 @@
 //		return;
 //	}
 //
-//	OutStream out_archive(&Outfile);
+//	GTSL::OutStream out_archive(&Outfile);
 //
 //	Outfile.close();
 //}

@@ -27,7 +27,7 @@ StaticMeshResourceData* StaticMeshResourceManager::TryGetResource(const GTSL::St
 
 	Assimp::Importer importer;
 
-	GTSL::String path(255, &transientAllocator);
+	GTSL::String path(512, &transientAllocator);
 	GTSL::System::GetRunningPath(path);
 	path += "resources/";
 	path += name;

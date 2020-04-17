@@ -1,18 +1,23 @@
 #include "Application.h"
-#include "Debug/Logger.h"
-#include "Resources/AudioResourceManager.h"
 
-BE::Application* BE::Application::ApplicationInstance = nullptr;
+#include "Byte Engine/Resources/AudioResourceManager.h"
+
+BE::Application* BE::Application::applicationInstance = nullptr;
+
+void onAssert(const char* text, int line, const char* file, const char* function)
+{
+	BE_BASIC_LOG_ERROR("ASSERT: Error: %s, Line: %i, File: %s, Function: %s.", text, line, file, function);
+}
 
 namespace BE
 {
 	Application::Application(const ApplicationCreateInfo& ACI)
 	{
-		ApplicationInstance = this;
+		applicationInstance = this;
 
-		ResourceManagerInstance = new ResourceManager();
-
-		ResourceManagerInstance->CreateSubResourceManager<AudioResourceManager>();
+		clockInstance = new Clock();
+		resourceManagerInstance = new ResourceManager();
+		inputManagerInstance = new InputManager();
 	}
 
 	Application::~Application()
@@ -21,25 +26,28 @@ namespace BE
 
 	int Application::Run(int argc, char** argv)
 	{
-		while (!ShouldClose())
+		while (!shouldClose())
 		{
 			transientAllocator.Clear();
-			
-			ClockInstance.OnUpdate();
-			InputManagerInstance.Update();
+			clockInstance->OnUpdate();
 
-			OnUpdate(); //Update instanced engine class
+			if(isInBackground)
+			{
+				OnBackgroundUpdate();
+			}
+			else
+			{
+				inputManagerInstance->Update();
+				OnNormalUpdate();
+			}
 		}
 
-		//BE_LOG_WARNING("Shutting down application!\nReason: %s", CloseReason.c_str())
+		if(closeMode != CloseMode::OK)
+		{
+			BE_LOG_WARNING("Shutting down application!\nReason: %s", closeReason.c_str())
+		}
 
 		return 0;
-	}
-
-	void Application::Close(const char* _Reason)
-	{
-		if (_Reason) CloseReason = _Reason;
-		flaggedForClose = true;
 	}
 
 	void Application::PromptClose()
@@ -47,7 +55,14 @@ namespace BE
 		//CloseDelegate.Dispatch();
 	}
 
-	bool Application::ShouldClose() const
+	void Application::Close(const CloseMode closeMode, const char* reason)
+	{
+		if (reason) closeReason = reason;
+		flaggedForClose = true;
+		this->closeMode = closeMode;
+	}
+
+	bool Application::shouldClose() const
 	{
 		return flaggedForClose;
 	}

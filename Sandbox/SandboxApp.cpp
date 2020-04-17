@@ -80,22 +80,26 @@ public:
 		//
 		//ResourceManagerInstance->CreateResource<MaterialResource>("M_Base", material_data);
 		
-		MyWorld = new World();
-		ActiveWorld = MyWorld;
-
-		
  		//MyObject = MyWorld->CreateWorldObject<TestObject>();
+
+#undef GetCurrentTime
+		
+		BE_LOG_SUCCESS("Started at %f!", GetClock()->GetCurrentTime().Seconds<float>())
 	}
 
-	void OnUpdate() override
+	void OnNormalUpdate() override
 	{
 	}
 
+	void OnBackgroundUpdate() override
+	{
+	}
+	
 	~Sandbox()
 	{
 	}
 
-	//[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
+	[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
 	const char* GetApplicationName() override { return "Sandbox"; }
 };
 

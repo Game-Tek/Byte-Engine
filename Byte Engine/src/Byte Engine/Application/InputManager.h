@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Object.h"
+#include "Byte Engine/Object.h"
 
 class InputManager : public Object
 {
@@ -12,5 +12,8 @@ public:
 	~InputManager() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
-	void Update();
+	void Update()
+	{
+		
+	}
 };

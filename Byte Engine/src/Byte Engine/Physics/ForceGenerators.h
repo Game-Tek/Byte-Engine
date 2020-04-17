@@ -2,7 +2,7 @@
 
 #include "ForceGenerator.h"
 
-#include "Math/Quaternion.h"
+#include <GTSL/Math/Quaternion.h>
 
 #include "Utility/Shapes/SphereWithFallof.h"
 #include "Utility/Shapes/BoxWithFalloff.h"
@@ -38,7 +38,7 @@ public:
 
 class WindGenerator : public ForceGenerator
 {
-	Vector3 windDirection;
+	GTSL::Vector3 windDirection;
 	BoxWithFalloff effectVolume;
 
 public:
@@ -47,7 +47,7 @@ public:
 
 class DirectionalWindGenerator : public ForceGenerator
 {
-	Quaternion windOrientation;
+	GTSL::Quaternion windOrientation;
 	ConeWithFalloff windDirection;
 
 public:

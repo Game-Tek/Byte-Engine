@@ -1,27 +1,25 @@
 #include "Logger.h"
 
 #include <cstdio>
-
 #include <windows.h>
+#include "Byte Engine/Application/Clock.h"
 
-#include "Application/Application.h"
+LogLevel Logger::MinLogLevel{LogLevel::MESSAGE};
 
-LogLevel Logger::MinLogLevel;
-
-void Logger::PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...)
+void Logger::PrintObjectLog(const Object* obj, const LogLevel level, const char* text, ...)
 {
-	if (_Level >= MinLogLevel)
+	if (level >= MinLogLevel)
 	{
-		SetTextColorOnLogLevel(_Level);
+		SetTextColorOnLogLevel(level);
 
-		const Time LogTime = Clock::GetTime();
+		const auto LogTime = Clock::GetTime();
 
 		printf("[Time: %02d:%02d:%02d]", LogTime.Hour, LogTime.Minute, LogTime.Second);
-		printf("%s: ", _Obj->GetName());
+		printf("%s: ", obj->GetName());
 
 		va_list args;
-		va_start(args, Text);
-		vprintf(Text, args);
+		va_start(args, text);
+		vprintf(text, args);
 		va_end(args);
 
 		printf("\n");

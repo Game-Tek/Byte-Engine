@@ -24,19 +24,17 @@ Clock::~Clock() = default;
 void Clock::OnUpdate()
 {
 #ifdef BE_PLATFORM_WIN
-	LARGE_INTEGER win_processor_ticks;
+	LARGE_INTEGER current_ticks;
+	QueryPerformanceCounter(&current_ticks);
 
-	QueryPerformanceCounter(&win_processor_ticks);
+	//ticks / processsorFrequency = seconds
 	
-	auto delta_ticks = win_processor_ticks.QuadPart - performanceCounterTicks;
-	
-	//Set system ticks as this frame's ticks so in the next update we can work with it.
-	performanceCounterTicks = win_processor_ticks.QuadPart;
+	auto delta_ticks = current_ticks.QuadPart - performanceCounterTicks;	
 
-	win_processor_ticks.QuadPart *= 1000000;
-	win_processor_ticks.QuadPart /= processorFrequency;
+	auto pc_time_in_microseconds = (performanceCounterTicks * 1000000);
+	pc_time_in_microseconds /= processorFrequency;
 	
-	const auto current_time = GTSL::TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart);
+	const auto pc_time = GTSL::TimePoint::CreateFromMicroseconds(pc_time_in_microseconds);
 	
 	delta_ticks *= 1000000; //to microseconds
 	delta_ticks /= processorFrequency;
@@ -46,22 +44,28 @@ void Clock::OnUpdate()
 	//which could be caused by checking breakpoints during development
 	//or by occasional freezes during normal game-play.
 
+	auto delta_microseconds = current_ticks.QuadPart - performanceCounterTicks;
+	delta_microseconds *= 1000000;
+	delta_microseconds /= processorFrequency;
+	auto delta_time = GTSL::TimePoint::CreateFromMicroseconds(delta_microseconds);
+	
 	if (delta_ticks > 1000000)
 	{
 		//Leave delta time as is. Assume last frame's delta time.
 	}
 	else
-	{
-		deltaTime = current_time - elapsedTime;
+	{	
 	}
+	deltaTime = delta_time;
 	
-	elapsedTime = current_time;
+	elapsedTime += GTSL::TimePoint::CreateFromMicroseconds(delta_microseconds);
+
+	//Set system ticks as this frame's ticks so in the next update we can work with it.
+	performanceCounterTicks = current_ticks.QuadPart;
 #endif
 	
 	//Update elapsed time counter.
 	++applicationTicks;
-
-	return;
 }
 
 

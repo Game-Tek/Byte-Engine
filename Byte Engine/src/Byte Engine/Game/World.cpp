@@ -1,5 +1,6 @@
 #include "World.h"
-#include "Application/Application.h"
+
+#include "Byte Engine/Application/Application.h"
 
 World::World()
 {
@@ -15,8 +16,8 @@ World::~World()
 
 void World::OnUpdate()
 {
-	levelRunningTime += BE::Application::Get()->GetClock().GetDeltaTime();
-	levelAdjustedRunningTime += BE::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier;
+	levelRunningTime += BE::Application::Get()->GetClock()->GetDeltaTime();
+	levelAdjustedRunningTime += BE::Application::Get()->GetClock()->GetDeltaTime() * worldTimeMultiplier;
 
 	for(auto& e : types)
 	{
@@ -30,6 +31,6 @@ void World::Pause()
 	worldTimeMultiplier = 0;
 }
 
-double World::GetRealRunningTime() { return BE::Application::Get()->GetClock().GetElapsedTime().Seconds<double>(); }
+double World::GetRealRunningTime() { return BE::Application::Get()->GetClock()->GetElapsedTime().Seconds<double>(); }
 
-GTSL::TimePoint World::GetWorldDeltaTime() const { return BE::Application::Get()->GetClock().GetDeltaTime() * worldTimeMultiplier; }
+GTSL::TimePoint World::GetWorldDeltaTime() const { return BE::Application::Get()->GetClock()->GetDeltaTime() * worldTimeMultiplier; }

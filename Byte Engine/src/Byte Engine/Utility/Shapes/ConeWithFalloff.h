@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
 
 #include "Cone.h"
 
@@ -13,21 +13,17 @@ struct ConeWithFalloff : public Cone
 	~ConeWithFalloff() = default;
 
 	//Returns the value of ExtraRadius.
-	float GetExtraRadius() const { return ExtraRadius; }
+	[[nodiscard]] float GetExtraRadius() const { return ExtraRadius; }
 
 	//Sets Extra Radius as NewExtraRadius.
-	void SetExtraRadius(const float NewExtraRadius);
+	void SetExtraRadius(const float NewExtraRadius)
+	{
+		ExtraRadius = NewExtraRadius;
+	}
 
-	float GetOuterConeInnerRadius() const;
+	[[nodiscard]] float GetOuterConeInnerRadius() const;
 
 protected:
 	//Determines the extra radius on top of the original radius to determine the outer radius.
 	float ExtraRadius = 50.0f;
 };
-
-INLINE void ConeWithFalloff::SetExtraRadius(const float NewExtraRadius)
-{
-	ExtraRadius = NewExtraRadius;
-
-	return;
-}

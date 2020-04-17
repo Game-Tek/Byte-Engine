@@ -1,11 +1,10 @@
 #pragma once
 
-#include "Object.h"
-
 #include <GTSL/Id.h>
 #include "TypeManager.h"
 #include <unordered_map>
 #include <GTSL/TimePoint.h>
+#include "Byte Engine/Object.h"
 
 class World : public Object
 {

@@ -12,12 +12,6 @@ using int32 = int;
 using uint64 = unsigned long long;
 using int64 = long long;
 
-#ifdef BE_PLATFORM_WIN
-#define INLINE __forceinline
-#else
-	#define inline
-#endif
-
 #include "Debug/Logger.h"
 
 //Assert

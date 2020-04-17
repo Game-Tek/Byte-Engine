@@ -2,6 +2,7 @@
 
 #include <stb image/stb_image.h>
 #include <GTSL/System.h>
+#include <GTSL/Id.h>
 
 TextureResourceData::~TextureResourceData() { stbi_image_free(ImageData); }
 

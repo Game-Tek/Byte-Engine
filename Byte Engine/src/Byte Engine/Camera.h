@@ -8,7 +8,7 @@
 class Camera : public WorldObject
 {
 	//First is near, Second is far
-	using NearFarPair = Pair<float, float>;
+	using NearFarPair = GTSL::Pair<float, float>;
 public:
 	Camera() = default;
 	explicit Camera(const float FOV);
@@ -36,7 +36,7 @@ public:
 
 	void SetFOV(const float NewFOV) { FOV = NewFOV; }
 	void SetFocusDistance(const float NewFocusDistance) { focusDistance = NewFocusDistance; }
-	void SetFocusDistance(const Vector3& Object);
+	void SetFocusDistance(const GTSL::Vector3& Object);
 	void SetWhiteBalance(const uint16 NewWhiteBalance) { whiteBalance = NewWhiteBalance; }
 	void SetISO(const uint16 NewISO) { ISO = NewISO; }
 	void SetNearFar(const NearFarPair& _NFP) { nearFar = _NFP; }

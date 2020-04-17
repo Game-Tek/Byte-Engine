@@ -1,9 +1,10 @@
 #include "Camera.h"
-#include <GTM/GTM.hpp>
 
-void Camera::SetFocusDistance(const Vector3& Object)
+#include <GTSL/Math/Math.hpp>
+
+void Camera::SetFocusDistance(const GTSL::Vector3& Object)
 {
-	focusDistance = GTM::Length(Transform.Position - Object);
+	focusDistance = GTSL::Math::Length(Transform.Position - Object);
 
 	return;
 }

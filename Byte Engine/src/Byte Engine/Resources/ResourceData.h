@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
 
 struct ResourceData
 {

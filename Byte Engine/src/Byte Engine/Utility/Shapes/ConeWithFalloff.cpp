@@ -1,6 +1,6 @@
 #include "ConeWithFalloff.h"
 
-#include <GTM/GTM.hpp>
+#include <GTSL/Math/Math.hpp>
 
 ConeWithFalloff::ConeWithFalloff(const float Radius, const float Length) : Cone(Radius, Length)
 {
@@ -12,5 +12,5 @@ ConeWithFalloff::ConeWithFalloff(const float Radius, const float Length, const f
 
 float ConeWithFalloff::GetOuterConeInnerRadius() const
 {
-	return GTM::ArcTangent((Radius + ExtraRadius) / Length);
+	return GTSL::Math::ArcTangent((Radius + ExtraRadius) / Length);
 }

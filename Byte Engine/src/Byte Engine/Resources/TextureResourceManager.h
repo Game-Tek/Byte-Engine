@@ -4,12 +4,13 @@
 #include <unordered_map>
 #include <GTSL/Extent.h>
 #include "ResourceData.h"
+#include <GTSL/Id.h>
 
 struct TextureResourceData final : ResourceData
 {
 	byte* ImageData = nullptr;
 	size_t ImageDataSize = 0;
-	Extent2D TextureDimensions;
+	GTSL::Extent2D TextureDimensions;
 	//GAL::ImageFormat TextureFormat;
 	
 	~TextureResourceData();
@@ -26,7 +27,7 @@ public:
 	
 	TextureResourceData* GetResource(const GTSL::Id64& name)
 	{
-		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(resourceMapMutex);
 		return &resources[name];
 	}
 

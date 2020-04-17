@@ -1,12 +1,13 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
 
 #include "SubResourceManager.h"
-#include "SAPI/AudioCore.h"
+#include <AAL/AudioCore.h>
 #include <GTSL/FixedVector.hpp>
 #include <unordered_map>
 #include "ResourceData.h"
+#include <GTSL/Id.h>
 
 class AudioResourceManager final : public SubResourceManager
 {
@@ -16,9 +17,9 @@ public:
 		friend AudioResourceManager;
 
 		GTSL::FixedVector<byte> Bytes;
-		AudioChannelCount AudioChannelCount;
-		AudioSampleRate AudioSampleRate;
-		AudioBitDepth AudioBitDepth;
+		AAL::AudioChannelCount AudioChannelCount;
+		AAL::AudioSampleRate AudioSampleRate;
+		AAL::AudioBitDepth AudioBitDepth;
 	};
 	
 private:
@@ -35,7 +36,7 @@ public:
 
 	AudioResourceData* GetResource(const GTSL::String& resourceName)
 	{
-		ReadLock<ReadWriteMutex> lock(resourceMapMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(resourceMapMutex);
 		return &resources[GTSL::Id64(resourceName)];
 	}
 	

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
 
 struct Cone
 {
@@ -11,16 +11,22 @@ struct Cone
 	~Cone() = default;
 
 	//Returns the value of Radius.
-	float GetRadius() const { return Radius; }
+	[[nodiscard]] float GetRadius() const { return Radius; }
 	//Returns the value of Length.
-	float GetLength() const { return Length; }
+	[[nodiscard]] float GetLength() const { return Length; }
 
-	float GetInnerAngle() const;
+	[[nodiscard]] float GetInnerAngle() const;
 
 	//Sets Radius as NewRadius.
-	void SetRadius(float NewRadius);
+	void SetRadius(float NewRadius)
+	{
+		Radius = NewRadius;
+	}
 	//Sets Length as NewLength.
-	void SetLength(float NewLength);
+	void SetLength(float NewLength)
+	{
+		Length = NewLength;
+	}
 
 protected:
 	//Specifies the radius of the cone.
@@ -29,17 +35,3 @@ protected:
 	//Specifies the length of the cone.
 	float Length = 500.0f;
 };
-
-INLINE void Cone::SetRadius(const float NewRadius)
-{
-	Radius = NewRadius;
-
-	return;
-}
-
-INLINE void Cone::SetLength(const float NewLength)
-{
-	Length = NewLength;
-
-	return;
-}

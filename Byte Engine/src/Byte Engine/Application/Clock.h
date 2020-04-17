@@ -1,8 +1,7 @@
 #pragma once
 
-#include "Core.h"
-
-#include "Object.h"
+#include "Byte Engine/Core.h"
+#include "Byte Engine/Object.h"
 #include <GTSL/TimePoint.h>
 
 //Used to specify time(Hour, Minute, Second).

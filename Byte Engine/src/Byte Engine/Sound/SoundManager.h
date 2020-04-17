@@ -1,16 +1,13 @@
 #pragma once
 
 #include "SoundMixer.h"
+#include "Byte Engine/Core.h"
 
 class Sound;
-
-#include "Resources/AudioResourceManager.h"
 
 class SoundManager
 {
 	SoundMixer* activeSoundMixer = nullptr;
-
-	AudioResourceManager::AudioResourceData* sound = nullptr;
 
 	byte* buffer = nullptr;
 	uint32 bufferSize = 0;

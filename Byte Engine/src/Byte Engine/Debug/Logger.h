@@ -18,7 +18,7 @@ class Logger
 
 	static void SetTextColorOnLogLevel(LogLevel _Level);
 public:
-	static void PrintObjectLog(const Object* _Obj, LogLevel _Level, const char* Text, ...);
+	static void PrintObjectLog(const Object* obj, LogLevel level, const char* text, ...);
 	static void PrintBasicLog(LogLevel _Level, const char* Text, ...);
 	static void SetMinLogLevel(const LogLevel _Level) { MinLogLevel = _Level; }
 
@@ -35,7 +35,6 @@ public:
 #define BE_BASIC_LOG_WARNING(Text, ...)	Logger::PrintBasicLog(LogLevel::WARNING, Text, __VA_ARGS__);
 #define BE_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::FATAL, Text, __VA_ARGS__);
 #else
-
 #define BE_LOG_SUCCESS(Text, ...)
 #define BE_LOG_MESSAGE(Text, ...)
 #define BE_LOG_WARNING(Text, ...)
@@ -45,6 +44,5 @@ public:
 #define BE_BASIC_LOG_MESSAGE(Text, ...)	
 #define BE_BASIC_LOG_WARNING(Text, ...)	
 #define BE_BASIC_LOG_ERROR(Text, ...)	
-
 #endif
 };

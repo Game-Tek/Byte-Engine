@@ -46,14 +46,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)vendor\shaderc;$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+    <IncludePath>$(ProjectDir)src;$(ProjectDir)ext;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)ext\shaderc;$(ProjectDir)ext\vulkan;$(ProjectDir)ext\assimp;$(ProjectDir)ext\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\$(ProjectName)\$(Configuration)-$(Platform)\</OutDir>
     <IntDir>$(SolutionDir)bin-int\$(ProjectName)\$(Configuration)-$(Platform)\</IntDir>
-    <IncludePath>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)vendor\shaderc;$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
+    <IncludePath>$(ProjectDir)src;$(ProjectDir)ext;$(VC_IncludePath);$(WindowsSDK_IncludePath);$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)ext\shaderc;$(ProjectDir)ext\vulkan;$(ProjectDir)ext\assimp;$(ProjectDir)ext\GLFW;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(NETFXKitsDir)Lib\um\x64</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -62,7 +62,8 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>NOMINMAX;BE_PLATFORM_WIN;BE_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+      </AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
       <ShowIncludes>false</ShowIncludes>
       <LanguageStandard>stdcpplatest</LanguageStandard>
@@ -76,7 +77,8 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vendor/GTSL.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;AAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -88,7 +90,8 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>NOMINMAX;BE_PLATFORM_WIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)src\Byte Engine;$(ProjectDir)vendor</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+      </AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
@@ -102,7 +105,8 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>vendor/GTSL.lib;vulkan-1.lib;glfw3.lib;shaderc_shared.lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;AAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -186,7 +190,7 @@
     <ClCompile Include="src\Byte Engine\Application\Clock.cpp" />
     <ClCompile Include="src\Byte Engine\Application\Application.cpp" />
     <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
-    <ClCompile Include="vendor\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

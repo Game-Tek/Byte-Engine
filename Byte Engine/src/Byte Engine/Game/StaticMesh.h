@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Object.h"
+#include "Byte Engine/Object.h"
 
 namespace GTSL {
 	class String;

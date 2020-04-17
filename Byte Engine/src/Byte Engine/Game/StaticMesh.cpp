@@ -1,7 +1,7 @@
 #include "StaticMesh.h"
 
-#include "Resources/StaticMeshResourceManager.h"
-#include "Application/Application.h"
+#include "Byte Engine/Application/Application.h"
+#include "Byte Engine/Resources/StaticMeshResourceManager.h"
 
 StaticMesh::StaticMesh(const GTSL::String& _Name)
 {

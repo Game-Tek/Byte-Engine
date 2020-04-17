@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Application/Clock.h"
+#include <GTSL/TimePoint.h>
 
 class Timer
 {

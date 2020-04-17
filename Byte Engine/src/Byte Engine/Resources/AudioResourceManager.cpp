@@ -35,7 +35,7 @@ AudioResourceManager::AudioResourceData* AudioResourceManager::TryGetResource(co
 	{
 		AudioResourceData data;
 
-		InStream in_archive(&input);
+		GTSL::InStream in_archive(&input);
 
 		unsigned char riff[4];                      // RIFF string
 		unsigned int overall_size;               // overall size of file in bytes
@@ -65,19 +65,19 @@ AudioResourceManager::AudioResourceData* AudioResourceManager::TryGetResource(co
 		in_archive.Read(&channels);
 		switch (channels)
 		{
-		case 1: data.AudioChannelCount = AudioChannelCount::CHANNELS_MONO; break;
-		case 2: data.AudioChannelCount = AudioChannelCount::CHANNELS_STEREO; break;
-		case 6: data.AudioChannelCount = AudioChannelCount::CHANNELS_5_1; break;
-		case 8: data.AudioChannelCount = AudioChannelCount::CHANNELS_7_1; break;
+		case 1: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_MONO; break;
+		case 2: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_STEREO; break;
+		case 6: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_5_1; break;
+		case 8: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_7_1; break;
 		default: return nullptr;
 		}
 
 		in_archive.Read(&sample_rate);
 		switch (sample_rate)
 		{
-		case 44100: data.AudioSampleRate = AudioSampleRate::KHZ_44_1; break;
-		case 48000: data.AudioSampleRate = AudioSampleRate::KHZ_48; break;
-		case 96000: data.AudioSampleRate = AudioSampleRate::KHZ_96; break;
+		case 44100: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_44_1; break;
+		case 48000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_48; break;
+		case 96000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_96; break;
 		default: return nullptr;
 		}
 
@@ -86,9 +86,9 @@ AudioResourceManager::AudioResourceData* AudioResourceManager::TryGetResource(co
 		in_archive.Read(&bits_per_sample);
 		switch (bits_per_sample)
 		{
-		case 8: data.AudioBitDepth = AudioBitDepth::BIT_DEPTH_8; break;
-		case 16: data.AudioBitDepth = AudioBitDepth::BIT_DEPTH_16; break;
-		case 24: data.AudioBitDepth = AudioBitDepth::BIT_DEPTH_24; break;
+		case 8: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_8; break;
+		case 16: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_16; break;
+		case 24: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_24; break;
 		default: return nullptr;
 		}
 

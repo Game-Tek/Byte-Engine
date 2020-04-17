@@ -1,10 +1,10 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
+#include "Byte Engine/Object.h"
 
-#include "Object.h"
-
-#include <GTM/Transform3.h>
+#include <GTSL/Math/Transform3.h>
+#include <GTSL/Math/Vector3.h>
 
 class World;
 class GameInstance;
@@ -26,14 +26,14 @@ public:
 
 	[[nodiscard]] WorldObjectID GetID() const { return ID; }
 
-	void SetTransform(const Transform3& _NewTransform) { Transform = _NewTransform; }
-	[[nodiscard]] Transform3& GetTransform() { return Transform; }
-	void SetPosition(const Vector3& _Pos) { Transform.Position = _Pos; }
-	[[nodiscard]] const Vector3& GetPosition() const { return Transform.Position; }
+	void SetTransform(const GTSL::Transform3& _NewTransform) { Transform = _NewTransform; }
+	[[nodiscard]] GTSL::Transform3& GetTransform() { return Transform; }
+	void SetPosition(const GTSL::Vector3& _Pos) { Transform.Position = _Pos; }
+	[[nodiscard]] const GTSL::Vector3& GetPosition() const { return Transform.Position; }
 
 	static World* GetWorld();
 protected:
-	Transform3 Transform;
+	GTSL::Transform3 Transform;
 
 	WorldObjectID ID = 0;
 };

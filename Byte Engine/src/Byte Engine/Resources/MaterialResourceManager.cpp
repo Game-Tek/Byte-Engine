@@ -35,7 +35,7 @@ MaterialResourceData* MaterialResourceManager::TryGetResource(const GTSL::String
 
 	if (input.is_open()) //If file is valid
 	{
-		InStream in_archive(&input);
+		GTSL::InStream in_archive(&input);
 
 		//in_archive >> data.VertexShaderCode;
 		//in_archive >> data.FragmentShaderCode;

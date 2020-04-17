@@ -1,23 +1,24 @@
 #pragma once
 
-#include <GTM/Vector2.h>
-#include <GTM/Vector3.h>
+#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vector3.h>
 #include <GTSL/TextureCoordinates.h>
+#include "Physics/ForceGenerators.h"
 
 using Index = uint16;
 
 struct Vertex2D
 {
-	Vector2 Position;
-	TextureCoordinates TextureCoordinates;
+	GTSL::Vector2 Position;
+	GTSL::TextureCoordinates TextureCoordinates;
 };
 
 struct Vertex
 {
-	Vector3 Position;
-	Vector3 Normal;
-	TextureCoordinates TextCoord;
-	Vector3 Tangent;
-	Vector3 BiTangent;
+	GTSL::Vector3 Position;
+	GTSL::Vector3 Normal;
+	GTSL::TextureCoordinates TextCoord;
+	GTSL::Vector3 Tangent;
+	GTSL::Vector3 BiTangent;
 };
 

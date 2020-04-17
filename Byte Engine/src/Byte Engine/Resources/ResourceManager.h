@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Core.h"
+#include "Byte Engine/Core.h"
 
-#include "Object.h"
+#include "Byte Engine/Object.h"
 
 #include <unordered_map>
 #include <GTSL/String.hpp>
@@ -14,7 +14,7 @@ class ResourceManager : public Object
 	//void SaveFile(const GTSL::String& _ResourceName, GTSL::String& fileName, ResourceData& ResourceData_);
 
 	std::unordered_map<GTSL::Id64::HashType, SubResourceManager*> resourceManagers;
-	AllocatorReference* allocatorReference{ nullptr };
+	GTSL::AllocatorReference* allocatorReference{ nullptr };
 	
 public:
 	ResourceManager()

@@ -54,7 +54,7 @@ class SoundMixer
 		/**
 		 * \brief Defines the type for a Pair holding a bool to determine whether the sound is virtualized, and a Player* to know which Player to grab the data from.
 		 */
-		using PlayingSounds = Pair<bool, SoundPlayer*>;
+		using PlayingSounds = GTSL::Pair<bool, SoundPlayer*>;
 
 
 		/**

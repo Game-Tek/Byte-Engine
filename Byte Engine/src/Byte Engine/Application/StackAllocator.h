@@ -1,4 +1,5 @@
 #pragma once
+#include <GTSL/Math/Math.hpp>
 
 class StackAllocator
 {
@@ -21,15 +22,15 @@ class StackAllocator
 			allocatorReference->Deallocate(end - start, alignof(byte), start);
 		}
 
-		void AllocateInBlock(uint64 size, const uint64 alignment, void** data)
+		void AllocateInBlock(const uint64 size, const uint64 alignment, void** data)
 		{
-			at = static_cast<byte*>(std::align(alignment, end - at, *data, size)); //take alignment
+			*data = (at += GTSL::Math::AlignedNumber(size, alignment));
 		}
 		
-		bool TryAllocateInBlock(uint64 size, const uint64 alignment, void** data)
+		bool TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data)
 		{
-			const auto p = static_cast<byte*>(std::align(alignment, end - at, *data, size)); //take alignment
-			if (p) { AllocateInBlock(size, alignment, data); return true; }
+			const auto new_at = at + GTSL::Math::AlignedNumber(size, alignment);
+			if (new_at < end) { *data = new_at; at = new_at; return true; }
 			return false;
 		}
 
@@ -39,11 +40,6 @@ class StackAllocator
 
 		[[nodiscard]] uint64 GetBlockSize() const { return end - start; }
 	};
-
-	static void clearBlock(Block& block)
-	{
-		block.at = block.start;
-	}
 
 	const uint64 blockSize{ 0 };
 	std::atomic<uint32> stackIndex{ 0 };

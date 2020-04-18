@@ -8,7 +8,7 @@
 class Sandbox final : public BE::Application
 {	
 public:
-	Sandbox() : Application(BE::ApplicationCreateInfo{"Sandbox"})
+	Sandbox(SystemAllocator* systemAllocator) : Application(BE::ApplicationCreateInfo{ "Sandbox", systemAllocator })
 	{
 		//MaterialResource::MaterialData material_data;
 		//
@@ -90,19 +90,17 @@ public:
 		//BE_LOG_SUCCESS("Started at %f!", GetClock()->GetCurrentTime().Seconds<float>())
 		auto text = "Hello, this is a very long string which should not fit into the first block! aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 		GTSL::String a(text, &transientAllocatorReference);
-		GTSL::String b(text, &transientAllocatorReference);
-		GTSL::String c(text, &transientAllocatorReference);
-		GTSL::String d(text, &transientAllocatorReference);
-		GTSL::String e(text, &transientAllocatorReference);
 
 		StackAllocator::DebugData debug_data(&transientAllocatorReference);
 		transientAllocator->GetDebugData(debug_data);
 		printf("BytesAllocated: %llu\n", debug_data.BytesAllocated);
 		printf("BytesDeallocated: %llu\n", debug_data.BytesDeallocated);
 		printf("BlockMisses: %llu\n", debug_data.BlockMisses);
-		printf("RemainingBytes: %llu\n", debug_data.PerStackBlockUnusedSpace[0]);
+		printf("MemoryUsage: %llu\n", debug_data.MemoryUsage);
 
 		transientAllocator->Clear();
+
+		std::cout << GetName() << '\n';
 	}
 
 	void OnNormalUpdate() override
@@ -121,7 +119,12 @@ public:
 	const char* GetApplicationName() override { return "Sandbox"; }
 };
 
-BE::Application	* BE::CreateApplication()
+BE::Application	* BE::CreateApplication(SystemAllocator* systemAllocator)
 {
-	return new Sandbox();
+	return new Sandbox(systemAllocator);
+}
+
+void BE::DestroyApplication(Application* application, SystemAllocator* systemAllocator)
+{
+	delete application;
 }

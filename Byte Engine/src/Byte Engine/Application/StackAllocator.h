@@ -46,7 +46,7 @@ class StackAllocator
 public:
 	struct DebugData
 	{
-		DebugData(GTSL::AllocatorReference* allocatorReference) : PerStackBlockUnusedSpace(64, allocatorReference)
+		DebugData(GTSL::AllocatorReference* allocatorReference)
 		{
 		}
 		
@@ -69,16 +69,12 @@ public:
 		 * LOWER BETTER; IDEAL 0.
 		 */
 		uint64 BlockMisses{ 0 };
-		
-		/**
-		 * \brief Average space blocks from all stacks have remaining when they are cleared. Try to strike a balance between lower AverageBlockMisses and less AverageUnusedSpace.
-		 */
-		GTSL::Vector<uint64> PerStackBlockUnusedSpace;
 
 		uint64 BytesAllocated{ 0 };
 		uint64 BytesDeallocated{ 0 };
 		uint64 TotalBytesAllocated{ 0 };
 		uint64 TotalBytesDeallocated{ 0 };
+		uint64 MemoryUsage{ 0 };
 	};
 protected:
 	const uint64 blockSize{ 0 };
@@ -95,6 +91,7 @@ protected:
 	uint64 bytesDeallocated{ 0 };
 	uint64 totalBytesAllocated{ 0 };
 	uint64 totalBytesDeallocated{ 0 };
+	uint64 memoryUsage{ 0 };
 #endif
 	
 	const uint8 maxStacks{ 8 };
@@ -139,7 +136,7 @@ public:
 		{
 			for (auto& block : stack)
 			{
-				debugData.PerStackBlockUnusedSpace.EmplaceBack(block.GetRemainingSize());
+				debugData.MemoryUsage = block.GetBlockSize();
 			}
 		}
 		

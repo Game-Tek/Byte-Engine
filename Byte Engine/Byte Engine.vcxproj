@@ -111,12 +111,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Byte Engine\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\Byte Engine\Application\BigAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
     <ClInclude Include="src\Byte Engine\Application\Console.h" />
     <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />

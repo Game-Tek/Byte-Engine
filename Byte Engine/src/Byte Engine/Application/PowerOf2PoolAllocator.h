@@ -2,9 +2,15 @@
 
 #include "Byte Engine/Core.h"
 
-class BigAllocator
+class PowerOf2PoolAllocator
 {
+	GTSL::AllocatorReference* allocatorReference{ nullptr };
+	
 public:
+	PowerOf2PoolAllocator(GTSL::AllocatorReference* allocatorReference) : allocatorReference(allocatorReference)
+	{
+	}
+	
 	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name)
 	{
 	}

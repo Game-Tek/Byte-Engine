@@ -140,8 +140,9 @@
     <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Object.h" />
     <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
-    <ClInclude Include="src\Byte Engine\Application\BigAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Input\InputEnums.h" />

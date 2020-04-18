@@ -2,8 +2,6 @@
 
 #include "Byte Engine/Resources/AudioResourceManager.h"
 
-BE::Application* BE::Application::applicationInstance = nullptr;
-
 void onAssert(const char* text, int line, const char* file, const char* function)
 {
 	BE_BASIC_LOG_ERROR("ASSERT: %s, Line: %u, File: %s, Function: %s.", text, line, file, function);
@@ -11,14 +9,19 @@ void onAssert(const char* text, int line, const char* file, const char* function
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI)
+	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocator(ACI.SystemAllocator)
 	{
 		applicationInstance = this;
+		
+		transientAllocator = new StackAllocator(&systemAllocatorReference);
+		poolAllocator = new PowerOf2PoolAllocator(&systemAllocatorReference);
 
+		//systemApplication = 
+		
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
-		transientAllocator = new StackAllocator(&systemAllocatorReference);
+		
 	}
 
 	Application::~Application()
@@ -29,9 +32,10 @@ namespace BE
 	{
 		while (!shouldClose())
 		{
-			//transientAllocator->Clear();
+			systemApplication.Update();
+			
 			clockInstance->OnUpdate();
-
+			
 			if(isInBackground)
 			{
 				OnBackgroundUpdate();
@@ -41,6 +45,8 @@ namespace BE
 				inputManagerInstance->Update();
 				OnNormalUpdate();
 			}
+			
+			transientAllocator->Clear();
 		}
 
 		if(closeMode != CloseMode::OK)

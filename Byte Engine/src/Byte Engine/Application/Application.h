@@ -4,8 +4,10 @@
 #include "InputManager.h"
 #include "Byte Engine/Resources/ResourceManager.h"
 #include "Byte Engine/Game/World.h"
-#include "BigAllocator.h"
+#include "PowerOf2PoolAllocator.h"
 #include "StackAllocator.h"
+#include "SystemAllocator.h"
+#include <GTSL/Application.h>
 
 namespace BE
 {
@@ -15,6 +17,7 @@ namespace BE
 	struct ApplicationCreateInfo
 	{
 		const char* ApplicationName = nullptr;
+		SystemAllocator* SystemAllocator{ nullptr };
 	};
 
 	class Application : public Object
@@ -39,27 +42,31 @@ namespace BE
 			}
 		};
 	private:
-		static Application* applicationInstance;
+		inline static Application* applicationInstance{ nullptr };
 
 	protected:
 		struct SystemAllocatorReference : public GTSL::AllocatorReference
 		{
 			void Allocate(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
 			{
-				GTSL::Memory::Allocate(size, memory);
+				Get()->systemAllocator->Allocate(size, alignment, memory);
 				*allocatedSize = size;
 			}
 
 			void Deallocate(const uint64 size, uint64 alignment, void* memory) const override
 			{
-				GTSL::Memory::Deallocate(size, memory);
+				Get()->systemAllocator->Deallocate(size, alignment, memory);
 			}
+			
 		} systemAllocatorReference;
 		
-		BigAllocator bigAllocator;
+		SystemAllocator* systemAllocator{ nullptr };
+		PowerOf2PoolAllocator* poolAllocator{ nullptr };
 		StackAllocator* transientAllocator{nullptr};
 
 		TransientAllocatorReference transientAllocatorReference;
+
+		GTSL::Application systemApplication;
 		
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
@@ -97,9 +104,10 @@ namespace BE
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		
-		[[nodiscard]] BigAllocator* GetBigAllocator() { return &bigAllocator; }
+		[[nodiscard]] PowerOf2PoolAllocator* GetBigAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};
 
-	Application* CreateApplication();
+	Application* CreateApplication(SystemAllocator* systemAllocator);
+	void DestroyApplication(Application* application, SystemAllocator* systemAllocator);
 }

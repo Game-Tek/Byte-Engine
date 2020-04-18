@@ -19,17 +19,47 @@ namespace BE
 
 	class Application : public Object
 	{
+		friend struct TransientAllocatorReference;
 	public:
 		enum class CloseMode : uint8
 		{
 			OK, ERROR
 		};
+
+		struct TransientAllocatorReference : public GTSL::AllocatorReference
+		{
+			void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
+			{
+				Get()->transientAllocator->Allocate(size, alignment, memory, allocatedSize, "Transient");
+			}
+
+			void Deallocate(uint64 size, uint64 alignment, void* memory) const override
+			{
+				Get()->transientAllocator->Deallocate(size, alignment, memory, "Transient");
+			}
+		};
 	private:
 		static Application* applicationInstance;
 
 	protected:
+		struct SystemAllocatorReference : public GTSL::AllocatorReference
+		{
+			void Allocate(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
+			{
+				GTSL::Memory::Allocate(size, memory);
+				*allocatedSize = size;
+			}
+
+			void Deallocate(const uint64 size, uint64 alignment, void* memory) const override
+			{
+				GTSL::Memory::Deallocate(size, memory);
+			}
+		} systemAllocatorReference;
+		
 		BigAllocator bigAllocator;
-		StackAllocator transientAllocator;
+		StackAllocator* transientAllocator{nullptr};
+
+		TransientAllocatorReference transientAllocatorReference;
 		
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
@@ -68,7 +98,7 @@ namespace BE
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		
 		[[nodiscard]] BigAllocator* GetBigAllocator() { return &bigAllocator; }
-		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
+		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};
 
 	Application* CreateApplication();

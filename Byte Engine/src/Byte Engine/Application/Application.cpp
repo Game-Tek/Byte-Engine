@@ -6,7 +6,7 @@ BE::Application* BE::Application::applicationInstance = nullptr;
 
 void onAssert(const char* text, int line, const char* file, const char* function)
 {
-	BE_BASIC_LOG_ERROR("ASSERT: Error: %s, Line: %i, File: %s, Function: %s.", text, line, file, function);
+	BE_BASIC_LOG_ERROR("ASSERT: %s, Line: %u, File: %s, Function: %s.", text, line, file, function);
 }
 
 namespace BE
@@ -18,6 +18,7 @@ namespace BE
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
+		transientAllocator = new StackAllocator(&systemAllocatorReference);
 	}
 
 	Application::~Application()
@@ -28,7 +29,7 @@ namespace BE
 	{
 		while (!shouldClose())
 		{
-			transientAllocator.Clear();
+			//transientAllocator->Clear();
 			clockInstance->OnUpdate();
 
 			if(isInBackground)

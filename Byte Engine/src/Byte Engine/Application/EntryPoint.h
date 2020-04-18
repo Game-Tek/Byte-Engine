@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Application.h"
+
 extern BE::Application* BE::CreateApplication(); //Is defined in another translation unit.
 
 int main(int argc, char** argv)

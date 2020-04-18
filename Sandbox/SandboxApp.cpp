@@ -1,9 +1,12 @@
 #include "ByteEngine.h"
 
 #include "Byte Engine/Application/Application.h"
+#include <iostream>
+
+#include "Windows.h"
 
 class Sandbox final : public BE::Application
-{
+{	
 public:
 	Sandbox() : Application(BE::ApplicationCreateInfo{"Sandbox"})
 	{
@@ -84,7 +87,22 @@ public:
 
 #undef GetCurrentTime
 		
-		BE_LOG_SUCCESS("Started at %f!", GetClock()->GetCurrentTime().Seconds<float>())
+		//BE_LOG_SUCCESS("Started at %f!", GetClock()->GetCurrentTime().Seconds<float>())
+		auto text = "Hello, this is a very long string which should not fit into the first block! aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		GTSL::String a(text, &transientAllocatorReference);
+		GTSL::String b(text, &transientAllocatorReference);
+		GTSL::String c(text, &transientAllocatorReference);
+		GTSL::String d(text, &transientAllocatorReference);
+		GTSL::String e(text, &transientAllocatorReference);
+
+		StackAllocator::DebugData debug_data(&transientAllocatorReference);
+		transientAllocator->GetDebugData(debug_data);
+		printf("BytesAllocated: %llu\n", debug_data.BytesAllocated);
+		printf("BytesDeallocated: %llu\n", debug_data.BytesDeallocated);
+		printf("BlockMisses: %llu\n", debug_data.BlockMisses);
+		printf("RemainingBytes: %llu\n", debug_data.PerStackBlockUnusedSpace[0]);
+
+		transientAllocator->Clear();
 	}
 
 	void OnNormalUpdate() override

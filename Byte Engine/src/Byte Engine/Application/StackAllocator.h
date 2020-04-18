@@ -10,17 +10,21 @@ class StackAllocator
 		byte* at{ nullptr };
 		byte* end{ nullptr };
 
-		void AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference)
+		void AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
 		{
-			uint64 allocatedSize{0};
+			uint64 allocated_size{0};
 			allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocatedSize);
+			
+			allocatedSize = allocated_size;
+			
 			at = start;
-			end = start + allocatedSize;
+			end = start + allocated_size;
 		}
 
-		void DeallocateBlock(GTSL::AllocatorReference* allocatorReference) const
+		void DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const
 		{
 			allocatorReference->Deallocate(end - start, alignof(byte), start);
+			deallocatedBytes = end - start;
 		}
 
 		void AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
@@ -62,19 +66,36 @@ public:
 		std::unordered_map<GTSL::Id64::HashType, PerNameData> PerNameAllocationsData;
 		
 		/**
-		 * \brief Number of times it was tried to allocate on a block to no avail.
+		 * \brief Number of times it was tried to allocate on different blocks to no avail.
 		 * To improve this number(lower it) try to make the blocks bigger.
 		 * Don't make it so big that in the event that a new block has to be allocated it takes up too much space.
 		 * Reset to 0 on every call to GetDebugInfo()
-		 * LOWER BETTER; IDEAL 0.
 		 */
 		uint64 BlockMisses{ 0 };
 
 		uint64 BytesAllocated{ 0 };
-		uint64 BytesDeallocated{ 0 };
 		uint64 TotalBytesAllocated{ 0 };
+		
+		uint64 BytesDeallocated{ 0 };
 		uint64 TotalBytesDeallocated{ 0 };
-		uint64 MemoryUsage{ 0 };
+		
+		uint64 AllocatorAllocatedBytes{ 0 };
+		uint64 TotalAllocatorAllocatedBytes{ 0 };
+
+		uint64 AllocatorDeallocatedBytes{ 0 };
+		uint64 TotalAllocatorDeallocatedBytes{ 0 };
+		
+		uint64 AllocationsCount{ 0 };
+		uint64 TotalAllocationsCount{ 0 };
+		
+		uint64 DeallocationsCount{ 0 };
+		uint64 TotalDeallocationsCount{ 0 };
+		
+		uint64 AllocatorAllocationsCount{ 0 };
+		uint64 TotalAllocatorAllocationsCount{ 0 };
+		
+		uint64 AllocatorDeallocationsCount{ 0 };
+		uint64 TotalAllocatorDeallocationsCount{ 0 };
 	};
 protected:
 	const uint64 blockSize{ 0 };
@@ -87,11 +108,30 @@ protected:
 	uint64 blockMisses{ 0 };
 	std::unordered_map<GTSL::Id64::HashType, DebugData::PerNameData> perNameData;
 	GTSL::Mutex debugDataMutex;
+	
 	uint64 bytesAllocated{ 0 };
 	uint64 bytesDeallocated{ 0 };
+	
+	uint64 totalAllocatorAllocatedBytes{ 0 };
+	uint64 totalAllocatorDeallocatedBytes{ 0 };
+	
+	uint64 allocationsCount{ 0 };
+	uint64 deallocationsCount{ 0 };
+	
+	uint64 allocatorAllocationsCount{ 0 };
+	uint64 allocatorDeallocationsCount{ 0 };
+
+	uint64 allocatorAllocatedBytes{ 0 };
+	uint64 allocatorDeallocatedBytes{ 0 };
+	
 	uint64 totalBytesAllocated{ 0 };
 	uint64 totalBytesDeallocated{ 0 };
-	uint64 memoryUsage{ 0 };
+	
+	uint64 totalAllocationsCount{ 0 };
+	uint64 totalDeallocationsCount{ 0 };
+	
+	uint64 totalAllocatorAllocationsCount{ 0 };
+	uint64 totalAllocatorDeallocationsCount{ 0 };
 #endif
 	
 	const uint8 maxStacks{ 8 };
@@ -99,6 +139,8 @@ protected:
 public:
 	explicit StackAllocator(GTSL::AllocatorReference* allocatorReference, const uint8 stackCount = 8, const uint8 defaultBlocksPerStackCount = 2, const uint64 blockSizes = 512) : blockSize(blockSizes), stacks(stackCount, allocatorReference), stacksMutexes(stackCount, allocatorReference), allocatorReference(allocatorReference), maxStacks(stackCount)
 	{
+		uint64 allocated_size = 0;
+		
 		for(uint8 i = 0; i < stackCount; ++i)
 		{
 			stacks.EmplaceBack(defaultBlocksPerStackCount, defaultBlocksPerStackCount, allocatorReference); //construct stack i's block vector
@@ -108,7 +150,15 @@ public:
 				//stacks[i].EmplaceBack(); //construct a default block
 				for (auto& block : blocks)
 				{
-					block.AllocateBlock(blockSizes, allocatorReference); //allocate constructed block, which is also current block
+					block.AllocateBlock(blockSizes, allocatorReference, allocated_size); //allocate constructed block, which is also current block
+
+					BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
+					
+					BE_DEBUG_ONLY(++allocatorAllocationsCount)
+					BE_DEBUG_ONLY(++totalAllocatorAllocationsCount)
+					
+					BE_DEBUG_ONLY(allocatorAllocatedBytes += allocated_size)
+					BE_DEBUG_ONLY(totalAllocatorAllocatedBytes += allocated_size)
 				}
 			}
 			
@@ -118,11 +168,19 @@ public:
 
 	~StackAllocator()
 	{
+		uint64 deallocatedBytes{ 0 };
+		
 		for (auto& stack : stacks)
 		{
 			for (auto& block : stack)
 			{
-				block.DeallocateBlock(allocatorReference);
+				block.DeallocateBlock(allocatorReference, deallocatedBytes);
+				
+				BE_DEBUG_ONLY(++allocatorDeallocationsCount)
+				BE_DEBUG_ONLY(++totalAllocatorDeallocationsCount)
+				
+				BE_DEBUG_ONLY(allocatorDeallocatedBytes += deallocatedBytes)
+				BE_DEBUG_ONLY(totalAllocatorDeallocatedBytes += deallocatedBytes)
 			}
 		}
 	}
@@ -132,20 +190,33 @@ public:
 	{
 		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
 		
-		for (auto& stack : stacks)
-		{
-			for (auto& block : stack)
-			{
-				debugData.MemoryUsage = block.GetBlockSize();
-			}
-		}
-		
 		debugData.BlockMisses = blockMisses;
+		
 		debugData.PerNameAllocationsData = perNameData;
+		
+		debugData.AllocationsCount = allocationsCount;
+		debugData.TotalAllocationsCount = totalAllocationsCount;
+
+		debugData.DeallocationsCount = deallocationsCount;
+		debugData.TotalDeallocationsCount = totalDeallocationsCount;
+		
 		debugData.BytesAllocated = bytesAllocated;
-		debugData.BytesDeallocated = bytesDeallocated;
 		debugData.TotalBytesAllocated = totalBytesAllocated;
+		
+		debugData.BytesDeallocated = bytesDeallocated;
 		debugData.TotalBytesDeallocated = totalBytesDeallocated;
+		
+		debugData.AllocatorAllocationsCount = allocatorAllocationsCount;
+		debugData.TotalAllocatorAllocationsCount = totalAllocatorAllocationsCount;
+		
+		debugData.AllocatorDeallocationsCount = allocatorDeallocationsCount;
+		debugData.TotalAllocatorDeallocationsCount = totalAllocatorDeallocationsCount;
+
+		debugData.AllocatorAllocatedBytes = allocatorAllocatedBytes;
+		debugData.TotalAllocatorAllocatedBytes = totalAllocatorAllocatedBytes;
+
+		debugData.AllocatorDeallocatedBytes = allocatorDeallocatedBytes;
+		debugData.TotalAllocatorDeallocatedBytes = totalAllocatorDeallocatedBytes;
 		
 		for (auto& e : perNameData)
 		{
@@ -156,8 +227,18 @@ public:
 		}
 		
 		blockMisses = 0;
+		
 		bytesAllocated = 0;
 		bytesDeallocated = 0;
+		
+		allocationsCount = 0;
+		deallocationsCount = 0;
+		
+		allocatorAllocationsCount = 0;
+		allocatorDeallocationsCount = 0;
+
+		allocatorAllocatedBytes = 0;
+		allocatorDeallocatedBytes = 0;
 	}
 #endif
 	
@@ -215,11 +296,18 @@ public:
 			{
 				stacksMutexes[i].Unlock();
 				*allocatedSize = allocated_size;
+				
 				BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
+				
 				BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
 				BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
+				
 				BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 				BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
+				
+				BE_DEBUG_ONLY(++allocationsCount)
+				BE_DEBUG_ONLY(++totalAllocationsCount)
+				
 				return;
 			}
 
@@ -230,16 +318,27 @@ public:
 		}
 
 		//stacks[i].EmplaceBack();
-		stacks[i][n].AllocateBlock(blockSize, allocatorReference);
+		stacks[i][n].AllocateBlock(blockSize, allocatorReference, allocated_size);
 		stacks[i][n].AllocateInBlock(size, alignment, memory, allocated_size);
 		stacksMutexes[i].Unlock();
 		*allocatedSize = allocated_size;
 
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
+		
 		BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
 		BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
+		
 		BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 		BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
+
+		BE_DEBUG_ONLY(allocatorAllocatedBytes += allocated_size)
+		BE_DEBUG_ONLY(totalAllocatorAllocatedBytes += allocated_size)
+		
+		BE_DEBUG_ONLY(++allocatorAllocationsCount)
+		BE_DEBUG_ONLY(++totalAllocatorAllocationsCount)
+		
+		BE_DEBUG_ONLY(++allocationsCount)
+		BE_DEBUG_ONLY(++totalAllocationsCount)
 	}
 
 	void Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name)
@@ -250,9 +349,14 @@ public:
 		BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::AlignedNumber(size, alignment) })
 		
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
+		
 		BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesDeallocated += bytes_deallocated)
 		BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].DeallocationCount += 1)
+		
 		BE_DEBUG_ONLY(bytesDeallocated += bytes_deallocated)
 		BE_DEBUG_ONLY(totalBytesDeallocated += bytes_deallocated)
+		
+		BE_DEBUG_ONLY(++deallocationsCount)
+		BE_DEBUG_ONLY(++totalDeallocationsCount)
 	}
 };

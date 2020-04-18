@@ -9,14 +9,12 @@ void onAssert(const char* text, int line, const char* file, const char* function
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocator(ACI.SystemAllocator)
+	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocator(ACI.SystemAllocator), systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
 		applicationInstance = this;
 		
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
 		poolAllocator = new PowerOf2PoolAllocator(&systemAllocatorReference);
-
-		//systemApplication = 
 		
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();

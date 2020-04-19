@@ -118,6 +118,7 @@
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />

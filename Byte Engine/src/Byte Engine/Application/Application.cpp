@@ -9,25 +9,27 @@ void onAssert(const char* text, int line, const char* file, const char* function
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocator(ACI.SystemAllocator), systemApplication(GTSL::Application::ApplicationCreateInfo{})
+	Application::Application(const ApplicationCreateInfo& ACI) : systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
-		applicationInstance = this;
-		
-		transientAllocator = new StackAllocator(&systemAllocatorReference);
-		poolAllocator = new PowerOf2PoolAllocator(&systemAllocatorReference);
-		
-		clockInstance = new Clock();
-		resourceManagerInstance = new ResourceManager();
-		inputManagerInstance = new InputManager();
-		
+		applicationInstance = this;		
 	}
 
 	Application::~Application()
 	{
 	}
 
-	int Application::Run(int argc, char** argv)
+	void Application::Init()
 	{
+		transientAllocator = new StackAllocator(&systemAllocatorReference);
+		poolAllocator = new PowerOf2PoolAllocator(&systemAllocatorReference);
+
+		clockInstance = new Clock();
+		resourceManagerInstance = new ResourceManager();
+		inputManagerInstance = new InputManager();
+	}
+	
+	int Application::Run(int argc, char** argv)
+	{		
 		while (!shouldClose())
 		{
 			systemApplication.Update();

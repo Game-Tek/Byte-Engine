@@ -143,6 +143,7 @@
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Input\InputEnums.h" />

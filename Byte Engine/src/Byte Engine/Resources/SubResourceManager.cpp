@@ -4,12 +4,12 @@
 
 void ResourceManagerBigAllocatorReference::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const
 {
-	BE::Application::Get()->GetBigAllocator()->Allocate(size, alignment, memory, allocatedSize, name);
+	BE::Application::Get()->GetNormalAllocator()->Allocate(size, alignment, memory, allocatedSize, name);
 }
 
 void ResourceManagerBigAllocatorReference::Deallocate(const uint64 size, const uint64 alignment, void* memory) const
 {
-	BE::Application::Get()->GetBigAllocator()->Deallocate(size, alignment, memory, name);
+	BE::Application::Get()->GetNormalAllocator()->Deallocate(size, alignment, memory, name);
 }
 
 void ResourceManagerTransientAllocatorReference::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const

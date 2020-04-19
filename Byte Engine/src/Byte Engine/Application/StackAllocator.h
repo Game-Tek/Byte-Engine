@@ -13,7 +13,8 @@ class StackAllocator
 		void AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
 		{
 			uint64 allocated_size{0};
-			allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocatedSize);
+			
+			allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
 			
 			allocatedSize = allocated_size;
 			
@@ -143,23 +144,21 @@ public:
 		
 		for(uint8 i = 0; i < stackCount; ++i)
 		{
-			stacks.EmplaceBack(defaultBlocksPerStackCount, defaultBlocksPerStackCount, allocatorReference); //construct stack i's block vector
+			stacks.EmplaceBack(defaultBlocksPerStackCount, allocatorReference); //construct stack [i]s
 			
-			for (auto& blocks : stacks) //for every block in constructed vector
+			for (uint32 j = 0; j < defaultBlocksPerStackCount; ++j) //for every block in constructed vector
 			{
-				//stacks[i].EmplaceBack(); //construct a default block
-				for (auto& block : blocks)
-				{
-					block.AllocateBlock(blockSizes, allocatorReference, allocated_size); //allocate constructed block, which is also current block
+				stacks[i].EmplaceBack(); //construct a default block
+				
+				stacks[i][j].AllocateBlock(blockSizes, allocatorReference, allocated_size); //allocate constructed block, which is also current block
 
-					BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
-					
-					BE_DEBUG_ONLY(++allocatorAllocationsCount)
-					BE_DEBUG_ONLY(++totalAllocatorAllocationsCount)
-					
-					BE_DEBUG_ONLY(allocatorAllocatedBytes += allocated_size)
-					BE_DEBUG_ONLY(totalAllocatorAllocatedBytes += allocated_size)
-				}
+				BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
+				
+				BE_DEBUG_ONLY(++allocatorAllocationsCount)
+				BE_DEBUG_ONLY(++totalAllocatorAllocationsCount)
+				
+				BE_DEBUG_ONLY(allocatorAllocatedBytes += allocated_size)
+				BE_DEBUG_ONLY(totalAllocatorAllocatedBytes += allocated_size)
 			}
 			
 			stacksMutexes.EmplaceBack();

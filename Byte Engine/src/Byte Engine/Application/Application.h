@@ -17,7 +17,6 @@ namespace BE
 	struct ApplicationCreateInfo
 	{
 		const char* ApplicationName = nullptr;
-		SystemAllocator* SystemAllocator{ nullptr };
 	};
 
 	class Application : public Object
@@ -49,8 +48,8 @@ namespace BE
 		{
 			void Allocate(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
 			{
+				(*allocatedSize) = size;
 				Get()->systemAllocator->Allocate(size, alignment, memory);
-				*allocatedSize = size;
 			}
 
 			void Deallocate(const uint64 size, uint64 alignment, void* memory) const override
@@ -83,6 +82,10 @@ namespace BE
 		explicit Application(const ApplicationCreateInfo& ACI);
 		virtual ~Application();
 
+		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
+
+		virtual void Init() = 0;
+		
 		virtual void OnNormalUpdate() = 0;
 		virtual void OnBackgroundUpdate() = 0;
 		
@@ -104,10 +107,10 @@ namespace BE
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		
-		[[nodiscard]] PowerOf2PoolAllocator* GetBigAllocator() const { return poolAllocator; }
+		[[nodiscard]] PowerOf2PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};
 
-	Application* CreateApplication(SystemAllocator* systemAllocator);
-	void DestroyApplication(Application* application, SystemAllocator* systemAllocator);
+	Application* CreateApplication();
+	void DestroyApplication(Application* application);
 }

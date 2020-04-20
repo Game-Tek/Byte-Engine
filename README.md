@@ -26,7 +26,7 @@
   - Console support (Nintendo™ Switch, Sony™ PS5, Microsoft™ Xbox X)
   - Linux Support
 
-You can check the prject's roadmap [here](https://github.com/Game-Tek/Byte-Engine/projects).
+**You can check the project's roadmap [here](https://github.com/Game-Tek/Byte-Engine/projects).**
 
 ---
 

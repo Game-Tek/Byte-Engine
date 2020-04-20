@@ -46,7 +46,7 @@ class PowerOf2PoolAllocator
 			}
 			
 		public:
-			Block(const uint32 slotsSize, const uint16 slotsCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference)
+			Block(const uint16 slotsCount, const uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference)
 			{				
 				const uint64 free_indeces_stack_space = slotsCount * sizeof(uint32);
 				const uint64 block_data_space = slotsSize * slotsCount;
@@ -68,16 +68,17 @@ class PowerOf2PoolAllocator
 			
 			bool DoesAllocationBelongToBlock(void* p, const uint16 slotsCount, const uint32 slotsSize) const { return p > blockData(slotsCount) && p < blockDataEnd(slotsCount, slotsSize); }
 
-			void AllocateInBlock(const uint64 alignment, void** data, const uint16 slotsCount, const uint32 slotsSize)
+			void AllocateInBlock(const uint64 alignment, void** data, uint64& allocatedSize, const uint16 slotsCount, const uint32 slotsSize)
 			{
 				uint32 free_slot{ 0 };
 				mutex.Lock();
 				popFreeSlot(free_slot);
 				mutex.Unlock();
 				*data = GTSL::Memory::AlignedPointer(alignment, blockData(slotsCount) + free_slot * slotsSize);
+				allocatedSize = slotsSize - ((blockData(slotsCount) + (free_slot + 1) * slotsSize) - reinterpret_cast<byte*>(*data));
 			}
 
-			bool TryAllocateInBlock(const uint64 alignment, void** data, const uint16 slotsCount, const uint32 slotsSize)
+			bool TryAllocateInBlock(const uint64 alignment, void** data, uint64& allocatedSize, const uint16 slotsCount, const uint32 slotsSize)
 			{
 				uint32 free_slot{ 0 };
 				mutex.Lock();
@@ -86,6 +87,7 @@ class PowerOf2PoolAllocator
 					popFreeSlot(free_slot);
 					mutex.Unlock();
 					*data = GTSL::Memory::AlignedPointer(alignment, blockData(slotsCount) + free_slot * slotsSize);
+					allocatedSize = slotsSize - ((blockData(slotsCount) + (free_slot + 1) * slotsSize) - reinterpret_cast<byte*>(*data));
 					return true;
 				}
 				mutex.Unlock();
@@ -106,10 +108,12 @@ class PowerOf2PoolAllocator
 		const uint16 slotsCount{ 0 };
 		const uint32 slotsSize{ 0 };
 	public:
-		Pool(uint16 slotsCount, uint32 slotsSize, const uint8 blockCount, GTSL::AllocatorReference* allocatorReference) : blocks(blockCount, allocatorReference)
-		{
-			uint64 a_s{ 0 };
-			blocks.EmplaceBack(slotsSize, slotsCount, a_s, allocatorReference);
+		Pool(uint16 slotsCount, uint32 slotsSize, const uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference) : blocks(blockCount, allocatorReference)
+		{	
+			for(uint8 i = 0; i < blockCount; ++i)
+			{
+				blocks.EmplaceBack(slotsCount, slotsSize, allocatedSize, allocatorReference);
+			}
 		}
 		
 		void Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize, GTSL::AllocatorReference* allocatorReference)
@@ -125,12 +129,12 @@ class PowerOf2PoolAllocator
 			blocksMutex.ReadLock();
 			for(uint32 j = 0; j < blocks.GetLength(); ++j)
 			{
-				if (blocks[(i + j) % blocks.GetLength()].TryAllocateInBlock(alignment, data, slotsCount, slotsSize)) { blocksMutex.ReadUnlock(); return; }
+				if (blocks[(i + j) % blocks.GetLength()].TryAllocateInBlock(alignment, data, *allocatedSize,slotsCount, slotsSize)) { blocksMutex.ReadUnlock(); return; }
 			}
 			blocksMutex.ReadUnlock();
 			
 			blocksMutex.WriteLock();
-			blocks[blocks.EmplaceBack(slotsSize, slotsCount, allocatorReference)].AllocateInBlock(alignment, data, slotsCount, slotsSize);
+			blocks[blocks.EmplaceBack(slotsSize, slotsCount, allocatorReference)].AllocateInBlock(alignment, data, *allocatedSize, slotsCount, slotsSize);
 			blocksMutex.WriteUnlock();
 		}
 
@@ -157,9 +161,12 @@ public:
 	PowerOf2PoolAllocator(GTSL::AllocatorReference* allocatorReference) : allocatorReference(allocatorReference)
 	{
 		const auto max_power_of_two_allocatable = 10;
+
+		uint64 allocated_size{ 0 }; //debug
+		
 		for(uint32 i = max_power_of_two_allocatable; i > 0; --i)
 		{
-			pools.EmplaceBack(i * max_power_of_two_allocatable, 1 << i, i, allocatorReference);
+			pools.EmplaceBack(i * max_power_of_two_allocatable, 1 << i, i, allocated_size, allocatorReference);
 		}
 	}
 	

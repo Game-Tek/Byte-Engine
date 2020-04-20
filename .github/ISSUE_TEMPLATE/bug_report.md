@@ -1,38 +1,31 @@
 ---
 name: Bug report
 about: Create a report to help us improve
-title: ''
-labels: ''
-assignees: ''
+title: Bug Report
+labels: 'Topic: Bug :bug:'
+assignees: Facundo961
 
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+#Bug Report
+## Description
+### Expected behavior
+__A clear and concise description of what you expected to happen.__
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+### Current behavior
+__A clear and concise description of what is actually happening.__
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+### To Reproduce
+**Steps to reproduce the behavior:**
+1. ...
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+### Code Snippets
+__If applicable, add code to help explain your problem.__
 
-**Desktop (please complete the following information):**
+## Enviroment
+### Device
  - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+ - Compiler: [e.g. MSVC v.19, Env. Vars: BE_DEBUG]
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
-
-**Additional context**
-Add any other context about the problem here.
+### Additional context
+__Add any other context about the problem here.__

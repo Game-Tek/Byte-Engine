@@ -137,7 +137,6 @@
       <Filter>Engine\Render</Filter>
     </ClInclude>
     <ClInclude Include="src\ByteEngine.h" />
-    <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Object.h" />
     <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
@@ -177,6 +176,7 @@
     <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\PowerOf2PoolAllocator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

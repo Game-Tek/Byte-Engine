@@ -114,7 +114,6 @@
     <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
     <ClInclude Include="src\Byte Engine\Application\Console.h" />
-    <ClInclude Include="src\Byte Engine\Application\MainAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
@@ -171,6 +170,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\PowerOf2PoolAllocator.cpp" />
     <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />

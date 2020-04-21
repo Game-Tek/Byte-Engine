@@ -3,25 +3,22 @@
 #include "Byte Engine/Core.h"
 
 #include <atomic>
-#include <GTSL/Mutex.h>
 #include <GTSL/Allocator.h>
-#include <GTSL/Vector.hpp>
+#include <GTSL/Ranger.h>
 
-class PowerOf2PoolAllocator
+class PoolAllocator
 {
-	GTSL::AllocatorReference* allocatorReference{ nullptr };
+	GTSL::AllocatorReference* systemAllocatorReference{ nullptr };
 
 	class Pool
 	{
 		struct Block
 		{
 		protected:
-			GTSL::Mutex mutex;
 			void* data{ nullptr };
+			std::atomic<uint16> freeSlotsCount{ 0 };
 
-			uint16 freeSlotsCount{ 0 };
-
-			[[nodiscard]] uint32* freeSlotsIndices() const { return reinterpret_cast<uint32*>(reinterpret_cast<byte*>(data)); }
+			[[nodiscard]] uint32* freeSlotsIndices() const { return reinterpret_cast<uint32*>(static_cast<byte*>(data)); }
 			[[nodiscard]] byte* blockData(const uint16 slotsCount) const { return reinterpret_cast<byte*>(freeSlotsIndices()) + sizeof(uint32) * slotsCount; }
 			[[nodiscard]] byte* blockDataEnd(const uint16 slotsCount, const uint32 slotsSize) const { return blockData(slotsCount) + slotsCount * slotsSize; }
 
@@ -58,18 +55,19 @@ class PowerOf2PoolAllocator
 
 			void DeallocateInBlock(uint64 alignment, void* data, const uint16 slotsCount, const uint32 slotsSize)
 			{
-				mutex.Lock();
 				placeFreeSlot(slotIndexFromPointer(data, slotsCount, slotsSize));
-				mutex.Unlock();
 			}
 		};
 
-		GTSL::Vector<Block> blocks;
-		GTSL::ReadWriteMutex blocksMutex;
+		std::atomic<Block*> blocks{ nullptr };
+		std::atomic<uint32> blockCount{ 0 };
+		std::atomic<uint32> blockCapacity{ 0 };
 		std::atomic<uint32> index{ 0 };
-		const uint16 slotsCount{ 0 };
 		const uint32 slotsSize{ 0 };
-		
+		const uint16 slotsCount{ 0 };
+
+		uint32 allocateAndAddNewBlock(GTSL::AllocatorReference* allocatorReference);
+		auto blocksRange() const { return Ranger(blocks.load(), blocks + blockCount); }
 	public:
 		Pool(uint16 slotsCount, uint32 slotsSize, uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
@@ -80,11 +78,12 @@ class PowerOf2PoolAllocator
 		void Deallocate(uint64 size, uint64 alignment, void* memory, GTSL::AllocatorReference* allocatorReference);
 	};
 	
-	GTSL::Vector<Pool> pools;
+	Pool* pools{nullptr};
+	uint32 poolCount{ 0 };
 public:
-	PowerOf2PoolAllocator(GTSL::AllocatorReference* allocatorReference);
+	PoolAllocator(GTSL::AllocatorReference* allocatorReference);
 
-	~PowerOf2PoolAllocator()
+	~PoolAllocator()
 	{
 		Free();
 	}

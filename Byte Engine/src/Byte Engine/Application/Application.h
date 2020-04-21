@@ -4,7 +4,7 @@
 #include "InputManager.h"
 #include "Byte Engine/Resources/ResourceManager.h"
 #include "Byte Engine/Game/World.h"
-#include "PowerOf2PoolAllocator.h"
+#include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 #include <GTSL/Application.h>
@@ -60,7 +60,7 @@ namespace BE
 		} systemAllocatorReference;
 		
 		SystemAllocator* systemAllocator{ nullptr };
-		PowerOf2PoolAllocator* poolAllocator{ nullptr };
+		PoolAllocator* poolAllocator{ nullptr };
 		StackAllocator* transientAllocator{nullptr};
 
 		TransientAllocatorReference transientAllocatorReference;
@@ -107,7 +107,7 @@ namespace BE
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		
-		[[nodiscard]] PowerOf2PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
+		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};
 

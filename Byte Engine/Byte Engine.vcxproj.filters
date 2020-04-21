@@ -140,9 +140,10 @@
     <ClInclude Include="src\Byte Engine\Object.h" />
     <ClInclude Include="src\Byte Engine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\Byte Engine\Application\StackAllocator.h" />
-    <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\SystemAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
+    <ClInclude Include="src\Byte Engine\Game\GameInstance.h" />
+    <ClInclude Include="src\Byte Engine\Application\PoolAllocator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Input\InputEnums.h" />
@@ -176,7 +177,7 @@
     <ClCompile Include="src\Byte Engine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\Byte Engine\Application\PowerOf2PoolAllocator.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\PoolAllocator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

@@ -21,7 +21,7 @@ namespace BE
 	void Application::Init()
 	{
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
-		poolAllocator = new PowerOf2PoolAllocator(&systemAllocatorReference);
+		poolAllocator = new PoolAllocator(&systemAllocatorReference);
 
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();

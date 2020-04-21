@@ -5,6 +5,10 @@
 #include "Game/WorldObject.h"
 #include <GTSL/Pair.h>
 
+namespace GTSL {
+	class Vector3;
+}
+
 class Camera : public WorldObject
 {
 	//First is near, Second is far
@@ -13,9 +17,6 @@ public:
 	Camera() = default;
 	explicit Camera(const float FOV);
 	~Camera() = default;
-
-	void Destroy(World* ownerWorld) override
-	{}
 	
 	[[nodiscard]] const char* GetName() const override { return "Camera"; }
 

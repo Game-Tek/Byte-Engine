@@ -4,8 +4,6 @@
 
 #include <iostream>
 
-#include <GTSL/Window.h>
-
 #include "Windows.h"
 
 class Sandbox final : public GameApplication

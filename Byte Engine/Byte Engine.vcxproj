@@ -111,7 +111,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\Byte Engine\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\Byte Engine\Application\PowerOf2PoolAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\PoolAllocator.h" />
     <ClInclude Include="src\Byte Engine\Application\CommandMap.h" />
     <ClInclude Include="src\Byte Engine\Application\Console.h" />
     <ClInclude Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.h" />
@@ -120,6 +120,7 @@
     <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
+    <ClInclude Include="src\Byte Engine\Game\GameInstance.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />
     <ClInclude Include="src\Byte Engine\Game\TypeManager.h" />
@@ -170,7 +171,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.cpp" />
-    <ClCompile Include="src\Byte Engine\Application\PowerOf2PoolAllocator.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\PoolAllocator.cpp" />
     <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />

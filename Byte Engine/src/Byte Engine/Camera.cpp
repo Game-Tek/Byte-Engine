@@ -4,7 +4,5 @@
 
 void Camera::SetFocusDistance(const GTSL::Vector3& Object)
 {
-	focusDistance = GTSL::Math::Length(Transform.Position - Object);
-
 	return;
 }

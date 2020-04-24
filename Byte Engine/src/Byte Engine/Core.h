@@ -16,7 +16,7 @@ using int64 = long long;
 
 //Assert
 #ifdef BE_DEBUG
-#define BE_ASSERT(func, text) if ((func)) { BE_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %u: %s", __FILE__, __LINE__, text); __debugbreak(); }
+#define BE_ASSERT(func, text) if ((func)) [[unlikely]] { BE_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %u: %s", __FILE__, __LINE__, text); __debugbreak(); }
 #else
 #define BE_ASSERT(func, text)
 #endif

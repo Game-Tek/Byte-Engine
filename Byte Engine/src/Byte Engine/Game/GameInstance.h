@@ -2,5 +2,6 @@
 
 class GameInstance
 {
-	
+	//worlds
+public:
 };

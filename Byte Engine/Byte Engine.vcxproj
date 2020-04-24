@@ -172,6 +172,7 @@
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\Byte Engine\Application\PoolAllocator.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\StackAllocator.cpp" />
     <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />

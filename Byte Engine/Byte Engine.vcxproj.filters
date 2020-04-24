@@ -178,6 +178,7 @@
     <ClCompile Include="src\Byte Engine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
     <ClCompile Include="src\Byte Engine\Application\PoolAllocator.cpp" />
+    <ClCompile Include="src\Byte Engine\Application\StackAllocator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />

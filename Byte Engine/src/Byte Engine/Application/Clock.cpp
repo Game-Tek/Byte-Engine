@@ -29,12 +29,7 @@ void Clock::OnUpdate()
 
 	//ticks / processsorFrequency = seconds
 	
-	auto delta_ticks = current_ticks.QuadPart - performanceCounterTicks;	
-
-	auto pc_time_in_microseconds = (performanceCounterTicks * 1000000);
-	pc_time_in_microseconds /= processorFrequency;
-	
-	const auto pc_time = GTSL::TimePoint::CreateFromMicroseconds(pc_time_in_microseconds);
+	auto delta_ticks = current_ticks.QuadPart - performanceCounterTicks;
 	
 	delta_ticks *= 1000000; //to microseconds
 	delta_ticks /= processorFrequency;

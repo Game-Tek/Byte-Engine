@@ -68,9 +68,16 @@ uint32 PoolAllocator::Pool::allocateAndAddNewBlock(GTSL::AllocatorReference* all
 	return ++blockCount;
 }
 
-PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, const uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference)
+PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, const uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference) : blockCount(blockCount), slotsSize(slotsSize), slotsCount(slotsCount), blockCapacity(blockCount)
 {
-	for (uint8 i = 0; i < blockCount; ++i) { ::new(static_cast<void*>(blocks + blockCount)) Block(slotsCount, slotsSize, allocatedSize, allocatorReference); }
+	allocatorReference->Allocate(sizeof(Block) * blockCount, alignof(Block), reinterpret_cast<void**>(&blocks), &allocatedSize);
+
+	uint64 block_allocation_size{ 0 };
+	for (uint8 i = 0; i < blockCount; ++i)
+	{
+		::new(static_cast<void*>(blocks + i)) Block(slotsCount, slotsSize, block_allocation_size, allocatorReference);
+		allocatedSize += block_allocation_size;
+	}
 }
 
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize, uint64& allocatorAllocatedBytes, GTSL::AllocatorReference* allocatorReference)
@@ -117,27 +124,24 @@ void PoolAllocator::Pool::Free(uint64& freedBytes, GTSL::AllocatorReference* all
 	for (auto& block : blocksRange()) { block.FreeBlock(slotsCount, slotsSize, freedBytes, allocatorReference); }
 }
 
-PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference): systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference): systemAllocatorReference(allocatorReference), poolCount(10)
 {
-	const auto max_power_of_two_allocatable = 10;
-
 	uint64 allocated_size{ 0 }; //debug
 
 	void* data{ nullptr };
 	uint64 alloc_size{ 0 };
-	allocatorReference->Allocate(sizeof(Pool) * max_power_of_two_allocatable, alignof(Pool), &data, &alloc_size);
+	allocatorReference->Allocate(sizeof(Pool) * poolCount, alignof(Pool), &data, &alloc_size);
 	
-	for (uint32 i = max_power_of_two_allocatable; i > 0; --i)
+	pools = static_cast<Pool*>(data);
+	
+	for (uint32 i = poolCount - 1; i > 0; --i)
 	{
-		::new(static_cast<void*>(pools + 1)) Pool(i * max_power_of_two_allocatable, 1 << i, i, alloc_size, allocatorReference);
+		::new(static_cast<void*>(pools + i)) Pool(i * poolCount, 1 << i, i, alloc_size, allocatorReference);
 		allocated_size += alloc_size;
 	}
-
-	pools = static_cast<Pool*>(data);
-	poolCount = max_power_of_two_allocatable;
 }
 
-void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name)
+void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const
 {
 	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!")
 	
@@ -154,7 +158,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 	pools[set_bit].Allocate(size, alignment, memory, allocatedSize, allocator_bytes, systemAllocatorReference);
 }
 
-void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name)
+void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name) const
 {
 	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!")
 
@@ -169,11 +173,11 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 	pools[set_bit].Deallocate(size, alignment, memory, systemAllocatorReference);
 }
 
-void PoolAllocator::Free()
+void PoolAllocator::Free() const
 {
 	uint64 freed_bytes{ 0 };
 
-	for (auto& pool : Ranger(pools, pools + poolCount))
+	for (auto& pool : GTSL::Ranger(pools, pools + poolCount))
 	{
 		pool.Free(freed_bytes, systemAllocatorReference);
 	}

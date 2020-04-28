@@ -1,7 +1,7 @@
 #include "Clock.h"
 
 #ifdef BE_PLATFORM_WIN
-#include "windows.h"
+#include <Windows.h>
 #endif
 
 Clock::Clock()
@@ -27,34 +27,22 @@ void Clock::OnUpdate()
 	LARGE_INTEGER current_ticks;
 	QueryPerformanceCounter(&current_ticks);
 
-	//ticks / processsorFrequency = seconds
-	
-	auto delta_ticks = current_ticks.QuadPart - performanceCounterTicks;
-	
-	delta_ticks *= 1000000; //to microseconds
-	delta_ticks /= processorFrequency;
-
 	//Check if delta_ticks exceeds 1 seconds.
 	//This is done to prevent possible problems caused by large time deltas,
 	//which could be caused by checking breakpoints during development
 	//or by occasional freezes during normal game-play.
 
 	auto delta_microseconds = current_ticks.QuadPart - performanceCounterTicks;
-	delta_microseconds *= 1000000;
-	delta_microseconds /= processorFrequency;
-	auto delta_time = GTSL::TimePoint::CreateFromMicroseconds(delta_microseconds);
+	delta_microseconds *= 1000000; delta_microseconds /= processorFrequency;
+	const auto delta_time = GTSL::Microseconds(delta_microseconds);
 	
-	if (delta_ticks > 1000000)
+	if (delta_time < GTSL::Microseconds(GTSL::Seconds(1)))
 	{
-		//Leave delta time as is. Assume last frame's delta time.
+		deltaTime = delta_time;
 	}
-	else
-	{	
-	}
-	deltaTime = delta_time;
 	
-	elapsedTime += GTSL::TimePoint::CreateFromMicroseconds(delta_microseconds);
-
+	elapsedTime += GTSL::Microseconds(delta_microseconds);
+	
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	performanceCounterTicks = current_ticks.QuadPart;
 #endif
@@ -65,10 +53,10 @@ void Clock::OnUpdate()
 
 
 #undef GetCurrentTime
-GTSL::TimePoint Clock::GetCurrentTime() const
+GTSL::Microseconds Clock::GetCurrentTime() const
 {
 #ifdef BE_PLATFORM_WIN
-	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return GTSL::TimePoint::CreateFromMicroseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
+	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return GTSL::Microseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
 #endif
 }
 

@@ -8,6 +8,35 @@
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 #include <GTSL/Application.h>
+#include <GTSL/Allocator.h>
+
+struct SystemAllocatorReference : public GTSL::AllocatorReference
+{
+protected:
+	void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+	void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
+
+public:
+	SystemAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::deallocateFunc>())
+	{
+	}
+
+};
+
+struct TransientAllocatorReference : public GTSL::AllocatorReference
+{
+protected:
+	void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+	void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
+
+public:
+	TransientAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::deallocateFunc>())
+	{
+
+	}
+};
 
 namespace BE
 {
@@ -27,43 +56,16 @@ namespace BE
 		{
 			OK, ERROR
 		};
-
-		struct TransientAllocatorReference : public GTSL::AllocatorReference
-		{
-			void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
-			{
-				Get()->transientAllocator->Allocate(size, alignment, memory, allocatedSize, "Transient");
-			}
-
-			void Deallocate(uint64 size, uint64 alignment, void* memory) const override
-			{
-				Get()->transientAllocator->Deallocate(size, alignment, memory, "Transient");
-			}
-		};
 	private:
 		inline static Application* applicationInstance{ nullptr };
 
 	protected:
-		struct SystemAllocatorReference : public GTSL::AllocatorReference
-		{
-			void Allocate(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override
-			{
-				(*allocatedSize) = size;
-				Get()->systemAllocator->Allocate(size, alignment, memory);
-			}
-
-			void Deallocate(const uint64 size, uint64 alignment, void* memory) const override
-			{
-				Get()->systemAllocator->Deallocate(size, alignment, memory);
-			}
-			
-		} systemAllocatorReference;
+		SystemAllocatorReference systemAllocatorReference;
+		TransientAllocatorReference transientAllocatorReference;
 		
 		SystemAllocator* systemAllocator{ nullptr };
 		PoolAllocator* poolAllocator{ nullptr };
-		StackAllocator* transientAllocator{nullptr};
-
-		TransientAllocatorReference transientAllocatorReference;
+		StackAllocator* transientAllocator{ nullptr };
 
 		GTSL::Application systemApplication;
 		
@@ -106,7 +108,8 @@ namespace BE
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
-		
+
+		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <GTSL/TimePoint.h>
+#include <GTSL/Time.h>
 
 class Timer
 {
-	GTSL::TimePoint startingTime;
+	GTSL::Microseconds startingTime;
 	const char* name = "unnamed";
 public:
 	Timer(const char* name);

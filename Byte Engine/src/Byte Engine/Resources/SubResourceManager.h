@@ -11,11 +11,13 @@ struct ResourceManagerBigAllocatorReference final : GTSL::AllocatorReference
 	{
 	}
 	
-	virtual ~ResourceManagerBigAllocatorReference() = default;
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override;
-	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
+	~ResourceManagerBigAllocatorReference() = default;
 	
 protected:
+	void allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+	void deallocateFunc(const uint64 size, uint64 alignment, void* memory) const;
+	
 	const char* name{ nullptr };
 };
 
@@ -25,11 +27,13 @@ struct ResourceManagerTransientAllocatorReference final : GTSL::AllocatorReferen
 	{
 	}
 	
-	virtual ~ResourceManagerTransientAllocatorReference() = default;
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const override;
-	void Deallocate(uint64 size, uint64 alignment, void* memory) const override;
+	~ResourceManagerTransientAllocatorReference() = default;
 	
 protected:
+	void allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+	void deallocateFunc(const uint64 size, uint64 alignment, void* memory) const;
+	
 	const char* name{ nullptr };
 };
 

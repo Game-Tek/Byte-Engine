@@ -76,7 +76,7 @@ class PoolAllocator
 		const uint16 slotsCount{ 0 };
 
 		uint32 allocateAndAddNewBlock(GTSL::AllocatorReference* allocatorReference);
-		[[nodiscard]] auto blocksRange() const { return Ranger(blocks, blocks + blockCount); }//Ranger(blocks.load(), blocks + blockCount); }
+		[[nodiscard]] auto blocksRange() const { return GTSL::Ranger(blocks, blocks + blockCount); }//Ranger(blocks.load(), blocks + blockCount); }
 	public:
 		Pool(uint16 slotsCount, uint32 slotsSize, uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
@@ -97,9 +97,9 @@ public:
 		Free();
 	}
 
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name);
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const;
 
-	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name);
+	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name) const;
 	
-	void Free();
+	void Free() const;
 };

@@ -74,3 +74,24 @@ namespace BE
 		return flaggedForClose;
 	}
 }
+
+void SystemAllocatorReference::allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const
+{
+	(*allocatedSize) = size;
+	BE::Application::Get()->GetSystemAllocator()->Allocate(size, alignment, memory);
+}
+
+void SystemAllocatorReference::deallocateFunc(const uint64 size, uint64 alignment, void* memory) const
+{
+	BE::Application::Get()->GetSystemAllocator()->Deallocate(size, alignment, memory);
+}
+
+void TransientAllocatorReference::allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const
+{
+	BE::Application::Get()->GetTransientAllocator()->Allocate(size, alignment, memory, allocatedSize, "Transient");
+}
+
+void TransientAllocatorReference::deallocateFunc(uint64 size, uint64 alignment, void* memory) const
+{
+	BE::Application::Get()->GetTransientAllocator()->Deallocate(size, alignment, memory, "Transient");
+}

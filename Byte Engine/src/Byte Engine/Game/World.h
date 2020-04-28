@@ -3,13 +3,11 @@
 #include <GTSL/Id.h>
 #include "TypeManager.h"
 #include <unordered_map>
-#include <GTSL/TimePoint.h>
+#include <GTSL/Time.h>
 #include "Byte Engine/Object.h"
 
 class World : public Object
 {
-	GTSL::TimePoint levelRunningTime;
-	GTSL::TimePoint levelAdjustedRunningTime;
 	float worldTimeMultiplier = 1;
 
 	std::unordered_map<GTSL::Id64::HashType, TypeManager*> types;
@@ -36,9 +34,4 @@ public:
 
 
 	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
-
-	static double GetRealRunningTime();
-	[[nodiscard]] GTSL::TimePoint GetWorldRunningTime() const { return levelRunningTime; }
-	[[nodiscard]] GTSL::TimePoint GetWorldAdjustedRunningTime() const { return levelAdjustedRunningTime; }
-	[[nodiscard]] GTSL::TimePoint GetWorldDeltaTime() const;
 };

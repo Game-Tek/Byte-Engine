@@ -1,4 +1,4 @@
-![Byte Engine](https://i.imgur.com/0c4Zuzx.png)  
+![Byte Engine](https://i.imgur.com/VRRaCOp.png)  
 
 **BYTΞ Engine** is a C++ based game engine with focus on API simplicity and speed. It's also intended to serve as an educational resource for everyone trying to build a game engine.
 

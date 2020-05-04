@@ -144,6 +144,7 @@
     <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\Byte Engine\Game\GameInstance.h" />
     <ClInclude Include="src\Byte Engine\Application\PoolAllocator.h" />
+    <ClInclude Include="src\Byte Engine\Application\EventManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Byte Engine\Application\Input\InputEnums.h" />

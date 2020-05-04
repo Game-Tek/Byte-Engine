@@ -2,15 +2,35 @@
 
 #include "Application.h"
 
-extern BE::Application* BE::CreateApplication(); //Is defined in another translation unit.
-extern void BE::DestroyApplication(BE::Application* application); //Is defined in another translation unit.
+#include <GTSL/Allocator.h>
+
+extern BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference); //Is defined in another translation unit.
+extern void BE::DestroyApplication(BE::Application* application, GTSL::AllocatorReference* allocatorReference); //Is defined in another translation unit.
 
 int main(int argc, char** argv)
 {
-	SystemAllocator system_allocator;
+	static SystemAllocator system_allocator;
+
+	struct SystemAllocatorReference : GTSL::AllocatorReference
+	{
+	protected:
+		void alloc(uint64 size, uint64 alignment, void** data, uint64* allocatedSize) const
+		{
+			system_allocator.Allocate(size, alignment, data);
+		}
+
+		void dealloc(uint64 size, uint64 alignement, void* data) const
+		{
+			system_allocator.Deallocate(size, alignement, data);
+		}
+		
+	public:
+		SystemAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::alloc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::dealloc>())
+		{}
+	} system_allocator_reference;
 	
 	//When CreateApplication() is defined it must return a new object of it class, effectively letting us manage that instance from here.
-	auto application = BE::CreateApplication();
+	auto application = BE::CreateApplication(&system_allocator_reference);
 
 	application->SetSystemAllocator(&system_allocator);
 
@@ -18,7 +38,7 @@ int main(int argc, char** argv)
 	//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
 	const auto exit_code = application->Run(argc, argv);
 	
-	BE::DestroyApplication(application);
+	BE::DestroyApplication(application, &system_allocator_reference);
 
 	return exit_code; //Return and exit.
 }

@@ -67,6 +67,7 @@
       <CompileAs>CompileAsCpp</CompileAs>
       <ShowIncludes>false</ShowIncludes>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>W:\Game Studio\GS_Engine\vendor\vulkan\shaderc;$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -93,6 +94,10 @@
       <AdditionalIncludeDirectories>
       </AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -120,6 +125,7 @@
     <ClInclude Include="src\Byte Engine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\Byte Engine\Debug\Timer.h" />
     <ClInclude Include="src\Byte Engine\Dispatcher.h" />
+    <ClInclude Include="src\Byte Engine\Application\EventManager.h" />
     <ClInclude Include="src\Byte Engine\Game\GameInstance.h" />
     <ClInclude Include="src\Byte Engine\Game\StaticMesh.h" />
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />

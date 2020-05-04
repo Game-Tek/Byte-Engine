@@ -10,6 +10,8 @@
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
 
+#include "EventManager.h"
+
 struct SystemAllocatorReference : public GTSL::AllocatorReference
 {
 protected:
@@ -50,7 +52,6 @@ namespace BE
 
 	class Application : public Object
 	{
-		friend struct TransientAllocatorReference;
 	public:
 		enum class CloseMode : uint8
 		{
@@ -72,6 +73,8 @@ namespace BE
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
 		ResourceManager* resourceManagerInstance{ nullptr };
+
+		EventManager eventManager;
 		
 		bool isInBackground = false;
 		
@@ -108,12 +111,13 @@ namespace BE
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
-
+		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
+		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 	};
 
-	Application* CreateApplication();
-	void DestroyApplication(Application* application);
+	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);
+	void DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference);
 }

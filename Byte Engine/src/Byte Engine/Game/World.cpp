@@ -6,20 +6,17 @@ World::World()
 {
 }
 
-World::~World()
+void World::InitializeWorld(const InitializeInfo& initializeInfo)
 {
-	for(auto& e : types)
-	{
-		delete e.second;
-	}
+	
 }
 
-void World::OnUpdate()
+void World::DestroyWorld(const DestroyInfo& destroyInfo)
 {
-	for(auto& e : types)
+	for (auto& e : entitiesManager)
 	{
-		TypeManager::UpdateInstancesInfo update_instances_info;
-		e.second->UpdateInstances(update_instances_info);
+		TypeManager::DestroyInstancesInfo destroy_instances_info;
+		e.second->DestroyInstances(destroy_instances_info);
 	}
 }
 

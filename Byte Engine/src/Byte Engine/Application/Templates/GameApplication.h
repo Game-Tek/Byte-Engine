@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+
 #include "Byte Engine/Application/Application.h"
 
 #include <GTSL/Window.h>
@@ -27,13 +29,14 @@ public:
 		create_window_info.Extent = { 1280, 720 };
 		::new(&window) GTSL::Window(create_window_info);
 		
-		window.SetOnResizeDelegate(Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::resize>(this));
+		//window.SetOnResizeDelegate(Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::resize>(this));
 
-		window.ShowWindow();
+		//window.ShowWindow();
 	}
 	
 	void OnNormalUpdate() override
 	{
-		systemApplication.UpdateWindow(&window);
+		std::cout << "Game Application loop update\n";
+		//systemApplication.UpdateWindow(&window);
 	}
 };

@@ -36,12 +36,12 @@ void Clock::OnUpdate()
 	delta_microseconds *= 1000000; delta_microseconds /= processorFrequency;
 	const auto delta_time = GTSL::Microseconds(delta_microseconds);
 	
-	if (delta_time < GTSL::Microseconds(GTSL::Seconds(1)))
+	if (delta_time < static_cast<GTSL::Microseconds>(GTSL::Seconds(1)))
 	{
 		deltaTime = delta_time;
 	}
 	
-	elapsedTime += GTSL::Microseconds(delta_microseconds);
+	elapsedTime += delta_time;
 	
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	performanceCounterTicks = current_ticks.QuadPart;

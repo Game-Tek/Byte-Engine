@@ -1,48 +1,80 @@
 #pragma once
 
+#include <GTSL/Mutex.h>
+#include <GTSL/File.h>
+#include <GTSL/Vector.hpp>
+
+#include "Byte Engine/Core.h"
+
 class Object;
 
 #undef ERROR
 
-enum class LogLevel
+namespace BE
 {
-	MESSAGE,
-	SUCCESS,
-	WARNING,
-	FATAL
-};
+	/**
+	 * \brief Self locking class that manages logging to console and to disk.
+	 * All logs get dumped to disk, verbosity levels are only for console.
+	 */
+	class Logger
+	{
+	public:
+		enum class VerbosityLevel : uint8
+		{
+			MESSAGE = 1, SUCCESS = 2, WARNING = 4, FATAL = 8
+		};
+	private:
+		/**
+		 * \brief Mutex for all log operations.
+		 */
+		mutable GTSL::ReadWriteMutex logMutex;
+		
+		/**
+		 * \brief Minimum level for a log to go through to console, all logs get dumped to disk.
+		 */
+		mutable VerbosityLevel minLogLevel;
 
-class Logger
-{
-	static LogLevel MinLogLevel;
+		/**
+		 * \brief File handle to log file where all logs are dumped to.
+		 */
+		mutable GTSL::File logFile;
 
-	static void SetTextColorOnLogLevel(LogLevel _Level);
-public:
-	static void PrintObjectLog(const Object* obj, LogLevel level, const char* text, ...);
-	static void PrintBasicLog(LogLevel _Level, const char* Text, ...);
-	static void SetMinLogLevel(const LogLevel _Level) { MinLogLevel = _Level; }
+		/**
+		 * \brief Default amount of characters the buffer can hold at a moment.
+		 */
+		static constexpr uint32 defaultBufferLength{ 10000 };
+		
+		/**
+		 * \brief Current write index in the buffer, this is swapped every time the memory buffer is dumped to a file since we use a single buffer as two to avoid contention.
+		 */
+		mutable uint32 currentBufferStart{ 0 };
+		
+		mutable GTSL::Vector<char> fileBuffer;
 
-#ifdef BE_DEBUG
+		void SetTextColorOnLogLevel(VerbosityLevel level) const;
+	public:
+		Logger() = default;
+		~Logger();
 
-#define BE_LOG_SUCCESS(Text, ...)	Logger::PrintObjectLog(this, LogLevel::SUCCESS, Text, __VA_ARGS__);
-#define BE_LOG_MESSAGE(Text, ...)	Logger::PrintObjectLog(this, LogLevel::MESSAGE, Text, __VA_ARGS__);
-#define BE_LOG_WARNING(Text, ...)	Logger::PrintObjectLog(this, LogLevel::WARNING, Text, __VA_ARGS__);
-#define BE_LOG_ERROR(Text, ...)		Logger::PrintObjectLog(this, LogLevel::FATAL, Text, __VA_ARGS__);
-#define BE_LOG_LEVEL(_Level)		Logger::SetMinLogLevel(_Level);
+		struct LoggerCreateInfo
+		{
+			GTSL::Ranger<char> AbsolutePathToLogFile;
+		};
+		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 
-#define BE_BASIC_LOG_SUCCESS(Text, ...)	Logger::PrintBasicLog(LogLevel::SUCCESS, Text, __VA_ARGS__);
-#define BE_BASIC_LOG_MESSAGE(Text, ...)	Logger::PrintBasicLog(LogLevel::MESSAGE, Text, __VA_ARGS__);
-#define BE_BASIC_LOG_WARNING(Text, ...)	Logger::PrintBasicLog(LogLevel::WARNING, Text, __VA_ARGS__);
-#define BE_BASIC_LOG_ERROR(Text, ...)	Logger::PrintBasicLog(LogLevel::FATAL, Text, __VA_ARGS__);
-#else
-#define BE_LOG_SUCCESS(Text, ...)
-#define BE_LOG_MESSAGE(Text, ...)
-#define BE_LOG_WARNING(Text, ...)
-#define BE_LOG_ERROR(Text, ...)
-#define BE_LOG_LEVEL(_Level)
-#define BE_BASIC_LOG_SUCCESS(Text, ...)	
-#define BE_BASIC_LOG_MESSAGE(Text, ...)	
-#define BE_BASIC_LOG_WARNING(Text, ...)	
-#define BE_BASIC_LOG_ERROR(Text, ...)	
-#endif
-};
+		void Shutdown() const;
+
+		void PrintObjectLog(const Object* obj, VerbosityLevel level, const char* text, ...) const;
+		void PrintBasicLog(VerbosityLevel level, const char* text, ...) const;
+
+		/**
+		 * \brief Sets the minimum log verbosity, only affects logs to console. Value is inclusive.
+		 * \param level Verbosity level.
+		 */
+		void SetMinLogLevel(const VerbosityLevel level) const
+		{
+			GTSL::WriteLock<GTSL::ReadWriteMutex> lock(logMutex);
+			minLogLevel = level;
+		}
+	};
+}

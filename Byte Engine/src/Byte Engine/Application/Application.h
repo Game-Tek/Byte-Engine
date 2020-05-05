@@ -1,47 +1,83 @@
 #pragma once
 
-#include "Clock.h"
-#include "InputManager.h"
-#include "Byte Engine/Resources/ResourceManager.h"
-#include "Byte Engine/Game/World.h"
-#include "PoolAllocator.h"
-#include "StackAllocator.h"
-#include "SystemAllocator.h"
+#include "Byte Engine/Core.h"
+
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
 
+#include "Clock.h"
+#include "InputManager.h"
+
+#include "Byte Engine/Resources/ResourceManager.h"
+
+#include "PoolAllocator.h"
+#include "StackAllocator.h"
+#include "SystemAllocator.h"
+
 #include "EventManager.h"
-
-struct SystemAllocatorReference : public GTSL::AllocatorReference
-{
-protected:
-	void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
-
-	void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
-
-public:
-	SystemAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::deallocateFunc>())
-	{
-	}
-
-};
-
-struct TransientAllocatorReference : public GTSL::AllocatorReference
-{
-protected:
-	void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
-
-	void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
-
-public:
-	TransientAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::deallocateFunc>())
-	{
-
-	}
-};
+#include "Byte Engine/Debug/Logger.h"
 
 namespace BE
 {
+	struct BEAllocatorReference : GTSL::AllocatorReference
+	{
+		const char* Name{ nullptr };
+		bool IsDebugAllocation = false;
+
+		explicit BEAllocatorReference(const decltype(allocate)& allocateFunc, const decltype(deallocate)& deallocateFunc, const char* name, const bool isDebugAllocation = false) : AllocatorReference(allocateFunc, deallocateFunc), Name(name), IsDebugAllocation(isDebugAllocation) {}
+	};
+	
+	struct SystemAllocatorReference : BEAllocatorReference
+	{
+	protected:
+		void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+		void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
+
+	public:
+		SystemAllocatorReference(const char* name, const bool isDebugAllocation = false) :
+			BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::allocateFunc>(),
+			GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::deallocateFunc>(),
+			name, isDebugAllocation)
+		{
+		}
+
+	};
+	
+	struct TransientAllocatorReference : BEAllocatorReference
+	{
+	protected:		
+		void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+		void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
+
+	public:
+		TransientAllocatorReference(const char* name, const bool isDebugAllocation = false) :
+		BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<TransientAllocatorReference,
+			&TransientAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::deallocateFunc>(),
+			name, isDebugAllocation)
+		{
+		}
+	};
+
+	struct PersistentAllocatorReference : BEAllocatorReference
+	{
+	protected:
+		const char* name{ nullptr };
+		
+		void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
+
+		void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;
+
+	public:
+		PersistentAllocatorReference(const char* name, const bool isDebugAllocation = false) :
+			BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<PersistentAllocatorReference, &PersistentAllocatorReference::allocateFunc>(),
+			GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<PersistentAllocatorReference, &PersistentAllocatorReference::deallocateFunc>(),
+			name, isDebugAllocation)
+		{
+		}
+	};
+	
 	/**
 	 * \brief Defines all the data necessary to startup a GameStudio application instance.
 	 */
@@ -50,6 +86,8 @@ namespace BE
 		const char* ApplicationName = nullptr;
 	};
 
+#undef ERROR
+	
 	class Application : public Object
 	{
 	public:
@@ -61,8 +99,9 @@ namespace BE
 		inline static Application* applicationInstance{ nullptr };
 
 	protected:
+		Logger* logger{ nullptr };
+		
 		SystemAllocatorReference systemAllocatorReference;
-		TransientAllocatorReference transientAllocatorReference;
 		
 		SystemAllocator* systemAllocator{ nullptr };
 		PoolAllocator* poolAllocator{ nullptr };
@@ -112,10 +151,34 @@ namespace BE
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
+		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
+
+#ifdef BE_DEBUG
+#define BE_LOG_SUCCESS(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, Text, __VA_ARGS__);
+#define BE_LOG_MESSAGE(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, Text, __VA_ARGS__);
+#define BE_LOG_WARNING(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, Text, __VA_ARGS__);
+#define BE_LOG_ERROR(Text, ...)			BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, Text, __VA_ARGS__);
+#define BE_LOG_LEVEL(Level)				BE::Application::Get()->GetLogger()->SetMinLogLevel(Level);
+
+#define BE_BASIC_LOG_SUCCESS(Text, ...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, Text, __VA_ARGS__);
+#define BE_BASIC_LOG_MESSAGE(Text, ...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, Text, __VA_ARGS__);
+#define BE_BASIC_LOG_WARNING(Text, ...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::WARNING, Text, __VA_ARGS__);
+#define BE_BASIC_LOG_ERROR(Text, ...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::FATAL, Text, __VA_ARGS__);
+#else
+#define BE_LOG_SUCCESS(Text, ...)
+#define BE_LOG_MESSAGE(Text, ...)
+#define BE_LOG_WARNING(Text, ...)
+#define BE_LOG_ERROR(Text, ...)
+#define BE_LOG_LEVEL(_Level)
+#define BE_BASIC_LOG_SUCCESS(Text, ...)	
+#define BE_BASIC_LOG_MESSAGE(Text, ...)	
+#define BE_BASIC_LOG_WARNING(Text, ...)	
+#define BE_BASIC_LOG_ERROR(Text, ...)	
+#endif
 	};
 
 	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);

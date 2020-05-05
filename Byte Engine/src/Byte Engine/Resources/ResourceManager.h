@@ -1,11 +1,8 @@
 #pragma once
 
-#include "Byte Engine/Core.h"
-
 #include "Byte Engine/Object.h"
 
 #include <unordered_map>
-#include <GTSL/String.hpp>
 #include <GTSL/Id.h>
 #include "SubResourceManager.h"
 
@@ -29,7 +26,7 @@ public:
 	T* GetSubResourceManager()
 	{
 		const auto resource_manager = resourceManagers.find(T::type);
-		BE_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
+		//BE_ASSERT(resource_manager == resourceManagers.end(), "A resource manager for the specified resource type could not be found! Remember to register all needed resource managers on startup.")
 		return static_cast<T*>(resource_manager->second);
 	}
 

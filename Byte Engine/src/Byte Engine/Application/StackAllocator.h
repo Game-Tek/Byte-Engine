@@ -8,7 +8,6 @@
 #include <unordered_map>
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
-#include <GTSL/Math/Math.hpp>
 
 class StackAllocator
 {
@@ -18,35 +17,13 @@ class StackAllocator
 		byte* at{ nullptr };
 		byte* end{ nullptr };
 
-		void AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
-		{
-			uint64 allocated_size{0};
-			
-			allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
-			
-			allocatedSize = allocated_size;
-			
-			at = start;
-			end = start + allocated_size;
-		}
+		void AllocateBlock(uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize);
 
-		void DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const
-		{
-			allocatorReference->Deallocate(end - start, alignof(byte), start);
-			deallocatedBytes = end - start;
-		}
+		void DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const;
 
-		void AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
-		{
-			*data = (at += (allocatedSize = GTSL::Math::AlignedNumber(size, alignment)));
-		}
-		
-		bool TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
-		{
-			auto* const new_at = at + (allocatedSize = GTSL::Math::AlignedNumber(size, alignment));
-			if (new_at < end) { *data = new_at; at = new_at; return true; }
-			return false;
-		}
+		void AllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
+
+		bool TryAllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
 
 		void Clear() { at = start; }
 

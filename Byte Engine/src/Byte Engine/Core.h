@@ -12,15 +12,6 @@ using int32 = int;
 using uint64 = unsigned long long;
 using int64 = long long;
 
-#include "Debug/Logger.h"
-
-//Assert
-#ifdef BE_DEBUG
-#define BE_ASSERT(func, text) if ((func)) [[unlikely]] { BE_BASIC_LOG_ERROR("ASSERT: File: %s, Line: %u: %s", __FILE__, __LINE__, text); __debugbreak(); }
-#else
-#define BE_ASSERT(func, text)
-#endif
-
 #ifdef BE_DEBUG
 #define BE_DEBUG_ONLY(...) __VA_ARGS__;
 #else

@@ -22,6 +22,7 @@ public:
 	WorldReference CreateNewWorld(const CreateNewWorldInfo& createNewWorldInfo)
 	{
 		//worlds.PushBack(new(createNewWorldInfo.Application) T());
+		return 0;
 	}
 
 	template<typename T>

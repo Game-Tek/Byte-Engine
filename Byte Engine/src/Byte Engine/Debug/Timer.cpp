@@ -11,5 +11,5 @@ Timer::~Timer()
 {
 	const auto time_taken = BE::Application::Get()->GetClock()->GetCurrentTime() - startingTime;
 
-	BE_BASIC_LOG_MESSAGE("Timer: %s, took %luu milliseconds", name, time_taken.Count())
+	BE_BASIC_LOG_MESSAGE("Timer: %s, took %luu milliseconds", name, time_taken.GetCount())
 }

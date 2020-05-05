@@ -1,5 +1,46 @@
 #include "StackAllocator.h"
 
+#include <GTSL/Math/Math.hpp>
+#include "Byte Engine/Debug/Assert.h"
+
+void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference,
+                                          uint64& allocatedSize)
+{
+	uint64 allocated_size{0};
+
+	allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
+
+	allocatedSize = allocated_size;
+
+	at = start;
+	end = start + allocated_size;
+}
+
+void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorReference,
+                                            uint64& deallocatedBytes) const
+{
+	allocatorReference->Deallocate(end - start, alignof(byte), start);
+	deallocatedBytes = end - start;
+}
+
+void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data,
+                                            uint64& allocatedSize)
+{
+	*data = (at += (allocatedSize = GTSL::Math::AlignedNumber(size, alignment)));
+}
+
+bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
+{
+	auto* const new_at = at + (allocatedSize = GTSL::Math::AlignedNumber(size, alignment));
+	if (new_at < end)
+	{
+		*data = new_at;
+		at = new_at;
+		return true;
+	}
+	return false;
+}
+
 StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, const uint8 stackCount, const uint8 defaultBlocksPerStackCount, const uint64 blockSizes) :
 	blockSize(blockSizes), stacks(stackCount, allocatorReference), stacksMutexes(stackCount, allocatorReference), allocatorReference(allocatorReference), maxStacks(stackCount)
 {

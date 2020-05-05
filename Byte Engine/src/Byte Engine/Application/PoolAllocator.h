@@ -21,51 +21,46 @@ class PoolAllocator
 			//uint16 freeSlotsCount{ 0 };
 			//GTSL::Mutex mutex;
 
-			[[nodiscard]] uint32* freeSlotsIndices() const { return reinterpret_cast<uint32*>(static_cast<byte*>(data)); }
-			[[nodiscard]] byte* blockData(const uint16 slotsCount) const { return reinterpret_cast<byte*>(freeSlotsIndices()) + sizeof(uint32) * slotsCount; }
-			[[nodiscard]] byte* blockDataEnd(const uint16 slotsCount, const uint32 slotsSize) const { return blockData(slotsCount) + static_cast<uint64>(slotsSize) * slotsCount; }
+			[[nodiscard]] uint32* freeSlotsIndices() const { return static_cast<uint32*>(data); }
+			[[nodiscard]] byte* blockData(const uint16 slotsCount) const { return reinterpret_cast<byte*>(static_cast<uint32*>(data) + slotsCount); }
+			[[nodiscard]] byte* blockDataEnd(const uint16 slotsCount, const uint32 slotsSize) const { return blockData(slotsCount) + static_cast<uint64>(slotsCount) * slotsSize; }
 			
 			void popFreeSlot(uint32& freeSlot)
 			{
 				//freeSlot = freeSlotsIndices()[freeSlotsCount.fetch_add(1)];
-				freeSlot = freeSlotsIndices()[freeSlotsCount++];
+				freeSlot = freeSlotsIndices()[freeSlotsCount--];
 			}
 
 			void placeFreeSlot(const uint32 freeSlot)
 			{
 				//freeSlotsIndices()[freeSlotsCount.fetch_sub(1)] = freeSlot;
-				freeSlotsIndices()[freeSlotsCount--] = freeSlot;
+				freeSlotsIndices()[freeSlotsCount++] = freeSlot;
 			}
 			
-			[[nodiscard]] bool freeSlot() const { return freeSlotsCount;/*freeSlotsCount.load(std::memory_order::memory_order_seq_cst);*/ }
+			[[nodiscard]] bool freeSlot() const { return freeSlotsCount; }
 
-			uint32 slotIndexFromPointer(void* p, const uint16 slotsCount, const uint32 slotsSize) const
-			{
-				BE_ASSERT(p > blockDataEnd(slotsCount, slotsSize) || p < blockData(slotsCount), "p does not belong to block!");
-				return static_cast<uint32>((blockDataEnd(slotsCount, slotsSize) - static_cast<byte*>(p))) / slotsSize;
-			}
-			
+			uint32 slotIndexFromPointer(void* p, uint16 slotsCount, uint32 slotsSize) const;
+
 		public:
 			Block(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
 			void FreeBlock(uint16 slotsCount, uint32 slotsSize, uint64& freedSpace, GTSL::AllocatorReference* allocatorReference);
 
-			bool DoesAllocationBelongToBlock(void* p, const uint16 slotsCount, const uint32 slotsSize) const { return p > blockData(slotsCount) && p < blockDataEnd(slotsCount, slotsSize); }
-
+			bool TryFreeAllocation(void* p, const uint16 slotsCount, const uint32 slotsSize);
+			
 			void AllocateInBlock(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
 
 			bool TryAllocateInBlock(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
 
-			void DeallocateInBlock(uint64 alignment, void* data, const uint16 slotsCount, const uint32 slotsSize)
-			{
-				placeFreeSlot(slotIndexFromPointer(data, slotsCount, slotsSize));
-			}
+			void DeallocateInBlock(uint64 alignment, void* data, const uint16 slotsCount, const uint32 slotsSize);
+			
+			bool DoesAllocationBelongToBlock(void* data, uint16 slotsCount, uint32 slotsSize) const;
 		};
 
 		//std::atomic<Block*> blocks{ nullptr };
-		std::atomic<uint8> blockCount{ 0 };
-		std::atomic<uint8> blockCapacity{ 0 };
-		std::atomic<uint8> index{ 0 };
+		std::atomic<uint32> blockCount{ 0 };
+		std::atomic<uint32> blockCapacity{ 0 };
+		std::atomic<uint32> index{ 0 };
 		
 		Block* blocks{ nullptr };
 		//uint32 blockCount{ 0 };
@@ -76,7 +71,7 @@ class PoolAllocator
 		const uint16 slotsCount{ 0 };
 
 		uint32 allocateAndAddNewBlock(GTSL::AllocatorReference* allocatorReference);
-		[[nodiscard]] auto blocksRange() const { return GTSL::Ranger(blocks, blocks + blockCount); }//Ranger(blocks.load(), blocks + blockCount); }
+		[[nodiscard]] GTSL::Ranger<Block> blocksRange() const { return GTSL::Ranger(blocks, blocks + blockCount); }//Ranger(blocks.load(), blocks + blockCount); }
 	public:
 		Pool(uint16 slotsCount, uint32 slotsSize, uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 

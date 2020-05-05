@@ -18,9 +18,11 @@ public:
 	{
 		GameApplication::Init();
 
-		GameInstance::CreateNewWorldInfo create_new_world_info;
-		create_new_world_info.Application = this;
-		menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+		//GameInstance::CreateNewWorldInfo create_new_world_info;
+		//create_new_world_info.Application = this;
+		//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+
+		BE_LOG_SUCCESS("Inited Game!")
 		
 		//show loading screen
 		//load menu

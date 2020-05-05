@@ -22,10 +22,12 @@ public:
 	void Init() override
 	{
 		Application::Init();
+
+		BE::TransientAllocatorReference transient_allocator_reference("Application");
 		
 		GTSL::Window::WindowCreateInfo create_window_info;
 		create_window_info.Application = &systemApplication;
-		create_window_info.Name = GTSL::String(GetApplicationName(), &transientAllocatorReference);
+		create_window_info.Name = GTSL::String(GetApplicationName(), &transient_allocator_reference);
 		create_window_info.Extent = { 1280, 720 };
 		::new(&window) GTSL::Window(create_window_info);
 		

@@ -52,6 +52,7 @@ namespace BE
 		mutable GTSL::Vector<char> fileBuffer;
 
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
+		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;
 	public:
 		Logger() = default;
 		~Logger();

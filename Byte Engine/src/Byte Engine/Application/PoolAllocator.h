@@ -28,7 +28,7 @@ class PoolAllocator
 			void popFreeSlot(uint32& freeSlot)
 			{
 				//freeSlot = freeSlotsIndices()[freeSlotsCount.fetch_add(1)];
-				freeSlot = freeSlotsIndices()[freeSlotsCount--];
+				freeSlot = freeSlotsIndices()[--freeSlotsCount];
 			}
 
 			void placeFreeSlot(const uint32 freeSlot)
@@ -45,8 +45,6 @@ class PoolAllocator
 			Block(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
 			void FreeBlock(uint16 slotsCount, uint32 slotsSize, uint64& freedSpace, GTSL::AllocatorReference* allocatorReference);
-
-			bool TryFreeAllocation(void* p, const uint16 slotsCount, const uint32 slotsSize);
 			
 			void AllocateInBlock(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
 

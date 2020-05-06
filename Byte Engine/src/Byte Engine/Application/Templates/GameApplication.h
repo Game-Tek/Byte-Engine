@@ -38,7 +38,7 @@ public:
 	
 	void OnNormalUpdate() override
 	{
-		std::cout << "Game Application loop update\n";
+		//std::cout << "Game Application loop update\n";
 		//systemApplication.UpdateWindow(&window);
 	}
 };

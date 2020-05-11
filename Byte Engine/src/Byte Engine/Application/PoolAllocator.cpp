@@ -74,7 +74,7 @@ uint32 PoolAllocator::Pool::allocateAndAddNewBlock(GTSL::AllocatorReference* all
 	uint64 allocated_size{ 0 };
 	void* new_data{ nullptr };
 	allocatorReference->Allocate(sizeof(Block) * blockCapacity * 2, alignof(Block), &new_data, &allocated_size);
-	GTSL::Memory::CopyMemory(blockCount * sizeof(Block), blocks, new_data);
+	GTSL::Memory::MemCopy(blockCount * sizeof(Block), blocks, new_data);
 	allocatorReference->Deallocate(blockCapacity * sizeof(Block), alignof(Block), blocks);
 	//blockCapacity.store(allocated_size / sizeof(Block), std::memory_order::memory_order_seq_cst);
 	//blocks.store(static_cast<Block*>(new_data), std::memory_order::memory_order_seq_cst);

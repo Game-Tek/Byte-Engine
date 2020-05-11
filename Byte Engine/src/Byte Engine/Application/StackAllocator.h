@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include <atomic>
 
 #include "Byte Engine/Core.h"
@@ -8,6 +7,7 @@
 #include <unordered_map>
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
+#include <GTSL/Vector.hpp>
 
 class StackAllocator
 {

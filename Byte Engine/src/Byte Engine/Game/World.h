@@ -2,9 +2,9 @@
 
 #include "Byte Engine/Core.h"
 
-#include <GTSL/Id.h>
+#include <GTSL/Vector.hpp>
+
 #include "TypeManager.h"
-#include <unordered_map>
 
 #include "Byte Engine/Object.h"
 
@@ -14,23 +14,34 @@
  */
 struct Entity
 {
-	GTSL::Id32 type;
+protected:
+	uint16 type{ 0 };
 	uint32 index{ 0 };
+
+public:
+	Entity(const uint16 typeId, const uint32 entityIndex) noexcept : type(typeId), index(entityIndex)
+	{
+	}
+	
+	[[nodiscard]] uint16 GetType() const { return type; }
+	[[nodiscard]] uint32 GetIndex() const { return index; }
 };
 
 class EntitiesManager
 {
-	std::unordered_map<uint32, TypeManager*> types;
+	GTSL::Vector<uint64> hashes;
+	GTSL::Vector<TypeManager*> managers;
 
 public:
-	void AddType(const GTSL::Ranger<char>& name, TypeManager* typeManager) { types.insert({ GTSL::Id32(name.begin()), typeManager }); }
+	void AddType(const GTSL::Ranger<char>& name, TypeManager* typeManager);
 
-	[[nodiscard]] TypeManager* GetTypeManager(const GTSL::Id32& id) const noexcept { return types.at(id); }
+	[[nodiscard]] TypeManager* GetTypeManager(const Entity& entity) const noexcept
+	{
+		return managers[entity.GetIndex()];
+	}
 
-	[[nodiscard]] TypeManager* GetEntity(const Entity& entity) const noexcept { return types.at(entity.type); }
-
-	auto begin() { return types.begin(); }
-	auto end() { return types.end().operator++(); }
+	auto begin() { return managers.begin(); }
+	auto end() { return managers.end(); }
 };
 
 class World : public Object

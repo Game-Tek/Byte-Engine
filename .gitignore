@@ -12,3 +12,4 @@ ext/
 *.sln.DotSettings
 *.DotSettings.user
 *.sln.DotSettings.user
+*.log

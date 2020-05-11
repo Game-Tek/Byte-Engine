@@ -4,6 +4,8 @@
 
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
+#include <GTSL/String.hpp>
+
 
 #include "Clock.h"
 #include "InputManager.h"
@@ -36,8 +38,7 @@ namespace BE
 
 	public:
 		SystemAllocatorReference(const char* name, const bool isDebugAllocation = false) :
-			BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::allocateFunc>(),
-			GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::deallocateFunc>(),
+			BEAllocatorReference(reinterpret_cast<decltype(allocate)>(&SystemAllocatorReference::allocateFunc), reinterpret_cast<decltype(deallocate)>(&SystemAllocatorReference::deallocateFunc),
 			name, isDebugAllocation)
 		{
 		}
@@ -53,8 +54,7 @@ namespace BE
 
 	public:
 		TransientAllocatorReference(const char* name, const bool isDebugAllocation = false) :
-		BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<TransientAllocatorReference,
-			&TransientAllocatorReference::allocateFunc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<TransientAllocatorReference, &TransientAllocatorReference::deallocateFunc>(),
+			BEAllocatorReference(reinterpret_cast<decltype(allocate)>(&TransientAllocatorReference::allocateFunc), reinterpret_cast<decltype(deallocate)>(&TransientAllocatorReference::deallocateFunc),
 			name, isDebugAllocation)
 		{
 		}
@@ -71,8 +71,7 @@ namespace BE
 
 	public:
 		PersistentAllocatorReference(const char* name, const bool isDebugAllocation = false) :
-			BEAllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<PersistentAllocatorReference, &PersistentAllocatorReference::allocateFunc>(),
-			GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<PersistentAllocatorReference, &PersistentAllocatorReference::deallocateFunc>(),
+			BEAllocatorReference(reinterpret_cast<decltype(allocate)>(&PersistentAllocatorReference::allocateFunc), reinterpret_cast<decltype(deallocate)>(&PersistentAllocatorReference::deallocateFunc),
 			name, isDebugAllocation)
 		{
 		}

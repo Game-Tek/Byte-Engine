@@ -99,9 +99,6 @@
     <ClInclude Include="src\Byte Engine\Game\Texture.h" />
     <ClInclude Include="src\Byte Engine\Game\TypeManager.h" />
     <ClInclude Include="src\Byte Engine\Game\World.h" />
-    <ClInclude Include="src\Byte Engine\Game\WorldObject.h">
-      <Filter>Game Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\Byte Engine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\Byte Engine\Physics\HitResult.h" />
@@ -165,7 +162,6 @@
     <ClCompile Include="src\Byte Engine\Debug\Timer.cpp" />
     <ClCompile Include="src\Byte Engine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\Byte Engine\Game\World.cpp" />
-    <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\Byte Engine\Resources\StaticMeshResourceManager.cpp" />

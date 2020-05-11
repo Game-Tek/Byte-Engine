@@ -19,8 +19,6 @@ struct TextureResourceData final : ResourceData
 class TextureResourceManager final : public SubResourceManager
 {
 public:
-	inline static constexpr GTSL::Id64 type{ "Texture" };
-	
 	TextureResourceManager() : SubResourceManager("Texture")
 	{
 	}

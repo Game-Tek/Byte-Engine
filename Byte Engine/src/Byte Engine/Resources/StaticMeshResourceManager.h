@@ -28,8 +28,6 @@ struct StaticMeshResourceData final : ResourceData
 class StaticMeshResourceManager final : public SubResourceManager
 {
 public:
-	inline static constexpr GTSL::Id64 type{ "Static Mesh" };
-	
 	StaticMeshResourceManager() : SubResourceManager("Static Mesh")
 	{
 	}

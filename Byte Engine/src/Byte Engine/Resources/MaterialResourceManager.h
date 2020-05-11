@@ -13,10 +13,8 @@ struct MaterialResourceData final : ResourceData
 class MaterialResourceManager final : public SubResourceManager
 {
 	std::unordered_map<GTSL::Id64::HashType, MaterialResourceData> resources;
-	
+
 public:
-	inline static constexpr GTSL::Id64 type{ "Material" };
-	
 	MaterialResourceManager() : SubResourceManager("Material")
 	{
 	}

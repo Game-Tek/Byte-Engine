@@ -2,10 +2,9 @@
 
 #include "Core.h"
 
-#include "Game/WorldObject.h"
 #include <GTSL/RGB.h>
 
-class Light : public WorldObject
+class Light
 {
 public:
 	Light() = default;

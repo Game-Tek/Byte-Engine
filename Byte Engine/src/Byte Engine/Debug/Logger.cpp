@@ -105,7 +105,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& 
 void Logger::PrintObjectLog(const Object* obj, const VerbosityLevel level, const char* text, ...) const
 {
 	GTSL::StaticString<1024> t;
-	t << obj->GetName(); t << ": "; t << text;
+	t += obj->GetName(); t += ": "; t += text;
 	log(level, t);
 }
 
@@ -132,6 +132,6 @@ Logger::~Logger()
 void Logger::PrintBasicLog(const VerbosityLevel level, const char* text, ...) const
 {
 	GTSL::StaticString<1024> t;
-	t << text;
+	t += text;
 	log(level, t);
 }

@@ -1,5 +1,7 @@
 #include "StackAllocator.h"
 
+
+#include <GTSL/String.hpp>
 #include <GTSL/Math/Math.hpp>
 #include "Byte Engine/Debug/Assert.h"
 
@@ -179,6 +181,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 	uint64 n{0};
 	const auto i{ stackIndex % maxStacks };
 
+	BE_DEBUG_ONLY(GTSL::Ranger<GTSL::UTF8> range(GTSL::String::StringLength(name), const_cast<char*>(name)))
+	
 	++stackIndex;
 
 	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!")
@@ -188,7 +192,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 	{
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
-		BE_DEBUG_ONLY(perNameData.try_emplace(GTSL::Id64(name)).first->second.Name = name)
+		BE_DEBUG_ONLY(perNameData.try_emplace(GTSL::Id64(range)).first->second.Name = name)
 	}
 
 	stacksMutexes[i].Lock();
@@ -201,8 +205,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 			BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
 
-			BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
-			BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
+			BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesAllocated += allocated_size)
+			BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].AllocationCount += 1)
 
 			BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 			BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
@@ -227,8 +231,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 	BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
 
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesAllocated += allocated_size)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].AllocationCount += 1)
 
 	BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 	BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
@@ -250,10 +254,12 @@ void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void*
 
 	BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::AlignedNumber(size, alignment) })
 
+	BE_DEBUG_ONLY(GTSL::Ranger<GTSL::UTF8> range(GTSL::String::StringLength(name), const_cast<char*>(name)))
+	
 	BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
-
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesDeallocated += bytes_deallocated)
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].DeallocationCount += 1)
+	
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesDeallocated += bytes_deallocated)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].DeallocationCount += 1)
 
 	BE_DEBUG_ONLY(bytesDeallocated += bytes_deallocated)
 	BE_DEBUG_ONLY(totalBytesDeallocated += bytes_deallocated)

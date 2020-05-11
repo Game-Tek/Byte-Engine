@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include "ResourceData.h"
 #include <GTSL/Id.h>
+#include <GTSL/String.hpp>
 
 class AudioResourceManager final : public SubResourceManager
 {
@@ -26,8 +27,6 @@ private:
 	std::unordered_map<GTSL::Id64::HashType, AudioResourceData> resources;
 	
 public:
-	inline static constexpr GTSL::Id64 type{ "Audio" };
-	
 	AudioResourceManager() : SubResourceManager("Audio")
 	{
 	}
@@ -37,7 +36,7 @@ public:
 	AudioResourceData* GetResource(const GTSL::String& resourceName)
 	{
 		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(resourceMapMutex);
-		return &resources[GTSL::Id64(resourceName)];
+		return &resources.at(GTSL::Id64(resourceName));
 	}
 	
 	AudioResourceData* TryGetResource(const GTSL::String& name);

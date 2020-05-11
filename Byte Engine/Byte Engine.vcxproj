@@ -68,6 +68,7 @@
       <ShowIncludes>false</ShowIncludes>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>W:\Game Studio\GS_Engine\vendor\vulkan\shaderc;$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -98,6 +99,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -173,7 +175,6 @@
     <ClInclude Include="src\Byte Engine\Utility\Shapes\SphereWithFallof.h" />
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\Byte Engine\Vertex.h" />
-    <ClInclude Include="src\Byte Engine\Game\WorldObject.h" />
     <ClInclude Include="src\Game Studio\Texture.h" />
   </ItemGroup>
   <ItemGroup>
@@ -200,7 +201,6 @@
     <ClCompile Include="src\Byte Engine\Debug\Logger.cpp" />
     <ClCompile Include="src\Byte Engine\Application\Clock.cpp" />
     <ClCompile Include="src\Byte Engine\Application\Application.cpp" />
-    <ClCompile Include="src\Byte Engine\Game\WorldObject.cpp" />
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -2,14 +2,13 @@
 
 #include "Core.h"
 
-#include "Game/WorldObject.h"
 #include <GTSL/Pair.h>
 
 namespace GTSL {
 	class Vector3;
 }
 
-class Camera : public WorldObject
+class Camera
 {
 	//First is near, Second is far
 	using NearFarPair = GTSL::Pair<float, float>;
@@ -17,8 +16,6 @@ public:
 	Camera() = default;
 	explicit Camera(const float FOV);
 	~Camera() = default;
-	
-	[[nodiscard]] const char* GetName() const override { return "Camera"; }
 
 	[[nodiscard]] float GetAperture() const { return aperture; }
 	[[nodiscard]] float GetIrisHeightMultiplier() const { return irisHeightMultiplier; }

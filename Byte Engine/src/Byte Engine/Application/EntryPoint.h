@@ -25,7 +25,7 @@ int main(int argc, char** argv)
 		}
 		
 	public:
-		SystemAllocatorReference() : AllocatorReference(GTSL::FunctionPointer<void(uint64, uint64, void**, uint64*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::alloc>(), GTSL::FunctionPointer<void(uint64, uint64, void*)>::Create<SystemAllocatorReference, &SystemAllocatorReference::dealloc>())
+		SystemAllocatorReference() : AllocatorReference(reinterpret_cast<decltype(allocate)>(&SystemAllocatorReference::alloc), reinterpret_cast<decltype(deallocate)>(&SystemAllocatorReference::dealloc))
 		{}
 	} system_allocator_reference;
 	

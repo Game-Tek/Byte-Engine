@@ -1,5 +1,8 @@
 #include "Application.h"
 
+#include <GTSL/StaticString.hpp>
+
+
 #include "Byte Engine/Resources/AudioResourceManager.h"
 
 void onAssert(const char* text, int line, const char* file, const char* function)
@@ -23,9 +26,8 @@ namespace BE
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
 
-		const char* file = "log.log";
 		Logger::LoggerCreateInfo logger_create_info;
-		logger_create_info.AbsolutePathToLogFile = GTSL::Ranger<char>(8, const_cast<char*>(file));
+		logger_create_info.AbsolutePathToLogFile = GTSL::StaticString<1024>();
 		logger = new Logger(logger_create_info);
 		
 		clockInstance = new Clock();

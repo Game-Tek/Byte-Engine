@@ -37,6 +37,7 @@ int main(int argc, char** argv)
 	application->Init();
 	//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
 	const auto exit_code = application->Run(argc, argv);
+	application->Shutdown();
 	
 	BE::DestroyApplication(application, &system_allocator_reference);
 

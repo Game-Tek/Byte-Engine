@@ -35,7 +35,23 @@ namespace BE
 		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
 	}
-	
+
+	void Application::Shutdown()
+	{
+		delete clockInstance;
+		delete resourceManagerInstance;
+		delete inputManagerInstance;
+
+		logger->Shutdown();
+		delete logger;
+
+		transientAllocator->LockedClear();
+		delete transientAllocator;
+
+		poolAllocator->Free();
+		delete poolAllocator;
+	}
+
 	int Application::Run(int argc, char** argv)
 	{		
 		while (!shouldClose())
@@ -56,8 +72,6 @@ namespace BE
 			
 			transientAllocator->Clear();
 		}
-
-		logger->Shutdown();
 		
 		if(closeMode != CloseMode::OK)
 		{
@@ -79,39 +93,17 @@ namespace BE
 		this->closeMode = closeMode;
 	}
 
-	bool Application::shouldClose() const
-	{
-		return flaggedForClose;
-	}
+	bool Application::shouldClose() const { return flaggedForClose; }
 }
 
-void BE::SystemAllocatorReference::allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const
-{
-	(*allocatedSize) = size;
-	BE::Application::Get()->GetSystemAllocator()->Allocate(size, alignment, memory);
-}
+void BE::SystemAllocatorReference::allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const { (*allocatedSize) = size;	BE::Application::Get()->GetSystemAllocator()->Allocate(size, alignment, memory); }
 
-void BE::SystemAllocatorReference::deallocateFunc(const uint64 size, uint64 alignment, void* memory) const
-{
-	BE::Application::Get()->GetSystemAllocator()->Deallocate(size, alignment, memory);
-}
+void BE::SystemAllocatorReference::deallocateFunc(const uint64 size, uint64 alignment, void* memory) const { BE::Application::Get()->GetSystemAllocator()->Deallocate(size, alignment, memory); }
 
-void BE::TransientAllocatorReference::allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const
-{
-	BE::Application::Get()->GetTransientAllocator()->Allocate(size, alignment, memory, allocatedSize, Name);
-}
+void BE::TransientAllocatorReference::allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const {	BE::Application::Get()->GetTransientAllocator()->Allocate(size, alignment, memory, allocatedSize, Name); }
 
-void BE::TransientAllocatorReference::deallocateFunc(uint64 size, uint64 alignment, void* memory) const
-{
-	BE::Application::Get()->GetTransientAllocator()->Deallocate(size, alignment, memory, Name);
-}
+void BE::TransientAllocatorReference::deallocateFunc(uint64 size, uint64 alignment, void* memory) const { BE::Application::Get()->GetTransientAllocator()->Deallocate(size, alignment, memory, Name); }
 
-void BE::PersistentAllocatorReference::allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const
-{
-	Application::Get()->GetNormalAllocator()->Allocate(size, alignment, memory, allocatedSize, name);
-}
+void BE::PersistentAllocatorReference::allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const { Application::Get()->GetNormalAllocator()->Allocate(size, alignment, memory, allocatedSize, name); }
 
-void BE::PersistentAllocatorReference::deallocateFunc(uint64 size, uint64 alignment, void* memory) const
-{
-	Application::Get()->GetNormalAllocator()->Deallocate(size, alignment, memory, name);
-}
+void BE::PersistentAllocatorReference::deallocateFunc(uint64 size, uint64 alignment, void* memory) const { Application::Get()->GetNormalAllocator()->Deallocate(size, alignment, memory, name); }

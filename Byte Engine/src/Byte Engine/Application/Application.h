@@ -6,7 +6,6 @@
 #include <GTSL/Allocator.h>
 #include <GTSL/String.hpp>
 
-
 #include "Clock.h"
 #include "InputManager.h"
 
@@ -128,6 +127,7 @@ namespace BE
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
 		virtual void Init() = 0;
+		virtual void Shutdown();
 		
 		virtual void OnNormalUpdate() = 0;
 		virtual void OnBackgroundUpdate() = 0;
@@ -144,7 +144,7 @@ namespace BE
 		void PromptClose();
 
 		//Flags the application to close on the next update.
-		void Close(const CloseMode closeMode, const char* reason);
+		void Close(CloseMode closeMode, const char* reason);
 
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }

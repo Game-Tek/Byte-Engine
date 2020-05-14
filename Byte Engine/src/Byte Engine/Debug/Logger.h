@@ -45,6 +45,8 @@ namespace BE
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
 		static constexpr uint32 defaultBufferLength{ perStringMaxLength * 256 };
+
+		static constexpr uint32 bytesToDumpOn{ 256 };
 		
 		/**
 		 * \brief Current write index in the buffer, this is swapped every time the memory buffer is dumped to a file since we use a single buffer as two to avoid contention.
@@ -52,6 +54,8 @@ namespace BE
 		mutable std::atomic<uint32> currentStringIndex{ 0 };
 		
 		mutable GTSL::Vector<char> fileBuffer;
+
+		mutable std::atomic<uint32> writtenBytes{ 0 };
 
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;

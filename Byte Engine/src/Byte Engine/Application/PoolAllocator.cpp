@@ -143,7 +143,7 @@ void PoolAllocator::Pool::Free(uint64& freedBytes, GTSL::AllocatorReference* all
 	for (auto& block : blocksRange()) { block.FreeBlock(slotsCount, slotsSize, freedBytes, allocatorReference); }
 }
 
-PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference): systemAllocatorReference(allocatorReference), poolCount(16)
+PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference): systemAllocatorReference(allocatorReference), poolCount(19)
 {
 	uint64 allocated_size{ 0 }; //debug
 
@@ -169,6 +169,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 	BE_ASSERT((allocation_min_size& (allocation_min_size - 1)) != 0, "allocation_min_size is not power of two!")
 	
 	uint8 set_bit{ 0 }; GTSL::BitScanForward(allocation_min_size, set_bit);
+	BE_ASSERT(poolCount < set_bit, "No pool big enough!")
 	
 	uint64 allocator_bytes{ 0 };
 	pools[set_bit].Allocate(size, alignment, memory, allocatedSize, allocator_bytes, systemAllocatorReference);

@@ -39,15 +39,17 @@ namespace BE
 		 */
 		mutable GTSL::File logFile;
 
+		static constexpr uint32 perStringMaxLength{ 512 };
+		
 		/**
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
-		static constexpr uint32 defaultBufferLength{ 10000 };
+		static constexpr uint32 defaultBufferLength{ perStringMaxLength * 256 };
 		
 		/**
 		 * \brief Current write index in the buffer, this is swapped every time the memory buffer is dumped to a file since we use a single buffer as two to avoid contention.
 		 */
-		mutable uint32 currentBufferStart{ 0 };
+		mutable std::atomic<uint32> currentStringIndex{ 0 };
 		
 		mutable GTSL::Vector<char> fileBuffer;
 

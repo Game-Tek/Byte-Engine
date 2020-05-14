@@ -15,7 +15,10 @@ BE::PersistentAllocatorReference allocator_reference("Clock", true); //TODO get 
 
 Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile(), fileBuffer(defaultBufferLength * 2/*use single buffer as two buffers for when one half is being written to disk*/, &allocator_reference)
 {
-	logFile.OpenFile(loggerCreateInfo.AbsolutePathToLogFile, GTSL::File::OpenFileMode::WRITE);
+	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogFile);
+	path += "/log.txt";
+	fileBuffer.Resize(fileBuffer.GetCapacity());
+	logFile.OpenFile(path, GTSL::File::OpenFileMode::WRITE);
 }
 
 void Logger::Shutdown() const
@@ -27,79 +30,44 @@ void Logger::Shutdown() const
 	logFile.CloseFile();
 }
 
-void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const
+void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::UTF8>& text) const
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();
 
-	//auto print_date_to_buffer = [=]() { return snprintf(const_cast<char*>(fileBuffer.begin() + fileBuffer.GetLength()), fileBuffer.GetCapacity(), "[Date: %02d/%02hhu/%02d]", day_of_month, month, year); };
-	//auto print_log_to_buffer = [=]() { return snprintf(fileBuffer.GetData(), fileBuffer.GetCapacity() - fileBuffer.GetLength(), "[Time: %02d:%02d:%02d] %s: %s", time.Hour, time.Minute, time.Second, obj->GetName(), text); };
-
+	uint32 string_remaining_length{ perStringMaxLength };
+	uint32 write_start{ currentStringIndex * perStringMaxLength };
+	
 	// Check if should dump logs to file if no more space is available
-	logMutex.ReadLock();
-	auto date_text_length = snprintf(const_cast<char*>(fileBuffer.begin() + fileBuffer.GetLength()), fileBuffer.GetRemainingLength(), "[Date: %02d/%02hhu/%02d]", day_of_month, month, year) + 1;
-	if (date_text_length > fileBuffer.GetRemainingLength())
+	if (write_start >= defaultBufferLength)
 	{
 		uint64 bytes_written{ 0 };
 		//TODO dispatch as a job
-		logFile.WriteToFile(GTSL::Ranger<byte>((byte*)fileBuffer.begin() + currentBufferStart, (byte*)fileBuffer.begin() + currentBufferStart + fileBuffer.GetLength()), bytes_written);
-		logMutex.ReadUnlock();
-
-		{
-			logMutex.WriteLock();
-			currentBufferStart = currentBufferStart == 0 ? fileBuffer.GetCapacity() : 0;
-			fileBuffer.Resize(0);
-			logMutex.WriteUnlock();
-		}
-
-		// Print to buffer now that we are sure space is available
-		logMutex.ReadLock();
-		snprintf(const_cast<char*>(fileBuffer.begin() + fileBuffer.GetLength()), fileBuffer.GetRemainingLength(), "[Date: %02d/%02hhu/%02d]", day_of_month, month, year);
-		logMutex.ReadUnlock();
-		{
-			logMutex.WriteLock();
-			fileBuffer.Resize(fileBuffer.GetLength() + date_text_length);
-			logMutex.WriteUnlock();
-		}
-	}
-	else
-	{
-		fileBuffer.Resize(fileBuffer.GetLength() + date_text_length - 1);
-		logMutex.ReadUnlock();
+		logFile.WriteToFile(GTSL::Ranger<byte>((byte*)fileBuffer.begin() + write_start, (byte*)fileBuffer.begin() + write_start + (fileBuffer.GetLength() - write_start)), bytes_written);
 	}
 
-	// Print log to buffer, if no space to hold single log resize buffer
-	logMutex.ReadLock();
-	auto log_length = snprintf(fileBuffer.GetData() + date_text_length - 1, fileBuffer.GetRemainingLength(), "[Time: %02d:%02d:%02d] %s", time.Hour, time.Minute, time.Second, text.begin()) + 1;
-	if (log_length > fileBuffer.GetRemainingLength())
-	{
-		logMutex.ReadUnlock();
-		//TODO: WHAT IF FILE BUFFER IS NOT BIG ENOUGH TO HOLD LOG, RESIZE?, ASSERT?(ASSERT WILL CALL LOG FOR WHICH THERE WILL BE NO SPACE!)
-		logMutex.WriteLock();
-		fileBuffer.Resize(fileBuffer.GetCapacity() + log_length);
-		logMutex.WriteUnlock();
-
-		// Print log to buffer now that we are sure space is available
-		logMutex.ReadLock();
-		snprintf(fileBuffer.GetData(), fileBuffer.GetRemainingLength(), "[Time: %02d:%02d:%02d] %s", time.Hour, time.Minute, time.Second, text.begin());
-		logMutex.ReadUnlock();
-
-		logMutex.WriteLock();
-		fileBuffer.Resize(fileBuffer.GetLength() + log_length);
-		logMutex.WriteUnlock();
-	}
-	else
-	{
-		fileBuffer.Resize(fileBuffer.GetLength() + log_length + 1);
-		fileBuffer[fileBuffer.GetLength() - 2] = '\n';
-		fileBuffer[fileBuffer.GetLength() - 1] = '\0';
-		logMutex.ReadUnlock();
-	}
+	uint32 date_length = snprintf(const_cast<char*>(fileBuffer.begin() + write_start), string_remaining_length, "[Date: %02d/%02hhu/%02d]", day_of_month, month, year);
+	string_remaining_length -= date_length;
+	write_start += date_length;
+	
+	uint32 time_length = snprintf(fileBuffer.GetData() + write_start, string_remaining_length, "[Time: %02d:%02d:%02d]", time.Hour, time.Minute, time.Second);
+	string_remaining_length -= time_length;
+	write_start += time_length;
+	
+	uint32 text_length = text.ElementCount(); //TODO: ASSERT LENGTH
+	string_remaining_length -= text_length;
+	GTSL::Memory::MemCopy(text_length, text.Data(), fileBuffer.GetData() + write_start);
+	write_start += text_length;
+	
+	fileBuffer[write_start - 1] = '\n';
+	fileBuffer[write_start] = '\0';
 
 	if(verbosityLevel >= minLogLevel)
 	{
 		SetTextColorOnLogLevel(verbosityLevel);
-		printf(fileBuffer.GetData() + fileBuffer.GetLength() - log_length - 1);
+		printf(fileBuffer.GetData() + currentStringIndex * perStringMaxLength + date_length);
 	}
+
+	++currentStringIndex;
 }
 
 void Logger::PrintObjectLog(const Object* obj, const VerbosityLevel level, const char* text, ...) const

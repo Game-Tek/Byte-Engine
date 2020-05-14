@@ -2,12 +2,11 @@
 
 #include <GTSL/StaticString.hpp>
 
-
 #include "Byte Engine/Resources/AudioResourceManager.h"
 
 void onAssert(const char* text, int line, const char* file, const char* function)
 {
-	BE_BASIC_LOG_ERROR("ASSERT: %s, Line: %u, File: %s, Function: %s.", text, line, file, function);
+	//BE_BASIC_LOG_ERROR("ASSERT: %s, Line: %u, File: %s, Function: %s.", text, line, file, function);
 }
 
 namespace BE
@@ -27,7 +26,9 @@ namespace BE
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
 
 		Logger::LoggerCreateInfo logger_create_info;
-		logger_create_info.AbsolutePathToLogFile = GTSL::StaticString<1024>();
+		GTSL::StaticString<1024> path(systemApplication.GetPathToExecutable());
+		path.Drop(path.FindLast('/'));
+		logger_create_info.AbsolutePathToLogFile = path;
 		logger = new Logger(logger_create_info);
 		
 		clockInstance = new Clock();

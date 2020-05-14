@@ -33,6 +33,7 @@ public:
 	void OnNormalUpdate() override
 	{
 		GameApplication::OnNormalUpdate();
+		BE_LOG_MESSAGE("Hello!")
 	}
 
 	void OnBackgroundUpdate() override

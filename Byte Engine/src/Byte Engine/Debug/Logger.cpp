@@ -15,7 +15,7 @@ BE::PersistentAllocatorReference allocator_reference("Clock", true); //TODO get 
 
 Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile(), fileBuffer(defaultBufferLength * 2/*use single buffer as two buffers for when one half is being written to disk*/, &allocator_reference)
 {
-	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogFile);
+	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
 	fileBuffer.Resize(fileBuffer.GetCapacity());
 	logFile.OpenFile(path, GTSL::File::OpenFileMode::WRITE);

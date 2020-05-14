@@ -65,7 +65,7 @@ namespace BE
 
 		struct LoggerCreateInfo
 		{
-			GTSL::Ranger<char> AbsolutePathToLogFile;
+			GTSL::Ranger<UTF8> AbsolutePathToLogDirectory;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 

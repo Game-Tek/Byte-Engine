@@ -28,7 +28,7 @@ namespace BE
 		Logger::LoggerCreateInfo logger_create_info;
 		GTSL::StaticString<1024> path(systemApplication.GetPathToExecutable());
 		path.Drop(path.FindLast('/'));
-		logger_create_info.AbsolutePathToLogFile = path;
+		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = new Logger(logger_create_info);
 		
 		clockInstance = new Clock();

@@ -33,7 +33,6 @@ public:
 	void OnNormalUpdate() override
 	{
 		GameApplication::OnNormalUpdate();
-		BE_LOG_MESSAGE("Hello!")
 	}
 
 	void OnBackgroundUpdate() override
@@ -50,14 +49,10 @@ public:
 
 BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)
 {
-	void* gameAlloc{ nullptr };
-	uint64 allocSize{ 0 };
-	allocatorReference->Allocate(sizeof(Game), alignof(Game), &gameAlloc, &allocSize);
-	return ::new(gameAlloc) Game();
+	return GTSL::New<Game>(allocatorReference);
 }
 
 void BE::DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference)
 {
-	static_cast<Game*>(application)->~Game();
-	allocatorReference->Deallocate(sizeof(Game), alignof(Game), application);
+	Delete(application, allocatorReference);
 }

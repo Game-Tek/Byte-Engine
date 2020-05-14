@@ -27,7 +27,7 @@ namespace BE
 		/**
 		 * \brief Mutex for all log operations.
 		 */
-		mutable GTSL::ReadWriteMutex logMutex;
+		mutable GTSL::Mutex logMutex;
 		
 		/**
 		 * \brief Minimum level for a log to go through to console, all logs get dumped to disk.
@@ -39,12 +39,12 @@ namespace BE
 		 */
 		mutable GTSL::File logFile;
 
-		static constexpr uint32 perStringMaxLength{ 512 };
+		static constexpr uint32 logMaxLength{ 1024 };
 		
 		/**
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
-		static constexpr uint32 defaultBufferLength{ perStringMaxLength * 256 };
+		static constexpr uint32 defaultBufferLength{ logMaxLength * 256 };
 
 		static constexpr uint32 bytesToDumpOn{ 256 };
 		
@@ -55,7 +55,8 @@ namespace BE
 		
 		mutable GTSL::Vector<char> fileBuffer;
 
-		mutable std::atomic<uint32> writtenBytes{ 0 };
+		mutable std::atomic<uint32> lastWriteToDiskPos{ 0 };
+		mutable std::atomic<uint32> bytesWrittenSinceLastWriteToDisk{ 0 };
 
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;
@@ -80,8 +81,9 @@ namespace BE
 		 */
 		void SetMinLogLevel(const VerbosityLevel level) const
 		{
-			GTSL::WriteLock<GTSL::ReadWriteMutex> lock(logMutex);
+			logMutex.Lock();
 			minLogLevel = level;
+			logMutex.Unlock();
 		}
 	};
 }

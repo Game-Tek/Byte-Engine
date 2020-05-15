@@ -23,15 +23,6 @@ public:
 		//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 		BE_LOG_SUCCESS("Inited Game!")
-		BE_LOG_MESSAGE("This is a test")
-		BE_LOG_WARNING("This is another test")
-		BE_LOG_ERROR("This is yet another test")
-		BE_LOG_SUCCESS("Maybe another test?")
-		BE_LOG_WARNING("This is another test")
-		BE_LOG_ERROR("This is yet another test")
-		BE_LOG_ERROR("This is yet another test")
-		BE_LOG_ERROR("This is yet another test")
-		BE_LOG_ERROR("This is yet another test")
 		
 		//show loading screen
 		//load menu

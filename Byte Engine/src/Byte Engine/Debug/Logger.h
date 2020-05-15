@@ -41,12 +41,13 @@ namespace BE
 
 		static constexpr uint32 logMaxLength{ 1024 };
 		
+		static constexpr uint32 bytesToDumpOn{ 256 };
+		
 		/**
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
-		static constexpr uint32 defaultBufferLength{ logMaxLength * 256 };
+		static constexpr uint32 defaultBufferLength{ bytesToDumpOn * 3 };
 
-		static constexpr uint32 bytesToDumpOn{ 256 };
 		
 		/**
 		 * \brief Current write index in the buffer, this is swapped every time the memory buffer is dumped to a file since we use a single buffer as two to avoid contention.

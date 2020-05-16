@@ -1,8 +1,8 @@
 #include <ByteEngine.h>
 
 #include "SandboxWorld.h"
-#include "Byte Engine/Application/Templates/GameApplication.h"
-#include "Byte Engine/Game/GameInstance.h"
+#include "ByteEngine/Application/Templates/GameApplication.h"
+#include "ByteEngine/Game/GameInstance.h"
 
 class Game final : public GameApplication
 {

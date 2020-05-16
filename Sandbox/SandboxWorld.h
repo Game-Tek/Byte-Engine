@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Byte Engine/Game/World.h"
+#include "ByteEngine/Game/World.h"
 
 class MenuWorld : public World
 {

@@ -1,0 +1,184 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Misc">
+      <UniqueIdentifier>{9c40395e-d181-4c74-9766-14313884e0c4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math">
+      <UniqueIdentifier>{f8f0c03a-dfc7-4ee2-958a-410b4f3df571}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Math\Math Objects">
+      <UniqueIdentifier>{98f4c226-6cf7-4440-8735-239d67b2101e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game Objects">
+      <UniqueIdentifier>{809ad5c6-c667-4e11-a957-15f59d2b06eb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc\Array">
+      <UniqueIdentifier>{e2e8519c-615a-4d49-a289-35a03e129e42}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine">
+      <UniqueIdentifier>{7d83fe5f-cb2e-4a25-9bf2-9651aaafc8f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Events">
+      <UniqueIdentifier>{3b96b18b-4237-43a9-b391-5f076fc32c6b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render">
+      <UniqueIdentifier>{c5fb3db2-ad1f-4ef9-a3dd-c3ad3a33ef61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Buffers">
+      <UniqueIdentifier>{529962db-4acc-4ea8-890e-14b2de711925}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Shaders">
+      <UniqueIdentifier>{e0b6ab77-afd6-4494-acc7-346d55957e21}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Shaders\GLSL Code">
+      <UniqueIdentifier>{37d4b3ff-a6b4-42ed-9949-2d5cf33ce159}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Objects">
+      <UniqueIdentifier>{6bb20616-6d06-4996-a9ce-ddf7cda7153d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Window">
+      <UniqueIdentifier>{8908fd2c-3082-4886-9ae5-3fea920eb4e3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Render\Renderer">
+      <UniqueIdentifier>{8a427f36-913a-4afa-8eee-f22ac3685b55}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Clock">
+      <UniqueIdentifier>{324d8236-686e-4eed-988d-a3b7b56f6f9e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Resource Manager">
+      <UniqueIdentifier>{24a2456e-0f7d-47f1-b352-aa8129c7db33}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Resource Manager\Resources">
+      <UniqueIdentifier>{5513227a-3009-4368-80a8-edfa2163f281}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\InputManager">
+      <UniqueIdentifier>{d8135fcb-5a1e-4857-953e-37d836b63974}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\InputManager\Events">
+      <UniqueIdentifier>{2a651d8e-df00-4284-baa5-7abc672b40db}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Log">
+      <UniqueIdentifier>{d7eb5379-c059-40f4-abea-11baa036cdd3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Application">
+      <UniqueIdentifier>{9669b65e-2eba-4026-9f31-190e2ee371e9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Game Studio\GL.h">
+      <Filter>Engine\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game Studio\Texture.h">
+      <Filter>Engine\Render\Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine.h" />
+    <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
+    <ClInclude Include="src\ByteEngine\Application\Input\JoystickState.h" />
+    <ClInclude Include="src\ByteEngine\Application\Input\MouseState.h" />
+    <ClInclude Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.h" />
+    <ClInclude Include="src\ByteEngine\Application\Templates\GameApplication.h" />
+    <ClInclude Include="src\ByteEngine\Application\Application.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Application\Clock.h">
+      <Filter>Engine\Clock</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Application\CommandMap.h" />
+    <ClInclude Include="src\ByteEngine\Application\Console.h" />
+    <ClInclude Include="src\ByteEngine\Application\EntryPoint.h">
+      <Filter>Engine\Application</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Application\EventManager.h" />
+    <ClInclude Include="src\ByteEngine\Application\InputManager.h">
+      <Filter>Engine\InputManager</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Application\PoolAllocator.h" />
+    <ClInclude Include="src\ByteEngine\Application\StackAllocator.h" />
+    <ClInclude Include="src\ByteEngine\Application\SystemAllocator.h" />
+    <ClInclude Include="src\ByteEngine\Debug\Assert.h" />
+    <ClInclude Include="src\ByteEngine\Debug\Logger.h">
+      <Filter>Engine\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Debug\Timer.h" />
+    <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
+    <ClInclude Include="src\ByteEngine\Game\StaticMesh.h" />
+    <ClInclude Include="src\ByteEngine\Game\SubWorlds.h" />
+    <ClInclude Include="src\ByteEngine\Game\Texture.h" />
+    <ClInclude Include="src\ByteEngine\Game\TypeManager.h" />
+    <ClInclude Include="src\ByteEngine\Game\World.h" />
+    <ClInclude Include="src\ByteEngine\Physics\ForceGenerator.h" />
+    <ClInclude Include="src\ByteEngine\Physics\ForceGenerators.h" />
+    <ClInclude Include="src\ByteEngine\Physics\HitResult.h" />
+    <ClInclude Include="src\ByteEngine\Physics\PhysicsWorld.h" />
+    <ClInclude Include="src\ByteEngine\Physics\Queries.h" />
+    <ClInclude Include="src\ByteEngine\Physics\RigidBody.h" />
+    <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
+    <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\StaticMeshResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\SubResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
+    <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
+    <ClInclude Include="src\ByteEngine\Sound\SoundManager.h" />
+    <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
+    <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
+    <ClInclude Include="src\ByteEngine\Utility\Shapes\Box.h" />
+    <ClInclude Include="src\ByteEngine\Utility\Shapes\BoxWithFalloff.h" />
+    <ClInclude Include="src\ByteEngine\Utility\Shapes\Cone.h" />
+    <ClInclude Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.h" />
+    <ClInclude Include="src\ByteEngine\Utility\Shapes\SphereWithFallof.h" />
+    <ClInclude Include="src\ByteEngine\Camera.h" />
+    <ClInclude Include="src\ByteEngine\Core.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ByteEngine\Dispatcher.h" />
+    <ClInclude Include="src\ByteEngine\Light.h" />
+    <ClInclude Include="src\ByteEngine\Object.h" />
+    <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
+    <ClInclude Include="src\ByteEngine\PointLight.h" />
+    <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
+    <ClInclude Include="src\ByteEngine\Vertex.h">
+      <Filter>Engine\Render</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
+    <ClCompile Include="src\ByteEngine\Application\Input\InputEnums.h" />
+    <ClCompile Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.cpp" />
+    <ClCompile Include="src\ByteEngine\Application\Application.cpp">
+      <Filter>Engine\Application</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ByteEngine\Application\Clock.cpp">
+      <Filter>Engine\Clock</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ByteEngine\Application\InputManager.cpp">
+      <Filter>Engine\InputManager</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />
+    <ClCompile Include="src\ByteEngine\Application\StackAllocator.cpp" />
+    <ClCompile Include="src\ByteEngine\Debug\Logger.cpp">
+      <Filter>Engine\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ByteEngine\Debug\Timer.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\StaticMesh.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\World.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\SubResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Sound\SoundManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
+    <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
+    <ClCompile Include="src\ByteEngine\Camera.cpp" />
+    <ClCompile Include="src\ByteEngine\Light.cpp" />
+    <ClCompile Include="src\ByteEngine\PointLight.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cpp.hint" />
+  </ItemGroup>
+</Project>

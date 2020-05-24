@@ -66,12 +66,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Game Studio\GL.h">
-      <Filter>Engine\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Game Studio\Texture.h">
-      <Filter>Engine\Render\Objects</Filter>
-    </ClInclude>
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\ByteEngine\Application\Input\JoystickState.h" />
@@ -177,8 +171,6 @@
     <ClCompile Include="src\ByteEngine\Camera.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\PointLight.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="cpp.hint" />
+    <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
   </ItemGroup>
 </Project>

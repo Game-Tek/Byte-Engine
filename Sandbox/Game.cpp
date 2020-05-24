@@ -1,58 +1,30 @@
-#include <ByteEngine.h>
+#include "Game.h"
 
-#include "SandboxWorld.h"
-#include "ByteEngine/Application/Templates/GameApplication.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Application/InputManager.h"
 
-class Game final : public GameApplication
+void Game::Init()
 {
-	GameInstance* sandboxGameInstance{ nullptr };
-	GameInstance::WorldReference menuWorld;
-	GameInstance::WorldReference gameWorld;
-public:
-	Game() : GameApplication("Sandbox")
+	GameApplication::Init();
+
+	//GameInstance::CreateNewWorldInfo create_new_world_info;
+	//create_new_world_info.Application = this;
+	//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+
+	BE_LOG_SUCCESS("Inited Game!")
+
+	auto mo = [&](GTSL::Vector2 a, GTSL::Vector2 b)
 	{
-	}
+		BE_LOG_MESSAGE("Mouse moved to: %f; %f", a.X, a.Y)
+	};
 
-	void Init() override
-	{
-		GameApplication::Init();
-
-		//GameInstance::CreateNewWorldInfo create_new_world_info;
-		//create_new_world_info.Application = this;
-		//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
-
-		BE_LOG_SUCCESS("Inited Game!")
-		
-		//show loading screen
-		//load menu
-		//show menu
-		//start game
-	}
-	
-	void OnNormalUpdate() override
-	{
-		GameApplication::OnNormalUpdate();
-	}
-
-	void OnBackgroundUpdate() override
-	{
-	}
-
-	~Game()
-	{
-	}
-
-	[[nodiscard]] const char* GetName() const override { return "Game"; }
-	const char* GetApplicationName() override { return "Game"; }
-};
-
-BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)
-{
-	return GTSL::New<Game>(allocatorReference);
+	inputManagerInstance->RegisterAxisAction(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
+	//show loading screen
+	//load menu
+	//show menu
+	//start game
 }
 
-void BE::DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference)
+void Game::OnNormalUpdate()
 {
-	Delete(application, allocatorReference);
+	GameApplication::OnNormalUpdate();
 }

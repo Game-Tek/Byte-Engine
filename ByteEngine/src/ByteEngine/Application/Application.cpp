@@ -1,11 +1,9 @@
 #include "Application.h"
 
-
-#include <iostream>
-#include <string>
 #include <GTSL/StaticString.hpp>
 
 #include "ByteEngine/Resources/AudioResourceManager.h"
+#include "ByteEngine/Application/InputManager.h"
 
 void onAssert(const char* text, int line, const char* file, const char* function)
 {
@@ -74,8 +72,8 @@ namespace BE
 			}
 			else
 			{
-				inputManagerInstance->Update();
 				OnNormalUpdate();
+				inputManagerInstance->Update();
 			}
 			
 			transientAllocator->Clear();

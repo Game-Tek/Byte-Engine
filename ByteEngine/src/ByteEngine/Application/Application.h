@@ -7,7 +7,6 @@
 #include <GTSL/String.hpp>
 
 #include "Clock.h"
-#include "InputManager.h"
 
 #include "ByteEngine/Resources/ResourceManager.h"
 
@@ -17,6 +16,8 @@
 
 #include "EventManager.h"
 #include "ByteEngine/Debug/Logger.h"
+
+class InputManager;
 
 namespace BE
 {
@@ -147,7 +148,7 @@ namespace BE
 		void Close(CloseMode closeMode, const char* reason);
 
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
-		[[nodiscard]] const InputManager* GetInputManager() const { return inputManagerInstance; }
+		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }

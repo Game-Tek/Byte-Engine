@@ -1,54 +1,49 @@
 #pragma once
 
+#include "ByteEngine/Core.h"
+
+#include "ByteEngine/Object.h"
+
 #include <unordered_map>
 #include <GTSL/Id.h>
-
-
-#include "ByteEngine/Core.h"
-#include "ByteEngine/Object.h"
 #include <GTSL/Delegate.hpp>
 #include <GTSL/Pair.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vector2.h>
 
+namespace GTSL {
+	class Window;
+}
+
 class InputManager : public Object
 {
-	//std::unordered_map<GTSL::Id16, Delegate<void(float)>> axisActions;
-	//std::unordered_map<GTSL::Id16, Delegate<void(bool)>> buttonActions;
-	//
-	std::unordered_map<GTSL::Id64::HashType, Delegate<void(bool)>> buttons;
-	std::unordered_map<GTSL::Id64::HashType, Delegate<void(GTSL::Vector2)>> axis;
+	std::unordered_map<GTSL::Id64::HashType, GTSL::Delegate<void(bool)>> buttons;
+	std::unordered_map<GTSL::Id64::HashType, GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>> axis;
 
 	GTSL::Vector<GTSL::Pair<GTSL::Id64, bool>> buttonEvents;
-	
+
+	struct AxisEvent
+	{
+		GTSL::Id64 Id;
+		GTSL::Vector2 NewValue;
+		GTSL::Vector2 Delta;
+	};
+	GTSL::Vector<AxisEvent> axisEvents;
+
 public:
-	InputManager() = default;
+	InputManager();
 	~InputManager() = default;
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
 
-	void RegisterKeyAction(GTSL::Id64 key, Delegate<void(bool)> del)
-	{
-		buttons.insert({ key, del });
-	}
-	
-	void SignalButtonPress(const GTSL::Id64 key, const bool cond)
-	{
-		buttonEvents.PushBack(GTSL::Pair<GTSL::Id64, bool>(key, cond));
-	}
+	void BindWindow(GTSL::Window* window);
 
-	void RegisterAxisEvent(bool cond)
-	{
-	}
+	void RegisterKeyAction(GTSL::Id64 key, GTSL::Delegate<void(bool)> del);
+	void RegisterAxisAction(GTSL::Id64 key, GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)> del);
 	
-	void Update()
-	{
-		for (auto& e : buttonEvents)
-		{
-			buttons.at(e.First.GetID())(e.Second);
-		}
-		
-		
-		buttonEvents.Resize(0);
-	}
+	void SignalAxis(GTSL::Id64 name, GTSL::Vector2 a, GTSL::Vector2 b);
+
+	void SignalButtonPress(GTSL::Id64 key, bool cond);
+
+	void Update();
 };

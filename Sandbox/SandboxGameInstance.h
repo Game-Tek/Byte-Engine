@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Byte Engine/Game/GameInstance.h>
+#include <ByteEngine/Game/GameInstance.h>
 
 class SandboxGameInstance : public GameInstance
 {

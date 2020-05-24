@@ -9,67 +9,19 @@
 
 class PoolAllocator
 {
-	GTSL::AllocatorReference* systemAllocatorReference{ nullptr };
+public:
+	PoolAllocator(GTSL::AllocatorReference* allocatorReference);
+
+	~PoolAllocator();
+
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const;
+
+	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name) const;
+
+	void Free() const;
 
 	class Pool
 	{
-		struct Block
-		{
-		protected:
-			void* data{ nullptr };
-			std::atomic<uint16> freeSlotsCount{ 0 };
-			//uint16 freeSlotsCount{ 0 };
-			//GTSL::Mutex mutex;
-
-			[[nodiscard]] uint32* freeSlotsIndices() const { return static_cast<uint32*>(data); }
-			[[nodiscard]] byte* blockData(const uint16 slotsCount) const { return reinterpret_cast<byte*>(static_cast<uint32*>(data) + slotsCount); }
-			[[nodiscard]] byte* blockDataEnd(const uint16 slotsCount, const uint32 slotsSize) const { return blockData(slotsCount) + static_cast<uint64>(slotsCount) * slotsSize; }
-			
-			void popFreeSlot(uint32& freeSlot)
-			{
-				//freeSlot = freeSlotsIndices()[freeSlotsCount.fetch_add(1)];
-				freeSlot = freeSlotsIndices()[--freeSlotsCount];
-			}
-
-			void placeFreeSlot(const uint32 freeSlot)
-			{
-				//freeSlotsIndices()[freeSlotsCount.fetch_sub(1)] = freeSlot;
-				freeSlotsIndices()[freeSlotsCount++] = freeSlot;
-			}
-			
-			[[nodiscard]] bool freeSlot() const { return freeSlotsCount; }
-
-			uint32 slotIndexFromPointer(void* p, uint16 slotsCount, uint32 slotsSize) const;
-
-		public:
-			Block(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
-
-			void FreeBlock(uint16 slotsCount, uint32 slotsSize, uint64& freedSpace, GTSL::AllocatorReference* allocatorReference);
-			
-			void AllocateInBlock(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
-
-			bool TryAllocateInBlock(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
-
-			void DeallocateInBlock(uint64 alignment, void* data, const uint16 slotsCount, const uint32 slotsSize);
-			
-			bool DoesAllocationBelongToBlock(void* data, uint16 slotsCount, uint32 slotsSize) const;
-		};
-
-		//std::atomic<Block*> blocks{ nullptr };
-		std::atomic<uint32> blockCount{ 0 };
-		std::atomic<uint32> blockCapacity{ 0 };
-		std::atomic<uint32> index{ 0 };
-		
-		Block* blocks{ nullptr };
-		//uint32 blockCount{ 0 };
-		//uint32 blockCapacity{ 0 };
-		//uint32 index{ 0 };
-		GTSL::ReadWriteMutex mutex;
-		const uint32 slotsSize{ 0 };
-		const uint16 slotsCount{ 0 };
-
-		uint32 allocateAndAddNewBlock(GTSL::AllocatorReference* allocatorReference);
-		[[nodiscard]] GTSL::Ranger<Block> blocksRange() const { return GTSL::Ranger(blocks, blocks + blockCount); }//Ranger(blocks.load(), blocks + blockCount); }
 	public:
 		Pool(uint16 slotsCount, uint32 slotsSize, uint8 blockCount, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
@@ -78,21 +30,62 @@ class PoolAllocator
 		void Deallocate(uint64 size, uint64 alignment, void* memory, GTSL::AllocatorReference* allocatorReference) const;
 
 		void Free(uint64& freedBytes, GTSL::AllocatorReference* allocatorReference) const;
+		
+		class Block
+		{
+		public:
+			Block(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
+			
+			void Allocate(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
+
+			bool AllocateIfFreeSlot(uint64 alignment, void** data, uint64& allocatedSize, uint16 slotsCount, uint32 slotsSize);
+
+			void Deallocate(uint64 alignment, void* data, uint16 slotsCount, uint32 slotsSize);
+			
+			bool DoesAllocationBelongToBlock(void* data, uint16 slotsCount, uint32 slotsSize) const;
+			
+			void Free(uint16 slotsCount, uint32 slotsSize, uint64& freedSpace, GTSL::AllocatorReference* allocatorReference);
+
+		private:
+			void* dataPointer{ nullptr };
+			std::atomic<uint16> freeSlotsCount{ 0 };
+			//uint16 freeSlotsCount{ 0 };
+			//GTSL::Mutex mutex;
+			
+			GTSL::Ranger<uint32> freeSlots(const uint16 slotsCount) const { return GTSL::Ranger<uint32>(slotsCount, static_cast<uint32*>(dataPointer)); }
+			GTSL::Ranger<byte> slotsData(const uint16 slotsCount, const uint32 slotsSize) const { return GTSL::Ranger<byte>(static_cast<uint64>(slotsCount) * slotsSize, reinterpret_cast<byte*>(freeSlots(slotsCount).end())); }
+			
+			void popFreeSlot(uint32& freeSlot, const uint16 slotsCount) { freeSlot = freeSlots(slotsCount)[--freeSlotsCount]; }
+
+			void insertFreeSlot(const uint32 freeSlot, const uint16 slotsCount) { freeSlots(slotsCount)[freeSlotsCount++] = freeSlot; }
+			
+			[[nodiscard]] bool freeSlot() const { return freeSlotsCount; }
+
+			uint32 slotIndexFromPointer(void* p, uint16 slotsCount, uint32 slotsSize) const;
+		};
+
+	private:
+		//std::atomic<Block*> blocks{ nullptr };
+		std::atomic<uint32> blockCount{ 0 };
+		std::atomic<uint32> blockCapacity{ 0 };
+		std::atomic<uint32> index{ 0 };
+		
+		Block* blocksData{ nullptr };
+		//uint32 blockCount{ 0 };
+		//uint32 blockCapacity{ 0 };
+		//uint32 index{ 0 };
+		GTSL::ReadWriteMutex mutex;
+		const uint32 slotsSize{ 0 };
+		const uint16 slotsCount{ 0 };
+
+		uint32 allocateAndAddNewBlock(GTSL::AllocatorReference* allocatorReference);
+		[[nodiscard]] GTSL::Ranger<Block> blocks() const { return GTSL::Ranger(blockCount, blocksData); }
 	};
-	
-	Pool* pools{ nullptr };
+
+private:
+	Pool* poolsData{ nullptr };
 	const uint32 poolCount{ 0 };
-public:
-	PoolAllocator(GTSL::AllocatorReference* allocatorReference);
+	GTSL::AllocatorReference* systemAllocatorReference{ nullptr };
 
-	~PoolAllocator()
-	{
-		Free();
-	}
-
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const;
-
-	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name) const;
-	
-	void Free() const;
+	[[nodiscard]] GTSL::Ranger<Pool> pools() const { return GTSL::Ranger<Pool>(poolCount, poolsData); }
 };

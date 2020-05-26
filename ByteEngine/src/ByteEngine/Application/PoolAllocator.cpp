@@ -51,15 +51,15 @@ PoolAllocator::Pool::Block::Block(const uint16 slotsCount, const uint32 slotsSiz
 
 void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const
 {
-	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!");
+	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 
 	uint64 allocation_min_size { 0 }; GTSL::NextPowerOfTwo(size, allocation_min_size);
 
-	BE_ASSERT((allocation_min_size & (allocation_min_size - 1)) != 0, "allocation_min_size is not power of two!");
+	BE_ASSERT((allocation_min_size & (allocation_min_size - 1)) == 0, "allocation_min_size is not power of two!");
 
 	uint8 set_bit { 0 }; GTSL::BitScanForward(allocation_min_size, set_bit);
 	
-	BE_ASSERT(poolCount <= set_bit, "No pool big enough!");
+	BE_ASSERT(poolCount >= set_bit, "No pool big enough!");
 
 	uint64 allocator_bytes{ 0 };
 	poolsData[set_bit].Allocate(size, alignment, memory, allocatedSize, allocator_bytes, systemAllocatorReference);
@@ -67,8 +67,8 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize, uint64& allocatorAllocatedBytes, GTSL::AllocatorReference* allocatorReference)
 {
-	BE_ASSERT(size > slotsSize, "Allocation size greater than pool's slot size");
-	BE_ASSERT(GTSL::Math::AlignedNumber(alignment, size) > slotsSize, "Aligned allocation size greater than pool's slot size");
+	BE_ASSERT(size < slotsSize, "Allocation size greater than pool's slot size");
+	BE_ASSERT(GTSL::Math::AlignedNumber(alignment, size) < slotsSize, "Aligned allocation size greater than pool's slot size");
 
 	const auto i{ index % blockCount };	++index;
 
@@ -122,11 +122,11 @@ bool PoolAllocator::Pool::Block::AllocateIfFreeSlot(const uint64 alignment, void
 
 void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name) const
 {
-	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!");
+	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 
 	uint64 allocation_min_size { 0 }; GTSL::NextPowerOfTwo(size, allocation_min_size);
 
-	BE_ASSERT((allocation_min_size & (allocation_min_size - 1)) != 0, "allocation_min_size is not power of two!");
+	BE_ASSERT((allocation_min_size & (allocation_min_size - 1)) == 0, "allocation_min_size is not power of two!");
 
 	uint8 set_bit{ 0 }; GTSL::BitScanForward(allocation_min_size, set_bit);
 
@@ -143,7 +143,7 @@ void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* 
 		}
 	}
 
-	BE_ASSERT(true, "Allocation couldn't be freed from this pool, pointer does not belong to any allocation in this pool!");
+	BE_ASSERT(false, "Allocation couldn't be freed from this pool, pointer does not belong to any allocation in this pool!");
 }
 
 void PoolAllocator::Pool::Block::Deallocate(uint64 alignment, void* data, const uint16 slotsCount, const uint32 slotsSize)
@@ -202,7 +202,7 @@ bool PoolAllocator::Pool::Block::DoesAllocationBelongToBlock(void* data, const u
 
 uint32 PoolAllocator::Pool::Block::slotIndexFromPointer(void* p, const uint16 slotsCount, const uint32 slotsSize) const
 {
-	BE_ASSERT(!DoesAllocationBelongToBlock(p, slotsCount, slotsSize), "p does not belong to block!");
+	BE_ASSERT(DoesAllocationBelongToBlock(p, slotsCount, slotsSize), "p does not belong to block!");
 	return static_cast<byte*>(p) - slotsData(slotsCount, slotsSize).begin();
 }
 

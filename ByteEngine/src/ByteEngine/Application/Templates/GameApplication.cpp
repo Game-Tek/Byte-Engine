@@ -27,7 +27,7 @@ void GameApplication::Init()
 
 	auto mouse = [](const GTSL::Vector2& a, const GTSL::Vector2& b)
 	{
-		Get()->GetInputManager()->SignalAxis(GTSL::Ranger<const char>("MouseMove"), a, b);
+		Get()->GetInputManager()->Record2DInputSource(GTSL::Ranger<const char>("MouseMove"), a, b);
 		BE_BASIC_LOG_MESSAGE("Mouse was moved");
 	};
 

@@ -4,53 +4,43 @@
 #include <GTSL/Math/Vector2.h>
 
 #include "Application.h"
+#include "ByteEngine/Debug/Assert.h"
 
 static BE::PersistentAllocatorReference allocator_reference("Input Manager");
 
-void InputManager::SignalAxis(GTSL::Id64 name, GTSL::Vector2 a, GTSL::Vector2 b)
+InputManager::InputManager()
 {
-	axisEvents.PushBack({name, a, b});
-}
-
-void InputManager::SignalButtonPress(const GTSL::Id64 key, const bool cond)
-{
-	buttonEvents.PushBack(GTSL::Pair<GTSL::Id64, bool>(key, cond));
+	input2DSourceRecords.Initialize(50, &allocator_reference);
 }
 
 void InputManager::Update()
 {
-	for (auto& e : buttonEvents)
+	GTSL::Microseconds current_time{ 0 };
+	
+	for(auto& record2D : input2DSourceRecords)
 	{
-		buttons.at(e.First.GetID())(e.Second);
+		auto& inputSource = vector2dInputSourceEventsToVector2DInputEvents.at(record2D.Name);
+		inputSource.Function(Vector2DInputEvent{ record2D.Name, current_time - inputSource.LastTime, record2D.NewValue, record2D.NewValue - inputSource.LastValue });
 	}
 
-	for (auto& e : axisEvents)
-	{
-		axis.at(e.Id)(e.NewValue, e.Delta);
-	}
-
-
-	buttonEvents.Resize(0);
-	axisEvents.Resize(0);
+	input2DSourceRecords.Resize(0);
 }
 
-InputManager::InputManager()
+void InputManager::Register2DInputSource(const GTSL::Id64 inputSourceName)
 {
-	buttonEvents.Initialize(50, &allocator_reference);
-	axisEvents.Initialize(50, &allocator_reference);
+	vector2dInputSourceEventsToVector2DInputEvents.insert({ inputSourceName, {} });
 }
 
-void InputManager::BindWindow(GTSL::Window* window)
+void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames)
 {
+#ifdef BE_DEBUG
+	for (auto& e : inputSourceNames) { if(vector2dInputSourceEventsToVector2DInputEvents.find(e) == vector2dInputSourceEventsToVector2DInputEvents.end()) BE_ASSERT(false, "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
+#endif
 
+	for(auto& e : inputSourceNames) { vector2dInputSourceEventsToVector2DInputEvents.insert({ e, {} }); }
 }
 
-void InputManager::RegisterKeyAction(GTSL::Id64 key, GTSL::Delegate<void(bool)> del)
+void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, const GTSL::Vector2& newValue)
 {
-	buttons.insert({key, del});
-}
-
-void InputManager::RegisterAxisAction(GTSL::Id64 key, GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)> del)	
-{
-	axis.insert({ key, del });
+	//axis2DInputSourceRecords.PushBack({ inputSourceName , newValue, newValue });
 }

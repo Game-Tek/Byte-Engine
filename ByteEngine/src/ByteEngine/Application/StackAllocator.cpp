@@ -185,8 +185,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 	
 	++stackIndex;
 
-	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!")
-	BE_ASSERT(size > blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.")
+	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
+	BE_ASSERT(size < blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.")
 
 	uint64 allocated_size{0};
 
@@ -249,8 +249,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name)
 {
-	BE_ASSERT((alignment & (alignment - 1)) != 0, "Alignment is not power of two!")
-	BE_ASSERT(size > blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
+	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
+	BE_ASSERT(size < blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
 
 	BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::AlignedNumber(size, alignment) })
 

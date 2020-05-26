@@ -17,7 +17,7 @@ void Game::Init()
 		BE_LOG_MESSAGE("Mouse moved to: %f; %f", a.X, a.Y)
 	};
 
-	inputManagerInstance->RegisterAxisAction(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
+	inputManagerInstance->SubscribeToAxisAction(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
 	//show loading screen
 	//load menu
 	//show menu

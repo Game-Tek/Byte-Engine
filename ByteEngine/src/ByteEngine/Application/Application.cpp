@@ -72,8 +72,8 @@ namespace BE
 			}
 			else
 			{
-				OnNormalUpdate();
 				inputManagerInstance->Update();
+				OnNormalUpdate();
 			}
 			
 			transientAllocator->Clear();

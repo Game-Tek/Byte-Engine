@@ -12,12 +12,15 @@ void Game::Init()
 
 	BE_LOG_SUCCESS("Inited Game!")
 
-	auto mo = [&](GTSL::Vector2 a, GTSL::Vector2 b)
+	auto mo = [&](InputManager::Vector2DInputEvent a)
 	{
-		BE_LOG_MESSAGE("Mouse moved to: %f; %f", a.X, a.Y)
+		BE_BASIC_LOG_MESSAGE("Mouse moved to: %f; %f", a.Value.X, a.Value.Y)
 	};
 
-	inputManagerInstance->SubscribeToAxisAction(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
+	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("MouseMove") });
+	
+	inputManagerInstance->Register2DInputEvent("MoveTest", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create(mo));
+	//inputManagerInstance->Register2DInputEvent(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
 	//show loading screen
 	//load menu
 	//show menu

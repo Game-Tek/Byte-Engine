@@ -25,10 +25,12 @@ void GameApplication::Init()
 	
 	window.ShowWindow();
 
+	inputManagerInstance->Register2DInputSource("MouseMove");
+	
 	auto mouse = [](const GTSL::Vector2& a, const GTSL::Vector2& b)
 	{
-		Get()->GetInputManager()->Record2DInputSource(GTSL::Ranger<const char>("MouseMove"), a, b);
-		BE_BASIC_LOG_MESSAGE("Mouse was moved");
+		Get()->GetInputManager()->Record2DInputSource("MouseMove", a);
+		//BE_BASIC_LOG_MESSAGE("Mouse was moved");
 	};
 
 	window.SetOnMouseMoveDelegate(GTSL::Delegate<void(const GTSL::Vector2&, const GTSL::Vector2&)>::Create(mouse));

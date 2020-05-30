@@ -25,15 +25,14 @@ void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorR
 	deallocatedBytes = end - start;
 }
 
-void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data,
-                                            uint64& allocatedSize)
+void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	*data = (at += (allocatedSize = GTSL::Math::AlignedNumber(size, alignment)));
+	*data = (at += (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment)));
 }
 
 bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	auto* const new_at = at + (allocatedSize = GTSL::Math::AlignedNumber(size, alignment));
+	auto* const new_at = at + (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment));
 	if (new_at < end)
 	{
 		*data = new_at;
@@ -252,7 +251,7 @@ void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void*
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
 	BE_ASSERT(size < blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
 
-	BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::AlignedNumber(size, alignment) })
+	BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::PowerOf2RoundUp(size, alignment) })
 
 	BE_DEBUG_ONLY(GTSL::Ranger<GTSL::UTF8> range(GTSL::String::StringLength(name), const_cast<char*>(name)))
 	

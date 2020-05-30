@@ -58,7 +58,7 @@ public:
 	
 	void Allocate(const uint64 size, const uint64 alignment, void** data)
 	{
-		const uint64 allocated_size{ GTSL::Math::AlignedNumber(size + sizeof(void*), alignment) };
+		const uint64 allocated_size{ GTSL::Math::PowerOf2RoundUp(size + sizeof(void*), alignment) };
 		void* raw_data_alloc{ nullptr };
 		
 		allocatorMutex.Lock();
@@ -77,7 +77,7 @@ public:
 
 	void Deallocate(const uint64 size, const uint64 alignment, void* data)
 	{
-		const uint64 deallocated_size{ GTSL::Math::AlignedNumber(size + sizeof(void*), alignment) };
+		const uint64 deallocated_size{ GTSL::Math::PowerOf2RoundUp(size + sizeof(void*), alignment) };
 
 		allocatorMutex.Lock();
 		GTSL::Memory::Deallocate(deallocated_size, static_cast<byte*>(data) - sizeof(void*));

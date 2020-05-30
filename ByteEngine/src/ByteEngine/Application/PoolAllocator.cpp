@@ -68,7 +68,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize, uint64& allocatorAllocatedBytes, GTSL::AllocatorReference* allocatorReference)
 {
 	BE_ASSERT(size < slotsSize, "Allocation size greater than pool's slot size");
-	BE_ASSERT(GTSL::Math::AlignedNumber(alignment, size) < slotsSize, "Aligned allocation size greater than pool's slot size");
+	BE_ASSERT(GTSL::Math::PowerOf2RoundUp(alignment, size) < slotsSize, "Aligned allocation size greater than pool's slot size");
 
 	const auto i{ index % blockCount };	++index;
 

@@ -102,7 +102,14 @@ void Logger::PrintObjectLog(const Object* obj, const VerbosityLevel level, const
 {
 	GTSL::StaticString<1024> t;
 	t += obj->GetName(); t += ": "; t += text;
+
+	va_list list;
+	va_start(list, text);
+	
+	snprintf(t.begin() + t.GetLength(), 512, text, list);
 	log(level, t);
+
+	va_end(list);
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
@@ -128,6 +135,12 @@ Logger::~Logger()
 void Logger::PrintBasicLog(const VerbosityLevel level, const char* text, ...) const
 {
 	GTSL::StaticString<1024> t;
-	t += text;
+
+	va_list list;
+	va_start(list, text);
+
+	t.Resize(vsnprintf(t.begin(), 1024, text, list));
 	log(level, t);
+
+	va_end(list);
 }

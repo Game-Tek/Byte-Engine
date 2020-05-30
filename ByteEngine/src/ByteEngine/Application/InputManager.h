@@ -63,7 +63,7 @@ public:
 
 	void Register2DInputSource(GTSL::Id64 inputSourceName);
 
-	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames);
+	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
 
 	void Record2DInputSource(GTSL::Id64 inputSourceName, const GTSL::Vector2& newValue);
 
@@ -78,6 +78,12 @@ protected:
 		GTSL::Delegate<void(Vector2DInputEvent)> Function;
 		GTSL::Vector2 LastValue;
 		GTSL::Microseconds LastTime;
+
+		Vector2DInputSourceData() = default;
+		
+		Vector2DInputSourceData(const GTSL::Delegate<void(Vector2DInputEvent)> func, const GTSL::Vector2 lstValue, const GTSL::Microseconds lstTime) : Function(func), LastValue(lstValue), LastTime(lstTime)
+		{
+		}
 	};
 	std::unordered_map<GTSL::Id64::HashType, Vector2DInputSourceData> vector2dInputSourceEventsToVector2DInputEvents;
 	//std::unordered_map<GTSL::Id64::HashType, GTSL::Vector<GTSL::Id64::HashType>> vector3dInputSourcesToVector3DInputEvents;

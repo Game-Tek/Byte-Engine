@@ -6,8 +6,6 @@
 #include <cstdio>
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#include <GTSL/Array.hpp>
-#include <GTSL\StaticString.hpp>
 
 using namespace BE;
 

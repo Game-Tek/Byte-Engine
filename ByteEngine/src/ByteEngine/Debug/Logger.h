@@ -6,6 +6,7 @@
 
 #include "ByteEngine/Core.h"
 
+#include <GTSL/StaticString.hpp>
 class Object;
 
 #undef ERROR
@@ -76,6 +77,14 @@ namespace BE
 		void PrintObjectLog(const Object* obj, VerbosityLevel level, const char* text, ...) const;
 		void PrintBasicLog(VerbosityLevel level, const char* text, ...) const;
 
+		template<typename... ARGS>
+		void PrintBLog(const VerbosityLevel level, ARGS& ...args)
+		{
+			GTSL::StaticString<1024> text;
+			(text += ... += args);
+			log(level, text);
+		}
+		
 		/**
 		 * \brief Sets the minimum log verbosity, only affects logs to console. Value is inclusive.
 		 * \param level Verbosity level.

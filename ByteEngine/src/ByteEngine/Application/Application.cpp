@@ -23,11 +23,13 @@ namespace BE
 
 	void Application::Init()
 	{
+		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+		
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
 
 		Logger::LoggerCreateInfo logger_create_info;
-		GTSL::StaticString<1024> path(systemApplication.GetPathToExecutable());
+		auto path = systemApplication.GetPathToExecutable();
 		path.Drop(path.FindLast('/'));
 		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = new Logger(logger_create_info);

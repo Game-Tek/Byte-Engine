@@ -14,7 +14,7 @@ void Game::Init()
 
 	auto mo = [&](InputManager::Vector2DInputEvent a)
 	{
-		BE_BASIC_LOG_MESSAGE("Mouse moved to: %f; %f", a.Value.X, a.Value.Y)
+		BE_BASIC_LOG_MESSAGE("Mouse moved to: ", a.Value.X, ", ", a.Value.Y)
 	};
 
 	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("MouseMove") });

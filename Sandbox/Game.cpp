@@ -20,7 +20,7 @@ void Game::Init()
 	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("MouseMove") });
 	
 	inputManagerInstance->Register2DInputEvent("MoveTest", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create(mo));
-	//inputManagerInstance->Register2DInputEvent(GTSL::Ranger<const char>("MoveTest"), GTSL::Delegate<void(GTSL::Vector2, GTSL::Vector2)>::Create(mo));
+	
 	//show loading screen
 	//load menu
 	//show menu

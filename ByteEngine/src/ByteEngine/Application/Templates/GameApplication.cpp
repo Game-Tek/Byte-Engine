@@ -16,24 +16,23 @@ void GameApplication::Init()
 
 	//window.SetOnResizeDelegate(Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::resize>(this));
 
-	auto window_resize = [&](const GTSL::Extent2D& a)
+	auto window_resize = [](const GTSL::Extent2D& a)
 	{
-		
 	};
 
-	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create(window_resize));
+	window.SetOnResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create(window_resize));
 	
 	window.ShowWindow();
 
 	inputManagerInstance->Register2DInputSource("MouseMove");
 	
-	auto mouse = [](const GTSL::Vector2& a, const GTSL::Vector2& b)
+	auto mouse = [](const GTSL::Vector2 a)
 	{
 		Get()->GetInputManager()->Record2DInputSource("MouseMove", a);
 		//BE_BASIC_LOG_MESSAGE("Mouse was moved");
 	};
 
-	window.SetOnMouseMoveDelegate(GTSL::Delegate<void(const GTSL::Vector2&, const GTSL::Vector2&)>::Create(mouse));
+	window.SetOnMouseMoveDelegate(GTSL::Delegate<void(GTSL::Vector2)>::Create(mouse));
 
 }
 

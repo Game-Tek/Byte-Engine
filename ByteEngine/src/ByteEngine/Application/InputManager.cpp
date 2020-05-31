@@ -21,6 +21,8 @@ void InputManager::Update()
 	{
 		auto& inputSource = vector2dInputSourceEventsToVector2DInputEvents.at(record2D.Name);
 		inputSource.Function(Vector2DInputEvent{ record2D.Name, current_time - inputSource.LastTime, record2D.NewValue, record2D.NewValue - inputSource.LastValue });
+		inputSource.LastValue = record2D.NewValue;
+		inputSource.LastTime = current_time;
 	}
 
 	input2DSourceRecords.Resize(0);
@@ -28,7 +30,7 @@ void InputManager::Update()
 
 void InputManager::Register2DInputSource(const GTSL::Id64 inputSourceName)
 {
-	vector2dInputSourceEventsToVector2DInputEvents.insert({ inputSourceName, Vector2DInputSourceData() });
+	vector2dInputSourceEventsToVector2DInputEvents.emplace(inputSourceName, Vector2DInputSourceData());
 }
 
 void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, const GTSL::Delegate<void(Vector2DInputEvent)> function)
@@ -39,14 +41,11 @@ void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL
 
 	for(auto& e : inputSourceNames)
 	{
-		//vector2dInputSourceEventsToVector2DInputEvents.emplace(e.GetID(), Vector2DInputSourceData(function, {}, GTSL::Microseconds(33)));
-
-		auto data = Vector2DInputSourceData(function, {}, GTSL::Microseconds(33));
-		vector2dInputSourceEventsToVector2DInputEvents.at(e) = data;
+		vector2dInputSourceEventsToVector2DInputEvents.at(e) = Vector2DInputSourceData(function, {}, {});
 	}
 }
 
 void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, const GTSL::Vector2& newValue)
 {
-	input2DSourceRecords.PushBack({ inputSourceName , newValue });
+	input2DSourceRecords.PushBack(Axis2DRecord{ { inputSourceName }, newValue });
 }

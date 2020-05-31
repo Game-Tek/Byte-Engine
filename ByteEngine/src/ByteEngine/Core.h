@@ -14,6 +14,9 @@ using int64 = long long;
 
 using UTF8 = char;
 
+using float32 = float;
+using float64 = double;
+
 #ifdef BE_DEBUG
 #define BE_DEBUG_ONLY(...) __VA_ARGS__;
 #else

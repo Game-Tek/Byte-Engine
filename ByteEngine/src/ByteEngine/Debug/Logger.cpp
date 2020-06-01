@@ -1,15 +1,13 @@
 #include "Logger.h"
 
+#include <cstdarg>
+
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/Clock.h"
 
-#include <cstdio>
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
 using namespace BE;
 
-BE::PersistentAllocatorReference allocator_reference("Clock", true); //TODO get rid of global once vector is fixed
+static BE::PersistentAllocatorReference allocator_reference("Clock", true); //TODO get rid of global once vector is fixed
 
 Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile(), fileBuffer(defaultBufferLength/*use single buffer as two buffers for when one half is being written to disk*/, &allocator_reference)
 {
@@ -114,15 +112,11 @@ void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 {
 	switch (level)
 	{
-	default: SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15); break;
-
-	case VerbosityLevel::MESSAGE: SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15); break;
-
-	case VerbosityLevel::SUCCESS: SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_GREEN | FOREGROUND_INTENSITY); break;
-
-	case VerbosityLevel::WARNING: SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_GREEN); break;
-
-	case VerbosityLevel::FATAL: SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY); break;
+	case VerbosityLevel::MESSAGE: console.SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
+	case VerbosityLevel::SUCCESS: console.SetTextColor(GTSL::Console::ConsoleTextColor::GREEN); break;
+	case VerbosityLevel::WARNING: console.SetTextColor(GTSL::Console::ConsoleTextColor::ORANGE); break;
+	case VerbosityLevel::FATAL: console.SetTextColor(GTSL::Console::ConsoleTextColor::RED); break;
+	default: console.SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
 	}
 }
 

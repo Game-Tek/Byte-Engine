@@ -3,10 +3,11 @@
 #include <GTSL/Mutex.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
+#include <GTSL/Console.h>
 
 #include "ByteEngine/Core.h"
-
 #include <GTSL/StaticString.hpp>
+
 class Object;
 
 #undef ERROR
@@ -60,6 +61,8 @@ namespace BE
 		mutable std::atomic<uint32> lastWriteToDiskPos{ 0 };
 		mutable std::atomic<uint32> bytesWrittenSinceLastWriteToDisk{ 0 };
 
+		GTSL::Console console;
+		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;
 	public:

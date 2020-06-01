@@ -10,18 +10,14 @@ void Game::Init()
 	//create_new_world_info.Application = this;
 	//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
-	BE_LOG_SUCCESS("Inited Game!")
-	BE_LOG_WARNING("Testing warnings!")
-	BE_LOG_ERROR("Testing errors!")
+	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 
-	auto mo = [&](InputManager::Vector2DInputEvent a)
+	auto mo = [&](InputManager::CharacterInputEvent a)
 	{
-		BE_BASIC_LOG_MESSAGE("Mouse moved to: ", a.Value.X, ", ", a.Value.Y)
+		BE_BASIC_LOG_MESSAGE("Character: ", a.Value)
 	};
-
-	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("MouseMove") });
-	
-	inputManagerInstance->Register2DInputEvent("MoveTest", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create(mo));
+	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("Keyboard") });
+	inputManagerInstance->RegisterCharacterInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::CharacterInputEvent)>::Create(mo));
 	
 	//show loading screen
 	//load menu

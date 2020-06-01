@@ -8,6 +8,8 @@
 #include "ByteEngine/Core.h"
 #include <GTSL/StaticString.hpp>
 
+#include "ByteEngine/Object.h"
+
 class Object;
 
 #undef ERROR
@@ -77,11 +79,17 @@ namespace BE
 
 		void Shutdown() const;
 
-		void PrintObjectLog(const Object* obj, VerbosityLevel level, const char* text, ...) const;
-		void PrintBasicLog(VerbosityLevel level, const char* text, ...) const;
+		template<typename... ARGS>
+		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS&& ...args)
+		{
+			GTSL::StaticString<1024> text;
+			text += obj->GetName(); text += ": ";
+			(text += ... += GTSL::MakeForwardReference<ARGS>(args));
+			log(level, text);
+		}
 
 		template<typename... ARGS>
-		void PrintBLog(const VerbosityLevel level, ARGS&& ...args)
+		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args)
 		{
 			GTSL::StaticString<1024> text;
 			(text += ... += GTSL::MakeForwardReference<ARGS>(args));

@@ -94,20 +94,6 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	bytesWrittenSinceLastWriteToDisk += written_bytes;
 }
 
-void Logger::PrintObjectLog(const Object* obj, const VerbosityLevel level, const char* text, ...) const
-{
-	GTSL::StaticString<1024> t;
-	t += obj->GetName(); t += ": "; t += text;
-
-	va_list list;
-	va_start(list, text);
-	
-	snprintf(t.begin() + t.GetLength(), 512, text, list);
-	log(level, t);
-
-	va_end(list);
-}
-
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 {
 	switch (level)

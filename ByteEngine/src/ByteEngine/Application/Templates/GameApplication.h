@@ -6,12 +6,6 @@
 
 class GameApplication : public BE::Application
 {
-	GTSL::Window window;
-	
-	void resize(const GTSL::Extent2D& size)
-	{
-
-	}
 public:
 	GameApplication(const char* name) : Application(BE::ApplicationCreateInfo{ name })
 	{
@@ -20,4 +14,12 @@ public:
 	void Init() override;
 
 	void OnNormalUpdate() override;
+
+private:
+	GTSL::Window window;
+
+	void SetupInputSources();
+	void RegisterMouse();
+	void RegisterKeyboard();
+	void RegisterControllers();
 };

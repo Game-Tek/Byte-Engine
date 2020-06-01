@@ -158,16 +158,16 @@ namespace BE
 		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
 
 #ifdef BE_DEBUG
-#define BE_LOG_SUCCESS(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, Text, __VA_ARGS__);
-#define BE_LOG_MESSAGE(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, Text, __VA_ARGS__);
-#define BE_LOG_WARNING(Text, ...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, Text, __VA_ARGS__);
-#define BE_LOG_ERROR(Text, ...)			BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, Text, __VA_ARGS__);
-#define BE_LOG_LEVEL(Level)				BE::Application::Get()->GetLogger()->SetMinLogLevel(Level);
+#define BE_LOG_SUCCESS(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
+#define BE_LOG_MESSAGE(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
+#define BE_LOG_WARNING(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
+#define BE_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
+#define BE_LOG_LEVEL(Level)		BE::Application::Get()->GetLogger()->SetMinLogLevel(Level);
 
-#define BE_BASIC_LOG_SUCCESS(...)	BE::Application::Get()->GetLogger()->PrintBLog(BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
-#define BE_BASIC_LOG_MESSAGE(...)	BE::Application::Get()->GetLogger()->PrintBLog(BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
-#define BE_BASIC_LOG_WARNING(...)	BE::Application::Get()->GetLogger()->PrintBLog(BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
-#define BE_BASIC_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintBLog(BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
+#define BE_BASIC_LOG_SUCCESS(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
+#define BE_BASIC_LOG_MESSAGE(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
+#define BE_BASIC_LOG_WARNING(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
+#define BE_BASIC_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
 #else
 #define BE_LOG_SUCCESS(Text, ...)
 #define BE_LOG_MESSAGE(Text, ...)

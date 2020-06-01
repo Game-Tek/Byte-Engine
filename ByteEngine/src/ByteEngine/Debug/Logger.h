@@ -56,7 +56,7 @@ namespace BE
 		 */
 		mutable std::atomic<uint32> currentStringIndex{ 0 };
 		
-		mutable GTSL::Vector<char> fileBuffer;
+		mutable GTSL::Vector<UTF8> fileBuffer;
 
 		mutable std::atomic<uint32> lastWriteToDiskPos{ 0 };
 		mutable std::atomic<uint32> bytesWrittenSinceLastWriteToDisk{ 0 };
@@ -81,10 +81,10 @@ namespace BE
 		void PrintBasicLog(VerbosityLevel level, const char* text, ...) const;
 
 		template<typename... ARGS>
-		void PrintBLog(const VerbosityLevel level, ARGS& ...args)
+		void PrintBLog(const VerbosityLevel level, ARGS&& ...args)
 		{
 			GTSL::StaticString<1024> text;
-			(text += ... += args);
+			(text += ... += GTSL::MakeForwardReference<ARGS>(args));
 			log(level, text);
 		}
 		

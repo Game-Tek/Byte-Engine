@@ -123,16 +123,3 @@ void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 Logger::~Logger()
 {
 }
-
-void Logger::PrintBasicLog(const VerbosityLevel level, const char* text, ...) const
-{
-	GTSL::StaticString<1024> t;
-
-	va_list list;
-	va_start(list, text);
-
-	t.Resize(vsnprintf(t.begin(), 1024, text, list));
-	log(level, t);
-
-	va_end(list);
-}

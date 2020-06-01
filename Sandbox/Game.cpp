@@ -11,6 +11,8 @@ void Game::Init()
 	//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	BE_LOG_SUCCESS("Inited Game!")
+	BE_LOG_WARNING("Testing warnings!")
+	BE_LOG_ERROR("Testing errors!")
 
 	auto mo = [&](InputManager::Vector2DInputEvent a)
 	{

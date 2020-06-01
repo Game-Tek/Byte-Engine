@@ -5,8 +5,7 @@
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Debug/Assert.h"
 
-void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference,
-                                          uint64& allocatedSize)
+void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
 {
 	uint64 allocated_size{0};
 
@@ -18,8 +17,7 @@ void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::Alloca
 	end = start + allocated_size;
 }
 
-void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorReference,
-                                            uint64& deallocatedBytes) const
+void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const
 {
 	allocatorReference->Deallocate(end - start, alignof(byte), start);
 	deallocatedBytes = end - start;
@@ -179,8 +177,6 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 {
 	uint64 n{0};
 	const auto i{ stackIndex % maxStacks };
-
-	BE_DEBUG_ONLY(GTSL::Ranger<GTSL::UTF8> range(GTSL::String::StringLength(name), const_cast<char*>(name)))
 	
 	++stackIndex;
 
@@ -191,7 +187,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 	{
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
-		BE_DEBUG_ONLY(perNameData.try_emplace(GTSL::Id64(range)).first->second.Name = name)
+		BE_DEBUG_ONLY(perNameData.try_emplace(GTSL::Id64(name)).first->second.Name = name)
 	}
 
 	stacksMutexes[i].Lock();
@@ -204,8 +200,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 			BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
 
-			BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesAllocated += allocated_size)
-			BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].AllocationCount += 1)
+			BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
+			BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
 
 			BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 			BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
@@ -230,8 +226,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 
 	BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
 
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesAllocated += allocated_size)
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].AllocationCount += 1)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].AllocationCount += 1)
 
 	BE_DEBUG_ONLY(bytesAllocated += allocated_size)
 	BE_DEBUG_ONLY(totalBytesAllocated += allocated_size)
@@ -252,13 +248,11 @@ void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void*
 	BE_ASSERT(size < blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
 
 	BE_DEBUG_ONLY(const auto bytes_deallocated{ GTSL::Math::PowerOf2RoundUp(size, alignment) })
-
-	BE_DEBUG_ONLY(GTSL::Ranger<GTSL::UTF8> range(GTSL::String::StringLength(name), const_cast<char*>(name)))
 	
 	BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex));
 	
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].BytesDeallocated += bytes_deallocated)
-	BE_DEBUG_ONLY(perNameData[GTSL::Id64(range)].DeallocationCount += 1)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].BytesDeallocated += bytes_deallocated)
+	BE_DEBUG_ONLY(perNameData[GTSL::Id64(name)].DeallocationCount += 1)
 
 	BE_DEBUG_ONLY(bytesDeallocated += bytes_deallocated)
 	BE_DEBUG_ONLY(totalBytesDeallocated += bytes_deallocated)

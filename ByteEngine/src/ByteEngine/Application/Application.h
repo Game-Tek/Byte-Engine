@@ -62,9 +62,7 @@ namespace BE
 
 	struct PersistentAllocatorReference : BEAllocatorReference
 	{
-	protected:
-		const char* name{ nullptr };
-		
+	protected:	
 		void allocateFunc(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
 
 		void deallocateFunc(uint64 size, uint64 alignment, void* memory) const;

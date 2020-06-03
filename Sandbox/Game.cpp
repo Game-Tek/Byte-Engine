@@ -12,13 +12,19 @@ void Game::Init()
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 
-	auto mo = [&](InputManager::CharacterInputEvent a)
+	auto mo = [&](InputManager::ActionInputEvent a)
 	{
-		BE_BASIC_LOG_MESSAGE("Character: ", a.Value)
+		BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
 	};
-	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("Keyboard") });
-	inputManagerInstance->RegisterCharacterInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::CharacterInputEvent)>::Create(mo));
-	
+	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("W_Key") });
+	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
+
+	BE::PersistentAllocatorReference ss("Test");
+
+	{
+		GTSL::Vector<byte> test(16, &ss);
+		
+	}
 	//show loading screen
 	//load menu
 	//show menu

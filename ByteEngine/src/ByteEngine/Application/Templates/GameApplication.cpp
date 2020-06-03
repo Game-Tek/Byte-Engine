@@ -12,7 +12,7 @@ void GameApplication::Init()
 
 	GTSL::Window::WindowCreateInfo create_window_info;
 	create_window_info.Application = &systemApplication;
-	create_window_info.Name = GTSL::String(GetApplicationName(), &transient_allocator_reference);
+	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
 	create_window_info.Extent = {1280, 720};
 	::new(&window) GTSL::Window(create_window_info);
 
@@ -21,8 +21,20 @@ void GameApplication::Init()
 	auto window_resize = [](const GTSL::Extent2D& a)
 	{
 	};
+	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create(window_resize));
 
-	window.SetOnResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create(window_resize));
+	auto window_close = []()
+	{
+		Get()->PromptClose();
+		Get()->Close(CloseMode::OK, nullptr);
+	};
+	window.SetOnCloseDelegate(GTSL::Delegate<void()>::Create(window_close));
+
+	auto window_move = [](uint16 x, uint16 y)
+	{
+
+	};
+	window.SetOnWindowMoveDelegate(GTSL::Delegate<void(uint16, uint16)>::Create(window_move));
 	
 	window.ShowWindow();
 
@@ -88,72 +100,40 @@ void GameApplication::RegisterKeyboard()
 	{
 		Get()->GetInputManager()->RecordCharacterInputSource("Keyboard", ch);
 	};
-	
 	window.SetOnCharEventDelegate(GTSL::Delegate<void(uint32)>::Create(char_event));
 
-	inputManagerInstance->RegisterActionInputSource("Q_Key");
-	inputManagerInstance->RegisterActionInputSource("W_Key");
-	inputManagerInstance->RegisterActionInputSource("E_Key");
-	inputManagerInstance->RegisterActionInputSource("R_Key");
-	inputManagerInstance->RegisterActionInputSource("T_Key");
-	inputManagerInstance->RegisterActionInputSource("Y_Key");
-	inputManagerInstance->RegisterActionInputSource("U_Key");
-	inputManagerInstance->RegisterActionInputSource("I_Key");
-	inputManagerInstance->RegisterActionInputSource("O_Key");
-	inputManagerInstance->RegisterActionInputSource("P_Key");
-	inputManagerInstance->RegisterActionInputSource("A_Key");
-	inputManagerInstance->RegisterActionInputSource("S_Key");
-	inputManagerInstance->RegisterActionInputSource("D_Key");
-	inputManagerInstance->RegisterActionInputSource("F_Key");
-	inputManagerInstance->RegisterActionInputSource("G_Key");
-	inputManagerInstance->RegisterActionInputSource("H_Key");
-	inputManagerInstance->RegisterActionInputSource("J_Key");
-	inputManagerInstance->RegisterActionInputSource("K_Key");
-	inputManagerInstance->RegisterActionInputSource("L_Key");
-	inputManagerInstance->RegisterActionInputSource("Z_Key");
-	inputManagerInstance->RegisterActionInputSource("X_Key");
-	inputManagerInstance->RegisterActionInputSource("C_Key");
-	inputManagerInstance->RegisterActionInputSource("V_Key");
-	inputManagerInstance->RegisterActionInputSource("B_Key");
-	inputManagerInstance->RegisterActionInputSource("N_Key");
-	inputManagerInstance->RegisterActionInputSource("M_Key");
-	inputManagerInstance->RegisterActionInputSource("0_Key");
-	inputManagerInstance->RegisterActionInputSource("1_Key");
-	inputManagerInstance->RegisterActionInputSource("2_Key");
-	inputManagerInstance->RegisterActionInputSource("3_Key");
-	inputManagerInstance->RegisterActionInputSource("4_Key");
-	inputManagerInstance->RegisterActionInputSource("5_Key");
-	inputManagerInstance->RegisterActionInputSource("6_Key");
-	inputManagerInstance->RegisterActionInputSource("7_Key");
-	inputManagerInstance->RegisterActionInputSource("8_Key");
-	inputManagerInstance->RegisterActionInputSource("9_Key");
-	inputManagerInstance->RegisterActionInputSource("Backspace_Key");
-	inputManagerInstance->RegisterActionInputSource("Enter_Key");
-	inputManagerInstance->RegisterActionInputSource("Supr_Key");
-	inputManagerInstance->RegisterActionInputSource("Tab_Key");
-	inputManagerInstance->RegisterActionInputSource("CapsLock_Key");
-	inputManagerInstance->RegisterActionInputSource("Esc_Key");
-	inputManagerInstance->RegisterActionInputSource("RightShift_Key");
-	inputManagerInstance->RegisterActionInputSource("LeftShift_Key");
-	inputManagerInstance->RegisterActionInputSource("RightControl_Key");
-	inputManagerInstance->RegisterActionInputSource("LeftControl_Key");
-	inputManagerInstance->RegisterActionInputSource("RightAlt_Key");
-	inputManagerInstance->RegisterActionInputSource("LeftAlt_Key");
-	inputManagerInstance->RegisterActionInputSource("UpArrow_Key");
-	inputManagerInstance->RegisterActionInputSource("RightArrow_Key");
-	inputManagerInstance->RegisterActionInputSource("DownArrow_Key");
-	inputManagerInstance->RegisterActionInputSource("LeftArrow_Key");
+	inputManagerInstance->RegisterActionInputSource("Q_Key"); inputManagerInstance->RegisterActionInputSource("W_Key");
+	inputManagerInstance->RegisterActionInputSource("E_Key"); inputManagerInstance->RegisterActionInputSource("R_Key");
+	inputManagerInstance->RegisterActionInputSource("T_Key"); inputManagerInstance->RegisterActionInputSource("Y_Key");
+	inputManagerInstance->RegisterActionInputSource("U_Key"); inputManagerInstance->RegisterActionInputSource("I_Key");
+	inputManagerInstance->RegisterActionInputSource("O_Key"); inputManagerInstance->RegisterActionInputSource("P_Key");
+	inputManagerInstance->RegisterActionInputSource("A_Key"); inputManagerInstance->RegisterActionInputSource("S_Key");
+	inputManagerInstance->RegisterActionInputSource("D_Key"); inputManagerInstance->RegisterActionInputSource("F_Key");
+	inputManagerInstance->RegisterActionInputSource("G_Key"); inputManagerInstance->RegisterActionInputSource("H_Key");
+	inputManagerInstance->RegisterActionInputSource("J_Key"); inputManagerInstance->RegisterActionInputSource("K_Key");
+	inputManagerInstance->RegisterActionInputSource("L_Key"); inputManagerInstance->RegisterActionInputSource("Z_Key");
+	inputManagerInstance->RegisterActionInputSource("X_Key"); inputManagerInstance->RegisterActionInputSource("C_Key");
+	inputManagerInstance->RegisterActionInputSource("V_Key"); inputManagerInstance->RegisterActionInputSource("B_Key");
+	inputManagerInstance->RegisterActionInputSource("N_Key"); inputManagerInstance->RegisterActionInputSource("M_Key");
+	inputManagerInstance->RegisterActionInputSource("0_Key"); inputManagerInstance->RegisterActionInputSource("1_Key");
+	inputManagerInstance->RegisterActionInputSource("2_Key"); inputManagerInstance->RegisterActionInputSource("3_Key");
+	inputManagerInstance->RegisterActionInputSource("4_Key"); inputManagerInstance->RegisterActionInputSource("5_Key");
+	inputManagerInstance->RegisterActionInputSource("6_Key"); inputManagerInstance->RegisterActionInputSource("7_Key");
+	inputManagerInstance->RegisterActionInputSource("8_Key"); inputManagerInstance->RegisterActionInputSource("9_Key");
+	inputManagerInstance->RegisterActionInputSource("Backspace_Key"); inputManagerInstance->RegisterActionInputSource("Enter_Key");
+	inputManagerInstance->RegisterActionInputSource("Supr_Key"); inputManagerInstance->RegisterActionInputSource("Tab_Key");
+	inputManagerInstance->RegisterActionInputSource("CapsLock_Key"); inputManagerInstance->RegisterActionInputSource("Esc_Key");
+	inputManagerInstance->RegisterActionInputSource("RightShift_Key"); inputManagerInstance->RegisterActionInputSource("LeftShift_Key");
+	inputManagerInstance->RegisterActionInputSource("RightControl_Key"); inputManagerInstance->RegisterActionInputSource("LeftControl_Key");
+	inputManagerInstance->RegisterActionInputSource("RightAlt_Key"); inputManagerInstance->RegisterActionInputSource("LeftAlt_Key");
+	inputManagerInstance->RegisterActionInputSource("UpArrow_Key"); inputManagerInstance->RegisterActionInputSource("RightArrow_Key");
+	inputManagerInstance->RegisterActionInputSource("DownArrow_Key"); inputManagerInstance->RegisterActionInputSource("LeftArrow_Key");
 	inputManagerInstance->RegisterActionInputSource("SpaceBar_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad0_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad1_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad2_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad3_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad4_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad5_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad6_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad7_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad8_Key");
-	inputManagerInstance->RegisterActionInputSource("Numpad9_Key");
+	inputManagerInstance->RegisterActionInputSource("Numpad0_Key"); inputManagerInstance->RegisterActionInputSource("Numpad1_Key");
+	inputManagerInstance->RegisterActionInputSource("Numpad2_Key"); inputManagerInstance->RegisterActionInputSource("Numpad3_Key");
+	inputManagerInstance->RegisterActionInputSource("Numpad4_Key"); inputManagerInstance->RegisterActionInputSource("Numpad5_Key");
+	inputManagerInstance->RegisterActionInputSource("Numpad6_Key"); inputManagerInstance->RegisterActionInputSource("Numpad7_Key");
+	inputManagerInstance->RegisterActionInputSource("Numpad8_Key"); inputManagerInstance->RegisterActionInputSource("Numpad9_Key");
 
 	auto key_press = [](const GTSL::Window::KeyboardKeys key, const GTSL::ButtonState state)
 	{

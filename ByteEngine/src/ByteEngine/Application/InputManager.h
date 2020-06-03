@@ -129,6 +129,6 @@ protected:
 	GTSL::Vector<InputSourceRecord<LinearInputEvent>> linearInputSourceRecords;
 	GTSL::Vector<InputSourceRecord<CharacterInputEvent>> characterInputSourceRecords;
 	GTSL::Vector<InputSourceRecord<Vector2DInputEvent>> vector2DInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<Vector3DInputEvent>> vector3DInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
+	//GTSL::Vector<InputSourceRecord<Vector3DInputEvent>> vector3DInputSourceRecords;
+	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
 };

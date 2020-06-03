@@ -58,34 +58,36 @@ public:
 	
 	void Allocate(const uint64 size, const uint64 alignment, void** data)
 	{
-		const uint64 allocated_size{ GTSL::Math::PowerOf2RoundUp(size + sizeof(void*), alignment) };
+		const uint64 allocated_size{ GTSL::Math::PowerOf2RoundUp(size, alignment) };
 		void* raw_data_alloc{ nullptr };
 		
 		allocatorMutex.Lock();
-		GTSL::Memory::Allocate(allocated_size, &raw_data_alloc);
+		GTSL::Memory::Allocate(size, &raw_data_alloc);
 		allocatorMutex.Unlock();
 		
-		*data = GTSL::Memory::AlignedPointer(alignment, raw_data_alloc);
-		::new(static_cast<byte*>(*data) - sizeof(void*)) (void*)(raw_data_alloc);
+		//*data = GTSL::Memory::AlignedPointer(alignment, raw_data_alloc);
+		//::new(static_cast<byte*>(*data)) (void*)(raw_data_alloc);
+
+		*data = raw_data_alloc;
 		
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
-		BE_DEBUG_ONLY(allocatedBytes += allocated_size)
-		BE_DEBUG_ONLY(totalAllocatedBytes += allocated_size)
+		BE_DEBUG_ONLY(allocatedBytes += size)
+		BE_DEBUG_ONLY(totalAllocatedBytes += size)
 		BE_DEBUG_ONLY(++allocationCount)
 		BE_DEBUG_ONLY(++totalAllocationCount)
 	}
 
 	void Deallocate(const uint64 size, const uint64 alignment, void* data)
 	{
-		const uint64 deallocated_size{ GTSL::Math::PowerOf2RoundUp(size + sizeof(void*), alignment) };
+		const uint64 deallocated_size{ GTSL::Math::PowerOf2RoundUp(size, alignment) };
 
 		allocatorMutex.Lock();
-		GTSL::Memory::Deallocate(deallocated_size, static_cast<byte*>(data) - sizeof(void*));
+		GTSL::Memory::Deallocate(size, data);
 		allocatorMutex.Unlock();
 		
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
-		BE_DEBUG_ONLY(deallocatedBytes += deallocated_size)
-		BE_DEBUG_ONLY(totalDeallocatedBytes += deallocated_size)
+		BE_DEBUG_ONLY(deallocatedBytes += size)
+		BE_DEBUG_ONLY(totalDeallocatedBytes += size)
 		BE_DEBUG_ONLY(++allocationCount)
 		BE_DEBUG_ONLY(++totalAllocationCount)
 	}

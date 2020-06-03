@@ -6,7 +6,7 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-static BE::PersistentAllocatorReference allocator_reference("Input Manager");
+BE::PersistentAllocatorReference allocator_reference("Input Manager");
 
 InputManager::InputManager()
 {

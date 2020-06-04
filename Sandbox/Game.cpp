@@ -1,7 +1,6 @@
 #include "Game.h"
 
 #include "ByteEngine/Application/InputManager.h"
-#include <Windows.h>
 
 void Game::Init()
 {

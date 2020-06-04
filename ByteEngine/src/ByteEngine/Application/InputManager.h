@@ -62,7 +62,7 @@ public:
 	void RecordLinearInputSource(GTSL::Id64 inputSourceName, LinearInputEvent::type newValue);
 	void Record2DInputSource(GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue);
 
-	void Update();
+	void Update();	
 	
 protected:
 	template<typename T>

@@ -25,9 +25,9 @@ class StackAllocator
 
 		bool TryAllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
 
-		void Clear() { at = start; }
+		void Clear();
 
-		[[nodiscard]] bool FitsInBlock(const uint64 size, uint64 alignment) const { return at + size < end; }
+		[[nodiscard]] bool FitsInBlock(const uint64 size, uint64 alignment) const;
 
 		[[nodiscard]] uint64 GetBlockSize() const { return end - start; }
 		[[nodiscard]] uint64 GetRemainingSize() const { return end - at; }
@@ -85,7 +85,7 @@ public:
 	};
 protected:
 	const uint64 blockSize{ 0 };
-	std::atomic<uint32> stackIndex{ 0 };
+	std::atomic<uint8> stackIndex{ 0 };
 	GTSL::Vector<GTSL::Vector<Block>> stacks;
 	GTSL::Vector<GTSL::Mutex> stacksMutexes;
 	GTSL::AllocatorReference* allocatorReference{ nullptr };
@@ -120,7 +120,7 @@ protected:
 	uint64 totalAllocatorDeallocationsCount{ 0 };
 #endif
 	
-	const uint8 maxStacks{ 8 };
+	const uint8 MAX_STACKS{ 8 };
 	
 public:
 	explicit StackAllocator(GTSL::AllocatorReference* allocatorReference, uint8 stackCount = 8, uint8 defaultBlocksPerStackCount = 2, uint64 blockSizes = 512);
@@ -138,4 +138,6 @@ public:
 	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name);
 
 	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name);
+
+	void Free();
 };

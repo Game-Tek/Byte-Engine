@@ -4,7 +4,6 @@
 
 #include <atomic>
 #include <GTSL/Allocator.h>
-#include <GTSL/Mutex.h>
 #include <GTSL/Ranger.h>
 
 class PoolAllocator
@@ -25,7 +24,7 @@ public:
 	public:
 		Pool(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
-		void Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize);
+		void Allocate(uint64 size, uint64 alignment, void** data, uint64* allocatedSize);
 
 		void Deallocate(uint64 size, uint64 alignment, void* memory, GTSL::AllocatorReference* allocatorReference);
 
@@ -54,8 +53,8 @@ public:
 
 private:
 	Pool* poolsData{ nullptr };
-	const uint32 poolCount{ 0 };
+	const uint32 POOL_COUNT{ 0 };
 	GTSL::AllocatorReference* systemAllocatorReference{ nullptr };
 
-	[[nodiscard]] GTSL::Ranger<Pool> pools() const { return GTSL::Ranger<Pool>(poolCount, poolsData); }
+	[[nodiscard]] GTSL::Ranger<Pool> pools() const { return GTSL::Ranger<Pool>(POOL_COUNT, poolsData); }
 };

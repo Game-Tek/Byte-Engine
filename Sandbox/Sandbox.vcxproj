@@ -95,7 +95,7 @@
       </Command>
     </PreBuildEvent>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Test|x64'">
@@ -119,7 +119,7 @@
       </Command>
     </PreBuildEvent>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -145,7 +145,7 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\Debug-x64"</Command>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -57,13 +57,13 @@ public:
 	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function);
 	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
 	
-	void RecordActionInputSource(GTSL::Id64 inputSourceName, const ActionInputEvent::type& newValue);
-	void RecordCharacterInputSource(GTSL::Id64 inputSourceName, const CharacterInputEvent::type& newValue);
-	void RecordLinearInputSource(GTSL::Id64 inputSourceName, const float32 newValue);
-	void Record2DInputSource(GTSL::Id64 inputSourceName, const Vector2DInputEvent::type& newValue);
+	void RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue);
+	void RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue);
+	void RecordLinearInputSource(GTSL::Id64 inputSourceName, LinearInputEvent::type newValue);
+	void Record2DInputSource(GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue);
 
 	void Update();
-
+	
 protected:
 	template<typename T>
 	struct InputSourceData

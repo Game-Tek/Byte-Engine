@@ -6,7 +6,7 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-BE::PersistentAllocatorReference allocator_reference("Input Manager");
+static BE::PersistentAllocatorReference allocator_reference("Input Manager");
 
 InputManager::InputManager()
 {
@@ -23,6 +23,7 @@ void InputManager::Update()
 	for(auto& action_record : actionInputSourceRecords)
 	{
 		auto& inputSource = actionInputSourcesToActionInputEvents.at(action_record.Name);
+		
 		if(inputSource.Function)
 		{
 			inputSource.Function({ action_record.Name, inputSource.LastTime, action_record.NewValue, inputSource.LastValue });
@@ -35,6 +36,7 @@ void InputManager::Update()
 	for(auto& character_record : characterInputSourceRecords)
 	{
 		auto& inputSource = characterInputSourcesToCharacterInputEvents.at(character_record.Name);
+		
 		if(inputSource.Function)
 		{
 			inputSource.Function({ character_record.Name, inputSource.LastTime, character_record.NewValue, inputSource.LastValue });
@@ -60,10 +62,12 @@ void InputManager::Update()
 	for(auto& record2D : vector2DInputSourceRecords)
 	{
 		auto& inputSource = vector2dInputSourceEventsToVector2DInputEvents.at(record2D.Name);
+		
 		if(inputSource.Function)
 		{
 			inputSource.Function({ record2D.Name, inputSource.LastTime, record2D.NewValue, inputSource.LastValue });
 		}
+		
 		inputSource.LastValue = record2D.NewValue;
 		inputSource.LastTime = current_time;
 	}
@@ -106,7 +110,7 @@ void InputManager::RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Ranger<
 	}
 }
 
-void InputManager::RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function)
+void InputManager::RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, const GTSL::Delegate<void(CharacterInputEvent)> function)
 {
 #ifdef BE_DEBUG
 	for (auto& e : inputSourceNames) { BE_ASSERT(characterInputSourcesToCharacterInputEvents.find(e) != characterInputSourcesToCharacterInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
@@ -142,22 +146,22 @@ void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL
 	}
 }
 
-void InputManager::RecordActionInputSource(GTSL::Id64 inputSourceName, const ActionInputEvent::type& newValue)
+void InputManager::RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue)
 {
 	actionInputSourceRecords.EmplaceBack(inputSourceName, newValue );
 }
 
-void InputManager::RecordCharacterInputSource(GTSL::Id64 inputSourceName, const CharacterInputEvent::type& newValue)
+void InputManager::RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue)
 {
 	characterInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }
 
-void InputManager::RecordLinearInputSource(GTSL::Id64 inputSourceName, const float32 newValue)
+void InputManager::RecordLinearInputSource(GTSL::Id64 inputSourceName, const LinearInputEvent::type newValue)
 {
 	linearInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }
 
-void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, const Vector2DInputEvent::type& newValue)
+void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue)
 {
 	vector2DInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }

@@ -47,4 +47,5 @@ MaterialResourceData* MaterialResourceManager::TryGetResource(const GTSL::String
 	}
 
 	input.close();
+	return nullptr;
 }

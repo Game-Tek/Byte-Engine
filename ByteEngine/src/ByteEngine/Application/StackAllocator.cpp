@@ -88,6 +88,7 @@ StackAllocator::~StackAllocator()
 	}
 }
 
+#if (_DEBUG)
 void StackAllocator::GetDebugData(DebugData& debugData)
 {
 	GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
@@ -142,6 +143,7 @@ void StackAllocator::GetDebugData(DebugData& debugData)
 	allocatorAllocatedBytes = 0;
 	allocatorDeallocatedBytes = 0;
 }
+#endif
 
 void StackAllocator::Clear()
 {

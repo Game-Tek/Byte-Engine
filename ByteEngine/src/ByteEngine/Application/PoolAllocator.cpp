@@ -7,15 +7,15 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : poolCount(16), systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : POOL_COUNT(17), systemAllocatorReference(allocatorReference)
 {
 	uint64 allocator_allocated_size{ 0 }; //debug
 
-	allocatorReference->Allocate(sizeof(Pool) * poolCount, alignof(Pool), reinterpret_cast<void**>(&poolsData), &allocator_allocated_size);
+	allocatorReference->Allocate(sizeof(Pool) * POOL_COUNT, alignof(Pool), reinterpret_cast<void**>(&poolsData), &allocator_allocated_size);
 
-	for (uint8 i = 0, j = poolCount; i < poolCount; ++i, --j)
+	for (uint8 i = 0, j = POOL_COUNT; i < POOL_COUNT; ++i, --j)
 	{	
-		const auto slot_count = j * poolCount; //pools with smaller slot sizes get more slots
+		const auto slot_count = j * POOL_COUNT; //pools with smaller slot sizes get more slots
 		const auto slot_size = 1 << i;
 
 		::new(poolsData + i) Pool(slot_count, slot_size, allocator_allocated_size, allocatorReference);
@@ -31,6 +31,8 @@ PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint6
 	allocatorReference->Allocate(freeSlotsStackSize(), freeSlotsStackAlignment(), reinterpret_cast<void**>(&freeSlotsStack), &pool_allocated_size);
 	allocatedSize += pool_allocated_size;
 
+	GTSL::Memory::SetZero(slotsDataAllocationSize(), slotsData);
+	
 	for(uint32 i = 0; i < MAX_SLOTS_COUNT; ++i)
 	{
 		freeSlotsStack[i] = i;
@@ -42,11 +44,10 @@ PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint6
 void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const
 {
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
-
 	uint64 allocation_min_size { 0 }; GTSL::NextPowerOfTwo(size, allocation_min_size);
 
 	uint8 set_bit { 0 }; GTSL::BitScanForward(allocation_min_size, set_bit);
-	BE_ASSERT(poolCount >= set_bit, "No pool big enough!");	
+	BE_ASSERT(POOL_COUNT >= set_bit, "No pool big enough!");	
 
 	poolsData[set_bit].Allocate(size, alignment, memory, allocatedSize);
 }
@@ -55,8 +56,8 @@ void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, vo
 {
 	BE_ASSERT(GTSL::Math::PowerOf2RoundUp(alignment, size) <= SLOTS_SIZE, "Aligned allocation size greater than pool's slot size");
 
+	BE_ASSERT(slotsCount != 0, "No more free slots remaining!")
 	const uint32 slot = freeSlotsStack[--slotsCount];
-	BE_ASSERT(slot <= MAX_SLOTS_COUNT, "Slot is higher than MAX_SLOTS_COUNT")
 	*data = getSlotAddress(slot);
 	*allocatedSize = SLOTS_SIZE;
 
@@ -76,10 +77,11 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* memory, GTSL::AllocatorReference* allocatorReference)
 {
 	BE_ASSERT(memory >= slotsData && memory <= slotsData + slotsDataAllocationSize(), "Allocation does not belong to pool!")
-	//if(memory < slotsData || memory > (slotsData + slotsDataAllocationSize())) {__debugbreak();}
 
 	const auto index = getSlotIndexFromPointer(memory);
 	freeSlotsStack[slotsCount++] = index;
+
+	BE_ASSERT(slotsCount <= MAX_SLOTS_COUNT, "More allocations have been freed than there are slots!")
 }
 
 // FREE //
@@ -88,12 +90,7 @@ void PoolAllocator::Free() const
 {
 	uint64 freed_bytes{ 0 };
 
-	//for (auto& pool : pools()) { pool.Free(freed_bytes, systemAllocatorReference); }
-
-	for(uint32 i = 0; i < poolCount; ++i)
-	{
-		poolsData[i].Free(freed_bytes, systemAllocatorReference);
-	}
+	for (auto& pool : pools()) { pool.Free(freed_bytes, systemAllocatorReference); }
 }
 
 void PoolAllocator::Pool::Free(uint64& freedBytes, GTSL::AllocatorReference* allocatorReference) const

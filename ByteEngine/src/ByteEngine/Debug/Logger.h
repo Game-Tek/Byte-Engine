@@ -43,25 +43,21 @@ namespace BE
 		 */
 		mutable GTSL::File logFile;
 
-		static constexpr uint32 logMaxLength{ 1024 };
-		
 		static constexpr uint32 bytesToDumpOn{ 256 };
+		
+		static constexpr uint32 logMaxLength{ bytesToDumpOn };
+
+		static constexpr uint32 buffersInBuffer{ 3 };
 		
 		/**
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
-		static constexpr uint32 defaultBufferLength{ bytesToDumpOn * 3 };
+		static constexpr uint32 defaultBufferLength{ bytesToDumpOn * buffersInBuffer };
 
+		mutable std::atomic<uint32> posInSubBuffer{ 0 };
+		mutable std::atomic<uint32> subBufferIndex{ 0 };
 		
-		/**
-		 * \brief Current write index in the buffer, this is swapped every time the memory buffer is dumped to a file since we use a single buffer as two to avoid contention.
-		 */
-		mutable std::atomic<uint32> currentStringIndex{ 0 };
-		
-		mutable GTSL::Vector<UTF8> fileBuffer;
-
-		mutable std::atomic<uint32> lastWriteToDiskPos{ 0 };
-		mutable std::atomic<uint32> bytesWrittenSinceLastWriteToDisk{ 0 };
+		mutable UTF8* data{ nullptr };
 
 		GTSL::Console console;
 		

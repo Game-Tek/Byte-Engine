@@ -91,6 +91,8 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <StringPooling>true</StringPooling>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -101,7 +103,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;AAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>
@@ -119,6 +121,8 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <StringPooling>true</StringPooling>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -129,7 +133,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;AAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>
@@ -150,6 +154,8 @@
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <StringPooling>true</StringPooling>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -162,7 +168,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;AAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>

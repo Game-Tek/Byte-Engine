@@ -1,19 +1,21 @@
 #include "Logger.h"
 
-#include <cstdarg>
-
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/Clock.h"
 
 using namespace BE;
 
-static BE::PersistentAllocatorReference allocator_reference("Clock", true); //TODO get rid of global once vector is fixed
+static SystemAllocatorReference allocator_reference("Clock", true); //TODO get rid of global once vector is fixed
 
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile(), fileBuffer(defaultBufferLength/*use single buffer as two buffers for when one half is being written to disk*/, &allocator_reference)
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
 {
+	uint64 allocated_size{ 0 };
+	allocator_reference.Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
+	
+	GTSL::Memory::SetZero(defaultBufferLength, data);
+	
 	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
-	fileBuffer.Resize(fileBuffer.GetCapacity());
 	logFile.OpenFile(path, GTSL::File::OpenFileMode::WRITE);
 }
 
@@ -21,7 +23,7 @@ void Logger::Shutdown() const
 {
 	uint64 bytes_written{ 0 };
 	logMutex.Lock();
-	logFile.WriteToFile(GTSL::Ranger<byte>(reinterpret_cast<byte*>(fileBuffer.begin()), reinterpret_cast<byte*>(fileBuffer.begin() + fileBuffer.GetLength())), bytes_written);
+	logFile.WriteToFile(GTSL::Ranger<byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data + posInSubBuffer + buffersInBuffer * subBufferIndex)), bytes_written);
 	logMutex.Unlock();
 	logFile.CloseFile();
 }
@@ -33,9 +35,8 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	char string[logMaxLength]{ 0 };
 	
 	uint32 string_remaining_length{ logMaxLength };
-	uint32 write_start{ lastWriteToDiskPos + bytesWrittenSinceLastWriteToDisk };
+	uint32 write_start{ posInSubBuffer };
 	uint32 written_bytes{ 0 };
-	
 
 	auto write_loc = [&]() {return written_bytes; };
 	auto write_ptr = [&]() { return string + write_loc(); };
@@ -68,30 +69,27 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	}
 	
 	// Check if should dump logs to file if no more space is available
-	if (bytesWrittenSinceLastWriteToDisk + written_bytes >= bytesToDumpOn)
+	if (posInSubBuffer + written_bytes >= bytesToDumpOn)
 	{
 		if(write_start >= defaultBufferLength)
 		{
-			currentStringIndex = 0;
 		}
 		
 		uint64 bytes_written{ 0 };
 		//TODO dispatch as a job
 		logMutex.Lock();
-		logFile.WriteToFile(GTSL::Ranger<byte>((byte*)fileBuffer.begin() + lastWriteToDiskPos, (byte*)fileBuffer.begin() + lastWriteToDiskPos + bytesWrittenSinceLastWriteToDisk), bytes_written);
+		logFile.WriteToFile(GTSL::Ranger<byte>(reinterpret_cast<byte*>(data) + subBufferIndex * buffersInBuffer, reinterpret_cast<byte*>(data) + posInSubBuffer + subBufferIndex * buffersInBuffer), bytes_written);
 		logMutex.Unlock();
 		
-		lastWriteToDiskPos += bytesWrittenSinceLastWriteToDisk;
-		bytesWrittenSinceLastWriteToDisk = 0;
-		write_start = lastWriteToDiskPos;
+		posInSubBuffer = 0;
+		subBufferIndex = (subBufferIndex + 1) % buffersInBuffer;
 	}
 
 	logMutex.Lock();
-	GTSL::Memory::MemCopy(written_bytes, string, fileBuffer.GetData() + write_start);
+	GTSL::Memory::MemCopy(written_bytes, string, data + posInSubBuffer + subBufferIndex * buffersInBuffer);
 	logMutex.Unlock();
 
-	++currentStringIndex;
-	bytesWrittenSinceLastWriteToDisk += written_bytes;
+	posInSubBuffer += written_bytes;
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const

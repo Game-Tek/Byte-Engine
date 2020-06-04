@@ -53,14 +53,18 @@ namespace BE
 		delete resourceManagerInstance;
 		delete inputManagerInstance;
 
-		logger->Shutdown();
-		delete logger;
-
 		transientAllocator->LockedClear();
 		delete transientAllocator;
 
 		poolAllocator->Free();
 		delete poolAllocator;
+
+		//StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
+		//transientAllocator->GetDebugData(stack_allocator_debug_data);
+		//BE_LOG_MESSAGE(stack_allocator_debug_data);
+		
+		logger->Shutdown();
+		delete logger;
 	}
 
 	int Application::Run(int argc, char** argv)

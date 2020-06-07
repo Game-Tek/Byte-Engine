@@ -5,7 +5,7 @@
 
 using namespace BE;
 
-static SystemAllocatorReference allocator_reference("Clock", true); //TODO get rid of global once vector is fixed
+static SystemAllocatorReference allocator_reference("Logger", true); //TODO get rid of global once vector is fixed
 
 Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
 {

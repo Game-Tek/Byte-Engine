@@ -2,26 +2,21 @@
 
 #include "World.h"
 
-inline void* operator new(const uint64 size, GTSL::AllocatorReference* allocatorReference)
-{
-	void* alloc{ nullptr }; uint64 alloc_size{ 0 }; allocatorReference->Allocate(size, 8, &alloc, &alloc_size); return alloc;
-}
-
 class GameInstance
 {
-	GTSL::Vector<World*> worlds;
-
 public:
+	GameInstance();
+	
 	using WorldReference = uint8;
 	
 	struct CreateNewWorldInfo
 	{
-		class BE::Application* Application{ nullptr };
 	};
 	template<typename T>
 	WorldReference CreateNewWorld(const CreateNewWorldInfo& createNewWorldInfo)
 	{
-		//worlds.PushBack(new(createNewWorldInfo.Application) T());
+		auto index = worlds.PushBack(new T());
+		initWorld(index);
 		return 0;
 	}
 
@@ -32,4 +27,9 @@ public:
 		worlds[worldId]->DestroyWorld(destroy_info);
 		worlds.Destroy(worldId);
 	}
+
+private:
+	GTSL::Vector<World*> worlds;
+
+	void initWorld(uint8 worldId);
 };

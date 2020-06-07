@@ -9,7 +9,7 @@ public:
 	{
 		World::InitializeWorld(initializeInfo);
 
-		
+		BE_LOG_MESSAGE("Initilized world!")
 	}
 };
 

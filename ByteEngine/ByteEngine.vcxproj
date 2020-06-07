@@ -237,6 +237,7 @@
     <ClCompile Include="src\ByteEngine\Application\StackAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\Timer.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
     <ClCompile Include="src\ByteEngine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\PointLight.cpp" />

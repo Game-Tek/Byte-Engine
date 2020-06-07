@@ -172,5 +172,6 @@
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\PointLight.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
   </ItemGroup>
 </Project>

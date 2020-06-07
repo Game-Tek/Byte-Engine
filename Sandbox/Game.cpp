@@ -1,16 +1,21 @@
 #include "Game.h"
 
+
+#include "SandboxGameInstance.h"
+#include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
 
 void Game::Init()
 {
 	GameApplication::Init();
 
-	//GameInstance::CreateNewWorldInfo create_new_world_info;
-	//create_new_world_info.Application = this;
-	//menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
+	
+	sandboxGameInstance = new SandboxGameInstance();
+	
+	GameInstance::CreateNewWorldInfo create_new_world_info;
+	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
-	//BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
@@ -29,4 +34,9 @@ void Game::Init()
 void Game::OnNormalUpdate()
 {
 	GameApplication::OnNormalUpdate();
+}
+
+Game::~Game()
+{
+	delete sandboxGameInstance;
 }

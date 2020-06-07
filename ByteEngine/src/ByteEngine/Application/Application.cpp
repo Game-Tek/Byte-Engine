@@ -8,8 +8,7 @@
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
 {
-	//BE_BASIC_LOG_ERROR("ASSERT: %s, Line: %u, File: %s, Function: %s.", text, line, file, function);
-	if (!condition) [[unlikely]] { __debugbreak(); }
+	BE_BASIC_LOG_ERROR("GTSL ASSERT: ", text, "Line: ", line, "File: ", file, "Function: ", function);
 }
 #endif
 

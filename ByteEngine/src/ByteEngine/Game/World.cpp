@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Application/Application.h"
 
-void EntitiesManager::AddType(const GTSL::Ranger<char>& name, TypeManager* typeManager)
+void EntitiesManager::AddType(const GTSL::Ranger<UTF8>& name, TypeManager* typeManager)
 {
 	hashes.PushBack(GTSL::Id64(name));
 	managers.PushBack(typeManager);

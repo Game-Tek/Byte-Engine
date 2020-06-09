@@ -26,6 +26,7 @@ public:
 		World::DestroyInfo destroy_info;
 		worlds[worldId]->DestroyWorld(destroy_info);
 		worlds.Destroy(worldId);
+		delete worlds[worldId];
 	}
 
 private:

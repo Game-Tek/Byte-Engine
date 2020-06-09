@@ -19,7 +19,6 @@ void Game::Init()
 
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
-		//BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, a.Value);
 		BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
 	};
 	const GTSL::Array<GTSL::Id64, 1> a({ GTSL::Id64("W_Key") });

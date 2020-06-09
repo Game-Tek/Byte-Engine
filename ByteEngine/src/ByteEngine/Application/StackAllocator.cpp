@@ -5,7 +5,7 @@
 
 void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
 {
-	uint64 allocated_size{0};
+	uint64 allocated_size{ 0 };
 
 	allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
 
@@ -28,7 +28,7 @@ void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alig
 
 bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	auto* const new_at = at + (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment));
+	byte* new_at = at + (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment));
 	if (new_at < end)
 	{
 		*data = new_at;
@@ -47,16 +47,15 @@ StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, con
 {
 	uint64 allocated_size = 0;
 
-	for (uint8 i = 0; i < stackCount; ++i)
+	for (uint8 stack = 0; stack < stackCount; ++stack)
 	{
-		stacks.EmplaceBack(defaultBlocksPerStackCount, allocatorReference); //construct stack [i]s
+		stacks.EmplaceBack(defaultBlocksPerStackCount, allocatorReference);
 
-		for (uint32 j = 0; j < defaultBlocksPerStackCount; ++j) //for every block in constructed vector
+		for (uint32 block = 0; block < defaultBlocksPerStackCount; ++block)
 		{
-			stacks[i].EmplaceBack(); //construct a default block
+			stacks[stack].EmplaceBack(); //construct a default block
 
-			stacks[i][j].AllocateBlock(blockSizes, allocatorReference, allocated_size);
-			//allocate constructed block, which is also current block
+			stacks[stack][block].AllocateBlock(blockSizes, allocatorReference, allocated_size);
 
 			if constexpr (BE_DEBUG)
 			{
@@ -74,24 +73,6 @@ StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, con
 
 StackAllocator::~StackAllocator()
 {
-	uint64 deallocatedBytes{0};
-
-	for (auto& stack : stacks)
-	{
-		for (auto& block : stack)
-		{
-			block.DeallocateBlock(allocatorReference, deallocatedBytes);
-
-			if constexpr (BE_DEBUG)
-			{	
-				++allocatorDeallocationsCount;
-				++totalAllocatorDeallocationsCount;
-
-				allocatorDeallocatedBytes += deallocatedBytes;
-				totalAllocatorDeallocatedBytes += deallocatedBytes;
-			}
-		}
-	}
 }
 
 #if BE_DEBUG
@@ -164,17 +145,14 @@ void StackAllocator::Clear()
 
 void StackAllocator::LockedClear()
 {
-	uint64 stack_index{0};
-	
 	for (auto& stack : stacks)
 	{
 		for (auto& block : stack)
 		{
-			stacksMutexes[stack_index].Lock();
+			stacksMutexes[&stack - stacks.begin()].Lock();
 			block.Clear();
-			stacksMutexes[stack_index].Unlock();
+			stacksMutexes[&stack - stacks.begin()].Unlock();
 		}
-		++stack_index;
 	}
 }
 
@@ -249,7 +227,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name)
 {
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
-	BE_ASSERT(size < blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
+	BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
 
 	if constexpr (BE_DEBUG)
 	{

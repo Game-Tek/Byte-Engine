@@ -25,8 +25,8 @@ public:
 
 	~Game();
 
-	[[nodiscard]] const char* GetName() const override { return "Game"; }
-	const char* GetApplicationName() override { return "TEST - TEST - TEST - TEST"; }
+	[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
+	const char* GetApplicationName() override { return "Sandbox"; }
 };
 
 BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)

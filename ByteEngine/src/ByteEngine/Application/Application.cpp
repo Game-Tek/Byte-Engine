@@ -8,7 +8,7 @@
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
 {
-	BE_BASIC_LOG_ERROR("GTSL ASSERT: ", text, "Line: ", line, "File: ", file, "Function: ", function);
+	BE_BASIC_LOG_ERROR("GTSL ASSERT: ", text, ' ', "Line: ", line, ' ', "File: ", file, ' ', "Function: ", function);
 }
 #endif
 
@@ -45,7 +45,7 @@ namespace BE
 	{
 		if (closeMode != CloseMode::OK)
 		{
-			BE_LOG_WARNING("Shutting down application!\nReason: %s", closeReason.c_str())
+			BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
 		}
 		
 		delete clockInstance;
@@ -53,14 +53,15 @@ namespace BE
 		delete inputManagerInstance;
 
 		transientAllocator->LockedClear();
-		delete transientAllocator;
+		transientAllocator->Free();
+		StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
+		transientAllocator->GetDebugData(stack_allocator_debug_data);
+		BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
 
 		poolAllocator->Free();
+		
+		delete transientAllocator;
 		delete poolAllocator;
-
-		//StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
-		//transientAllocator->GetDebugData(stack_allocator_debug_data);
-		//BE_LOG_MESSAGE(stack_allocator_debug_data);
 		
 		logger->Shutdown();
 		delete logger;

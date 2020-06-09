@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
+#include <GTSL/StaticString.hpp>
 #include <GTSL/Vector.hpp>
 
 class StackAllocator
@@ -27,7 +28,7 @@ class StackAllocator
 
 		void Clear();
 
-		[[nodiscard]] bool FitsInBlock(const uint64 size, uint64 alignment) const;
+		[[nodiscard]] bool FitsInBlock(uint64 size, uint64 alignment) const;
 
 		[[nodiscard]] uint64 GetBlockSize() const { return end - start; }
 		[[nodiscard]] uint64 GetRemainingSize() const { return end - at; }
@@ -82,6 +83,20 @@ public:
 		
 		uint64 AllocatorDeallocationsCount{ 0 };
 		uint64 TotalAllocatorDeallocationsCount{ 0 };
+
+		operator GTSL::StaticString<1024>() const
+		{
+#define ADD_FIELD(string, var) string += #var; (string) += ": "; (string) += (var); (string) += '\n';
+			
+			GTSL::StaticString<1024> result;
+			ADD_FIELD(result, BytesAllocated)
+			ADD_FIELD(result, TotalBytesAllocated)
+			ADD_FIELD(result, TotalAllocatorAllocatedBytes)
+			ADD_FIELD(result, TotalAllocatorDeallocatedBytes)
+
+#undef ADD_FIELD
+			return result;
+		}
 	};
 protected:
 	const uint64 blockSize{ 0 };

@@ -2,10 +2,18 @@
 
 #include "ByteEngine/Application/Application.h"
 
-static BE::PersistentAllocatorReference persistent_allocator("Game");
+#include "System.h"
 
-GameInstance::GameInstance() : worlds(4, &persistent_allocator)
+static BE::PersistentAllocatorReference persistent_allocator("Game Instance");
+
+GameInstance::GameInstance() : worlds(4, &persistent_allocator), systems(8, &persistent_allocator)
 {
+}
+
+GTSL::FlatHashMap<class System*>::ref GameInstance::AddSystem(System* system)
+{
+	//return systems.Emplace(&persistent_allocator, GTSL::Id64(system->GetName()), system);
+	return 0;
 }
 
 void GameInstance::initWorld(const uint8 worldId)

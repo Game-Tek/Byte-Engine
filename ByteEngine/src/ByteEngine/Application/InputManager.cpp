@@ -10,10 +10,10 @@ static BE::PersistentAllocatorReference allocator_reference("Input Manager");
 
 InputManager::InputManager()
 {
-	actionInputSourceRecords.Initialize(50, &allocator_reference);
-	characterInputSourceRecords.Initialize(50, &allocator_reference);
-	linearInputSourceRecords.Initialize(50, &allocator_reference);
-	vector2DInputSourceRecords.Initialize(50, &allocator_reference);
+	actionInputSourceRecords.Initialize(10, &allocator_reference);
+	characterInputSourceRecords.Initialize(10, &allocator_reference);
+	linearInputSourceRecords.Initialize(10, &allocator_reference);
+	vector2DInputSourceRecords.Initialize(10, &allocator_reference);
 }
 
 void InputManager::Update()

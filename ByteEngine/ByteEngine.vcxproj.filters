@@ -132,11 +132,11 @@
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
-    <ClInclude Include="src\ByteEngine\PointLight.h" />
     <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
     <ClInclude Include="src\ByteEngine\Vertex.h">
       <Filter>Engine\Render</Filter>
     </ClInclude>
+    <ClInclude Include="src\ByteEngine\Game\System.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -170,7 +170,6 @@
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\ByteEngine\Camera.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
-    <ClCompile Include="src\ByteEngine\PointLight.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
   </ItemGroup>

@@ -187,6 +187,7 @@
     <ClInclude Include="src\ByteEngine\Application\EventManager.h" />
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Game\StaticMesh.h" />
+    <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Game\Texture.h" />
     <ClInclude Include="src\ByteEngine\Game\TypeManager.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
@@ -213,7 +214,6 @@
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
     <ClInclude Include="src\ByteEngine\Application\Input\JoystickState.h" />
     <ClInclude Include="src\ByteEngine\Application\Input\MouseState.h" />
-    <ClInclude Include="src\ByteEngine\PointLight.h" />
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\Cone.h" />
@@ -240,7 +240,6 @@
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
     <ClCompile Include="src\ByteEngine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
-    <ClCompile Include="src\ByteEngine\PointLight.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />

@@ -2,12 +2,16 @@
 
 #include "World.h"
 
+#include <GTSL/FlatHashMap.h>
+
 class GameInstance
 {
 public:
 	GameInstance();
 	
 	using WorldReference = uint8;
+
+	GTSL::FlatHashMap<class System*>::ref AddSystem(class System* system);
 	
 	struct CreateNewWorldInfo
 	{
@@ -31,6 +35,8 @@ public:
 
 private:
 	GTSL::Vector<World*> worlds;
-
+	
+	GTSL::FlatHashMap<class System*> systems;
+	
 	void initWorld(uint8 worldId);
 };

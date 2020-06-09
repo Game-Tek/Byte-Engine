@@ -11,7 +11,6 @@
 #include <GTSL/Math/Vector2.h>
 #include <GTSL/Math/Vector3.h>
 
-
 #include "ByteEngine/Core.h"
 
 namespace GTSL {

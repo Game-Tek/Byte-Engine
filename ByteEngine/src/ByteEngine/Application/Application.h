@@ -87,49 +87,26 @@ namespace BE
 	
 	class Application : public Object
 	{
-	public:
-		enum class CloseMode : uint8
-		{
-			OK, ERROR
-		};
-	private:
-		inline static Application* applicationInstance{ nullptr };
-
-	protected:
-		Logger* logger{ nullptr };
-		
-		SystemAllocatorReference systemAllocatorReference;
-		
-		SystemAllocator* systemAllocator{ nullptr };
-		PoolAllocator* poolAllocator{ nullptr };
-		StackAllocator* transientAllocator{ nullptr };
-
-		GTSL::Application systemApplication;
-		
-		Clock* clockInstance{ nullptr };
-		InputManager* inputManagerInstance{ nullptr };
-		ResourceManager* resourceManagerInstance{ nullptr };
-
-		EventManager eventManager;
-		
-		bool isInBackground = false;
-		
-		bool flaggedForClose = false;
-		CloseMode closeMode{ CloseMode::OK };
-		GTSL::String closeReason;
-
-		[[nodiscard]] bool shouldClose() const;
-	public:
+	public:	
 		explicit Application(const ApplicationCreateInfo& ACI);
 		virtual ~Application();
 
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
-		virtual void Init() = 0;
-		virtual void Shutdown();
+		virtual void Initialize() = 0;
+		virtual void Shutdown() = 0;
+
+
+		enum class UpdateContext : uint8
+		{
+			NORMAL, BACKGROUND
+		};
 		
-		virtual void OnNormalUpdate() = 0;
-		virtual void OnBackgroundUpdate() = 0;
+		struct OnUpdateInfo
+		{
+			UpdateContext UpdateContext;
+		};
+		virtual void OnUpdate(const OnUpdateInfo& updateInfo);
 		
 		int Run(int argc, char** argv);
 		
@@ -142,8 +119,12 @@ namespace BE
 		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();
 
+		enum class CloseMode : uint8
+		{
+			OK, ERROR
+		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, const char* reason);
+		void Close(CloseMode closeMode, const GTSL::Ranger<UTF8>& reason);
 
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
@@ -177,6 +158,32 @@ namespace BE
 #define BE_BASIC_LOG_WARNING(Text, ...)	
 #define BE_BASIC_LOG_ERROR(Text, ...)	
 #endif
+
+	private:
+		inline static Application* applicationInstance{ nullptr };
+
+	protected:
+		Logger* logger{ nullptr };
+
+		SystemAllocatorReference systemAllocatorReference;
+
+		SystemAllocator* systemAllocator{ nullptr };
+		PoolAllocator* poolAllocator{ nullptr };
+		StackAllocator* transientAllocator{ nullptr };
+
+		GTSL::Application systemApplication;
+
+		Clock* clockInstance{ nullptr };
+		InputManager* inputManagerInstance{ nullptr };
+		ResourceManager* resourceManagerInstance{ nullptr };
+
+		EventManager eventManager;
+
+		UpdateContext updateContext{ UpdateContext::NORMAL };
+
+		bool flaggedForClose = false;
+		CloseMode closeMode{ CloseMode::OK };
+		GTSL::String closeReason;
 	};
 
 	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);

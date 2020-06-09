@@ -11,9 +11,9 @@ public:
 	{
 	}
 
-	void Init() override;
+	void Initialize() override;
 
-	void OnNormalUpdate() override;
+	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 
 private:
 	GTSL::Window window;

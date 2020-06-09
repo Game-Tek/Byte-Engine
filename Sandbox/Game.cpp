@@ -5,9 +5,9 @@
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
 
-void Game::Init()
+void Game::Initialize()
 {
-	GameApplication::Init();
+	GameApplication::Initialize();
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
@@ -30,9 +30,9 @@ void Game::Init()
 	//start game
 }
 
-void Game::OnNormalUpdate()
+void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
-	GameApplication::OnNormalUpdate();
+	GameApplication::OnUpdate(onUpdate);
 }
 
 Game::~Game()

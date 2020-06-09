@@ -15,13 +15,9 @@ public:
 	{
 	}
 
-	void Init() override;
+	void Initialize() override;
 
-	void OnNormalUpdate() override;
-
-	void OnBackgroundUpdate() override
-	{
-	}
+	void OnUpdate(const OnUpdateInfo& onUpdate) override;
 
 	~Game();
 
@@ -29,12 +25,12 @@ public:
 	const char* GetApplicationName() override { return "Sandbox"; }
 };
 
-BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)
+inline BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)
 {
 	return GTSL::New<Game>(allocatorReference);
 }
 
-void BE::DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference)
+inline void BE::DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference)
 {
-	Delete(application, allocatorReference);
+	Delete(static_cast<Game*>(application), allocatorReference);
 }

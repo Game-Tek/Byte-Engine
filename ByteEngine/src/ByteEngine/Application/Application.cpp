@@ -14,7 +14,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"), systemApplication(GTSL::Application::ApplicationCreateInfo{})
+	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"), systemApplication(GTSL::Application::ApplicationCreateInfo{}), closeReason(255, &systemAllocatorReference)
 	{
 		applicationInstance = this;
 	}
@@ -23,7 +23,7 @@ namespace BE
 	{
 	}
 
-	void Application::Init()
+	void Application::Initialize()
 	{
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 		
@@ -67,23 +67,34 @@ namespace BE
 		delete logger;
 	}
 
+	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
+	{
+		switch(updateInfo.UpdateContext)
+		{
+		case UpdateContext::NORMAL:
+		{
+			inputManagerInstance->Update();
+		} break;
+		
+		case UpdateContext::BACKGROUND:
+		{
+			
+		} break;
+			
+		default: break;
+		}
+	}
+
 	int Application::Run(int argc, char** argv)
 	{		
-		while (!shouldClose())
+		while (!flaggedForClose)
 		{
 			systemApplication.Update();
 			
 			clockInstance->OnUpdate();
 			
-			if(isInBackground)
-			{
-				OnBackgroundUpdate();
-			}
-			else
-			{
-				inputManagerInstance->Update();
-				OnNormalUpdate();
-			}
+			OnUpdateInfo update_info;
+			OnUpdate(update_info);
 			
 			transientAllocator->Clear();
 		}
@@ -96,14 +107,12 @@ namespace BE
 		//CloseDelegate.Dispatch();
 	}
 
-	void Application::Close(const CloseMode closeMode, const char* reason)
+	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<UTF8>& reason)
 	{
-		if (reason) closeReason = reason;
+		//closeReason.Insert(reason);
 		flaggedForClose = true;
 		this->closeMode = closeMode;
 	}
-
-	bool Application::shouldClose() const { return flaggedForClose; }
 }
 
 void BE::SystemAllocatorReference::allocateFunc(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const { (*allocatedSize) = size;	BE::Application::Get()->GetSystemAllocator()->Allocate(size, alignment, memory); }

@@ -33,7 +33,7 @@ class EntitiesManager
 	GTSL::Vector<TypeManager*> managers;
 
 public:
-	void AddType(const GTSL::Ranger<char>& name, TypeManager* typeManager);
+	void AddType(const GTSL::Ranger<UTF8>& name, TypeManager* typeManager);
 
 	[[nodiscard]] TypeManager* GetTypeManager(const Entity& entity) const noexcept
 	{

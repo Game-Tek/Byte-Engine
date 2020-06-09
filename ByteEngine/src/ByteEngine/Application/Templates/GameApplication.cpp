@@ -4,9 +4,9 @@
 
 #include <GTSL/Input.h>
 
-void GameApplication::Init()
+void GameApplication::Initialize()
 {
-	Application::Init();
+	Application::Initialize();
 
 	BE::TransientAllocatorReference transient_allocator_reference("Application");
 
@@ -16,8 +16,6 @@ void GameApplication::Init()
 	create_window_info.Extent = {1280, 720};
 	::new(&window) GTSL::Window(create_window_info);
 
-	//window.SetOnResizeDelegate(Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::resize>(this));
-
 	auto window_resize = [](const GTSL::Extent2D& a)
 	{
 	};
@@ -26,7 +24,7 @@ void GameApplication::Init()
 	auto window_close = []()
 	{
 		Get()->PromptClose();
-		Get()->Close(CloseMode::OK, nullptr);
+		Get()->Close(CloseMode::OK, GTSL::Ranger<UTF8>());
 	};
 	window.SetOnCloseDelegate(GTSL::Delegate<void()>::Create(window_close));
 
@@ -41,10 +39,22 @@ void GameApplication::Init()
 	SetupInputSources();
 }
 
-void GameApplication::OnNormalUpdate()
+void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
-	//std::cout << "Game Application loop update\n";
-	systemApplication.UpdateWindow(&window);
+	switch (updateInfo.UpdateContext)
+	{
+		case UpdateContext::NORMAL:
+		{
+			systemApplication.UpdateWindow(&window);	
+		} break;
+		
+		case UpdateContext::BACKGROUND:
+		{
+			
+		} break;
+		
+		default: break;
+	}
 }
 
 void GameApplication::SetupInputSources()
@@ -203,27 +213,24 @@ void GameApplication::RegisterKeyboard()
 		case GTSL::Window::KeyboardKeys::Numpad7: id = "Numpad7_Key"; break;
 		case GTSL::Window::KeyboardKeys::Numpad8: id = "Numpad8_Key"; break;
 		case GTSL::Window::KeyboardKeys::Numpad9: id = "Numpad9_Key"; break;
-		case GTSL::Window::KeyboardKeys::F1: break;
-		case GTSL::Window::KeyboardKeys::F2: break;
-		case GTSL::Window::KeyboardKeys::F3: break;
-		case GTSL::Window::KeyboardKeys::F4: break;
-		case GTSL::Window::KeyboardKeys::F5: break;
-		case GTSL::Window::KeyboardKeys::F6: break;
-		case GTSL::Window::KeyboardKeys::F7: break;
-		case GTSL::Window::KeyboardKeys::F8: break;
-		case GTSL::Window::KeyboardKeys::F9: break;
-		case GTSL::Window::KeyboardKeys::F10: break;
-		case GTSL::Window::KeyboardKeys::F11: break;
-		case GTSL::Window::KeyboardKeys::F12: break;
+		case GTSL::Window::KeyboardKeys::F1: id = "F1_Key"; break;
+		case GTSL::Window::KeyboardKeys::F2: id = "F2_Key"; break;
+		case GTSL::Window::KeyboardKeys::F3: id = "F3_Key"; break;
+		case GTSL::Window::KeyboardKeys::F4: id = "F4_Key"; break;
+		case GTSL::Window::KeyboardKeys::F5: id = "F5_Key"; break;
+		case GTSL::Window::KeyboardKeys::F6: id = "F6_Key"; break;
+		case GTSL::Window::KeyboardKeys::F7: id = "F7_Key"; break;
+		case GTSL::Window::KeyboardKeys::F8: id = "F8_Key"; break;
+		case GTSL::Window::KeyboardKeys::F9: id = "F9_Key"; break;
+		case GTSL::Window::KeyboardKeys::F10: id = "F10_Key";break;
+		case GTSL::Window::KeyboardKeys::F11: id = "F11_Key"; break;
+		case GTSL::Window::KeyboardKeys::F12: id = "F12_Key"; break;
 		default: break;
 		}
 
 		bool val = state == GTSL::ButtonState::PRESSED ? true : false;
 		
-		if(id)
-		{
-			Get()->GetInputManager()->RecordActionInputSource(id, val);
-		}
+		Get()->GetInputManager()->RecordActionInputSource(id, val);
 	};
 	
 	window.SetOnKeyEventDelegate(GTSL::Delegate<void(GTSL::Window::KeyboardKeys, GTSL::ButtonState)>::Create(key_press));

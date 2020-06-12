@@ -1,6 +1,5 @@
 #include "Game.h"
 
-
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
@@ -22,8 +21,8 @@ void Game::Initialize()
 		BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
 	};
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("W_Key"), GTSL::Id64("S_Key") });
-	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));	
-	
+	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
+
 	//show loading screen
 	//load menu
 	//show menu
@@ -33,6 +32,10 @@ void Game::Initialize()
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
 	GameApplication::OnUpdate(onUpdate);
+}
+
+void Game::Shutdown()
+{
 }
 
 Game::~Game()

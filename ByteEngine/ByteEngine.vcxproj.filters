@@ -94,7 +94,6 @@
     <ClInclude Include="src\ByteEngine\Debug\Logger.h">
       <Filter>Engine\Log</Filter>
     </ClInclude>
-    <ClInclude Include="src\ByteEngine\Debug\Timer.h" />
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Game\StaticMesh.h" />
     <ClInclude Include="src\ByteEngine\Game\SubWorlds.h" />
@@ -137,6 +136,7 @@
       <Filter>Engine\Render</Filter>
     </ClInclude>
     <ClInclude Include="src\ByteEngine\Game\System.h" />
+    <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -156,7 +156,6 @@
     <ClCompile Include="src\ByteEngine\Debug\Logger.cpp">
       <Filter>Engine\Log</Filter>
     </ClCompile>
-    <ClCompile Include="src\ByteEngine\Debug\Timer.cpp" />
     <ClCompile Include="src\ByteEngine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
@@ -172,5 +171,6 @@
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
+    <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
   </ItemGroup>
 </Project>

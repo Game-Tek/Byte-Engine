@@ -2,6 +2,7 @@
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/Clock.h"
+#include "ByteEngine/Debug/FunctionTimer.h"
 
 using namespace BE;
 
@@ -90,6 +91,11 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	logMutex.Unlock();
 
 	posInSubBuffer += written_bytes;
+}
+
+void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
+{
+	log(VerbosityLevel::MESSAGE, GTSL::Ranger<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const

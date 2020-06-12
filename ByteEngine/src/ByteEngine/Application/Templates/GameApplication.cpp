@@ -41,11 +41,14 @@ void GameApplication::Initialize()
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
+	Application::OnUpdate(updateInfo);
+	
+	systemApplication.UpdateWindow(&window);
+	
 	switch (updateInfo.UpdateContext)
 	{
 		case UpdateContext::NORMAL:
 		{
-			systemApplication.UpdateWindow(&window);	
 		} break;
 		
 		case UpdateContext::BACKGROUND:

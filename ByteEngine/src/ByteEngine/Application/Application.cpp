@@ -4,6 +4,7 @@
 
 #include "ByteEngine/Resources/AudioResourceManager.h"
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Debug/FunctionTimer.h"
 
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
@@ -14,7 +15,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"), systemApplication(GTSL::Application::ApplicationCreateInfo{}), closeReason(255, &systemAllocatorReference)
+	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"), systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
 		applicationInstance = this;
 	}
@@ -26,6 +27,8 @@ namespace BE
 	void Application::Initialize()
 	{
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+		
+		closeReason = GTSL::String(255, &systemAllocatorReference);
 		
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
@@ -39,6 +42,7 @@ namespace BE
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
+
 	}
 
 	void Application::Shutdown()
@@ -69,6 +73,8 @@ namespace BE
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
 	{
+		PROFILE()
+		
 		switch(updateInfo.UpdateContext)
 		{
 		case UpdateContext::NORMAL:
@@ -93,7 +99,8 @@ namespace BE
 			
 			clockInstance->OnUpdate();
 			
-			OnUpdateInfo update_info;
+			OnUpdateInfo update_info{};
+			update_info.UpdateContext = updateContext;
 			OnUpdate(update_info);
 			
 			transientAllocator->Clear();
@@ -109,7 +116,7 @@ namespace BE
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<UTF8>& reason)
 	{
-		//closeReason.Insert(reason);
+		closeReason.Append(reason);
 		flaggedForClose = true;
 		this->closeMode = closeMode;
 	}

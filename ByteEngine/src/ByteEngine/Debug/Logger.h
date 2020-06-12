@@ -7,9 +7,12 @@
 
 #include "ByteEngine/Core.h"
 #include <GTSL/StaticString.hpp>
+#include <GTSL/Time.h>
+
 
 #include "ByteEngine/Object.h"
 
+class FunctionTimer;
 class Object;
 
 #undef ERROR
@@ -63,6 +66,9 @@ namespace BE
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;
+
+		friend class FunctionTimer;
+		void logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken);
 	public:
 		Logger() = default;
 		~Logger();

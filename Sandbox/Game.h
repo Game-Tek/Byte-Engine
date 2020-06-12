@@ -19,6 +19,8 @@ public:
 
 	void OnUpdate(const OnUpdateInfo& onUpdate) override;
 
+	void Shutdown() override;
+	
 	~Game();
 
 	[[nodiscard]] const char* GetName() const override { return "Sandbox"; }

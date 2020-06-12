@@ -8,6 +8,9 @@ class GameInstance
 {
 public:
 	GameInstance();
+	virtual ~GameInstance();
+	
+	virtual void OnUpdate();
 	
 	using WorldReference = uint8;
 

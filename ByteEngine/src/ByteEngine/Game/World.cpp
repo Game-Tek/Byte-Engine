@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Application/Application.h"
 
-void EntitiesManager::AddType(const GTSL::Ranger<UTF8>& name, TypeManager* typeManager)
+void EntitiesManager::AddType(const GTSL::Ranger<UTF8>& name, ComponentCollection* typeManager)
 {
 	hashes.PushBack(GTSL::Id64(name));
 	managers.PushBack(typeManager);
@@ -21,7 +21,7 @@ void World::DestroyWorld(const DestroyInfo& destroyInfo)
 {
 	for (auto& e : entitiesManager)
 	{
-		TypeManager::DestroyInstancesInfo destroy_instances_info;
+		ComponentCollection::DestroyInstancesInfo destroy_instances_info;
 		e->DestroyInstances(destroy_instances_info);
 	}
 }

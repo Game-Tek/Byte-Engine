@@ -15,7 +15,6 @@ void Game::Initialize()
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
-
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
 		BE_BASIC_LOG_MESSAGE("Key: ", a.Value)

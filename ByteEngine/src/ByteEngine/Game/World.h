@@ -4,7 +4,7 @@
 
 #include <GTSL/Vector.hpp>
 
-#include "TypeManager.h"
+#include "ComponentCollection.h"
 
 #include "ByteEngine/Object.h"
 
@@ -30,12 +30,12 @@ public:
 class EntitiesManager
 {
 	GTSL::Vector<uint64> hashes;
-	GTSL::Vector<TypeManager*> managers;
+	GTSL::Vector<ComponentCollection*> managers;
 
 public:
-	void AddType(const GTSL::Ranger<UTF8>& name, TypeManager* typeManager);
+	void AddType(const GTSL::Ranger<UTF8>& name, ComponentCollection* typeManager);
 
-	[[nodiscard]] TypeManager* GetTypeManager(const Entity& entity) const noexcept
+	[[nodiscard]] ComponentCollection* GetTypeManager(const Entity& entity) const noexcept
 	{
 		return managers[entity.GetIndex()];
 	}
@@ -57,6 +57,7 @@ public:
 
 	struct InitializeInfo
 	{
+		class GameInstance* GameInstance{ nullptr };
 	};
 	virtual void InitializeWorld(const InitializeInfo& initializeInfo);
 

@@ -95,7 +95,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 
 void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
 {
-	log(VerbosityLevel::MESSAGE, GTSL::Ranger<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
+	//log(VerbosityLevel::MESSAGE, GTSL::Ranger<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const

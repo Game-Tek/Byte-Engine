@@ -9,8 +9,14 @@ public:
 	{
 		World::InitializeWorld(initializeInfo);
 
-		BE_LOG_MESSAGE("Initilized world!")
+		BE_LOG_MESSAGE("Initilized world!");
+
+		initializeInfo.GameInstance->GetComponentCollection("TestComponents", testComponentCollectionReference);
+		initializeInfo.GameInstance->GetSystem("Renderer");
 	}
+
+private:
+	uint64 testComponentCollectionReference{ 0 };
 };
 
 class SandboxWorld

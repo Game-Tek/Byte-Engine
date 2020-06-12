@@ -1,9 +1,9 @@
 #pragma once
 
-class TypeManager
+class ComponentCollection
 {
 public:
-	virtual ~TypeManager() = default;
+	virtual ~ComponentCollection() = default;
 
 	struct CreateInstanceInfo
 	{};

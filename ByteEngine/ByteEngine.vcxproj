@@ -189,7 +189,7 @@
     <ClInclude Include="src\ByteEngine\Game\StaticMesh.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Game\Texture.h" />
-    <ClInclude Include="src\ByteEngine\Game\TypeManager.h" />
+    <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerator.h" />

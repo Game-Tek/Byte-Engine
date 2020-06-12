@@ -22,7 +22,7 @@ void GameInstance::OnUpdate()
 	GTSL::ForEach(systems, [&](System*& system) { system->Process(worlds_range); });
 }
 
-GTSL::FlatHashMap<class System*>::ref GameInstance::AddSystem(System* system)
+GTSL::FlatHashMap<System*>::ref GameInstance::AddSystem(System* system)
 {
 	return systems.Emplace(&persistent_allocator, GTSL::Id64(system->GetName()), system);
 }
@@ -30,5 +30,6 @@ GTSL::FlatHashMap<class System*>::ref GameInstance::AddSystem(System* system)
 void GameInstance::initWorld(const uint8 worldId)
 {
 	World::InitializeInfo initialize_info;
+	initialize_info.GameInstance = this;
 	worlds[worldId]->InitializeWorld(initialize_info);
 }

@@ -147,8 +147,14 @@ void GameApplication::RegisterKeyboard()
 	inputManagerInstance->RegisterActionInputSource("Numpad4_Key"); inputManagerInstance->RegisterActionInputSource("Numpad5_Key");
 	inputManagerInstance->RegisterActionInputSource("Numpad6_Key"); inputManagerInstance->RegisterActionInputSource("Numpad7_Key");
 	inputManagerInstance->RegisterActionInputSource("Numpad8_Key"); inputManagerInstance->RegisterActionInputSource("Numpad9_Key");
+	inputManagerInstance->RegisterActionInputSource("F1_Key"); inputManagerInstance->RegisterActionInputSource("F2_Key");
+	inputManagerInstance->RegisterActionInputSource("F3_Key"); inputManagerInstance->RegisterActionInputSource("F4_Key");
+	inputManagerInstance->RegisterActionInputSource("F5_Key"); inputManagerInstance->RegisterActionInputSource("F6_Key");
+	inputManagerInstance->RegisterActionInputSource("F7_Key"); inputManagerInstance->RegisterActionInputSource("F8_Key");
+	inputManagerInstance->RegisterActionInputSource("F9_Key"); inputManagerInstance->RegisterActionInputSource("F10_Key");
+	inputManagerInstance->RegisterActionInputSource("F11_Key"); inputManagerInstance->RegisterActionInputSource("F12_Key");
 
-	auto key_press = [](const GTSL::Window::KeyboardKeys key, const GTSL::ButtonState state)
+	auto key_press = [](const GTSL::Window::KeyboardKeys key, const GTSL::ButtonState state, bool isFirstkeyOfType)
 	{
 		const char* id = nullptr;
 		switch (key)
@@ -232,9 +238,12 @@ void GameApplication::RegisterKeyboard()
 		}
 
 		bool val = state == GTSL::ButtonState::PRESSED ? true : false;
-		
-		Get()->GetInputManager()->RecordActionInputSource(id, val);
+
+		if(isFirstkeyOfType)
+		{
+			Get()->GetInputManager()->RecordActionInputSource(id, val);
+		}
 	};
 	
-	window.SetOnKeyEventDelegate(GTSL::Delegate<void(GTSL::Window::KeyboardKeys, GTSL::ButtonState)>::Create(key_press));
+	window.SetOnKeyEventDelegate(GTSL::Delegate<void(GTSL::Window::KeyboardKeys, GTSL::ButtonState, bool)>::Create(key_press));
 }

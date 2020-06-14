@@ -173,6 +173,7 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\ByteEngine\Application\PoolAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\CommandMap.h" />
@@ -232,6 +233,7 @@
     <ClInclude Include="src\ByteEngine\Vertex.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\StackAllocator.cpp" />

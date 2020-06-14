@@ -7,7 +7,7 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : POOL_COUNT(17), systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : POOL_COUNT(18), systemAllocatorReference(allocatorReference)
 {
 	uint64 allocator_allocated_size{ 0 }; //debug
 
@@ -47,7 +47,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 	uint64 allocation_min_size { 0 }; GTSL::NextPowerOfTwo(size, allocation_min_size);
 
 	uint8 set_bit { 0 }; GTSL::BitScanForward(allocation_min_size, set_bit);
-	BE_ASSERT(POOL_COUNT >= set_bit, "No pool big enough!");	
+	BE_ASSERT(POOL_COUNT > set_bit, "No pool big enough!");	
 
 	poolsData[set_bit].Allocate(size, alignment, memory, allocatedSize);
 }

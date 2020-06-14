@@ -137,6 +137,7 @@
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
     <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
+    <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -172,5 +173,6 @@
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
+    <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
   </ItemGroup>
 </Project>

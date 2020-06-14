@@ -29,10 +29,10 @@ public:
 
 inline BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference)
 {
-	return GTSL::New<Game>(allocatorReference);
+	return GTSL::New<Game>(*allocatorReference);
 }
 
 inline void BE::DestroyApplication(Application* application, GTSL::AllocatorReference* allocatorReference)
 {
-	Delete(static_cast<Game*>(application), allocatorReference);
+	Delete(static_cast<Game*>(application), *allocatorReference);
 }

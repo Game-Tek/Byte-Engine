@@ -18,6 +18,9 @@
     <ClCompile Include="Game.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="TestCollection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SandboxGameInstance.h">
@@ -27,6 +30,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Game.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TestCollection.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

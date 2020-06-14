@@ -2,13 +2,11 @@
 
 #include <GTSL/Mutex.h>
 #include <GTSL/File.h>
-#include <GTSL/Vector.hpp>
 #include <GTSL/Console.h>
 
 #include "ByteEngine/Core.h"
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Time.h>
-
 
 #include "ByteEngine/Object.h"
 

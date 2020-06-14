@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteEngine/Core.h"
+
 class ComponentCollection
 {
 public:
@@ -10,7 +12,9 @@ public:
 	virtual void CreateInstance(const CreateInstanceInfo& createInstanceInfo) = 0;
 
 	struct CreateInstancesInfo
-	{};
+	{
+		uint32 Count{ 0 };
+	};
 	virtual void CreateInstances(const CreateInstancesInfo& createInstancesInfo) = 0;
 	
 	struct DestroyInstanceInfo

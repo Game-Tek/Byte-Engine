@@ -63,6 +63,7 @@ public:
 
 	struct DestroyInfo
 	{
+		class GameInstance* GameInstance{ nullptr };
 	};
 	virtual void DestroyWorld(const DestroyInfo& destroyInfo);
 	

@@ -16,6 +16,7 @@ int main(int argc, char** argv)
 	protected:
 		void alloc(uint64 size, uint64 alignment, void** data, uint64* allocatedSize) const
 		{
+			*allocatedSize = size;
 			system_allocator.Allocate(size, alignment, data);
 		}
 

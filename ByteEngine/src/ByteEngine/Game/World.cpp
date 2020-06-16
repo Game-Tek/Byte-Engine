@@ -21,8 +21,8 @@ void World::DestroyWorld(const DestroyInfo& destroyInfo)
 {
 	for (auto& e : entitiesManager)
 	{
-		ComponentCollection::DestroyInstancesInfo destroy_instances_info;
-		e->DestroyInstances(destroy_instances_info);
+		ComponentCollection::DestroyInstanceInfo destroy_instance_info;
+		e->DestroyInstance(destroy_instance_info);
 	}
 }
 

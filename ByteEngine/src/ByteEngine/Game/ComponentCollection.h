@@ -1,8 +1,9 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
+#include "ByteEngine/Object.h"
 
-class ComponentCollection
+class ComponentCollection : public Object
 {
 public:
 	virtual ~ComponentCollection() = default;
@@ -10,20 +11,10 @@ public:
 	struct CreateInstanceInfo
 	{};
 	virtual void CreateInstance(const CreateInstanceInfo& createInstanceInfo) = 0;
-
-	struct CreateInstancesInfo
-	{
-		uint32 Count{ 0 };
-	};
-	virtual void CreateInstances(const CreateInstancesInfo& createInstancesInfo) = 0;
 	
 	struct DestroyInstanceInfo
 	{};
-	virtual void DestroyInstances(const DestroyInstanceInfo& destroyInstancesInfo) = 0;
-
-	struct DestroyInstancesInfo
-	{};
-	virtual void DestroyInstances(const DestroyInstancesInfo& destroyInstanceInfo) = 0;
+	virtual void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) = 0;
 
 	struct UpdateInstancesInfo
 	{};

@@ -15,7 +15,7 @@ public:
 
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 
-private:
+protected:
 	GTSL::Window window;
 
 	void SetupInputSources();

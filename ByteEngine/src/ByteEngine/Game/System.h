@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GTSL/Ranger.h>
+
 #include "ByteEngine/Object.h"
 
 /**

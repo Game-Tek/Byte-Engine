@@ -3,6 +3,7 @@
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Game/RenderSystem.h"
 
 void Game::Initialize()
 {
@@ -22,6 +23,12 @@ void Game::Initialize()
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("W_Key"), GTSL::Id64("S_Key") });
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
 
+	auto renderer = sandboxGameInstance->AddSystem<RenderSystem>("RenderSystem");
+
+	RenderSystem::InitializeRendererInfo initialize_renderer_info;
+	initialize_renderer_info.Window = &window;
+	renderer->InitializeRenderer(initialize_renderer_info);
+	
 	//show loading screen
 	//load menu
 	//show menu

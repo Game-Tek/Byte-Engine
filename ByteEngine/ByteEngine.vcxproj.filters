@@ -95,9 +95,6 @@
       <Filter>Engine\Log</Filter>
     </ClInclude>
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
-    <ClInclude Include="src\ByteEngine\Game\StaticMesh.h" />
-    <ClInclude Include="src\ByteEngine\Game\SubWorlds.h" />
-    <ClInclude Include="src\ByteEngine\Game\Texture.h" />
     <ClInclude Include="src\ByteEngine\Game\World.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerators.h" />
@@ -138,6 +135,8 @@
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
     <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
+    <ClInclude Include="src\ByteEngine\Game\StaticMeshRenderComponentCollection.h" />
+    <ClInclude Include="src\ByteEngine\Game\RenderSystem.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -157,7 +156,6 @@
     <ClCompile Include="src\ByteEngine\Debug\Logger.cpp">
       <Filter>Engine\Log</Filter>
     </ClCompile>
-    <ClCompile Include="src\ByteEngine\Game\StaticMesh.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
@@ -174,5 +172,7 @@
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\StaticMeshRenderComponentCollection.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\RenderSystem.cpp" />
   </ItemGroup>
 </Project>

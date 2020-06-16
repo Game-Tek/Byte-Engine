@@ -9,13 +9,12 @@ public:
 	TestCollection();
 	
 	void CreateInstance(const CreateInstanceInfo& createInstanceInfo) override;
-	void CreateInstances(const CreateInstancesInfo& createInstancesInfo) override;
-	void DestroyInstances(const DestroyInstanceInfo& destroyInstancesInfo) override;
-	void DestroyInstances(const DestroyInstancesInfo& destroyInstanceInfo) override;
+	void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) override;
 	void UpdateInstances(const UpdateInstancesInfo& updateInstancesInfo) override;
 
 	GTSL::Vector<float>& GetNumbers() { return numbers; }
-	
+
+	[[nodiscard]] const char* GetName() const override { return "Test Collection"; }
 private:
 	GTSL::Vector<float> numbers;
 };

@@ -21,7 +21,7 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		return *systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()));
+		return static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
 	}
 
 	template<typename T>

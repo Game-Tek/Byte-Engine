@@ -51,8 +51,10 @@ public:
 	void RegisterLinearInputSource(GTSL::Id64 inputSourceName);
 	void Register2DInputSource(GTSL::Id64 inputSourceName);
 
-	void RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function);
-	void RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function);
+	void RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, const GTSL::Delegate<void(ActionInputEvent)>
+	                              function);
+	void RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, const GTSL::Delegate<void(CharacterInputEvent)>
+	                                 function);
 	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function);
 	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
 	

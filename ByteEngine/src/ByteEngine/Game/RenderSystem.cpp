@@ -8,7 +8,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GAL::RenderDevice::CreateInfo createinfo;
 	createinfo.ApplicationName = GTSL::StaticString<128>("Test");
 	GTSL::Array<GAL::Queue::CreateInfo, 1> queue_create_infos(1);
-	queue_create_infos[0].Capabilities = GAL::QueueCapabilities::GRAPHICS;
+	queue_create_infos[0].Capabilities = static_cast<uint8>(GAL::QueueCapabilities::GRAPHICS);
 	queue_create_infos[0].QueuePriority = 1.0f;
 	createinfo.QueueCreateInfos = queue_create_infos;
 	GTSL::Array<GAL::Queue*, 1> queues;
@@ -19,6 +19,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GAL::RenderContext::CreateInfo render_context_create_info;
 	render_context_create_info.RenderDevice = &renderDevice;
 	render_context_create_info.DesiredFramesInFlight = 2;
+	render_context_create_info.PresentMode = GAL::PresentMode::FIFO;
 	GTSL::Extent2D window_extent;
 	initializeRenderer.Window->GetFramebufferExtent(window_extent);
 	render_context_create_info.SurfaceArea = window_extent;
@@ -37,4 +38,5 @@ void RenderSystem::Initialize()
 
 void RenderSystem::Shutdown()
 {
+	renderContext.Destroy(&renderDevice);
 }

@@ -28,7 +28,7 @@ public:
 	void Process(const GTSL::Ranger<World*>& worlds) override
 	{
 	}
-
+	
 	void UpdateWindow(GTSL::Window& window);
 	
 	void Initialize() override;
@@ -37,5 +37,5 @@ private:
 	RenderDevice renderDevice;
 	RenderContext renderContext;
 
-	GAL::VulkanQueue graphicsQueue;
+	Queue graphicsQueue;
 };

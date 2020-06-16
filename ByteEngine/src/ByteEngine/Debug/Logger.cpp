@@ -102,11 +102,11 @@ void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 {
 	switch (level)
 	{
-	case VerbosityLevel::MESSAGE: console.SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
-	case VerbosityLevel::SUCCESS: console.SetTextColor(GTSL::Console::ConsoleTextColor::GREEN); break;
-	case VerbosityLevel::WARNING: console.SetTextColor(GTSL::Console::ConsoleTextColor::ORANGE); break;
-	case VerbosityLevel::FATAL: console.SetTextColor(GTSL::Console::ConsoleTextColor::RED); break;
-	default: console.SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
+	case VerbosityLevel::MESSAGE: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
+	case VerbosityLevel::SUCCESS: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::GREEN); break;
+	case VerbosityLevel::WARNING: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::ORANGE); break;
+	case VerbosityLevel::FATAL: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::RED); break;
+	default: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
 	}
 }
 

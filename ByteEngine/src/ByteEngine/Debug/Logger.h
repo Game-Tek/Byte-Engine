@@ -59,8 +59,6 @@ namespace BE
 		mutable std::atomic<uint32> subBufferIndex{ 0 };
 		
 		mutable UTF8* data{ nullptr };
-
-		GTSL::Console console;
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;

@@ -54,7 +54,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	{
 		const uint32 bytes_to_copy = text_length + 2 > string_remaining_length ? string_remaining_length - 2 : text_length;
 		string_remaining_length -= bytes_to_copy;
-		GTSL::Memory::MemCopy(bytes_to_copy, text.Data(), write_ptr());
+		GTSL::Memory::MemCopy(bytes_to_copy, text.begin(), write_ptr());
 		written_bytes += bytes_to_copy;
 	}
 

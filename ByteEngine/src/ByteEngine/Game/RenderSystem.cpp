@@ -14,21 +14,21 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GTSL::Array<GAL::Queue*, 1> queues;
 	queues.EmplaceBack(&graphicsQueue);
 	createinfo.Queues = queues;
-	renderDevice = RenderDevice(createinfo);
+	::new(&renderDevice) RenderDevice(createinfo);
 
-	//GAL::RenderContext::CreateInfo render_context_create_info;
-	//render_context_create_info.DesiredFramesInFlight = 2;
-	//GTSL::Extent2D window_extent;
-	//initializeRenderer.Window->GetFramebufferExtent(window_extent);
-	//render_context_create_info.SurfaceArea = window_extent;
-	//render_context_create_info.RenderDevice = &renderDevice;
-	//GAL::WindowsWindowData window_data;
-	//GTSL::Window::Win32NativeHandles native_handles;
-	//initializeRenderer.Window->GetNativeHandles(&native_handles);
-	//window_data.WindowHandle = native_handles.HWND;
-	//window_data.InstanceHandle = GetModuleHandleA(nullptr);
-	//render_context_create_info.SystemData = &window_data;
-	//renderContext = RenderContext(render_context_create_info);
+	GAL::RenderContext::CreateInfo render_context_create_info;
+	render_context_create_info.RenderDevice = &renderDevice;
+	render_context_create_info.DesiredFramesInFlight = 2;
+	GTSL::Extent2D window_extent;
+	initializeRenderer.Window->GetFramebufferExtent(window_extent);
+	render_context_create_info.SurfaceArea = window_extent;
+	GAL::WindowsWindowData window_data;
+	GTSL::Window::Win32NativeHandles native_handles;
+	initializeRenderer.Window->GetNativeHandles(&native_handles);
+	window_data.WindowHandle = native_handles.HWND;
+	window_data.InstanceHandle = GetModuleHandleA(nullptr);
+	render_context_create_info.SystemData = &window_data;
+	::new(&renderContext) RenderContext(render_context_create_info);
 }
 
 void RenderSystem::Initialize()

@@ -2,11 +2,12 @@
 
 #include "ByteEngine/Core.h"
 
-struct ResourceData
+struct ResourceHandle
 {
-	uint32 references = 0;
-
 	uint32 IncrementReferences() { return ++references; }
 	uint32 DecrementReferences() { return --references; }
 	[[nodiscard]] uint32 GetReferenceCount() const { return references; }
+
+protected:
+	uint32 references = 0;
 };

@@ -6,7 +6,7 @@
 #include "ResourceData.h"
 #include <GTSL/Id.h>
 
-struct StaticMeshResourceData final : ResourceData
+struct StaticMeshResourceData final : ResourceHandle
 {
 	//Pointer to Vertex Array.
 	Vertex* VertexArray = nullptr;
@@ -30,21 +30,6 @@ class StaticMeshResourceManager final : public SubResourceManager
 public:
 	StaticMeshResourceManager() : SubResourceManager("Static Mesh")
 	{
-	}
-
-	StaticMeshResourceData* GetResource(const GTSL::Id64& resourceName)
-	{
-		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(resourceMapMutex);
-		return &resources[resourceName];
-	}
-	
-	StaticMeshResourceData* TryGetResource(const GTSL::String& name);
-	
-	void ReleaseResource(const GTSL::Id64& resourceName)
-	{
-		resourceMapMutex.WriteLock();
-		if(resources[resourceName].DecrementReferences() == 0) { resources.erase(resourceName); }
-		resourceMapMutex.WriteUnlock();
 	}
 	
 private:

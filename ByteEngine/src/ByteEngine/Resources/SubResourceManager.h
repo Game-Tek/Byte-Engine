@@ -1,41 +1,6 @@
 #pragma once
 
-#include "ByteEngine/Core.h"
-
 #include <GTSL/Mutex.h>
-#include <GTSL/Allocator.h>
-
-struct ResourceManagerBigAllocatorReference final : GTSL::AllocatorReference
-{
-	explicit ResourceManagerBigAllocatorReference(const char* name) : name(name)
-	{
-	}
-	
-	~ResourceManagerBigAllocatorReference() = default;
-	
-protected:
-	void allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
-
-	void deallocateFunc(const uint64 size, uint64 alignment, void* memory) const;
-	
-	const char* name{ nullptr };
-};
-
-struct ResourceManagerTransientAllocatorReference final : GTSL::AllocatorReference
-{
-	explicit ResourceManagerTransientAllocatorReference(const char* name) : name(name)
-	{
-	}
-	
-	~ResourceManagerTransientAllocatorReference() = default;
-	
-protected:
-	void allocateFunc(const uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
-
-	void deallocateFunc(const uint64 size, uint64 alignment, void* memory) const;
-	
-	const char* name{ nullptr };
-};
 
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
@@ -48,15 +13,13 @@ protected:
  */
 class SubResourceManager
 {
-protected:
-	ResourceManagerBigAllocatorReference bigAllocator;
-	ResourceManagerTransientAllocatorReference transientAllocator;
-
-	GTSL::ReadWriteMutex resourceMapMutex;
 public:
-	explicit SubResourceManager(const char* resourceType) : bigAllocator(resourceType), transientAllocator(resourceType)
+	explicit SubResourceManager(const char* resourceType)
 	{	
 	}
 	
 	~SubResourceManager() = default;
+	
+protected:
+	GTSL::ReadWriteMutex resourceMapMutex;
 };

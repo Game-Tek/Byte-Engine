@@ -22,9 +22,9 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
 
 void Logger::Shutdown() const
 {
-	uint64 bytes_written{ 0 };
 	logMutex.Lock();
-	logFile.WriteToFile(GTSL::Ranger<byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data + posInSubBuffer + buffersInBuffer * subBufferIndex)), bytes_written);
+	auto range = GTSL::Ranger<const byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data) + posInSubBuffer + buffersInBuffer * subBufferIndex);
+	logFile.WriteToFile(range);
 	logMutex.Unlock();
 	logFile.CloseFile();
 }
@@ -79,7 +79,8 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 		uint64 bytes_written{ 0 };
 		//TODO dispatch as a job
 		logMutex.Lock();
-		logFile.WriteToFile(GTSL::Ranger<byte>(reinterpret_cast<byte*>(data) + subBufferIndex * buffersInBuffer, reinterpret_cast<byte*>(data) + posInSubBuffer + subBufferIndex * buffersInBuffer), bytes_written);
+		auto range = GTSL::Ranger<const byte>(reinterpret_cast<byte*>(data) + subBufferIndex * buffersInBuffer, reinterpret_cast<byte*>(data) + posInSubBuffer + subBufferIndex * buffersInBuffer);
+		logFile.WriteToFile(range);
 		logMutex.Unlock();
 		
 		posInSubBuffer = 0;

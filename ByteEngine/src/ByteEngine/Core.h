@@ -22,9 +22,3 @@ using float64 = double;
 #else
 #define BE_DEBUG_ONLY(...)
 #endif
-
-#ifdef BE_DEBUG
-#define BE_THROW(text) throw (text);
-#else
-#define BE_THROW(text)
-#endif

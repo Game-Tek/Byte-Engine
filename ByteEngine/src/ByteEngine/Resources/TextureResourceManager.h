@@ -3,9 +3,9 @@
 #include "SubResourceManager.h"
 #include <GTSL/Extent.h>
 #include "ResourceData.h"
-#include <GTSL/Id.h>
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
+#include <GTSL/StaticString.hpp>
 
 struct TextureResourceData final : ResourceHandle
 {
@@ -31,5 +31,8 @@ public:
 		GTSL::Delegate<void(OnTextureLoadInfo)> OnTextureLoadInfo;
 		GTSL::Extent3D TextureExtent;
 		float32 LODPercentage{ 0.0f };
+		GTSL::StaticString<128> ResourceName;
 	};
+
+	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
 };

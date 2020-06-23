@@ -77,6 +77,7 @@ namespace BE
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
+		GTSL::Application* GetSystemApplication() { return &systemApplication; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }

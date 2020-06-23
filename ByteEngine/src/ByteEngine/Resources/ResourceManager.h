@@ -4,6 +4,8 @@
 
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Id.h>
+#include <GTSL/StaticString.hpp>
+
 
 #include "SubResourceManager.h"
 
@@ -29,6 +31,8 @@ public:
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }
 
+	[[nodiscard]] GTSL::StaticString<256> GetResourcePath() const;
+	
 protected:
 	GTSL::FlatHashMap<GTSL::Allocation<SubResourceManager>> resourceManagers;
 };

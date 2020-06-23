@@ -62,7 +62,7 @@ public:
 		void* raw_data_alloc{ nullptr };
 		
 		allocatorMutex.Lock();
-		GTSL::Memory::Allocate(size, &raw_data_alloc);
+		GTSL::Allocate(size, &raw_data_alloc);
 		allocatorMutex.Unlock();
 		
 		//*data = GTSL::Memory::AlignedPointer(alignment, raw_data_alloc);
@@ -82,7 +82,7 @@ public:
 		const uint64 deallocated_size{ GTSL::Math::PowerOf2RoundUp(size, alignment) };
 
 		allocatorMutex.Lock();
-		GTSL::Memory::Deallocate(size, data);
+		GTSL::Deallocate(size, data);
 		allocatorMutex.Unlock();
 		
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))

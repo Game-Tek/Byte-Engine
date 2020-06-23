@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <GTSL/Mutex.h>
 #include <GTSL/File.h>
 #include <GTSL/Console.h>

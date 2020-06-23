@@ -31,13 +31,15 @@ PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint6
 	allocatorReference->Allocate(freeSlotsStackSize(), freeSlotsStackAlignment(), reinterpret_cast<void**>(&freeSlotsStack), &pool_allocated_size);
 	allocatedSize += pool_allocated_size;
 
-	GTSL::Memory::SetZero(slotsDataAllocationSize(), slotsData);
+	BE_DEBUG_ONLY(GTSL::SetMemory(slotsDataAllocationSize(), slotsData));
 	
 	for(uint32 i = 0; i < MAX_SLOTS_COUNT; ++i)
 	{
 		freeSlotsStack[i] = i;
 	}
 }
+
+#undef BitScanForward
 
 // ALLOCATE //
 

@@ -13,7 +13,7 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
 	uint64 allocated_size{ 0 };
 	allocator_reference.Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
 	
-	GTSL::Memory::SetZero(defaultBufferLength, data);
+	GTSL::SetMemory(defaultBufferLength, data);
 	
 	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
@@ -54,7 +54,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	{
 		const uint32 bytes_to_copy = text_length + 2 > string_remaining_length ? string_remaining_length - 2 : text_length;
 		string_remaining_length -= bytes_to_copy;
-		GTSL::Memory::MemCopy(bytes_to_copy, text.begin(), write_ptr());
+		GTSL::MemCopy(bytes_to_copy, text.begin(), write_ptr());
 		written_bytes += bytes_to_copy;
 	}
 
@@ -88,7 +88,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::U
 	}
 
 	logMutex.Lock();
-	GTSL::Memory::MemCopy(written_bytes, string, data + posInSubBuffer + subBufferIndex * buffersInBuffer);
+	GTSL::MemCopy(written_bytes, string, data + posInSubBuffer + subBufferIndex * buffersInBuffer);
 	logMutex.Unlock();
 
 	posInSubBuffer += written_bytes;

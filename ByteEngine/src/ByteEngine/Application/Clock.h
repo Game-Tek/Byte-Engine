@@ -58,9 +58,7 @@ public:
 	//Returns the time the game has been running.
 	[[nodiscard]] GTSL::Microseconds GetElapsedTime() const { return elapsedTime; }
 
-	[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
-
-	[[nodiscard]] GTSL::Microseconds GetCurrentTime() const;
+	[[nodiscard]] GTSL::Microseconds GetCurrentMicroseconds() const;
 
 	//Returns the current local year of the computer.
 	static uint16 GetYear();
@@ -78,8 +76,6 @@ public:
 	static Time GetTime();
 
 private:
-	uint64 applicationTicks = 0;
-
 	uint64 startPerformanceCounterTicks = 0;
 	uint64 performanceCounterTicks = 0;
 	//Stores the frequency at which the processor operates. Used to calculate time differences between ticks.

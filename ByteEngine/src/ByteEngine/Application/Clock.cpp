@@ -46,14 +46,11 @@ void Clock::OnUpdate()
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	performanceCounterTicks = current_ticks.QuadPart;
 #endif
-	
-	//Update elapsed time counter.
-	++applicationTicks;
 }
 
 
 #undef GetCurrentTime
-GTSL::Microseconds Clock::GetCurrentTime() const
+GTSL::Microseconds Clock::GetCurrentMicroseconds() const
 {
 #ifdef BE_PLATFORM_WIN
 	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return GTSL::Microseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);

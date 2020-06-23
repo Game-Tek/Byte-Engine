@@ -70,7 +70,7 @@ namespace BE
 			OK, ERROR
 		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, const GTSL::Ranger<UTF8>& reason);
+		void Close(CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason);
 
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
@@ -105,9 +105,6 @@ namespace BE
 #define BE_BASIC_LOG_ERROR(Text, ...)	
 #endif
 
-	private:
-		inline static Application* applicationInstance{ nullptr };
-
 	protected:
 		Logger* logger{ nullptr };
 
@@ -129,7 +126,11 @@ namespace BE
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
-		GTSL::String closeReason;
+		BE_DEBUG_ONLY(GTSL::String closeReason);
+		
+	private:
+		inline static Application* applicationInstance{ nullptr };
+
 	};
 
 	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);

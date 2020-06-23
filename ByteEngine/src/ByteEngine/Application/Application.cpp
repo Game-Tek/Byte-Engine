@@ -28,7 +28,7 @@ namespace BE
 	{
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 		
-		closeReason = GTSL::String(255, &systemAllocatorReference);
+		BE_DEBUG_ONLY(closeReason = GTSL::String(255, &systemAllocatorReference));
 		
 		transientAllocator = new StackAllocator(&systemAllocatorReference);
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
@@ -114,7 +114,7 @@ namespace BE
 		//CloseDelegate.Dispatch();
 	}
 
-	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<UTF8>& reason)
+	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason)
 	{
 		closeReason.Append(reason);
 		flaggedForClose = true;

@@ -1,14 +1,12 @@
 #include "GameApplication.h"
 
 #include "ByteEngine/Application/InputManager.h"
-
 #include <GTSL/Input.h>
+#include "ByteEngine/Debug/FunctionTimer.h"
 
 void GameApplication::Initialize()
 {
 	Application::Initialize();
-
-	BE::TransientAllocatorReference transient_allocator_reference("Application");
 
 	GTSL::Window::WindowCreateInfo create_window_info;
 	create_window_info.Application = &systemApplication;
@@ -24,7 +22,7 @@ void GameApplication::Initialize()
 	auto window_close = []()
 	{
 		Get()->PromptClose();
-		Get()->Close(CloseMode::OK, GTSL::Ranger<UTF8>());
+		Get()->Close(CloseMode::OK, GTSL::Ranger<const UTF8>());
 	};
 	window.SetOnCloseDelegate(GTSL::Delegate<void()>::Create(window_close));
 
@@ -42,6 +40,8 @@ void GameApplication::Initialize()
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
 	Application::OnUpdate(updateInfo);
+
+	PROFILE;
 	
 	systemApplication.UpdateWindow(&window);
 	
@@ -156,7 +156,7 @@ void GameApplication::RegisterKeyboard()
 
 	auto key_press = [](const GTSL::Window::KeyboardKeys key, const GTSL::ButtonState state, bool isFirstkeyOfType)
 	{
-		const char* id = nullptr;
+		GTSL::Id64 id;
 		switch (key)
 		{
 		case GTSL::Window::KeyboardKeys::Q: id = "Q_Key"; break;

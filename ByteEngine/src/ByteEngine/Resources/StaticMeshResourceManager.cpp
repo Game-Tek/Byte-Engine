@@ -3,74 +3,87 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
-#include <GTSL/System.h>
 
-//StaticMeshResourceData* StaticMeshResourceManager::TryGetResource(const GTSL::String& name)
-//{
-//	const auto ai_scene = importer.ReadFile(path.c_str(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
-//
-//	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode)
-//	{
-//		auto res = importer.GetErrorString();
-//		return nullptr;
-//	}
-//
-//	auto InMesh = ai_scene->mMeshes[0];
-//
-//	data.VertexArray = new Vertex[InMesh->mNumVertices];
-//	//Set this mesh's vertex count as the number of vertices found in this mesh.
-//	data.VertexCount = InMesh->mNumVertices;
-//
-//	//------------MESH SETUP------------
-//
-//	// Loop through each vertex.
-//	for (uint32 i = 0; i < InMesh->mNumVertices; i++)
-//	{
-//		// Positions
-//		data.VertexArray[i].Position.X = InMesh->mVertices[i].x;
-//		data.VertexArray[i].Position.Y = InMesh->mVertices[i].y;
-//		data.VertexArray[i].Position.Z = InMesh->mVertices[i].z;
-//
-//		// Normals
-//		data.VertexArray[i].Normal.X = InMesh->mNormals[i].x;
-//		data.VertexArray[i].Normal.Y = InMesh->mNormals[i].y;
-//		data.VertexArray[i].Normal.Z = InMesh->mNormals[i].z;
-//
-//		// Texture Coordinates
-//		if (InMesh->mTextureCoords[0]) //We check if the pointer to texture coords is valid. (Could be NULLPTR)
-//		{
-//			//A vertex can contain up to 8 different texture coordinates.
-//			//Here, we are making the assumption we won't be using a model with more than one texture coordinates.
-//			data.VertexArray[i].TextCoord.U = InMesh->mTextureCoords[0][i].x;
-//			data.VertexArray[i].TextCoord.V = InMesh->mTextureCoords[0][i].y;
-//		}
-//
-//		data.VertexArray[i].Tangent.X = InMesh->mTangents[i].x;
-//		data.VertexArray[i].Tangent.Y = InMesh->mTangents[i].y;
-//		data.VertexArray[i].Tangent.Z = InMesh->mTangents[i].z;
-//
-//		data.VertexArray[i].BiTangent.X = InMesh->mBitangents[i].x;
-//		data.VertexArray[i].BiTangent.Y = InMesh->mBitangents[i].y;
-//		data.VertexArray[i].BiTangent.Z = InMesh->mBitangents[i].z;
-//	}
-//
-//	//We allocate a new array of unsigned ints big enough to hold the number of indices in this mesh and assign it to the
-//	//pointer found inside the mesh.
-//	data.IndexArray = new uint16[InMesh->mNumFaces * 3];
-//
-//	//Wow loop through each of the mesh's faces and retrieve the corresponding vertex indices.
-//	for (uint32 f = 0; f < InMesh->mNumFaces; ++f)
-//	{
-//		const auto Face = InMesh->mFaces[f];
-//
-//		// Retrieve all indices of the face and store them in the indices array.
-//		for (uint32 i = 0; i < Face.mNumIndices; i++)
-//		{
-//			data.IndexArray[data.IndexCount + i] = Face.mIndices[i];
-//		}
-//
-//		//Update the vertex count by summing the number of indices that each face we loop through has.
-//		data.IndexCount += Face.mNumIndices;
-//	}
-//}
-//
+#include "ByteEngine/Application/Application.h"
+#include <new>
+
+#include "ByteEngine/Vertex.h"
+
+void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo)
+{
+	GTSL::StaticString<1024> path;
+	path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
+	path += '/';
+	path += loadStaticMeshInfo.Name;
+	path += ".obj";
+
+	GTSL::File file;
+	file.OpenFile(path, GTSL::File::OpenFileMode::READ);
+	auto file_size = file.GetFileSize();
+	auto range = GTSL::Ranger<byte>(file_size, loadStaticMeshInfo.MeshDataBuffer.begin());
+	file.ReadFromFile(range);
+
+	Assimp::Importer importer;
+
+	const auto* const ai_scene = importer.ReadFileFromMemory(range.begin(), range.Bytes(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+
+	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode)
+	{
+		auto res = importer.GetErrorString();
+	}
+
+	aiMesh* InMesh = ai_scene->mMeshes[0];
+
+	auto vertices = ::new(range.begin()) Vertex[InMesh->mNumVertices];
+
+	//------------MESH SETUP------------
+
+	// Loop through each vertex.
+	for (uint32 i = 0; i < InMesh->mNumVertices; i++)
+	{
+		// Positions
+		vertices[i].Position.X = InMesh->mVertices[i].x;
+		vertices[i].Position.Y = InMesh->mVertices[i].y;
+		vertices[i].Position.Z = InMesh->mVertices[i].z;
+
+		// Normals
+		vertices[i].Normal.X = InMesh->mNormals[i].x;
+		vertices[i].Normal.Y = InMesh->mNormals[i].y;
+		vertices[i].Normal.Z = InMesh->mNormals[i].z;
+
+		// Texture Coordinates
+		if (InMesh->mTextureCoords[0]) //We check if the pointer to texture coords is valid. (Could be NULLPTR)
+		{
+			//A vertex can contain up to 8 different texture coordinates.
+			//Here, we are making the assumption we won't be using a model with more than one texture coordinates.
+			vertices[i].TextCoord.U() = InMesh->mTextureCoords[0][i].x;
+			vertices[i].TextCoord.V() = InMesh->mTextureCoords[0][i].y;
+		}
+
+		vertices[i].Tangent.X = InMesh->mTangents[i].x;
+		vertices[i].Tangent.Y = InMesh->mTangents[i].y;
+		vertices[i].Tangent.Z = InMesh->mTangents[i].z;
+
+		vertices[i].BiTangent.X = InMesh->mBitangents[i].x;
+		vertices[i].BiTangent.Y = InMesh->mBitangents[i].y;
+		vertices[i].BiTangent.Z = InMesh->mBitangents[i].z;
+	}
+
+	auto indeces = ::new(vertices + ai_scene->mMeshes[0]->mNumVertices) uint16[InMesh->mNumFaces * 3];
+	uint32 index_count{ 0 };
+	
+	for (uint32 f = 0; f < InMesh->mNumFaces; ++f)
+	{
+		const auto Face = InMesh->mFaces[f];
+
+		for (uint32 i = 0; i < Face.mNumIndices; i++) { indeces[f + i] = Face.mIndices[i]; }
+
+		index_count += Face.mNumIndices;
+	}
+
+	OnStaticMeshLoad on_static_mesh_load;
+	on_static_mesh_load.MeshDataBuffer = range;
+	on_static_mesh_load.IndexCount = index_count;
+	on_static_mesh_load.VertexCount = InMesh->mNumVertices;
+	loadStaticMeshInfo.OnStaticMeshLoad(on_static_mesh_load);
+}

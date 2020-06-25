@@ -1,7 +1,6 @@
 #include "TextureResourceManager.h"
 
 #include <stb image/stb_image.h>
-#include <GTSL/System.h>
 #include <GTSL/Id.h>
 
 #include <GTSL/File.h>
@@ -13,7 +12,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	GTSL::StaticString<1024> path;
 	path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
 	path += '/';
-	path += textureLoadInfo.ResourceName;
+	path += textureLoadInfo.Name;
 	path += ".png";
 	
 	GTSL::File file;

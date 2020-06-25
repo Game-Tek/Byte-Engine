@@ -1,6 +1,5 @@
 #pragma once
-
-#include <GTSL/Mutex.h>
+#include <GTSL/StaticString.hpp>
 
 /**
  * \brief Used to specify a type of resource loader. When inherited it's functions implementation should load resources as per request
@@ -19,7 +18,11 @@ public:
 	}
 	
 	~SubResourceManager() = default;
+
+	struct ResourceLoadInfo
+	{
+		GTSL::StaticString<128> Name;
+	};
 	
 protected:
-	GTSL::ReadWriteMutex resourceMapMutex;
 };

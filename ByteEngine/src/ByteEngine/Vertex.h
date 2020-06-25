@@ -15,6 +15,8 @@ struct Vertex2D
 
 struct Vertex
 {
+	Vertex() = default;
+	
 	GTSL::Vector3 Position;
 	GTSL::Vector3 Normal;
 	GTSL::TextureCoordinates2D TextCoord;

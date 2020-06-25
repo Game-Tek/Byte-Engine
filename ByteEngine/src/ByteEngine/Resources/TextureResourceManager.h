@@ -5,6 +5,7 @@
 #include "ResourceData.h"
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
+#include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
 
 struct TextureResourceData final : ResourceHandle
@@ -25,14 +26,16 @@ public:
 		float32 LODPercentage{ 0.0f };
 	};
 	
-	struct TextureLoadInfo
+	struct TextureLoadInfo : ResourceLoadInfo
 	{
 		GTSL::Ranger<byte> TextureDataBuffer;
 		GTSL::Delegate<void(OnTextureLoadInfo)> OnTextureLoadInfo;
 		GTSL::Extent3D TextureExtent;
 		float32 LODPercentage{ 0.0f };
-		GTSL::StaticString<128> ResourceName;
 	};
 
 	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
+
+private:
+	//GTSL::FlatHashMap<
 };

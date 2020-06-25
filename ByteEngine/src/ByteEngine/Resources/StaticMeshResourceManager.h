@@ -1,29 +1,10 @@
 #pragma once
 
 #include "SubResourceManager.h"
-#include <unordered_map>
-#include "ByteEngine/Vertex.h"
+#include <GTSL/Delegate.hpp>
+
 #include "ResourceData.h"
 #include <GTSL/Id.h>
-
-struct StaticMeshResourceData final : ResourceHandle
-{
-	//Pointer to Vertex Array.
-	Vertex* VertexArray = nullptr;
-	//Pointer to index array.
-	uint16* IndexArray = nullptr;
-
-	//Vertex Count.
-	uint16 VertexCount = 0;
-	//Index Count.
-	uint16 IndexCount = 0;
-
-	~StaticMeshResourceData()
-	{
-		delete[] VertexArray;
-		delete[] IndexArray;
-	}
-};
 
 class StaticMeshResourceManager final : public SubResourceManager
 {
@@ -31,7 +12,30 @@ public:
 	StaticMeshResourceManager() : SubResourceManager("Static Mesh")
 	{
 	}
+
+	struct OnStaticMeshLoad
+	{
+		/**
+		 * \brief Buffer containing the loaded data. At the start all vertices are found and after VertexCount vertices the indeces are found.
+		 */
+		GTSL::Ranger<byte> MeshDataBuffer;
+		/**
+		 * \brief Number of vertices the loaded mesh contains.
+		 */
+		GTSL::uint32 VertexCount;
+		/**
+		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
+		 */
+		GTSL::uint16 IndexCount;
+	};
+
+	struct LoadStaticMeshInfo : ResourceLoadInfo
+	{
+		GTSL::Ranger<byte> MeshDataBuffer;
+		GTSL::Delegate<void(OnStaticMeshLoad)> OnStaticMeshLoad;
+	};
+	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
 	
 private:
-	std::unordered_map<GTSL::Id64::HashType, StaticMeshResourceData> resources;
+	//std::unordered_map<GTSL::Id64::HashType, StaticMeshResourceData> resources;
 };

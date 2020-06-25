@@ -9,12 +9,18 @@
 
 #include "SubResourceManager.h"
 
+/**
+ * \brief Manages a set of named sub-resource managers which can be added dynamically.
+ */
 class ResourceManager : public Object
 {
 public:
-	~ResourceManager()
+	ResourceManager();
+	
+	virtual ~ResourceManager()
 	{
 		ForEach(resourceManagers, [&](GTSL::Allocation<SubResourceManager>& allocation){ Delete(allocation, GetPersistentAllocator()); });
+		resourceManagers.Free(GetPersistentAllocator());
 	}
 
 	SubResourceManager* GetSubResourceManager(const GTSL::Id64 name)
@@ -26,7 +32,7 @@ public:
 	template<class T>
 	T* CreateSubResourceManager(const GTSL::Id64 name)
 	{
-		return resourceManagers.Emplace(GetPersistentAllocator(), name, GTSL::Allocation<SubResourceManager>::Create<T>())->Data;
+		return static_cast<T*>(resourceManagers.Emplace(GetPersistentAllocator(), name, GTSL::Allocation<SubResourceManager>::Create<T>(GetPersistentAllocator()))->Data);
 	}
 
 	[[nodiscard]] const char* GetName() const override { return "Resource Manager"; }

@@ -6,14 +6,14 @@
 
 static BE::PersistentAllocatorReference persistent_allocator("Game Instance");
 
-GameInstance::GameInstance() : worlds(4, &persistent_allocator), systems(8, persistent_allocator), componentCollections(64, persistent_allocator)
+GameInstance::GameInstance() : worlds(4, &persistent_allocator), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator())
 {
 }
 
 GameInstance::~GameInstance()
 {
-	systems.Free(persistent_allocator);
-	componentCollections.Free(persistent_allocator);
+	systems.Free(GetPersistentAllocator());
+	componentCollections.Free(GetPersistentAllocator());
 }
 
 void GameInstance::OnUpdate()

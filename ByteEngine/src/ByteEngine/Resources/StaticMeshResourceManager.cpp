@@ -27,6 +27,8 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 
 	const auto* const ai_scene = importer.ReadFileFromMemory(range.begin(), range.Bytes(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
 
+	file.CloseFile();
+	
 	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode)
 	{
 		auto res = importer.GetErrorString();

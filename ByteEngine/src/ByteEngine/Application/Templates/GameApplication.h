@@ -12,8 +12,8 @@ public:
 	}
 
 	void Initialize() override;
-
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
+	void Shutdown() override;
 
 protected:
 	GTSL::Window window;

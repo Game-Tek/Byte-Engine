@@ -3,6 +3,8 @@
 #include "ByteEngine/Application/InputManager.h"
 #include <GTSL/Input.h>
 #include "ByteEngine/Debug/FunctionTimer.h"
+#include "ByteEngine/Resources/StaticMeshResourceManager.h"
+#include "ByteEngine/Resources/TextureResourceManager.h"
 
 void GameApplication::Initialize()
 {
@@ -35,6 +37,9 @@ void GameApplication::Initialize()
 	window.ShowWindow();
 
 	SetupInputSources();
+
+	resourceManagerInstance->CreateSubResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	resourceManagerInstance->CreateSubResourceManager<TextureResourceManager>("TextureResourceManager");
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
@@ -58,6 +63,11 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 		
 		default: break;
 	}
+}
+
+void GameApplication::Shutdown()
+{
+	Application::Shutdown();
 }
 
 void GameApplication::SetupInputSources()

@@ -106,6 +106,9 @@
       <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+    </ProjectReference>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Test|x64'">
     <ClCompile>
@@ -136,6 +139,9 @@
       <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+    </ProjectReference>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -171,6 +177,9 @@
       <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+    </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />

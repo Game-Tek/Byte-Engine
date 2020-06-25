@@ -42,9 +42,10 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 void Game::Shutdown()
 {
+	delete sandboxGameInstance;
+	GameApplication::Shutdown();
 }
 
 Game::~Game()
 {
-	delete sandboxGameInstance;
 }

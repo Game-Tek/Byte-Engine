@@ -40,9 +40,8 @@ namespace BE
 		logger = new Logger(logger_create_info);
 		
 		clockInstance = new Clock();
-		//resourceManagerInstance = new ResourceManager();
+		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
-
 	}
 
 	void Application::Shutdown()
@@ -53,7 +52,7 @@ namespace BE
 		}
 		
 		delete clockInstance;
-		//delete resourceManagerInstance;
+		delete resourceManagerInstance;
 		delete inputManagerInstance;
 
 		transientAllocator->LockedClear();

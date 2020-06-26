@@ -29,7 +29,7 @@ void Logger::Shutdown() const
 	logFile.CloseFile();
 }
 
-void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<GTSL::UTF8>& text) const
+void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const GTSL::UTF8>& text) const
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();
 

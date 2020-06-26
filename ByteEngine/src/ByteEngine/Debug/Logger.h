@@ -62,7 +62,7 @@ namespace BE
 		mutable UTF8* data{ nullptr };
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
-		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<char>& text) const;
+		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<const char>& text) const;
 
 		friend class FunctionTimer;
 		void logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken);

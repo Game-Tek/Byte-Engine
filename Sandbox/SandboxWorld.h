@@ -19,7 +19,7 @@ public:
 	
 	void DestroyWorld(const DestroyInfo& destroyInfo) override
 	{
-		destroyInfo.GameInstance->DestroyComponentCollection(testComponentCollectionReference);
+		//destroyInfo.GameInstance->DestroyComponentCollection(testComponentCollectionReference);
 	}
 	
 private:

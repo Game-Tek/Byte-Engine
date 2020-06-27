@@ -11,14 +11,11 @@ TestCollection::TestCollection() : numbers(8, &persistent_allocator)
 {
 }
 
-void TestCollection::CreateInstance(const CreateInstanceInfo& createInstanceInfo)
+uint32 TestCollection::CreateInstance(const CreateInstanceInfo& createInstanceInfo)
 {
+	return 0;
 }
 
 void TestCollection::DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo)
-{
-}
-
-void TestCollection::UpdateInstances(const UpdateInstancesInfo& updateInstancesInfo)
 {
 }

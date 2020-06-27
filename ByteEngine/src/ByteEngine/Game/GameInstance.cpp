@@ -17,7 +17,7 @@ GameInstance::GameInstance() : worlds(4, &persistent_allocator), systems(8, GetP
 GameInstance::~GameInstance()
 {
 	for(auto& e : worlds) { GTSL::Delete(e, GetPersistentAllocator()); }
-	GTSL::ForEach(systems, [&](const GTSL::Allocation<System>& system) { GTSL::Delete(system, GetPersistentAllocator()); });
+	GTSL::ForEach(systems, [&](const GTSL::Allocation<System>& system) { system->Shutdown(); GTSL::Delete(system, GetPersistentAllocator()); });
 	systems.Free(GetPersistentAllocator());
 	GTSL::ForEach(componentCollections, [&](const GTSL::Allocation<ComponentCollection>& componentCollection) { GTSL::Delete(componentCollection, GetPersistentAllocator()); });
 	componentCollections.Free(GetPersistentAllocator());
@@ -27,12 +27,6 @@ GameInstance::~GameInstance()
 void GameInstance::OnUpdate()
 {
 	PROFILE;
-	
-	GTSL::Array<World*, 64> world_pointers(worlds.GetLength());
-	for(auto& e : worlds) { world_pointers[&e - worlds.begin()] = e.Data; }
-
-	ForEach(systems, [&](GTSL::Allocation<System>& system) { system->Process(world_pointers); });
-	//GTSL::ForEach(componentCollections, [&](ComponentCollection*& collection) { collection->Process(worlds_range); });
 
 	TaskInfo task_info;
 	

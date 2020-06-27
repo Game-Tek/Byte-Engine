@@ -3,7 +3,6 @@
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
-#include "ByteEngine/Game/RenderSystem.h"
 
 void Game::Initialize()
 {
@@ -12,9 +11,7 @@ void Game::Initialize()
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
 	sandboxGameInstance = new SandboxGameInstance();
-	
-	GameInstance::CreateNewWorldInfo create_new_world_info;
-	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+	gameInstance = sandboxGameInstance;
 
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
@@ -28,6 +25,11 @@ void Game::Initialize()
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
 	renderer->InitializeRenderer(initialize_renderer_info);
+
+	gameInstance->AddComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
+
+	GameInstance::CreateNewWorldInfo create_new_world_info;
+	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 	
 	//show loading screen
 	//load menu

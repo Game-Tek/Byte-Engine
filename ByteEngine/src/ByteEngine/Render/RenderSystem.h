@@ -1,6 +1,6 @@
 #pragma once
 
-#include "System.h"
+#include "ByteEngine/Game/System.h"
 #include <GTSL/Ranger.h>
 
 #include <GAL/Vulkan/VulkanRenderDevice.h>
@@ -9,10 +9,6 @@
 namespace GTSL {
 	class Window;
 }
-
-using RenderDevice = GAL::VulkanRenderDevice;
-using RenderContext = GAL::VulkanRenderContext;
-using Queue = GAL::VulkanQueue;
 
 class RenderSystem : public System
 {
@@ -25,14 +21,15 @@ public:
 	};
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
-	void Process(const GTSL::Ranger<World*>& worlds) override
-	{
-	}
-	
 	void UpdateWindow(GTSL::Window& window);
 	
 	void Initialize() override;
 	void Shutdown() override;
+
+	using RenderDevice = GAL::VulkanRenderDevice;
+	using RenderContext = GAL::VulkanRenderContext;
+	using Queue = GAL::VulkanQueue;
+	
 private:
 	RenderDevice renderDevice;
 	RenderContext renderContext;

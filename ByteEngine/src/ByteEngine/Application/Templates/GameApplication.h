@@ -17,6 +17,7 @@ public:
 
 protected:
 	GTSL::Window window;
+	class GameInstance* gameInstance{ nullptr };
 
 	void SetupInputSources();
 	void RegisterMouse();

@@ -78,6 +78,8 @@ namespace BE
 		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
+
+		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
@@ -128,7 +130,8 @@ namespace BE
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
 		BE_DEBUG_ONLY(GTSL::String closeReason);
-		
+
+		uint64 applicationTicks{ 0 };
 	private:
 		inline static Application* applicationInstance{ nullptr };
 

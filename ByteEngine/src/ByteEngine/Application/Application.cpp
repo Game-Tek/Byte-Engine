@@ -103,6 +103,8 @@ namespace BE
 			OnUpdate(update_info);
 			
 			transientAllocator->Clear();
+
+			++applicationTicks;
 		}
 
 		return static_cast<int>(closeMode);

@@ -3,6 +3,8 @@
 #include <GTSL/Window.h>
 #include <Windows.h>
 
+#include "ByteEngine/Application/Application.h"
+
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
 	GAL::RenderDevice::CreateInfo createinfo;
@@ -32,11 +34,18 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	::new(&renderContext) RenderContext(render_context_create_info);
 }
 
-void RenderSystem::Initialize()
+void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
+	GTSL::Array<GTSL::Id64, 8> actsOn{ "RenderSystem" };
+	initializeInfo.GameInstance->AddTask("Test", GameInstance::AccessType::READ, GTSL::Delegate<void(const GameInstance::TaskInfo&)>::Create<RenderSystem, &RenderSystem::test>(this), actsOn, "Frame");
 }
 
 void RenderSystem::Shutdown()
 {
 	renderContext.Destroy(&renderDevice);
+}
+
+void RenderSystem::test(const GameInstance::TaskInfo& taskInfo)
+{
+	BE_LOG_SUCCESS("Test task was fired!")
 }

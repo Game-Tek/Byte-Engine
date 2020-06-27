@@ -56,6 +56,7 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	{
 		case UpdateContext::NORMAL:
 		{
+			gameInstance->OnUpdate();
 		} break;
 		
 		case UpdateContext::BACKGROUND:

@@ -19,6 +19,8 @@ void Game::Initialize()
 	};
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("W_Key"), GTSL::Id64("S_Key") });
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
+	
+	sandboxGameInstance->AddGoal("Frame");
 
 	auto renderer = sandboxGameInstance->AddSystem<RenderSystem>("RenderSystem");
 
@@ -30,7 +32,7 @@ void Game::Initialize()
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
-	
+
 	//show loading screen
 	//load menu
 	//show menu

@@ -1,7 +1,5 @@
 #include "TestCollection.h"
 
-#include <GTSL/Math/Math.hpp>
-
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
 

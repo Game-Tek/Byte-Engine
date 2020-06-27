@@ -9,7 +9,11 @@
 class System : public Object
 {
 public:
-	virtual void Initialize() = 0;
+	struct InitializeInfo
+	{
+		class GameInstance* GameInstance{ nullptr };
+	};
+	virtual void Initialize(const InitializeInfo& initializeInfo) = 0;
 
 	virtual void Shutdown() = 0;
 

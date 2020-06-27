@@ -6,6 +6,8 @@
 #include <GAL/Vulkan/VulkanRenderDevice.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
 
+#include "ByteEngine/Game/GameInstance.h"
+
 namespace GTSL {
 	class Window;
 }
@@ -23,7 +25,7 @@ public:
 	
 	void UpdateWindow(GTSL::Window& window);
 	
-	void Initialize() override;
+	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown() override;
 
 	using RenderDevice = GAL::VulkanRenderDevice;
@@ -35,4 +37,6 @@ private:
 	RenderContext renderContext;
 
 	Queue graphicsQueue;
+
+	void test(const GameInstance::TaskInfo& taskInfo);
 };

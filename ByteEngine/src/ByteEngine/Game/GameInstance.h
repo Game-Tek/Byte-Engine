@@ -22,7 +22,9 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		return static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
+		schedulerSystems.Emplace(GetPersistentAllocator(), systemName);
+		auto ret = static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
+		intiSystem(ret, systemName); return ret;
 	}
 
 	template<typename T>
@@ -83,6 +85,8 @@ private:
 			void AddTask(const GTSL::Delegate<void(const TaskInfo&)> function) { ParallelTasks.back().EmplaceBack(function); }
 			void AddNewTaskStack() { ParallelTasks.EmplaceBack(); }
 		};
+
+		SchedulerSystem();
 		
 		GTSL::Vector<Goal> goals;
 		bool nextNeedsNewStack = false;
@@ -92,4 +96,5 @@ private:
 	
 	void initWorld(uint8 worldId);
 	void initCollection(ComponentCollection* collection);
+	void intiSystem(System* system, GTSL::Id64 name);
 };

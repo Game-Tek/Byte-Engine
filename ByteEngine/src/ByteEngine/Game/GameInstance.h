@@ -89,7 +89,6 @@ private:
 		SchedulerSystem();
 		
 		GTSL::Vector<Goal> goals;
-		bool nextNeedsNewStack = true;
 	};
 	GTSL::FlatHashMap<SchedulerSystem> schedulerSystems;
 	GTSL::Vector<GTSL::Id64> goalNames;

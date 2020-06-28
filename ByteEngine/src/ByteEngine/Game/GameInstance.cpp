@@ -49,8 +49,18 @@ void GameInstance::AddTask(const GTSL::Id64 name, const AccessType accessType, c
 	for(auto system : actsOn)
 	{
 		auto& scheduler_system = schedulerSystems.At(system); auto& goal = scheduler_system.goals[i];
-		if (scheduler_system.nextNeedsNewStack) { goal.AddNewTaskStack(); scheduler_system.nextNeedsNewStack = accessType == AccessType::READ_WRITE; }
-		goal.AddTask(function);
+		
+		if (accessType == AccessType::READ_WRITE)
+		{
+			if (goal.ParallelTasks[goal.ParallelTasks.GetLength() - 1].GetLength() != 0) { goal.AddNewTaskStack(); }
+			goal.AddTask(function);
+			goal.AddNewTaskStack();
+		}
+		else
+		{
+			goal.AddTask(function);
+		}
+		
 	}
 }
 
@@ -72,6 +82,7 @@ void GameInstance::AddGoal(GTSL::Id64 name)
 
 GameInstance::SchedulerSystem::Goal::Goal() : ParallelTasks(8, &persistent_allocator)
 {
+	AddNewTaskStack();
 }
 
 void GameInstance::SchedulerSystem::Goal::AddTask(const GTSL::Delegate<void(const TaskInfo&)> function)

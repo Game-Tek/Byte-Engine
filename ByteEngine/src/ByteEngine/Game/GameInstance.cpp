@@ -2,7 +2,6 @@
 
 #include <GTSL/FixedVector.hpp>
 
-
 #include "ByteEngine/Application/Application.h"
 
 #include "System.h"
@@ -17,9 +16,9 @@ GameInstance::GameInstance() : worlds(4, &persistent_allocator), systems(8, GetP
 GameInstance::~GameInstance()
 {
 	for(auto& e : worlds) { GTSL::Delete(e, GetPersistentAllocator()); }
-	GTSL::ForEach(systems, [&](const GTSL::Allocation<System>& system) { system->Shutdown(); GTSL::Delete(system, GetPersistentAllocator()); });
+	GTSL::ForEach(systems, [&](const GTSL::Allocation<System>& system) { system->Shutdown(); Delete(system, GetPersistentAllocator()); });
 	systems.Free(GetPersistentAllocator());
-	GTSL::ForEach(componentCollections, [&](const GTSL::Allocation<ComponentCollection>& componentCollection) { GTSL::Delete(componentCollection, GetPersistentAllocator()); });
+	GTSL::ForEach(componentCollections, [&](const GTSL::Allocation<ComponentCollection>& componentCollection) { Delete(componentCollection, GetPersistentAllocator()); });
 	componentCollections.Free(GetPersistentAllocator());
 	schedulerSystems.Free(GetPersistentAllocator());
 }
@@ -30,16 +29,16 @@ void GameInstance::OnUpdate()
 
 	TaskInfo task_info;
 	
-	GTSL::ForEach(schedulerSystems, [&](const SchedulerSystem& schedulerSystem)
+	ForEach(schedulerSystems, [&](const SchedulerSystem& schedulerSystem)
+	{
+		for(const auto& goal : schedulerSystem.goals)
 		{
-			for(const auto& goal : schedulerSystem.goals)
+			for(const auto& parallel_tasks : goal.ParallelTasks)
 			{
-				for(const auto& parallel_tasks : goal.ParallelTasks)
-				{
-					for (auto task : parallel_tasks) { task(task_info); }
-				}
+				for (auto task : parallel_tasks) { task(task_info); }
 			}
-		});
+		}
+	});
 }
 
 void GameInstance::AddTask(const GTSL::Id64 name, const AccessType accessType, const GTSL::Delegate<void(const TaskInfo&)> function, const GTSL::Ranger<GTSL::Id64> actsOn, const GTSL::Id64 doneFor)
@@ -50,10 +49,8 @@ void GameInstance::AddTask(const GTSL::Id64 name, const AccessType accessType, c
 	for(auto system : actsOn)
 	{
 		auto& scheduler_system = schedulerSystems.At(system); auto& goal = scheduler_system.goals[i];
-
 		if (scheduler_system.nextNeedsNewStack) { goal.AddNewTaskStack(); scheduler_system.nextNeedsNewStack = accessType == AccessType::READ_WRITE; }
-		
-		goal.ParallelTasks[goal.ParallelTasks.GetLength() - 1].EmplaceBack(function);
+		goal.AddTask(function);
 	}
 }
 
@@ -64,7 +61,6 @@ void GameInstance::AddGoal(const GTSL::Id64 name, const GTSL::Id64 dependsOn)
 	for(auto goal_name : goalNames) { if(goal_name == dependsOn) { break; } } ++i;
 	
 	ForEach(schedulerSystems, [&](SchedulerSystem& schedulerSystem) { schedulerSystem.goals.Insert(i, SchedulerSystem::Goal()); });
-
 	goalNames.Insert(i, name);
 }
 
@@ -76,9 +72,16 @@ void GameInstance::AddGoal(GTSL::Id64 name)
 
 GameInstance::SchedulerSystem::Goal::Goal() : ParallelTasks(8, &persistent_allocator)
 {
-	for (uint32 i = 0; i < ParallelTasks.GetCapacity(); ++i) { (ParallelTasks.begin() + i)->Initialize(8, &persistent_allocator); }
+}
 
-	ParallelTasks.Resize(1);
+void GameInstance::SchedulerSystem::Goal::AddTask(const GTSL::Delegate<void(const TaskInfo&)> function)
+{
+	ParallelTasks[ParallelTasks.GetLength() - 1].EmplaceBack(function);
+}
+
+void GameInstance::SchedulerSystem::Goal::AddNewTaskStack()
+{
+	ParallelTasks.EmplaceBack(8, &persistent_allocator);
 }
 
 GameInstance::SchedulerSystem::SchedulerSystem() : goals(8, &persistent_allocator)
@@ -97,7 +100,7 @@ void GameInstance::initCollection(ComponentCollection* collection)
 	//collection->Initialize();
 }
 
-void GameInstance::intiSystem(System* system, GTSL::Id64 name)
+void GameInstance::initSystem(System* system, const GTSL::Id64 name)
 {
 	//Add all existing goals to the newly added system since thay also need to take into account all existing goal
 	//and since goals are per system thay need to be added like this

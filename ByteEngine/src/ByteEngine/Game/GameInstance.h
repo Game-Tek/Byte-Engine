@@ -24,7 +24,7 @@ public:
 	{
 		schedulerSystems.Emplace(GetPersistentAllocator(), systemName);
 		auto ret = static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
-		intiSystem(ret, systemName); return ret;
+		initSystem(ret, systemName); return ret;
 	}
 
 	template<typename T>
@@ -55,12 +55,12 @@ public:
 	}
 
 	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
-	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName, uint64& reference) { reference = componentCollections.GetReference(collectionName); return componentCollections.At(collectionName); }
-	class ComponentCollection* GetComponentCollection(const uint64 collectionReference) { return componentCollections[collectionReference]; }
+	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName, GTSL::FlatHashMap<GTSL::Allocation<ComponentCollection>>::ElementReference& reference) { reference = componentCollections.GetReference(collectionName); return componentCollections.At(collectionName); }
+	class ComponentCollection* GetComponentCollection(const GTSL::FlatHashMap<GTSL::Allocation<ComponentCollection>>::ElementReference collectionReference) { return componentCollections[collectionReference]; }
 
 	class System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
-	class System* GetSystem(const GTSL::Id64 systemName, uint64& reference) { reference = systems.GetReference(systemName); return systems.At(systemName); }
-	class System* GetSystem(const uint64 systemReference) { return systems[systemReference]; }
+	class System* GetSystem(const GTSL::Id64 systemName, GTSL::FlatHashMap<GTSL::Allocation<System>>::ElementReference& reference) { reference = systems.GetReference(systemName); return systems.At(systemName); }
+	class System* GetSystem(const GTSL::FlatHashMap<GTSL::Allocation<System>>::ElementReference systemReference) { return systems[systemReference]; }
 
 	struct TaskInfo
 	{
@@ -78,23 +78,23 @@ private:
 	{
 		struct Goal
 		{		
-			GTSL::Vector<GTSL::Vector<GTSL::Delegate<void(const TaskInfo&)>>> ParallelTasks;
-
 			Goal();
-			
-			void AddTask(const GTSL::Delegate<void(const TaskInfo&)> function) { ParallelTasks.back().EmplaceBack(function); }
-			void AddNewTaskStack() { ParallelTasks.EmplaceBack(); }
+
+			void AddTask(const GTSL::Delegate<void(const TaskInfo&)> function);
+			void AddNewTaskStack();
+
+			GTSL::Vector<GTSL::Vector<GTSL::Delegate<void(const TaskInfo&)>>> ParallelTasks;
 		};
 
 		SchedulerSystem();
 		
 		GTSL::Vector<Goal> goals;
-		bool nextNeedsNewStack = false;
+		bool nextNeedsNewStack = true;
 	};
 	GTSL::FlatHashMap<SchedulerSystem> schedulerSystems;
 	GTSL::Vector<GTSL::Id64> goalNames;
 	
 	void initWorld(uint8 worldId);
 	void initCollection(ComponentCollection* collection);
-	void intiSystem(System* system, GTSL::Id64 name);
+	void initSystem(System* system, GTSL::Id64 name);
 };

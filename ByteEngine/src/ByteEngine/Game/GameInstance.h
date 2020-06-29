@@ -6,6 +6,7 @@
 
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Id.h>
+#include <GTSL/Vector.hpp>
 
 class GameInstance : public Object
 {
@@ -22,7 +23,6 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		schedulerSystems.Emplace(GetPersistentAllocator(), systemName);
 		auto ret = static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
 		initSystem(ret, systemName); return ret;
 	}
@@ -40,7 +40,7 @@ public:
 	template<typename T>
 	WorldReference CreateNewWorld(const CreateNewWorldInfo& createNewWorldInfo)
 	{
-		auto index = worlds.EmplaceBack(GTSL::Allocation<World>::Create<T>(GetPersistentAllocator()));
+		auto index = worlds.EmplaceBack(GetPersistentAllocator(), GTSL::Allocation<World>::Create<T>(GetPersistentAllocator()));
 		initWorld(index); return index;
 	}
 
@@ -55,12 +55,7 @@ public:
 	}
 
 	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
-	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName, GTSL::FlatHashMap<GTSL::Allocation<ComponentCollection>>::ElementReference& reference) { reference = componentCollections.GetReference(collectionName); return componentCollections.At(collectionName); }
-	class ComponentCollection* GetComponentCollection(const GTSL::FlatHashMap<GTSL::Allocation<ComponentCollection>>::ElementReference collectionReference) { return componentCollections[collectionReference]; }
-
 	class System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
-	class System* GetSystem(const GTSL::Id64 systemName, GTSL::FlatHashMap<GTSL::Allocation<System>>::ElementReference& reference) { reference = systems.GetReference(systemName); return systems.At(systemName); }
-	class System* GetSystem(const GTSL::FlatHashMap<GTSL::Allocation<System>>::ElementReference systemReference) { return systems[systemReference]; }
 
 	struct TaskInfo
 	{
@@ -77,16 +72,18 @@ private:
 	struct SchedulerSystem
 	{
 		struct Goal
-		{		
-			Goal();
+		{
+			Goal() = default;
+			Goal(const GTSL::AllocatorReference& allocatorReference);
 
-			void AddTask(const GTSL::Delegate<void(const TaskInfo&)> function);
-			void AddNewTaskStack();
+			void AddTask(GTSL::Delegate<void(const TaskInfo&)> function, const GTSL::AllocatorReference& allocatorReference);
+			void AddNewTaskStack(const GTSL::AllocatorReference& allocatorReference);
 
 			GTSL::Vector<GTSL::Vector<GTSL::Delegate<void(const TaskInfo&)>>> ParallelTasks;
 		};
 
-		SchedulerSystem();
+		SchedulerSystem() = default;
+		SchedulerSystem(const GTSL::AllocatorReference& allocatorReference);
 		
 		GTSL::Vector<Goal> goals;
 	};

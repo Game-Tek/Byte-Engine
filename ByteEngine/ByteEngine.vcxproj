@@ -103,7 +103,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib;vulkan-1.lib;shaderc_shared.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
@@ -136,7 +136,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib;vulkan-1.lib;shaderc_shared.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
@@ -174,7 +174,7 @@
       </Command>
     </PostBuildEvent>
     <Lib>
-      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib</AdditionalDependencies>
+      <AdditionalDependencies>GTSL-$(Configuration)-$(Platform).lib;GAL-$(Configuration)-$(Platform).lib;assimp-vc140-mt.lib;vulkan-1.lib;shaderc_shared.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>ext/;</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>

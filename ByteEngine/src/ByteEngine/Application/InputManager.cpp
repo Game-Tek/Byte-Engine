@@ -6,14 +6,12 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-static BE::PersistentAllocatorReference allocator_reference("Input Manager");
-
 InputManager::InputManager()
 {
-	actionInputSourceRecords.Initialize(10, &allocator_reference);
-	characterInputSourceRecords.Initialize(10, &allocator_reference);
-	linearInputSourceRecords.Initialize(10, &allocator_reference);
-	vector2DInputSourceRecords.Initialize(10, &allocator_reference);
+	actionInputSourceRecords.Initialize(10, GetPersistentAllocator());
+	characterInputSourceRecords.Initialize(10, GetPersistentAllocator());
+	linearInputSourceRecords.Initialize(10, GetPersistentAllocator());
+	vector2DInputSourceRecords.Initialize(10, GetPersistentAllocator());
 }
 
 void InputManager::Update()
@@ -72,10 +70,10 @@ void InputManager::Update()
 		inputSource.LastTime = current_time;
 	}
 
-	actionInputSourceRecords.Resize(0);
-	characterInputSourceRecords.Resize(0);
-	linearInputSourceRecords.Resize(0);
-	vector2DInputSourceRecords.Resize(0);
+	actionInputSourceRecords.ResizeDown(0);
+	characterInputSourceRecords.ResizeDown(0);
+	linearInputSourceRecords.ResizeDown(0);
+	vector2DInputSourceRecords.ResizeDown(0);
 }
 
 void InputManager::RegisterActionInputSource(const GTSL::Id64 inputSourceName)
@@ -148,20 +146,20 @@ void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL
 
 void InputManager::RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue)
 {
-	actionInputSourceRecords.EmplaceBack(inputSourceName, newValue );
+	actionInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue );
 }
 
 void InputManager::RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue)
 {
-	characterInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	characterInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
 }
 
 void InputManager::RecordLinearInputSource(GTSL::Id64 inputSourceName, const LinearInputEvent::type newValue)
 {
-	linearInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	linearInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
 }
 
 void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue)
 {
-	vector2DInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	vector2DInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
 }

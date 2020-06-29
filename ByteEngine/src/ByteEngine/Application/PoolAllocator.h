@@ -42,7 +42,7 @@ public:
 		std::atomic<free_slots_type> slotsCount{ 0 };
 
 		byte* getSlotAddress(const uint32 slotIndex) const { return &slotsData[slotIndex * SLOTS_SIZE]; }
-		uint32 getSlotIndexFromPointer(void* pointer) const { return (static_cast<byte*>(pointer) - slotsData) / SLOTS_SIZE; }
+		uint64 getSlotIndexFromPointer(void* pointer) const { return (static_cast<byte*>(pointer) - slotsData) / SLOTS_SIZE; }
 
 		uint64 slotsDataAllocationSize() const { return static_cast<uint64>(MAX_SLOTS_COUNT) * SLOTS_SIZE; }
 		static uint64 slotsDataAllocationAlignment() { return alignof(uint64); }

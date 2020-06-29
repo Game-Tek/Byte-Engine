@@ -43,17 +43,17 @@ void StackAllocator::Block::Clear() { at = start; }
 bool StackAllocator::Block::FitsInBlock(const uint64 size, uint64 alignment) const { return at + size < end; }
 
 StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, const uint8 stackCount, const uint8 defaultBlocksPerStackCount, const uint64 blockSizes) :
-	blockSize(blockSizes), stacks(stackCount, allocatorReference), stacksMutexes(stackCount, allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)
+	blockSize(blockSizes), stacks(stackCount, *allocatorReference), stacksMutexes(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)
 {
 	uint64 allocated_size = 0;
 
 	for (uint8 stack = 0; stack < stackCount; ++stack)
 	{
-		stacks.EmplaceBack(defaultBlocksPerStackCount, allocatorReference);
+		stacks.EmplaceBack(*allocatorReference, defaultBlocksPerStackCount, *allocatorReference);
 
 		for (uint32 block = 0; block < defaultBlocksPerStackCount; ++block)
 		{
-			stacks[stack].EmplaceBack(); //construct a default block
+			stacks[stack].EmplaceBack(*allocatorReference); //construct a default block
 
 			stacks[stack][block].AllocateBlock(blockSizes, allocatorReference, allocated_size);
 
@@ -67,7 +67,7 @@ StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, con
 			}
 		}
 
-		stacksMutexes.EmplaceBack();
+		stacksMutexes.EmplaceBack(*allocatorReference);
 	}
 }
 
@@ -201,7 +201,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 		}
 	}
 
-	const auto last_block = stacks[i].EmplaceBack();
+	const auto last_block = stacks[i].EmplaceBack(*allocatorReference);
 	stacks[i][last_block].AllocateBlock(blockSize, allocatorReference, allocated_size);
 	stacks[i][last_block].AllocateInBlock(size, alignment, memory, allocated_size);
 	stacksMutexes[i].Unlock();

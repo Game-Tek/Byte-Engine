@@ -28,9 +28,7 @@ namespace BE
 	{
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 		
-		BE_DEBUG_ONLY(closeReason = GTSL::String(255, &systemAllocatorReference));
-		
-		transientAllocator = new StackAllocator(&systemAllocatorReference);
+		transientAllocator = new StackAllocator(&systemAllocatorReference, 2, 1, 70000);
 		poolAllocator = new PoolAllocator(&systemAllocatorReference);
 
 		Logger::LoggerCreateInfo logger_create_info;
@@ -42,6 +40,8 @@ namespace BE
 		clockInstance = new Clock();
 		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
+		
+		BE_DEBUG_ONLY(closeReason = GTSL::String(255, GetPersistentAllocator()));
 	}
 
 	void Application::Shutdown()
@@ -117,7 +117,7 @@ namespace BE
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason)
 	{
-		closeReason.Append(reason);
+		closeReason.Append(reason, GetPersistentAllocator());
 		flaggedForClose = true;
 		this->closeMode = closeMode;
 	}

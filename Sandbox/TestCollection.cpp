@@ -1,11 +1,8 @@
 #include "TestCollection.h"
 
 #include "ByteEngine/Core.h"
-#include "ByteEngine/Application/AllocatorReferences.h"
 
-static BE::PersistentAllocatorReference persistent_allocator("Test Collection");
-
-TestCollection::TestCollection() : numbers(8, &persistent_allocator)
+TestCollection::TestCollection() : numbers(8, GetPersistentAllocator())
 {
 }
 

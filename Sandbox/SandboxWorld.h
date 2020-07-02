@@ -1,6 +1,5 @@
 #pragma once
 
-#include "TestCollection.h"
 #include "ByteEngine/Game/World.h"
 #include "ByteEngine/Render/RenderStaticMeshCollection.h"
 #include "ByteEngine/Render/RenderSystem.h"
@@ -19,9 +18,10 @@ public:
 		ComponentCollection::CreateInstanceInfo create_instance_info;
 		auto component = collection->CreateInstance(create_instance_info);
 
-		//collection->SetMesh(component, "FireHydrant");
+		collection->SetMesh(component, "hydrant");
 
 		auto renderer = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"));
+		renderer->AddStaticMeshes(0, 1);
 	}
 	
 	void DestroyWorld(const DestroyInfo& destroyInfo) override

@@ -39,6 +39,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	render_context_create_info.SystemData = &window_data;
 	::new(&renderContext) RenderContext(render_context_create_info);
 
+	initializeRenderer.Window->GetFramebufferExtent(renderArea);
+	
 	RenderPass::CreateInfo render_pass_create_info;
 	render_pass_create_info.RenderDevice = &renderDevice;
 	render_pass_create_info.Descriptor.DepthStencilAttachmentAvailable = false;
@@ -109,8 +111,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	{
 		imagesAvailable.EmplaceBack(Semaphore::CreateInfo{ &renderDevice });
 		rendersFinished.EmplaceBack(Semaphore::CreateInfo{ &renderDevice });
-		inFlightFences.EmplaceBack(Fence::CreateInfo{ &renderDevice });
-		imagesInFlight.EmplaceBack(Fence::CreateInfo{ &renderDevice });
+		inFlightFences.EmplaceBack(Fence::CreateInfo{ &renderDevice, false });
+		imagesInFlight.EmplaceBack(Fence::CreateInfo{ &renderDevice, false });
 		
 		commandBuffers.EmplaceBack(CommandBuffer::CreateInfo{ &renderDevice, true, &graphicsQueue });
 		
@@ -126,7 +128,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
-	buffer_create_info.BufferType = static_cast<uint32>(BufferType::VERTEX) | static_cast<uint32>(BufferType::INDEX);
+	buffer_create_info.BufferType = static_cast<uint32>(BufferType::TRANSFER_SOURCE);
 	buffer_create_info.Size = 4 * 1024 * 1024;
 	::new(&stagingMesh) Buffer(buffer_create_info);
 
@@ -149,8 +151,8 @@ void RenderSystem::AddStaticMeshes(uint32 start, uint32 end)
 {
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_mesh_info;
 	load_static_mesh_info.OnStaticMeshLoad = GTSL::Delegate<void(StaticMeshResourceManager::OnStaticMeshLoad)>::Create<RenderSystem, &RenderSystem::staticMeshLoaded>(this);
-	load_static_mesh_info.MeshDataBuffer = GTSL::Ranger<byte>(8192, static_cast<byte*>(mappedMemoryPointer));
-	load_static_mesh_info.Name = reinterpret_cast<RenderStaticMeshCollection*>(BE::Application::Get()->GetGameInstance()->GetComponentCollection("StaticMeshCollection"))->ResourceNames[start];
+	load_static_mesh_info.MeshDataBuffer = GTSL::Ranger<byte>(4 * 1024 * 1024, static_cast<byte*>(mappedMemoryPointer));
+	load_static_mesh_info.Name = reinterpret_cast<RenderStaticMeshCollection*>(BE::Application::Get()->GetGameInstance()->GetComponentCollection("RenderStaticMeshCollection"))->ResourceNames[start];
 	static_cast<StaticMeshResourceManager*>(BE::Application::Get()->GetResourceManager()->GetSubResourceManager("StaticMeshResourceManager"))->LoadStaticMesh(load_static_mesh_info);
 }
 
@@ -205,6 +207,12 @@ void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
 	reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[renderContext.GetCurrentImage()]);
 	Fence::ResetFences(reset_fences_info);
 
+	commandBuffers[renderContext.GetCurrentImage()].BindGraphicsPipeline(CommandBuffer::BindGraphicsPipelineInfo{&renderDevice, &graphicsPipeline, renderArea});
+	
+	commandBuffers[renderContext.GetCurrentImage()].BindIndexBuffer(CommandBuffer::BindIndexBufferInfo{&renderDevice, &deviceMesh, indecesOffset});
+	commandBuffers[renderContext.GetCurrentImage()].BindVertexBuffer(CommandBuffer::BindVertexBufferInfo{&renderDevice, &deviceMesh, 0});
+	commandBuffers[renderContext.GetCurrentImage()].DrawIndexed({ &renderDevice, indexCount, 1 });
+	
 	Queue::SubmitInfo submit_info;
 	submit_info.RenderDevice = &renderDevice;
 	submit_info.Fence = &inFlightFences[renderContext.GetCurrentImage()];
@@ -222,23 +230,40 @@ void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
 
 void RenderSystem::staticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
+	commandBuffers[renderContext.GetCurrentImage()].BeginRecording({});
+	
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
-	buffer_create_info.BufferType = static_cast<uint32>(BufferType::VERTEX) | static_cast<uint32>(BufferType::INDEX);
+	buffer_create_info.BufferType = static_cast<uint32>(BufferType::VERTEX) | static_cast<uint32>(BufferType::INDEX) | static_cast<uint32>(BufferType::TRANSFER_DESTINATION);
 	buffer_create_info.Size = onStaticMeshLoad.MeshDataBuffer.Bytes();
 	::new(&deviceMesh) Buffer(buffer_create_info);
 
 	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
-	renderDevice.GetBufferMemoryRequirements(&stagingMesh, buffer_memory_requirements);
+	renderDevice.GetBufferMemoryRequirements(&deviceMesh, buffer_memory_requirements);
 	auto memory_type = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, (uint32)MemoryType::GPU);
 	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Size = onStaticMeshLoad.MeshDataBuffer.Bytes();
+	memory_create_info.Size = buffer_memory_requirements.Size;
 	memory_create_info.MemoryType = memory_type;
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
 
 	deviceMesh.BindToMemory(Buffer::BindMemoryInfo{ &renderDevice, &deviceMemory, 0 });
 	
 	commandBuffers[renderContext.GetCurrentImage()].CopyBuffers({&renderDevice, &stagingMesh, 0, &deviceMesh, 0, static_cast<uint32>(onStaticMeshLoad.MeshDataBuffer.Bytes())});
+
+	indexCount = onStaticMeshLoad.IndexCount;
+	indecesOffset = onStaticMeshLoad.IndexCount * sizeof(uint16);
+
+	commandBuffers[renderContext.GetCurrentImage()].EndRecording({});
+
+	Queue::SubmitInfo submit_info{};
+	submit_info.RenderDevice = &renderDevice;
+
+	GTSL::Array<uint32, 8> wps{ (uint32)GAL::PipelineStage::TOP_OF_PIPE };
+	
+	submit_info.WaitPipelineStages = wps;
+	submit_info.Fence = &inFlightFences[renderContext.GetCurrentImage()];
+	submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffers[renderContext.GetCurrentImage()]);
+	graphicsQueue.Submit(submit_info);
 }

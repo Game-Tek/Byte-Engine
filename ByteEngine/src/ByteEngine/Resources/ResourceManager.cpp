@@ -11,6 +11,7 @@ GTSL::StaticString<256> ResourceManager::GetResourcePath() const
 {
 	GTSL::StaticString<256> path;
 	path += BE::Application::Get()->GetSystemApplication()->GetPathToExecutable();
-	path.Drop(path.FindLast('/'));
+	path.Drop(path.FindLast('/') + 1);
+	path += "resources/";
 	return path;
 }

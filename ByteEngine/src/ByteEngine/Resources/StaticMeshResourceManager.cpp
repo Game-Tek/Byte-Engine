@@ -13,7 +13,6 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 {
 	GTSL::StaticString<1024> path;
 	path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
-	path += '/';
 	path += loadStaticMeshInfo.Name;
 	path += ".obj";
 
@@ -84,8 +83,8 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	}
 
 	OnStaticMeshLoad on_static_mesh_load;
-	on_static_mesh_load.MeshDataBuffer = range;
 	on_static_mesh_load.IndexCount = index_count;
 	on_static_mesh_load.VertexCount = InMesh->mNumVertices;
+	on_static_mesh_load.MeshDataBuffer = GTSL::Ranger<byte>(index_count * sizeof(uint16) + InMesh->mNumVertices * sizeof(Vertex), range.begin());
 	loadStaticMeshInfo.OnStaticMeshLoad(on_static_mesh_load);
 }

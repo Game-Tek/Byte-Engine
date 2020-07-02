@@ -83,6 +83,10 @@ private:
 	DeviceMemory mappedDeviceMemory;
 	DeviceMemory deviceMemory;
 
+	uint32 indexCount, indecesOffset;
+
+	GTSL::Extent2D renderArea;
+
 	void* mappedMemoryPointer = nullptr;
 
 	void render(const GameInstance::TaskInfo& taskInfo);

@@ -14,6 +14,14 @@ InputManager::InputManager()
 	vector2DInputSourceRecords.Initialize(10, GetPersistentAllocator());
 }
 
+InputManager::~InputManager()
+{
+	actionInputSourceRecords.Free(GetPersistentAllocator());
+	characterInputSourceRecords.Free(GetPersistentAllocator());
+	linearInputSourceRecords.Free(GetPersistentAllocator());
+	vector2DInputSourceRecords.Free(GetPersistentAllocator());
+}
+
 void InputManager::Update()
 {
 	GTSL::Microseconds current_time{ 0 };

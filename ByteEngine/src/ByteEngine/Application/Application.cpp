@@ -50,6 +50,8 @@ namespace BE
 		{
 			BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
 		}
+
+		closeReason.Free(GetPersistentAllocator());
 		
 		delete clockInstance;
 		delete resourceManagerInstance;

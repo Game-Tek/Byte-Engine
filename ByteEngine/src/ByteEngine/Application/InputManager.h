@@ -42,7 +42,7 @@ public:
 	using QuaternionInputEvent = InputEvent<GTSL::Quaternion>;
 	
 	InputManager();
-	~InputManager() = default;
+	~InputManager();
 
 	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
 	

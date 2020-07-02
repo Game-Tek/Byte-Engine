@@ -31,6 +31,8 @@ public:
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
 	void UpdateWindow(GTSL::Window& window);
+
+	void AddStaticMeshes(uint32 start, uint32 end);
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown() override;
@@ -47,6 +49,7 @@ public:
 	using Fence = GAL::VulkanFence;
 	using Semaphore = GAL::VulkanSemaphore;
 	using Image = GAL::VulkanImage;
+	using ImageView = GAL::VulkanImageView;
 	using Shader = GAL::VulkanShader;
 
 	using QueueCapabilities = GAL::VulkanQueueCapabilities;
@@ -66,7 +69,7 @@ private:
 
 	GTSL::Array<GTSL::RGBA, 3> clearValues;
 
-	GTSL::Array<Image, 5> swapchainImages;
+	GTSL::Array<ImageView, 5> swapchainImages;
 	
 	GTSL::Array<Semaphore, 3> imagesAvailable;
 	GTSL::Array<Semaphore, 3> rendersFinished;

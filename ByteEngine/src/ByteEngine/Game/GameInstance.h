@@ -78,6 +78,7 @@ private:
 
 			void AddTask(GTSL::Delegate<void(const TaskInfo&)> function, const GTSL::AllocatorReference& allocatorReference);
 			void AddNewTaskStack(const GTSL::AllocatorReference& allocatorReference);
+			[[nodiscard]] bool IsLastStackEmpty() const { return ParallelTasks.back().GetLength() == 0; }
 
 			GTSL::Vector<GTSL::Vector<GTSL::Delegate<void(const TaskInfo&)>>> ParallelTasks;
 		};

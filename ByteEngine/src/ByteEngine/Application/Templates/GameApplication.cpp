@@ -3,10 +3,9 @@
 #include "ByteEngine/Application/InputManager.h"
 #include <GTSL/Input.h>
 #include "ByteEngine/Debug/FunctionTimer.h"
-#include "ByteEngine/Game/GameInstance.h"
-#include "ByteEngine/Render/RenderStaticMeshCollection.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
+#include "ByteEngine/Game/GameInstance.h"
 
 void GameApplication::Initialize()
 {

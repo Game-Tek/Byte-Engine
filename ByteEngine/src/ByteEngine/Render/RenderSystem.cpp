@@ -3,8 +3,13 @@
 #include <GTSL/Window.h>
 #include <Windows.h>
 
+
+#include "RenderStaticMeshCollection.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
+#include "ByteEngine/Game/ComponentCollection.h"
+
+class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
@@ -21,7 +26,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	render_context_create_info.RenderDevice = &renderDevice;
 	render_context_create_info.DesiredFramesInFlight = 2;
 	render_context_create_info.PresentMode = static_cast<uint32>(PresentMode::FIFO);
-	render_context_create_info.Format = (uint32)ImageFormat::RGBA_I8;
+	render_context_create_info.Format = (uint32)ImageFormat::BGRA_I8;
 	render_context_create_info.ColorSpace = (uint32)ColorSpace::NONLINEAR_SRGB;
 	GTSL::Extent2D window_extent;
 	initializeRenderer.Window->GetFramebufferExtent(window_extent);
@@ -38,11 +43,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	render_pass_create_info.RenderDevice = &renderDevice;
 	render_pass_create_info.Descriptor.DepthStencilAttachmentAvailable = false;
 	GTSL::Array<GAL::AttachmentDescriptor, 8> attachment_descriptors;
-	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::RGB_I8, GAL::RenderTargetLoadOperations::UNDEFINED, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::COLOR_ATTACHMENT, GAL::ImageLayout::PRESENTATION });
-	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::RGB_I8, GAL::RenderTargetLoadOperations::UNDEFINED, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::COLOR_ATTACHMENT, GAL::ImageLayout::PRESENTATION });
+	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::BGRA_I8, GAL::RenderTargetLoadOperations::UNDEFINED, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::COLOR_ATTACHMENT, GAL::ImageLayout::PRESENTATION });
 	render_pass_create_info.Descriptor.RenderPassColorAttachments = attachment_descriptors;
 	GTSL::Array<GAL::AttachmentReference, 8> attachment_references;
-	attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
 	attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
 	GTSL::Array<GAL::SubPassDescriptor, 8> sub_pass_descriptors;
 	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), attachment_references, GTSL::Ranger<uint8>(), nullptr });
@@ -52,6 +55,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	
 	RenderContext::GetImagesInfo get_images_info;
 	get_images_info.RenderDevice = &renderDevice;
+	get_images_info.SwapchainImagesFormat = (uint32)ImageFormat::BGRA_I8;
 	swapchainImages = renderContext.GetImages(get_images_info);
 
 	GraphicsPipeline::CreateInfo pipeline_create_info{};
@@ -114,24 +118,59 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		framebuffer_create_info.RenderDevice = &renderDevice;
 		framebuffer_create_info.RenderPass = &renderPass;
 		framebuffer_create_info.Extent = window_extent;
-		framebuffer_create_info.Images = GTSL::Ranger<const Image>(1, &swapchainImages[i]);
+		framebuffer_create_info.ImageViews = GTSL::Ranger<const ImageView>(1, &swapchainImages[i]);
 		framebuffer_create_info.ClearValues = clearValues;
 
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 	}
+
+	Buffer::CreateInfo buffer_create_info;
+	buffer_create_info.RenderDevice = &renderDevice;
+	buffer_create_info.BufferType = static_cast<uint32>(BufferType::VERTEX) | static_cast<uint32>(BufferType::INDEX);
+	buffer_create_info.Size = 4 * 1024 * 1024;
+	::new(&stagingMesh) Buffer(buffer_create_info);
+
+	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
+	renderDevice.GetBufferMemoryRequirements(&stagingMesh, buffer_memory_requirements);
+
+	auto memory_type = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, (uint32)MemoryType::SHARED | (uint32)MemoryType::COHERENT);
+
+	DeviceMemory::CreateInfo scratch_memory_create_info;
+	scratch_memory_create_info.RenderDevice = &renderDevice;
+	scratch_memory_create_info.Size = buffer_create_info.Size;
+	scratch_memory_create_info.MemoryType = memory_type;
+	::new(&mappedDeviceMemory) DeviceMemory(scratch_memory_create_info);
+	mappedMemoryPointer = mappedDeviceMemory.Map(DeviceMemory::MapInfo{ &renderDevice, buffer_create_info.Size, 0 });
+
+	stagingMesh.BindToMemory(Buffer::BindMemoryInfo{ &renderDevice, &mappedDeviceMemory, 0 });
+}
+
+void RenderSystem::AddStaticMeshes(uint32 start, uint32 end)
+{
+	StaticMeshResourceManager::LoadStaticMeshInfo load_static_mesh_info;
+	load_static_mesh_info.OnStaticMeshLoad = GTSL::Delegate<void(StaticMeshResourceManager::OnStaticMeshLoad)>::Create<RenderSystem, &RenderSystem::staticMeshLoaded>(this);
+	load_static_mesh_info.MeshDataBuffer = GTSL::Ranger<byte>(8192, static_cast<byte*>(mappedMemoryPointer));
+	load_static_mesh_info.Name = reinterpret_cast<RenderStaticMeshCollection*>(BE::Application::Get()->GetGameInstance()->GetComponentCollection("StaticMeshCollection"))->ResourceNames[start];
+	static_cast<StaticMeshResourceManager*>(BE::Application::Get()->GetResourceManager()->GetSubResourceManager("StaticMeshResourceManager"))->LoadStaticMesh(load_static_mesh_info);
 }
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	GTSL::Array<GTSL::Id64, 8> actsOn{ "RenderSystem" };
-	initializeInfo.GameInstance->AddTask("Test", GameInstance::AccessType::READ, GTSL::Delegate<void(const GameInstance::TaskInfo&)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "Frame");
+	//initializeInfo.GameInstance->AddTask(__FUNCTION__, GameInstance::AccessType::READ,
+//		GTSL::Delegate<void(const GameInstance::TaskInfo&)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "Frame");
 }
 
 void RenderSystem::Shutdown()
 {
+	stagingMesh.Destroy(&renderDevice);
+	deviceMesh.Destroy(&renderDevice);
+	
 	mappedDeviceMemory.Unmap(DeviceMemory::UnmapInfo{ &renderDevice });
 	mappedDeviceMemory.Destroy(&renderDevice);
 	deviceMemory.Destroy(&renderDevice);
+
+	graphicsPipeline.Destroy(&renderDevice);
 	
 	renderPass.Destroy(&renderDevice);
 	renderContext.Destroy(&renderDevice);
@@ -143,6 +182,8 @@ void RenderSystem::Shutdown()
 	
 	for(auto& e : commandBuffers) { e.Destroy(&renderDevice); }
 	for (auto& e : frameBuffers) { e.Destroy(&renderDevice); }
+
+	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 }
 
 void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
@@ -157,10 +198,12 @@ void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
 	RenderContext::AcquireNextImageInfo acquire_next_image_info;
 	acquire_next_image_info.RenderDevice = &renderDevice;
 	acquire_next_image_info.Semaphore = &imagesAvailable[renderContext.GetCurrentImage()];
-	//acquire_next_image_info.Fence = &renderFinished[renderContext.GetCurrentImage()];
 	renderContext.AcquireNextImage(acquire_next_image_info);
 
-	inFlightFences[renderContext.GetCurrentImage()]; //reset fence
+	Fence::ResetFencesInfo reset_fences_info;
+	reset_fences_info.RenderDevice = &renderDevice;
+	reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[renderContext.GetCurrentImage()]);
+	Fence::ResetFences(reset_fences_info);
 
 	Queue::SubmitInfo submit_info;
 	submit_info.RenderDevice = &renderDevice;
@@ -183,32 +226,19 @@ void RenderSystem::staticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad 
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.BufferType = static_cast<uint32>(BufferType::VERTEX) | static_cast<uint32>(BufferType::INDEX);
 	buffer_create_info.Size = onStaticMeshLoad.MeshDataBuffer.Bytes();
-	::new(&stagingMesh) Buffer(buffer_create_info);
+	::new(&deviceMesh) Buffer(buffer_create_info);
 
 	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
 	renderDevice.GetBufferMemoryRequirements(&stagingMesh, buffer_memory_requirements);
-
-	auto memory_type = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, (uint32)MemoryType::SHARED | (uint32)MemoryType::COHERENT);
-	
-	DeviceMemory::CreateInfo scratch_memory_create_info;
-	scratch_memory_create_info.RenderDevice = &renderDevice;
-	scratch_memory_create_info.Size = 8192;
-	scratch_memory_create_info.MemoryType = memory_type;
-	::new(&mappedDeviceMemory) DeviceMemory(scratch_memory_create_info);
-	mappedMemoryPointer = mappedDeviceMemory.Map(DeviceMemory::MapInfo{ &renderDevice, 8192, 0 });
-
-	::new(&deviceMesh) Buffer(buffer_create_info);
-	
-	memory_type = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, (uint32)MemoryType::GPU);
+	auto memory_type = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, (uint32)MemoryType::GPU);
 	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Size = 8192;
+	memory_create_info.Size = onStaticMeshLoad.MeshDataBuffer.Bytes();
 	memory_create_info.MemoryType = memory_type;
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
 
 	deviceMesh.BindToMemory(Buffer::BindMemoryInfo{ &renderDevice, &deviceMemory, 0 });
-	stagingMesh.BindToMemory(Buffer::BindMemoryInfo{ &renderDevice, &mappedDeviceMemory, 0 });
 	
 	commandBuffers[renderContext.GetCurrentImage()].CopyBuffers({&renderDevice, &stagingMesh, 0, &deviceMesh, 0, static_cast<uint32>(onStaticMeshLoad.MeshDataBuffer.Bytes())});
 }

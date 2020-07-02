@@ -10,7 +10,7 @@ public:
 	ComponentReference CreateInstance(const CreateInstanceInfo& createInstanceInfo) override { return 0; }
 	void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) override {};
 
-	void SetMesh(ComponentReference componentReference, const GTSL::StaticString<128>& renderMeshName) { Strings.EmplaceBack(renderMeshName); }
+	void SetMesh(ComponentReference componentReference, const GTSL::StaticString<128>& renderMeshName) { ResourceNames.EmplaceBack(renderMeshName); }
 
-	GTSL::Array<GTSL::StaticString<128>, 16> Strings;
+	GTSL::Array<GTSL::StaticString<128>, 16> ResourceNames;
 };

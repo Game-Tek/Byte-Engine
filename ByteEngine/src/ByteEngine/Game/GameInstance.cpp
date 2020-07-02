@@ -15,12 +15,14 @@ GameInstance::GameInstance() : worlds(4, GetPersistentAllocator()), systems(8, G
 
 GameInstance::~GameInstance()
 {
-	for(auto& e : worlds) { GTSL::Delete(e, GetPersistentAllocator()); }
+	goalNames.Free(GetPersistentAllocator());
+	for(auto& e : worlds) { Delete(e, GetPersistentAllocator()); }
 	ForEach(systems, [&](const GTSL::Allocation<System>& system) { system->Shutdown(); Delete(system, GetPersistentAllocator()); });
 	systems.Free(GetPersistentAllocator());
 	ForEach(componentCollections, [&](const GTSL::Allocation<ComponentCollection>& componentCollection) { Delete(componentCollection, GetPersistentAllocator()); });
 	componentCollections.Free(GetPersistentAllocator());
 	schedulerSystems.Free(GetPersistentAllocator());
+	worlds.Free(GetPersistentAllocator());
 }
 
 void GameInstance::OnUpdate()
@@ -52,7 +54,7 @@ void GameInstance::AddTask(const GTSL::Id64 name, const AccessType accessType, c
 		
 		if (accessType == AccessType::READ_WRITE)
 		{
-			if (goal.ParallelTasks[goal.ParallelTasks.GetLength() - 1].GetLength() != 0) { goal.AddNewTaskStack(GetPersistentAllocator()); }
+			if (!goal.IsLastStackEmpty()) { goal.AddNewTaskStack(GetPersistentAllocator()); }
 			goal.AddTask(function, GetPersistentAllocator());
 			goal.AddNewTaskStack(GetPersistentAllocator());
 		}
@@ -60,7 +62,6 @@ void GameInstance::AddTask(const GTSL::Id64 name, const AccessType accessType, c
 		{
 			goal.AddTask(function, GetPersistentAllocator());
 		}
-		
 	}
 }
 
@@ -87,7 +88,7 @@ GameInstance::SchedulerSystem::Goal::Goal(const GTSL::AllocatorReference& alloca
 
 void GameInstance::SchedulerSystem::Goal::AddTask(const GTSL::Delegate<void(const TaskInfo&)> function, const GTSL::AllocatorReference& allocatorReference)
 {
-	ParallelTasks[ParallelTasks.GetLength() - 1].EmplaceBack(allocatorReference, function);
+	ParallelTasks.back().EmplaceBack(allocatorReference, function);
 }
 
 void GameInstance::SchedulerSystem::Goal::AddNewTaskStack(const GTSL::AllocatorReference& allocatorReference)
@@ -116,7 +117,7 @@ void GameInstance::initSystem(System* system, const GTSL::Id64 name)
 	schedulerSystems.Emplace(GetPersistentAllocator(), name, GetPersistentAllocator());
 	
 	//Add all existing goals to the newly added system since thay also need to take into account all existing goal
-	//and since goals are per system thay need to be added like this
+	//and since goals are per system they need to be added like this
 	auto& sys = schedulerSystems.At(name);
 	for (uint32 i = 0; i < goalNames.GetLength(); ++i) { sys.goals.EmplaceBack(GetPersistentAllocator(), GetPersistentAllocator()); }
 	

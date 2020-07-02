@@ -19,6 +19,8 @@
 
 class InputManager;
 
+class GameInstance;
+
 namespace BE
 {	
 	/**
@@ -78,7 +80,8 @@ namespace BE
 		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
-
+		class GameInstance* GetGameInstance() const { return gameInstance; }
+		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
@@ -111,6 +114,8 @@ namespace BE
 	protected:
 		Logger* logger{ nullptr };
 
+		GameInstance* gameInstance{nullptr};
+		
 		SystemAllocatorReference systemAllocatorReference;
 
 		SystemAllocator* systemAllocator{ nullptr };

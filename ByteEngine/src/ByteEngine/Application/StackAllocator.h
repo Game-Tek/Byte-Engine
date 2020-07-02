@@ -1,12 +1,11 @@
 #pragma once
 
-#include <atomic>
-
 #include "ByteEngine/Core.h"
 
 #include <unordered_map>
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
+#include <GTSL/Atomic.hpp>
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Vector.hpp>
 
@@ -100,7 +99,7 @@ public:
 	};
 protected:
 	const uint64 blockSize{ 0 };
-	std::atomic<uint8> stackIndex{ 0 };
+	GTSL::Atomic<uint64> stackIndex{ 0 };
 	GTSL::Vector<GTSL::Vector<Block>> stacks;
 	GTSL::Vector<GTSL::Mutex> stacksMutexes;
 	GTSL::AllocatorReference* allocatorReference{ nullptr };

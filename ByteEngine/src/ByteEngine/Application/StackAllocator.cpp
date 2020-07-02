@@ -258,11 +258,17 @@ void StackAllocator::Free()
 				++totalAllocatorDeallocationsCount;
 			}
 		}
+
+		stack.Free(*allocatorReference);
 	}
 
+	stacks.Free(*allocatorReference);
+	
 	if constexpr (BE_DEBUG)
 	{
 		allocatorDeallocatedBytes += freed_bytes;
 		totalAllocatorDeallocatedBytes += freed_bytes;
 	}
+
+	stacksMutexes.Free(*allocatorReference);
 }

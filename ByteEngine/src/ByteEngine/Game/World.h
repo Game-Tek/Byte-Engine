@@ -4,8 +4,6 @@
 
 class World : public Object
 {
-	float worldTimeMultiplier = 1;
-
 public:
 	World();
 	virtual ~World() = default;
@@ -27,4 +25,8 @@ public:
 	virtual void Pause();
 
 	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
+
+protected:
+	float worldTimeMultiplier = 1;
+
 };

@@ -68,8 +68,6 @@
   <ItemGroup>
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\ByteEngine\Application\Input\JoystickState.h" />
-    <ClInclude Include="src\ByteEngine\Application\Input\MouseState.h" />
     <ClInclude Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\ByteEngine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\ByteEngine\Application\Application.h">
@@ -80,10 +78,6 @@
     </ClInclude>
     <ClInclude Include="src\ByteEngine\Application\CommandMap.h" />
     <ClInclude Include="src\ByteEngine\Application\Console.h" />
-    <ClInclude Include="src\ByteEngine\Application\EntryPoint.h">
-      <Filter>Engine\Application</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ByteEngine\Application\EventManager.h" />
     <ClInclude Include="src\ByteEngine\Application\InputManager.h">
       <Filter>Engine\InputManager</Filter>
     </ClInclude>
@@ -137,10 +131,13 @@
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderStaticMeshCollection.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
+    <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
+    <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
+    <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
+    <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\ByteEngine\Application\Input\InputEnums.h" />
     <ClCompile Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Application.cpp">
       <Filter>Engine\Application</Filter>
@@ -173,5 +170,6 @@
     <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
   </ItemGroup>
 </Project>

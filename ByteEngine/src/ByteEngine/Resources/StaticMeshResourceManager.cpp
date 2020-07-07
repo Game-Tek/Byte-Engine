@@ -61,16 +61,19 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 			vertices[i].TextCoord.V() = InMesh->mTextureCoords[0][i].y;
 		}
 
-		vertices[i].Tangent.X = InMesh->mTangents[i].x;
-		vertices[i].Tangent.Y = InMesh->mTangents[i].y;
-		vertices[i].Tangent.Z = InMesh->mTangents[i].z;
-
-		vertices[i].BiTangent.X = InMesh->mBitangents[i].x;
-		vertices[i].BiTangent.Y = InMesh->mBitangents[i].y;
-		vertices[i].BiTangent.Z = InMesh->mBitangents[i].z;
+		//vertices[i].Tangent.X = InMesh->mTangents[i].x;
+		//vertices[i].Tangent.Y = InMesh->mTangents[i].y;
+		//vertices[i].Tangent.Z = InMesh->mTangents[i].z;
+		//
+		//vertices[i].BiTangent.X = InMesh->mBitangents[i].x;
+		//vertices[i].BiTangent.Y = InMesh->mBitangents[i].y;
+		//vertices[i].BiTangent.Z = InMesh->mBitangents[i].z;
 	}
 
-	auto indeces = ::new(vertices + ai_scene->mMeshes[0]->mNumVertices) uint16[InMesh->mNumFaces * 3];
+	auto normal = vertices + ai_scene->mMeshes[0]->mNumVertices;
+	auto aligned = GTSL::AlignPointer(256, vertices + ai_scene->mMeshes[0]->mNumVertices);
+	
+	auto indeces = ::new(aligned) uint16[InMesh->mNumFaces * 3];
 	uint32 index_count{ 0 };
 	
 	for (uint32 f = 0; f < InMesh->mNumFaces; ++f)
@@ -83,8 +86,10 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	}
 
 	OnStaticMeshLoad on_static_mesh_load;
+	on_static_mesh_load.Vertex = vertices;
+	on_static_mesh_load.Indices = indeces;
 	on_static_mesh_load.IndexCount = index_count;
 	on_static_mesh_load.VertexCount = InMesh->mNumVertices;
-	on_static_mesh_load.MeshDataBuffer = GTSL::Ranger<byte>(index_count * sizeof(uint16) + InMesh->mNumVertices * sizeof(Vertex), range.begin());
+	on_static_mesh_load.MeshDataBuffer = GTSL::Ranger<byte>(range.begin(), reinterpret_cast<byte*>(indeces + index_count));
 	loadStaticMeshInfo.OnStaticMeshLoad(on_static_mesh_load);
 }

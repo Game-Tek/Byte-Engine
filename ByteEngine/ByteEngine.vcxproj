@@ -184,6 +184,7 @@
   <ItemGroup>
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
+    <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
     <ClInclude Include="src\ByteEngine\Application\PoolAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\CommandMap.h" />
     <ClInclude Include="src\ByteEngine\Application\Console.h" />
@@ -191,11 +192,12 @@
     <ClInclude Include="src\ByteEngine\Application\StackAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\SystemAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\Templates\GameApplication.h" />
+    <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Debug\Assert.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
     <ClInclude Include="src\ByteEngine\Dispatcher.h" />
-    <ClInclude Include="src\ByteEngine\Application\EventManager.h" />
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
+    <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
@@ -209,6 +211,7 @@
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
     <ClInclude Include="src\ByteEngine\Game\World.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderStaticMeshCollection.h" />
+    <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
@@ -221,8 +224,6 @@
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
     <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
-    <ClInclude Include="src\ByteEngine\Application\Input\JoystickState.h" />
-    <ClInclude Include="src\ByteEngine\Application\Input\MouseState.h" />
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\Cone.h" />
@@ -231,7 +232,6 @@
     <ClInclude Include="src\ByteEngine\Application\InputManager.h" />
     <ClInclude Include="src\ByteEngine\Debug\Logger.h" />
     <ClInclude Include="src\ByteEngine\Application\Clock.h" />
-    <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
     <ClInclude Include="src\ByteEngine\Application\Application.h" />
     <ClInclude Include="src\ByteEngine\Core.h" />
     <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
@@ -251,6 +251,7 @@
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
@@ -260,7 +261,6 @@
     <ClCompile Include="src\ByteEngine\Sound\SoundManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\ByteEngine\Application\Input\InputEnums.h" />
     <ClCompile Include="src\ByteEngine\Camera.cpp" />
     <ClCompile Include="src\ByteEngine\Application\InputManager.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\Logger.cpp" />

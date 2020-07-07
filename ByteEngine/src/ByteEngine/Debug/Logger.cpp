@@ -33,9 +33,9 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();
 
-	char string[logMaxLength]{ 0 };
+	char string[maxLogLength]{ 0 };
 	
-	uint32 string_remaining_length{ logMaxLength };
+	uint32 string_remaining_length{ maxLogLength };
 	uint32 write_start{ posInSubBuffer };
 	uint32 written_bytes{ 0 };
 

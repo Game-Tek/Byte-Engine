@@ -3,6 +3,7 @@
 #include "ByteEngine/Game/World.h"
 #include "ByteEngine/Render/RenderStaticMeshCollection.h"
 #include "ByteEngine/Render/RenderSystem.h"
+#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 class MenuWorld : public World
 {
@@ -18,10 +19,10 @@ public:
 		ComponentCollection::CreateInstanceInfo create_instance_info;
 		auto component = collection->CreateInstance(create_instance_info);
 
-		collection->SetMesh(component, "hydrant");
+		collection->SetMesh(component, "plane");
 
-		auto renderer = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"));
-		renderer->AddStaticMeshes(0, 1);
+		//auto static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(initializeInfo.GameInstance->GetSystem("StaticMeshRenderGroup"));
+		//static_mesh_renderer->AddStaticMesh(component, collection);
 	}
 	
 	void DestroyWorld(const DestroyInfo& destroyInfo) override

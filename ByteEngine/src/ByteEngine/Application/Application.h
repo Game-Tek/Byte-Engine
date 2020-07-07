@@ -14,7 +14,6 @@
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 
-#include "EventManager.h"
 #include "ByteEngine/Debug/Logger.h"
 
 class InputManager;
@@ -77,7 +76,6 @@ namespace BE
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
 		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
-		[[nodiscard]] EventManager* GetEventManager() { return &eventManager; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
 		class GameInstance* GetGameInstance() const { return gameInstance; }
@@ -127,8 +125,6 @@ namespace BE
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
 		ResourceManager* resourceManagerInstance{ nullptr };
-
-		EventManager eventManager;
 
 		UpdateContext updateContext{ UpdateContext::NORMAL };
 

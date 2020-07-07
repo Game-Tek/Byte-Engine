@@ -45,9 +45,9 @@ namespace BE
 		 */
 		mutable GTSL::File logFile;
 
+		static constexpr uint16 maxLogLength{ 2048 };
+
 		static constexpr uint32 bytesToDumpOn{ 256 };
-		
-		static constexpr uint32 logMaxLength{ bytesToDumpOn };
 
 		static constexpr uint32 buffersInBuffer{ 3 };
 		
@@ -81,7 +81,7 @@ namespace BE
 		template<typename... ARGS>
 		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS&& ...args)
 		{
-			GTSL::StaticString<1024> text;
+			GTSL::StaticString<maxLogLength> text;
 			text += obj->GetName(); text += ": ";
 			(text += ... += GTSL::MakeForwardReference<ARGS>(args));
 			log(level, text);
@@ -90,7 +90,7 @@ namespace BE
 		template<typename... ARGS>
 		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args)
 		{
-			GTSL::StaticString<1024> text;
+			GTSL::StaticString<maxLogLength> text;
 			(text += ... += GTSL::MakeForwardReference<ARGS>(args));
 			log(level, text);
 		}

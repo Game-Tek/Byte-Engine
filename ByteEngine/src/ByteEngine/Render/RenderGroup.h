@@ -1,20 +1,11 @@
 #pragma once
 
-#include "GAL/GraphicsPipeline.h"
+#include "ByteEngine/Game/System.h"
 
 /**
- * \brief A render group represents a group of meshes that share the same pipeline, hence can be rendered together.
- * A render group can consume a binding group so as to use the bindings it contains.
+ * \brief A render group represents a group of meshes that share the same characteristics and can be rendered together.
  */
-class RenderGroup
+class RenderGroup : public System
 {
-    GAL::Pipeline* pipeline = nullptr;
-
 public:
-    struct RenderGroupCreateInfo
-    {
-        GAL::Pipeline* Pipeline = nullptr;
-    };
-
-    explicit RenderGroup(const RenderGroupCreateInfo& renderGroupCreateInfo);
 };

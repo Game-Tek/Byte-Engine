@@ -31,8 +31,6 @@ public:
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
 	void UpdateWindow(GTSL::Window& window);
-
-	void AddStaticMeshes(uint32 start, uint32 end);
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown() override;
@@ -44,6 +42,7 @@ public:
 	using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
 	using DeviceMemory = GAL::VulkanDeviceMemory;
 	using CommandBuffer = GAL::VulkanCommandBuffer;
+	using CommandPool = GAL::VulkanCommandPool;
 	using RenderPass = GAL::VulkanRenderPass;
 	using FrameBuffer = GAL::VulkanFramebuffer;
 	using Fence = GAL::VulkanFence;
@@ -51,44 +50,49 @@ public:
 	using Image = GAL::VulkanImage;
 	using ImageView = GAL::VulkanImageView;
 	using Shader = GAL::VulkanShader;
+	using Surface = GAL::VulkanSurface;
 
 	using QueueCapabilities = GAL::VulkanQueueCapabilities;
 	using PresentMode = GAL::VulkanPresentMode;
 	using ImageFormat = GAL::VulkanFormat;
+	using ImageUse = GAL::VulkanImageUse;
 	using ColorSpace = GAL::VulkanColorSpace;
 	using BufferType = GAL::VulkanBufferType;
 	using MemoryType = GAL::VulkanMemoryType;
 	
 private:
+	GTSL::Vector<GTSL::Id64> renderGroups;
+	
 	RenderDevice renderDevice;
+	Surface surface;
 	RenderContext renderContext;
-	GraphicsPipeline graphicsPipeline;
+	
+	GTSL::Extent2D renderArea;
+
 	RenderPass renderPass;
+	GTSL::Array<ImageView, 3> swapchainImages;
+	GTSL::Array<Semaphore, 3> imageAvailableSemaphore;
+	GTSL::Array<Semaphore, 3> renderFinishedSemaphore;
+	GTSL::Array<Fence, 3> inFlightFences;
+	
 	GTSL::Array<CommandBuffer, 3> commandBuffers;
+	GTSL::Array<CommandPool, 3> commandPools;
+	
 	GTSL::Array<FrameBuffer, 3> frameBuffers;
 
 	GTSL::Array<GTSL::RGBA, 3> clearValues;
 
-	GTSL::Array<ImageView, 5> swapchainImages;
-	
-	GTSL::Array<Semaphore, 3> imagesAvailable;
-	GTSL::Array<Semaphore, 3> rendersFinished;
-	GTSL::Array<Fence, 3> inFlightFences;
-	GTSL::Array<Fence, 3> imagesInFlight;
-	
 	Queue graphicsQueue;
 
-	Buffer stagingMesh;
-	Buffer deviceMesh;
-	DeviceMemory mappedDeviceMemory;
-	DeviceMemory deviceMemory;
+	uint8 index = 0;
 
-	uint32 indexCount, indecesOffset;
-
-	GTSL::Extent2D renderArea;
+	uint32 swapchainPresentMode{ 0 };
+	uint32 swapchainFormat{ 0 };
+	uint32 swapchainColorSpace{ 0 };
 
 	void* mappedMemoryPointer = nullptr;
 
 	void render(const GameInstance::TaskInfo& taskInfo);
-	void staticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad);
+
+	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
 };

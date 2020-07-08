@@ -40,7 +40,7 @@ void GameInstance::OnUpdate()
 	
 	dynamicGoals = &dynamic_goals;
 	
-	GTSL::Vector<GTSL::ConditionVariable> condition_variables(128, GetTransientAllocator());
+	GTSL::Vector<GTSL::Semaphore> semaphores(128, GetTransientAllocator());
 
 	uint32 task_n = 0;
 	
@@ -59,16 +59,16 @@ void GameInstance::OnUpdate()
 			dynamicGoalsMutex.ReadLock();
 			for (const auto& task : parallel_tasks)
 			{
-				threadPool.EnqueueTask(task, &condition_variables[task_n], task_info);
+				threadPool.EnqueueTask(task, &semaphores[task_n], task_info);
 				++task_n;
 			}
 			dynamicGoalsMutex.ReadUnlock();
 
-			condition_variables.Resize(task_n, GetTransientAllocator());
-			for (auto& e : condition_variables) { e.Wait(); }
+			semaphores.Resize(task_n, GetTransientAllocator());
+			for (auto& e : semaphores) { e.Wait(); }
 				
 			task_n = 0;
-			condition_variables.ResizeDown(0);
+			semaphores.ResizeDown(0);
 			
 			dynamicGoalsMutex.ReadLock();
 		}
@@ -80,7 +80,7 @@ void GameInstance::OnUpdate()
 
 	for (auto& e : dynamic_goals) { e.Free(GetTransientAllocator()); }
 	dynamic_goals.Free(GetTransientAllocator());
-	condition_variables.Free(GetTransientAllocator());
+	semaphores.Free(GetTransientAllocator());
 	
 	dynamicGoals = nullptr;
 }

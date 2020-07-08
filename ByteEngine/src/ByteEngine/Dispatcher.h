@@ -3,10 +3,10 @@
 #include <GTSL/Vector.hpp>
 #include "Utility/Delegate.h"
 
-template <typename RET, typename... PARAMS>
+template <typename FT, typename... PARAMS>
 class Dispatcher
 {
-	using FunctorType = Delegate<RET(PARAMS)>;
+	using FunctorType = Delegate<FT(PARAMS)>;
 
 	FVector<FunctorType> Delegates;
 

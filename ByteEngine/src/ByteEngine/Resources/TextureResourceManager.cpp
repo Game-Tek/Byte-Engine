@@ -10,7 +10,7 @@
 void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 {
 	GTSL::StaticString<1024> path;
-	path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
+	//path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
 	path += '/';
 	path += textureLoadInfo.Name;
 	path += ".png";

@@ -8,8 +8,6 @@
 
 #include "Clock.h"
 
-#include "ByteEngine/Resources/ResourceManager.h"
-
 #include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
@@ -75,7 +73,6 @@ namespace BE
 
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
-		[[nodiscard]] ResourceManager* GetResourceManager() const { return resourceManagerInstance; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
 		class GameInstance* GetGameInstance() const { return gameInstance; }
@@ -124,7 +121,6 @@ namespace BE
 
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
-		ResourceManager* resourceManagerInstance{ nullptr };
 
 		UpdateContext updateContext{ UpdateContext::NORMAL };
 

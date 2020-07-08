@@ -12,7 +12,7 @@
 void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo)
 {
 	GTSL::StaticString<1024> path;
-	path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
+	//path += BE::Application::Get()->GetResourceManager()->GetResourcePath();
 	path += loadStaticMeshInfo.Name;
 	path += ".obj";
 

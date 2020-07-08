@@ -9,6 +9,8 @@
 class System : public Object
 {
 public:
+	using ComponentReference = uint32;
+
 	struct InitializeInfo
 	{
 		class GameInstance* GameInstance{ nullptr };

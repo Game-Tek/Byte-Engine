@@ -141,6 +141,7 @@ void RenderSystem::Shutdown()
 	
 	renderPass.Destroy(&renderDevice);
 	renderContext.Destroy(&renderDevice);
+	surface.Destroy(&renderDevice);
 
 	for(auto& e : imageAvailableSemaphore) { e.Destroy(&renderDevice); }
 	for(auto& e : renderFinishedSemaphore) { e.Destroy(&renderDevice); }

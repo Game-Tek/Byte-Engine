@@ -39,8 +39,8 @@ void GameApplication::Initialize()
 
 	SetupInputSources();
 
-	resourceManagerInstance->CreateSubResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	resourceManagerInstance->CreateSubResourceManager<TextureResourceManager>("TextureResourceManager");
+	//resourceManagerInstance->CreateSubResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//resourceManagerInstance->CreateSubResourceManager<TextureResourceManager>("TextureResourceManager");
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

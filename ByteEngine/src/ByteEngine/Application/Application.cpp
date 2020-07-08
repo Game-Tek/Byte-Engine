@@ -38,7 +38,6 @@ namespace BE
 		logger = new Logger(logger_create_info);
 		
 		clockInstance = new Clock();
-		resourceManagerInstance = new ResourceManager();
 		inputManagerInstance = new InputManager();
 		
 		BE_DEBUG_ONLY(closeReason = GTSL::String(255, GetPersistentAllocator()));
@@ -54,7 +53,6 @@ namespace BE
 		closeReason.Free(GetPersistentAllocator());
 		
 		delete clockInstance;
-		delete resourceManagerInstance;
 		delete inputManagerInstance;
 
 		transientAllocator->LockedClear();

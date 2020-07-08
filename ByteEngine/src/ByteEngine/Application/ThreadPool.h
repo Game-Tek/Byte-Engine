@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include "ByteEngine/Core.h"
 
 #include <GTSL/Array.hpp>
@@ -8,13 +7,15 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
 #include <GTSL/ConditionVariable.h>
+#include <thread>
+#include <GTSL/Thread.h>
 
 //https://github.com/mvorbrodt/blog
 
 class ThreadPool
 {
 public:
-	explicit ThreadPool() : queues(threadCount - 1)
+	explicit ThreadPool() : queues(threadCount)
 	{
 		//lambda
 		auto workers_loop = [this](const uint8 i)
@@ -35,24 +36,25 @@ public:
 		for (uint8 i = 0; i < threadCount; ++i)
 		{
 			//Constructing threads with function and I parameter
-			threads.EmplaceBack(workers_loop, i);
-			//threads.EmplaceBack(GTSL::Delegate<void()>::Create(workers_loop), i);
+			//threads.EmplaceBack(workers_loop, i);
+			threads.EmplaceBack(GTSL::Delegate<void(const uint8)>::Create(workers_loop), i);
+			//threads.SetThreadPriority(HIGH);
 		}
 	}
 
 	~ThreadPool()
 	{
 		for (auto& queue : queues) { queue.Done(); }
-		for (auto& thread : threads) { thread.join(); }
+		for (auto& thread : threads) { thread.Join(); }
 	}
 
 	template<typename F, typename... ARGS>
-	void EnqueueTask(const GTSL::Delegate<F>& delegate, GTSL::ConditionVariable* conditionVariable, ARGS&&... args)
+	void EnqueueTask(const GTSL::Delegate<F>& delegate, GTSL::Semaphore* conditionVariable, ARGS&&... args)
 	{	
 		auto work = [delegate, conditionVariable, ... args = GTSL::MakeForwardReference<ARGS>(args)]()
 		{
 			delegate(GTSL::MakeForwardReference<ARGS>(args)...);
-			conditionVariable->NotifyOne();
+			conditionVariable->Post();
 		};
 
 		const auto current_index = ++index;
@@ -68,11 +70,11 @@ public:
 	}
 
 private:
-	inline const static uint8 threadCount{ static_cast<uint8>(std::thread::hardware_concurrency()) };
+	inline const static uint8 threadCount{ static_cast<uint8>(std::thread::hardware_concurrency() - 1) };
 	GTSL::Atomic<uint32> index{ 0 };
 	
 	GTSL::Array<GTSL::BlockingQueue<GTSL::Delegate<void()>>, 64> queues;
-	GTSL::Array<std::thread, 64> threads;
+	GTSL::Array<GTSL::Thread, 64> threads;
 
 
 	/**

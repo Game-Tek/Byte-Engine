@@ -14,14 +14,14 @@ public:
 
 		BE_LOG_MESSAGE("Initilized world!");
 
-		auto collection = static_cast<RenderStaticMeshCollection*>(initializeInfo.GameInstance->GetComponentCollection("RenderStaticMeshCollection"));
+		//auto collection = static_cast<RenderStaticMeshCollection*>(initializeInfo.GameInstance->GetComponentCollection("RenderStaticMeshCollection"));
 		
 		ComponentCollection::CreateInstanceInfo create_instance_info;
-		auto component = collection->CreateInstance(create_instance_info);
-		collection->SetMesh(component, "plane");
+		//auto component = collection->CreateInstance(create_instance_info);
+		//collection->SetMesh(component, "plane");
 
-		auto static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(initializeInfo.GameInstance->GetSystem("StaticMeshRenderGroup"));
-		static_mesh_renderer->AddStaticMesh(component, collection);
+		//auto static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(initializeInfo.GameInstance->GetSystem("StaticMeshRenderGroup"));
+		//static_mesh_renderer->AddStaticMesh(component, collection);
 	}
 	
 	void DestroyWorld(const DestroyInfo& destroyInfo) override

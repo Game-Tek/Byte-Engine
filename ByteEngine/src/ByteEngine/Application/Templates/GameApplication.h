@@ -3,6 +3,7 @@
 #include "ByteEngine/Application/Application.h"
 
 #include <GTSL/Window.h>
+#include <GTSL/GamepadQuery.h>
 
 class GameApplication : public BE::Application
 {
@@ -18,6 +19,8 @@ public:
 protected:
 	GTSL::Window window;
 
+	GTSL::Array<GTSL::GamepadQuery, 4> gamepads;
+	
 	void SetupInputSources();
 	void RegisterMouse();
 	void RegisterKeyboard();

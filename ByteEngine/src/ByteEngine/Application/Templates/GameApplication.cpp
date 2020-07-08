@@ -3,9 +3,10 @@
 #include "ByteEngine/Application/InputManager.h"
 #include <GTSL/Input.h>
 #include "ByteEngine/Debug/FunctionTimer.h"
-#include "ByteEngine/Resources/StaticMeshResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "ByteEngine/Game/GameInstance.h"
+
+#pragma comment(lib, "XInput.lib")
 
 void GameApplication::Initialize()
 {
@@ -39,6 +40,8 @@ void GameApplication::Initialize()
 
 	SetupInputSources();
 
+	gamepads.Resize(4);
+
 	//resourceManagerInstance->CreateSubResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//resourceManagerInstance->CreateSubResourceManager<TextureResourceManager>("TextureResourceManager");
 }
@@ -56,6 +59,11 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 		case UpdateContext::NORMAL:
 		{
 			gameInstance->OnUpdate();
+			for(auto& e : gamepads)
+			{
+				bool connected;
+				e.Update(connected);
+			}
 		} break;
 		
 		case UpdateContext::BACKGROUND:
@@ -76,6 +84,7 @@ void GameApplication::SetupInputSources()
 {
 	RegisterMouse();
 	RegisterKeyboard();
+	RegisterControllers();
 }
 
 void GameApplication::RegisterMouse()
@@ -258,4 +267,117 @@ void GameApplication::RegisterKeyboard()
 	};
 	
 	window.SetOnKeyEventDelegate(GTSL::Delegate<void(GTSL::Window::KeyboardKeys, GTSL::ButtonState, bool)>::Create(key_press));
+}
+
+void GameApplication::RegisterControllers()
+{
+	inputManagerInstance->Register2DInputSource("LeftStick");
+	inputManagerInstance->Register2DInputSource("RightStick");
+
+	inputManagerInstance->RegisterActionInputSource("TopFrontButton");
+	inputManagerInstance->RegisterActionInputSource("RightFrontButton");
+	inputManagerInstance->RegisterActionInputSource("BottomFrontButton");
+	inputManagerInstance->RegisterActionInputSource("LeftFrontButton");
+
+	inputManagerInstance->RegisterActionInputSource("TopDPadButton");
+	inputManagerInstance->RegisterActionInputSource("RightDPadButton");
+	inputManagerInstance->RegisterActionInputSource("BottomDPadButton");
+	inputManagerInstance->RegisterActionInputSource("LeftDPadButton");
+	
+	inputManagerInstance->RegisterActionInputSource("LeftStickButton");
+	inputManagerInstance->RegisterActionInputSource("RightStickButton");
+	
+	inputManagerInstance->RegisterActionInputSource("LeftMenuButton");
+	inputManagerInstance->RegisterActionInputSource("RightMenuButton");
+	
+	inputManagerInstance->RegisterActionInputSource("LeftHatButton");
+	inputManagerInstance->RegisterActionInputSource("RightHatButton");
+	
+	inputManagerInstance->RegisterLinearInputSource("LeftTrigger");
+	inputManagerInstance->RegisterLinearInputSource("RightTrigger");
+	
+	auto on_stick_move = [](GTSL::GamepadQuery::Side side, GTSL::Vector2 source, GTSL::Vector2 old)
+	{
+		switch(side)
+		{
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->Record2DInputSource("RightStick", source); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->Record2DInputSource("LeftStick", source); break;
+		default: break;
+		}
+	};
+
+	auto on_trigger_change = [](GTSL::GamepadQuery::Side side, float32 source, float32 old)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordLinearInputSource("RightTrigger", source); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordLinearInputSource("LeftTrigger", source); break;
+		default: break;
+		}
+	};
+
+	auto on_dpad_change = [](const GTSL::GamepadQuery::GamepadButtonPosition side, GTSL::ButtonState state)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("TopDPadButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightDPadButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("BottomDPadButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftDPadButton", !static_cast<bool>(state)); break;
+		default: break;
+		}
+	};
+
+	auto on_hats_change = [](const GTSL::GamepadQuery::Side side, GTSL::ButtonState state)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightHatButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftHatButton", !static_cast<bool>(state)); break;
+		default: break;
+		}
+	};
+
+	auto on_menu_buttons_change = [](const GTSL::GamepadQuery::Side side, GTSL::ButtonState state)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightMenuButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftMenuButton", !static_cast<bool>(state)); break;
+		default: break;
+		}
+	};
+
+	auto on_front_buttons_change = [](const GTSL::GamepadQuery::GamepadButtonPosition side, GTSL::ButtonState state)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("TopFrontButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightFrontButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("BottomFrontButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftFrontButton", !static_cast<bool>(state)); break;
+		default: break;
+		}
+	};
+
+	auto on_sticks_button_change = [](const GTSL::GamepadQuery::Side side, GTSL::ButtonState state)
+	{
+		switch (side)
+		{
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightStickButton", !static_cast<bool>(state)); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftStickButton", !static_cast<bool>(state)); break;
+		default: break;
+		}
+	};
+	
+	for (uint8 i = 0; i < 4; ++i)
+	{
+		gamepads[i].OnSticksMove = GTSL::Delegate<void(GTSL::GamepadQuery::Side, GTSL::Vector2, GTSL::Vector2)>::Create(on_stick_move);
+		gamepads[i].OnDPadChange = GTSL::Delegate<void(GTSL::GamepadQuery::GamepadButtonPosition, GTSL::ButtonState)>::Create(on_dpad_change);
+		gamepads[i].OnHatsChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, GTSL::ButtonState)>::Create(on_hats_change);
+		gamepads[i].OnMenuButtonsChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, GTSL::ButtonState)>::Create(on_menu_buttons_change);
+		gamepads[i].OnRightButtonsChange = GTSL::Delegate<void(GTSL::GamepadQuery::GamepadButtonPosition, GTSL::ButtonState)>::Create(on_front_buttons_change);
+		gamepads[i].OnSticksChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, GTSL::ButtonState)>::Create(on_sticks_button_change);
+		gamepads[i].OnTriggersChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, float32, float32)>::Create(on_trigger_change);
+	}
 }

@@ -19,6 +19,8 @@ public:
 		uint64 TotalDeallocatedBytes{ 0 };
 		uint64 AllocationCount{ 0 };
 		uint64 TotalAllocationCount{ 0 };
+		uint64 DeallocationCount{ 0 };
+		uint64 TotalDeallocationCount{ 0 };
 	};
 protected:
 	GTSL::Mutex allocatorMutex;
@@ -30,7 +32,9 @@ protected:
 	uint64 totalAllocatedBytes{ 0 };
 	uint64 totalDeallocatedBytes{ 0 };
 	uint64 allocationCount{ 0 };
+	uint64 deallocationCount{ 0 };
 	uint64 totalAllocationCount{ 0 };
+	uint64 totalDeallocationCount{ 0 };
 #endif
 	
 public:
@@ -88,7 +92,7 @@ public:
 		BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
 		BE_DEBUG_ONLY(deallocatedBytes += size)
 		BE_DEBUG_ONLY(totalDeallocatedBytes += size)
-		BE_DEBUG_ONLY(++allocationCount)
-		BE_DEBUG_ONLY(++totalAllocationCount)
+		BE_DEBUG_ONLY(++deallocationCount)
+		BE_DEBUG_ONLY(++totalDeallocationCount)
 	}
 };

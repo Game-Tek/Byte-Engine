@@ -7,6 +7,7 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
 #include <thread>
+#include <GTSL/Pair.h>
 #include <GTSL/Thread.h>
 #include <GTSL/Tuple.h>
 
@@ -21,15 +22,17 @@ public:
 		auto workers_loop = [](ThreadPool* pool, const uint8 i)
 		{
 			while (true)
-			{
-				GTSL::Delegate<void(void*)> work;
+			{		
+				Tasks task;
+				
 				for (auto n = 0; n < threadCount * K; ++n)
 				{
-					if (pool->queues[(i + n) % threadCount].TryPop(work)) { break; }
+					if (pool->queues[(i + n) % threadCount].TryPop(task)) { break; }
 				}
 
-				if (!work && !pool->queues[i].Pop(work)) { break; }
-				work(pool->taskDatas[i]);
+				if (!task.First && !pool->queues[i].Pop(task)) { break;	}
+				
+				task.First(task.Second);
 			}
 		};
 
@@ -68,19 +71,20 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(current_index + n) % threadCount].TryPush(GTSL::Delegate<void(void*)>::Create(work))) { return; }
+			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), task))) { return; }
 		}
 
-		queues[current_index % threadCount].Push(GTSL::Delegate<void(void*)>::Create(work));
+		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), task));
 	}
 
 private:
 	inline const static uint8 threadCount{ static_cast<uint8>(std::thread::hardware_concurrency() - 1) };
 	GTSL::Atomic<uint32> index{ 0 };
+
+	using Tasks = GTSL::Pair<GTSL::Delegate<void(void*)>, void*>;
 	
-	GTSL::Array<GTSL::BlockingQueue<GTSL::Delegate<void(void*)>>, 64> queues;
+	GTSL::Array<GTSL::BlockingQueue<Tasks>, 64> queues;
 	GTSL::Array<GTSL::Thread, 64> threads;
-	GTSL::Array<void*, 128> taskDatas;
 
 	template<typename T, typename... ARGS>
 	struct TaskInfo

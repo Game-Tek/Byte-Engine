@@ -19,7 +19,7 @@ public:
 protected:
 	GTSL::Window window;
 
-	GTSL::Array<GTSL::GamepadQuery, 4> gamepads;
+	GTSL::GamepadQuery gamepad;
 	
 	void SetupInputSources();
 	void RegisterMouse();

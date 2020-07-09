@@ -2,16 +2,15 @@
 
 #include "ByteEngine/Object.h"
 
-#include <unordered_map>
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
+#include <GTSL/FlatHashMap.h>
 #include <GTSL/Time.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>
 #include <GTSL/Math/Vector2.h>
 #include <GTSL/Math/Vector3.h>
 
-#include "ByteEngine/Core.h"
 
 namespace GTSL {
 	class Window;
@@ -53,8 +52,8 @@ public:
 
 	void RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function);
 	void RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function);
-	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function);
-	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<GTSL::Id64> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
+	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function);
+	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<const GTSL::Id64> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
 	
 	void RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue);
 	void RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue);
@@ -79,23 +78,22 @@ protected:
 	};
 	
 	using ActionInputSourceData = InputSourceData<ActionInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, ActionInputSourceData> actionInputSourcesToActionInputEvents;
-	
-	using LinearInputSourceData = InputSourceData<LinearInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, LinearInputSourceData> linearInputSourcesToLinearInputEvents;
+	GTSL::FlatHashMap<ActionInputSourceData> actionInputSourcesToActionInputEvents;
 
 	using CharacterInputSourceData = InputSourceData<CharacterInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, CharacterInputSourceData> characterInputSourcesToCharacterInputEvents;
+	GTSL::FlatHashMap<CharacterInputSourceData> characterInputSourcesToCharacterInputEvents;
+	
+	using LinearInputSourceData = InputSourceData<LinearInputEvent>;
+	GTSL::FlatHashMap<LinearInputSourceData> linearInputSourcesToLinearInputEvents;
 	
 	using Vector2DInputSourceData = InputSourceData<Vector2DInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, Vector2DInputSourceData> vector2dInputSourceEventsToVector2DInputEvents;
+	GTSL::FlatHashMap<Vector2DInputSourceData> vector2dInputSourceEventsToVector2DInputEvents;
 	
 	using Vector3DInputSourceData = InputSourceData<Vector3DInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, Vector3DInputSourceData> vector3dInputSourcesToVector3DInputEvents;
+	GTSL::FlatHashMap<Vector3DInputSourceData> vector3dInputSourcesToVector3DInputEvents;
 
 	using QuaternionInputSourceData = InputSourceData<QuaternionInputEvent>;
-	std::unordered_map<GTSL::Id64::HashType, QuaternionInputSourceData> quaternionInputSourcesToQuaternionInputEvents;
-
+	GTSL::FlatHashMap<QuaternionInputSourceData> quaternionInputSourcesToQuaternionInputEvents;
 
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.
@@ -125,9 +123,25 @@ protected:
 	 * \brief InputSourceRecord for a 2D value(X, Y) triggered by a gamepad stick, mouse move, etc.
 	 */
 	GTSL::Vector<InputSourceRecord<ActionInputEvent>> actionInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<LinearInputEvent>> linearInputSourceRecords;
 	GTSL::Vector<InputSourceRecord<CharacterInputEvent>> characterInputSourceRecords;
+	GTSL::Vector<InputSourceRecord<LinearInputEvent>> linearInputSourceRecords;
 	GTSL::Vector<InputSourceRecord<Vector2DInputEvent>> vector2DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<Vector3DInputEvent>> vector3DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
+	//
+	template<typename A, typename B>
+	static void updateInput(GTSL::Vector<A>& records, GTSL::FlatHashMap<B>& map, GTSL::Microseconds time)
+	{
+		for (auto& record : records)
+		{
+			auto& inputSource = map.At(record.Name);
+
+			if (inputSource.Function) { inputSource.Function({ record.Name, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
+
+			inputSource.LastValue = record.NewValue;
+			inputSource.LastTime = time;
+		}
+
+		records.ResizeDown(0);
+	}
 };

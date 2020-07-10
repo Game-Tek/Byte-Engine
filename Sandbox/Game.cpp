@@ -10,8 +10,8 @@ void Game::Initialize()
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
-	sandboxGameInstance = new SandboxGameInstance();
-	gameInstance = sandboxGameInstance;
+	GTSL::Allocation<GameInstance>::Create<SandboxGameInstance>(GetPersistentAllocator(), gameInstance);
+	sandboxGameInstance = gameInstance;
 
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
@@ -46,7 +46,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 void Game::Shutdown()
 {
-	delete sandboxGameInstance;
+	GTSL::Delete(gameInstance, GetPersistentAllocator());
 	GameApplication::Shutdown();
 }
 

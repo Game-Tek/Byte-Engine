@@ -75,13 +75,13 @@ namespace BE
 		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
-		class GameInstance* GetGameInstance() const { return gameInstance; }
+		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
-		[[nodiscard]] PoolAllocator* GetNormalAllocator() const { return poolAllocator; }
-		[[nodiscard]] StackAllocator* GetTransientAllocator() const { return transientAllocator; }
+		[[nodiscard]] PoolAllocator* GetNormalAllocator() { return &poolAllocator; }
+		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
 #ifdef BE_DEBUG
 #define BE_LOG_SUCCESS(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
@@ -107,15 +107,13 @@ namespace BE
 #endif
 
 	protected:
-		Logger* logger{ nullptr };
+		GTSL::Allocation<Logger> logger;
+		GTSL::Allocation<GameInstance> gameInstance;
 
-		GameInstance* gameInstance{nullptr};
-		
 		SystemAllocatorReference systemAllocatorReference;
-
 		SystemAllocator* systemAllocator{ nullptr };
-		PoolAllocator* poolAllocator{ nullptr };
-		StackAllocator* transientAllocator{ nullptr };
+		PoolAllocator poolAllocator;
+		StackAllocator transientAllocator;
 
 		GTSL::Application systemApplication;
 

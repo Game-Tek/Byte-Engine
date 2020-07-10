@@ -7,29 +7,32 @@
 extern BE::Application* BE::CreateApplication(GTSL::AllocatorReference* allocatorReference); //Is defined in another translation unit.
 extern void BE::DestroyApplication(BE::Application* application, GTSL::AllocatorReference* allocatorReference); //Is defined in another translation unit.
 
-int main(int argc, char** argv)
+static SystemAllocator system_allocator;
+
+struct SystemAllocatorReference : GTSL::AllocatorReference
 {
-	static SystemAllocator system_allocator;
-
-	struct SystemAllocatorReference : GTSL::AllocatorReference
-	{
-	protected:
-		void alloc(uint64 size, uint64 alignment, void** data, uint64* allocatedSize) const
-		{
-			*allocatedSize = size;
-			system_allocator.Allocate(size, alignment, data);
-		}
-
-		void dealloc(uint64 size, uint64 alignement, void* data) const
-		{
-			system_allocator.Deallocate(size, alignement, data);
-		}
-		
-	public:
-		SystemAllocatorReference() : AllocatorReference(reinterpret_cast<decltype(allocate)>(&SystemAllocatorReference::alloc), reinterpret_cast<decltype(deallocate)>(&SystemAllocatorReference::dealloc))
-		{}
-	} system_allocator_reference;
+protected:
 	
+	void alloc(uint64 size, uint64 alignment, void** data, uint64* allocatedSize) const
+	{
+		*allocatedSize = size;
+		system_allocator.Allocate(size, alignment, data);
+	}
+
+	void dealloc(uint64 size, uint64 alignement, void* data) const
+	{
+		system_allocator.Deallocate(size, alignement, data);
+	}
+
+public:
+	SystemAllocatorReference() : AllocatorReference(reinterpret_cast<decltype(allocate)>(&SystemAllocatorReference::alloc), reinterpret_cast<decltype(deallocate)>(&SystemAllocatorReference::dealloc))
+	{}
+};
+
+inline SystemAllocatorReference system_allocator_reference;
+
+int main(int argc, char** argv)
+{	
 	//When CreateApplication() is defined it must return a new object of it class, effectively letting us manage that instance from here.
 	auto application = BE::CreateApplication(&system_allocator_reference);
 

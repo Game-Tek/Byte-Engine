@@ -6,7 +6,6 @@
 #include <GTSL/Atomic.hpp>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
-#include <thread>
 #include <GTSL/Pair.h>
 #include <GTSL/Thread.h>
 #include <GTSL/Tuple.h>
@@ -78,7 +77,7 @@ public:
 	}
 
 private:
-	inline const static uint8 threadCount{ static_cast<uint8>(std::thread::hardware_concurrency() - 1) };
+	inline const static uint8 threadCount{ static_cast<uint8>(GTSL::Thread::ThreadCount() - 1) };
 	GTSL::Atomic<uint32> index{ 0 };
 
 	using Tasks = GTSL::Pair<GTSL::Delegate<void(void*)>, void*>;

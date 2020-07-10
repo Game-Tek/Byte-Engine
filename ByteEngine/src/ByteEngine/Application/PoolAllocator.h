@@ -9,6 +9,7 @@
 class PoolAllocator
 {
 public:
+	PoolAllocator() = default;
 	PoolAllocator(GTSL::AllocatorReference* allocatorReference);
 
 	~PoolAllocator();
@@ -22,6 +23,8 @@ public:
 	class Pool
 	{
 	public:
+		Pool() = default;
+		
 		Pool(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference);
 
 		void Allocate(uint64 size, uint64 alignment, void** data, uint64* allocatedSize);

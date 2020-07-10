@@ -38,7 +38,7 @@ namespace BE
 		/**
 		 * \brief Minimum level for a log to go through to console, all logs get dumped to disk.
 		 */
-		mutable VerbosityLevel minLogLevel;
+		mutable VerbosityLevel minLogLevel{ VerbosityLevel::MESSAGE };
 
 		/**
 		 * \brief File handle to log file where all logs are dumped to.

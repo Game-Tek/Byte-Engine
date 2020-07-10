@@ -31,8 +31,8 @@ public:
 	template<typename T>
 	T* AddComponentCollection(const GTSL::Id64 componentCollectionName)
 	{
-		GTSL::Allocation<ComponentCollection> pointer = *componentCollections.Emplace(GetPersistentAllocator(), componentCollectionName, GTSL::Allocation<ComponentCollection>::Create<T>(GetPersistentAllocator()));
-		initCollection(pointer); return static_cast<T*>(pointer.Data);
+		auto pointer = (T*)componentCollections.Emplace(GetPersistentAllocator(), componentCollectionName, GTSL::Allocation<ComponentCollection>::Create<T>(GetPersistentAllocator()))->Data;
+		initCollection(pointer); return pointer;
 	}
 	
 	struct CreateNewWorldInfo

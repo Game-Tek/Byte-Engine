@@ -15,7 +15,8 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"), systemApplication(GTSL::Application::ApplicationCreateInfo{})
+	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"),
+	systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
 		applicationInstance = this;
 	}
@@ -26,16 +27,16 @@ namespace BE
 
 	void Application::Initialize()
 	{
-		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
+		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 1, 70000);
 		
-		transientAllocator = new StackAllocator(&systemAllocatorReference, 2, 1, 70000);
-		poolAllocator = new PoolAllocator(&systemAllocatorReference);
+		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = systemApplication.GetPathToExecutable();
 		path.Drop(path.FindLast('/'));
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger = new Logger(logger_create_info);
+		GTSL::Allocation<Logger>::Create<Logger>(systemAllocatorReference, logger, logger_create_info);
 		
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
@@ -55,19 +56,16 @@ namespace BE
 		delete clockInstance;
 		delete inputManagerInstance;
 
-		transientAllocator->LockedClear();
-		transientAllocator->Free();
+		transientAllocator.LockedClear();
+		transientAllocator.Free();
 		StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
-		transientAllocator->GetDebugData(stack_allocator_debug_data);
+		transientAllocator.GetDebugData(stack_allocator_debug_data);
 		BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
 
-		poolAllocator->Free();
-		
-		delete transientAllocator;
-		delete poolAllocator;
+		poolAllocator.Free();
 		
 		logger->Shutdown();
-		delete logger;
+		GTSL::Delete(logger, systemAllocatorReference);
 	}
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
@@ -102,7 +100,7 @@ namespace BE
 			update_info.UpdateContext = updateContext;
 			OnUpdate(update_info);
 			
-			transientAllocator->Clear();
+			transientAllocator.LockedClear();
 
 			++applicationTicks;
 		}

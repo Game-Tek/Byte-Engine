@@ -18,15 +18,19 @@ goalNames(8, GetPersistentAllocator()), goals(16, GetPersistentAllocator())
 GameInstance::~GameInstance()
 {
 	goalNames.Free(GetPersistentAllocator());
-	for(auto& e : worlds) { Delete(e, GetPersistentAllocator()); }
-	ForEach(systems, [&](const GTSL::Allocation<System>& system) { system->Shutdown(); Delete(system, GetPersistentAllocator()); });
+	
+	ForEach(systems, [&](GTSL::Allocation<System>& system) { system->Shutdown(); Delete(system, GetPersistentAllocator()); });
 	systems.Free(GetPersistentAllocator());
-	ForEach(componentCollections, [&](const GTSL::Allocation<ComponentCollection>& componentCollection) { Delete(componentCollection, GetPersistentAllocator()); });
+	
+	ForEach(componentCollections, [&](GTSL::Allocation<ComponentCollection>& componentCollection) { Delete(componentCollection, GetPersistentAllocator()); });
 	componentCollections.Free(GetPersistentAllocator());
 
 	for (auto& goal : goals) { goal.Free(GetPersistentAllocator()); }
 	goals.Free(GetPersistentAllocator());
-	
+
+	World::DestroyInfo destroy_info;
+	destroy_info.GameInstance = this;
+	for (auto& world : worlds) { world->DestroyWorld(destroy_info); Delete(world, GetPersistentAllocator()); }
 	worlds.Free(GetPersistentAllocator());
 }
 

@@ -2,9 +2,10 @@
 
 #include "SubResourceManager.h"
 #include <GTSL/Delegate.hpp>
+#include <GTSL/FlatHashMap.h>
 
+#include <GTSL/DynamicType.h>
 #include "ResourceData.h"
-#include <GTSL/Id.h>
 
 class StaticMeshResourceManager final : public SubResourceManager
 {
@@ -15,6 +16,7 @@ public:
 
 	struct OnStaticMeshLoad
 	{
+		SAFE_POINTER UserData;
 		/**
 		 * \brief Buffer containing the loaded data. At the start all vertices are found and after VertexCount vertices the indeces are found.
 		 */
@@ -33,11 +35,15 @@ public:
 
 	struct LoadStaticMeshInfo : ResourceLoadInfo
 	{
+		SAFE_POINTER UserData;
 		GTSL::Ranger<byte> MeshDataBuffer;
 		GTSL::Delegate<void(OnStaticMeshLoad)> OnStaticMeshLoad;
+		uint32 IndicesAlignment = 0;
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
+
+	void GetMeshSize(const GTSL::StaticString<256>& name, uint32& meshSize);
 	
 private:
-	//std::unordered_map<GTSL::Id64::HashType, StaticMeshResourceData> resources;
+	GTSL::FlatHashMap<OnStaticMeshLoad> resources;
 };

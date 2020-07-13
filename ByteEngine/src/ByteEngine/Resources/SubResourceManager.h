@@ -1,4 +1,6 @@
 #pragma once
+
+#include "ByteEngine/Object.h"
 #include <GTSL/StaticString.hpp>
 
 /**
@@ -10,7 +12,7 @@
  * Every extension will allow for loading of 1 type of resource specified with a pretty name by the GetResourceType() function. Users will request loading of
  * some type of resource by asking for a resource of this "pretty" name type.
  */
-class SubResourceManager
+class SubResourceManager : public Object
 {
 public:
 	explicit SubResourceManager(const char* resourceType)

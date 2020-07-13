@@ -1,19 +1,9 @@
 #pragma once
-
 #include "ByteEngine/Game/System.h"
-
-#include <GAL/Vulkan/VulkanRenderDevice.h>
-#include <GAL/Vulkan/VulkanRenderContext.h>
-#include <GAL/Vulkan/VulkanPipelines.h>
-#include <GAL/Vulkan/VulkanRenderPass.h>
-#include <GAL/Vulkan/VulkanFramebuffer.h>
-#include <GAL/Vulkan/VulkanBuffer.h>
-#include <GAL/Vulkan/VulkanCommandBuffer.h>
-#include <GAL/Vulkan/VulkanMemory.h>
-#include <GAL/Vulkan/VulkanSynchronization.h>
-
 #include "ByteEngine/Game/GameInstance.h"
-#include <ByteEngine/Resources/StaticMeshResourceManager.h>
+
+#include <GTSL/DataSizes.h>
+#include "RenderTypes.h"
 
 namespace GTSL {
 	class Window;
@@ -22,8 +12,13 @@ namespace GTSL {
 class RenderSystem : public System
 {
 public:
-	RenderSystem() = default;
+	RenderSystem();
 
+	const char* GetName() const override { return "RenderSystem"; }
+
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown() override;
+	
 	struct InitializeRendererInfo
 	{
 		GTSL::Window* Window{ 0 };
@@ -31,43 +26,28 @@ public:
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
 	void UpdateWindow(GTSL::Window& window);
+
+	struct ScratchMemoryAllocationInfo
+	{
+		DeviceMemory* DeviceMemory = nullptr;
+		uint32 Size = 0;
+		uint32 MemoryType = 0;
+		uint32* Offset = nullptr;
+		void** Data = nullptr;
+	};
+	void AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo);
 	
-	void Initialize(const InitializeInfo& initializeInfo) override;
-	void Shutdown() override;
-
-	using RenderDevice = GAL::VulkanRenderDevice;
-	using RenderContext = GAL::VulkanRenderContext;
-	using Queue = GAL::VulkanQueue;
-	using Buffer = GAL::VulkanBuffer;
-	using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
-	using DeviceMemory = GAL::VulkanDeviceMemory;
-	using CommandBuffer = GAL::VulkanCommandBuffer;
-	using CommandPool = GAL::VulkanCommandPool;
-	using RenderPass = GAL::VulkanRenderPass;
-	using FrameBuffer = GAL::VulkanFramebuffer;
-	using Fence = GAL::VulkanFence;
-	using Semaphore = GAL::VulkanSemaphore;
-	using Image = GAL::VulkanImage;
-	using ImageView = GAL::VulkanImageView;
-	using Shader = GAL::VulkanShader;
-	using Surface = GAL::VulkanSurface;
-
-	using QueueCapabilities = GAL::VulkanQueueCapabilities;
-	using PresentMode = GAL::VulkanPresentMode;
-	using ImageFormat = GAL::VulkanFormat;
-	using ImageUse = GAL::VulkanImageUse;
-	using ColorSpace = GAL::VulkanColorSpace;
-	using BufferType = GAL::VulkanBufferType;
-	using MemoryType = GAL::VulkanMemoryType;
+	RenderDevice* GetRenderDevice() { return &renderDevice; }
+	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
 	
 private:
-	GTSL::Vector<GTSL::Id64> renderGroups;
-	
 	RenderDevice renderDevice;
 	Surface surface;
 	RenderContext renderContext;
 	
 	GTSL::Extent2D renderArea;
+	
+	GTSL::Vector<GTSL::Id64> renderGroups;
 
 	RenderPass renderPass;
 	GTSL::Array<ImageView, 3> swapchainImages;
@@ -77,6 +57,9 @@ private:
 	
 	GTSL::Array<CommandBuffer, 3> commandBuffers;
 	GTSL::Array<CommandPool, 3> commandPools;
+	
+	GTSL::Array<CommandPool, 3> transferCommandPools;
+	GTSL::Array<CommandBuffer, 3> transferCommandBuffers;
 	
 	GTSL::Array<FrameBuffer, 3> frameBuffers;
 
@@ -89,10 +72,67 @@ private:
 	uint32 swapchainPresentMode{ 0 };
 	uint32 swapchainFormat{ 0 };
 	uint32 swapchainColorSpace{ 0 };
-
-	void* mappedMemoryPointer = nullptr;
-
+	
 	void render(const GameInstance::TaskInfo& taskInfo);
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
+
+	struct MakeScratchAllocationInfo
+	{
+		DeviceMemory* DeviceMemory = nullptr;
+		uint32 Size = 0;
+		uint32* Offset = nullptr;
+		void** Data = nullptr;
+	};
+	void allocateScratchMemoryBlock();
+	
+	struct LocalMemoryBlock
+	{
+		static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+
+		void Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
+
+		bool TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const;
+
+		DeviceMemory DeviceMemory;
+
+		struct Allocation
+		{
+			uint8 DeviceAllocationIndex = 0;
+			uint32 Size = 0;
+			uint32 Offset = 0;
+		};
+		GTSL::Vector<Allocation> allocations;
+
+		uint32 UnusableSize = 0;
+	};
+	GTSL::Array<LocalMemoryBlock, 32> localMemoryBlocks;
+
+	struct ScratchMemoryBlock
+	{
+		static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+		
+		ScratchMemoryBlock() = default;
+		
+		void AllocateDeviceMemory(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
+		void Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
+
+		bool TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const;
+		void Allocate(MakeScratchAllocationInfo& makeAllocationInfo, const GTSL::AllocatorReference& allocatorReference);
+
+	private:
+		DeviceMemory deviceMemory;
+		void* mappedMemory = nullptr;
+
+		struct Allocation
+		{
+			uint32 Size = 0;
+			uint32 Offset = 0;
+			bool InUse = true;
+		};
+		GTSL::Vector<Allocation> allocations;
+
+		uint32 UnusableSize = 0;
+	};
+	GTSL::Array<ScratchMemoryBlock, 32> scratchMemoryBlocks;
 };

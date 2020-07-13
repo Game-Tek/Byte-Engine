@@ -1,5 +1,7 @@
 #include "StaticMeshResourceManager.h"
 
+#include <GTSL/Buffer.h>
+
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -25,12 +27,12 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	Assimp::Importer importer;
 
 	const auto* const ai_scene = importer.ReadFileFromMemory(range.begin(), range.Bytes(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
-
+	
 	file.CloseFile();
 	
 	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode)
 	{
-		auto res = importer.GetErrorString();
+		BE_BASIC_LOG_WARNING("Mesh load failed: ", importer.GetErrorString());
 	}
 
 	aiMesh* InMesh = ai_scene->mMeshes[0];
@@ -92,4 +94,36 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	on_static_mesh_load.VertexCount = InMesh->mNumVertices;
 	on_static_mesh_load.MeshDataBuffer = GTSL::Ranger<byte>(range.begin(), reinterpret_cast<byte*>(indeces + index_count));
 	loadStaticMeshInfo.OnStaticMeshLoad(on_static_mesh_load);
+}
+
+void StaticMeshResourceManager::GetMeshSize(const GTSL::StaticString<256>& name, uint32& meshSize)
+{
+	GTSL::StaticString<1024> path;
+	path += BE::Application::Get()->GetPathToApplication();
+	path += "resources/";
+	path += name;
+	path += ".obj";
+
+	GTSL::File file;
+	file.OpenFile(path, GTSL::File::OpenFileMode::READ);
+	
+	GTSL::Buffer buffer;
+	buffer.Allocate(file.GetFileSize(), 8, GetTransientAllocator());
+	GTSL::Ranger<byte> range = buffer;
+	
+	file.ReadFromFile(range);
+
+	Assimp::Importer importer;
+
+	const auto* const ai_scene = importer.ReadFileFromMemory(range.begin(), range.Bytes(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_ImproveCacheLocality);
+
+	file.CloseFile();
+	buffer.Free(8, GetTransientAllocator());
+
+	if (!ai_scene || ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !ai_scene->mRootNode) { BE_BASIC_LOG_WARNING("Mesh load failed: ", importer.GetErrorString()); }
+
+	aiMesh* InMesh = ai_scene->mMeshes[0];
+
+	meshSize += InMesh->mNumVertices * sizeof(Vertex);
+	meshSize += InMesh->mNumFaces * 3 * sizeof(uint16);
 }

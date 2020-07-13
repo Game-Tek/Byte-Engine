@@ -27,12 +27,15 @@ namespace BE
 	{
 		const char* ApplicationName = nullptr;
 	};
-
-//#undef ERROR
 	
 	class Application : public Object
 	{
-	public:	
+	public:
+		[[nodiscard]] static const char* GetEngineName() { return "Byte Engine"; }
+		static const char* GetEngineVersion() { return "0.0.1"; }
+
+		static Application* Get() { return applicationInstance; }
+		
 		explicit Application(const ApplicationCreateInfo& ACI);
 		virtual ~Application();
 
@@ -40,7 +43,6 @@ namespace BE
 
 		virtual void Initialize() = 0;
 		virtual void Shutdown() = 0;
-
 
 		enum class UpdateContext : uint8
 		{
@@ -56,10 +58,6 @@ namespace BE
 		int Run(int argc, char** argv);
 		
 		virtual const char* GetApplicationName() = 0;
-		[[nodiscard]] static const char* GetEngineName() { return "Byte Engine"; }
-		static const char* GetEngineVersion() { return "0.0.1"; }
-
-		static Application* Get() { return applicationInstance; }
 
 		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();
@@ -71,8 +69,14 @@ namespace BE
 		//Flags the application to close on the next update.
 		void Close(CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason);
 
+		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
+		{
+			auto path = systemApplication.GetPathToExecutable();
+			path.Drop(path.FindLast('/')); return path;
+		}
+		
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
-		[[nodiscard]] InputManager* GetInputManager() { return inputManagerInstance; }
+		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
 		GTSL::Application* GetSystemApplication() { return &systemApplication; }
 		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }

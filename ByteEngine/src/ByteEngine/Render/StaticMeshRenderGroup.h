@@ -3,15 +3,26 @@
 #include "RenderGroup.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
+#include "RenderTypes.h"
+
 class StaticMeshRenderGroup final : public RenderGroup
 {
 public:
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown() override;
 	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderGroup"; }
 
-	void AddStaticMesh(ComponentReference componentReference, class RenderStaticMeshCollection* renderStaticMeshCollection);
+	struct AddStaticMeshInfo
+	{
+		ComponentReference ComponentReference = 0;
+		class RenderSystem* RenderSystem = nullptr;
+		const class RenderStaticMeshCollection* RenderStaticMeshCollection = nullptr;
+		class StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
+	};
+	void AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 	
 private:
 	void onStaticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
-	void* data;
+	GTSL::Vector<Buffer> meshBuffers;
 };

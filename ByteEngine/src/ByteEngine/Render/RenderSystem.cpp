@@ -5,7 +5,7 @@
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/ComponentCollection.h"
-#include <ByteEngine\Debug\Assert.h>
+#include "ByteEngine/Debug/Assert.h"
 
 class RenderStaticMeshCollection;
 
@@ -106,6 +106,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 	}
+
+	allocateScratchMemoryBlock();
 }
 
 void RenderSystem::UpdateWindow(GTSL::Window& window)
@@ -150,7 +152,27 @@ void RenderSystem::Shutdown()
 	for (auto& e : frameBuffers) { e.Destroy(&renderDevice); }
 	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 
+	for (auto& e : scratchMemoryBlocks) { e.Free(renderDevice, GetPersistentAllocator()); }
+	
 	renderGroups.Free(GetPersistentAllocator());
+}
+
+void RenderSystem::AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo)
+{
+	auto memory_type = renderDevice.FindMemoryType(memoryAllocationInfo.MemoryType, static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT));
+
+	MakeScratchAllocationInfo make_scratch_allocation_info;
+	make_scratch_allocation_info.Size = memoryAllocationInfo.Size;
+	make_scratch_allocation_info.Offset = memoryAllocationInfo.Offset;
+	make_scratch_allocation_info.Data = memoryAllocationInfo.Data;
+	
+	for (auto& e : scratchMemoryBlocks)
+	{
+		if (e.TryAllocate(make_scratch_allocation_info)) { return; }
+	}
+
+	allocateScratchMemoryBlock();
+	scratchMemoryBlocks.back().Allocate(make_scratch_allocation_info, GetPersistentAllocator());
 }
 
 void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
@@ -207,7 +229,66 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 	{
 		case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message); break;
 		case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
-		case RenderDevice::MessageSeverity::ERROR: BE_LOG_ERROR(message); break;
+		case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
 	default: break;
 	}
+}
+
+void RenderSystem::allocateScratchMemoryBlock()
+{
+	scratchMemoryBlocks.EmplaceBack();
+	scratchMemoryBlocks.back().AllocateDeviceMemory(renderDevice, GetPersistentAllocator());
+}
+
+void RenderSystem::ScratchMemoryBlock::AllocateDeviceMemory(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)
+{
+	DeviceMemory::CreateInfo memory_create_info;
+	memory_create_info.RenderDevice = &renderDevice;
+	memory_create_info.Size = static_cast<uint32>(ALLOCATION_SIZE.GetCount());
+	memory_create_info.MemoryType = static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT); /////////////////////
+	::new(&deviceMemory) DeviceMemory(memory_create_info);
+
+	DeviceMemory::MapInfo map_info;
+	map_info.RenderDevice = &renderDevice;
+	map_info.Size = memory_create_info.Size;
+	map_info.Offset = 0;
+	mappedMemory = deviceMemory.Map(map_info);
+}
+
+void RenderSystem::ScratchMemoryBlock::Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)
+{
+	DeviceMemory::UnmapInfo unmap_info;
+	unmap_info.RenderDevice = &renderDevice;
+	deviceMemory.Unmap(unmap_info);
+
+	deviceMemory.Destroy(&renderDevice);
+
+	allocations.Free(allocatorReference);
+}
+
+bool RenderSystem::ScratchMemoryBlock::TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const
+{
+	for (auto& e : allocations)
+	{
+		if (!e.InUse)
+		{
+			if (e.Size >= makeAllocationInfo.Size)
+			{
+				//HANDOUT allocation
+			}
+		}
+	}
+
+	return false;
+}
+
+void RenderSystem::ScratchMemoryBlock::Allocate(MakeScratchAllocationInfo& makeAllocationInfo, const GTSL::AllocatorReference& allocatorReference)
+{	
+	Allocation allocation;
+	allocation.Size = makeAllocationInfo.Size;
+	allocation.Offset = 0;
+	allocation.InUse = true;
+	allocations.EmplaceBack(allocatorReference, allocation);
+
+	*makeAllocationInfo.Data = mappedMemory;
 }

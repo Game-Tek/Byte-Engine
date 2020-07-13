@@ -4,6 +4,7 @@
 
 #include <GTSL/Array.hpp>
 #include <GTSL/Atomic.hpp>
+#include <GTSL/Semaphore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
 #include <GTSL/Pair.h>

@@ -135,6 +135,7 @@
     <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
+    <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

@@ -4,31 +4,39 @@
 
 #include "SubResourceManager.h"
 #include <AAL/AudioCore.h>
-#include <GTSL/FixedVector.hpp>
-#include <unordered_map>
-#include "ResourceData.h"
-#include <GTSL/Id.h>
-#include <GTSL/String.hpp>
+#include <GTSL/File.h>
+#include <GTSL/FlatHashMap.h>
+#include <GTSL/Vector.hpp>
 
 class AudioResourceManager final : public SubResourceManager
 {
 public:
-	struct AudioResourceData final : ResourceHandle
+	struct AudioResourceInfo final
 	{
-		friend AudioResourceManager;
-
-		GTSL::FixedVector<byte> Bytes;
+		uint32 ByteOffset = 0;
 		AAL::AudioChannelCount AudioChannelCount;
 		AAL::AudioSampleRate AudioSampleRate;
 		AAL::AudioBitDepth AudioBitDepth;
 	};
-	
-public:
-	AudioResourceManager() : SubResourceManager("Audio")
+
+	struct AudioAsset
 	{
-	}
-	
+		GTSL::Vector<byte> Bytes;
+	};
+
+	struct LoadAudioAssetInfo : ResourceLoadInfo
+	{
+	};
+	void LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo);
+
+	AudioResourceManager();
+
 	~AudioResourceManager() = default;
+
+	const char* GetName() const override { return "Audio Resource Manager"; }
 	
 private:
+	GTSL::File indexFile, packageFile;
+	GTSL::FlatHashMap<AudioAsset> audioAssets;
+	GTSL::FlatHashMap<AudioResourceInfo> audioResourceInfos;
 };

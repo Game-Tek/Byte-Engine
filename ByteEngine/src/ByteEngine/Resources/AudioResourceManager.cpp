@@ -1,84 +1,117 @@
 #include "AudioResourceManager.h"
 
-//AudioResourceManager::AudioResourceData* AudioResourceManager::TryGetResource(const GTSL::String& name)
-//{
-//	std::ifstream input(path.c_str(), std::ios::in | std::ios::binary);
-//
-//	if (input.is_open())
-//	{
-//		AudioResourceData data;
-//
-//		GTSL::InStream in_archive(&input);
-//
-//		unsigned char riff[4];                      // RIFF string
-//		unsigned int overall_size;               // overall size of file in bytes
-//		unsigned char wave[4];                      // WAVE string
-//		unsigned char fmt_chunk_marker[4];          // fmt string with trailing null char
-//		unsigned int length_of_fmt;                 // length of the format data
-//		unsigned int format_type;                   // format type. 1-PCM, 3- IEEE float, 6 - 8bit A law, 7 - 8bit mu law
-//		unsigned int channels;                      // no.of channels
-//		unsigned int sample_rate;                   // sampling rate (blocks per second)
-//		unsigned int byterate;                      // SampleRate * NumChannels * BitsPerSample/8
-//		unsigned int block_align;                   // NumChannels * BitsPerSample/8
-//		unsigned int bits_per_sample;               // bits per sample, 8- 8bits, 16- 16 bits etc
-//		unsigned char data_chunk_header[4];        // DATA string or FLLR string
-//		unsigned int data_size;                     // NumSamples * NumChannels * BitsPerSample/8 - size of the next chunk that will be read
-//
-//		in_archive.Read(4, riff);
-//		if (riff[0] != 'r' || riff[1] != 'i' || riff[2] != 'f' || riff[3] != 'f')
-//		{
-//			return nullptr;
-//		}
-//
-//		in_archive.Read(&overall_size);
-//		in_archive.Read(4, wave);
-//		in_archive.Read(4, fmt_chunk_marker);
-//		in_archive.Read(&length_of_fmt);
-//		in_archive.Read(&format_type);
-//		in_archive.Read(&channels);
-//		switch (channels)
-//		{
-//		case 1: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_MONO; break;
-//		case 2: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_STEREO; break;
-//		case 6: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_5_1; break;
-//		case 8: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_7_1; break;
-//		default: return nullptr;
-//		}
-//
-//		in_archive.Read(&sample_rate);
-//		switch (sample_rate)
-//		{
-//		case 44100: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_44_1; break;
-//		case 48000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_48; break;
-//		case 96000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_96; break;
-//		default: return nullptr;
-//		}
-//
-//		in_archive.Read(&byterate);
-//		in_archive.Read(&block_align);
-//		in_archive.Read(&bits_per_sample);
-//		switch (bits_per_sample)
-//		{
-//		case 8: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_8; break;
-//		case 16: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_16; break;
-//		case 24: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_24; break;
-//		default: return nullptr;
-//		}
-//
-//		in_archive.Read(4, data_chunk_header);
-//		in_archive.Read(&data_size);
-//
-//		data.Bytes = GTSL::FixedVector<byte>(data_size, &bigAllocator);
-//
-//		in_archive.Read(data_size, data.Bytes.GetData());
-//
-//		resourceMapMutex.WriteLock();
-//		resources.emplace(hashed_name, GTSL::MakeTransferReference(data)).first->second.IncrementReferences();
-//		resourceMapMutex.WriteUnlock();
-//		return nullptr;
-//	}
-//
-//	input.close();
-//	return nullptr;
-//}
-//
+
+#include <GTSL/Buffer.h>
+#include <GTSL/Filesystem.h>
+
+
+#include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Debug/Assert.h"
+
+AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audioResourceInfos(8, GetPersistentAllocator())
+{
+	GTSL::StaticString<512> query_path, package_path, resources_path;
+	query_path += BE::Application::Get()->GetPathToApplication(); package_path += BE::Application::Get()->GetPathToApplication(); resources_path += BE::Application::Get()->GetPathToApplication();
+	query_path += "/resources/"; package_path += "/resources/"; resources_path += "/resources/";
+	query_path += "*.wav"; package_path += "AudioFiles.bepkg";
+
+	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
+	
+	GTSL::Buffer file_buffer; file_buffer.Allocate(1024 * 512, 32, GetTransientAllocator());
+	
+	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
+	{
+		auto file_path = resources_path;
+		file_path += queryResult.FilePath;
+		auto name = queryResult.FilePath; name.Drop(name.FindLast('.'));
+		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
+
+		GTSL::File query_file;
+		query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
+
+		query_file.ReadFile(file_buffer);
+		
+		AudioResourceInfo data;
+		
+		uint8 riff[4];                      // RIFF string
+		uint32 overall_size = 0;               // overall size of file in bytes
+		uint8 wave[4];                      // WAVE string
+		uint8 fmt_chunk_marker[4];          // fmt string with trailing null char
+		uint32 length_of_fmt = 0;                 // length of the format data
+		uint32 format_type = 0;                   // format type. 1-PCM, 3- IEEE float, 6 - 8bit A law, 7 - 8bit mu law
+		uint32 channels = 0;                      // no.of channels
+		uint32 sample_rate = 0;                   // sampling rate (blocks per second)
+		uint32 byte_rate = 0;                      // SampleRate * NumChannels * BitsPerSample/8
+		uint32 block_align = 0;                   // NumChannels * BitsPerSample/8
+		uint32 bits_per_sample = 0;               // bits per sample, 8- 8bits, 16- 16 bits etc
+		uint8 data_chunk_header[4];        // DATA string or FLLR string
+		uint32 data_size = 0;                     // NumSamples * NumChannels * BitsPerSample/8 - size of the next chunk that will be read
+
+		file_buffer.ReadBytes(4, riff);
+		BE_ASSERT(riff[0] != 'r' || riff[1] != 'i' || riff[2] != 'f' || riff[3] != 'f', "No RIFF");
+
+		GTSL::Extract(overall_size, file_buffer, GetTransientAllocator());
+		file_buffer.ReadBytes(4, wave);
+		file_buffer.ReadBytes(4, fmt_chunk_marker);
+		GTSL::Extract(length_of_fmt, file_buffer, GetTransientAllocator());
+		GTSL::Extract(format_type, file_buffer, GetTransientAllocator());
+		GTSL::Extract(channels, file_buffer, GetTransientAllocator());
+		switch (channels)
+		{
+		case 1: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_MONO; break;
+		case 2: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_STEREO; break;
+		case 6: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_5_1; break;
+		case 8: data.AudioChannelCount = AAL::AudioChannelCount::CHANNELS_7_1; break;
+		default: break;
+		}
+
+		GTSL::Extract(sample_rate, file_buffer, GetTransientAllocator());
+		switch (sample_rate)
+		{
+		case 44100: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_44_1; break;
+		case 48000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_48; break;
+		case 96000: data.AudioSampleRate = AAL::AudioSampleRate::KHZ_96; break;
+		default:break;
+		}
+
+		GTSL::Extract(byte_rate, file_buffer, GetTransientAllocator());
+		GTSL::Extract(block_align, file_buffer, GetTransientAllocator());
+		GTSL::Extract(bits_per_sample, file_buffer, GetTransientAllocator());
+		switch (bits_per_sample)
+		{
+		case 8: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_8; break;
+		case 16: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_16; break;
+		case 24: data.AudioBitDepth = AAL::AudioBitDepth::BIT_DEPTH_24; break;
+		default:break;
+		}
+
+		file_buffer.ReadBytes(4, data_chunk_header);
+		GTSL::Extract(data_size, file_buffer, GetTransientAllocator());
+
+		data.ByteOffset = (uint32)packageFile.GetFileSize();
+		
+		packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetLength()));
+		
+		audioResourceInfos.Emplace(GetPersistentAllocator(), hashed_name, data);
+
+		query_file.CloseFile();
+	};
+	
+	GTSL::FileQuery file_query(query_path);
+	GTSL::ForEach(file_query, load);
+	
+	file_buffer.Free(32, GetTransientAllocator());
+}
+
+void AudioResourceManager::LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo)
+{
+	auto& audio_resource_info = audioResourceInfos.At(loadAudioAssetInfo.Name);
+	
+	if(!audioAssets.Find(loadAudioAssetInfo.Name))
+	{
+		indexFile.SetPointer(audio_resource_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+		//packageFile.ReadFromFile()
+	}
+
+	//handle resource is loaded
+}

@@ -27,7 +27,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Sta
 	GTSL::StaticString<512> query_path, package_path, resources_path;
 	query_path += BE::Application::Get()->GetPathToApplication(); package_path += BE::Application::Get()->GetPathToApplication(); resources_path += BE::Application::Get()->GetPathToApplication();
 	query_path += "/resources/"; package_path += "/resources/"; resources_path += "/resources/";
-	query_path += "*.obj"; package_path += "static_meshes.smbepkg";
+	query_path += "*.obj"; package_path += "StaticMeshes.bepkg";
 
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, [&](const GTSL::FileQuery::QueryResult& queryResult)

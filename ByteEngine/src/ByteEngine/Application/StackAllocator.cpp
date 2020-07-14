@@ -24,7 +24,7 @@ void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorR
 void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
 	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
-	*data = at; at += allocatedSize;
+	*data = GTSL::AlignPointer(alignment, at); at += allocatedSize;
 }
 
 bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
@@ -32,7 +32,7 @@ bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 a
 	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
 	if (at + allocatedSize < end)
 	{
-		*data = at;
+		*data = GTSL::AlignPointer(alignment, at);
 		at += allocatedSize;
 		return true;
 	}

@@ -1,7 +1,6 @@
 #include "GameApplication.h"
 
 #include "ByteEngine/Application/InputManager.h"
-#include <GTSL/Input.h>
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "ByteEngine/Game/GameInstance.h"

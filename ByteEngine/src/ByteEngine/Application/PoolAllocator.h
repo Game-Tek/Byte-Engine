@@ -2,8 +2,8 @@
 
 #include "ByteEngine/Core.h"
 
-#include <atomic>
 #include <GTSL/Allocator.h>
+#include <GTSL/Atomic.hpp>
 #include <GTSL/Ranger.h>
 
 class PoolAllocator
@@ -12,7 +12,7 @@ public:
 	PoolAllocator() = default;
 	PoolAllocator(GTSL::AllocatorReference* allocatorReference);
 
-	~PoolAllocator();
+	~PoolAllocator() = default;
 
 	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const;
 
@@ -41,8 +41,7 @@ public:
 		
 		const uint32 SLOTS_SIZE{ 0 };
 		const uint32 MAX_SLOTS_COUNT{ 0 };
-		
-		std::atomic<free_slots_type> slotsCount{ 0 };
+		GTSL::Atomic<free_slots_type> slotsCount{ 0 };
 
 		byte* getSlotAddress(const uint32 slotIndex) const { return &slotsData[slotIndex * SLOTS_SIZE]; }
 		uint64 getSlotIndexFromPointer(void* pointer) const { return (static_cast<byte*>(pointer) - slotsData) / SLOTS_SIZE; }

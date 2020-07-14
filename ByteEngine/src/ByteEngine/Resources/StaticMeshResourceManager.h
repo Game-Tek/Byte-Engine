@@ -51,17 +51,12 @@ public:
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
 
-	void GetMeshSize(const GTSL::StaticString<256>& name, uint32& meshSize);
+	void GetMeshSize(GTSL::Id64 name, uint32& meshSize);
 
 	struct Mesh
 	{
 		GTSL::Vector<float32> VertexElements;
 		GTSL::Vector<uint32> Indeces;
-
-		[[nodiscard]] uint32 SerializedSize() const
-		{
-			return VertexElements.GetLengthSize() + Indeces.GetLengthSize() - sizeof(uint32) * 2;
-		}
 		
 		friend void Insert(const Mesh& mesh, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);	
 	};
@@ -72,7 +67,7 @@ public:
 		uint32 MeshSize = 0;
 		uint32 VerticesSize = 0;
 		uint32 IndecesSize = 0;
-		uint32 MeshByteOffset = 0;
+		uint32 ByteOffsetFromEndOfFile = 0;
 
 		static uint64 VertexDescriptorHash(GTSL::Ranger<uint8> descriptors)
 		{

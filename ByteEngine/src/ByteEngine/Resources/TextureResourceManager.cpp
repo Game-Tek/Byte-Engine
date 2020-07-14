@@ -16,7 +16,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	path += ".png";
 	
 	GTSL::File file;
-	file.OpenFile(path, GTSL::File::OpenFileMode::READ);
+	file.OpenFile(path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	auto file_size = file.GetFileSize();
 	auto range = GTSL::Ranger<byte>(file_size, textureLoadInfo.TextureDataBuffer.begin());
 	file.ReadFromFile(range);

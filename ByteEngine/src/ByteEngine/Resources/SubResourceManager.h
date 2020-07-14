@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GTSL/Id.h>
+
 #include "ByteEngine/Object.h"
 #include <GTSL/StaticString.hpp>
 
@@ -23,7 +25,8 @@ public:
 
 	struct ResourceLoadInfo
 	{
-		GTSL::StaticString<128> Name;
+		[[deprecated]] GTSL::StaticString<128> NameString;
+		GTSL::Id64 Name;
 	};
 	
 protected:

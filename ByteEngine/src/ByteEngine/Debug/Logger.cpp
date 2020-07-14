@@ -17,7 +17,7 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
 	
 	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
-	logFile.OpenFile(path, GTSL::File::OpenFileMode::WRITE);
+	logFile.OpenFile(path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
 }
 
 void Logger::Shutdown() const

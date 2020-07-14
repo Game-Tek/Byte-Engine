@@ -114,8 +114,6 @@ protected:
 
 		void Clear();
 
-		[[nodiscard]] bool FitsInBlock(uint64 size, uint64 alignment) const;
-
 		[[nodiscard]] uint64 GetBlockSize() const { return end - start; }
 		[[nodiscard]] uint64 GetRemainingSize() const { return end - at; }
 	};

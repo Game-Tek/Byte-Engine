@@ -28,7 +28,7 @@ namespace BE
 	void Application::Initialize()
 	{
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
-		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 1, 70000);
+		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 1024*1024);
 		
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 

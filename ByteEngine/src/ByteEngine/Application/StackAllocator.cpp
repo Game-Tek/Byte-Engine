@@ -23,24 +23,23 @@ void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorR
 
 void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	*data = (at += (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment)));
+	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
+	*data = at; at += allocatedSize;
 }
 
 bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	byte* new_at = at + (allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment));
-	if (new_at < end)
+	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
+	if (at + allocatedSize < end)
 	{
-		*data = new_at;
-		at = new_at;
+		*data = at;
+		at += allocatedSize;
 		return true;
 	}
 	return false;
 }
 
 void StackAllocator::Block::Clear() { at = start; }
-
-bool StackAllocator::Block::FitsInBlock(const uint64 size, uint64 alignment) const { return at + size < end; }
 
 StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, const uint8 stackCount, const uint8 defaultBlocksPerStackCount, const uint64 blockSizes) :
 	blockSize(blockSizes), stacks(stackCount, *allocatorReference), stacksMutexes(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)

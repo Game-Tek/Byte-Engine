@@ -12,7 +12,7 @@ namespace GTSL {
 class RenderSystem : public System
 {
 public:
-	RenderSystem();
+	RenderSystem() = default;
 
 	const char* GetName() const override { return "RenderSystem"; }
 

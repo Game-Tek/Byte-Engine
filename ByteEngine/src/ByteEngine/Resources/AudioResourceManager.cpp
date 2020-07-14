@@ -17,7 +17,7 @@ AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audi
 
 	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
 	
-	GTSL::Buffer file_buffer; file_buffer.Allocate(1024 * 512, 32, GetTransientAllocator());
+	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
 	{
@@ -38,12 +38,12 @@ AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audi
 		uint8 wave[4];                      // WAVE string
 		uint8 fmt_chunk_marker[4];          // fmt string with trailing null char
 		uint32 length_of_fmt = 0;                 // length of the format data
-		uint32 format_type = 0;                   // format type. 1-PCM, 3- IEEE float, 6 - 8bit A law, 7 - 8bit mu law
-		uint32 channels = 0;                      // no.of channels
+		uint16 format_type = 0;                   // format type. 1-PCM, 3- IEEE float, 6 - 8bit A law, 7 - 8bit mu law
+		uint16 channels = 0;                      // no.of channels
 		uint32 sample_rate = 0;                   // sampling rate (blocks per second)
 		uint32 byte_rate = 0;                      // SampleRate * NumChannels * BitsPerSample/8
-		uint32 block_align = 0;                   // NumChannels * BitsPerSample/8
-		uint32 bits_per_sample = 0;               // bits per sample, 8- 8bits, 16- 16 bits etc
+		uint16 block_align = 0;                   // NumChannels * BitsPerSample/8
+		uint16 bits_per_sample = 0;               // bits per sample, 8- 8bits, 16- 16 bits etc
 		uint8 data_chunk_header[4];        // DATA string or FLLR string
 		uint32 data_size = 0;                     // NumSamples * NumChannels * BitsPerSample/8 - size of the next chunk that will be read
 
@@ -90,7 +90,7 @@ AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audi
 
 		data.ByteOffset = (uint32)packageFile.GetFileSize();
 		
-		packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetLength()));
+		packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetRemainingSize()));
 		
 		audioResourceInfos.Emplace(GetPersistentAllocator(), hashed_name, data);
 
@@ -101,6 +101,12 @@ AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audi
 	GTSL::ForEach(file_query, load);
 	
 	file_buffer.Free(32, GetTransientAllocator());
+}
+
+AudioResourceManager::~AudioResourceManager()
+{
+	packageFile.CloseFile();
+	audioResourceInfos.Free(GetPersistentAllocator());
 }
 
 void AudioResourceManager::LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo)

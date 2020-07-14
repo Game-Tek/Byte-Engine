@@ -31,7 +31,7 @@ public:
 
 	AudioResourceManager();
 
-	~AudioResourceManager() = default;
+	~AudioResourceManager();
 
 	const char* GetName() const override { return "Audio Resource Manager"; }
 	

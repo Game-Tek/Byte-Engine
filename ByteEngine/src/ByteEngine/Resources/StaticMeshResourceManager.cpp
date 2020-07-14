@@ -121,7 +121,6 @@ StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Sta
 		}
 		
 		mesh_info.IndecesSize = in_mesh->mNumFaces * 3 * sizeof(uint32);
-		mesh_info.MeshSize = mesh_info.VerticesSize + mesh_info.IndecesSize;
 		
 		mesh_infos.EmplaceBack(GetPersistentAllocator(), mesh_info);
 		
@@ -136,7 +135,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Sta
 	for(uint32 i = meshes.GetLength() - 1; i > 0; --i)
 	{
 		auto& e = mesh_infos[i];
-		mesh_infos_size += e.MeshSize;
+		mesh_infos_size += e.MeshSize();
 		e.ByteOffsetFromEndOfFile = mesh_infos_size;
 	}
 
@@ -191,14 +190,14 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	//loadStaticMeshInfo.OnStaticMeshLoad(on_static_mesh_load);
 }
 
-void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, uint32& meshSize)
+void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, const uint32 alignment, uint32& meshSize)
 {
-	meshSize = meshInfos.At(name).MeshSize;
+	auto& mesh = meshInfos.At(name);
+	meshSize = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, alignment) + mesh.IndecesSize;
 }
 
 void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
 {
-	GTSL::Insert(meshInfo.MeshSize, buffer, allocatorReference);
 	GTSL::Insert(meshInfo.VerticesSize, buffer, allocatorReference);
 	GTSL::Insert(meshInfo.IndecesSize, buffer, allocatorReference);
 	GTSL::Insert(meshInfo.ByteOffsetFromEndOfFile, buffer, allocatorReference);
@@ -206,7 +205,6 @@ void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& b
 
 void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
 {
-	GTSL::Extract(meshInfo.MeshSize, buffer, allocatorReference);
 	GTSL::Extract(meshInfo.VerticesSize, buffer, allocatorReference);
 	GTSL::Extract(meshInfo.IndecesSize, buffer, allocatorReference);
 	GTSL::Extract(meshInfo.ByteOffsetFromEndOfFile, buffer, allocatorReference);

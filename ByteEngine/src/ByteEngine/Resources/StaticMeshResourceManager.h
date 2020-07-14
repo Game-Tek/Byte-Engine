@@ -7,7 +7,6 @@
 #include <GTSL/DynamicType.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Bitman.h>
 
 #include "ResourceData.h"
 
@@ -51,7 +50,7 @@ public:
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
 
-	void GetMeshSize(GTSL::Id64 name, uint32& meshSize);
+	void GetMeshSize(GTSL::Id64 name, uint32 alignment, uint32& meshSize);
 
 	struct Mesh
 	{
@@ -64,7 +63,6 @@ public:
 	struct MeshInfo
 	{
 		GTSL::Array<uint8, 32> VertexDescriptor;
-		uint32 MeshSize = 0;
 		uint32 VerticesSize = 0;
 		uint32 IndecesSize = 0;
 		uint32 ByteOffsetFromEndOfFile = 0;
@@ -77,6 +75,8 @@ public:
 			}
 		}
 
+		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndecesSize; }
+		
 		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
 		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
 	};

@@ -20,7 +20,7 @@ void StaticMeshRenderGroup::Shutdown()
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 buffer_size = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference], buffer_size);
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference], 256, buffer_size);
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();

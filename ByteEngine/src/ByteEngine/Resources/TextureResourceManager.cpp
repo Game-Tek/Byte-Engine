@@ -28,8 +28,8 @@ TextureResourceManager::TextureResourceManager() : SubResourceManager("Texture")
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
 	{
 		auto file_path = resources_path;
-		file_path += queryResult.FilePath;
-		auto name = queryResult.FilePath; name.Drop(name.FindLast('.'));
+		file_path += queryResult.FileNameWithExtension;
+		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
 		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
 
 		GTSL::File query_file;

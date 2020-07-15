@@ -20,9 +20,12 @@
 StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Static Mesh"), meshInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path;
-	query_path += BE::Application::Get()->GetPathToApplication(); package_path += BE::Application::Get()->GetPathToApplication(); resources_path += BE::Application::Get()->GetPathToApplication();
-	query_path += "/resources/"; package_path += "/resources/"; resources_path += "/resources/";
-	query_path += "*.obj"; package_path += "StaticMeshes.bepkg";
+	query_path += BE::Application::Get()->GetPathToApplication();
+	package_path += BE::Application::Get()->GetPathToApplication();
+	resources_path += BE::Application::Get()->GetPathToApplication();
+	query_path += "/resources/*.obj";
+	package_path += "/resources/StaticMeshes.bepkg";
+	resources_path += "/resources/";
 
 	GTSL::Buffer source_file_buffer; source_file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
@@ -32,8 +35,8 @@ StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Sta
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
 	{
 		auto file_path = resources_path;
-		file_path += queryResult.FilePath;
-		auto name = queryResult.FilePath; name.Drop(name.FindLast('.'));
+		file_path += queryResult.FileNameWithExtension;
+		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
 		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
 
 		GTSL::File query_file;

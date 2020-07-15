@@ -3,7 +3,6 @@
 #include "ByteEngine/Core.h"
 
 #include "SubResourceManager.h"
-#include <AAL/AudioCore.h>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Vector.hpp>
@@ -14,9 +13,9 @@ public:
 	struct AudioResourceInfo final
 	{
 		uint32 ByteOffset = 0;
-		AAL::AudioChannelCount AudioChannelCount;
-		AAL::AudioSampleRate AudioSampleRate;
-		AAL::AudioBitDepth AudioBitDepth;
+		uint8 AudioChannelCount;
+		uint8 AudioSampleRate;
+		uint8 AudioBitDepth;
 	};
 
 	struct AudioAsset
@@ -40,3 +39,6 @@ private:
 	GTSL::FlatHashMap<AudioAsset> audioAssets;
 	GTSL::FlatHashMap<AudioResourceInfo> audioResourceInfos;
 };
+
+void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
+void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);

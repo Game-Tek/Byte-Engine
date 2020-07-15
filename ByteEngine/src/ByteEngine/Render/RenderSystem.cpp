@@ -242,10 +242,19 @@ void RenderSystem::allocateScratchMemoryBlock()
 
 void RenderSystem::ScratchMemoryBlock::AllocateDeviceMemory(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)
 {
+	Buffer::CreateInfo buffer_create_info;
+	buffer_create_info.RenderDevice = &renderDevice;
+	buffer_create_info.Size = 1024;
+	buffer_create_info.BufferType = (uint32)BufferType::UNIFORM;
+	Buffer scratch_buffer(buffer_create_info);
+
+	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
+	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
+	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Size = static_cast<uint32>(ALLOCATION_SIZE.GetCount());
-	memory_create_info.MemoryType = static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT); /////////////////////
+	memory_create_info.Size = static_cast<uint32>(ALLOCATION_SIZE);
+	memory_create_info.MemoryType = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT));
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
 
 	DeviceMemory::MapInfo map_info;
@@ -253,6 +262,8 @@ void RenderSystem::ScratchMemoryBlock::AllocateDeviceMemory(const RenderDevice& 
 	map_info.Size = memory_create_info.Size;
 	map_info.Offset = 0;
 	mappedMemory = deviceMemory.Map(map_info);
+
+	scratch_buffer.Destroy(&renderDevice);
 }
 
 void RenderSystem::ScratchMemoryBlock::Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)

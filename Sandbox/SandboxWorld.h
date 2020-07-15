@@ -5,6 +5,7 @@
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
+#include "ByteEngine/Resources/TextureResourceManager.h"
 
 class MenuWorld : public World
 {
@@ -15,8 +16,9 @@ public:
 
 		BE_LOG_MESSAGE("Initilized world!");
 
-		StaticMeshResourceManager static_mesh_resource_manager;
+		//StaticMeshResourceManager static_mesh_resource_manager;
 		AudioResourceManager audio_resource_manager;
+		//TextureResourceManager texture_resource_manager;
 		
 		//auto* collection = static_cast<RenderStaticMeshCollection*>(initializeInfo.GameInstance->GetComponentCollection("RenderStaticMeshCollection"));
 		

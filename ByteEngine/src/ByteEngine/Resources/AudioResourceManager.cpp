@@ -90,7 +90,7 @@ AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio"), audi
 
 		data.ByteOffset = (uint32)packageFile.GetFileSize();
 		
-		packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetRemainingSize()));
+		packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetReadPosition()));
 		
 		audioResourceInfos.Emplace(GetPersistentAllocator(), hashed_name, data);
 

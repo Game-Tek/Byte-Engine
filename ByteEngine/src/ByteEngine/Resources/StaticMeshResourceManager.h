@@ -86,4 +86,6 @@ private:
 	GTSL::File staticMeshPackage;
 	
 	GTSL::FlatHashMap<MeshInfo> meshInfos;
+
+	static void loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh, const GTSL::AllocatorReference& allocatorReference);
 };

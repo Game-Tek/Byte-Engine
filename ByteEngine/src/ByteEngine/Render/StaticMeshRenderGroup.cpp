@@ -50,13 +50,13 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	bind_memory_info.Offset = offset;
 	scratch_buffer.BindToMemory(bind_memory_info);
 
-	StaticMeshResourceManager::LoadStaticMeshInfo load_static_mesh_info;
-	load_static_mesh_info.OnStaticMeshLoad = GTSL::Delegate<void(StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
-	load_static_mesh_info.MeshDataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
-	load_static_mesh_info.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
-	load_static_mesh_info.IndicesAlignment = alignment;
-	load_static_mesh_info.UserData = DYNAMIC_TYPE(Buffer, data);
-	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_mesh_info);
+	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
+	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
+	load_static_meshInfo.MeshDataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
+	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
+	load_static_meshInfo.IndicesAlignment = alignment;
+	load_static_meshInfo.UserData = DYNAMIC_TYPE(Buffer, data);
+	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)

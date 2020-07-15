@@ -5,8 +5,8 @@
 #include "ResourceData.h"
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
+#include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
-#include <GTSL/StaticString.hpp>
 
 struct TextureResourceData final : ResourceHandle
 {
@@ -15,10 +15,18 @@ struct TextureResourceData final : ResourceHandle
 class TextureResourceManager final : public SubResourceManager
 {
 public:
-	TextureResourceManager() : SubResourceManager("Texture")
+	TextureResourceManager();
+	~TextureResourceManager();
+	
+	const char* GetName() const override { return "Texture Resource Manager"; }
+	
+	struct TextureInfo
 	{
-	}
-
+		uint32 ByteOffset = 0;
+		uint32 ImageSize = 0;
+		uint8 Format = 0;
+	};
+	
 	struct OnTextureLoadInfo
 	{
 		GTSL::Ranger<byte> TextureDataBuffer;
@@ -37,5 +45,9 @@ public:
 	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
 
 private:
-	//GTSL::FlatHashMap<
+	GTSL::File packageFile;
+	GTSL::File indexFile;
+	GTSL::FlatHashMap<TextureInfo> textureInfos;
+	GTSL::FlatHashMap<TextureInfo> textureAssets;
+	
 };

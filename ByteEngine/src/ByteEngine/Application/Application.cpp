@@ -1,5 +1,7 @@
 #include "Application.h"
 
+
+#include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
 
 #include "ByteEngine/Resources/AudioResourceManager.h"
@@ -56,6 +58,9 @@ namespace BE
 		delete clockInstance;
 		delete inputManagerInstance;
 
+		GTSL::ForEach(resourceManagers, [&](GTSL::Allocation<ResourceManager>& resourceManager) { Delete(resourceManager, GetPersistentAllocator()); });
+		resourceManagers.Free(GetPersistentAllocator());
+		
 		transientAllocator.LockedClear();
 		transientAllocator.Free();
 		StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);

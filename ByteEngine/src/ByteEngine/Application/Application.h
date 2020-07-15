@@ -4,6 +4,7 @@
 
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
+#include <GTSL/FlatHashMap.h>
 #include <GTSL/String.hpp>
 
 #include "Clock.h"
@@ -13,6 +14,7 @@
 #include "SystemAllocator.h"
 
 #include "ByteEngine/Debug/Logger.h"
+#include "ByteEngine/Resources/ResourceManager.h"
 
 class InputManager;
 
@@ -78,10 +80,18 @@ namespace BE
 		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance; }
 		[[nodiscard]] Logger* GetLogger() const { return logger; }
-		GTSL::Application* GetSystemApplication() { return &systemApplication; }
+		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
 		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }
+
+		template<typename RM>
+		ResourceManager* CreateResourceManager()
+		{
+			auto resource_manager = GTSL::Allocation<ResourceManager>::Create<RM>();
+			return static_cast<RM*>(resourceManagers.Emplace(GetPersistentAllocator(), GTSL::Id64(resource_manager->GetName()), resource_manager));
+		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
+		ResourceManager* GetResourceManager(const GTSL::Id64 name) { return resourceManagers.At(name); }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() { return &poolAllocator; }
@@ -114,6 +124,8 @@ namespace BE
 		GTSL::Allocation<Logger> logger;
 		GTSL::Allocation<GameInstance> gameInstance;
 
+		GTSL::FlatHashMap<GTSL::Allocation<ResourceManager>> resourceManagers;
+		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };
 		PoolAllocator poolAllocator;

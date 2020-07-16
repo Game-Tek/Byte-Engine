@@ -1,20 +1,18 @@
 #pragma once
 
-#include "SubResourceManager.h"
+#include "ResourceManager.h"
+
 #include <GTSL/Delegate.hpp>
 #include <GTSL/FlatHashMap.h>
-
 #include <GTSL/DynamicType.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
-
-#include "ResourceData.h"
 
 namespace GTSL {
 	class Vector2;
 }
 
-class StaticMeshResourceManager final : public SubResourceManager
+class StaticMeshResourceManager final : public ResourceManager
 {
 public:
 	StaticMeshResourceManager();

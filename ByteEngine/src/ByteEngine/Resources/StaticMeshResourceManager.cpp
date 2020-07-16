@@ -1,5 +1,9 @@
 #include "StaticMeshResourceManager.h"
 
+
+#include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Debug/Assert.h"
+
 #include <GTSL/Buffer.h>
 
 #include <assimp/Importer.hpp>
@@ -7,17 +11,10 @@
 #include <assimp/scene.h>
 #include <GAL/RenderCore.h>
 
-
-#include "ByteEngine/Application/Application.h"
-
-#include "ByteEngine/Vertex.h"
-
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
 
-#include "ByteEngine/Debug/Assert.h"
-
-StaticMeshResourceManager::StaticMeshResourceManager() : SubResourceManager("Static Mesh"), meshInfos(4, GetPersistentAllocator())
+StaticMeshResourceManager::StaticMeshResourceManager() : meshInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path;
 	query_path += BE::Application::Get()->GetPathToApplication();

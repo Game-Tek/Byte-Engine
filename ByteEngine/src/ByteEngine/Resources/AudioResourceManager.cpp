@@ -8,7 +8,7 @@
 #include "ByteEngine/Debug/Assert.h"
 #include <AAL/AudioCore.h>
 
-AudioResourceManager::AudioResourceManager() : SubResourceManager("Audio")
+AudioResourceManager::AudioResourceManager()
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication(); query_path += "/resources/"; query_path += "*.wav";

@@ -101,7 +101,6 @@
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\StaticMeshResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Resources\SubResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
@@ -122,9 +121,6 @@
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
     <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
-    <ClInclude Include="src\ByteEngine\Vertex.h">
-      <Filter>Engine\Render</Filter>
-    </ClInclude>
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
     <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
@@ -157,9 +153,7 @@
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\SubResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Sound\SoundManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
@@ -172,5 +166,6 @@
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
+    <ClCompile Include="src\ByteEngine\Application\SystemAllocator.cpp" />
   </ItemGroup>
 </Project>

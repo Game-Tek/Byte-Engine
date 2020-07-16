@@ -9,7 +9,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-TextureResourceManager::TextureResourceManager() : SubResourceManager("Texture"), textureInfos(4, GetPersistentAllocator())
+TextureResourceManager::TextureResourceManager() : textureInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path;
 	query_path += BE::Application::Get()->GetPathToApplication();

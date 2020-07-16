@@ -1,18 +1,14 @@
 #pragma once
 
-#include "SubResourceManager.h"
 #include <GTSL/Extent.h>
-#include "ResourceData.h"
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
 
-struct TextureResourceData final : ResourceHandle
-{
-};
+#include "ResourceManager.h"
 
-class TextureResourceManager final : public SubResourceManager
+class TextureResourceManager final : public ResourceManager
 {
 public:
 	TextureResourceManager();

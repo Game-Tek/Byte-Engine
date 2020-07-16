@@ -2,12 +2,13 @@
 
 #include "ByteEngine/Core.h"
 
-#include "SubResourceManager.h"
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Vector.hpp>
 
-class AudioResourceManager final : public SubResourceManager
+#include "ResourceManager.h"
+
+class AudioResourceManager final : public ResourceManager
 {
 public:
 	struct AudioResourceInfo final

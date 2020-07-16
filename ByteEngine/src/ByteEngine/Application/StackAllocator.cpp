@@ -148,9 +148,10 @@ void StackAllocator::LockedClear()
 	{
 		for (auto& block : stack)
 		{
-			stacksMutexes[&stack - stacks.begin()].Lock();
+			const auto i = static_cast<uint32>(&stack - stacks.begin());
+			stacksMutexes[i].Lock();
 			block.Clear();
-			stacksMutexes[&stack - stacks.begin()].Unlock();
+			stacksMutexes[i].Unlock();
 		}
 	}
 }

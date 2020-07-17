@@ -1,12 +1,12 @@
 #pragma once
 
+#include "ResourceManager.h"
+
 #include <GTSL/Extent.h>
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
-
-#include "ResourceManager.h"
 
 class TextureResourceManager final : public ResourceManager
 {
@@ -41,9 +41,11 @@ public:
 	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
 
 private:
-	GTSL::File packageFile;
-	GTSL::File indexFile;
+	GTSL::File packageFile, indexFile;
 	GTSL::FlatHashMap<TextureInfo> textureInfos;
 	GTSL::FlatHashMap<TextureInfo> textureAssets;
 	
 };
+
+void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
+void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);

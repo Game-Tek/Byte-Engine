@@ -15,10 +15,6 @@ public:
 		World::InitializeWorld(initializeInfo);
 
 		BE_LOG_MESSAGE("Initilized world!");
-
-		//StaticMeshResourceManager static_mesh_resource_manager;
-		AudioResourceManager audio_resource_manager;
-		//TextureResourceManager texture_resource_manager;
 		
 		//auto* collection = static_cast<RenderStaticMeshCollection*>(initializeInfo.GameInstance->GetComponentCollection("RenderStaticMeshCollection"));
 		

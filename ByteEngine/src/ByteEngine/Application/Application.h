@@ -86,8 +86,8 @@ namespace BE
 		template<typename RM>
 		ResourceManager* CreateResourceManager()
 		{
-			auto resource_manager = GTSL::Allocation<ResourceManager>::Create<RM>();
-			return static_cast<RM*>(resourceManagers.Emplace(GetPersistentAllocator(), GTSL::Id64(resource_manager->GetName()), resource_manager));
+			GTSL::Allocation<ResourceManager> resource_manager = GTSL::Allocation<ResourceManager>::Create<RM>(GetPersistentAllocator());
+			return static_cast<RM*>(resourceManagers.Emplace(GetPersistentAllocator(), GTSL::Id64(resource_manager->GetName()), resource_manager)->Data);
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }

@@ -4,6 +4,7 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
 #pragma comment(lib, "XInput.lib")
 
@@ -39,8 +40,8 @@ void GameApplication::Initialize()
 
 	SetupInputSources();
 
-	//resourceManagerInstance->CreateSubResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//resourceManagerInstance->CreateSubResourceManager<TextureResourceManager>("TextureResourceManager");
+	CreateResourceManager<StaticMeshResourceManager>();
+	CreateResourceManager<TextureResourceManager>();
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

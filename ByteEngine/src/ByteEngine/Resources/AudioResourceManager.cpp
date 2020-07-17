@@ -13,8 +13,8 @@ AudioResourceManager::AudioResourceManager()
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication(); query_path += "/resources/"; query_path += "*.wav";
 	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
-	index_path += BE::Application::Get()->GetPathToApplication(); index_path += "/resources/AudioFiles.beidx";
-	package_path += BE::Application::Get()->GetPathToApplication(); package_path += "/resources/AudioFiles.bepkg";
+	index_path += BE::Application::Get()->GetPathToApplication(); index_path += "/resources/Audio.beidx";
+	package_path += BE::Application::Get()->GetPathToApplication(); package_path += "/resources/Audio.bepkg";
 
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);

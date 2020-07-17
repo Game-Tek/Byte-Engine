@@ -23,16 +23,14 @@ public:
 		uint8 Format = 0;
 	};
 	
-	struct OnTextureLoadInfo
+	struct OnTextureLoadInfo : OnResourceLoad
 	{
-		GTSL::Ranger<byte> TextureDataBuffer;
 		GAL::ImageFormat TextureFormat;
 		float32 LODPercentage{ 0.0f };
 	};
 	
 	struct TextureLoadInfo : ResourceLoadInfo
 	{
-		GTSL::Ranger<byte> TextureDataBuffer;
 		GTSL::Delegate<void(OnTextureLoadInfo)> OnTextureLoadInfo;
 		GTSL::Extent3D TextureExtent;
 		float32 LODPercentage{ 0.0f };

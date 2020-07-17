@@ -52,7 +52,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
-	load_static_meshInfo.MeshDataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
+	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
 	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
 	load_static_meshInfo.IndicesAlignment = alignment;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(Buffer, data);

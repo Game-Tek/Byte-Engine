@@ -4,7 +4,6 @@
 
 #include <GTSL/Delegate.hpp>
 #include <GTSL/FlatHashMap.h>
-#include <GTSL/DynamicType.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
 
@@ -20,13 +19,8 @@ public:
 
 	const char* GetName() const override { return "Static Mesh Resource Manager"; }
 	
-	struct OnStaticMeshLoad
+	struct OnStaticMeshLoad : OnResourceLoad
 	{
-		SAFE_POINTER UserData;
-		/**
-		 * \brief Buffer containing the loaded data. At the start all vertices are found and after VertexCount vertices the indeces are found.
-		 */
-		GTSL::Ranger<byte> MeshDataBuffer;
 		/**
 		 * \brief Number of vertices the loaded mesh contains.
 		 */
@@ -35,14 +29,10 @@ public:
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
 		GTSL::uint16 IndexCount;
-		void* Vertex = nullptr;
-		void* Indices = nullptr;
 	};
 
 	struct LoadStaticMeshInfo : ResourceLoadInfo
 	{
-		SAFE_POINTER UserData;
-		GTSL::Ranger<byte> MeshDataBuffer;
 		GTSL::Delegate<void(OnStaticMeshLoad)> OnStaticMeshLoad;
 		uint32 IndicesAlignment = 0;
 	};
@@ -63,7 +53,7 @@ public:
 		GTSL::Array<uint8, 32> VertexDescriptor;
 		uint32 VerticesSize = 0;
 		uint32 IndecesSize = 0;
-		uint32 ByteOffsetFromEndOfFile = 0;
+		uint32 ByteOffset = 0;
 
 		static uint64 VertexDescriptorHash(GTSL::Ranger<uint8> descriptors)
 		{
@@ -81,7 +71,7 @@ public:
 	
 private:
 	GTSL::FlatHashMap<OnStaticMeshLoad> resources;
-	GTSL::File staticMeshPackage;
+	GTSL::File staticMeshPackage, indexFile;
 	
 	GTSL::FlatHashMap<MeshInfo> meshInfos;
 

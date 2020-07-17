@@ -19,7 +19,6 @@ TextureResourceManager::TextureResourceManager()
 	index_path += BE::Application::Get()->GetPathToApplication();
 	package_path += BE::Application::Get()->GetPathToApplication();
 	resources_path += BE::Application::Get()->GetPathToApplication();
-	
 	resources_path += "/resources/";
 	query_path += "/resources/*.png";
 	index_path += "/resources/Textures.beidx";
@@ -97,7 +96,7 @@ TextureResourceManager::TextureResourceManager()
 TextureResourceManager::~TextureResourceManager()
 {
 	textureInfos.Free(GetPersistentAllocator());
-	packageFile.CloseFile();
+	packageFile.CloseFile(); indexFile.CloseFile();
 }
 
 void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)

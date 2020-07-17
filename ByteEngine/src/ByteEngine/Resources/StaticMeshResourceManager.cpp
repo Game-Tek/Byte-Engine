@@ -16,18 +16,29 @@
 
 StaticMeshResourceManager::StaticMeshResourceManager() : meshInfos(4, GetPersistentAllocator())
 {
-	GTSL::StaticString<512> query_path, package_path, resources_path;
+	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();
 	package_path += BE::Application::Get()->GetPathToApplication();
 	resources_path += BE::Application::Get()->GetPathToApplication();
+	index_path += BE::Application::Get()->GetPathToApplication();
 	query_path += "/resources/*.obj";
 	package_path += "/resources/StaticMeshes.bepkg";
+	index_path += "/resources/StaticMeshes.beidx";
 	resources_path += "/resources/";
 
-	GTSL::Buffer source_file_buffer; source_file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
+	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
+	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
+	
 	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 
-	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
+	if (indexFile.ReadFile(file_buffer))
+	{
+		GTSL::Extract(meshInfos, file_buffer, GetPersistentAllocator());
+	}
+	else
+	{
+		::new(&meshInfos) GTSL::FlatHashMap<MeshInfo>(8, 0.25, GetPersistentAllocator());
+	}
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
 	{
@@ -36,40 +47,49 @@ StaticMeshResourceManager::StaticMeshResourceManager() : meshInfos(4, GetPersist
 		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
 		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
 
-		GTSL::File query_file;
-		query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
+		if (!meshInfos.Find(hashed_name))
+		{
+			GTSL::File query_file;
+			query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
 
-		query_file.ReadFile(source_file_buffer);
+			query_file.ReadFile(file_buffer);
 
-		MeshInfo mesh_info; Mesh mesh;
-		mesh.Indeces.Initialize(1024, GetTransientAllocator());
-		mesh.VertexElements.Initialize(1024, GetTransientAllocator());
+			MeshInfo mesh_info; Mesh mesh;
+			mesh.Indeces.Initialize(1024, GetTransientAllocator());
+			mesh.VertexElements.Initialize(1024, GetTransientAllocator());
 
-		loadMesh(source_file_buffer, mesh_info, mesh, GetTransientAllocator());
+			loadMesh(file_buffer, mesh_info, mesh, GetTransientAllocator());
 
-		mesh_info.ByteOffsetFromEndOfFile = static_cast<uint32>(staticMeshPackage.GetFileSize());
+			mesh_info.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
 
-		Insert(mesh, file_buffer, GetTransientAllocator());
-		staticMeshPackage.WriteToFile(file_buffer);
-		
-		meshInfos.Emplace(GetPersistentAllocator(), hashed_name, mesh_info);
+			Insert(mesh, file_buffer, GetTransientAllocator());
+			staticMeshPackage.WriteToFile(file_buffer);
 
-		mesh.Indeces.Free(GetTransientAllocator());
-		mesh.VertexElements.Free(GetTransientAllocator());
+			meshInfos.Emplace(GetPersistentAllocator(), hashed_name, mesh_info);
 
-		query_file.CloseFile();
+			mesh.Indeces.Free(GetTransientAllocator());
+			mesh.VertexElements.Free(GetTransientAllocator());
+
+			query_file.CloseFile();
+		}
 	};
 	
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, load);
+
+	indexFile.CloseFile();
+	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
+
+	file_buffer.Resize(0);
+	Insert(meshInfos, file_buffer, GetTransientAllocator());
+	indexFile.WriteToFile(file_buffer);
 	
-	source_file_buffer.Free(32, GetTransientAllocator());
 	file_buffer.Free(32, GetTransientAllocator());
 }
 
 StaticMeshResourceManager::~StaticMeshResourceManager()
 {
-	staticMeshPackage.CloseFile();
+	staticMeshPackage.CloseFile(); indexFile.CloseFile();
 	meshInfos.Free(GetPersistentAllocator());
 }
 
@@ -77,11 +97,11 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 {
 	const auto meshInfo = meshInfos.At(loadStaticMeshInfo.Name);
 
-	staticMeshPackage.SetPointer(-(int64)meshInfo.ByteOffsetFromEndOfFile, GTSL::File::MoveFrom::END);
+	staticMeshPackage.SetPointer(meshInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 
-	byte* vertices = loadStaticMeshInfo.MeshDataBuffer, *indices = static_cast<byte*>(GTSL::AlignPointer(loadStaticMeshInfo.IndicesAlignment, vertices + meshInfo.VerticesSize));
+	byte* vertices = loadStaticMeshInfo.DataBuffer, *indices = static_cast<byte*>(GTSL::AlignPointer(loadStaticMeshInfo.IndicesAlignment, vertices + meshInfo.VerticesSize));
 	
-	staticMeshPackage.ReadFromFile(loadStaticMeshInfo.MeshDataBuffer); 
+	staticMeshPackage.ReadFromFile(loadStaticMeshInfo.DataBuffer); 
 
 	GTSL::MemCopy(meshInfo.IndecesSize, vertices + meshInfo.VerticesSize, indices);
 	
@@ -177,14 +197,14 @@ void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& b
 {
 	GTSL::Insert(meshInfo.VerticesSize, buffer, allocatorReference);
 	GTSL::Insert(meshInfo.IndecesSize, buffer, allocatorReference);
-	GTSL::Insert(meshInfo.ByteOffsetFromEndOfFile, buffer, allocatorReference);
+	GTSL::Insert(meshInfo.ByteOffset, buffer, allocatorReference);
 }
 
 void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
 {
 	GTSL::Extract(meshInfo.VerticesSize, buffer, allocatorReference);
 	GTSL::Extract(meshInfo.IndecesSize, buffer, allocatorReference);
-	GTSL::Extract(meshInfo.ByteOffsetFromEndOfFile, buffer, allocatorReference);
+	GTSL::Extract(meshInfo.ByteOffset, buffer, allocatorReference);
 }
 
 void Insert(const StaticMeshResourceManager::Mesh& mesh, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)

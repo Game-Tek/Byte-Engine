@@ -32,6 +32,8 @@ namespace BE
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 2);
 		
+		::new(&resourceManagers) GTSL::FlatHashMap<GTSL::Allocation<ResourceManager>>(8, GetPersistentAllocator());
+		
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
 		Logger::LoggerCreateInfo logger_create_info;

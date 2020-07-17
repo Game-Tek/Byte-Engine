@@ -32,8 +32,6 @@ public:
 	AudioResourceManager();
 
 	~AudioResourceManager();
-
-	const char* GetName() const override { return "Audio Resource Manager"; }
 	
 private:
 	GTSL::File indexFile, packageFile;

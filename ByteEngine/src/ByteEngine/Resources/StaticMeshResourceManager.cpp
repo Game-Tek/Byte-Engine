@@ -14,7 +14,7 @@
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
 
-StaticMeshResourceManager::StaticMeshResourceManager() : meshInfos(4, GetPersistentAllocator())
+StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();
@@ -45,7 +45,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : meshInfos(4, GetPersist
 		auto file_path = resources_path;
 		file_path += queryResult.FileNameWithExtension;
 		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
-		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
+		const auto hashed_name = GTSL::Id64(name);
 
 		if (!meshInfos.Find(hashed_name))
 		{

@@ -12,7 +12,7 @@
 
 #undef Extract
 
-TextureResourceManager::TextureResourceManager()
+TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResourceManager")
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();

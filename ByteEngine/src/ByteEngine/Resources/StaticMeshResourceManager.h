@@ -16,8 +16,6 @@ class StaticMeshResourceManager final : public ResourceManager
 public:
 	StaticMeshResourceManager();
 	~StaticMeshResourceManager();
-
-	const char* GetName() const override { return "Static Mesh Resource Manager"; }
 	
 	struct OnStaticMeshLoad : OnResourceLoad
 	{

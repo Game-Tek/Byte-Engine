@@ -49,8 +49,6 @@ public:
 	~Clock();
 
 	void OnUpdate();
-	
-	[[nodiscard]] const char* GetName() const override { return "Clock"; }
 
 	//Returns the time elapsed since the last application update (tick).
 	[[nodiscard]] GTSL::Microseconds GetDeltaTime() const { return deltaTime; }

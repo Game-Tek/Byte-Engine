@@ -17,7 +17,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : systemAllocatorReference("Application"),
+	Application::Application(const ApplicationCreateInfo& ACI) : Object(ACI.ApplicationName), systemAllocatorReference("Application"),
 	systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
 		applicationInstance = this;

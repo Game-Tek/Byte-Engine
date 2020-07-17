@@ -18,6 +18,8 @@ class ResourceManager : public Object
 public:
 	ResourceManager() = default;
 
+	ResourceManager(const UTF8* name) : Object(name) {}
+
 	struct ResourceLoadInfo
 	{
 		/**

@@ -9,6 +9,12 @@
 class System : public Object
 {
 public:
+	System() = default;
+	
+	System(const UTF8* name) : Object(name)
+	{
+	}
+	
 	using ComponentReference = uint32;
 
 	struct InitializeInfo
@@ -18,7 +24,5 @@ public:
 	virtual void Initialize(const InitializeInfo& initializeInfo) = 0;
 
 	virtual void Shutdown() = 0;
-
-	[[nodiscard]] const char* GetName() const override { return "System"; }
 private:
 };

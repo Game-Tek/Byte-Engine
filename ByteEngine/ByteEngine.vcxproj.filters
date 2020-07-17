@@ -104,7 +104,6 @@
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
-    <ClInclude Include="src\ByteEngine\Sound\SoundManager.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\Box.h" />
@@ -116,7 +115,6 @@
     <ClInclude Include="src\ByteEngine\Core.h">
       <Filter>Engine</Filter>
     </ClInclude>
-    <ClInclude Include="src\ByteEngine\Dispatcher.h" />
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
@@ -132,6 +130,7 @@
     <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
+    <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -155,7 +154,6 @@
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Sound\SoundManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\ByteEngine\Camera.cpp" />
@@ -167,5 +165,6 @@
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
     <ClCompile Include="src\ByteEngine\Application\SystemAllocator.cpp" />
+    <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
   </ItemGroup>
 </Project>

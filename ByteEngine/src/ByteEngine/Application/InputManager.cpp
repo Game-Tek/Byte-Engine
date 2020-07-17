@@ -3,10 +3,9 @@
 #include <GTSL/Math/Vector2.h>
 
 #include "Application.h"
-#include "ByteEngine/Debug/Assert.h"
 
-InputManager::InputManager() : actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()), characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
-linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()), vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator())
+InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()), characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
+                               linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()), vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator())
 {
 	actionInputSourceRecords.Initialize(10, GetPersistentAllocator());
 	characterInputSourceRecords.Initialize(10, GetPersistentAllocator());

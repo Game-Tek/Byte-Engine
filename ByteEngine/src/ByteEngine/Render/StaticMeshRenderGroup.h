@@ -10,7 +10,6 @@ class StaticMeshRenderGroup final : public RenderGroup
 public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown() override;
-	[[nodiscard]] const char* GetName() const override { return "StaticMeshRenderGroup"; }
 
 	struct AddStaticMeshInfo
 	{

@@ -23,7 +23,6 @@ public:
 	
 	~Game();
 
-	[[nodiscard]] const char* GetName() const override { return "Sandbox"; }
 	const char* GetApplicationName() override { return "Sandbox"; }
 };
 

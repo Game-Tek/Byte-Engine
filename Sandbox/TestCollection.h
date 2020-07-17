@@ -12,8 +12,6 @@ public:
 	void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) override;
 
 	GTSL::Vector<float>& GetNumbers() { return numbers; }
-
-	[[nodiscard]] const char* GetName() const override { return "Test Collection"; }
 private:
 	GTSL::Vector<float> numbers;
 };

@@ -2,20 +2,18 @@
 
 #include "SoundMixer.h"
 #include "ByteEngine/Core.h"
+#include "ByteEngine/Game/System.h"
 
 class Sound;
 
-class SoundManager
+class AudioSystem : public System
 {
-	SoundMixer* activeSoundMixer = nullptr;
-
-	byte* buffer = nullptr;
-	uint32 bufferSize = 0;
 public:
-	SoundManager();
-	~SoundManager();
+	AudioSystem();
+	~AudioSystem();
 	
-	void Update();
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown() override;
 	
 	void PlaySound2D(Sound* _Sound);
 
@@ -27,4 +25,10 @@ public:
 		delete activeSoundMixer;
 		activeSoundMixer = new _T();
 	}
+
+private:
+	SoundMixer* activeSoundMixer = nullptr;
+
+	byte* buffer = nullptr;
+	uint32 bufferSize = 0;
 };

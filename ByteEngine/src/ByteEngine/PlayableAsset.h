@@ -1,18 +1,19 @@
 #pragma once
 
 #include "Core.h"
+#include <GTSL/Time.h>
 
 class PlayableAsset
 {
-	uint32 totalFrames = 0;
-	float currentFrame = 0;
-	uint8 framesPerSecond = 0;
-
 public:
 
-	void Update(const float deltaTime);
+	void Update(const GTSL::Microseconds deltaTime) { elapsedTime += deltaTime; }
 
-	[[nodiscard]] float GetCurrentFrame() const { return currentFrame; }
+	[[nodiscard]] GTSL::Microseconds GetCurrentFrame() const { return elapsedTime; }
 	[[nodiscard]] uint32 GetTotalFrameCount() const { return totalFrames; }
-	[[nodiscard]] uint8 GetFramesPerSecond() const { return framesPerSecond; }
+
+private:
+	GTSL::Microseconds elapsedTime;
+	const uint64 totalFrames = 0;
+
 };

@@ -42,8 +42,6 @@ public:
 	
 	InputManager();
 	~InputManager();
-
-	[[nodiscard]] const char* GetName() const override { return "Input Manager"; }
 	
 	void RegisterActionInputSource(GTSL::Id64 inputSourceName);
 	void RegisterCharacterInputSource(GTSL::Id64 inputSourceName);

@@ -6,9 +6,7 @@ class World : public Object
 {
 public:
 	World();
-	virtual ~World() = default;
-
-	[[nodiscard]] const char* GetName() const override { return "World"; }
+	~World() = default;
 
 	struct InitializeInfo
 	{

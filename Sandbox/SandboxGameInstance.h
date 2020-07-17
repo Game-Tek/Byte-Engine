@@ -5,7 +5,6 @@
 class SandboxGameInstance final : public GameInstance
 {
 public:
-	[[nodiscard]] const char* GetName() const override { return "GI"; }
 	void OnUpdate() override
 	{
 		GameInstance::OnUpdate();

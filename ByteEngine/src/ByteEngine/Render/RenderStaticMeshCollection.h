@@ -4,9 +4,7 @@
 
 class RenderStaticMeshCollection : public ComponentCollection
 {
-public:
-	[[nodiscard]] const char* GetName() const override { return "RenderStaticMeshCollection"; }
-	
+public:	
 	ComponentReference CreateInstance(const CreateInstanceInfo& createInstanceInfo) override { return 0; }
 	void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) override {};
 

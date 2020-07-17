@@ -9,9 +9,12 @@ class Object
 {
 public:
 	Object() = default;
-	virtual ~Object() = default;
+	
+	Object(const UTF8* objectName) : name(objectName) {}
+	
+	~Object() = default;
 
-	[[nodiscard]] virtual const char* GetName() const = 0;
+	[[nodiscard]] const char* GetName() const { return name; }
 
 	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const
 	{
@@ -22,4 +25,7 @@ public:
 	{
 		return BE::TransientAllocatorReference(GetName());
 	}
+
+private:
+	const UTF8* name = "Object";
 };

@@ -14,8 +14,6 @@ public:
 	TextureResourceManager();
 	~TextureResourceManager();
 	
-	const char* GetName() const override { return "Texture Resource Manager"; }
-	
 	struct TextureInfo
 	{
 		uint32 ByteOffset = 0;

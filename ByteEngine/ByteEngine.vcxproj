@@ -195,7 +195,6 @@
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Debug\Assert.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
-    <ClInclude Include="src\ByteEngine\Dispatcher.h" />
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
@@ -220,7 +219,7 @@
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
-    <ClInclude Include="src\ByteEngine\Sound\SoundManager.h" />
+    <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
     <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
@@ -256,7 +255,7 @@
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Sound\SoundManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\ByteEngine\Camera.cpp" />

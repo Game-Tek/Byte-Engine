@@ -14,8 +14,6 @@ class GameInstance : public Object
 public:
 	GameInstance();
 	virtual ~GameInstance();
-
-	[[nodiscard]] const char* GetName() const override { return "GameInstance"; }
 	
 	virtual void OnUpdate();
 	

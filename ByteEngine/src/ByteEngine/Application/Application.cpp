@@ -32,7 +32,7 @@ namespace BE
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 2);
 		
-		::new(&resourceManagers) GTSL::FlatHashMap<GTSL::Allocation<ResourceManager>>(8, GetPersistentAllocator());
+		::new(&resourceManagers) GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>, PersistentAllocatorReference>(8, GetPersistentAllocator());
 		
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
@@ -40,7 +40,7 @@ namespace BE
 		auto path = systemApplication.GetPathToExecutable();
 		path.Drop(path.FindLast('/'));
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		GTSL::Allocation<Logger>::Create<Logger>(systemAllocatorReference, logger, logger_create_info);
+		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger, logger_create_info);
 		
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
@@ -59,9 +59,6 @@ namespace BE
 		
 		delete clockInstance;
 		delete inputManagerInstance;
-
-		GTSL::ForEach(resourceManagers, [&](GTSL::Allocation<ResourceManager>& resourceManager) { Delete(resourceManager, GetPersistentAllocator()); });
-		resourceManagers.Free(GetPersistentAllocator());
 		
 		transientAllocator.LockedClear();
 		transientAllocator.Free();
@@ -72,7 +69,6 @@ namespace BE
 		poolAllocator.Free();
 		
 		logger->Shutdown();
-		GTSL::Delete(logger, systemAllocatorReference);
 	}
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)

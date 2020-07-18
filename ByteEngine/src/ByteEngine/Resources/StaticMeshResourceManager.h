@@ -68,10 +68,10 @@ public:
 	};
 	
 private:
-	GTSL::FlatHashMap<OnStaticMeshLoad> resources;
+	GTSL::FlatHashMap<OnStaticMeshLoad, BE::PersistentAllocatorReference> resources;
 	GTSL::File staticMeshPackage, indexFile;
 	
-	GTSL::FlatHashMap<MeshInfo> meshInfos;
+	GTSL::FlatHashMap<MeshInfo, BE::PersistentAllocatorReference> meshInfos;
 
 	static void loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh, const GTSL::AllocatorReference& allocatorReference);
 };

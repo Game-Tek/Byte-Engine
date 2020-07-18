@@ -76,22 +76,22 @@ protected:
 	};
 	
 	using ActionInputSourceData = InputSourceData<ActionInputEvent>;
-	GTSL::FlatHashMap<ActionInputSourceData> actionInputSourcesToActionInputEvents;
+	GTSL::FlatHashMap<ActionInputSourceData, BE::PersistentAllocatorReference> actionInputSourcesToActionInputEvents;
 
 	using CharacterInputSourceData = InputSourceData<CharacterInputEvent>;
-	GTSL::FlatHashMap<CharacterInputSourceData> characterInputSourcesToCharacterInputEvents;
+	GTSL::FlatHashMap<CharacterInputSourceData, BE::PersistentAllocatorReference> characterInputSourcesToCharacterInputEvents;
 	
 	using LinearInputSourceData = InputSourceData<LinearInputEvent>;
-	GTSL::FlatHashMap<LinearInputSourceData> linearInputSourcesToLinearInputEvents;
+	GTSL::FlatHashMap<LinearInputSourceData, BE::PersistentAllocatorReference> linearInputSourcesToLinearInputEvents;
 	
 	using Vector2DInputSourceData = InputSourceData<Vector2DInputEvent>;
-	GTSL::FlatHashMap<Vector2DInputSourceData> vector2dInputSourceEventsToVector2DInputEvents;
+	GTSL::FlatHashMap<Vector2DInputSourceData, BE::PersistentAllocatorReference> vector2dInputSourceEventsToVector2DInputEvents;
 	
 	using Vector3DInputSourceData = InputSourceData<Vector3DInputEvent>;
-	GTSL::FlatHashMap<Vector3DInputSourceData> vector3dInputSourcesToVector3DInputEvents;
+	GTSL::FlatHashMap<Vector3DInputSourceData, BE::PersistentAllocatorReference> vector3dInputSourcesToVector3DInputEvents;
 
 	using QuaternionInputSourceData = InputSourceData<QuaternionInputEvent>;
-	GTSL::FlatHashMap<QuaternionInputSourceData> quaternionInputSourcesToQuaternionInputEvents;
+	GTSL::FlatHashMap<QuaternionInputSourceData, BE::PersistentAllocatorReference> quaternionInputSourcesToQuaternionInputEvents;
 
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.
@@ -128,7 +128,7 @@ protected:
 	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
 	//
 	template<typename A, typename B>
-	static void updateInput(GTSL::Vector<A>& records, GTSL::FlatHashMap<B>& map, GTSL::Microseconds time)
+	static void updateInput(GTSL::Vector<A>& records, GTSL::FlatHashMap<B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
 	{
 		for (auto& record : records)
 		{

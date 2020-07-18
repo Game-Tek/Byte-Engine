@@ -12,7 +12,7 @@
 
 #undef Extract
 
-TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResourceManager")
+TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();
@@ -31,11 +31,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 	if (indexFile.ReadFile(file_buffer))
 	{
-		GTSL::Extract(textureInfos, file_buffer, GetPersistentAllocator());
-	}
-	else
-	{
-		::new(&textureInfos) GTSL::FlatHashMap<TextureInfo>(8, 0.25, GetPersistentAllocator());
+		GTSL::Extract(textureInfos, file_buffer);
 	}
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
@@ -72,7 +68,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 			packageFile.WriteToFile(GTSL::Ranger<byte>(size, data));
 
-			textureInfos.Emplace(GetPersistentAllocator(), hashed_name, texture_info);
+			textureInfos.Emplace(hashed_name, texture_info);
 
 			stbi_image_free(data);
 
@@ -87,7 +83,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
 
 	file_buffer.Resize(0);
-	Insert(textureInfos, file_buffer, GetTransientAllocator());
+	Insert(textureInfos, file_buffer);
 	indexFile.WriteToFile(file_buffer);
 	
 	file_buffer.Free(32, GetTransientAllocator());
@@ -95,7 +91,6 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 TextureResourceManager::~TextureResourceManager()
 {
-	textureInfos.Free(GetPersistentAllocator());
 	packageFile.CloseFile(); indexFile.CloseFile();
 }
 
@@ -112,16 +107,16 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	//handle resource is loaded
 }
 
-void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
+void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
 {
-	Insert(textureInfo.ByteOffset, buffer, allocatorReference);
-	Insert(textureInfo.ImageSize, buffer, allocatorReference);
-	Insert(textureInfo.Format, buffer, allocatorReference);
+	Insert(textureInfo.ByteOffset, buffer);
+	Insert(textureInfo.ImageSize, buffer);
+	Insert(textureInfo.Format, buffer);
 }
 
-void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
+void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
 {
-	Extract(textureInfo.ByteOffset, buffer, allocatorReference);
-	Extract(textureInfo.ImageSize, buffer, allocatorReference);
-	Extract(textureInfo.Format, buffer, allocatorReference);
+	Extract(textureInfo.ByteOffset, buffer);
+	Extract(textureInfo.ImageSize, buffer);
+	Extract(textureInfo.Format, buffer);
 }

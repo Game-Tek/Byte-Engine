@@ -86,8 +86,8 @@ namespace BE
 		template<typename RM>
 		ResourceManager* CreateResourceManager()
 		{
-			GTSL::Allocation<ResourceManager> resource_manager = GTSL::Allocation<ResourceManager>::Create<RM>(GetPersistentAllocator());
-			return static_cast<RM*>(resourceManagers.Emplace(GetPersistentAllocator(), GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager))->Data);
+			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>::Create<RM>(GetPersistentAllocator());
+			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager)));
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
@@ -121,10 +121,10 @@ namespace BE
 #endif
 
 	protected:
-		GTSL::Allocation<Logger> logger;
-		GTSL::Allocation<GameInstance> gameInstance;
+		GTSL::SmartPointer<Logger, BE::SystemAllocatorReference> logger;
+		GTSL::SmartPointer<GameInstance, BE::PersistentAllocatorReference> gameInstance;
 
-		GTSL::FlatHashMap<GTSL::Allocation<ResourceManager>> resourceManagers;
+		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> resourceManagers;
 		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };

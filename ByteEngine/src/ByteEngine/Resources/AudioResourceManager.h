@@ -35,9 +35,9 @@ public:
 	
 private:
 	GTSL::File indexFile, packageFile;
-	GTSL::FlatHashMap<AudioAsset> audioAssets;
-	GTSL::FlatHashMap<AudioResourceInfo> audioResourceInfos;
+	GTSL::FlatHashMap<AudioAsset, BE::PersistentAllocatorReference> audioAssets;
+	GTSL::FlatHashMap<AudioResourceInfo, BE::PersistentAllocatorReference> audioResourceInfos;
 };
 
-void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
-void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
+void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer);
+void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer);

@@ -33,11 +33,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 	if (indexFile.ReadFile(file_buffer))
 	{
-		GTSL::Extract(meshInfos, file_buffer, GetPersistentAllocator());
-	}
-	else
-	{
-		::new(&meshInfos) GTSL::FlatHashMap<MeshInfo>(8, 0.25, GetPersistentAllocator());
+		GTSL::Extract(meshInfos, file_buffer);
 	}
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
@@ -65,7 +61,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 			Insert(mesh, file_buffer, GetTransientAllocator());
 			staticMeshPackage.WriteToFile(file_buffer);
 
-			meshInfos.Emplace(GetPersistentAllocator(), hashed_name, mesh_info);
+			meshInfos.Emplace(hashed_name, mesh_info);
 
 			mesh.Indeces.Free(GetTransientAllocator());
 			mesh.VertexElements.Free(GetTransientAllocator());
@@ -81,7 +77,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
 
 	file_buffer.Resize(0);
-	Insert(meshInfos, file_buffer, GetTransientAllocator());
+	Insert(meshInfos, file_buffer);
 	indexFile.WriteToFile(file_buffer);
 	
 	file_buffer.Free(32, GetTransientAllocator());
@@ -90,7 +86,6 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 StaticMeshResourceManager::~StaticMeshResourceManager()
 {
 	staticMeshPackage.CloseFile(); indexFile.CloseFile();
-	meshInfos.Free(GetPersistentAllocator());
 }
 
 void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo)
@@ -193,21 +188,21 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 	meshInfo.IndecesSize = in_mesh->mNumFaces * 3 * sizeof(uint32);
 }
 
-void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
+void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer)
 {
-	GTSL::Insert(meshInfo.VerticesSize, buffer, allocatorReference);
-	GTSL::Insert(meshInfo.IndecesSize, buffer, allocatorReference);
-	GTSL::Insert(meshInfo.ByteOffset, buffer, allocatorReference);
+	GTSL::Insert(meshInfo.VerticesSize, buffer);
+	GTSL::Insert(meshInfo.IndecesSize, buffer);
+	GTSL::Insert(meshInfo.ByteOffset, buffer);
 }
 
-void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
+void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer)
 {
-	GTSL::Extract(meshInfo.VerticesSize, buffer, allocatorReference);
-	GTSL::Extract(meshInfo.IndecesSize, buffer, allocatorReference);
-	GTSL::Extract(meshInfo.ByteOffset, buffer, allocatorReference);
+	GTSL::Extract(meshInfo.VerticesSize, buffer);
+	GTSL::Extract(meshInfo.IndecesSize, buffer);
+	GTSL::Extract(meshInfo.ByteOffset, buffer);
 }
 
-void Insert(const StaticMeshResourceManager::Mesh& mesh, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference)
+void Insert(const StaticMeshResourceManager::Mesh& mesh, GTSL::Buffer& buffer)
 {
 	buffer.WriteBytes(mesh.VertexElements.GetLengthSize(), (byte*)mesh.VertexElements.begin());
 	buffer.WriteBytes(mesh.Indeces.GetLengthSize(), (byte*)mesh.Indeces.begin());

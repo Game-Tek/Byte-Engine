@@ -11,7 +11,7 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 
 GameInstance::GameInstance() : worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
-goalNames(8, GetPersistentAllocator()), goals(16, GetPersistentAllocator())
+goals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator())
 {
 }
 
@@ -19,18 +19,14 @@ GameInstance::~GameInstance()
 {
 	goalNames.Free(GetPersistentAllocator());
 	
-	ForEach(systems, [&](GTSL::Allocation<System>& system) { system->Shutdown(); Delete(system, GetPersistentAllocator()); });
-	systems.Free(GetPersistentAllocator());
-	
-	ForEach(componentCollections, [&](GTSL::Allocation<ComponentCollection>& componentCollection) { Delete(componentCollection, GetPersistentAllocator()); });
-	componentCollections.Free(GetPersistentAllocator());
+	ForEach(systems, [&](GTSL::SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(); });
 
 	for (auto& goal : goals) { goal.Free(GetPersistentAllocator()); }
 	goals.Free(GetPersistentAllocator());
 
 	World::DestroyInfo destroy_info;
 	destroy_info.GameInstance = this;
-	for (auto& world : worlds) { world->DestroyWorld(destroy_info); Delete(world, GetPersistentAllocator()); }
+	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }
 	worlds.Free(GetPersistentAllocator());
 }
 

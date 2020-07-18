@@ -38,10 +38,10 @@ public:
 
 private:
 	GTSL::File packageFile, indexFile;
-	GTSL::FlatHashMap<TextureInfo> textureInfos;
-	GTSL::FlatHashMap<TextureInfo> textureAssets;
+	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureInfos;
+	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureAssets;
 	
 };
 
-void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
-void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
+void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer);
+void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer);

@@ -22,14 +22,14 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		auto ret = static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::Allocation<System>::Create<T>(GetPersistentAllocator()))->Data);
+		auto ret = static_cast<T*>(systems.Emplace(GetPersistentAllocator(), systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())));
 		initSystem(ret, systemName); return ret;
 	}
 
 	template<typename T>
 	T* AddComponentCollection(const GTSL::Id64 componentCollectionName)
 	{
-		auto pointer = (T*)componentCollections.Emplace(GetPersistentAllocator(), componentCollectionName, GTSL::Allocation<ComponentCollection>::Create<T>(GetPersistentAllocator()))->Data;
+		auto pointer = static_cast<T*>(componentCollections.Emplace(componentCollectionName, GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())));
 		initCollection(pointer); return pointer;
 	}
 	
@@ -39,7 +39,7 @@ public:
 	template<typename T>
 	WorldReference CreateNewWorld(const CreateNewWorldInfo& createNewWorldInfo)
 	{
-		auto index = worlds.EmplaceBack(GetPersistentAllocator(), GTSL::Allocation<World>::Create<T>(GetPersistentAllocator()));
+		auto index = worlds.EmplaceBack(GetPersistentAllocator(), GTSL::SmartPointer<World, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
 		initWorld(index); return index;
 	}
 
@@ -69,9 +69,9 @@ public:
 	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(const TaskInfo&)>& function, GTSL::Ranger<TaskDescriptor> actsOn, GTSL::Id64 doneFor);
 	void AddGoal(GTSL::Id64 name, GTSL::Id64 dependsOn); void AddGoal(GTSL::Id64 name);
 private:
-	GTSL::Vector<GTSL::Allocation<World>> worlds;
-	GTSL::FlatHashMap<GTSL::Allocation<System>> systems;
-	GTSL::FlatHashMap<GTSL::Allocation<ComponentCollection>> componentCollections;
+	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>> worlds;
+	GTSL::FlatHashMap<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::FlatHashMap<GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> componentCollections;
 
 	using TaskType = GTSL::Delegate<void(const TaskInfo&)>;
 	

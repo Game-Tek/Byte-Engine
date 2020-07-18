@@ -7,7 +7,7 @@
 #include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : POOL_COUNT(18), systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(18), systemAllocatorReference(allocatorReference)
 {
 	uint64 allocator_allocated_size{ 0 }; //debug
 	
@@ -22,7 +22,7 @@ PoolAllocator::PoolAllocator(GTSL::AllocatorReference* allocatorReference) : POO
 	}
 }
 
-PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint64& allocatedSize, GTSL::AllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount), slotsCount(MAX_SLOTS_COUNT)
+PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount), slotsCount(MAX_SLOTS_COUNT)
 {
 	uint64 pool_allocated_size{ 0 };
 	
@@ -73,7 +73,7 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 	poolsData[set_bit].Deallocate(size, alignment, memory, systemAllocatorReference);
 }
 
-void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* memory, GTSL::AllocatorReference* allocatorReference)
+void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference)
 {
 	BE_ASSERT(memory >= slotsData && memory <= slotsData + slotsDataAllocationSize(), "Allocation does not belong to pool!")
 
@@ -92,7 +92,7 @@ void PoolAllocator::Free() const
 	for (auto& pool : pools()) { pool.Free(freed_bytes, systemAllocatorReference); }
 }
 
-void PoolAllocator::Pool::Free(uint64& freedBytes, GTSL::AllocatorReference* allocatorReference) const
+void PoolAllocator::Pool::Free(uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference) const
 {
 	allocatorReference->Deallocate(slotsDataAllocationSize(), slotsDataAllocationAlignment(), slotsData);
 	allocatorReference->Deallocate(freeSlotsStackSize(), freeSlotsStackAlignment(), freeSlotsStack);

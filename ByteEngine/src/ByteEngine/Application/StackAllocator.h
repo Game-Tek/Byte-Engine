@@ -9,12 +9,14 @@
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Vector.hpp>
 
+#include "ByteEngine/Game/System.h"
+
 class StackAllocator
 {
 public:
 	struct DebugData
 	{
-		explicit DebugData(GTSL::AllocatorReference* allocatorReference)
+		explicit DebugData(BE::SystemAllocatorReference* allocatorReference)
 		{
 		}
 		
@@ -77,7 +79,7 @@ public:
 	};
 
 	StackAllocator() = default;
-	explicit StackAllocator(GTSL::AllocatorReference* allocatorReference, uint8 stackCount = 8, uint8 defaultBlocksPerStackCount = 2, uint64 blockSizes = 512);
+	explicit StackAllocator(BE::SystemAllocatorReference* allocatorReference, uint8 stackCount = 8, uint8 defaultBlocksPerStackCount = 2, uint64 blockSizes = 512);
 
 	~StackAllocator();
 
@@ -104,9 +106,9 @@ protected:
 		byte* at{ nullptr };
 		byte* end{ nullptr };
 
-		void AllocateBlock(uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize);
+		void AllocateBlock(uint64 minimumSize, BE::SystemAllocatorReference* allocatorReference, uint64& allocatedSize);
 
-		void DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const;
+		void DeallocateBlock(BE::SystemAllocatorReference* allocatorReference, uint64& deallocatedBytes) const;
 
 		void AllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
 
@@ -120,9 +122,9 @@ protected:
 
 	const uint64 blockSize{ 0 };
 	GTSL::Atomic<uint32> stackIndex{ 0 };
-	GTSL::Vector<GTSL::Vector<Block>> stacks;
-	GTSL::Vector<GTSL::Mutex> stacksMutexes;
-	GTSL::AllocatorReference* allocatorReference{ nullptr };
+	GTSL::Vector<GTSL::Vector<Block, BE::SystemAllocatorReference>, BE::SystemAllocatorReference> stacks;
+	GTSL::Vector<GTSL::Mutex, BE::SystemAllocatorReference> stacksMutexes;
+	BE::SystemAllocatorReference* allocatorReference{ nullptr };
 
 #if BE_DEBUG
 	uint64 blockMisses{ 0 };

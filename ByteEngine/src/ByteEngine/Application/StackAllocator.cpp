@@ -3,7 +3,7 @@
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Debug/Assert.h"
 
-void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::AllocatorReference* allocatorReference, uint64& allocatedSize)
+void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, BE::SystemAllocatorReference* allocatorReference, uint64& allocatedSize)
 {
 	uint64 allocated_size{ 0 };
 
@@ -15,7 +15,7 @@ void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, GTSL::Alloca
 	end = start + allocated_size;
 }
 
-void StackAllocator::Block::DeallocateBlock(GTSL::AllocatorReference* allocatorReference, uint64& deallocatedBytes) const
+void StackAllocator::Block::DeallocateBlock(BE::SystemAllocatorReference* allocatorReference, uint64& deallocatedBytes) const
 {
 	allocatorReference->Deallocate(end - start, alignof(byte), start);
 	deallocatedBytes += end - start;
@@ -41,18 +41,18 @@ bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 a
 
 void StackAllocator::Block::Clear() { at = start; }
 
-StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, const uint8 stackCount, const uint8 defaultBlocksPerStackCount, const uint64 blockSizes) :
+StackAllocator::StackAllocator(BE::SystemAllocatorReference* allocatorReference, const uint8 stackCount, const uint8 defaultBlocksPerStackCount, const uint64 blockSizes) :
 	blockSize(blockSizes), stacks(stackCount, *allocatorReference), stacksMutexes(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)
 {
 	uint64 allocated_size = 0;
 
 	for (uint8 stack = 0; stack < stackCount; ++stack)
 	{
-		stacks.EmplaceBack(*allocatorReference, defaultBlocksPerStackCount, *allocatorReference);
+		stacks.EmplaceBack(defaultBlocksPerStackCount, *allocatorReference);
 
 		for (uint32 block = 0; block < defaultBlocksPerStackCount; ++block)
 		{
-			stacks[stack].EmplaceBack(*allocatorReference); //construct a default block
+			stacks[stack].EmplaceBack(); //construct a default block
 
 			stacks[stack][block].AllocateBlock(blockSizes, allocatorReference, allocated_size);
 
@@ -66,7 +66,7 @@ StackAllocator::StackAllocator(GTSL::AllocatorReference* allocatorReference, con
 			}
 		}
 
-		stacksMutexes.EmplaceBack(*allocatorReference);
+		stacksMutexes.EmplaceBack();
 	}
 }
 
@@ -201,7 +201,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 		}
 	}
 
-	const auto last_block = stacks[i].EmplaceBack(*allocatorReference);
+	const auto last_block = stacks[i].EmplaceBack();
 	stacks[i][last_block].AllocateBlock(blockSize, allocatorReference, allocated_size);
 	stacks[i][last_block].AllocateInBlock(size, alignment, memory, allocated_size);
 	stacksMutexes[i].Unlock();
@@ -258,17 +258,11 @@ void StackAllocator::Free()
 				++totalAllocatorDeallocationsCount;
 			}
 		}
-
-		stack.Free(*allocatorReference);
 	}
-
-	stacks.Free(*allocatorReference);
 	
 	if constexpr (BE_DEBUG)
 	{
 		allocatorDeallocatedBytes += freed_bytes;
 		totalAllocatorDeallocatedBytes += freed_bytes;
 	}
-
-	stacksMutexes.Free(*allocatorReference);
 }

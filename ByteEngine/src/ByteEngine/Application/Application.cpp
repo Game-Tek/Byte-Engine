@@ -40,7 +40,7 @@ namespace BE
 		auto path = systemApplication.GetPathToExecutable();
 		path.Drop(path.FindLast('/'));
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger, logger_create_info);
+		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger_create_info);
 		
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
@@ -54,8 +54,6 @@ namespace BE
 		{
 			BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
 		}
-
-		closeReason.Free(GetPersistentAllocator());
 		
 		delete clockInstance;
 		delete inputManagerInstance;
@@ -118,7 +116,7 @@ namespace BE
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason)
 	{
-		closeReason.Append(reason, GetPersistentAllocator());
+		closeReason.Append(reason);
 		flaggedForClose = true;
 		this->closeMode = closeMode;
 	}

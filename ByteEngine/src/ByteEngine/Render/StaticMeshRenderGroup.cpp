@@ -7,14 +7,17 @@
 
 class RenderStaticMeshCollection;
 
+StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers()
+{
+}
+
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
-	meshBuffers.Initialize(64, GetPersistentAllocator());
+	meshBuffers.Initialize(64);
 }
 
 void StaticMeshRenderGroup::Shutdown()
 {
-	meshBuffers.Free(GetPersistentAllocator());
 }
 
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)

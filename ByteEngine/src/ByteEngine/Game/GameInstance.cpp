@@ -17,30 +17,24 @@ goals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator())
 
 GameInstance::~GameInstance()
 {
-	goalNames.Free(GetPersistentAllocator());
-	
 	ForEach(systems, [&](GTSL::SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(); });
-
-	for (auto& goal : goals) { goal.Free(GetPersistentAllocator()); }
-	goals.Free(GetPersistentAllocator());
 
 	World::DestroyInfo destroy_info;
 	destroy_info.GameInstance = this;
 	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }
-	worlds.Free(GetPersistentAllocator());
 }
 
 void GameInstance::OnUpdate()
 {
 	PROFILE;
 
-	goalsMutex.ReadLock(); GTSL::Vector<Goal> dynamic_goals(goals, GetTransientAllocator()); goalsMutex.ReadUnlock();
+	goalsMutex.ReadLock(); GTSL::Vector<Goal, BE::TransientAllocatorReference> dynamic_goals(goals, GetTransientAllocator()); goalsMutex.ReadUnlock();
 
-	for(auto& e : dynamic_goals) { ::new(&e) Goal(GetTransientAllocator()); }
+	for(auto& e : dynamic_goals) { ::new(&e) Goal(GetPersistentAllocator()); }
 	
 	dynamicGoals = &dynamic_goals;
 	
-	GTSL::Vector<GTSL::Semaphore> semaphores(256, GetTransientAllocator());
+	GTSL::Vector<GTSL::Semaphore, BE::TransientAllocatorReference> semaphores(256, GetTransientAllocator());
 
 	uint32 task_n = 0;
 	
@@ -60,12 +54,12 @@ void GameInstance::OnUpdate()
 			for (const auto& task : parallel_tasks)
 			{
 				threadPool.EnqueueTask(task, &semaphores[task_n], task_info);
-				semaphores.EmplaceBack(GetTransientAllocator());
+				semaphores.EmplaceBack();
 				++task_n;
 			}
 			dynamicGoalsMutex.ReadUnlock();
 
-			semaphores.Resize(task_n, GetTransientAllocator());
+			semaphores.Resize(task_n);
 			for (auto& e : semaphores) { e.Wait(); }
 				
 			task_n = 0;
@@ -78,10 +72,6 @@ void GameInstance::OnUpdate()
 		dynamicGoalsMutex.ReadLock();
 	}
 	dynamicGoalsMutex.ReadUnlock();
-
-	for (auto& e : dynamic_goals) { e.Free(GetTransientAllocator()); }
-	dynamic_goals.Free(GetTransientAllocator());
-	semaphores.Free(GetTransientAllocator());
 	
 	dynamicGoals = nullptr;
 }
@@ -104,7 +94,7 @@ void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(const TaskInfo&)
 		if (canInsert(parallel_task, actsOn))
 		{
 			goalsMutex.ReadUnlock(); goalsMutex.WriteLock();
-			goal[i].AddTask(name, actsOn, function, GetPersistentAllocator());
+			goal[i].AddTask(name, actsOn, function);
 			goalsMutex.WriteUnlock();
 			return;
 		}
@@ -114,7 +104,7 @@ void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(const TaskInfo&)
 
 	goalsMutex.ReadUnlock(); goalsMutex.WriteLock();
 	i = goal.AddNewTaskStack(GetPersistentAllocator());
-	goal[i].AddTask(name, actsOn, function, GetPersistentAllocator());
+	goal[i].AddTask(name, actsOn, function);
 	goalsMutex.WriteUnlock();
 }
 
@@ -172,7 +162,7 @@ void GameInstance::AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(con
 		if (canInsert(parallel_task, actsOn))
 		{
 			dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
-			goal[i].AddTask(name, actsOn, function, GetTransientAllocator());
+			goal[i].AddTask(name, actsOn, function);
 			dynamicGoalsMutex.WriteUnlock();
 			return;
 		}
@@ -181,8 +171,8 @@ void GameInstance::AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(con
 	}
 
 	dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
-	i = goal.AddNewTaskStack(GetTransientAllocator());
-	goal[i].AddTask(name, actsOn, function, GetTransientAllocator());
+	i = goal.AddNewTaskStack(GetPersistentAllocator());
+	goal[i].AddTask(name, actsOn, function);
 	dynamicGoalsMutex.WriteUnlock();	
 }
 
@@ -195,22 +185,22 @@ void GameInstance::AddGoal(const GTSL::Id64 name, const GTSL::Id64 dependsOn)
 	goalNamesMutex.ReadUnlock();
 
 	goalsMutex.WriteLock();
-	goals.EmplaceBack(GetPersistentAllocator(), GetPersistentAllocator());
+	goals.EmplaceBack(GetPersistentAllocator());
 	goalsMutex.WriteUnlock();
 	
 	goalNamesMutex.WriteLock();
-	goalNames.Insert(GetPersistentAllocator(), i, name);
+	goalNames.Insert(i, name);
 	goalNamesMutex.WriteUnlock();
 }
 
 void GameInstance::AddGoal(GTSL::Id64 name)
 {
 	goalsMutex.WriteLock();
-	goals.EmplaceBack(GetPersistentAllocator(), GetPersistentAllocator());
+	goals.EmplaceBack(GetPersistentAllocator());
 	goalsMutex.WriteUnlock();
 
 	goalNamesMutex.WriteLock();
-	goalNames.EmplaceBack(GetPersistentAllocator(), name);
+	goalNames.EmplaceBack(name);
 	goalNamesMutex.WriteUnlock();
 }
 

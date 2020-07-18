@@ -68,7 +68,6 @@
   <ItemGroup>
     <ClInclude Include="src\ByteEngine.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
-    <ClInclude Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\ByteEngine\Application\Templates\GameApplication.h" />
     <ClInclude Include="src\ByteEngine\Application\Application.h">
       <Filter>Engine\Application</Filter>
@@ -134,7 +133,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
-    <ClCompile Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Application.cpp">
       <Filter>Engine\Application</Filter>
     </ClCompile>

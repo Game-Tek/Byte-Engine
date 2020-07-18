@@ -40,10 +40,15 @@ public:
 
 	struct Mesh
 	{
-		GTSL::Vector<float32> VertexElements;
-		GTSL::Vector<uint32> Indeces;
+		Mesh(const uint32 length, const BE::TransientAllocatorReference& transientAllocatorReference) : VertexElements(length, transientAllocatorReference),
+		Indeces(length, transientAllocatorReference)
+		{
+			
+		}
+		GTSL::Vector<float32, BE::TransientAllocatorReference> VertexElements;
+		GTSL::Vector<uint32, BE::TransientAllocatorReference> Indeces;
 		
-		friend void Insert(const Mesh& mesh, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);	
+		friend void Insert(const Mesh& mesh, GTSL::Buffer& buffer);	
 	};
 
 	struct MeshInfo
@@ -63,8 +68,8 @@ public:
 
 		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndecesSize; }
 		
-		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
-		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer, const GTSL::AllocatorReference& allocatorReference);
+		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer);
+		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer);
 	};
 	
 private:
@@ -73,5 +78,5 @@ private:
 	
 	GTSL::FlatHashMap<MeshInfo, BE::PersistentAllocatorReference> meshInfos;
 
-	static void loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh, const GTSL::AllocatorReference& allocatorReference);
+	static void loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh);
 };

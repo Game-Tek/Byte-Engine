@@ -7,6 +7,8 @@
 #include <GTSL/Pair.h>
 #include <GTSL/Array.hpp>
 
+#include "ByteEngine/Application/AllocatorReferences.h"
+
 class AudioBuffer;
 
 class SoundMixerChannelEffect
@@ -70,7 +72,7 @@ class SoundMixer
 		/**
 		 * \brief Holds an array of sounds which are to be played.
 		 */
-		GTSL::Vector<PlayingSounds> playingSounds;
+		GTSL::Vector<PlayingSounds, BE::PersistentAllocatorReference> playingSounds;
 
 		/**
 		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.

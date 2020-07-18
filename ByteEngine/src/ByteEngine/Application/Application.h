@@ -84,10 +84,10 @@ namespace BE
 		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }
 
 		template<typename RM>
-		ResourceManager* CreateResourceManager()
+		RM* CreateResourceManager()
 		{
 			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>::Create<RM>(GetPersistentAllocator());
-			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager)));
+			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager)).operator ResourceManager*());
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
@@ -140,7 +140,7 @@ namespace BE
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
-		BE_DEBUG_ONLY(GTSL::String closeReason);
+		BE_DEBUG_ONLY(GTSL::String<BE::PersistentAllocatorReference> closeReason);
 
 		uint64 applicationTicks{ 0 };
 	private:

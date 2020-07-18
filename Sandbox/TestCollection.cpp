@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Core.h"
 
-TestCollection::TestCollection() : numbers(8, GetPersistentAllocator())
+TestCollection::TestCollection()
 {
 }
 

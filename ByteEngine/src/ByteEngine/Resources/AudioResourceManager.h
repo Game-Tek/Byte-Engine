@@ -21,7 +21,7 @@ public:
 
 	struct AudioAsset
 	{
-		GTSL::Vector<byte> Bytes;
+		GTSL::Vector<byte, BE::PersistentAllocatorReference> Bytes;
 	};
 
 	struct LoadAudioAssetInfo : ResourceLoadInfo

@@ -120,15 +120,15 @@ protected:
 	/**
 	 * \brief InputSourceRecord for a 2D value(X, Y) triggered by a gamepad stick, mouse move, etc.
 	 */
-	GTSL::Vector<InputSourceRecord<ActionInputEvent>> actionInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<CharacterInputEvent>> characterInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<LinearInputEvent>> linearInputSourceRecords;
-	GTSL::Vector<InputSourceRecord<Vector2DInputEvent>> vector2DInputSourceRecords;
+	GTSL::Vector<InputSourceRecord<ActionInputEvent>, BE::PersistentAllocatorReference> actionInputSourceRecords;
+	GTSL::Vector<InputSourceRecord<CharacterInputEvent>, BE::PersistentAllocatorReference> characterInputSourceRecords;
+	GTSL::Vector<InputSourceRecord<LinearInputEvent>, BE::PersistentAllocatorReference> linearInputSourceRecords;
+	GTSL::Vector<InputSourceRecord<Vector2DInputEvent>, BE::PersistentAllocatorReference> vector2DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<Vector3DInputEvent>> vector3DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
 	//
 	template<typename A, typename B>
-	static void updateInput(GTSL::Vector<A>& records, GTSL::FlatHashMap<B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
+	static void updateInput(GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::FlatHashMap<B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
 	{
 		for (auto& record : records)
 		{

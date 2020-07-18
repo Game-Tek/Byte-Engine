@@ -11,7 +11,7 @@ class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
-	renderGroups.Initialize(16, GetPersistentAllocator());
+	::new(&renderGroups) decltype(renderGroups)(16, GetPersistentAllocator());
 	
 	GAL::RenderDevice::CreateInfo createinfo;
 	createinfo.ApplicationName = GTSL::StaticString<128>("Test");
@@ -153,8 +153,6 @@ void RenderSystem::Shutdown()
 	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 
 	for (auto& e : scratchMemoryBlocks) { e.Free(renderDevice, GetPersistentAllocator()); }
-	
-	renderGroups.Free(GetPersistentAllocator());
 }
 
 void RenderSystem::AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo)
@@ -273,8 +271,6 @@ void RenderSystem::ScratchMemoryBlock::Free(const RenderDevice& renderDevice, co
 	deviceMemory.Unmap(unmap_info);
 
 	deviceMemory.Destroy(&renderDevice);
-
-	allocations.Free(allocatorReference);
 }
 
 bool RenderSystem::ScratchMemoryBlock::TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const
@@ -299,7 +295,7 @@ void RenderSystem::ScratchMemoryBlock::Allocate(MakeScratchAllocationInfo& makeA
 	allocation.Size = makeAllocationInfo.Size;
 	allocation.Offset = 0;
 	allocation.InUse = true;
-	allocations.EmplaceBack(allocatorReference, allocation);
+	allocations.EmplaceBack(allocation);
 
 	*makeAllocationInfo.Data = mappedMemory;
 }

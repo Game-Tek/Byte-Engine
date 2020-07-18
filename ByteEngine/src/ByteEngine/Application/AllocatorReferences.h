@@ -23,6 +23,8 @@ namespace BE
 
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const;
 
+		SystemAllocatorReference() = default;
+		
 		SystemAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}
@@ -35,6 +37,11 @@ namespace BE
 
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const;
 
+		TransientAllocatorReference() = default;
+
+		TransientAllocatorReference(const TransientAllocatorReference& reference) : BEAllocatorReference(reference.Name, reference.IsDebugAllocation) {}
+		TransientAllocatorReference(TransientAllocatorReference&& reference) = default;
+		
 		TransientAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}

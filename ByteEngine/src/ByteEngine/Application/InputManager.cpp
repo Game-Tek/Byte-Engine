@@ -4,21 +4,20 @@
 
 #include "Application.h"
 
-InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()), characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
-                               linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()), vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator())
+InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
+characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
+linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()),
+vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator()),
+
+actionInputSourceRecords(10, GetPersistentAllocator()),
+characterInputSourceRecords(10, GetPersistentAllocator()),
+linearInputSourceRecords(10, GetPersistentAllocator()),
+vector2DInputSourceRecords(10, GetPersistentAllocator())
 {
-	actionInputSourceRecords.Initialize(10, GetPersistentAllocator());
-	characterInputSourceRecords.Initialize(10, GetPersistentAllocator());
-	linearInputSourceRecords.Initialize(10, GetPersistentAllocator());
-	vector2DInputSourceRecords.Initialize(10, GetPersistentAllocator());
 }
 
 InputManager::~InputManager()
 {
-	actionInputSourceRecords.Free(GetPersistentAllocator());
-	characterInputSourceRecords.Free(GetPersistentAllocator());
-	linearInputSourceRecords.Free(GetPersistentAllocator());
-	vector2DInputSourceRecords.Free(GetPersistentAllocator());
 }
 
 void InputManager::Update()
@@ -89,20 +88,20 @@ void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Ranger<cons
 
 void InputManager::RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue)
 {
-	actionInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue );
+	actionInputSourceRecords.EmplaceBack(inputSourceName, newValue );
 }
 
 void InputManager::RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue)
 {
-	characterInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
+	characterInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }
 
 void InputManager::RecordLinearInputSource(GTSL::Id64 inputSourceName, const LinearInputEvent::type newValue)
 {
-	linearInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
+	linearInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }
 
 void InputManager::Record2DInputSource(const GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue)
 {
-	vector2DInputSourceRecords.EmplaceBack(GetPersistentAllocator(), inputSourceName, newValue);
+	vector2DInputSourceRecords.EmplaceBack(inputSourceName, newValue);
 }

@@ -188,7 +188,6 @@
     <ClInclude Include="src\ByteEngine\Application\PoolAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\CommandMap.h" />
     <ClInclude Include="src\ByteEngine\Application\Console.h" />
-    <ClInclude Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.h" />
     <ClInclude Include="src\ByteEngine\Application\StackAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\SystemAllocator.h" />
     <ClInclude Include="src\ByteEngine\Application\Templates\GameApplication.h" />
@@ -240,7 +239,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
-    <ClCompile Include="src\ByteEngine\Application\Platform\Windows\WindowsConsole.cpp" />
     <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\StackAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\SystemAllocator.cpp" />

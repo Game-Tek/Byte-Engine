@@ -8,6 +8,8 @@
 class StaticMeshRenderGroup final : public RenderGroup
 {
 public:
+	StaticMeshRenderGroup();
+	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown() override;
 
@@ -23,5 +25,5 @@ public:
 private:
 	void onStaticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
-	GTSL::Vector<Buffer> meshBuffers;
+	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
 };

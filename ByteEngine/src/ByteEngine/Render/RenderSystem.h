@@ -45,7 +45,7 @@ private:
 	
 	GTSL::Extent2D renderArea;
 	
-	GTSL::Vector<GTSL::Id64> renderGroups;
+	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> renderGroups;
 
 	RenderPass renderPass;
 	GTSL::Array<ImageView, 3> swapchainImages;
@@ -100,7 +100,7 @@ private:
 			uint32 Size = 0;
 			uint32 Offset = 0;
 		};
-		GTSL::Vector<Allocation> allocations;
+		GTSL::Vector<Allocation, BE::PersistentAllocatorReference> allocations;
 
 		uint32 UnusableSize = 0;
 	};
@@ -128,7 +128,7 @@ private:
 			uint32 Offset = 0;
 			bool InUse = true;
 		};
-		GTSL::Vector<Allocation> allocations;
+		GTSL::Vector<Allocation, BE::PersistentAllocatorReference> allocations;
 
 		uint32 UnusableSize = 0;
 	};

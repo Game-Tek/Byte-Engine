@@ -19,9 +19,7 @@ struct FreeSpace
 
 struct LocalMemoryBlock
 {
-	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
-
-	void InitBlock(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	void InitBlock(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset);
@@ -37,11 +35,20 @@ private:
 class LocalMemoryAllocator
 {
 public:
-	LocalMemoryAllocator(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	LocalMemoryAllocator() = default;
+
+	void Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 private:
-	GTSL::Array<LocalMemoryBlock, 32> memoryBlocks;
+	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+	
+	uint32 bufferMemoryType = 0, textureMemoryType = 0;
+	
+	GTSL::Array<LocalMemoryBlock, 32> bufferMemoryBlocks;
+	GTSL::Array<LocalMemoryBlock, 32> textureMemoryBlocks;
+	uint32 imageMemoryType = 0;
 };
 
 struct ScratchMemoryBlock
@@ -52,7 +59,7 @@ struct ScratchMemoryBlock
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
-	void Allocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
+	void AllocateFirstBlock(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
 	void Deallocate(uint32 size, uint32 offset);
 private:
 	DeviceMemory deviceMemory;

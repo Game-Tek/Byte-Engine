@@ -3,6 +3,7 @@
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Resources/MaterialResourceManager.h"
 
 void Game::Initialize()
 {
@@ -33,6 +34,12 @@ void Game::Initialize()
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
+	MaterialResourceManager::MaterialCreateInfo material_create_info;
+	material_create_info.ShaderName = "BasicMaterial";
+	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };
+	material_create_info.VertexFormat = format;
+	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
+	
 	//show loading screen
 	//load menu
 	//show menu

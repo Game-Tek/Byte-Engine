@@ -6,7 +6,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Render/RenderTypes.h"
 
-MaterialResourceManager::MaterialResourceManager() : materialInfos(16, GetPersistentAllocator())
+MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), materialInfos(16, GetPersistentAllocator())
 {
 	GTSL::Buffer file_buffer; file_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 	
@@ -41,9 +41,9 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 	
 	if (!materialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer file_buffer; file_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer index_buffer; file_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_buffer; file_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer index_buffer; index_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer shader_buffer; shader_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		
 		MaterialInfo material_info;
 		
@@ -53,23 +53,26 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		resources_path += materialCreateInfo.ShaderName; resources_path += ".vs";
 
 		GTSL::File shader; shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-		shader.ReadFile(file_buffer);
+		shader.ReadFile(shader_source_buffer);
 
-		auto f = GTSL::Ranger<const UTF8>(shader_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_buffer.GetData()));
+		auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
 		Shader::CompileShader(f, materialCreateInfo.ShaderName, GAL::ShaderType::VERTEX_SHADER, GAL::ShaderLanguage::GLSL, shader_buffer);
 
 		material_info.VertexShaderOffset = package.GetFileSize();
 		material_info.VertexShaderSize = shader_buffer.GetLength();
 		package.WriteToFile(shader_buffer);
 		
+		resources_path.Drop(resources_path.FindLast('/') + 1);
+		resources_path += materialCreateInfo.ShaderName; resources_path += ".fs";
+
 		shader.CloseFile();
 		shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 		
-		resources_path.Drop(resources_path.FindLast('/') + 1);
-		resources_path += materialCreateInfo.ShaderName; resources_path += ".fs";
+		shader_source_buffer.Resize(0);
 		shader_buffer.Resize(0);
+		shader.ReadFile(shader_source_buffer);
 
-		f = GTSL::Ranger<const UTF8>(shader_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_buffer.GetData()));
+		f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
 		Shader::CompileShader(f, materialCreateInfo.ShaderName, GAL::ShaderType::FRAGMENT_SHADER, GAL::ShaderLanguage::GLSL, shader_buffer);
 
 		material_info.FragmentShaderSize = shader_buffer.GetLength();
@@ -81,7 +84,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		index.WriteToFile(index_buffer);
 
 		shader.CloseFile();
-		file_buffer.Free(8, GetTransientAllocator());
+		shader_source_buffer.Free(8, GetTransientAllocator());
 		index_buffer.Free(8, GetTransientAllocator());
 		shader_buffer.Free(8, GetTransientAllocator());
 	}

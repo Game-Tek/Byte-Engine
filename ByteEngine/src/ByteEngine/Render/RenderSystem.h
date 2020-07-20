@@ -34,7 +34,15 @@ public:
 		uint32* Offset = nullptr;
 		void** Data = nullptr;
 	};
-	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& memoryAllocationInfo);
+
+	struct BufferLocalMemoryAllocationInfo
+	{
+		DeviceMemory* DeviceMemory = nullptr;
+		uint32 Size = 0;
+		uint32* Offset = nullptr;
+	};
+	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo);
+	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo);
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
@@ -77,4 +85,5 @@ private:
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
 	
 	ScratchMemoryAllocator scratchMemoryAllocator;
+	LocalMemoryAllocator localMemoryAllocator;
 };

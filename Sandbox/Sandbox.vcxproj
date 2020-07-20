@@ -92,11 +92,11 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PreBuildEvent>
-      <Command>
-      </Command>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
     </PreBuildEvent>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
+      <Command>
+      </Command>
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Test|x64'">
@@ -117,11 +117,11 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PreBuildEvent>
-      <Command>
-      </Command>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
     </PreBuildEvent>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
+      <Command>
+      </Command>
     </PreLinkEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -148,8 +148,12 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PreLinkEvent>
-      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
+      <Command>
+      </Command>
     </PreLinkEvent>
+    <PreBuildEvent>
+      <Command>copy "$(SolutionDir)bin\ByteEngine\$(Configuration)-$(Platform)\ByteEngine-$(Configuration)-$(Platform).lib" "$(SolutionDir)bin\Sandbox\$(Configuration)-$(Platform)"</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Game.cpp" />

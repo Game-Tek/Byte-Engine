@@ -108,6 +108,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	}
 
 	scratchMemoryAllocator.Init(renderDevice, GetPersistentAllocator());
+	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 }
 
 void RenderSystem::UpdateWindow(GTSL::Window& window)
@@ -129,9 +130,14 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 	swapchainImages = renderContext.GetImages(get_images_info);
 }
 
-void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& memoryAllocationInfo)
+void RenderSystem::AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
 {
-	scratchMemoryAllocator.AllocateBuffer(renderDevice, memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, memoryAllocationInfo.Data, GetPersistentAllocator());
+	localMemoryAllocator.AllocateBuffer(renderDevice, memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, GetPersistentAllocator());
+}
+
+void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
+{
+	scratchMemoryAllocator.AllocateBuffer(renderDevice, allocationInfo.DeviceMemory, allocationInfo.Size, allocationInfo.Offset, allocationInfo.Data, GetPersistentAllocator());
 }
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
@@ -158,6 +164,7 @@ void RenderSystem::Shutdown()
 	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
+	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 }
 
 void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)

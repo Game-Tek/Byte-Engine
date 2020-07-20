@@ -2,7 +2,6 @@
 #include <GTSL/DataSizes.h>
 #include <GTSL/Vector.hpp>
 
-
 #include "RenderTypes.h"
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
@@ -19,7 +18,7 @@ struct FreeSpace
 
 struct LocalMemoryBlock
 {
-	void InitBlock(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
+	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset);
@@ -37,10 +36,11 @@ class LocalMemoryAllocator
 public:
 	LocalMemoryAllocator() = default;
 
-	void Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, const BE::PersistentAllocatorReference& allocatorReference);
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 	
@@ -48,14 +48,13 @@ private:
 	
 	GTSL::Array<LocalMemoryBlock, 32> bufferMemoryBlocks;
 	GTSL::Array<LocalMemoryBlock, 32> textureMemoryBlocks;
-	uint32 imageMemoryType = 0;
 };
 
 struct ScratchMemoryBlock
 {
 	ScratchMemoryBlock() = default;
 
-	void InitBlock(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
+	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
@@ -84,5 +83,4 @@ private:
 	uint32 bufferMemoryType = 0;
 	
 	GTSL::Array<ScratchMemoryBlock, 32> bufferMemoryBlocks;
-	//GTSL::Array<ScratchMemoryBlock, 32> textureMemoryBlocks;
 };

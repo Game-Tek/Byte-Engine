@@ -106,6 +106,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 	}
+
+	scratchMemoryAllocator.Init(renderDevice, GetPersistentAllocator());
 }
 
 void RenderSystem::UpdateWindow(GTSL::Window& window)
@@ -125,6 +127,11 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 	get_images_info.RenderDevice = &renderDevice;
 	get_images_info.SwapchainImagesFormat = swapchainFormat;
 	swapchainImages = renderContext.GetImages(get_images_info);
+}
+
+void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& memoryAllocationInfo)
+{
+	scratchMemoryAllocator.AllocateBuffer(renderDevice, memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, memoryAllocationInfo.Data, GetPersistentAllocator());
 }
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
@@ -150,15 +157,7 @@ void RenderSystem::Shutdown()
 	for (auto& e : frameBuffers) { e.Destroy(&renderDevice); }
 	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 
-	for (auto& e : scratchMemoryBlocks) { e.Free(renderDevice, GetPersistentAllocator()); }
-}
-
-void RenderSystem::AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo)
-{	
-	for (auto& e : scratchMemoryBlocks)
-	{
-		if (e.TryAllocate(memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, memoryAllocationInfo.Data)) { return; }
-	}
+	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 }
 
 void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)

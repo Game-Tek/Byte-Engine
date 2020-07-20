@@ -39,13 +39,12 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	const uint32 size = buffer_memory_requirements.Size;
 	const uint32 alignment = buffer_memory_requirements.Alignment;
 	
-	RenderSystem::ScratchMemoryAllocationInfo memory_allocation_info;
+	RenderSystem::BufferScratchMemoryAllocationInfo memory_allocation_info;
 	memory_allocation_info.Size = size;
-	memory_allocation_info.MemoryType = buffer_memory_requirements.MemoryTypes;
 	memory_allocation_info.Offset = &offset;
 	memory_allocation_info.Data = &data;
 	memory_allocation_info.DeviceMemory = &device_memory;
-	addStaticMeshInfo.RenderSystem->AllocateScratchMemory(memory_allocation_info);
+	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memory_allocation_info);
 
 	Buffer::BindMemoryInfo bind_memory_info;
 	bind_memory_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();

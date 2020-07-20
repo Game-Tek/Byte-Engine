@@ -13,6 +13,11 @@ namespace BE
 		BEAllocatorReference() = default;
 		BEAllocatorReference(const BEAllocatorReference& allocatorReference) = default;
 		BEAllocatorReference(BEAllocatorReference&& allocatorReference) = default;
+
+		BEAllocatorReference& operator=(const BEAllocatorReference& other)
+		{
+			Name = other.Name; IsDebugAllocation = other.IsDebugAllocation; return *this;
+		}
 		
 		explicit BEAllocatorReference(const char* name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
 	};
@@ -58,6 +63,8 @@ namespace BE
 		PersistentAllocatorReference(const PersistentAllocatorReference& allocatorReference) : BEAllocatorReference(allocatorReference.Name, allocatorReference.IsDebugAllocation)
 		{
 		}
+
+		PersistentAllocatorReference& operator=(const PersistentAllocatorReference&) = default;
 		
 		PersistentAllocatorReference(PersistentAllocatorReference&& persistentAllocatorReference) = default;
 

@@ -2,10 +2,10 @@
 
 #include <GTSL/Math/Math.hpp>
 
-ScratchMemoryAllocator::ScratchMemoryAllocator(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	bufferMemoryBlocks.EmplaceBack();
-	textureMemoryBlocks.EmplaceBack();
+	//textureMemoryBlocks.EmplaceBack();
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
@@ -13,29 +13,31 @@ ScratchMemoryAllocator::ScratchMemoryAllocator(const RenderDevice& renderDevice,
 	buffer_create_info.BufferType = (uint32)BufferType::UNIFORM | (uint32)BufferType::TRANSFER_SOURCE | (uint32)BufferType::INDEX | (uint32)BufferType::VERTEX;
 	Buffer scratch_buffer(buffer_create_info);
 
-	Image::CreateInfo create_info;
-	create_info.RenderDevice = &renderDevice;
-	create_info.Extent = { 1280, 720 };
-	create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
-	create_info.ImageUses = (uint32)ImageUse::TRANSFER_SOURCE;
-	create_info.InitialLayout = GAL::ImageLayout::UNDEFINED;
-	create_info.SourceFormat = (uint32)ImageFormat::RGBA_I8;
-	create_info.ImageTiling = (uint32)GAL::VulkanImageTiling::OPTIMAL;
-	auto image = Image(create_info);
+	//Image::CreateInfo create_info;
+	//create_info.RenderDevice = &renderDevice;
+	//create_info.Extent = { 1280, 720 };
+	//create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
+	//create_info.ImageUses = (uint32)ImageUse::TRANSFER_SOURCE;
+	//create_info.InitialLayout = GAL::ImageLayout::UNDEFINED;
+	//create_info.SourceFormat = (uint32)ImageFormat::RGBA_I8;
+	//create_info.ImageTiling = (uint32)GAL::VulkanImageTiling::OPTIMAL;
+	//auto image = Image(create_info);
 
-	RenderDevice::ImageMemoryRequirements image_memory_requirements;
-	renderDevice.GetImageMemoryRequirements(&image, image_memory_requirements);
-	
+	//RenderDevice::ImageMemoryRequirements image_memory_requirements;
+	//renderDevice.GetImageMemoryRequirements(&image, image_memory_requirements);
+
 	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
 	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
 
 	bufferMemoryType = buffer_memory_requirements.MemoryTypes;
-	
-	bufferMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType);
-	textureMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), image_memory_requirements.MemoryTypes);
+
+	bufferMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
+
+	scratch_buffer.Destroy(&renderDevice);
+	//textureMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), image_memory_requirements.MemoryTypes, allocatorReference);
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data)
+void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	for(auto& e : bufferMemoryBlocks)
 	{
@@ -43,18 +45,20 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
-	bufferMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType);
+	bufferMemoryBlocks.back().InitBlock(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 	bufferMemoryBlocks.back().Allocate(deviceMemory, size, offset, data);
 }
 
 void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::PersistentAllocatorReference& allocatorReference)
 {
 	for (auto& e : bufferMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
-	for (auto& e : textureMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
+	//for (auto& e : textureMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void ScratchMemoryBlock::InitBlock(const RenderDevice& renderDevice, const uint32 size, const uint32 memType)
+void ScratchMemoryBlock::InitBlock(const RenderDevice& renderDevice, const uint32 size, const uint32 memType, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	freeSpaces.Initialize(16, allocatorReference);
+	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
 	memory_create_info.Size = size;
@@ -172,6 +176,8 @@ void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 
 void LocalMemoryBlock::InitBlock(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	freeSpaces.Initialize(16, allocatorReference);
+	
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;

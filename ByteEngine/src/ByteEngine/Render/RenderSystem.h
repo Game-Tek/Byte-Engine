@@ -27,15 +27,14 @@ public:
 	
 	void UpdateWindow(GTSL::Window& window);
 
-	struct ScratchMemoryAllocationInfo
+	struct BufferScratchMemoryAllocationInfo
 	{
 		DeviceMemory* DeviceMemory = nullptr;
 		uint32 Size = 0;
-		uint32 MemoryType = 0;
 		uint32* Offset = nullptr;
 		void** Data = nullptr;
 	};
-	void AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo);
+	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& memoryAllocationInfo);
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
@@ -77,6 +76,5 @@ private:
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
 	
-	GTSL::Array<LocalMemoryBlock, 32> localMemoryBlocks;
-	GTSL::Array<ScratchMemoryBlock, 32> scratchMemoryBlocks;
+	ScratchMemoryAllocator scratchMemoryAllocator;
 };

@@ -48,7 +48,7 @@ struct ScratchMemoryBlock
 {
 	ScratchMemoryBlock() = default;
 
-	void InitBlock(const RenderDevice& renderDevice, uint32 size, uint32 memType);
+	void InitBlock(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
@@ -64,10 +64,11 @@ private:
 class ScratchMemoryAllocator
 {
 public:
-	ScratchMemoryAllocator(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	ScratchMemoryAllocator() = default;
 
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
+	void Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 private:
@@ -76,5 +77,5 @@ private:
 	uint32 bufferMemoryType = 0;
 	
 	GTSL::Array<ScratchMemoryBlock, 32> bufferMemoryBlocks;
-	GTSL::Array<ScratchMemoryBlock, 32> textureMemoryBlocks;
+	//GTSL::Array<ScratchMemoryBlock, 32> textureMemoryBlocks;
 };

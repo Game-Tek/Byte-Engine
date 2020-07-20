@@ -36,4 +36,5 @@ using ImageUse = GAL::VulkanImageUse;
 using ColorSpace = GAL::VulkanColorSpace;
 using BufferType = GAL::VulkanBufferType;
 using MemoryType = GAL::VulkanMemoryType;
+using ImageTiling = GAL::VulkanImageTiling;
 #endif

@@ -130,6 +130,7 @@
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
     <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
+    <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -164,5 +165,6 @@
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
     <ClCompile Include="src\ByteEngine\Application\SystemAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\RendererAllocator.cpp" />
   </ItemGroup>
 </Project>

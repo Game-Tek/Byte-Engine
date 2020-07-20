@@ -106,8 +106,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 	}
-
-	allocateScratchMemoryBlock();
 }
 
 void RenderSystem::UpdateWindow(GTSL::Window& window)
@@ -156,21 +154,11 @@ void RenderSystem::Shutdown()
 }
 
 void RenderSystem::AllocateScratchMemory(ScratchMemoryAllocationInfo& memoryAllocationInfo)
-{
-	auto memory_type = renderDevice.FindMemoryType(memoryAllocationInfo.MemoryType, static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT));
-
-	MakeScratchAllocationInfo make_scratch_allocation_info;
-	make_scratch_allocation_info.Size = memoryAllocationInfo.Size;
-	make_scratch_allocation_info.Offset = memoryAllocationInfo.Offset;
-	make_scratch_allocation_info.Data = memoryAllocationInfo.Data;
-	
+{	
 	for (auto& e : scratchMemoryBlocks)
 	{
-		if (e.TryAllocate(make_scratch_allocation_info)) { return; }
+		if (e.TryAllocate(memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, memoryAllocationInfo.Data)) { return; }
 	}
-
-	allocateScratchMemoryBlock();
-	scratchMemoryBlocks.back().Allocate(make_scratch_allocation_info, GetPersistentAllocator());
 }
 
 void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
@@ -223,79 +211,11 @@ void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
 
 void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const
 {
-	switch(messageSeverity)
+	switch (messageSeverity)
 	{
-		case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message); break;
-		case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
-		case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
+	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message); break;
+	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
 	default: break;
 	}
-}
-
-void RenderSystem::allocateScratchMemoryBlock()
-{
-	scratchMemoryBlocks.EmplaceBack();
-	scratchMemoryBlocks.back().AllocateDeviceMemory(renderDevice, GetPersistentAllocator());
-}
-
-void RenderSystem::ScratchMemoryBlock::AllocateDeviceMemory(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)
-{
-	Buffer::CreateInfo buffer_create_info;
-	buffer_create_info.RenderDevice = &renderDevice;
-	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = (uint32)BufferType::UNIFORM;
-	Buffer scratch_buffer(buffer_create_info);
-
-	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
-	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
-	
-	DeviceMemory::CreateInfo memory_create_info;
-	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Size = static_cast<uint32>(ALLOCATION_SIZE);
-	memory_create_info.MemoryType = renderDevice.FindMemoryType(buffer_memory_requirements.MemoryTypes, static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT));
-	::new(&deviceMemory) DeviceMemory(memory_create_info);
-
-	DeviceMemory::MapInfo map_info;
-	map_info.RenderDevice = &renderDevice;
-	map_info.Size = memory_create_info.Size;
-	map_info.Offset = 0;
-	mappedMemory = deviceMemory.Map(map_info);
-
-	scratch_buffer.Destroy(&renderDevice);
-}
-
-void RenderSystem::ScratchMemoryBlock::Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference)
-{
-	DeviceMemory::UnmapInfo unmap_info;
-	unmap_info.RenderDevice = &renderDevice;
-	deviceMemory.Unmap(unmap_info);
-
-	deviceMemory.Destroy(&renderDevice);
-}
-
-bool RenderSystem::ScratchMemoryBlock::TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const
-{
-	for (auto& e : allocations)
-	{
-		if (!e.InUse)
-		{
-			if (e.Size >= makeAllocationInfo.Size)
-			{
-				//HANDOUT allocation
-			}
-		}
-	}
-
-	return false;
-}
-
-void RenderSystem::ScratchMemoryBlock::Allocate(MakeScratchAllocationInfo& makeAllocationInfo, const GTSL::AllocatorReference& allocatorReference)
-{	
-	Allocation allocation;
-	allocation.Size = makeAllocationInfo.Size;
-	allocation.Offset = 0;
-	allocation.InUse = true;
-	allocations.EmplaceBack(allocation);
-
-	*makeAllocationInfo.Data = mappedMemory;
 }

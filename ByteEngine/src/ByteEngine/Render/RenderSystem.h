@@ -3,6 +3,8 @@
 #include "ByteEngine/Game/GameInstance.h"
 
 #include <GTSL/DataSizes.h>
+
+#include "RendererAllocator.h"
 #include "RenderTypes.h"
 
 namespace GTSL {
@@ -74,63 +76,7 @@ private:
 	void render(const GameInstance::TaskInfo& taskInfo);
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
-
-	struct MakeScratchAllocationInfo
-	{
-		DeviceMemory* DeviceMemory = nullptr;
-		uint32 Size = 0;
-		uint32* Offset = nullptr;
-		void** Data = nullptr;
-	};
-	void allocateScratchMemoryBlock();
 	
-	struct LocalMemoryBlock
-	{
-		static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
-
-		void Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
-
-		bool TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const;
-
-		DeviceMemory DeviceMemory;
-
-		struct Allocation
-		{
-			uint8 DeviceAllocationIndex = 0;
-			uint32 Size = 0;
-			uint32 Offset = 0;
-		};
-		GTSL::Vector<Allocation, BE::PersistentAllocatorReference> allocations;
-
-		uint32 UnusableSize = 0;
-	};
 	GTSL::Array<LocalMemoryBlock, 32> localMemoryBlocks;
-
-	struct ScratchMemoryBlock
-	{
-		static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
-		
-		ScratchMemoryBlock() = default;
-		
-		void AllocateDeviceMemory(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
-		void Free(const RenderDevice& renderDevice, const GTSL::AllocatorReference& allocatorReference);
-
-		bool TryAllocate(const MakeScratchAllocationInfo& makeAllocationInfo) const;
-		void Allocate(MakeScratchAllocationInfo& makeAllocationInfo, const GTSL::AllocatorReference& allocatorReference);
-
-	private:
-		DeviceMemory deviceMemory;
-		void* mappedMemory = nullptr;
-
-		struct Allocation
-		{
-			uint32 Size = 0;
-			uint32 Offset = 0;
-			bool InUse = true;
-		};
-		GTSL::Vector<Allocation, BE::PersistentAllocatorReference> allocations;
-
-		uint32 UnusableSize = 0;
-	};
 	GTSL::Array<ScratchMemoryBlock, 32> scratchMemoryBlocks;
 };

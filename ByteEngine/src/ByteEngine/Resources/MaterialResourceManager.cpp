@@ -78,6 +78,8 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		material_info.FragmentShaderSize = shader_buffer.GetLength();
 		package.WriteToFile(shader_buffer);
 
+		material_info.VertexElements = materialCreateInfo.VertexFormat;
+		
 		materialInfos.Emplace(hashed_name, material_info);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(materialInfos, index_buffer);
@@ -95,6 +97,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.VertexShaderOffset, buffer);
 	Insert(materialInfo.VertexShaderSize, buffer);
 	Insert(materialInfo.FragmentShaderSize, buffer);
+	Insert(materialInfo.VertexElements, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
@@ -102,4 +105,5 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.VertexShaderOffset, buffer);
 	Extract(materialInfo.VertexShaderSize, buffer);
 	Extract(materialInfo.FragmentShaderSize, buffer);
+	Extract(materialInfo.VertexElements, buffer);
 }

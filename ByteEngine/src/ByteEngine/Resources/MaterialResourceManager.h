@@ -13,6 +13,7 @@ public:
 	struct MaterialInfo
 	{
 		uint32 VertexShaderOffset = 0, VertexShaderSize = 0, FragmentShaderSize = 0;
+		GTSL::Array<uint8, 20> VertexElements;
 		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 	};

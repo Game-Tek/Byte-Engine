@@ -110,47 +110,60 @@ void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const ui
 
 void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	uint32 free_space_index = 0;
-	uint32 lowest_free_space_index = 0;
-	for (FreeSpace& free_space : freeSpaces)
+	uint32 n = 0;
+
+	if(freeSpaces.GetLength() >= 2) [[likely]]
 	{
-		uint32 n = free_space_index;
-
-		if (offset <= free_space.Offset) { lowest_free_space_index = n; }
-
-		if (offset + size == free_space.Offset) //this is free space next to allocation
+		for (FreeSpace& free_space : freeSpaces)
 		{
-			free_space.Size += size;
-			free_space.Offset = offset;
+			//if current free space is further away from allocation no other free space could be holding this allocation, break and add new free space
+			if (free_space.Offset > offset) { break; }
+			++n;
+		}
 
-			if (free_space_index > 0) [[likely]]
-			{
-				if (freeSpaces[n - 1].Offset + freeSpaces[n - 1].Size == free_space.Offset) //if is contiguous
-				{
-					FreeSpace prev = freeSpaces[n - 1];
-					freeSpaces.Pop(n);
-					free_space.Size += prev.Size;
-					free_space.Offset = prev.Offset;
-				}
-			}
+		auto& next_free_space = freeSpaces[n];
+		auto& previous_free_space = freeSpaces[n - 1];
 
-			if (free_space_index != freeSpaces.GetLength() - 1) [[likely]]
+		//this is free space next to allocation
+		if (offset + size == next_free_space.Offset)
+		{
+			next_free_space.Size += size;
+			next_free_space.Offset = offset;
+
+			//if there is previous free space
+			if (n > 0) [[likely]]
 			{
-				if (free_space.Offset + free_space.Size == freeSpaces[n + 1].Offset) //if is contiguous
+				//if previous free space is contiguous pop it and expand current
+				if (previous_free_space.Offset + previous_free_space.Size == offset)
 				{
-					FreeSpace next = freeSpaces[n + 1];
-					freeSpaces.Pop(n + 1);
-					free_space.Size += next.Size;
+					next_free_space.Offset = previous_free_space.Offset;
+					next_free_space.Size += previous_free_space.Size;
+					freeSpaces.Pop(n - 1);
+					return;
 				}
 			}
 
 			return;
 		}
 
-		++free_space_index;
+		//if there is previous free space
+		if (n > 0) [[likely]]
+		{
+			//if previous free space is contiguous pop it and expand current
+			if (previous_free_space.Offset + previous_free_space.Size == offset)
+			{
+				previous_free_space.Size += size;
+				return;
+			}
+		}
 	}
 
-	freeSpaces.Insert(lowest_free_space_index, FreeSpace(size, offset));
+	if(freeSpaces.GetLength() == 1)
+	{
+		
+	}
+
+	freeSpaces.EmplaceBack(size, offset);
 }
 
 

@@ -22,7 +22,7 @@ namespace BE
 	 * \brief Self locking class that manages logging to console and to disk.
 	 * All logs get dumped to disk, verbosity levels are only for console.
 	 */
-	class Logger
+	class Logger : public Object
 	{
 	public:
 		enum class VerbosityLevel : uint8

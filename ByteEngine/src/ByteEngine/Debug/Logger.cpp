@@ -6,16 +6,14 @@
 
 using namespace BE;
 
-static SystemAllocatorReference allocator_reference("Logger", true); //TODO get rid of global once vector is fixed
-
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : logFile()
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), logFile()
 {
 	uint64 allocated_size{ 0 };
-	allocator_reference.Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
+	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
 	
 	GTSL::SetMemory(defaultBufferLength, data);
 	
-	GTSL::StaticString<1024> path(loggerCreateInfo.AbsolutePathToLogDirectory);
+	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
 	logFile.OpenFile(path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
 }

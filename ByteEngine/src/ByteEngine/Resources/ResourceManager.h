@@ -37,7 +37,10 @@ public:
 		 */
 		GTSL::Ranger<byte> DataBuffer;
 		
-		[[deprecated("Resources should be referred to by Id and not a full string.")]] GTSL::StaticString<128> NameString;
+		/**
+		 * \brief Instance of game instance to call to dispatch task when resource is loaded.
+		 */
+		class GameInstance* GameInstance = nullptr;
 	};
 
 	struct OnResourceLoad

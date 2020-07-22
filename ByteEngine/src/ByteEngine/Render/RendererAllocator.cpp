@@ -114,22 +114,28 @@ void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 	uint8 info = 0;
 	
 	uint32 i = 0;
+
+	if (freeSpaces[0].Offset > offset) [[likely]]
+	{
+		size + offset == freeSpaces[0].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
+		++i;
+		goto SWITCH;
+	}
+
+	++i;
+
 	for(; i < freeSpaces.GetLength(); ++i)
 	{
 		if (freeSpaces[i].Offset > offset) [[likely]]
-		{			
+		{
 			size + offset == freeSpaces[i].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
-			
 			break;
 		}
 	}
 
-	//if there is previous block
-	if(i != 0) [[likely]]
-	{
-		freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
-	}
-
+	freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
+	
+SWITCH:	
 	switch (info)
 	{
 	case IS_PRE_BLOCK_CONTIGUOUS: [[unlikely]]

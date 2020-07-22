@@ -110,60 +110,44 @@ void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const ui
 
 void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	uint32 n = 0;
+	bool post_block_is_contiguous = false, pre_block_is_contiguous = false;
 
-	if(freeSpaces.GetLength() >= 2) [[likely]]
+	uint32 i = 0;
+	for(; i < freeSpaces.GetLength(); ++i)
 	{
-		for (FreeSpace& free_space : freeSpaces)
-		{
-			//if current free space is further away from allocation no other free space could be holding this allocation, break and add new free space
-			if (free_space.Offset > offset) { break; }
-			++n;
-		}
-
-		auto& next_free_space = freeSpaces[n];
-		auto& previous_free_space = freeSpaces[n - 1];
-
-		//this is free space next to allocation
-		if (offset + size == next_free_space.Offset)
-		{
-			next_free_space.Size += size;
-			next_free_space.Offset = offset;
-
-			//if there is previous free space
-			if (n > 0) [[likely]]
-			{
-				//if previous free space is contiguous pop it and expand current
-				if (previous_free_space.Offset + previous_free_space.Size == offset)
-				{
-					next_free_space.Offset = previous_free_space.Offset;
-					next_free_space.Size += previous_free_space.Size;
-					freeSpaces.Pop(n - 1);
-					return;
-				}
-			}
-
-			return;
-		}
-
-		//if there is previous free space
-		if (n > 0) [[likely]]
-		{
-			//if previous free space is contiguous pop it and expand current
-			if (previous_free_space.Offset + previous_free_space.Size == offset)
-			{
-				previous_free_space.Size += size;
-				return;
-			}
+		if (freeSpaces[i].Offset > offset) [[likely]]
+		{			
+			post_block_is_contiguous = size + offset == freeSpaces[i].Offset;
+			
+			break;
 		}
 	}
 
-	if(freeSpaces.GetLength() == 1)
+	//if there is previous block
+	if(i != 0) [[likely]]
 	{
-		
+		pre_block_is_contiguous = freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset;
 	}
 
-	freeSpaces.EmplaceBack(size, offset);
+	if(pre_block_is_contiguous && post_block_is_contiguous) [[unlikely]]
+	{
+		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
+		freeSpaces.Pop(i);
+		//returns
+	}
+	else if(pre_block_is_contiguous) [[unlikely]]
+	{
+		freeSpaces[i - 1].Size += size;
+	}
+	else if(post_block_is_contiguous) [[likely]]
+	{
+		freeSpaces[i].Size += size;
+		freeSpaces[i].Offset = offset;
+	}
+	else
+	{
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+	}
 }
 
 
@@ -226,47 +210,44 @@ void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, u
 
 void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	uint32 free_space_index = 0;
-	uint32 lowest_free_space_index = 0;
-	for (FreeSpace& free_space : freeSpaces)
+	bool post_block_is_contiguous = false, pre_block_is_contiguous = false;
+
+	uint32 i = 0;
+	for (; i < freeSpaces.GetLength(); ++i)
 	{
-		const uint32 n = free_space_index;
-
-		if (offset <= free_space.Offset) { lowest_free_space_index = n; }
-
-		if (offset + size == free_space.Offset) //this is free space next to allocation
+		if (freeSpaces[i].Offset > offset) [[likely]]
 		{
-			free_space.Size += size;
-			free_space.Offset = offset;
+			post_block_is_contiguous = size + offset == freeSpaces[i].Offset;
 
-			if (free_space_index > 0) [[likely]]
-			{
-				if (freeSpaces[n - 1].Offset + freeSpaces[n - 1].Size == free_space.Offset) //if is contiguous
-				{
-					FreeSpace prev = freeSpaces[n - 1];
-					freeSpaces.Pop(n);
-					free_space.Size += prev.Size;
-					free_space.Offset = prev.Offset;
-				}
-			}
-
-			if (free_space_index != freeSpaces.GetLength() - 1) [[likely]]
-			{
-				if (free_space.Offset + free_space.Size == freeSpaces[n + 1].Offset) //if is contiguous
-				{
-					FreeSpace next = freeSpaces[n + 1];
-					freeSpaces.Pop(n + 1);
-					free_space.Size += next.Size;
-				}
-			}
-
-			return;
+			break;
 		}
-
-		++free_space_index;
 	}
 
-	freeSpaces.Insert(lowest_free_space_index, FreeSpace(size, offset));
+	//if there is previous block
+	if (i != 0) [[likely]]
+	{
+		pre_block_is_contiguous = freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset;
+	}
+
+	if (pre_block_is_contiguous && post_block_is_contiguous) [[unlikely]]
+	{
+		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
+		freeSpaces.Pop(i);
+		//returns
+	}
+	else if (pre_block_is_contiguous) [[unlikely]]
+	{
+		freeSpaces[i - 1].Size += size;
+	}
+	else if (post_block_is_contiguous) [[likely]]
+	{
+		freeSpaces[i].Size += size;
+		freeSpaces[i].Offset = offset;
+	}
+	else
+	{
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+	}
 }
 
 void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)

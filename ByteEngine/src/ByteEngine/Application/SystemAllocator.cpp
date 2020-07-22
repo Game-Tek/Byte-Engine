@@ -8,7 +8,7 @@ void SystemAllocator::Allocate(const uint64 size, const uint64 alignment, void**
 	GTSL::Allocate(allocated_size, data);
 	allocatorMutex.Unlock();
 
-	*data = GTSL::AlignPointer(alignment, data);
+	//*data = GTSL::AlignPointer(alignment, data);
 
 	BE_DEBUG_ONLY(GTSL::Lock<GTSL::Mutex> lock(debugDataMutex))
 	BE_DEBUG_ONLY(allocatedBytes += allocated_size)
@@ -21,7 +21,8 @@ void SystemAllocator::Deallocate(const uint64 size, const uint64 alignment, void
 {
 	const uint64 allocation_size{GTSL::Math::PowerOf2RoundUp(size, static_cast<uint32>(alignment))};
 
-	byte* dealigned_pointer = static_cast<byte*>(data) - (allocation_size - size);
+	//byte* dealigned_pointer = static_cast<byte*>(data) - (allocation_size - size);
+	byte* dealigned_pointer = static_cast<byte*>(data);
 	
 	allocatorMutex.Lock();
 	GTSL::Deallocate(allocation_size, dealigned_pointer);

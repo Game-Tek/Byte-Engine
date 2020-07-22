@@ -98,6 +98,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.VertexShaderSize, buffer);
 	Insert(materialInfo.FragmentShaderSize, buffer);
 	Insert(materialInfo.VertexElements, buffer);
+	Insert(materialInfo.BindingSets, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
@@ -106,4 +107,5 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.VertexShaderSize, buffer);
 	Extract(materialInfo.FragmentShaderSize, buffer);
 	Extract(materialInfo.VertexElements, buffer);
+	Extract(materialInfo.BindingSets, buffer);
 }

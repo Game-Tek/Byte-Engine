@@ -1,6 +1,7 @@
 #include "RendererAllocator.h"
 
-#include <GTSL/Math/Math.hpp>
+static constexpr uint8 IS_PRE_BLOCK_CONTIGUOUS = 1;
+static constexpr uint8 IS_POST_BLOCK_CONTIGUOUS = 2;
 
 void ScratchMemoryAllocator::Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
@@ -110,14 +111,14 @@ void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const ui
 
 void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	bool post_block_is_contiguous = false, pre_block_is_contiguous = false;
-
+	uint8 info = 0;
+	
 	uint32 i = 0;
 	for(; i < freeSpaces.GetLength(); ++i)
 	{
 		if (freeSpaces[i].Offset > offset) [[likely]]
 		{			
-			post_block_is_contiguous = size + offset == freeSpaces[i].Offset;
+			size + offset == freeSpaces[i].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
 			
 			break;
 		}
@@ -126,27 +127,28 @@ void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 	//if there is previous block
 	if(i != 0) [[likely]]
 	{
-		pre_block_is_contiguous = freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset;
+		freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
 	}
 
-	if(pre_block_is_contiguous && post_block_is_contiguous) [[unlikely]]
+	switch (info)
 	{
-		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
-		freeSpaces.Pop(i);
-		//returns
-	}
-	else if(pre_block_is_contiguous) [[unlikely]]
-	{
+	case IS_PRE_BLOCK_CONTIGUOUS: [[unlikely]]
 		freeSpaces[i - 1].Size += size;
-	}
-	else if(post_block_is_contiguous) [[likely]]
-	{
+		return;
+		
+	case IS_POST_BLOCK_CONTIGUOUS: [[likely]]
 		freeSpaces[i].Size += size;
 		freeSpaces[i].Offset = offset;
-	}
-	else
-	{
+		return;
+		
+	case IS_PRE_BLOCK_CONTIGUOUS & IS_POST_BLOCK_CONTIGUOUS: [[unlikely]]
+		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
+		freeSpaces.Pop(i);
+		return;
+		
+	default: [[likely]]
 		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
 	}
 }
 
@@ -210,14 +212,14 @@ void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, u
 
 void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	bool post_block_is_contiguous = false, pre_block_is_contiguous = false;
+	uint8 info = 0;
 
 	uint32 i = 0;
 	for (; i < freeSpaces.GetLength(); ++i)
 	{
 		if (freeSpaces[i].Offset > offset) [[likely]]
 		{
-			post_block_is_contiguous = size + offset == freeSpaces[i].Offset;
+			size + offset == freeSpaces[i].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
 
 			break;
 		}
@@ -226,27 +228,28 @@ void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 	//if there is previous block
 	if (i != 0) [[likely]]
 	{
-		pre_block_is_contiguous = freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset;
+		freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
 	}
 
-	if (pre_block_is_contiguous && post_block_is_contiguous) [[unlikely]]
+	switch (info)
 	{
-		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
-		freeSpaces.Pop(i);
-		//returns
-	}
-	else if (pre_block_is_contiguous) [[unlikely]]
-	{
+	case IS_PRE_BLOCK_CONTIGUOUS: [[unlikely]]
 		freeSpaces[i - 1].Size += size;
-	}
-	else if (post_block_is_contiguous) [[likely]]
-	{
+		return;
+
+	case IS_POST_BLOCK_CONTIGUOUS: [[likely]]
 		freeSpaces[i].Size += size;
 		freeSpaces[i].Offset = offset;
-	}
-	else
-	{
+		return;
+
+	case IS_PRE_BLOCK_CONTIGUOUS& IS_POST_BLOCK_CONTIGUOUS: [[unlikely]]
+		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
+		freeSpaces.Pop(i);
+		return;
+
+	default: [[likely]]
 		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
 	}
 }
 

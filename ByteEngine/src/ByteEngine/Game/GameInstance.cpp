@@ -76,7 +76,7 @@ void GameInstance::OnUpdate()
 	dynamicGoals = nullptr;
 }
 
-void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(const TaskInfo&)> function, GTSL::Ranger<TaskDescriptor> actsOn, const GTSL::Id64 doneFor)
+void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<TaskDescriptor> actsOn, const GTSL::Id64 doneFor)
 {	
 	uint32 i = 0;
 	goalNamesMutex.ReadLock();
@@ -142,38 +142,6 @@ void GameInstance::RemoveTask(const GTSL::Id64 name, const GTSL::Id64 doneFor)
 	goalsMutex.ReadUnlock();
 
 	BE_ASSERT(false, "No task under specified name!")
-}
-
-void GameInstance::AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(const TaskInfo&)>& function, const GTSL::Ranger<TaskDescriptor> actsOn, const GTSL::Id64 doneFor)
-{
-	uint32 i = 0;
-	goalNamesMutex.ReadLock();
-	for (auto goal_name : goalNames) { if (goal_name == doneFor) break; ++i; }
-	BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
-	goalNamesMutex.ReadUnlock();
-	
-	dynamicGoalsMutex.ReadLock();
-	auto& goal = dynamicGoals->At(i);
-
-	i = 0;
-	
-	for (const auto& parallel_task : goal)
-	{
-		if (canInsert(parallel_task, actsOn))
-		{
-			dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
-			goal[i].AddTask(name, actsOn, function);
-			dynamicGoalsMutex.WriteUnlock();
-			return;
-		}
-
-		++i;
-	}
-
-	dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
-	i = goal.AddNewTaskStack(GetPersistentAllocator());
-	goal[i].AddTask(name, actsOn, function);
-	dynamicGoalsMutex.WriteUnlock();	
 }
 
 void GameInstance::AddGoal(const GTSL::Id64 name, const GTSL::Id64 dependsOn)

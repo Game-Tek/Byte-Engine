@@ -40,7 +40,11 @@ namespace BE
 	{
 		void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
 
+#if(_DEBUG)
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const;
+#else
+		void Deallocate(uint64 size, uint64 alignment, void* memory) const {}
+#endif
 
 		TransientAllocatorReference() = default;
 
@@ -72,4 +76,6 @@ namespace BE
 		{
 		}
 	};
+
+	using TAR = TransientAllocatorReference;
 }

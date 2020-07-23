@@ -18,7 +18,7 @@
 
 class InputManager;
 
-class GameInstance;
+#include "ByteEngine/Game/GameInstance.h"
 
 namespace BE
 {	

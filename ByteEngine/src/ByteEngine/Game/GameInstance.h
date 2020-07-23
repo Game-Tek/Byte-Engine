@@ -8,6 +8,10 @@
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
 #include <GTSL/Vector.hpp>
+#include <GTSL/Algorithm.h>
+#include <GTSL/Allocator.h>
+
+#include "ByteEngine/Debug/Assert.h"
 
 class GameInstance : public Object
 {
@@ -43,7 +47,6 @@ public:
 		initWorld(index); return index;
 	}
 
-	template<typename T>
 	void UnloadWorld(const WorldReference worldId)
 	{
 		World::DestroyInfo destroy_info;
@@ -59,30 +62,95 @@ public:
 	{
 	};
 	
-	enum class AccessType : uint8 { READ, READ_WRITE };
+	enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
 	struct TaskDescriptor { GTSL::Id64 System; AccessType Access; };
 	
-	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(const TaskInfo&)> function, GTSL::Ranger<TaskDescriptor> actsOn, GTSL::Id64 doneFor);
+	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<TaskDescriptor> actsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
-	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(const TaskInfo&)>& function, GTSL::Ranger<TaskDescriptor> actsOn, GTSL::Id64 doneFor);
+
+	template<typename... ARGS>
+	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, GTSL::Ranger<TaskDescriptor> actsOn,
+		GTSL::Id64 doneFor, GTSL::Id64 dependsOn = 0ULL, ARGS&&... args)
+	{
+		auto task_info = GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>::Create<DynamicTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);
+		
+		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
+		{
+			auto& info = (GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>&)(gameInstance->dynamicTasksInfo[i]);
+			GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
+			gameInstance->dynamicTasksInfo.Pop(i);
+		};
+
+		dynamicTasks.EmplaceBack(GTSL::Delegate<void(GameInstance*, uint32)>::Create(task));
+		dynamicTasksInfo.EmplaceBack(task_info);
+
+		uint32 i = 0;
+
+		{
+			GTSL::ReadLock lock(goalNamesMutex);
+			
+			for (auto goal_name : goalNames) { if (goal_name == doneFor) break; ++i; }
+			BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!");
+		}
+		
+		//dynamicGoalsMutex.ReadLock();
+		//auto& goal = dynamicGoals->At(i);
+		//
+		//i = 0;
+		//
+		//for (const auto& parallel_task : goal)
+		//{
+		//	if (canInsert(parallel_task, actsOn))
+		//	{
+		//		dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
+		//		goal[i].AddTask(name, actsOn, function);
+		//		dynamicGoalsMutex.WriteUnlock();
+		//		return;
+		//	}
+		//
+		//	++i;
+		//}
+		//
+		//dynamicGoalsMutex.ReadUnlock(); dynamicGoalsMutex.WriteLock();
+		//i = goal.AddNewTaskStack(GetPersistentAllocator());
+		//goal[i].AddTask(name, actsOn, function);
+		//dynamicGoalsMutex.WriteUnlock();
+	}
+	
 	void AddGoal(GTSL::Id64 name, GTSL::Id64 dependsOn); void AddGoal(GTSL::Id64 name);
+	
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	GTSL::FlatHashMap<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> componentCollections;
+	
+	template<typename... ARGS>
+	struct DynamicTaskInfo
+	{
+		DynamicTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::MakeForwardReference<ARGS>(args)...)
+		{
+		}
 
-	using TaskType = GTSL::Delegate<void(const TaskInfo&)>;
+		GTSL::Delegate<void(ARGS...)> Delegate;
+		GTSL::Tuple<ARGS...> Arguments;
+	};
+	
+	GTSL::Vector<GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>, BE::TAR> dynamicTasksInfo;
+	GTSL::Vector<GTSL::Delegate<void(GameInstance*, uint32 i)>, BE::TAR> dynamicTasks;
+	
+	using TaskType = GTSL::Delegate<void(TaskInfo)>;
 	
 	ThreadPool threadPool;
 	
 	struct ParallelTasks
 	{
-		ParallelTasks(const BE::PersistentAllocatorReference& allocatorReference) : descriptors(8, allocatorReference), tasks(8, allocatorReference), names(8, allocatorReference)
+		explicit ParallelTasks(const BE::PersistentAllocatorReference& allocatorReference) : names(8, allocatorReference), descriptors(8, allocatorReference),
+		                                                                                     tasks(8, allocatorReference)
 		{
 		}
 
-		void AddTask(GTSL::Id64 name, GTSL::Ranger<TaskDescriptor> taskDescriptors, GTSL::Delegate<void(const TaskInfo&)> delegate)
+		void AddTask(GTSL::Id64 name, const GTSL::Ranger<TaskDescriptor> taskDescriptors, TaskType delegate)
 		{
 			names.EmplaceBack(name); descriptors.PushBack(taskDescriptors); tasks.EmplaceBack(delegate);
 		}

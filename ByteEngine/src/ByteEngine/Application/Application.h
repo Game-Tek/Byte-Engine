@@ -86,7 +86,7 @@ namespace BE
 		template<typename RM>
 		RM* CreateResourceManager()
 		{
-			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>::Create<RM>(GetPersistentAllocator());
+			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>::Create<RM>(systemAllocatorReference);
 			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager)).operator ResourceManager*());
 		}
 		
@@ -122,9 +122,9 @@ namespace BE
 
 	protected:
 		GTSL::SmartPointer<Logger, BE::SystemAllocatorReference> logger;
-		GTSL::SmartPointer<GameInstance, BE::PersistentAllocatorReference> gameInstance;
+		GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference> gameInstance;
 
-		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> resourceManagers;
+		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>, BE::SystemAllocatorReference> resourceManagers;
 		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };
@@ -140,7 +140,7 @@ namespace BE
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
-		BE_DEBUG_ONLY(GTSL::String<BE::PersistentAllocatorReference> closeReason);
+		BE_DEBUG_ONLY(GTSL::String<SystemAllocatorReference> closeReason);
 
 		uint64 applicationTicks{ 0 };
 	private:

@@ -32,7 +32,7 @@ namespace BE
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 2);
 		
-		::new(&resourceManagers) GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::PersistentAllocatorReference>, PersistentAllocatorReference>(8, GetPersistentAllocator());
+		resourceManagers.Initialize(8, systemAllocatorReference);
 		
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
@@ -45,7 +45,7 @@ namespace BE
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
 		
-		BE_DEBUG_ONLY(closeReason = GTSL::String(255, GetPersistentAllocator()));
+		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
 	}
 
 	void Application::Shutdown()
@@ -57,6 +57,8 @@ namespace BE
 		
 		delete clockInstance;
 		delete inputManagerInstance;
+
+		gameInstance.Free();
 		
 		transientAllocator.LockedClear();
 		transientAllocator.Free();

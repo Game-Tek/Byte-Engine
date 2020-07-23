@@ -80,7 +80,7 @@ private:
 	uint32 swapchainFormat{ 0 };
 	uint32 swapchainColorSpace{ 0 };
 	
-	void render(const GameInstance::TaskInfo& taskInfo);
+	void render(const TaskInfo& taskInfo);
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
 	

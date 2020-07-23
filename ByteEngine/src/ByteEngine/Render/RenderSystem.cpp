@@ -142,7 +142,7 @@ void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
-	GTSL::Array<GameInstance::TaskDescriptor, 8> actsOn{ { "RenderSystem", GameInstance::AccessType::READ } };
+	GTSL::Array<TaskDescriptor, 8> actsOn{ { "RenderSystem", AccessType::READ } };
 	//initializeInfo.GameInstance->AddTask(__FUNCTION__, GTSL::Delegate<void(const GameInstance::TaskInfo&)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "Frame");
 }
 
@@ -167,7 +167,7 @@ void RenderSystem::Shutdown()
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 }
 
-void RenderSystem::render(const GameInstance::TaskInfo& taskInfo)
+void RenderSystem::render(const TaskInfo& taskInfo)
 {
 	auto& command_buffer = commandBuffers[index];
 	

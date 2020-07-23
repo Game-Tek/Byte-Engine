@@ -31,7 +31,7 @@ public:
 
 	struct LoadStaticMeshInfo : ResourceLoadInfo
 	{
-		GTSL::Delegate<void(OnStaticMeshLoad)> OnStaticMeshLoad;
+		GTSL::Delegate<void(TaskInfo, OnStaticMeshLoad)> OnStaticMeshLoad;
 		uint32 IndicesAlignment = 0;
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);

@@ -6,6 +6,8 @@
 #include <GTSL/StaticString.hpp>
 #include <GTSL/DynamicType.h>
 
+#include "ByteEngine/Game/Tasks.h"
+
 /**
  * \brief Used to specify a type of resource loader.
  *
@@ -41,6 +43,10 @@ public:
 		 * \brief Instance of game instance to call to dispatch task when resource is loaded.
 		 */
 		class GameInstance* GameInstance = nullptr;
+
+		GTSL::Id64 ActsOn;
+		GTSL::Id64 DependsOn;
+		GTSL::Array<TaskDescriptor, 16> TaskDescriptors;
 	};
 
 	struct OnResourceLoad

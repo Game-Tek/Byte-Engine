@@ -4,6 +4,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 VisualStudioVersion = 16.0.29905.134
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Sandbox", "Sandbox\Sandbox.vcxproj", "{E632332E-1D2A-45D8-A04A-8777A7E5FA90}"
+	ProjectSection(ProjectDependencies) = postProject
+		{62643626-74F8-447C-8EA9-44518063920B} = {62643626-74F8-447C-8EA9-44518063920B}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ByteEngine", "ByteEngine\ByteEngine.vcxproj", "{62643626-74F8-447C-8EA9-44518063920B}"
 EndProject

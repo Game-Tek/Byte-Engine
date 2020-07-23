@@ -29,23 +29,13 @@ public:
 		//add_static_mesh_info.RenderStaticMeshCollection = collection;
 		//add_static_mesh_info.StaticMeshResourceManager = (StaticMeshResourceManager*)initializeInfo.GameInstance->GetComponentCollection("StaticMeshResourceManager");
 		//static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
-
-		GTSL::Array<GameInstance::TaskDescriptor, 2> actsOn{ { "RenderSystem", GameInstance::AccessType::READ } };
-		
-		initializeInfo.GameInstance->AddDynamicTask("TestDynamicTask", GTSL::Delegate<void(GameInstance::TaskInfo, int32)>::Create<MenuWorld, &MenuWorld::testFunc>(this),
-			actsOn, "RenderBegin", "PhysicsEnd", 23);
 	}
 	
 	void DestroyWorld(const DestroyInfo& destroyInfo) override
 	{
 		//destroyInfo.GameInstance->DestroyComponentCollection(testComponentCollectionReference);
 	}
-	
 private:
-	void testFunc(GameInstance::TaskInfo taskInfo, int32 a)
-	{
-		
-	}
 	
 	uint64 testComponentCollectionReference{ 0 };
 };

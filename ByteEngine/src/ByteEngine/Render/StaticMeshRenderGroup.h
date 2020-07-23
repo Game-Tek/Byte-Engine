@@ -23,7 +23,17 @@ public:
 	void AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 	
 private:
-	void onStaticMeshLoaded(StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
+	struct LoadInfo
+	{
+		LoadInfo(RenderSystem* renderDevice, const Buffer& buffer) : RenderSystem(renderDevice), ScratchBuffer(buffer)
+		{
+		}
+		
+		RenderSystem* RenderSystem = nullptr;
+		Buffer ScratchBuffer;
+	};
+	
+	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
 };

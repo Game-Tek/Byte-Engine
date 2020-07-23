@@ -8,8 +8,7 @@
 #include <GTSL/Atomic.hpp>
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Vector.hpp>
-
-#include "ByteEngine/Game/System.h"
+#include "AllocatorReferences.h"
 
 class StackAllocator
 {

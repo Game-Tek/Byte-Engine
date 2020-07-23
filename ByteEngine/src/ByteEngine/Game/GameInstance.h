@@ -11,6 +11,7 @@
 #include <GTSL/Algorithm.h>
 #include <GTSL/Allocator.h>
 
+#include "Tasks.h"
 #include "ByteEngine/Debug/Assert.h"
 
 class GameInstance : public Object
@@ -20,7 +21,8 @@ public:
 	virtual ~GameInstance();
 	
 	virtual void OnUpdate();
-	
+	ThreadPool* GetThreadPool() { return &threadPool; }
+
 	using WorldReference = uint8;
 
 	template<typename T>
@@ -57,28 +59,21 @@ public:
 
 	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
 	class System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
-
-	struct TaskInfo
-	{
-	};
 	
-	enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
-
-	struct TaskDescriptor { GTSL::Id64 System; AccessType Access; };
-	
-	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<TaskDescriptor> actsOn, GTSL::Id64 doneFor);
+	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDescriptor> actsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
 
 	template<typename... ARGS>
 	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, GTSL::Ranger<TaskDescriptor> actsOn,
-		GTSL::Id64 doneFor, GTSL::Id64 dependsOn = 0ULL, ARGS&&... args)
+	                    const GTSL::Id64 doneFor, GTSL::Id64 dependsOn, ARGS&&... args)
 	{
 		auto task_info = GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>::Create<DynamicTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);
 		
 		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
 		{
-			auto& info = (GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>&)(gameInstance->dynamicTasksInfo[i]);
+			GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>& info = reinterpret_cast<GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>&>(gameInstance->dynamicTasksInfo[i]);
 			GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
+			info.Free<DynamicTaskInfo<TaskInfo, ARGS...>>();
 			gameInstance->dynamicTasksInfo.Pop(i);
 		};
 
@@ -91,7 +86,7 @@ public:
 			GTSL::ReadLock lock(goalNamesMutex);
 			
 			for (auto goal_name : goalNames) { if (goal_name == doneFor) break; ++i; }
-			BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!");
+			//BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!");
 		}
 		
 		//dynamicGoalsMutex.ReadLock();
@@ -150,7 +145,7 @@ private:
 		{
 		}
 
-		void AddTask(GTSL::Id64 name, const GTSL::Ranger<TaskDescriptor> taskDescriptors, TaskType delegate)
+		void AddTask(GTSL::Id64 name, const GTSL::Ranger<const TaskDescriptor> taskDescriptors, TaskType delegate)
 		{
 			names.EmplaceBack(name); descriptors.PushBack(taskDescriptors); tasks.EmplaceBack(delegate);
 		}
@@ -215,11 +210,11 @@ private:
 	void initCollection(ComponentCollection* collection);
 	void initSystem(System* system, GTSL::Id64 name);
 
-	static bool canInsert(const ParallelTasks& parallelTasks, GTSL::Ranger<TaskDescriptor> actsOn)
+	static bool canInsert(const ParallelTasks& parallelTasks, GTSL::Ranger<const TaskDescriptor> actsOn)
 	{
 		for (const auto& task_descriptor : parallelTasks.GetTaskDescriptors())
 		{
-			for (auto& e : actsOn)
+			for (const auto& e : actsOn)
 			{
 				if (task_descriptor.System == e.System && (task_descriptor.Access == AccessType::READ_WRITE || e.Access == AccessType::READ_WRITE)) { return false; }
 			}

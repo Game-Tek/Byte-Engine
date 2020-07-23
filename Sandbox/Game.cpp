@@ -11,7 +11,7 @@ void Game::Initialize()
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
-	gameInstance = GTSL::SmartPointer<GameInstance, BE::PersistentAllocatorReference>::Create<SandboxGameInstance>(GetPersistentAllocator());
+	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
 	auto mo = [&](InputManager::ActionInputEvent a)

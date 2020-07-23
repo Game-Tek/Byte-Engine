@@ -76,7 +76,7 @@ void GameInstance::OnUpdate()
 	dynamicGoals = nullptr;
 }
 
-void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<TaskDescriptor> actsOn, const GTSL::Id64 doneFor)
+void GameInstance::AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDescriptor> actsOn, const GTSL::Id64 doneFor)
 {	
 	uint32 i = 0;
 	goalNamesMutex.ReadLock();

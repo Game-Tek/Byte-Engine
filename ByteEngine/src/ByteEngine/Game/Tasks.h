@@ -9,7 +9,7 @@ struct TaskInfo
 {
 };
 
-struct TaskDescriptor
+struct TaskDependency
 {
 	GTSL::Id64 System;
 	AccessType Access;

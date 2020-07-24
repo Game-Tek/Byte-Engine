@@ -46,7 +46,7 @@ public:
 
 		GTSL::Id64 DependsOn;
 		GTSL::Id64 DoneFor;
-		GTSL::Array<TaskDescriptor, 16> ActsOn;
+		GTSL::Array<TaskDependency, 16> ActsOn;
 	};
 
 	struct OnResourceLoad

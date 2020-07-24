@@ -64,18 +64,13 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	const auto load_info = new LoadInfo(addStaticMeshInfo.RenderSystem, scratch_buffer);
 	
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);
-	load_static_meshInfo.ActsOn = GTSL::Array<TaskDescriptor, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
+	load_static_meshInfo.ActsOn = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
-	CommandBuffer::CopyBuffersInfo copy_buffers_info;
-	
 	LoadInfo* load_info = DYNAMIC_CAST(LoadInfo, onStaticMeshLoad.UserData);
-	
-	copy_buffers_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	copy_buffers_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
 
 	uint32 offset = 0; DeviceMemory device_memory;
 	
@@ -91,11 +86,13 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	create_info.BufferType = (uint8)BufferType::VERTEX | (uint8)BufferType::INDEX | (uint8)BufferType::TRANSFER_DESTINATION;
 	Buffer device_buffer(create_info);
 	
-	copy_buffers_info.Destination = &device_buffer;
-	copy_buffers_info.DestinationOffset = offset;
-	copy_buffers_info.Source = &load_info->ScratchBuffer;
-	copy_buffers_info.SourceOffset = 0;
-	load_info->RenderSystem->GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info); //TODO: COPY SCRATCH BUFFERS FOR TRANSFER, DON'T KNOW WHEN TO DELETE
+	RenderSystem::BufferCopyData buffer_copy_data;
+	buffer_copy_data.SourceOffset = 0;
+	buffer_copy_data.DestinationOffset = 0;
+	buffer_copy_data.SourceBuffer = load_info->ScratchBuffer;
+	buffer_copy_data.DestinationBuffer = device_buffer;
+	buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
+	load_info->RenderSystem->AddBufferCopy(buffer_copy_data);
 	
 	meshBuffers.EmplaceBack(device_buffer);
 

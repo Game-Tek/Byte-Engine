@@ -1,9 +1,7 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
-#include <GTSL/Memory.h>
 #include <GTSL/Mutex.h>
-#include <GTSL/Math/Math.hpp>
 
 /**
  * \brief Allocates memory directly from the OS. Useful for all other allocators.

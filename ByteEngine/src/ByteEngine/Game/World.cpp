@@ -1,7 +1,5 @@
 #include "World.h"
 
-#include "ByteEngine/Application/Application.h"
-
 World::World()
 {
 }

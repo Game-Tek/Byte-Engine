@@ -142,7 +142,7 @@ void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
-	GTSL::Array<TaskDescriptor, 8> actsOn{ { "RenderSystem", AccessType::READ } };
+	GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ } };
 	//initializeInfo.GameInstance->AddTask(__FUNCTION__, GTSL::Delegate<void(const GameInstance::TaskInfo&)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "Frame");
 }
 
@@ -213,6 +213,43 @@ void RenderSystem::render(const TaskInfo& taskInfo)
 	renderContext.Present(present_info);
 
 	index = (index + 1) % swapchainImages.GetLength();
+}
+
+void RenderSystem::frameStart(TaskInfo taskInfo)
+{
+	auto range = transferredMeshes[index];
+	
+	if(transferFences[index].GetStatus(&renderDevice))
+	{
+		for(uint32 i = range.First; i < range.Second + 1; ++i)
+		{
+			bufferCopyDatas[i].SourceBuffer.Destroy(&renderDevice);
+			//DeallocateScratchBufferMemory(bufferCopyDatas[i].SourceBufferSize, bufferCopyDatas[i].SourceAllocationOffset);
+		}
+		//bufferCopyDatas.
+	}
+}
+
+void RenderSystem::executeTransfers(TaskInfo taskInfo)
+{
+	for(auto& e : bufferCopyDatas)
+	{
+		CommandBuffer::CopyBuffersInfo copy_buffers_info;
+		copy_buffers_info.RenderDevice = &renderDevice;
+		copy_buffers_info.Destination = &e.DestinationBuffer;
+		copy_buffers_info.DestinationOffset = e.DestinationOffset;
+		copy_buffers_info.Source = &e.SourceBuffer;
+		copy_buffers_info.SourceOffset = e.SourceOffset;
+		copy_buffers_info.Size = e.Size;
+		GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
+	}
+
+	Queue::SubmitInfo submit_info;
+	submit_info.RenderDevice = &renderDevice;
+	submit_info.Fence = &transferFences[index];
+	submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &transferCommandBuffers[index]);
+	submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(GAL::PipelineStage::TOP_OF_PIPE) };
+	transferQueue.Submit(submit_info);
 }
 
 void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const

@@ -1,8 +1,7 @@
 #pragma once
+
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
-
-#include <GTSL/DataSizes.h>
 
 #include "RendererAllocator.h"
 #include "RenderTypes.h"
@@ -46,6 +45,16 @@ public:
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
+
+	struct BufferCopyData
+	{
+		Buffer SourceBuffer, DestinationBuffer;
+		/* Offset from start of buffer.
+		 */
+		uint32 SourceOffset = 0, DestinationOffset = 0;
+		uint32 Size = 0;
+	};
+	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas.EmplaceBack(bufferCopyData); }
 	
 private:
 	RenderDevice renderDevice;
@@ -56,6 +65,8 @@ private:
 	
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> renderGroups;
 
+	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas;
+
 	RenderPass renderPass;
 	GTSL::Array<ImageView, 3> swapchainImages;
 	GTSL::Array<Semaphore, 3> imageAvailableSemaphore;
@@ -65,14 +76,19 @@ private:
 	GTSL::Array<CommandBuffer, 3> commandBuffers;
 	GTSL::Array<CommandPool, 3> commandPools;
 	
-	GTSL::Array<CommandPool, 3> transferCommandPools;
-	GTSL::Array<CommandBuffer, 3> transferCommandBuffers;
-	
 	GTSL::Array<FrameBuffer, 3> frameBuffers;
 
 	GTSL::Array<GTSL::RGBA, 3> clearValues;
 
+	GTSL::Array<Fence, 3> transferFences;
+
+	GTSL::Array<GTSL::Pair<uint32, uint32>, 3> transferredMeshes;
+	
 	Queue graphicsQueue;
+	
+	Queue transferQueue;
+	GTSL::Array<CommandPool, 3> transferCommandPools;
+	GTSL::Array<CommandBuffer, 3> transferCommandBuffers;
 
 	uint8 index = 0;
 
@@ -81,6 +97,9 @@ private:
 	uint32 swapchainColorSpace{ 0 };
 	
 	void render(const TaskInfo& taskInfo);
+
+	void frameStart(TaskInfo taskInfo);
+	void executeTransfers(TaskInfo taskInfo);
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
 	

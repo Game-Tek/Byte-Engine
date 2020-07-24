@@ -111,14 +111,11 @@ void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const ui
 
 void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	uint8 info = 0;
-	
-	uint32 i = 0;
+	uint8 info = 0; uint32 i = 0;
 
 	if (freeSpaces[0].Offset > offset) [[likely]]
 	{
 		size + offset == freeSpaces[0].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
-		++i;
 		goto SWITCH;
 	}
 

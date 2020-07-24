@@ -64,7 +64,7 @@ public:
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
 
 	template<typename... ARGS>
-	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, GTSL::Ranger<TaskDescriptor> actsOn,
+	void AddDynamicTask(GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, GTSL::Ranger<const TaskDescriptor> actsOn,
 	                    const GTSL::Id64 doneFor, GTSL::Id64 dependsOn, ARGS&&... args)
 	{
 		auto task_info = GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>::Create<DynamicTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);

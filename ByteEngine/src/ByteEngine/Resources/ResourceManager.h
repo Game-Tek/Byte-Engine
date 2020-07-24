@@ -44,9 +44,9 @@ public:
 		 */
 		class GameInstance* GameInstance = nullptr;
 
-		GTSL::Id64 ActsOn;
 		GTSL::Id64 DependsOn;
-		GTSL::Array<TaskDescriptor, 16> TaskDescriptors;
+		GTSL::Id64 DoneFor;
+		GTSL::Array<TaskDescriptor, 16> ActsOn;
 	};
 
 	struct OnResourceLoad

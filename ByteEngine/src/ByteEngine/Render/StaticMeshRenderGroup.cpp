@@ -61,9 +61,10 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
 	load_static_meshInfo.IndicesAlignment = alignment;
 
-	const auto load_info = new LoadInfo((RenderSystem*)addStaticMeshInfo.RenderSystem, scratch_buffer);
+	const auto load_info = new LoadInfo(addStaticMeshInfo.RenderSystem, scratch_buffer);
 	
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);
+	load_static_meshInfo.ActsOn = GTSL::Array<TaskDescriptor, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 }
 
@@ -94,7 +95,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	copy_buffers_info.DestinationOffset = offset;
 	copy_buffers_info.Source = &load_info->ScratchBuffer;
 	copy_buffers_info.SourceOffset = 0;
-	load_info->RenderSystem->GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
+	load_info->RenderSystem->GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info); //TODO: COPY SCRATCH BUFFERS FOR TRANSFER, DON'T KNOW WHEN TO DELETE
 	
 	meshBuffers.EmplaceBack(device_buffer);
 

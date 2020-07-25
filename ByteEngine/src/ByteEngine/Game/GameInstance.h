@@ -1,7 +1,6 @@
 #pragma once
 
 #include "World.h"
-#include "ByteEngine/Application/ThreadPool.h"
 
 #include <GTSL/Delegate.hpp>
 #include <GTSL/FlatHashMap.h>
@@ -21,7 +20,6 @@ public:
 	virtual ~GameInstance();
 	
 	virtual void OnUpdate();
-	ThreadPool* GetThreadPool() { return &threadPool; }
 
 	using WorldReference = uint8;
 
@@ -112,8 +110,6 @@ private:
 	
 	using TaskType = GTSL::Delegate<void(TaskInfo)>;
 	
-	ThreadPool threadPool;
-	
 	GTSL::ReadWriteMutex goalsMutex;
 	GTSL::Vector<Goal<TaskType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> goals;
 
@@ -135,13 +131,13 @@ private:
 	template<typename T, class ALLOCATOR>
 	static bool canInsert(const Goal<T, ALLOCATOR>& goal1, const Goal<T, ALLOCATOR>& goal2, uint32 taskN)
 	{
-		for (const auto& task_descriptor : parallelTasks.GetTaskDescriptors())
-		{
-			for (const auto& e : actsOn)
-			{
-				if (task_descriptor.System == e.AccessedObject && (task_descriptor.Access == AccessType::READ_WRITE || e.Access == AccessType::READ_WRITE)) { return false; }
-			}
-		}
+		//for (const auto& task_descriptor : parallelTasks.GetTaskDescriptors())
+		//{
+		//	for (const auto& e : actsOn)
+		//	{
+		//		if (task_descriptor.System == e.AccessedObject && (task_descriptor.Access == AccessType::READ_WRITE || e.Access == AccessType::READ_WRITE)) { return false; }
+		//	}
+		//}
 
 		return true;
 	}

@@ -1,5 +1,8 @@
 #include "SystemAllocator.h"
 
+#include <GTSL/Memory.h>
+#include <GTSL/Math/Math.hpp>
+
 void SystemAllocator::Allocate(const uint64 size, const uint64 alignment, void** data)
 {
 	const uint64 allocated_size{ GTSL::Math::PowerOf2RoundUp(size, static_cast<uint32>(alignment)) };

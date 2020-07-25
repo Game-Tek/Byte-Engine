@@ -4,7 +4,6 @@
 #include <GTSL/Math/Math.hpp>
 #include <new>
 
-#include "Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
 PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(18), systemAllocatorReference(allocatorReference)

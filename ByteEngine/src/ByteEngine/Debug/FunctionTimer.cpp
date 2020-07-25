@@ -2,6 +2,7 @@
 
 #include "Logger.h"
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/Clock.h"
 
 #undef GetCurrentTime
 

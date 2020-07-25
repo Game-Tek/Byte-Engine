@@ -2,7 +2,6 @@
 
 #include "RenderStaticMeshCollection.h"
 #include "RenderSystem.h"
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/GameInstance.h"
 
 class RenderStaticMeshCollection;

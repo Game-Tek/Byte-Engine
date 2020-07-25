@@ -2,6 +2,7 @@
 
 #include "ByteEngine/Core.h"
 #include <GTSL/Id.h>
+#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -48,7 +49,7 @@ struct Goal
 		auto res = taskNames.Find(name);
 		BE_ASSERT(res != taskNames.end(), "No task by that name");
 
-		uint32 i = res - taskNames.begin();
+		uint32 i = static_cast<uint32>(res - taskNames.begin());
 		
 		taskAccessedObjects.Pop(i);
 		taskAccessTypes.Pop(i);
@@ -57,41 +58,43 @@ struct Goal
 		tasks.Pop(i);
 	}
 
+	void GetTask(TASK& task, const uint32 i) { task = tasks[i]; }
+
 private:
 	GTSL::Vector<GTSL::Vector<GTSL::Id64, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
 	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> taskAccessTypes;
-	GTSL::Vector<GTSL::Vector<GTSL::Id64, ALLOCATOR>, ALLOCATOR> taskGoals;
+	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskGoals;
 	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskNames;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 };
 
-template<class ALLOCATOR>
-struct ParallelTasks
-{
-	explicit ParallelTasks(const BE::PersistentAllocatorReference& allocatorReference) : names(8, allocatorReference), taskDependencies(8, allocatorReference),
-		tasks(8, allocatorReference)
-	{
-	}
-
-	void AddTask(GTSL::Id64 name, const GTSL::Ranger<const TaskDependency> taskDescriptors, TaskType delegate)
-	{
-		names.EmplaceBack(name); taskDependencies.PushBack(taskDescriptors); tasks.EmplaceBack(delegate);
-	}
-
-	void RemoveTask(const uint32 i)
-	{
-		taskDependencies.Pop(i); tasks.Pop(i); names.Pop(i);
-	}
-
-	TaskType& operator[](const uint32 i) { return tasks[i]; }
-
-	[[nodiscard]] GTSL::Ranger<TaskType> GetTasks() const { return tasks; }
-	[[nodiscard]] GTSL::Ranger<GTSL::Id64> GetTaskNames() const { return names; }
-	[[nodiscard]] GTSL::Ranger<TaskDependency> GetTaskDescriptors() const { return taskDependencies; }
-
-	[[nodiscard]] const TaskType* begin() const { return tasks.begin(); }
-	[[nodiscard]] const TaskType* end() const { return tasks.end(); }
-
-private:
-	GTSL::Vector<TaskDependency, BE::PersistentAllocatorReference> taskDependencies;
-};
+//template<class ALLOCATOR>
+//struct ParallelTasks
+//{
+//	explicit ParallelTasks(const BE::PersistentAllocatorReference& allocatorReference) : names(8, allocatorReference), taskDependencies(8, allocatorReference),
+//		tasks(8, allocatorReference)
+//	{
+//	}
+//
+//	void AddTask(GTSL::Id64 name, const GTSL::Ranger<const TaskDependency> taskDescriptors, TaskType delegate)
+//	{
+//		names.EmplaceBack(name); taskDependencies.PushBack(taskDescriptors); tasks.EmplaceBack(delegate);
+//	}
+//
+//	void RemoveTask(const uint32 i)
+//	{
+//		taskDependencies.Pop(i); tasks.Pop(i); names.Pop(i);
+//	}
+//
+//	TaskType& operator[](const uint32 i) { return tasks[i]; }
+//
+//	[[nodiscard]] GTSL::Ranger<TaskType> GetTasks() const { return tasks; }
+//	[[nodiscard]] GTSL::Ranger<GTSL::Id64> GetTaskNames() const { return names; }
+//	[[nodiscard]] GTSL::Ranger<TaskDependency> GetTaskDescriptors() const { return taskDependencies; }
+//
+//	[[nodiscard]] const TaskType* begin() const { return tasks.begin(); }
+//	[[nodiscard]] const TaskType* end() const { return tasks.end(); }
+//
+//private:
+//	GTSL::Vector<TaskDependency, BE::PersistentAllocatorReference> taskDependencies;
+//};

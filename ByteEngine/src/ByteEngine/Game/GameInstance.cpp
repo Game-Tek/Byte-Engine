@@ -1,12 +1,12 @@
 #include "GameInstance.h"
 
-#include "ByteEngine/Application/Application.h"
-
 #include "ComponentCollection.h"
 
 #include "System.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
+
+#include <GTSL/Semaphore.h>
 
 using namespace GTSL;
 
@@ -45,10 +45,11 @@ void GameInstance::OnUpdate()
 		for (auto& e : semaphores)
 		{
 			e.Initialize(128, GetTransientAllocator());
+			for (uint8 i = 0; i < 128; ++i) { e.EmplaceBack(); }
 		}
 	}
 
-	uint32 task_n = 0, goal_n = 0; const TaskInfo task_info;
+	uint32 task_n = 0, goal_n = 0; [[maybe_unused]] const TaskInfo task_info;
 	
 	for(auto& goal : dynamic_goals)
 	{
@@ -92,7 +93,7 @@ void GameInstance::AddGoal(Id64 name)
 {
 	{
 		WriteLock lock(goalsMutex);
-		goals.EmplaceBack(GetPersistentAllocator());
+		goals.EmplaceBack(16, GetPersistentAllocator());
 	}
 
 	{
@@ -105,7 +106,7 @@ void GameInstance::popDynamicTask(DynamicTaskFunctionType& dynamicTaskFunction, 
 {
 	WriteLock lock(newDynamicTasks);
 	i = dynamicGoals.GetLength() - 1;
-	dynamicTaskFunction = dynamicGoals.back();
+	dynamicGoals.back().GetTask(dynamicTaskFunction, i);
 	dynamicGoals.PopBack();
 }
 

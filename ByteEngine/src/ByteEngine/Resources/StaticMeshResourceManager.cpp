@@ -3,15 +3,17 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-#include <GTSL/Buffer.h>
-
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
-#include <GAL/RenderCore.h>
 
+#include <GTSL/Buffer.h>
+#include <GAL/RenderCore.h>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
+#include <GTSL/Math/Math.hpp>
+
+#include "ByteEngine/Game/GameInstance.h"
 
 StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
 {

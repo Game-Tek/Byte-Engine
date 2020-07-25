@@ -50,6 +50,8 @@ namespace BE
 
 		TransientAllocatorReference(const TransientAllocatorReference& reference) : BEAllocatorReference(reference.Name, reference.IsDebugAllocation) {}
 		TransientAllocatorReference(TransientAllocatorReference&& reference) = default;
+
+		TransientAllocatorReference& operator=(const TransientAllocatorReference& allocatorReference) = default;
 		
 		TransientAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{

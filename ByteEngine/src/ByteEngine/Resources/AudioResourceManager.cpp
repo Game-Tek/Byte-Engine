@@ -4,9 +4,10 @@
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
 
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 #include <AAL/AudioCore.h>
+
+#include "ByteEngine/Application/Application.h"
 
 AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator())
 {

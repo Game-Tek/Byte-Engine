@@ -169,5 +169,6 @@
     <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RendererAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Object.cpp" />
   </ItemGroup>
 </Project>

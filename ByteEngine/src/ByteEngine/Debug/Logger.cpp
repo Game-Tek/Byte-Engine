@@ -1,6 +1,8 @@
 #include "Logger.h"
 
-#include "ByteEngine/Application/Application.h"
+#include <cstdio>
+
+
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 

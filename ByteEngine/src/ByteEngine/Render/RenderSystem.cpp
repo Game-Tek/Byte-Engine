@@ -3,7 +3,6 @@
 #include <GTSL/Window.h>
 #include <Windows.h>
 
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/ComponentCollection.h"
 #include "ByteEngine/Debug/Assert.h"
 

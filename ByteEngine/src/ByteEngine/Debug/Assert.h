@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Logger.h"
 
 //Assert

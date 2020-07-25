@@ -7,21 +7,22 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/String.hpp>
 
-#include "Clock.h"
-
 #include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 
-#include "ByteEngine/Debug/Logger.h"
-#include "ByteEngine/Resources/ResourceManager.h"
-
+class ResourceManager;
+class GameInstance;
 class InputManager;
+class ThreadPool;
+class Clock;
 
-#include "ByteEngine/Game/GameInstance.h"
+#undef ERROR
 
 namespace BE
 {	
+	class Logger;
+	
 	/**
 	 * \brief Defines all the data necessary to startup a GameStudio application instance.
 	 */
@@ -92,39 +93,17 @@ namespace BE
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		ResourceManager* GetResourceManager(const GTSL::Id64 name) { return resourceManagers.At(name); }
+		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() { return &poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
-#ifdef BE_DEBUG
-#define BE_LOG_SUCCESS(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
-#define BE_LOG_MESSAGE(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
-#define BE_LOG_WARNING(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
-#define BE_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
-#define BE_LOG_LEVEL( Level)		BE::Application::Get()->GetLogger()->SetMinLogLevel(Level);
-
-#define BE_BASIC_LOG_SUCCESS(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
-#define BE_BASIC_LOG_MESSAGE(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
-#define BE_BASIC_LOG_WARNING(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
-#define BE_BASIC_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
-#else
-#define BE_LOG_SUCCESS(Text, ...)
-#define BE_LOG_MESSAGE(Text, ...)
-#define BE_LOG_WARNING(Text, ...)
-#define BE_LOG_ERROR(Text, ...)
-#define BE_LOG_LEVEL(_Level)
-#define BE_BASIC_LOG_SUCCESS(Text, ...)	
-#define BE_BASIC_LOG_MESSAGE(Text, ...)	
-#define BE_BASIC_LOG_WARNING(Text, ...)	
-#define BE_BASIC_LOG_ERROR(Text, ...)	
-#endif
-
 	protected:
-		GTSL::SmartPointer<Logger, BE::SystemAllocatorReference> logger;
-		GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference> gameInstance;
+		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
+		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;
 
-		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>, BE::SystemAllocatorReference> resourceManagers;
+		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };
@@ -135,6 +114,7 @@ namespace BE
 
 		Clock* clockInstance{ nullptr };
 		InputManager* inputManagerInstance{ nullptr };
+		ThreadPool* threadPool = nullptr;
 
 		UpdateContext updateContext{ UpdateContext::NORMAL };
 

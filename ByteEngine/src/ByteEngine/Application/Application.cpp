@@ -1,17 +1,23 @@
-#include "Application.h"
-
+#include "ByteEngine/Application/Application.h"
 
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
 
-#include "ByteEngine/Resources/AudioResourceManager.h"
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Application/ThreadPool.h"
+#include "ByteEngine/Application/Clock.h"
+
+#include "ByteEngine/Resources/ResourceManager.h"
+
+#include "ByteEngine/Game/GameInstance.h"
+
 #include "ByteEngine/Debug/FunctionTimer.h"
+#include "ByteEngine/Debug/Logger.h"
 
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
 {
-	BE_BASIC_LOG_ERROR("GTSL ASSERT: ", text, ' ', "Line: ", line, ' ', "File: ", file, ' ', "Function: ", function);
+	//BE_BASIC_LOG_ERROR("GTSL ASSERT: ", text, ' ', "Line: ", line, ' ', "File: ", file, ' ', "Function: ", function);
 }
 #endif
 
@@ -44,6 +50,7 @@ namespace BE
 		
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
+		threadPool = new ThreadPool();
 		
 		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
 	}

@@ -2,8 +2,6 @@
 
 #include <GTSL/Math/Vector2.h>
 
-#include "Application.h"
-
 InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
 characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
 linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()),

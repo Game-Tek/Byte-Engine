@@ -8,6 +8,9 @@
 
 #include <GTSL/Semaphore.h>
 
+#include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/ThreadPool.h"
+
 using namespace GTSL;
 
 GameInstance::GameInstance() : worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
@@ -24,13 +27,11 @@ GameInstance::~GameInstance()
 	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }
 }
 
-void GameInstance::OnUpdate()
+void GameInstance::OnUpdate(BE::Application* application)
 {
 	PROFILE;
-
-	{
-		ReadLock lock(goalsMutex);
-	}
+	
+	TaskSorter<BE::TAR> task_sorter(32, GetTransientAllocator());
 	
 	Vector<Goal<TaskType, BE::TAR>, BE::TAR> dynamic_goals(32, GetTransientAllocator());
 	{
@@ -48,28 +49,64 @@ void GameInstance::OnUpdate()
 			for (uint8 i = 0; i < 128; ++i) { e.EmplaceBack(); }
 		}
 	}
-
-	uint32 task_n = 0, goal_n = 0; [[maybe_unused]] const TaskInfo task_info;
+	
+	TaskInfo task_info; task_info.GameInstance = this;
+	
+	uint16 goal_n = 0;
+	uint16 goal_number_of_tasks;
 	
 	for(auto& goal : dynamic_goals)
 	{
+		goal.GetNumberOfTasks(goal_number_of_tasks);
+		
 		for (auto& semaphore : semaphores[goal_n]) { semaphore.Wait(); }
+
+		uint16 i = goal_number_of_tasks;
+		
+		while(i != 0)
+		{
+			bool can_run = false;
+			Ranger<const uint16> accessed_objects; Ranger<const AccessType> access_types;
+			goal.GetTaskAccessedObjects(i, accessed_objects); goal.GetTaskAccessTypes(i, access_types);
+			
+			task_sorter.CanRunTask(can_run, accessed_objects, access_types);
+
+			Delegate<void(void)> test;
+			Tuple<> test_args;
+			
+			TaskType task; goal.GetTask(task, i);
+			application->GetThreadPool()->EnqueueTask(task, test, &semaphores[goal_n][i], MakeTransferReference(test_args), task_info);
+
+			--i;
+		}
 		
 		++goal_n;
 	}
 }
 
-void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, const Ranger<const TaskDependency> actsOn, const Id64 doneFor)
-{	
-	uint32 i = 0;
-	
-	goalNamesMutex.ReadLock();
-	for (auto goal_name : goalNames) { if (goal_name == doneFor) break; ++i; }
-	BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
-	goalNamesMutex.ReadUnlock();
-	
+void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, Ranger<const TaskDependency> actsOn, const Id64 startsOn, const Id64 doneFor)
+{
+	Array<uint16, 32> objects;
+	objects.Resize(actsOn.ElementCount());
+	Array<AccessType, 32> accesses;
+	accesses.Resize(actsOn.ElementCount());
+
+	uint16 goal_index = 0;
+
+	{
+		ReadLock lock(goalNamesMutex);
+
+		for (uint16 i = 0; i < static_cast<uint16>(actsOn.ElementCount()); ++i)
+		{
+			getGoalIndex((actsOn + i)->AccessedObject, objects[i]);
+			accesses[i] = (actsOn + i)->Access;
+		}
+
+		getGoalIndex(startsOn, goal_index);
+	}
+
 	goalsMutex.WriteLock();
-	goals[i].AddTask(name, function, actsOn, doneFor, GetPersistentAllocator());
+	goals[goal_index].AddTask(name, function, objects, accesses, doneFor, GetPersistentAllocator());
 	goalsMutex.WriteUnlock();
 }
 

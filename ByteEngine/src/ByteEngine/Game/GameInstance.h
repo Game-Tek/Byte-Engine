@@ -1,7 +1,5 @@
 #pragma once
 
-#include "World.h"
-
 #include <GTSL/Delegate.hpp>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Id.h>
@@ -11,7 +9,13 @@
 #include <GTSL/Allocator.h>
 
 #include "Tasks.h"
+#include "World.h"
+
 #include "ByteEngine/Debug/Assert.h"
+
+namespace BE {
+	class Application;
+}
 
 class GameInstance : public Object
 {
@@ -19,7 +23,7 @@ public:
 	GameInstance();
 	virtual ~GameInstance();
 	
-	virtual void OnUpdate();
+	void OnUpdate(BE::Application* application);
 
 	using WorldReference = uint8;
 
@@ -58,7 +62,7 @@ public:
 	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
 	class System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
 	
-	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 doneFor);
+	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 startsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
 
 	template<typename... ARGS>
@@ -79,7 +83,7 @@ public:
 
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
-			for (auto goal_name : goalNames) { if (goal_name == doneFor) break; ++i; }
+			for (auto goal_name : goalNames) { if (goal_name == startOn) break; ++i; }
 			//BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!");
 		}
 
@@ -128,6 +132,13 @@ private:
 	void initCollection(ComponentCollection* collection);
 	void initSystem(System* system, GTSL::Id64 name);
 
+	void getGoalIndex(const GTSL::Id64 name, uint16& goal)
+	{
+		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
+		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
+		goal = i;
+	}
+	
 	template<typename T, class ALLOCATOR>
 	static bool canInsert(const Goal<T, ALLOCATOR>& goal1, const Goal<T, ALLOCATOR>& goal2, uint32 taskN)
 	{

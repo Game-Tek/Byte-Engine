@@ -30,9 +30,9 @@ public:
 					if (pool->queues[(i + n) % threadCount].TryPop(task)) { break; }
 				}
 
-				if (!task.First && !pool->queues[i].Pop(task)) { break;	}
+				if (!GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task) && !pool->queues[i].Pop(task)) { break;	}
 				
-				task.First(task.Second);
+				GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(&task);
 			}
 		};
 
@@ -51,18 +51,24 @@ public:
 		for (auto& thread : threads) { thread.Join(); }
 	}
 
-	template<typename F, typename... ARGS>
-	void EnqueueTask(const GTSL::Delegate<F>& delegate, GTSL::Semaphore* semaphore, ARGS&&... args)
+	template<typename F, typename P, typename... ARGS, typename... PARGS>
+	void EnqueueTask(const GTSL::Delegate<F>& task, const GTSL::Delegate<P>& post_task, GTSL::Semaphore* semaphore, GTSL::Tuple<PARGS...>&& post_args, ARGS&&... args)
 	{
-		auto task = new TaskInfo<F, ARGS...>(delegate, semaphore, GTSL::MakeForwardReference<ARGS>(args)...);
-		
+		auto task_info = new TaskInfo<F, ARGS...>(task, semaphore, GTSL::MakeForwardReference<ARGS>(args)...);
+		auto post_task_info = new TaskInfo<P, PARGS...>(post_task, nullptr, GTSL::MakeTransferReference(post_args));
+
 		auto work = [](void* voidTask)
 		{
-			TaskInfo<F, ARGS...>* task = static_cast<TaskInfo<F, ARGS...>*>(voidTask);
-			GTSL::Thread::Call<F, ARGS...>(task->Delegate, task->Arguments);
-			task->Semaphore->Post();
+			Tasks* task = static_cast<Tasks*>(voidTask);
+			TaskInfo<F, ARGS...>* task_info = static_cast<TaskInfo<F, ARGS...>*>(GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(*task));
+			TaskInfo<P, PARGS...>* post_task_info = static_cast<TaskInfo<P, PARGS...>*>(GTSL::Get<TUPLE_LAMBDA_POST_TASK_INDEX>(*task));
+			
+			GTSL::Thread::Call(task_info->Delegate, task_info->Arguments);
+			task_info->Semaphore->Post();
+			GTSL::Thread::Call(post_task_info->Delegate, post_task_info->Arguments);
 
-			delete task;
+			delete task_info;
+			delete post_task_info;
 		};
 		
 		const auto current_index = ++index;
@@ -71,17 +77,21 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), task))) { return; }
+			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), task_info, post_task_info))) { return; }
 		}
 
-		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), task));
+		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), task_info, post_task_info));
 	}
 
 private:
 	inline const static uint8 threadCount{ static_cast<uint8>(GTSL::Thread::ThreadCount() - 1) };
 	GTSL::Atomic<uint32> index{ 0 };
 
-	using Tasks = GTSL::Pair<GTSL::Delegate<void(void*)>, void*>;
+	static constexpr uint8 TUPLE_LAMBDA_DELEGATE_INDEX = 0;
+	static constexpr uint8 TUPLE_LAMBDA_TASK_INFO_INDEX = 1;
+	static constexpr uint8 TUPLE_LAMBDA_POST_TASK_INDEX = 2;
+	
+	using Tasks = GTSL::Tuple<GTSL::Delegate<void(void*)>, void*, void*>;
 	
 	GTSL::Array<GTSL::BlockingQueue<Tasks>, 64> queues;
 	GTSL::Array<GTSL::Thread, 64> threads;

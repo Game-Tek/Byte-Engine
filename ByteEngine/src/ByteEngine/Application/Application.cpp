@@ -87,6 +87,7 @@ namespace BE
 		case UpdateContext::NORMAL:
 		{
 			inputManagerInstance->Update();
+			gameInstance->OnUpdate(this);
 		} break;
 		
 		case UpdateContext::BACKGROUND:

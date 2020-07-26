@@ -26,7 +26,7 @@ public:
 		return BE::PersistentAllocatorReference(GetName());
 	}
 
-	[[nodiscard]] BE::TransientAllocatorReference	 GetTransientAllocator() const
+	[[nodiscard]] BE::TransientAllocatorReference GetTransientAllocator() const
 	{
 		return BE::TransientAllocatorReference(GetName());
 	}

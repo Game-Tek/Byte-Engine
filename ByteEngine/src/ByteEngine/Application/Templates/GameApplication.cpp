@@ -60,9 +60,7 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	switch (updateInfo.UpdateContext)
 	{
 		case UpdateContext::NORMAL:
-		{
-			gameInstance->OnUpdate();
-				
+		{		
 			bool connected;
 			GTSL::GamepadQuery::Update(gamepad, connected, 0);
 		} break;

@@ -54,17 +54,17 @@ public:
 	template<typename F, typename P, typename... ARGS, typename... PARGS>
 	void EnqueueTask(const GTSL::Delegate<F>& task, const GTSL::Delegate<P>& post_task, GTSL::Semaphore* semaphore, GTSL::Tuple<PARGS...>&& post_args, ARGS&&... args)
 	{
-		auto task_info = new TaskInfo<F, ARGS...>(task, semaphore, GTSL::MakeForwardReference<ARGS>(args)...);
-		auto post_task_info = new TaskInfo<P, PARGS...>(post_task, nullptr, GTSL::MakeTransferReference(post_args));
+		TaskInfo<F, ARGS...>* task_info = new TaskInfo<F, ARGS...>(task, GTSL::MakeForwardReference<ARGS>(args)...);
+		TaskInfo<P, PARGS...>* post_task_info = new TaskInfo<P, PARGS...>(post_task, GTSL::MakeTransferReference(post_args));
 
-		auto work = [](void* voidTask)
+		auto work = [](void* voidTask) -> void
 		{
 			Tasks* task = static_cast<Tasks*>(voidTask);
 			TaskInfo<F, ARGS...>* task_info = static_cast<TaskInfo<F, ARGS...>*>(GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(*task));
 			TaskInfo<P, PARGS...>* post_task_info = static_cast<TaskInfo<P, PARGS...>*>(GTSL::Get<TUPLE_LAMBDA_POST_TASK_INDEX>(*task));
 			
 			GTSL::Thread::Call(task_info->Delegate, task_info->Arguments);
-			task_info->Semaphore->Post();
+			static_cast<GTSL::Semaphore*>(GTSL::Get<TUPLE_SEMAPHORE_INDEX>(*task))->Post();
 			GTSL::Thread::Call(post_task_info->Delegate, post_task_info->Arguments);
 
 			delete task_info;
@@ -77,10 +77,10 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), task_info, post_task_info))) { return; }
+			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MakeTransferReference((void*)task_info), GTSL::MakeTransferReference((void*)post_task_info), GTSL::MakeTransferReference(semaphore)))) { return; }
 		}
 
-		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), task_info, post_task_info));
+		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MakeTransferReference((void*)task_info), GTSL::MakeTransferReference((void*)post_task_info), GTSL::MakeTransferReference(semaphore)));
 	}
 
 private:
@@ -90,8 +90,9 @@ private:
 	static constexpr uint8 TUPLE_LAMBDA_DELEGATE_INDEX = 0;
 	static constexpr uint8 TUPLE_LAMBDA_TASK_INFO_INDEX = 1;
 	static constexpr uint8 TUPLE_LAMBDA_POST_TASK_INDEX = 2;
+	static constexpr uint8 TUPLE_SEMAPHORE_INDEX = 3;
 	
-	using Tasks = GTSL::Tuple<GTSL::Delegate<void(void*)>, void*, void*>;
+	using Tasks = GTSL::Tuple<GTSL::Delegate<void(void*)>, void*, void*, GTSL::Semaphore*>;
 	
 	GTSL::Array<GTSL::BlockingQueue<Tasks>, 64> queues;
 	GTSL::Array<GTSL::Thread, 64> threads;
@@ -99,13 +100,16 @@ private:
 	template<typename T, typename... ARGS>
 	struct TaskInfo
 	{
-		TaskInfo(const GTSL::Delegate<T>& delegate, GTSL::Semaphore* semaphore, ARGS&&... args) : Delegate(delegate), Semaphore(semaphore), Arguments(GTSL::MakeForwardReference<ARGS>(args)...)
+		TaskInfo(const GTSL::Delegate<T>& delegate, GTSL::Tuple<ARGS...>&& args) : Delegate(delegate), Arguments(GTSL::MakeTransferReference(args))
+		{
+		}
+
+		TaskInfo(const GTSL::Delegate<T>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::MakeForwardReference<ARGS>(args)...)
 		{
 		}
 		
 		GTSL::Delegate<T> Delegate;
 		GTSL::Tuple<ARGS...> Arguments;
-		GTSL::Semaphore* Semaphore = nullptr;
 	};
 	/**
 	 * \brief Number of times to loop around the queues to find one that is free.

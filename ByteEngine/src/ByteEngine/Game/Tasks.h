@@ -114,7 +114,7 @@ struct TaskSorter
 	{
 		for (uint32 i = 0; i < objects.ElementCount(); ++i)
 		{
-			if (currentObjectAccessState[objects[i]] == AccessType::READ_WRITE) { can = false; return; }
+			if (currentObjectAccessState[objects[i]] == (uint8)AccessType::READ_WRITE) { can = false; return; }
 		}
 	}
 	
@@ -132,6 +132,10 @@ struct TaskSorter
 				//goto next task, and put this pending
 			}
 		}
+	}
+
+	void UpdateResources(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
+	{
 	}
 	
 private:

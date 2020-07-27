@@ -44,8 +44,9 @@ public:
 		 */
 		class GameInstance* GameInstance = nullptr;
 
-		GTSL::Id64 DependsOn;
+		GTSL::Id64 StartOn;
 		GTSL::Id64 DoneFor;
+		
 		GTSL::Array<TaskDependency, 16> ActsOn;
 	};
 

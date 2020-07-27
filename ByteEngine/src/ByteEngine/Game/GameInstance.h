@@ -79,17 +79,19 @@ public:
 			gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
 		};
 
-		uint32 i = 0;
+		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
+		uint16 i = 0;
+		
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
-			for (auto goal_name : goalNames) { if (goal_name == startOn) break; ++i; }
-			//BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!");
+			decomposeTaskDescriptor(dependencies, objects, accesses);
+			getGoalIndex(startOn, i);
 		}
-
+		
 		{
 			GTSL::WriteLock lock(newDynamicTasks);
-			dynamicGoals[i].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), dependencies, doneFor, GetPersistentAllocator());
+			dynamicGoals[i].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -139,17 +141,15 @@ private:
 		goal = i;
 	}
 	
-	template<typename T, class ALLOCATOR>
-	static bool canInsert(const Goal<T, ALLOCATOR>& goal1, const Goal<T, ALLOCATOR>& goal2, uint32 taskN)
+	template<uint32 N>
+	void decomposeTaskDescriptor(GTSL::Ranger<const TaskDependency> taskDependencies, GTSL::Array<uint16, N>& object, GTSL::Array<AccessType, N>& access)
 	{
-		//for (const auto& task_descriptor : parallelTasks.GetTaskDescriptors())
-		//{
-		//	for (const auto& e : actsOn)
-		//	{
-		//		if (task_descriptor.System == e.AccessedObject && (task_descriptor.Access == AccessType::READ_WRITE || e.Access == AccessType::READ_WRITE)) { return false; }
-		//	}
-		//}
-
-		return true;
+		object.Resize(taskDependencies.ElementCount()); access.Resize(taskDependencies.ElementCount());
+		
+		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i)
+		{
+			getGoalIndex((taskDependencies + i)->AccessedObject, object[i]);
+			access[i] = (taskDependencies + i)->Access;
+		}
 	}
 };

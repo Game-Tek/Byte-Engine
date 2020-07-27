@@ -71,37 +71,36 @@ void GameInstance::OnUpdate(BE::Application* application)
 			
 			task_sorter.CanRunTask(can_run, accessed_objects, access_types);
 
-			Delegate<void(void)> test;
-			Tuple<> test_args;
-			
-			TaskType task; goal.GetTask(task, i);
-			application->GetThreadPool()->EnqueueTask(task, test, &semaphores[goal_n][i], MakeTransferReference(test_args), task_info);
+			auto on_done = [](const Array<uint16, 64>& objects, const Array<AccessType, 64>& accesses, decltype(task_sorter)* taskSorter) -> void
+			{
+				taskSorter->UpdateResources(objects, accesses);
+			};
 
-			--i;
+			if (can_run)
+			{
+				auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, decltype(task_sorter)*)>::Create(on_done);
+				Tuple<Array<uint16, 64>, Array<AccessType, 64>, decltype(task_sorter)*> test_args(accessed_objects, access_types, &task_sorter);
+
+				TaskType task; goal.GetTask(task, i);
+				application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[goal_n][i], MakeTransferReference(test_args), task_info);
+				
+				--i;
+			}
 		}
 		
 		++goal_n;
 	}
 }
 
-void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, Ranger<const TaskDependency> actsOn, const Id64 startsOn, const Id64 doneFor)
+void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, const Ranger<const TaskDependency> actsOn, const Id64 startsOn, const Id64 doneFor)
 {
-	Array<uint16, 32> objects;
-	objects.Resize(actsOn.ElementCount());
-	Array<AccessType, 32> accesses;
-	accesses.Resize(actsOn.ElementCount());
+	Array<uint16, 32> objects; Array<AccessType, 32> accesses;
 
 	uint16 goal_index = 0;
 
 	{
 		ReadLock lock(goalNamesMutex);
-
-		for (uint16 i = 0; i < static_cast<uint16>(actsOn.ElementCount()); ++i)
-		{
-			getGoalIndex((actsOn + i)->AccessedObject, objects[i]);
-			accesses[i] = (actsOn + i)->Access;
-		}
-
+		decomposeTaskDescriptor(actsOn, objects, accesses);
 		getGoalIndex(startsOn, goal_index);
 	}
 
@@ -112,11 +111,10 @@ void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> funct
 
 void GameInstance::RemoveTask(const Id64 name, const Id64 doneFor)
 {
-	uint32 i = 0;
+	uint16 i = 0;
 	{
 		ReadLock lock(goalNamesMutex);
-		for (auto goal_name : goalNames) { if (goal_name == doneFor) { break; } { ++i;	} }
-		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
+		getGoalIndex(name, i);
 	}
 	
 	goalsMutex.WriteLock();

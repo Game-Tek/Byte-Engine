@@ -64,7 +64,9 @@ struct Goal
 	void GetTaskAccessTypes(uint16 task, GTSL::Ranger<const AccessType>& accesses) { accesses = taskAccessTypes[task]; }
 	
 	void GetNumberOfTasks(uint16& numberOfStacks) { numberOfStacks = tasks.GetLength(); }
-
+	
+	void GetTaskGoal(const uint16 task, GTSL::Id64& goal) { goal = taskGoals[task]; }
+	
 private:
 	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
 	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> taskAccessTypes;
@@ -78,73 +80,48 @@ template<class ALLOCATOR>
 struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
-	tasksAccessedObjects(num, allocator), tasksAccessTypes(num, allocator)
-	{
-	}
-
-	/**
-	 * \brief Adds task to be scheduled.
-	 * \param num Number of preallocated task properties.
-	 * \param allocator Allocator reference for creation of new lists.
-	 * \param taskAccessedObjects Indices of the task accessed objects.
-	 * \param taskAccessTypes Access types of the tasks.
-	 */
-	void AddTask(uint32 num, const ALLOCATOR& allocator, 
-		const GTSL::Ranger<const uint16> taskAccessedObjects,
-		const GTSL::Ranger<const AccessType> taskAccessTypes, uint16 stack)
-	{
-		tasksAccessedObjects.EmplaceBack(num, allocator);
-		tasksAccessTypes.EmplaceBack(num, allocator);
-		
-		tasksAccessedObjects.back().PushBack(taskAccessedObjects);
-		tasksAccessTypes.back().PushBack(taskAccessTypes);
-
-		pendingTasks.Resize(pendingTasks.GetLength() + taskAccessedObjects.ElementCount());
-		uint32 i = pendingTasks.GetLength();
-		for (auto& e : pendingTasks) { e = i; ++i; }
-	}
-
-	void AddObjects(const uint32 i) { currentObjectAccessState.Resize(currentObjectAccessState.GetLength() + i); }
-	
-	void RemoveTask(const uint32 i)
+	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator)
 	{
 	}
 
 	void CanRunTask(bool& can, const GTSL::Ranger<const uint16>& objects, const GTSL::Ranger<const AccessType>& accesses)
 	{
-		for (uint32 i = 0; i < objects.ElementCount(); ++i)
 		{
-			if (currentObjectAccessState[objects[i]] == (uint8)AccessType::READ_WRITE) { can = false; return; }
-		}
-	}
-	
-	void PopTask(uint32& list, uint32& index)
-	{
-		uint32 task = pendingTasks.back();
-
-		GTSL::Ranger<const uint16> accessed_objects = tasksAccessedObjects[task];
-		GTSL::Ranger<const AccessType> access_types = tasksAccessTypes[task];
-
-		for(uint32 i = 0; i < accessed_objects.ElementCount(); ++i)
-		{
-			if(access_types[i] == AccessType::READ_WRITE || currentObjectAccessState[accessed_objects[i]] == AccessType::READ_WRITE)
+			GTSL::ReadLock lock(mutex);
+			
+			for (uint32 i = 0; i < objects.ElementCount(); ++i)
 			{
-				//goto next task, and put this pending
+				if (currentObjectAccessState[objects[i]] == static_cast<uint8>(AccessType::READ_WRITE)) { can = false; return; }
 			}
 		}
+
+		{
+			GTSL::WriteLock lock(mutex);
+			
+			for (uint32 i = 0; i < objects.ElementCount(); ++i)
+			{
+				currentObjectAccessState[objects[i]] = accesses[i];
+				++currentObjectAccessCount[i];
+			}
+		}
+
+		can = true;
 	}
 
-	void UpdateResources(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
+	void ReleaseResources(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
 	{
+		GTSL::WriteLock lock(mutex);
+		
+		for (uint32 i = 0; i < objects.ElementCount(); ++i)
+		{
+			BE_ASSERT(currentObjectAccessCount[i] != 0, "Oops :/")
+			if (--currentObjectAccessCount[i] == 0) { currentObjectAccessState[i] = 0; }
+		}
 	}
 	
 private:
-	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> tasksAccessedObjects;
-	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> tasksAccessTypes;
-
 	GTSL::Vector<uint8, ALLOCATOR> currentObjectAccessState;
+	GTSL::Vector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	GTSL::Vector<uint32, ALLOCATOR> pendingTasks;
-
-	GTSL::Vector<GTSL::Pair<uint16, uint16>, ALLOCATOR> tasks;
+	GTSL::ReadWriteMutex mutex;
 };

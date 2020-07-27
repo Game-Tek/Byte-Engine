@@ -16,7 +16,7 @@ void Game::Initialize()
 
 	auto mo = [&](InputManager::ActionInputEvent a)
 	{
-		BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
+		//BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
 	};
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("RightHatButton"), GTSL::Id64("S_Key") });
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));

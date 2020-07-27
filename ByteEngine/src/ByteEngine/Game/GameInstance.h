@@ -9,9 +9,12 @@
 #include <GTSL/Allocator.h>
 
 #include "Tasks.h"
-#include "World.h"
 
 #include "ByteEngine/Debug/Assert.h"
+
+class World;
+class ComponentCollection;
+class System;
 
 namespace BE {
 	class Application;
@@ -51,16 +54,10 @@ public:
 		initWorld(index); return index;
 	}
 
-	void UnloadWorld(const WorldReference worldId)
-	{
-		World::DestroyInfo destroy_info;
-		destroy_info.GameInstance = this;
-		worlds[worldId]->DestroyWorld(destroy_info);
-		worlds.Pop(worldId);
-	}
+	void UnloadWorld(WorldReference worldId);
 
-	class ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
-	class System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
+	ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
+	System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
 	
 	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 startsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
@@ -69,29 +66,31 @@ public:
 	void AddDynamicTask(const GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies,
 	                    const GTSL::Id64 startOn, const GTSL::Id64 doneFor, ARGS&&... args)
 	{
-		auto task_info = GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>::Create<DynamicTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);
+		void* task_info;
+		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);
 		
 		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
 		{
-			GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>& info = reinterpret_cast<GTSL::SmartPointer<DynamicTaskInfo<TaskInfo, ARGS...>, BE::TAR>&>(gameInstance->dynamicTasksInfo[i]);
+			DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
 			GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
-			info.Free<DynamicTaskInfo<TaskInfo, ARGS...>>();
+			GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(&gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
 			gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
-		uint16 i = 0;
+		uint16 start_on_goal_index, task_goal_index;
 		
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			getGoalIndex(startOn, i);
+			getGoalIndex(startOn, start_on_goal_index);
+			getGoalIndex(doneFor, task_goal_index);
 		}
 		
 		{
 			GTSL::WriteLock lock(newDynamicTasks);
-			dynamicGoals[i].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, GetPersistentAllocator());
+			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, task_goal_index, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -125,7 +124,7 @@ private:
 	using DynamicTaskFunctionType = GTSL::Delegate<void(GameInstance*, uint32 i)>;
 	
 	GTSL::ReadWriteMutex newDynamicTasks;
-	GTSL::Vector<GTSL::SmartPointer<DynamicTaskInfo<TaskInfo>, BE::TAR>, BE::TAR> dynamicTasksInfo;
+	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
 	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
 	void popDynamicTask(DynamicTaskFunctionType& dynamicTaskFunction, uint32& i);

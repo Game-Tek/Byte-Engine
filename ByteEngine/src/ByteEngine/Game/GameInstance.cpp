@@ -1,15 +1,16 @@
 #include "GameInstance.h"
 
-#include "ComponentCollection.h"
+#include "ByteEngine/Game/World.h"
+#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/ComponentCollection.h"
 
-#include "System.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
-#include <GTSL/Semaphore.h>
-
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
+#include "ByteEngine/Application/Application.h"
+
+#include <GTSL/Semaphore.h>
 
 using namespace GTSL;
 
@@ -31,48 +32,39 @@ void GameInstance::OnUpdate(BE::Application* application)
 {
 	PROFILE;
 	
-	TaskSorter<BE::TAR> task_sorter(32, GetTransientAllocator());
+	TaskSorter<BE::TAR> task_sorter(64, GetTransientAllocator());
 	
-	Vector<Goal<TaskType, BE::TAR>, BE::TAR> recurring_goals(32, GetTransientAllocator());
-	{
-		for(uint32 i = 0; i < recurring_goals.GetLength(); ++i)
-		{
-			recurring_goals.EmplaceBack(64, GetTransientAllocator());
-		}
-	}
-
-	Vector<Goal<DynamicTaskFunctionType, BE::TAR>, BE::TAR> dynamic_goals(32, GetTransientAllocator());
-	{
-		for(uint32 i = 0; i < dynamic_goals.GetLength(); ++i)
-		{
-			dynamic_goals.EmplaceBack(64, GetTransientAllocator());
-		}
-	}
-	
+	Vector<Goal<TaskType, BE::TAR>, BE::TAR> recurring_goals(64, GetTransientAllocator());
+	Vector<Goal<DynamicTaskFunctionType, BE::TAR>, BE::TAR> dynamic_goals(64, GetTransientAllocator());
 	Vector<Vector<Semaphore, BE::TAR>, BE::TAR> semaphores(64, GetTransientAllocator());
 	{
-		for (auto& e : semaphores)
+		for(uint32 i = 0; i < recurring_goals.GetCapacity(); ++i)
 		{
-			e.Initialize(128, GetTransientAllocator());
-			for (uint8 i = 0; i < 128; ++i) { e.EmplaceBack(); }
+			recurring_goals.EmplaceBack(128, GetTransientAllocator());
+			dynamic_goals.EmplaceBack(128, GetTransientAllocator());
+			semaphores[i].Initialize(128, GetTransientAllocator());
 		}
 	}
+		
+	const uint32 goal_count = recurring_goals.GetLength();
 	
-	TaskInfo task_info; task_info.GameInstance = this;
+	TaskInfo task_info;
+	task_info.GameInstance = this;
 
 	uint16 recurring_goal_number_of_tasks, dynamic_goal_number_of_tasks;
 
-	auto on_done = [](const Array<uint16, 64>& objects, const Array<AccessType, 64>& accesses, decltype(task_sorter)* taskSorter) -> void
+	using task_sorter_t = decltype(task_sorter);
+	using on_done_args = Tuple<Array<uint16, 64>, Array<AccessType, 64>, task_sorter_t*>;
+	
+	auto on_done = [](const Array<uint16, 64>& objects, const Array<AccessType, 64>& accesses, task_sorter_t* taskSorter) -> void
 	{
 		taskSorter->ReleaseResources(objects, accesses);
 	};
 
-	auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, decltype(task_sorter)*)>::Create(on_done);
+	auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
 	
-	for(uint32 goal = 0; goal < recurring_goals.GetLength(); ++goal)
-	{
-		uint16 task_n = 0;
-		
+	for(uint32 goal = 0; goal < goal_count; ++goal)
+	{		
 		recurring_goals[goal].GetNumberOfTasks(recurring_goal_number_of_tasks);
 		dynamic_goals[goal].GetNumberOfTasks(dynamic_goal_number_of_tasks);
 		
@@ -83,23 +75,28 @@ void GameInstance::OnUpdate(BE::Application* application)
 			bool can_run = false;
 
 			//try recurring goals
-			while (true)
+			while (recurring_goal_number_of_tasks != 0)
 			{
-				Ranger<const uint16> accessed_objects; Ranger<const AccessType> access_types;
-				recurring_goals[goal].GetTaskAccessedObjects(recurring_goal_number_of_tasks, accessed_objects); recurring_goals[goal].GetTaskAccessTypes(recurring_goal_number_of_tasks, access_types);
+				Ranger<const uint16> accessed_objects;
+				recurring_goals[goal].GetTaskAccessedObjects(recurring_goal_number_of_tasks, accessed_objects);
+				
+				Ranger<const AccessType> access_types;
+				recurring_goals[goal].GetTaskAccessTypes(recurring_goal_number_of_tasks, access_types);
 
 				task_sorter.CanRunTask(can_run, accessed_objects, access_types);
 
 				if (can_run)
 				{
-					Tuple<Array<uint16, 64>, Array<AccessType, 64>, decltype(task_sorter)*> test_args(accessed_objects, access_types, &task_sorter);
+					on_done_args done_args(accessed_objects, access_types, &task_sorter);
 
-					uint16 target_goal; Id64 goal_name;
-					recurring_goals[goal].GetTaskGoal(recurring_goal_number_of_tasks, goal_name);
-					getGoalIndex(goal_name, target_goal);
+					uint16 target_goal;
+					recurring_goals[goal].GetTaskGoalIndex(recurring_goal_number_of_tasks, target_goal);
+
+					auto semaphore_index = semaphores[target_goal].EmplaceBack();
 					
-					TaskType task; recurring_goals[goal].GetTask(task, recurring_goal_number_of_tasks);
-					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][task_n], MakeTransferReference(test_args), task_info);
+					TaskType task;
+					recurring_goals[goal].GetTask(task, recurring_goal_number_of_tasks);
+					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), task_info);
 
 					--recurring_goal_number_of_tasks;
 				}
@@ -110,7 +107,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 			}
 			
 			//try dynamic goals
-			while (true)
+			while (dynamic_goal_number_of_tasks != 0)
 			{
 				Ranger<const uint16> accessed_objects; Ranger<const AccessType> access_types;
 				dynamic_goals[goal].GetTaskAccessedObjects(dynamic_goal_number_of_tasks, accessed_objects); dynamic_goals[goal].GetTaskAccessTypes(dynamic_goal_number_of_tasks, access_types);
@@ -119,14 +116,16 @@ void GameInstance::OnUpdate(BE::Application* application)
 
 				if (can_run)
 				{
-					Tuple<Array<uint16, 64>, Array<AccessType, 64>, decltype(task_sorter)*> test_args(accessed_objects, access_types, &task_sorter);
+					on_done_args done_args(accessed_objects, access_types, &task_sorter);
 					
-					uint16 target_goal; Id64 goal_name;
-					dynamic_goals[goal].GetTaskGoal(dynamic_goal_number_of_tasks, goal_name);
-					getGoalIndex(goal_name, target_goal);
+					uint16 target_goal;
+					dynamic_goals[goal].GetTaskGoalIndex(dynamic_goal_number_of_tasks, target_goal);
+
+					auto semaphore_index = semaphores[target_goal].EmplaceBack();
 					
-					DynamicTaskFunctionType task; dynamic_goals[goal].GetTask(task, dynamic_goal_number_of_tasks);
-					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][task_n], MakeTransferReference(test_args), task_info);
+					DynamicTaskFunctionType task;
+					dynamic_goals[goal].GetTask(task, dynamic_goal_number_of_tasks);
+					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), this, dynamic_goal_number_of_tasks);
 
 					--dynamic_goal_number_of_tasks;
 				}
@@ -135,29 +134,37 @@ void GameInstance::OnUpdate(BE::Application* application)
 					break;
 				}
 			}
-			
-			++task_n;
 		}
 		
 	} //goals
 
 }
 
+void GameInstance::UnloadWorld(const WorldReference worldId)
+{
+	World::DestroyInfo destroy_info;
+	destroy_info.GameInstance = this;
+	worlds[worldId]->DestroyWorld(destroy_info);
+	worlds.Pop(worldId);
+}
+
 void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, const Ranger<const TaskDependency> actsOn, const Id64 startsOn, const Id64 doneFor)
 {
 	Array<uint16, 32> objects; Array<AccessType, 32> accesses;
 
-	uint16 goal_index = 0;
+	uint16 goal_index = 0, target_goal_index = 0;
 
 	{
 		ReadLock lock(goalNamesMutex);
 		decomposeTaskDescriptor(actsOn, objects, accesses);
 		getGoalIndex(startsOn, goal_index);
+		getGoalIndex(doneFor, target_goal_index);
 	}
 
-	goalsMutex.WriteLock();
-	goals[goal_index].AddTask(name, function, objects, accesses, doneFor, GetPersistentAllocator());
-	goalsMutex.WriteUnlock();
+	{
+		WriteLock lock(goalsMutex);
+		goals[goal_index].AddTask(name, function, objects, accesses, doneFor, target_goal_index, GetPersistentAllocator());
+	}
 }
 
 void GameInstance::RemoveTask(const Id64 name, const Id64 doneFor)

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
+
 #include <GTSL/Id.h>
-#include <GTSL/Pair.h>
 #include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Debug/Assert.h"
@@ -30,7 +30,7 @@ struct Goal
 	{
 	}
 
-	void AddTask(GTSL::Id64 name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, GTSL::Id64 doneFor, const ALLOCATOR& allocator)
+	void AddTask(GTSL::Id64 name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, GTSL::Id64 doneFor, uint16 goalIndex, const ALLOCATOR& allocator)
 	{
 		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
 		taskAccessTypes.EmplaceBack(16, allocator);
@@ -40,6 +40,7 @@ struct Goal
 		
 		taskNames.EmplaceBack(name);
 		taskGoals.EmplaceBack(doneFor);
+		taskGoalIndex.EmplaceBack(goalIndex);
 		tasks.EmplaceBack(task);
 	}
 
@@ -53,6 +54,7 @@ struct Goal
 		taskAccessedObjects.Pop(i);
 		taskAccessTypes.Pop(i);
 		taskGoals.Pop(i);
+		taskGoalIndex.Pop(i);
 		taskNames.Pop(i);
 		tasks.Pop(i);
 	}
@@ -66,12 +68,15 @@ struct Goal
 	void GetNumberOfTasks(uint16& numberOfStacks) { numberOfStacks = tasks.GetLength(); }
 	
 	void GetTaskGoal(const uint16 task, GTSL::Id64& goal) { goal = taskGoals[task]; }
+	void GetTaskGoalIndex(const uint16 task, uint16& goal) { goal = taskGoalIndex[task]; }
 	
 private:
 	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
 	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> taskAccessTypes;
 	
 	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskGoals;
+	GTSL::Vector<uint16, ALLOCATOR> taskGoalIndex;
+	
 	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskNames;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 };
@@ -100,7 +105,7 @@ struct TaskSorter
 			
 			for (uint32 i = 0; i < objects.ElementCount(); ++i)
 			{
-				currentObjectAccessState[objects[i]] = accesses[i];
+				currentObjectAccessState[objects[i]] = static_cast<uint8>(accesses[i]);
 				++currentObjectAccessCount[i];
 			}
 		}

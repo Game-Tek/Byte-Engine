@@ -4,6 +4,7 @@
 #include <GTSL/DataSizes.h>
 #include <GTSL/Serialize.h>
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/RenderTypes.h"
 
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), materialInfos(16, GetPersistentAllocator())
@@ -90,6 +91,28 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		index_buffer.Free(8, GetTransientAllocator());
 		shader_buffer.Free(8, GetTransientAllocator());
 	}
+}
+
+void MaterialResourceManager::GetMaterialSize(const GTSL::Id64 name, uint32& size)
+{
+	GTSL::ReadLock lock(mutex);
+	size = materialInfos.At(name).VertexShaderSize + materialInfos.At(name).FragmentShaderSize;
+}
+
+void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
+{
+	auto material_info = materialInfos.At(loadInfo.Name);
+	material_info;
+
+	package.SetPointer(material_info.VertexShaderOffset, GTSL::File::MoveFrom::BEGIN);
+
+	package.ReadFromFile(loadInfo.DataBuffer);
+	
+	OnMaterialLoadInfo on_material_load_info;
+	on_material_load_info.UserData = loadInfo.UserData;
+	on_material_load_info.DataBuffer = loadInfo.DataBuffer;
+	
+	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MakeTransferReference(on_material_load_info));
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)

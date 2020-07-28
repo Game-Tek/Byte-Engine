@@ -40,6 +40,7 @@ void Game::Initialize()
 	material_create_info.ShaderName = "BasicMaterial";
 	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };
 	material_create_info.VertexFormat = format;
+	material_create_info.BindingSets;
 	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
 
 	auto test_task = [](TaskInfo taskInfo, uint32 i)

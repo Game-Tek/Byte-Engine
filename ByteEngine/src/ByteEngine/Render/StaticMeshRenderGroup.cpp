@@ -51,8 +51,6 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	bind_memory_info.Memory = &device_memory;
 	bind_memory_info.Offset = offset;
 	scratch_buffer.BindToMemory(bind_memory_info);
-
-	//BE::Application::Get()->GetGameInstance()->GetThreadPool()->EnqueueTask();
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
@@ -61,7 +59,6 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.IndicesAlignment = alignment;
 
 	void* load_info;
-
 	GTSL::New<LoadInfo>(&load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer);
 	
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);

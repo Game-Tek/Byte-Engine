@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
 #include "ResourceManager.h"
@@ -23,21 +24,24 @@ public:
 	{
 		GTSL::StaticString<128> ShaderName;
 		GTSL::Ranger<const uint8> VertexFormat;
-		GTSL::Ranger<GTSL::Ranger<uint8>> BindingSets;
+		GTSL::Ranger<const GTSL::Ranger<const uint8>> BindingSets;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 
+	void GetMaterialSize(GTSL::Id64 name, uint32& size);
+	
 	struct OnMaterialLoadInfo : OnResourceLoad
 	{
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo
 	{
-		
+		GTSL::Delegate<void(TaskInfo, OnMaterialLoadInfo)> OnMaterialLoad;
 	};
-	void LoadMaterial(const MaterialLoadInfo& materialLoadInfo);
+	void LoadMaterial(const MaterialLoadInfo& loadInfo);
 	
 private:
 	GTSL::File package, index;
 	GTSL::FlatHashMap<MaterialInfo, BE::PersistentAllocatorReference> materialInfos;
+	GTSL::ReadWriteMutex mutex;
 };

@@ -154,24 +154,43 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{
+			mesh.VertexElements.EmplaceBack(in_mesh->mTangents[vertex].x);
+			mesh.VertexElements.EmplaceBack(in_mesh->mTangents[vertex].y);
+			mesh.VertexElements.EmplaceBack(in_mesh->mTangents[vertex].z);
+			mesh.VertexElements.EmplaceBack(in_mesh->mBitangents[vertex].x);
+			mesh.VertexElements.EmplaceBack(in_mesh->mBitangents[vertex].y);
+			mesh.VertexElements.EmplaceBack(in_mesh->mBitangents[vertex].z);
 		}
+		
 		meshInfo.VerticesSize += sizeof(GTSL::Vector3) * in_mesh->mNumVertices * 2;
 	}
 
-	for (uint8 tex_coords = 0; tex_coords < 8; ++tex_coords)
+	for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(in_mesh->GetNumUVChannels()); ++tex_coords)
 	{
-		if (in_mesh->HasTextureCoords(tex_coords))
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT2));
+
+		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{
-			meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT2));
-
-			for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
-			{
-				mesh.VertexElements.EmplaceBack(in_mesh->mTextureCoords[tex_coords][vertex].x);
-				mesh.VertexElements.EmplaceBack(in_mesh->mTextureCoords[tex_coords][vertex].y);
-			}
-
-			meshInfo.VerticesSize += sizeof(GTSL::Vector2) * in_mesh->mNumVertices;
+			mesh.VertexElements.EmplaceBack(in_mesh->mTextureCoords[tex_coords][vertex].x);
+			mesh.VertexElements.EmplaceBack(in_mesh->mTextureCoords[tex_coords][vertex].y);
 		}
+
+		meshInfo.VerticesSize += sizeof(GTSL::Vector2) * in_mesh->mNumVertices;
+	}
+
+	for (uint8 colors = 0; colors < static_cast<uint8>(in_mesh->GetNumColorChannels()); ++colors)
+	{
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT4));
+		
+		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
+		{
+			mesh.VertexElements.EmplaceBack(in_mesh->mColors[colors][vertex].r);
+			mesh.VertexElements.EmplaceBack(in_mesh->mColors[colors][vertex].g);
+			mesh.VertexElements.EmplaceBack(in_mesh->mColors[colors][vertex].b);
+			mesh.VertexElements.EmplaceBack(in_mesh->mColors[colors][vertex].a);
+		}
+		
+		meshInfo.VerticesSize += sizeof(GTSL::Vector4) * in_mesh->mNumVertices;
 	}
 
 	for (uint32 face = 0; face < in_mesh->mNumFaces; ++face)

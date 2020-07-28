@@ -60,7 +60,9 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
 	load_static_meshInfo.IndicesAlignment = alignment;
 
-	const auto load_info = new LoadInfo(addStaticMeshInfo.RenderSystem, scratch_buffer);
+	void* load_info;
+
+	GTSL::New<LoadInfo>(&load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer);
 	
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);
 	load_static_meshInfo.ActsOn = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
@@ -95,5 +97,5 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	
 	meshBuffers.EmplaceBack(device_buffer);
 
-	delete load_info;
+	GTSL::Delete<LoadInfo>(reinterpret_cast<void**>(&load_info), GetPersistentAllocator());
 }

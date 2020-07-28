@@ -39,7 +39,6 @@ public:
 		for (uint8 i = 0; i < threadCount; ++i)
 		{
 			//Constructing threads with function and I parameter
-			//threads.EmplaceBack(workers_loop, i);
 			threads.EmplaceBack(GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
 			threads[i].SetPriority(GTSL::Thread::Priority::HIGH);
 		}

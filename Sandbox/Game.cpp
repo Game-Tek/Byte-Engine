@@ -42,14 +42,14 @@ void Game::Initialize()
 	material_create_info.VertexFormat = format;
 	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
 
-	auto test_task = [&](TaskInfo taskInfo, uint32 i)
+	auto test_task = [](TaskInfo taskInfo, uint32 i)
 	{
-		std::cout << "Hey" << std::endl;
+		std::cout << "Hey: " << i << std::endl;
 	};
 
 	GTSL::Array<TaskDependency, 2> dependencies{ {"RenderStaticMeshCollection", AccessType::READ} };
 	
-	gameInstance->AddDynamicTask(GTSL::Id64("Test"), GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, GTSL::Id64("Frame"), GTSL::Id64("FrameEnd"), 32u);
+	gameInstance->AddDynamicTask("Test", GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, "Frame", "FrameEnd", 32u);
 	//show loading screen
 	//load menu
 	//show menu

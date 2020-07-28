@@ -34,14 +34,18 @@ public:
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
 		T* ret = static_cast<T*>(systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
-		initSystem(ret, systemName); return ret;
+		objectNames.EmplaceBack(systemName);
+		initSystem(ret, systemName);
+		return ret;
 	}
 
 	template<typename T>
 	T* AddComponentCollection(const GTSL::Id64 componentCollectionName)
 	{
 		T* pointer = static_cast<T*>(componentCollections.Emplace(componentCollectionName, GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
-		initCollection(pointer); return pointer;
+		objectNames.EmplaceBack(componentCollectionName);
+		initCollection(pointer);
+		return pointer;
 	}
 	
 	struct CreateNewWorldInfo
@@ -79,18 +83,18 @@ public:
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
-		uint16 start_on_goal_index, task_goal_index;
+		uint16 start_on_goal_index, task_objective_index;
 		
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
 			getGoalIndex(startOn, start_on_goal_index);
-			getGoalIndex(doneFor, task_goal_index);
+			getGoalIndex(doneFor, task_objective_index);
 		}
 		
 		{
-			GTSL::WriteLock lock(newDynamicTasks);
-			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, task_goal_index, GetPersistentAllocator());
+			GTSL::WriteLock lock(dynamicTasksMutex);
+			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, task_objective_index, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -101,6 +105,8 @@ private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	GTSL::FlatHashMap<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> componentCollections;
+
+	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> objectNames;
 	
 	template<typename... ARGS>
 	struct DynamicTaskInfo
@@ -123,7 +129,7 @@ private:
 
 	using DynamicTaskFunctionType = GTSL::Delegate<void(GameInstance*, uint32 i)>;
 	
-	GTSL::ReadWriteMutex newDynamicTasks;
+	GTSL::ReadWriteMutex dynamicTasksMutex;
 	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
 	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
@@ -145,9 +151,11 @@ private:
 	{
 		object.Resize(taskDependencies.ElementCount()); access.Resize(taskDependencies.ElementCount());
 		
-		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i)
+		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
 		{
-			getGoalIndex((taskDependencies + i)->AccessedObject, object[i]);
+			object[i] = 0;
+			for (auto object_name : objectNames) { if (object_name == (taskDependencies + i)->AccessedObject) break; ++object[i]; }
+			BE_ASSERT(object[i] != objectNames.GetLength(), "No object found with that name!")
 			access[i] = (taskDependencies + i)->Access;
 		}
 	}

@@ -7,6 +7,8 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
+#include <new>
+
 enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
 struct TaskInfo
@@ -25,11 +27,44 @@ struct Goal
 {
 	Goal() = default;
 
-	Goal(uint32 num, const ALLOCATOR& allocatorReference) : taskAccessedObjects(num, allocatorReference), taskAccessTypes(num, allocatorReference),
-	taskGoals(num, allocatorReference), taskNames(num, allocatorReference)
+	Goal(uint32 num, const ALLOCATOR& allocatorReference) :
+	taskAccessedObjects(num, allocatorReference),
+	taskAccessTypes(num, allocatorReference),
+	taskGoals(num, allocatorReference),
+	taskGoalIndex(num, allocatorReference),
+	taskNames(num, allocatorReference),
+	tasks(num, allocatorReference)
 	{
 	}
 
+	template<class OALLOC>
+	Goal(const Goal<TASK, OALLOC>& other, const ALLOCATOR& allocatorReference) :
+	taskAccessedObjects(other.taskAccessedObjects.GetCapacity(), allocatorReference),
+	taskAccessTypes(other.taskAccessTypes.GetCapacity(), allocatorReference),
+	taskGoals(other.taskGoals, allocatorReference),
+	taskGoalIndex(other.taskGoalIndex, allocatorReference),
+	taskNames(other.taskNames, allocatorReference),
+	tasks(other.tasks, allocatorReference)
+	{
+		for(uint32 i = 0; i< other.taskAccessedObjects.GetLength(); ++i)
+		{
+			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocatorReference);
+			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocatorReference);
+		}
+	}
+
+	template<class OALLOC>
+	Goal& operator=(const Goal<TASK, OALLOC>& other)
+	{
+		taskAccessedObjects = other.taskAccessedObjects;
+		taskAccessTypes = other.taskAccessTypes;
+		taskGoals = other.taskGoals;
+		taskGoalIndex = other.taskGoalIndex;
+		taskNames = other.taskNames;
+		tasks = other.tasks;
+		return *this;
+	}
+	
 	void AddTask(GTSL::Id64 name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, GTSL::Id64 doneFor, uint16 goalIndex, const ALLOCATOR& allocator)
 	{
 		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
@@ -68,7 +103,22 @@ struct Goal
 	void GetNumberOfTasks(uint16& numberOfStacks) { numberOfStacks = tasks.GetLength(); }
 	
 	void GetTaskGoal(const uint16 task, GTSL::Id64& goal) { goal = taskGoals[task]; }
+	
 	void GetTaskGoalIndex(const uint16 task, uint16& goal) { goal = taskGoalIndex[task]; }
+
+	void Clear()
+	{
+		for (auto& e : taskAccessedObjects) { e.ResizeDown(0); }
+		taskAccessedObjects.ResizeDown(0);
+		for (auto& e : taskAccessTypes) { e.ResizeDown(0); }
+		taskAccessTypes.ResizeDown(0);
+
+		taskGoals.ResizeDown(0);
+		taskGoalIndex.ResizeDown(0);
+
+		taskNames.ResizeDown(0);
+		tasks.ResizeDown(0);
+	}
 	
 private:
 	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
@@ -79,6 +129,8 @@ private:
 	
 	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskNames;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
+
+	friend class Goal;
 };
 
 template<class ALLOCATOR>
@@ -87,6 +139,10 @@ struct TaskSorter
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator)
 	{
+		currentObjectAccessState.Resize(num);
+		for (auto& e : currentObjectAccessState) { e = 0; }
+		currentObjectAccessCount.Resize(num);
+		for (auto& e : currentObjectAccessCount) { e = 0; }
 	}
 
 	void CanRunTask(bool& can, const GTSL::Ranger<const uint16>& objects, const GTSL::Ranger<const AccessType>& accesses)

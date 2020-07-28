@@ -4,6 +4,7 @@
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
+#include <iostream>
 
 void Game::Initialize()
 {
@@ -22,6 +23,7 @@ void Game::Initialize()
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
 	
 	sandboxGameInstance->AddGoal("Frame");
+	sandboxGameInstance->AddGoal("FrameEnd");
 
 	auto renderer = sandboxGameInstance->AddSystem<RenderSystem>("RenderSystem");
 
@@ -39,7 +41,15 @@ void Game::Initialize()
 	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };
 	material_create_info.VertexFormat = format;
 	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
+
+	auto test_task = [&](TaskInfo taskInfo, uint32 i)
+	{
+		std::cout << "Hey" << std::endl;
+	};
+
+	GTSL::Array<TaskDependency, 2> dependencies{ {"RenderStaticMeshCollection", AccessType::READ} };
 	
+	gameInstance->AddDynamicTask(GTSL::Id64("Test"), GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, GTSL::Id64("Frame"), GTSL::Id64("FrameEnd"), 32u);
 	//show loading screen
 	//load menu
 	//show menu

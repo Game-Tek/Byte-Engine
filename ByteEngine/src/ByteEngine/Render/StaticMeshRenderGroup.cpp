@@ -64,6 +64,21 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);
 	load_static_meshInfo.ActsOn = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
+
+	BindingsPool::CreateInfo create_info;
+
+	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindings_sets;
+	
+	GTSL::Array<GAL::BindingDescriptor, 10> binding_descriptors;
+	GAL::BindingDescriptor binding_descriptor;
+	binding_descriptor.ShaderStage = GAL::ShaderType::VERTEX_SHADER;
+	binding_descriptor.BindingType = GAL::BindingType::FLOAT3;
+	binding_descriptor.MaxNumberOfBindingsAllocatable = 3;
+	binding_descriptors.EmplaceBack(binding_descriptor);
+
+	//create_info.BindingsSets = bindings_sets;
+	
+	create_info.BindingsDescriptors = binding_descriptors;
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
@@ -95,4 +110,8 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	meshBuffers.EmplaceBack(device_buffer);
 
 	GTSL::Delete<LoadInfo>(reinterpret_cast<void**>(&load_info), GetPersistentAllocator());
+
+	GraphicsPipeline::CreateInfo pipeline_create_info;
+	pipeline_create_info.VertexDescriptor = GetShaderDataTypes(onStaticMeshLoad.VertexDescriptor);
+	pipeline_create_info.IsInheritable = true;
 }

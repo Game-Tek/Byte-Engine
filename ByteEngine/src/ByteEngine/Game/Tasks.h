@@ -100,7 +100,7 @@ struct Goal
 
 	void GetTaskAccessTypes(uint16 task, GTSL::Ranger<const AccessType>& accesses) { accesses = taskAccessTypes[task]; }
 	
-	void GetNumberOfTasks(uint16& numberOfStacks) { numberOfStacks = tasks.GetLength(); }
+	uint16 GetNumberOfTasks() { return (uint16)tasks.GetLength(); }
 	
 	void GetTaskGoal(const uint16 task, GTSL::Id64& goal) { goal = taskGoals[task]; }
 	
@@ -130,7 +130,7 @@ private:
 	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskNames;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 
-	friend class Goal;
+	friend struct Goal;
 };
 
 template<class ALLOCATOR>

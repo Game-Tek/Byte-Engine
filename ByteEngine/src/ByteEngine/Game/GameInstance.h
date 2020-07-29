@@ -75,10 +75,13 @@ public:
 		
 		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
 		{
+			gameInstance->dynamicTasksMutex.WriteLock();
 			DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
-			GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(&gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
+			GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
 			gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
+			gameInstance->dynamicTasksMutex.WriteUnlock();
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -133,6 +136,8 @@ private:
 	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
 	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
+	TaskSorter<BE::PersistentAllocatorReference> task_sorter;
+	
 	void popDynamicTask(DynamicTaskFunctionType& dynamicTaskFunction, uint32& i);
 
 	void initWorld(uint8 worldId);

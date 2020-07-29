@@ -68,27 +68,27 @@ private:
 	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas;
 
 	RenderPass renderPass;
-	GTSL::Array<ImageView, 3> swapchainImages;
-	GTSL::Array<Semaphore, 3> imageAvailableSemaphore;
-	GTSL::Array<Semaphore, 3> renderFinishedSemaphore;
-	GTSL::Array<Fence, 3> inFlightFences;
+	GTSL::Array<ImageView, MAX_CONCURRENT_FRAMES> swapchainImages;
+	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
+	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
+	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> inFlightFences;
 	
-	GTSL::Array<CommandBuffer, 3> commandBuffers;
-	GTSL::Array<CommandPool, 3> commandPools;
+	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> commandBuffers;
+	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> commandPools;
 	
-	GTSL::Array<FrameBuffer, 3> frameBuffers;
+	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
 
-	GTSL::Array<GTSL::RGBA, 3> clearValues;
+	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 
-	GTSL::Array<Fence, 3> transferFences;
+	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
 
-	GTSL::Array<GTSL::Pair<uint32, uint32>, 3> transferredMeshes;
+	GTSL::Array<GTSL::Pair<uint32, uint32>, MAX_CONCURRENT_FRAMES> transferredMeshes;
 	
 	Queue graphicsQueue;
-	
 	Queue transferQueue;
-	GTSL::Array<CommandPool, 3> transferCommandPools;
-	GTSL::Array<CommandBuffer, 3> transferCommandBuffers;
+	
+	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
+	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
 
 	uint8 index = 0;
 
@@ -96,7 +96,7 @@ private:
 	uint32 swapchainFormat{ 0 };
 	uint32 swapchainColorSpace{ 0 };
 	
-	void render(const TaskInfo& taskInfo);
+	void render(TaskInfo taskInfo);
 
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);

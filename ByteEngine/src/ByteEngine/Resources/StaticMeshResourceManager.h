@@ -27,6 +27,8 @@ public:
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
 		GTSL::uint16 IndexCount;
+
+		GTSL::Array<uint8, 32> VertexDescriptor;
 	};
 
 	struct LoadStaticMeshInfo : ResourceLoadInfo

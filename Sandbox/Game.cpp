@@ -22,7 +22,11 @@ void Game::Initialize()
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("RightHatButton"), GTSL::Id64("S_Key") });
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
 	
-	sandboxGameInstance->AddGoal("Frame");
+	sandboxGameInstance->AddGoal("FrameStart");
+	sandboxGameInstance->AddGoal("GameplayStart");
+	sandboxGameInstance->AddGoal("GameplayEnd");
+	sandboxGameInstance->AddGoal("RenderStart");
+	sandboxGameInstance->AddGoal("RenderEnd");
 	sandboxGameInstance->AddGoal("FrameEnd");
 
 	auto renderer = sandboxGameInstance->AddSystem<RenderSystem>("RenderSystem");
@@ -45,12 +49,12 @@ void Game::Initialize()
 
 	auto test_task = [](TaskInfo taskInfo, uint32 i)
 	{
-		std::cout << "Hey: " << i << std::endl;
+		printf("Hey: %u", i);
 	};
 
 	GTSL::Array<TaskDependency, 2> dependencies{ {"RenderStaticMeshCollection", AccessType::READ} };
 	
-	gameInstance->AddDynamicTask("Test", GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, "Frame", "FrameEnd", 32u);
+	gameInstance->AddDynamicTask("Test", GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, "FrameStart", "FrameEnd", 32u);
 	//show loading screen
 	//load menu
 	//show menu

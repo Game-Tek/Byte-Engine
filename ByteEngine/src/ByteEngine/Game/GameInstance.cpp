@@ -17,7 +17,7 @@ using namespace GTSL;
 GameInstance::GameInstance() : worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
 goals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
-dynamicTasksInfo(32, GetTransientAllocator())
+dynamicTasksInfo(32, GetTransientAllocator()), task_sorter(64, GetPersistentAllocator())
 {
 }
 
@@ -33,8 +33,6 @@ GameInstance::~GameInstance()
 void GameInstance::OnUpdate(BE::Application* application)
 {
 	PROFILE;
-	
-	TaskSorter<BE::TAR> task_sorter(64, GetTransientAllocator());
 
 	Vector<Goal<TaskType, BE::TAR>, BE::TAR> recurring_goals(64, GetTransientAllocator());
 	Vector<Goal<DynamicTaskFunctionType, BE::TAR>, BE::TAR> dynamic_goals(64, GetTransientAllocator());
@@ -51,14 +49,9 @@ void GameInstance::OnUpdate(BE::Application* application)
 			semaphores.EmplaceBack(128, GetTransientAllocator());
 		}
 	}
-		
-	const uint32 goal_count = recurring_goals.GetLength();
 	
 	TaskInfo task_info;
 	task_info.GameInstance = this;
-
-	uint16 recurring_goal_number_of_tasks, dynamic_goal_number_of_tasks;
-	uint16 recurring_goal_task, dynamic_goal_task;
 
 	using task_sorter_t = decltype(task_sorter);
 	using on_done_args = Tuple<Array<uint16, 64>, Array<AccessType, 64>, task_sorter_t*>;
@@ -69,23 +62,29 @@ void GameInstance::OnUpdate(BE::Application* application)
 	};
 
 	auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
+
+	const uint32 goal_count = recurring_goals.GetLength();
+	
+	uint16 recurring_goal_number_of_tasks = 0, dynamic_goal_number_of_tasks = 0;
+	uint16 recurring_goal_task = 0;
+	uint16 dynamic_goal_task = 0;
 	
 	for(uint32 goal = 0; goal < goal_count; ++goal)
 	{		
-		recurring_goals[goal].GetNumberOfTasks(recurring_goal_number_of_tasks);
-		dynamic_goals[goal].GetNumberOfTasks(dynamic_goal_number_of_tasks);
+		recurring_goal_number_of_tasks = recurring_goals[goal].GetNumberOfTasks();
+		dynamic_goal_number_of_tasks = dynamic_goals[goal].GetNumberOfTasks();
 
 		recurring_goal_task = recurring_goal_number_of_tasks;
 		dynamic_goal_task = dynamic_goal_number_of_tasks;
 		
 		for (auto& semaphore : semaphores[goal]) { semaphore.Wait(); }
 		
-		while(recurring_goal_number_of_tasks + dynamic_goal_number_of_tasks != 0)
+		while(recurring_goal_number_of_tasks + dynamic_goal_number_of_tasks > 0)
 		{
 			bool can_run = false;
 
 			//try recurring goals
-			while (recurring_goal_number_of_tasks != 0)
+			while (recurring_goal_number_of_tasks > 0)
 			{
 				--recurring_goal_task;
 				
@@ -119,7 +118,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 			}
 			
 			//try dynamic goals
-			while (dynamic_goal_number_of_tasks != 0)
+			while (dynamic_goal_number_of_tasks > 0)
 			{
 				--dynamic_goal_task;
 				

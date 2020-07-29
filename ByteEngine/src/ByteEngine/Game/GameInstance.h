@@ -24,7 +24,7 @@ class GameInstance : public Object
 {
 public:
 	GameInstance();
-	virtual ~GameInstance();
+	~GameInstance();
 	
 	void OnUpdate(BE::Application* application);
 
@@ -75,13 +75,18 @@ public:
 		
 		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
 		{
-			gameInstance->dynamicTasksMutex.WriteLock();
-			DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
-			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-			GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
-			GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
-			gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
-			gameInstance->dynamicTasksMutex.WriteUnlock();
+			{
+				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
+				DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+				GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
+				GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
+			}
+
+			{
+				GTSL::WriteLock lock(gameInstance->dynamicTasksMutex);
+				gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
+			}
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -91,13 +96,13 @@ public:
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			getGoalIndex(startOn, start_on_goal_index);
-			getGoalIndex(doneFor, task_objective_index);
+			start_on_goal_index = getGoalIndex(startOn);
+			task_objective_index = getGoalIndex(doneFor);
 		}
 		
 		{
 			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, doneFor, task_objective_index, GetPersistentAllocator());
+			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -137,18 +142,16 @@ private:
 	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
 	TaskSorter<BE::PersistentAllocatorReference> task_sorter;
-	
-	void popDynamicTask(DynamicTaskFunctionType& dynamicTaskFunction, uint32& i);
 
 	void initWorld(uint8 worldId);
 	void initCollection(ComponentCollection* collection);
 	void initSystem(System* system, GTSL::Id64 name);
 
-	void getGoalIndex(const GTSL::Id64 name, uint16& goal)
+	uint16 getGoalIndex(const GTSL::Id64 name)
 	{
 		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
 		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
-		goal = i;
+		return i;
 	}
 	
 	template<uint32 N>

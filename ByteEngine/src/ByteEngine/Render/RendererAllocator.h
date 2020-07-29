@@ -72,7 +72,7 @@ class ScratchMemoryAllocator
 public:
 	ScratchMemoryAllocator() = default;
 
-	void Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
+	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);

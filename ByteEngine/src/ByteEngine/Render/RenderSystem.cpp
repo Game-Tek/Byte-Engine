@@ -57,7 +57,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	render_context_create_info.PresentMode = swapchainPresentMode;
 	render_context_create_info.Format = swapchainFormat;
 	render_context_create_info.ColorSpace = swapchainColorSpace;
-	render_context_create_info.ImageUses = (uint32)ImageUse::COLOR_ATTACHMENT;
+	render_context_create_info.ImageUses = ImageUse::COLOR_ATTACHMENT;
 	render_context_create_info.Surface = &surface;
 	GTSL::Extent2D window_extent;
 	initializeRenderer.Window->GetFramebufferExtent(window_extent);
@@ -112,7 +112,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 	}
 
-	scratchMemoryAllocator.Init(renderDevice, GetPersistentAllocator());
+	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 	PipelineCache::CreateInfo pipeline_cache_create_info;

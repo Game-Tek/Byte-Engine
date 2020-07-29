@@ -7,7 +7,7 @@ static constexpr uint8 IS_PRE_BLOCK_CONTIGUOUS = 1;
 static constexpr uint8 IS_POST_BLOCK_CONTIGUOUS = 2;
 static constexpr uint8 IS_PRE_AND_POST_BLOCK_CONTIGUOUS = IS_PRE_BLOCK_CONTIGUOUS | IS_POST_BLOCK_CONTIGUOUS;
 
-void ScratchMemoryAllocator::Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	bufferMemoryBlocks.EmplaceBack();
 	//textureMemoryBlocks.EmplaceBack();
@@ -52,7 +52,7 @@ void ScratchMemoryBlock::Initialize(const RenderDevice& renderDevice, const uint
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
 	memory_create_info.Size = size;
-	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, static_cast<uint32>(MemoryType::SHARED) | static_cast<uint32>(MemoryType::COHERENT));
+	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, MemoryType::SHARED | MemoryType::COHERENT);
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
 
 	DeviceMemory::MapInfo map_info;

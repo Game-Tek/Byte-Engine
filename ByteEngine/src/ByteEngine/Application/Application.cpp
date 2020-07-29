@@ -61,6 +61,8 @@ namespace BE
 		{
 			BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
 		}
+
+		delete threadPool;
 		
 		delete clockInstance;
 		delete inputManagerInstance;

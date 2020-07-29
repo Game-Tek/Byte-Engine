@@ -73,7 +73,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	GAL::BindingDescriptor binding_descriptor;
 	binding_descriptor.ShaderStage = GAL::ShaderType::VERTEX_SHADER;
 	binding_descriptor.BindingType = GAL::BindingType::FLOAT3;
-	binding_descriptor.MaxNumberOfBindingsAllocatable = 3;
+	binding_descriptor.MaxNumberOfBindingsAllocatable = MAX_CONCURRENT_FRAMES;
 	binding_descriptors.EmplaceBack(binding_descriptor);
 
 	//create_info.BindingsSets = bindings_sets;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteEngine/Core.h"
+
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
 #include <GAL/Vulkan/VulkanBuffer.h>
@@ -13,7 +15,7 @@
 
 static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 
-GTSL::Ranger<const GAL::ShaderDataTypes> GetShaderDataTypes(const GTSL::Ranger<const uint8> ranger)
+inline GTSL::Ranger<const GAL::ShaderDataTypes> GetShaderDataTypes(const GTSL::Ranger<const uint8> ranger)
 {
 	return GTSL::Ranger<const GAL::ShaderDataTypes>(reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.begin()), reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.end()));
 }
@@ -36,6 +38,7 @@ using RenderDevice = GAL::VulkanRenderDevice;
 using BindingsPool = GAL::VulkanBindingsPool;
 using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
+using PipelineCache = GAL::VulkanPipelineCache;
 using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
 
 using ImageUse = GAL::VulkanImageUse;

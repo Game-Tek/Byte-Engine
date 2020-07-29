@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GTSL/Buffer.h>
+
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -55,11 +57,16 @@ public:
 		uint32 Size = 0;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas.EmplaceBack(bufferCopyData); }
+
+	PipelineCache* GetPipelineCache() { return &pipelineCache; }
 	
 private:
 	RenderDevice renderDevice;
 	Surface surface;
 	RenderContext renderContext;
+
+	PipelineCache pipelineCache;
+	GTSL::Buffer pipelineCacheBuffer;
 	
 	GTSL::Extent2D renderArea;
 	

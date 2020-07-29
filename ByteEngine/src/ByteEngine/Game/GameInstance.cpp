@@ -83,11 +83,11 @@ void GameInstance::OnUpdate(BE::Application* application)
 		{
 			bool can_run = false;
 
+			--recurring_goal_task;
+			
 			//try recurring goals
 			while (recurring_goal_number_of_tasks > 0)
-			{
-				--recurring_goal_task;
-				
+			{	
 				Ranger<const uint16> accessed_objects;
 				recurring_goals[goal].GetTaskAccessedObjects(recurring_goal_task, accessed_objects);
 				
@@ -110,17 +110,20 @@ void GameInstance::OnUpdate(BE::Application* application)
 					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), task_info);
 
 					--recurring_goal_number_of_tasks;
+					--recurring_goal_task;
 				}
 				else
 				{
+					++recurring_goal_task;
 					break;
 				}
 			}
 			
+			--dynamic_goal_task;
+			
 			//try dynamic goals
 			while (dynamic_goal_number_of_tasks > 0)
 			{
-				--dynamic_goal_task;
 				
 				Ranger<const uint16> accessed_objects;
 				dynamic_goals[goal].GetTaskAccessedObjects(dynamic_goal_task, accessed_objects);
@@ -143,9 +146,11 @@ void GameInstance::OnUpdate(BE::Application* application)
 					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), this, dynamic_goal_task);
 
 					--dynamic_goal_number_of_tasks;
+					--dynamic_goal_task;
 				}
 				else
 				{
+					++dynamic_goal_task;
 					break;
 				}
 			}

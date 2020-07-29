@@ -115,6 +115,15 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	scratchMemoryAllocator.Init(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
+	uint32 pipeline_cache_size = 0;
+	//pipelineCache.GetCacheSize(&renderDevice, pipeline_cache_size);
+
+	if(pipeline_cache_size)
+	{
+		pipelineCacheBuffer.Allocate(pipeline_cache_size, 32, GetPersistentAllocator());
+		pipelineCache.GetCache(&renderDevice, pipeline_cache_size, pipelineCacheBuffer);
+	}
+	
 	BE_LOG_MESSAGE("Initialized successfully");
 }
 
@@ -179,6 +188,9 @@ void RenderSystem::Shutdown()
 
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
+
+	//pipelineCacheBuffer.Free(32, GetPersistentAllocator());
+	//if(pipelineCache.GetCacheSize(&renderDevice, ))
 }
 
 void RenderSystem::render(TaskInfo taskInfo)

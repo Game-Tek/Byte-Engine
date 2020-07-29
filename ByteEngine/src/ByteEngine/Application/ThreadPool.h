@@ -4,10 +4,10 @@
 
 #include <GTSL/Array.hpp>
 #include <GTSL/Atomic.hpp>
+#include <GTSL/Algorithm.h>
 #include <GTSL/Semaphore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
-#include <GTSL/Pair.h>
 #include <GTSL/Thread.h>
 #include <GTSL/Tuple.h>
 
@@ -62,9 +62,9 @@ public:
 			TaskInfo<F, ARGS...>* task_info = static_cast<TaskInfo<F, ARGS...>*>(GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(*task));
 			TaskInfo<P, PARGS...>* post_task_info = static_cast<TaskInfo<P, PARGS...>*>(GTSL::Get<TUPLE_LAMBDA_POST_TASK_INDEX>(*task));
 			
-			GTSL::Thread::Call(task_info->Delegate, task_info->Arguments);
+			GTSL::Call(task_info->Delegate, task_info->Arguments);
 			static_cast<GTSL::Semaphore*>(GTSL::Get<TUPLE_SEMAPHORE_INDEX>(*task))->Post();
-			GTSL::Thread::Call(post_task_info->Delegate, post_task_info->Arguments);
+			GTSL::Call(post_task_info->Delegate, post_task_info->Arguments);
 
 			delete task_info;
 			delete post_task_info;

@@ -143,7 +143,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 					
 					DynamicTaskFunctionType task;
 					dynamic_goals[goal].GetTask(task, dynamic_goal_task);
-					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), this, dynamic_goal_task);
+					application->GetThreadPool()->EnqueueTask(task, on_done_del, &semaphores[target_goal][semaphore_index], MakeTransferReference(done_args), this, GTSL::MakeForwardReference<uint16>(dynamic_goal_task));
 
 					--dynamic_goal_number_of_tasks;
 					--dynamic_goal_task;

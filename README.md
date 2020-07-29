@@ -11,9 +11,9 @@
   - SIMD Optimized Math Library
   - Custom Allocators
   - [Custom Standard Library](https://github.com/Game-Tek/Game-Tek-Standard-Library)
+  - Resource Manager with Asynchronous IO
 
 - **Features in development:**  :construction_worker:
-  - Resource Manager with Asynchronous IO
   - Heavy Multithreading
   - Multi-backend Raytraced Renderer
   - Multi-backend Audio Engine

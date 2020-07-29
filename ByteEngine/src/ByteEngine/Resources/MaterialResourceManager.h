@@ -13,9 +13,12 @@ public:
 	
 	struct MaterialInfo
 	{
-		uint32 VertexShaderOffset = 0, VertexShaderSize = 0, FragmentShaderSize = 0;
+		uint32 MaterialOffset = 0;
+		uint32 MaterialSize = 0;
+		GTSL::Array<uint32, 12> ShaderOffsets;
 		GTSL::Array<uint8, 20> VertexElements;
 		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
+		GTSL::Array<uint8, 12> ShaderTypes;
 		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 	};
@@ -25,6 +28,7 @@ public:
 		GTSL::StaticString<128> ShaderName;
 		GTSL::Ranger<const uint8> VertexFormat;
 		GTSL::Ranger<const GTSL::Ranger<const uint8>> BindingSets;
+		GTSL::Array<uint8, 12> ShaderTypes;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 
@@ -32,6 +36,9 @@ public:
 	
 	struct OnMaterialLoadInfo : OnResourceLoad
 	{
+		GTSL::Array<uint8, 20> VertexElements;
+		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
+		GTSL::Array<uint8, 12> ShaderTypes;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo

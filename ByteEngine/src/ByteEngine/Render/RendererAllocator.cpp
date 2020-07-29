@@ -1,7 +1,11 @@
 #include "RendererAllocator.h"
 
+#include "ByteEngine/Debug/Assert.h"
+
+static constexpr uint8 ALLOC_IS_ISOLATED = 0;
 static constexpr uint8 IS_PRE_BLOCK_CONTIGUOUS = 1;
 static constexpr uint8 IS_POST_BLOCK_CONTIGUOUS = 2;
+static constexpr uint8 IS_PRE_AND_POST_BLOCK_CONTIGUOUS = IS_PRE_BLOCK_CONTIGUOUS | IS_POST_BLOCK_CONTIGUOUS;
 
 void ScratchMemoryAllocator::Init(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
@@ -11,7 +15,7 @@ void ScratchMemoryAllocator::Init(const RenderDevice& renderDevice, const BE::Pe
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = (uint32)BufferType::UNIFORM | (uint32)BufferType::TRANSFER_SOURCE | (uint32)BufferType::INDEX | (uint32)BufferType::VERTEX;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX;
 	Buffer scratch_buffer(buffer_create_info);
 
 	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
@@ -113,17 +117,24 @@ void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
 	uint8 info = 0; uint32 i = 0;
 
-	if (freeSpaces[0].Offset > offset) [[likely]]
+	if (freeSpaces[0].Offset > offset)
 	{
-		size + offset == freeSpaces[0].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
-		goto SWITCH;
+		if(size + offset == freeSpaces[0].Offset) //is post block contiguous
+		{
+			freeSpaces[i].Size += size;
+			freeSpaces[i].Offset = offset;
+			return;
+		}
+
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
 	}
 
 	++i;
 
 	for(; i < freeSpaces.GetLength(); ++i)
 	{
-		if (freeSpaces[i].Offset > offset) [[likely]]
+		if (freeSpaces[i].Offset > offset)
 		{
 			size + offset == freeSpaces[i].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
 			break;
@@ -132,26 +143,27 @@ void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 
 	freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
 	
-SWITCH:	
 	switch (info)
 	{
-	case IS_PRE_BLOCK_CONTIGUOUS: [[unlikely]]
+	case ALLOC_IS_ISOLATED:
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
+		
+	case IS_PRE_BLOCK_CONTIGUOUS:
 		freeSpaces[i - 1].Size += size;
 		return;
 		
-	case IS_POST_BLOCK_CONTIGUOUS: [[likely]]
+	case IS_POST_BLOCK_CONTIGUOUS:
 		freeSpaces[i].Size += size;
 		freeSpaces[i].Offset = offset;
 		return;
 		
-	case IS_PRE_BLOCK_CONTIGUOUS & IS_POST_BLOCK_CONTIGUOUS: [[unlikely]]
+	case IS_PRE_AND_POST_BLOCK_CONTIGUOUS:
 		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
 		freeSpaces.Pop(i);
 		return;
 		
-	default: [[likely]]
-		freeSpaces.Insert(i, FreeSpace(size, offset));
-		return;
+	default: BE_ASSERT(false, "Wa happened?")
 	}
 }
 
@@ -215,44 +227,55 @@ void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, u
 
 void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
 {
-	uint8 info = 0;
+	uint8 info = 0; uint32 i = 0;
 
-	uint32 i = 0;
+	if (freeSpaces[0].Offset > offset)
+	{
+		if (size + offset == freeSpaces[0].Offset) //is post block contiguous
+		{
+			freeSpaces[i].Size += size;
+			freeSpaces[i].Offset = offset;
+			return;
+		}
+
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
+	}
+
+	++i;
+
 	for (; i < freeSpaces.GetLength(); ++i)
 	{
-		if (freeSpaces[i].Offset > offset) [[likely]]
+		if (freeSpaces[i].Offset > offset)
 		{
 			size + offset == freeSpaces[i].Offset ? info |= IS_POST_BLOCK_CONTIGUOUS : 0;
-
 			break;
 		}
 	}
 
-	//if there is previous block
-	if (i != 0) [[likely]]
-	{
-		freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
-	}
+	freeSpaces[i - 1].Offset + freeSpaces[i - 1].Size == offset ? info |= IS_PRE_BLOCK_CONTIGUOUS : 0;
 
 	switch (info)
 	{
-	case IS_PRE_BLOCK_CONTIGUOUS: [[unlikely]]
+	case ALLOC_IS_ISOLATED:
+		freeSpaces.Insert(i, FreeSpace(size, offset));
+		return;
+
+	case IS_PRE_BLOCK_CONTIGUOUS:
 		freeSpaces[i - 1].Size += size;
 		return;
 
-	case IS_POST_BLOCK_CONTIGUOUS: [[likely]]
+	case IS_POST_BLOCK_CONTIGUOUS:
 		freeSpaces[i].Size += size;
 		freeSpaces[i].Offset = offset;
 		return;
 
-	case IS_PRE_BLOCK_CONTIGUOUS& IS_POST_BLOCK_CONTIGUOUS: [[unlikely]]
+	case IS_PRE_AND_POST_BLOCK_CONTIGUOUS:
 		freeSpaces[i - 1].Size += freeSpaces[i].Size + size;
 		freeSpaces.Pop(i);
 		return;
 
-	default: [[likely]]
-		freeSpaces.Insert(i, FreeSpace(size, offset));
-		return;
+	default: BE_ASSERT(false, "Wa happened?")
 	}
 }
 

@@ -7,6 +7,10 @@
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/RenderTypes.h"
 
+static_assert((uint8)GAL::ShaderType::VERTEX_SHADER == 0, "Enum changed!");
+static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
+static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs" };
+
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), materialInfos(16, GetPersistentAllocator())
 {
 	GTSL::Buffer file_buffer; file_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
@@ -42,44 +46,47 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 	
 	if (!materialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer index_buffer; index_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_buffer; shader_buffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		
 		MaterialInfo material_info;
 		
 		GTSL::StaticString<256> resources_path;
 		resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
 
-		resources_path += materialCreateInfo.ShaderName; resources_path += ".vs";
+		GTSL::File shader;
 
-		GTSL::File shader; shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-		shader.ReadFile(shader_source_buffer);
-
-		auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-		Shader::CompileShader(f, materialCreateInfo.ShaderName, GAL::ShaderType::VERTEX_SHADER, GAL::ShaderLanguage::GLSL, shader_buffer);
-
-		material_info.VertexShaderOffset = package.GetFileSize();
-		material_info.VertexShaderSize = shader_buffer.GetLength();
-		package.WriteToFile(shader_buffer);
+		material_info.MaterialOffset = package.GetFileSize();
 		
-		resources_path.Drop(resources_path.FindLast('/') + 1);
-		resources_path += materialCreateInfo.ShaderName; resources_path += ".fs";
+		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.GetLength(); ++i)
+		{
+			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[materialCreateInfo.ShaderTypes[i]];
 
-		shader.CloseFile();
-		shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-		
-		shader_source_buffer.Resize(0);
-		shader_buffer.Resize(0);
-		shader.ReadFile(shader_source_buffer);
+			shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
+			shader.ReadFile(shader_source_buffer);
 
-		f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-		Shader::CompileShader(f, materialCreateInfo.ShaderName, GAL::ShaderType::FRAGMENT_SHADER, GAL::ShaderLanguage::GLSL, shader_buffer);
+			auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
+			BE_ASSERT(Shader::CompileShader(f, materialCreateInfo.ShaderName, (GAL::ShaderType)materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer) != false, "Failed to compile");
 
-		material_info.FragmentShaderSize = shader_buffer.GetLength();
-		package.WriteToFile(shader_buffer);
+			material_info.ShaderOffsets.EmplaceBack(package.GetFileSize() - material_info.MaterialOffset);
+			package.WriteToFile(shader_buffer);
+			
+			resources_path.Drop(resources_path.FindLast('/') + 1);
 
+			shader_source_buffer.Resize(0);
+			shader_buffer.Resize(0);
+			shader.CloseFile();
+		}
+
+		material_info.MaterialSize = package.GetFileSize() - material_info.MaterialOffset;
 		material_info.VertexElements = materialCreateInfo.VertexFormat;
+		material_info.ShaderTypes = materialCreateInfo.ShaderTypes;
+
+		for(const auto& e : materialCreateInfo.BindingSets)
+		{
+			material_info.BindingSets.EmplaceBack(e);
+		}
 		
 		materialInfos.Emplace(hashed_name, material_info);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
@@ -96,39 +103,41 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 void MaterialResourceManager::GetMaterialSize(const GTSL::Id64 name, uint32& size)
 {
 	GTSL::ReadLock lock(mutex);
-	size = materialInfos.At(name).VertexShaderSize + materialInfos.At(name).FragmentShaderSize;
+	size = materialInfos.At(name).MaterialSize;
 }
 
 void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 {
 	auto material_info = materialInfos.At(loadInfo.Name);
-	material_info;
 
-	package.SetPointer(material_info.VertexShaderOffset, GTSL::File::MoveFrom::BEGIN);
+	package.SetPointer(material_info.MaterialOffset, GTSL::File::MoveFrom::BEGIN);
 
 	package.ReadFromFile(loadInfo.DataBuffer);
 	
 	OnMaterialLoadInfo on_material_load_info;
 	on_material_load_info.UserData = loadInfo.UserData;
 	on_material_load_info.DataBuffer = loadInfo.DataBuffer;
+	on_material_load_info.ShaderTypes = material_info.ShaderTypes;
+	on_material_load_info.BindingSets = material_info.BindingSets;
+	on_material_load_info.VertexElements = material_info.VertexElements;
 	
 	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MakeTransferReference(on_material_load_info));
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
-	Insert(materialInfo.VertexShaderOffset, buffer);
-	Insert(materialInfo.VertexShaderSize, buffer);
-	Insert(materialInfo.FragmentShaderSize, buffer);
+	Insert(materialInfo.MaterialOffset, buffer);
+	Insert(materialInfo.ShaderOffsets, buffer);
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
+	Insert(materialInfo.ShaderTypes, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
-	Extract(materialInfo.VertexShaderOffset, buffer);
-	Extract(materialInfo.VertexShaderSize, buffer);
-	Extract(materialInfo.FragmentShaderSize, buffer);
+	Extract(materialInfo.MaterialOffset, buffer);
+	Extract(materialInfo.ShaderOffsets, buffer);
 	Extract(materialInfo.VertexElements, buffer);
 	Extract(materialInfo.BindingSets, buffer);
+	Extract(materialInfo.ShaderTypes, buffer);
 }

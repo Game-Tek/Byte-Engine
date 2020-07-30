@@ -12,7 +12,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 {
 	renderGroups.Initialize(16, GetPersistentAllocator());
 	
-	GAL::RenderDevice::CreateInfo createinfo;
+	RenderDevice::CreateInfo createinfo;
 	createinfo.ApplicationName = GTSL::StaticString<128>("Test");
 	GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
 	queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
@@ -20,10 +20,12 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	queue_create_infos[1].Capabilities = static_cast<uint8>(QueueCapabilities::TRANSFER);
 	queue_create_infos[1].QueuePriority = 1.0f;
 	createinfo.QueueCreateInfos = queue_create_infos;
-	auto y = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
-	createinfo.Queues = GTSL::Ranger<GAL::Queue*>(2, (GAL::Queue**)y.begin());
+	auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
+	createinfo.Queues = queues;
 	createinfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 	::new(&renderDevice) RenderDevice(createinfo);
+
+	graphicsQueue = queues[0]; transferQueue = queues[1];
 	
 	swapchainPresentMode = static_cast<uint32>(PresentMode::FIFO);
 	swapchainColorSpace = static_cast<uint32>(ColorSpace::NONLINEAR_SRGB);
@@ -150,16 +152,6 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 	swapchainImages = renderContext.GetImages(get_images_info);
 }
 
-void RenderSystem::AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
-{
-	localMemoryAllocator.AllocateBuffer(renderDevice, memoryAllocationInfo.DeviceMemory, memoryAllocationInfo.Size, memoryAllocationInfo.Offset, GetPersistentAllocator());
-}
-
-void RenderSystem::AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
-{
-	scratchMemoryAllocator.AllocateBuffer(renderDevice, allocationInfo.DeviceMemory, allocationInfo.Size, allocationInfo.Offset, allocationInfo.Data, GetPersistentAllocator());
-}
-
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
@@ -264,8 +256,9 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		for(uint32 i = range.First; i < range.Second + 1; ++i)
 		{
 			bufferCopyDatas[i].SourceBuffer.Destroy(&renderDevice);
-			//DeallocateScratchBufferMemory(bufferCopyDatas[i].SourceBufferSize, bufferCopyDatas[i].SourceAllocationOffset);
+			DeallocateScratchBufferMemory(bufferCopyDatas[i].SourceBufferSize, bufferCopyDatas[i].SourceAllocationOffset, bufferCopyDatas[i].AllocationId);
 		}
+		
 		//bufferCopyDatas.
 	}
 }

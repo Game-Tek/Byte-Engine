@@ -20,6 +20,8 @@ inline GTSL::Ranger<const GAL::ShaderDataTypes> GetShaderDataTypes(const GTSL::R
 	return GTSL::Ranger<const GAL::ShaderDataTypes>(reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.begin()), reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.end()));
 }
 
+using AllocationId = uint64;
+
 #if (_WIN64)
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
@@ -49,4 +51,6 @@ using MemoryType = GAL::VulkanMemoryType;
 using PresentMode = GAL::VulkanPresentMode;
 using ImageTiling = GAL::VulkanImageTiling;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
+using ShaderStage = GAL::VulkanShaderStage;
+using BindingType = GAL::VulkanBindingType;
 #endif

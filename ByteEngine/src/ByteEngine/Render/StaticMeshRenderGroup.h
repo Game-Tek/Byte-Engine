@@ -25,12 +25,15 @@ public:
 private:
 	struct LoadInfo
 	{
-		LoadInfo(RenderSystem* renderDevice, const Buffer& buffer) : RenderSystem(renderDevice), ScratchBuffer(buffer)
+		LoadInfo(RenderSystem* renderDevice, const Buffer& buffer, uint32 size, uint32 offset, uint64 allocId) : RenderSystem(renderDevice), ScratchBuffer(buffer),
+		BufferSize(size), BufferOffset(offset), AllocationId(allocId)
 		{
 		}
 		
 		RenderSystem* RenderSystem = nullptr;
 		Buffer ScratchBuffer;
+		uint32 BufferSize, BufferOffset;
+		uint64 AllocationId;
 	};
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);

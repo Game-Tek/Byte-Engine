@@ -4,13 +4,14 @@
 
 #include <GTSL/Id.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/EasyEnum.h>
+#include <GTSL/Flags.h>
+
 
 #include "ByteEngine/Debug/Assert.h"
 
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
-struct AccessType : GTSL::EasyEnum<uint8>
+struct AccessType : GTSL::Flags<uint8>
 {	
 	static constexpr value_type READ = 1;
 	static constexpr value_type READ_WRITE = 4;

@@ -34,7 +34,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
 	addStaticMeshInfo.RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
 	
-	uint32 offset; void* data; DeviceMemory device_memory;
+	uint32 offset; void* data; DeviceMemory device_memory; AllocationId alloc_id;
 
 	const uint32 size = buffer_memory_requirements.Size;
 	const uint32 alignment = buffer_memory_requirements.Alignment;
@@ -43,6 +43,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	memory_allocation_info.Size = size;
 	memory_allocation_info.Offset = &offset;
 	memory_allocation_info.Data = &data;
+	memory_allocation_info.AllocationId = &alloc_id;
 	memory_allocation_info.DeviceMemory = &device_memory;
 	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memory_allocation_info);
 
@@ -59,7 +60,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.IndicesAlignment = alignment;
 
 	void* load_info;
-	GTSL::New<LoadInfo>(&load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer);
+	GTSL::New<LoadInfo>(&load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, size, offset, alloc_id);
 	
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(LoadInfo, load_info);
 	load_static_meshInfo.ActsOn = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
@@ -69,14 +70,14 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindings_sets;
 	
-	GTSL::Array<GAL::BindingDescriptor, 10> binding_descriptors;
-	GAL::BindingDescriptor binding_descriptor;
-	binding_descriptor.ShaderStage = GAL::ShaderType::VERTEX_SHADER;
-	binding_descriptor.BindingType = GAL::BindingType::FLOAT3;
+	GTSL::Array<BindingsPool::BindingDescriptor, 10> binding_descriptors;
+	BindingsPool::BindingDescriptor binding_descriptor;
+	binding_descriptor.ShaderStage = ShaderStage::VERTEX_SHADER;
+	binding_descriptor.BindingType = BindingType::FLOAT3;
 	binding_descriptor.MaxNumberOfBindingsAllocatable = MAX_CONCURRENT_FRAMES;
 	binding_descriptors.EmplaceBack(binding_descriptor);
 
-	//create_info.BindingsSets = bindings_sets;
+	create_info.BindingsSets = bindings_sets;
 	
 	create_info.BindingsDescriptors = binding_descriptors;
 }
@@ -85,18 +86,19 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 {
 	LoadInfo* load_info = DYNAMIC_CAST(LoadInfo, onStaticMeshLoad.UserData);
 
-	uint32 offset = 0; DeviceMemory device_memory;
+	uint32 offset = 0; DeviceMemory device_memory; AllocationId alloc_id;
 	
 	RenderSystem::BufferLocalMemoryAllocationInfo memory_allocation_info;
 	memory_allocation_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
 	memory_allocation_info.Offset = &offset;
 	memory_allocation_info.DeviceMemory = &device_memory;
+	memory_allocation_info.AllocationId = &alloc_id;
 	load_info->RenderSystem->AllocateLocalBufferMemory(memory_allocation_info);
 
 	Buffer::CreateInfo create_info;
 	create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
 	create_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
-	create_info.BufferType = (uint8)BufferType::VERTEX | (uint8)BufferType::INDEX | (uint8)BufferType::TRANSFER_DESTINATION;
+	create_info.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
 	Buffer device_buffer(create_info);
 	
 	RenderSystem::BufferCopyData buffer_copy_data;
@@ -105,6 +107,9 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	buffer_copy_data.SourceBuffer = load_info->ScratchBuffer;
 	buffer_copy_data.DestinationBuffer = device_buffer;
 	buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
+	buffer_copy_data.SourceBufferSize = load_info->BufferSize;
+	buffer_copy_data.SourceAllocationOffset = load_info->BufferOffset;
+	buffer_copy_data.AllocationId = load_info->AllocationId;
 	load_info->RenderSystem->AddBufferCopy(buffer_copy_data);
 	
 	meshBuffers.EmplaceBack(device_buffer);

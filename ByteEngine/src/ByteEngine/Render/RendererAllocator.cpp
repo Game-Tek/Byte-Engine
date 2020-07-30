@@ -28,16 +28,28 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	scratch_buffer.Destroy(&renderDevice);
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	uint32 i = 0, id = 0;
+	
 	for(auto& e : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(deviceMemory, size, offset, data)) { return; }
+		if(e.TryAllocate(deviceMemory, size, offset, data, id))
+		{
+			*reinterpret_cast<uint8*>(allocId) = i;
+			*(reinterpret_cast<uint32*>(allocId) + 1) = i;
+			return;
+		}
+		
+		++i;
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, size, offset, data);
+	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, size, offset, data, id);
+
+	*reinterpret_cast<uint8*>(allocId) = i;
+	*(reinterpret_cast<uint32*>(allocId) + 1) = i;
 }
 
 void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::PersistentAllocatorReference& allocatorReference)
@@ -73,7 +85,7 @@ void ScratchMemoryBlock::Free(const RenderDevice& renderDevice, const BE::Persis
 	deviceMemory.Destroy(&renderDevice);
 }
 
-bool ScratchMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data)
+bool ScratchMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
 {
 	uint32 i = 0;
 
@@ -103,7 +115,7 @@ bool ScratchMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 si
 	return false;
 }
 
-void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data)
+void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
 {
 	*data = static_cast<byte*>(mappedMemory) + freeSpaces[0].Offset;
 	*offset = freeSpaces[0].Offset;
@@ -113,7 +125,7 @@ void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const ui
 	freeSpaces[0].Offset += size;
 }
 
-void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
+void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
 {
 	uint8 info = 0; uint32 i = 0;
 
@@ -216,7 +228,7 @@ bool LocalMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size
 	return false;
 }
 
-void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset)
+void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, uint32& id)
 {
 	*offset = freeSpaces[0].Offset;
 	*deviceMemory = this->deviceMemory;
@@ -225,7 +237,7 @@ void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, u
 	freeSpaces[0].Offset += size;
 }
 
-void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset)
+void LocalMemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
 {
 	uint8 info = 0; uint32 i = 0;
 
@@ -287,14 +299,14 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = (uint32)BufferType::UNIFORM | (uint32)BufferType::TRANSFER_DESTINATION | (uint32)BufferType::INDEX | (uint32)BufferType::VERTEX;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX;
 	Buffer scratch_buffer(buffer_create_info);
 
 	Image::CreateInfo create_info;
 	create_info.RenderDevice = &renderDevice;
 	create_info.Extent = { 1280, 720 };
 	create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
-	create_info.ImageUses = (uint32)ImageUse::TRANSFER_DESTINATION;
+	create_info.ImageUses = ImageUse::TRANSFER_DESTINATION;
 	create_info.InitialLayout = GAL::ImageLayout::UNDEFINED;
 	create_info.SourceFormat = (uint32)ImageFormat::RGBA_I8;
 	create_info.ImageTiling = (uint32)GAL::VulkanImageTiling::OPTIMAL;
@@ -322,14 +334,25 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 	for(auto& e : textureMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, const BE::PersistentAllocatorReference& allocatorReference)
+void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	uint32 i = 0, id;
+	
 	for(auto& e : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(deviceMemory, size, offset)) { return; }
+		if(e.TryAllocate(deviceMemory, size, offset))
+		{
+			*reinterpret_cast<uint8*>(allocId) = i;
+			return;
+		}
+		
+		++i;
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().Allocate(deviceMemory, size, offset);
+	bufferMemoryBlocks.back().Allocate(deviceMemory, size, offset, id);
+
+	*reinterpret_cast<uint8*>(allocId) = i;
 }
+

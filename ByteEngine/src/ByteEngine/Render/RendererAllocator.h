@@ -22,8 +22,8 @@ struct LocalMemoryBlock
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset);
-	void Allocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset);
-	void Deallocate(uint32 size, uint32 offset);
+	void Allocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, uint32& id);
+	void Deallocate(uint32 size, uint32 offset, uint32 id);
 
 private:
 	DeviceMemory deviceMemory;
@@ -40,7 +40,15 @@ public:
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset,
+	                    AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference);
+	
+	void DeallocateBuffer(const RenderDevice& renderDevice, const uint32 size, const uint32 offset, AllocationId allocId)
+	{
+		uint8* id = reinterpret_cast<uint8*>(&allocId);
+		bufferMemoryBlocks[*id].Deallocate(size, offset, *reinterpret_cast<uint32*>(id + 4));
+	}
+	
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 	
@@ -50,6 +58,7 @@ private:
 	GTSL::Array<LocalMemoryBlock, 32> textureMemoryBlocks;
 };
 
+
 struct ScratchMemoryBlock
 {
 	ScratchMemoryBlock() = default;
@@ -57,9 +66,9 @@ struct ScratchMemoryBlock
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
-	void AllocateFirstBlock(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data);
-	void Deallocate(uint32 size, uint32 offset);
+	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void AllocateFirstBlock(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void Deallocate(uint32 size, uint32 offset, uint32 id);
 private:
 	DeviceMemory deviceMemory;
 	void* mappedMemory = nullptr;
@@ -74,7 +83,13 @@ public:
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference);
+	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
+	{
+		uint8* id = reinterpret_cast<uint8*>(&allocId);
+		bufferMemoryBlocks[*id].Deallocate(size, offset, *reinterpret_cast<uint32*>(id + 4));
+	}
+	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 private:

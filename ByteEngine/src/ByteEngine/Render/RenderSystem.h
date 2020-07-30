@@ -34,6 +34,7 @@ public:
 		uint32 Size = 0;
 		uint32* Offset = nullptr;
 		void** Data = nullptr;
+		AllocationId* AllocationId = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
@@ -41,9 +42,38 @@ public:
 		DeviceMemory* DeviceMemory = nullptr;
 		uint32 Size = 0;
 		uint32* Offset = nullptr;
+		AllocationId* AllocationId = nullptr;
 	};
-	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo);
-	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo);
+	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
+	{
+		scratchMemoryAllocator.AllocateBuffer(renderDevice,
+			allocationInfo.DeviceMemory,
+			allocationInfo.Size,
+			allocationInfo.Offset,
+			allocationInfo.Data,
+			allocationInfo.AllocationId,
+			GetPersistentAllocator());
+	}
+	
+	void DeallocateScratchBufferMemory(uint32 size, uint32 offset, AllocationId allocId)
+	{
+		scratchMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
+	}
+	
+	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
+	{
+		localMemoryAllocator.AllocateBuffer(renderDevice,
+			memoryAllocationInfo.DeviceMemory,
+			memoryAllocationInfo.Size,
+			memoryAllocationInfo.Offset,
+			memoryAllocationInfo.AllocationId,
+			GetPersistentAllocator());
+	}
+
+	void DeallocateLocalBufferMemory(const uint32 size, const uint32 offset, AllocationId allocId)
+	{
+		localMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
+	}
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
@@ -55,6 +85,8 @@ public:
 		 */
 		uint32 SourceOffset = 0, DestinationOffset = 0;
 		uint32 Size = 0;
+		uint32 SourceBufferSize, SourceAllocationOffset;
+		AllocationId AllocationId;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas.EmplaceBack(bufferCopyData); }
 
@@ -104,7 +136,6 @@ private:
 	uint32 swapchainColorSpace{ 0 };
 	
 	void render(TaskInfo taskInfo);
-
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);
 

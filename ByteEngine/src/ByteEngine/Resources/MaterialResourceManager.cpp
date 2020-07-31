@@ -79,7 +79,6 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			shader.CloseFile();
 		}
 
-		material_info.MaterialSize = package.GetFileSize() - material_info.MaterialOffset;
 		material_info.VertexElements = materialCreateInfo.VertexFormat;
 		material_info.ShaderTypes = materialCreateInfo.ShaderTypes;
 
@@ -103,7 +102,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 void MaterialResourceManager::GetMaterialSize(const GTSL::Id64 name, uint32& size)
 {
 	GTSL::ReadLock lock(mutex);
-	size = materialInfos.At(name).MaterialSize;
+	for(auto& e : materialInfos.At(name).ShaderSizes) { size += e; }
 }
 
 void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)

@@ -13,6 +13,27 @@ StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers()
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	meshBuffers.Initialize(64);
+
+	BindingsPool::CreateInfo create_info;
+	create_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
+
+	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindings_sets;
+	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
+	BindingsSetLayout::BindingDescriptor binding_descriptor;
+	binding_descriptor.ShaderStage = ShaderStage::VERTEX;
+	binding_descriptor.BindingType = BindingType::FLOAT3;
+	binding_descriptor.UniformCount = 1;
+	binding_descriptors.EmplaceBack(binding_descriptor);
+	create_info.BindingsSets = bindings_sets;
+
+	//GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
+	//for (uint32 i = 0; i < onStaticMeshLoad.BindingSets[0].GetLength(); ++i)
+	//{
+	//	descriptor_pool_sizes.PushBack({ static_cast<BindingType>(onStaticMeshLoad.BindingSets[0][i]), 1 });
+	//}
+	//
+	//create_info.DescriptorPoolSizes = descriptor_pool_sizes;
+	//bindingsSets.Emplace(load_info->Instance, bindings_sets);
 }
 
 void StaticMeshRenderGroup::Shutdown()
@@ -143,7 +164,7 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 		Shader::CreateInfo create_info;
 		create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
 		create_info.ShaderData = GTSL::Ranger<const byte>(onStaticMeshLoad.ShaderSizes[i], onStaticMeshLoad.DataBuffer + offset);
-		load_info->RenderSystem->AddShader("REPLACE", shaders[shaders.EmplaceBack(create_info)]);
+		shaders.EmplaceBack(create_info);
 		offset += onStaticMeshLoad.ShaderSizes[i];
 	}
 	
@@ -156,27 +177,6 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	pipeline_create_info.Stages = shader_infos;
 	pipeline_create_info.RenderPass = load_info->RenderSystem->GetRenderPass();
 	pipelines.Emplace(load_info->Instance, pipeline_create_info);
-
-	BindingsPool::CreateInfo create_info;
-	create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-
-	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindings_sets;
-	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
-	BindingsSetLayout::BindingDescriptor binding_descriptor;
-	binding_descriptor.ShaderStage = ShaderStage::VERTEX;
-	binding_descriptor.BindingType = BindingType::FLOAT3;
-	binding_descriptor.UniformCount = 1;
-	binding_descriptors.EmplaceBack(binding_descriptor);
-	create_info.BindingsSets = bindings_sets;
-
-	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
-	for(uint32 i = 0; i < onStaticMeshLoad.BindingSets[0].GetLength(); ++i)
-	{
-		descriptor_pool_sizes.PushBack({ static_cast<BindingType>(onStaticMeshLoad.BindingSets[0][i]), 1 });
-	}
-	
-	create_info.DescriptorPoolSizes = descriptor_pool_sizes;
-	bindingsSets.Emplace(load_info->Instance, bindings_sets);
 	
 	load_info->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(load_info, GetPersistentAllocator());

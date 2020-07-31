@@ -22,6 +22,12 @@ inline GTSL::Ranger<const GAL::ShaderDataTypes> GetShaderDataTypes(const GTSL::R
 
 using AllocationId = uint64;
 
+struct RenderAllocation
+{
+	uint32 Size = 0, Offset = 0;
+	AllocationId AllocationId = 0;
+};
+
 #if (_WIN64)
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
@@ -29,6 +35,7 @@ using Image = GAL::VulkanImage;
 using Shader = GAL::VulkanShader;
 using Buffer = GAL::VulkanBuffer;
 using Surface = GAL::VulkanSurface;
+using Pipeline = GAL::VulkanPipeline;
 using Semaphore = GAL::VulkanSemaphore;
 using ImageView = GAL::VulkanImageView;
 using RenderPass = GAL::VulkanRenderPass;
@@ -42,6 +49,7 @@ using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
 using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
+using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
 
 using ImageUse = GAL::VulkanImageUse;
 using ImageFormat = GAL::VulkanFormat;
@@ -53,4 +61,6 @@ using ImageTiling = GAL::VulkanImageTiling;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
 using ShaderStage = GAL::VulkanShaderStage;
 using BindingType = GAL::VulkanBindingType;
+using ShaderType = GAL::VulkanShaderType;
+using CullMode = GAL::CullMode;
 #endif

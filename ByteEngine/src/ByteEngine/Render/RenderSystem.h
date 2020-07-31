@@ -55,7 +55,7 @@ public:
 			GetPersistentAllocator());
 	}
 	
-	void DeallocateScratchBufferMemory(uint32 size, uint32 offset, AllocationId allocId)
+	void DeallocateScratchBufferMemory(const uint32 size, const uint32 offset, const AllocationId allocId)
 	{
 		scratchMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
 	}
@@ -70,7 +70,7 @@ public:
 			GetPersistentAllocator());
 	}
 
-	void DeallocateLocalBufferMemory(const uint32 size, const uint32 offset, AllocationId allocId)
+	void DeallocateLocalBufferMemory(const uint32 size, const uint32 offset, const AllocationId allocId)
 	{
 		localMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
 	}
@@ -85,12 +85,14 @@ public:
 		 */
 		uint32 SourceOffset = 0, DestinationOffset = 0;
 		uint32 Size = 0;
-		uint32 SourceBufferSize, SourceAllocationOffset;
-		AllocationId AllocationId;
+		RenderAllocation Allocation;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas.EmplaceBack(bufferCopyData); }
 
 	PipelineCache* GetPipelineCache() { return &pipelineCache; }
+
+	void AddShader(const GTSL::Id64 name, const Shader shader) { shaders.Emplace(name, shader); }
+	Shader* GetShader(const GTSL::Id64 name) { return &shaders.At(name); }
 	
 private:
 	RenderDevice renderDevice;
@@ -111,17 +113,14 @@ private:
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> inFlightFences;
-	
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> commandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> commandPools;
-	
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
-
 	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
-
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
-
 	GTSL::Array<GTSL::Pair<uint32, uint32>, MAX_CONCURRENT_FRAMES> transferredMeshes;
+
+	GTSL::FlatHashMap<Shader, BE::PersistentAllocatorReference> shaders;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;

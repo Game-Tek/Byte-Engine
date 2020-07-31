@@ -256,7 +256,7 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		for(uint32 i = range.First; i < range.Second + 1; ++i)
 		{
 			bufferCopyDatas[i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(bufferCopyDatas[i].SourceBufferSize, bufferCopyDatas[i].SourceAllocationOffset, bufferCopyDatas[i].AllocationId);
+			DeallocateScratchBufferMemory(bufferCopyDatas[i].Allocation.Size, bufferCopyDatas[i].Allocation.Offset, bufferCopyDatas[i].Allocation.AllocationId);
 		}
 		
 		//bufferCopyDatas.

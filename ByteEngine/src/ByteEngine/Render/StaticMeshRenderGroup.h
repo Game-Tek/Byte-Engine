@@ -1,9 +1,12 @@
 #pragma once
 
+#include <GTSL/Buffer.h>
+
 #include "RenderGroup.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
 #include "RenderTypes.h"
+#include "ByteEngine/Resources/MaterialResourceManager.h"
 
 class StaticMeshRenderGroup final : public RenderGroup
 {
@@ -17,26 +20,50 @@ public:
 	{
 		ComponentReference ComponentReference = 0;
 		class RenderSystem* RenderSystem = nullptr;
+		class GameInstance* GameInstance = nullptr;
 		const class RenderStaticMeshCollection* RenderStaticMeshCollection = nullptr;
-		class StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
+		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
+		MaterialResourceManager* MaterialResourceManager = nullptr;
 	};
 	void AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 	
 private:
-	struct LoadInfo
+	struct MeshLoadInfo
 	{
-		LoadInfo(RenderSystem* renderDevice, const Buffer& buffer, uint32 size, uint32 offset, uint64 allocId) : RenderSystem(renderDevice), ScratchBuffer(buffer),
-		BufferSize(size), BufferOffset(offset), AllocationId(allocId)
+		MeshLoadInfo(RenderSystem* renderDevice, const Buffer& buffer, RenderAllocation renderAllocation, uint32 instance) : RenderSystem(renderDevice), ScratchBuffer(buffer),
+		Allocation(renderAllocation), InstanceId(instance)
 		{
 		}
 		
 		RenderSystem* RenderSystem = nullptr;
 		Buffer ScratchBuffer;
-		uint32 BufferSize, BufferOffset;
-		uint64 AllocationId;
+		RenderAllocation Allocation;
+		uint32 InstanceId;
+	};
+
+	struct MaterialLoadInfo
+	{
+		MaterialLoadInfo(RenderSystem* renderSystem, const GTSL::Buffer& buffer, uint32 instance) : RenderSystem(renderSystem), Buffer(buffer), Instance(instance)
+		{
+			
+		}
+
+		RenderSystem* RenderSystem = nullptr;
+		GTSL::Buffer Buffer;
+		uint32 Instance = 0;
 	};
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
+	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
 
+	BindingsSetLayout bindingsSetLayout;
+
+	uint32 index = 0;
+	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
+	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
+	
+	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;
+	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> bindingsSets;
+	GTSL::Vector<BindingsPool, BE::PersistentAllocatorReference> bindingsPools;
 };

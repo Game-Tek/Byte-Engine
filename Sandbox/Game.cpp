@@ -40,6 +40,9 @@ void Game::Initialize()
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
+	/// <summary>
+	/// Push bindings only for actual shader
+	/// </summary>
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
 	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };

@@ -15,7 +15,7 @@ public:
 	{
 		uint32 MaterialOffset = 0;
 		uint32 MaterialSize = 0;
-		GTSL::Array<uint32, 12> ShaderOffsets;
+		GTSL::Array<uint32, 12> ShaderSizes;
 		GTSL::Array<uint8, 20> VertexElements;
 		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
 		GTSL::Array<uint8, 12> ShaderTypes;
@@ -39,6 +39,7 @@ public:
 		GTSL::Array<uint8, 20> VertexElements;
 		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
 		GTSL::Array<uint8, 12> ShaderTypes;
+		GTSL::Array<uint32, 20> ShaderSizes;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo

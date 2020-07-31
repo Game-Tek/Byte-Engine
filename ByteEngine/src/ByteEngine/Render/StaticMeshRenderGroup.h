@@ -19,6 +19,7 @@ public:
 	struct AddStaticMeshInfo
 	{
 		ComponentReference ComponentReference = 0;
+		GTSL::Id64 MaterialName;
 		class RenderSystem* RenderSystem = nullptr;
 		class GameInstance* GameInstance = nullptr;
 		const class RenderStaticMeshCollection* RenderStaticMeshCollection = nullptr;

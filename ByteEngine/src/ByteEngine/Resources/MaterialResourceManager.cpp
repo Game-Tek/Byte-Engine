@@ -69,7 +69,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
 			BE_ASSERT(Shader::CompileShader(f, materialCreateInfo.ShaderName, (GAL::ShaderType)materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer) != false, "Failed to compile");
 
-			material_info.ShaderOffsets.EmplaceBack(package.GetFileSize() - material_info.MaterialOffset);
+			material_info.ShaderSizes.EmplaceBack(shader_buffer.GetLength());
 			package.WriteToFile(shader_buffer);
 			
 			resources_path.Drop(resources_path.FindLast('/') + 1);
@@ -118,6 +118,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	on_material_load_info.UserData = loadInfo.UserData;
 	on_material_load_info.DataBuffer = loadInfo.DataBuffer;
 	on_material_load_info.ShaderTypes = material_info.ShaderTypes;
+	on_material_load_info.ShaderSizes = material_info.ShaderSizes;
 	on_material_load_info.BindingSets = material_info.BindingSets;
 	on_material_load_info.VertexElements = material_info.VertexElements;
 	
@@ -127,7 +128,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
 	Insert(materialInfo.MaterialOffset, buffer);
-	Insert(materialInfo.ShaderOffsets, buffer);
+	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
@@ -136,7 +137,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
 	Extract(materialInfo.MaterialOffset, buffer);
-	Extract(materialInfo.ShaderOffsets, buffer);
+	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
 	Extract(materialInfo.BindingSets, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);

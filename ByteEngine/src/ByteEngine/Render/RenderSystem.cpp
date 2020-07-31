@@ -167,6 +167,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 void RenderSystem::Shutdown()
 {
+	ForEach(shaders, [&](Shader& shader){ shader.Destroy(&renderDevice); });
+	
 	uint8 i = 0;
 	for (auto& e : commandPools) { e.FreeCommandBuffers({ &renderDevice, GTSL::Ranger<CommandBuffer>(1, &commandBuffers[i]) }); ++i; }
 	for (auto& e : commandPools) { e.Destroy(&renderDevice); }

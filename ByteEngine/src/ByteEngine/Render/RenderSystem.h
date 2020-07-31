@@ -93,6 +93,8 @@ public:
 
 	void AddShader(const GTSL::Id64 name, const Shader shader) { shaders.Emplace(name, shader); }
 	Shader* GetShader(const GTSL::Id64 name) { return &shaders.At(name); }
+
+	RenderPass* GetRenderPass() { return &renderPass; }
 	
 private:
 	RenderDevice renderDevice;

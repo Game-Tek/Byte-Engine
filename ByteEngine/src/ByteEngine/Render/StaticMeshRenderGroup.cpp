@@ -36,9 +36,9 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	//bindingsSets.Emplace(load_info->Instance, bindings_sets);
 }
 
-void StaticMeshRenderGroup::Shutdown()
+void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	//for (auto& e : meshBuffers) { e.Destroy(); }
+	for (auto& e : meshBuffers) { e.Destroy(static_cast<RenderSystem*>(shutdownInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice()); }
 }
 
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)

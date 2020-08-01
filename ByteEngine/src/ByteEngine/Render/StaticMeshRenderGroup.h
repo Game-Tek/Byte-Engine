@@ -14,7 +14,7 @@ public:
 	StaticMeshRenderGroup();
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
-	void Shutdown() override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	struct AddStaticMeshInfo
 	{

@@ -23,6 +23,10 @@ public:
 	};
 	virtual void Initialize(const InitializeInfo& initializeInfo) = 0;
 
-	virtual void Shutdown() = 0;
+	struct ShutdownInfo
+	{
+		class GameInstance* GameInstance = nullptr;
+	};
+	virtual void Shutdown(const ShutdownInfo& shutdownInfo) = 0;
 private:
 };

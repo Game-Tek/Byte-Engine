@@ -23,8 +23,12 @@ dynamicTasksInfo(32, GetTransientAllocator()), task_sorter(64, GetPersistentAllo
 
 GameInstance::~GameInstance()
 {
-	ForEach(systems, [&](SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(); });
-
+	{
+		System::ShutdownInfo shutdown_info;
+		shutdown_info.GameInstance = this;
+		ForEach(systems, [&](SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(shutdown_info); });
+	}
+		
 	World::DestroyInfo destroy_info;
 	destroy_info.GameInstance = this;
 	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }

@@ -49,6 +49,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		GTSL::Buffer index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		GTSL::Buffer shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
 		
 		MaterialInfo material_info;
 		
@@ -67,7 +68,9 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			shader.ReadFile(shader_source_buffer);
 
 			auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-			BE_ASSERT(Shader::CompileShader(f, materialCreateInfo.ShaderName, (GAL::ShaderType)materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer) != false, "Failed to compile");
+			const auto comp_res = Shader::CompileShader(f, materialCreateInfo.ShaderName, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
+			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
+			BE_ASSERT(comp_res != false, shader_error_buffer.GetData());
 
 			material_info.ShaderSizes.EmplaceBack(shader_buffer.GetLength());
 			package.WriteToFile(shader_buffer);
@@ -75,6 +78,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			resources_path.Drop(resources_path.FindLast('/') + 1);
 
 			shader_source_buffer.Resize(0);
+			shader_error_buffer.Resize(0);
 			shader_buffer.Resize(0);
 			shader.CloseFile();
 		}
@@ -96,6 +100,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		shader_source_buffer.Free(8, GetTransientAllocator());
 		index_buffer.Free(8, GetTransientAllocator());
 		shader_buffer.Free(8, GetTransientAllocator());
+		shader_error_buffer.Free(8, GetTransientAllocator());
 	}
 }
 

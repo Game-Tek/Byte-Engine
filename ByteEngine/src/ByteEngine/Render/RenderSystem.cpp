@@ -165,7 +165,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
 }
 
-void RenderSystem::Shutdown()
+void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	ForEach(shaders, [&](Shader& shader){ shader.Destroy(&renderDevice); });
 	
@@ -263,6 +263,11 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		
 		//bufferCopyDatas.
 	}
+	else
+	{
+		//BE_ASSERT()
+	}
+
 }
 
 void RenderSystem::executeTransfers(TaskInfo taskInfo)

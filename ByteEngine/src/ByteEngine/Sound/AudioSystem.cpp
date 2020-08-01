@@ -16,7 +16,7 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 	audioDevice.Start();
 }
 
-void AudioSystem::Shutdown()
+void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	audioDevice.Stop();
 	audioDevice.Destroy();

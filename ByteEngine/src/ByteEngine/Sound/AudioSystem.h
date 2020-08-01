@@ -12,7 +12,7 @@ public:
 	~AudioSystem();
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
-	void Shutdown() override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 private:
 	using AudioDevice = AAL::WindowsAudioDevice;

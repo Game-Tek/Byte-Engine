@@ -60,11 +60,14 @@ private:
 	BindingsSetLayout bindingsSetLayout;
 
 	uint32 index = 0;
+
+	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindingsSets;
 	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	
 	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;
-	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> bindingsSets;
+	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> perObjectBindingsSets;
 	GTSL::Vector<BindingsPool, BE::PersistentAllocatorReference> bindingsPools;
+	BindingsPool bindingsPool;
 };

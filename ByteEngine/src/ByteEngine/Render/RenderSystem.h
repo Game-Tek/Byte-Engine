@@ -18,7 +18,7 @@ public:
 	RenderSystem() : System("RenderSystem") {}
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
-	void Shutdown() override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
 	struct InitializeRendererInfo
 	{
@@ -31,15 +31,17 @@ public:
 	struct BufferScratchMemoryAllocationInfo
 	{
 		DeviceMemory* DeviceMemory = nullptr;
+		void** Data = nullptr;
+		
 		uint32 Size = 0;
 		uint32* Offset = nullptr;
-		void** Data = nullptr;
 		AllocationId* AllocationId = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
 	{
 		DeviceMemory* DeviceMemory = nullptr;
+		
 		uint32 Size = 0;
 		uint32* Offset = nullptr;
 		AllocationId* AllocationId = nullptr;

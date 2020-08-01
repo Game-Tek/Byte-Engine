@@ -33,9 +33,9 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		T* ret = static_cast<T*>(systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
+		T* ret = (T*)systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData();
 		objectNames.EmplaceBack(systemName);
-		initSystem(ret, systemName);
+		initSystem((System*)ret, systemName);
 		return ret;
 	}
 

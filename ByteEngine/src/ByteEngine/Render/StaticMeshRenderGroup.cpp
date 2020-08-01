@@ -21,11 +21,19 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	
 	BindingsPool::CreateInfo create_info;
 	create_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
-	create_info.BindingsSets = bindingsSets;
 	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
 	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{BindingType::UNIFORM_BUFFER_DYNAMIC, 3});
 	create_info.DescriptorPoolSizes = descriptor_pool_sizes;
+	create_info.MaxSets = 1;
 	::new(&bindingsPool) BindingsPool(create_info);
+
+	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
+	allocate_bindings_sets_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
+	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(bindingsSets.GetCapacity(), bindingsSets.begin());
+	allocate_bindings_sets_info.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ bindingsSetLayout, bindingsSetLayout, bindingsSetLayout };
+	bindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
+	
+	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
 
 void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)

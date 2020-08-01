@@ -36,6 +36,7 @@ void Game::Initialize()
 	renderer->InitializeRenderer(initialize_renderer_info);
 
 	gameInstance->AddComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
+	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -46,18 +47,14 @@ void Game::Initialize()
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
 	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };
+	GTSL::Array<GTSL::Array<uint8, 8>, 8> binding_sets(1);
+	binding_sets[0].EmplaceBack(static_cast<uint8>(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC));
 	material_create_info.VertexFormat = format;
 	material_create_info.ShaderTypes = GTSL::Array<uint8, 12>{ (uint8)GAL::ShaderType::VERTEX_SHADER, (uint8)GAL::ShaderType::FRAGMENT_SHADER };
+	GTSL::Array<GTSL::Ranger<const uint8>, 10> b_array;
+	b_array.EmplaceBack(binding_sets[0]);
+	material_create_info.BindingSets = b_array;
 	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
-
-	auto test_task = [](TaskInfo taskInfo, uint32 i)
-	{
-		printf("Hey: %u", i);
-	};
-
-	GTSL::Array<TaskDependency, 2> dependencies{ {"RenderStaticMeshCollection", AccessType::READ} };
-	
-	gameInstance->AddDynamicTask("Test", GTSL::Delegate<void(TaskInfo, uint32)>::Create(test_task), dependencies, "FrameStart", "FrameEnd", 32u);
 	//show loading screen
 	//load menu
 	//show menu

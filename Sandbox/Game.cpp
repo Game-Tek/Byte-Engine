@@ -34,7 +34,7 @@ void Game::Initialize()
 	GTSL::Array<GTSL::Array<uint8, 8>, 8> binding_sets(1);
 	binding_sets[0].EmplaceBack(static_cast<uint8>(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC));
 	material_create_info.VertexFormat = format;
-	material_create_info.ShaderTypes = GTSL::Array<uint8, 12>{ (uint8)GAL::ShaderType::VERTEX_SHADER, (uint8)GAL::ShaderType::FRAGMENT_SHADER };
+	material_create_info.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
 	GTSL::Array<GTSL::Ranger<const uint8>, 10> b_array;
 	b_array.EmplaceBack(binding_sets[0]);
 	material_create_info.BindingSets = b_array;

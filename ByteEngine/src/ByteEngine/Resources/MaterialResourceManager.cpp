@@ -60,9 +60,9 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 
 		material_info.MaterialOffset = package.GetFileSize();
 		
-		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.GetLength(); ++i)
+		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.ElementCount(); ++i)
 		{
-			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[materialCreateInfo.ShaderTypes[i]];
+			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.ShaderTypes[i])];
 
 			shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 			shader.ReadFile(shader_source_buffer);
@@ -83,9 +83,8 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			shader.CloseFile();
 		}
 
-		material_info.VertexElements = GTSL::Ranger<std::underlying_type<GAL::ShaderDataType>::type>(
-			materialCreateInfo.VertexFormat.ElementCount(), (std::underlying_type<GAL::ShaderDataType>::type*)materialCreateInfo.VertexFormat.begin());
-		material_info.ShaderTypes = materialCreateInfo.ShaderTypes;
+		material_info.VertexElements = GTSL::Ranger<uint8>(materialCreateInfo.VertexFormat.ElementCount(), (uint8*)materialCreateInfo.VertexFormat.begin());
+		material_info.ShaderTypes = GTSL::Ranger<uint8>(materialCreateInfo.ShaderTypes.ElementCount(), (uint8*)materialCreateInfo.ShaderTypes.begin());
 
 		for(const auto& e : materialCreateInfo.BindingSets)
 		{

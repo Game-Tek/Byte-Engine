@@ -13,6 +13,8 @@
 #include <ByteEngine\Render\RenderStaticMeshCollection.h>
 #include <ByteEngine\Render\RenderSystem.h>
 
+#include "ByteEngine/Resources/AudioResourceManager.h"
+
 #pragma comment(lib, "XInput.lib")
 
 void GameApplication::Initialize()
@@ -50,6 +52,7 @@ void GameApplication::Initialize()
 	CreateResourceManager<StaticMeshResourceManager>();
 	CreateResourceManager<TextureResourceManager>();
 	CreateResourceManager<MaterialResourceManager>();
+	CreateResourceManager<AudioResourceManager>();
 	CreateResourceManager<PipelineCacheResourceManager>();
 
 	gameInstance->AddGoal("FrameStart");

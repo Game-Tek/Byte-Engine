@@ -6,6 +6,7 @@
 #include "ResourceManager.h"
 
 namespace GAL {
+	enum class ShaderType : unsigned char;
 	enum class ShaderDataType : unsigned char;
 }
 
@@ -31,7 +32,7 @@ public:
 		GTSL::StaticString<128> ShaderName;
 		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 		GTSL::Ranger<const GTSL::Ranger<const uint8>> BindingSets;
-		GTSL::Array<uint8, 12> ShaderTypes;
+		GTSL::Ranger<const GAL::ShaderType> ShaderTypes;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 

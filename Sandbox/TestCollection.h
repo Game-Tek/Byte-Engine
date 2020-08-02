@@ -7,8 +7,5 @@ class TestCollection : public ComponentCollection
 {
 public:
 	TestCollection();
-
-	uint32 CreateInstance(const CreateInstanceInfo& createInstanceInfo) override;
-	void DestroyInstance(const DestroyInstanceInfo& destroyInstancesInfo) override;
 };
 

@@ -21,22 +21,6 @@ void Game::Initialize()
 	};
 	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("RightHatButton"), GTSL::Id64("S_Key") });
 	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
-	
-	sandboxGameInstance->AddGoal("FrameStart");
-	sandboxGameInstance->AddGoal("GameplayStart");
-	sandboxGameInstance->AddGoal("GameplayEnd");
-	sandboxGameInstance->AddGoal("RenderStart");
-	sandboxGameInstance->AddGoal("RenderEnd");
-	sandboxGameInstance->AddGoal("FrameEnd");
-
-	auto renderer = sandboxGameInstance->AddSystem<RenderSystem>("RenderSystem");
-
-	RenderSystem::InitializeRendererInfo initialize_renderer_info;
-	initialize_renderer_info.Window = &window;
-	renderer->InitializeRenderer(initialize_renderer_info);
-
-	gameInstance->AddComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
-	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -46,7 +30,7 @@ void Game::Initialize()
 	/// </summary>
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
-	GTSL::Array<uint8, 8> format{ (uint8)GAL::ShaderDataTypes::FLOAT3, (uint8)GAL::ShaderDataTypes::FLOAT3 };
+	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
 	GTSL::Array<GTSL::Array<uint8, 8>, 8> binding_sets(1);
 	binding_sets[0].EmplaceBack(static_cast<uint8>(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC));
 	material_create_info.VertexFormat = format;

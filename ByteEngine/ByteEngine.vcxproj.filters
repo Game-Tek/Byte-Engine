@@ -133,6 +133,7 @@
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
+    <ClInclude Include="src\ByteEngine\Game\CameraComponentCollection.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

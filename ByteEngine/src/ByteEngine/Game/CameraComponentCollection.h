@@ -34,6 +34,7 @@ public:
 	}
 	
 	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetViewMatrices() const { return viewMatrices; }
+	
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> viewMatrices;
 };

@@ -88,7 +88,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 
 		for(const auto& e : materialCreateInfo.BindingSets)
 		{
-			material_info.BindingSets.EmplaceBack(e);
+			material_info.BindingSets.EmplaceBack(GTSL::Ranger<const uint8>(e.ElementCount(), reinterpret_cast<const uint8*>(e.begin())));
 		}
 		
 		materialInfos.Emplace(hashed_name, material_info);
@@ -121,9 +121,12 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	OnMaterialLoadInfo on_material_load_info;
 	on_material_load_info.UserData = loadInfo.UserData;
 	on_material_load_info.DataBuffer = loadInfo.DataBuffer;
-	on_material_load_info.ShaderTypes = material_info.ShaderTypes;
+	on_material_load_info.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(material_info.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(material_info.ShaderTypes.begin()));
 	on_material_load_info.ShaderSizes = material_info.ShaderSizes;
-	on_material_load_info.BindingSets = material_info.BindingSets;
+	for(auto& e : material_info.BindingSets)
+	{
+		on_material_load_info.BindingSets.EmplaceBack(GTSL::Ranger<GAL::BindingType>(material_info.BindingSets.GetLength(), reinterpret_cast<GAL::BindingType*>(material_info.BindingSets.begin())));
+	}
 	on_material_load_info.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(material_info.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(material_info.VertexElements.begin()));
 	
 	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MakeTransferReference(on_material_load_info));

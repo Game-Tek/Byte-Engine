@@ -19,7 +19,6 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[index]; }
 
 	struct InitializeRendererInfo
 	{
@@ -98,6 +97,9 @@ public:
 	Shader* GetShader(const GTSL::Id64 name) { return &shaders.At(name); }
 
 	RenderPass* GetRenderPass() { return &renderPass; }
+
+	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[index]; }
+	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 	
 private:
 	RenderDevice renderDevice;

@@ -7,7 +7,7 @@
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers(64, GetPersistentAllocator()),
-indeces(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator())
+indeces(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator())
 {
 }
 
@@ -39,21 +39,48 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 
 void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	RenderSystem* render_system = (RenderSystem*)shutdownInfo.GameInstance->GetSystem("RenderSystem");
+	RenderSystem* render_system = static_cast<RenderSystem*>(shutdownInfo.GameInstance->GetSystem("RenderSystem"));
 	
-	for (auto& e : meshBuffers) { e.Destroy(static_cast<RenderSystem*>(shutdownInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice()); }
+	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
 	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
+	for (auto& e : pipelines) { e.Destroy(render_system->GetRenderDevice()); }
 }
 
 void StaticMeshRenderGroup::Render(RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix)
 {	
-	for(auto& e : meshBuffers)
+	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
+		CommandBuffer::BindGraphicsPipelineInfo bind_pipeline_info;
+		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();
+		bind_pipeline_info.RenderExtent = renderSystem->GetRenderExtent();
+		bind_pipeline_info.GraphicsPipeline = &pipelines[i];
+		renderSystem->GetCurrentCommandBuffer()->BindGraphicsPipeline(bind_pipeline_info);
+		
+		CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
+		bind_bindings_set_info.RenderDevice = renderSystem->GetRenderDevice();
+		bind_bindings_set_info.BindingsSets; //CHECK
+		bind_bindings_set_info.Pipeline; //CHECK
+		bind_bindings_set_info.BindingsSetIndex; //CHECK
+		bind_bindings_set_info.Offsets; //CHECK
+		renderSystem->GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
+		
+		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
+		bind_vertex_info.RenderDevice = renderSystem->GetRenderDevice();
+		bind_vertex_info.Buffer = &meshBuffers[i];
+		bind_vertex_info.Offset = renderAllocations[i].Offset;
+		renderSystem->GetCurrentCommandBuffer()->BindVertexBuffer(bind_vertex_info);
+		
+		CommandBuffer::BindIndexBufferInfo bind_index_buffer;
+		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
+		bind_index_buffer.Buffer = &meshBuffers[i];
+		bind_index_buffer.Offset = renderAllocations[i].Offset;
+		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
+		
 		CommandBuffer::DrawIndexedInfo draw_indexed_info;
 		draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
-		draw_indexed_info.IndexCount;
 		draw_indexed_info.InstanceCount = 1;
-		renderSystem->GetCurrentCommandBuffer()->DrawIndexed();
+		draw_indexed_info.IndexCount = indeces[i];
+		renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
 	}
 }
 

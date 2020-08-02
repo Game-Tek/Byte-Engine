@@ -5,6 +5,10 @@
 #include <GTSL/FlatHashMap.h>
 #include "ResourceManager.h"
 
+namespace GAL {
+	enum class ShaderDataType : unsigned char;
+}
+
 class MaterialResourceManager final : public ResourceManager
 {
 public:
@@ -25,7 +29,7 @@ public:
 	struct MaterialCreateInfo
 	{
 		GTSL::StaticString<128> ShaderName;
-		GTSL::Ranger<const uint8> VertexFormat;
+		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 		GTSL::Ranger<const GTSL::Ranger<const uint8>> BindingSets;
 		GTSL::Array<uint8, 12> ShaderTypes;
 	};
@@ -35,7 +39,7 @@ public:
 	
 	struct OnMaterialLoadInfo : OnResourceLoad
 	{
-		GTSL::Array<uint8, 20> VertexElements;
+		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
 		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
 		GTSL::Array<uint8, 12> ShaderTypes;
 		GTSL::Array<uint32, 20> ShaderSizes;

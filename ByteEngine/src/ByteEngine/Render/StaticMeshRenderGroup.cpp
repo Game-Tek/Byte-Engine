@@ -146,10 +146,12 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad)
 {
 	auto load_info = DYNAMIC_CAST(MaterialLoadInfo, onStaticMeshLoad.UserData);
-	
+
+	GTSL::Array<ShaderDataType, 10> shader_datas(onStaticMeshLoad.VertexElements.GetLength());
+	ConvertShaderDataType(onStaticMeshLoad.VertexElements, shader_datas);
 	GraphicsPipeline::CreateInfo pipeline_create_info;
 	pipeline_create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	pipeline_create_info.VertexDescriptor = GetShaderDataTypes(onStaticMeshLoad.VertexElements);
+	pipeline_create_info.VertexDescriptor = shader_datas;
 	pipeline_create_info.IsInheritable = true;
 
 	GTSL::Array<BindingsSetLayout, 10> bindings_set_layouts;

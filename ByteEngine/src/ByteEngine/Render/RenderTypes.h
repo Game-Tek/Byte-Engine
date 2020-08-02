@@ -15,11 +15,6 @@
 
 static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 
-inline GTSL::Ranger<const GAL::ShaderDataTypes> GetShaderDataTypes(const GTSL::Ranger<const uint8> ranger)
-{
-	return GTSL::Ranger<const GAL::ShaderDataTypes>(reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.begin()), reinterpret_cast<const GAL::ShaderDataTypes*>(ranger.end()));
-}
-
 using AllocationId = uint64;
 
 struct RenderAllocation
@@ -63,4 +58,13 @@ using ShaderStage = GAL::VulkanShaderStage;
 using BindingType = GAL::VulkanBindingType;
 using ShaderType = GAL::VulkanShaderType;
 using CullMode = GAL::CullMode;
+using ShaderDataType = GAL::VulkanShaderDataType;
 #endif
+
+inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> shaderDataTypes, const GTSL::Ranger<ShaderDataType> datas)
+{
+	for(uint64 i = 0; i < shaderDataTypes.ElementCount(); ++i)
+	{
+		datas[i] = GAL::ShaderDataTypeToVulkanShaderDataType(shaderDataTypes[i]);
+	}
+}

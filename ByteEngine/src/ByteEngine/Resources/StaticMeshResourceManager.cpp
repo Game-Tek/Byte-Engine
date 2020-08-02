@@ -123,7 +123,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 	aiMesh* in_mesh = ai_scene->mMeshes[0];
 
 	//MESH ALWAYS HAS POSITIONS
-	meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT3));
+	meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT3));
 	for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 	{
 		mesh.VertexElements.EmplaceBack(in_mesh->mVertices[vertex].x);
@@ -134,7 +134,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 	if (in_mesh->HasNormals())
 	{
-		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT3));
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT3));
 
 		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{
@@ -149,8 +149,8 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 	if (in_mesh->HasTangentsAndBitangents())
 	{
-		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT3));
-		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT3));
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT3));
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT3));
 
 		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{
@@ -167,7 +167,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 	for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(in_mesh->GetNumUVChannels()); ++tex_coords)
 	{
-		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT2));
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT2));
 
 		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{
@@ -180,7 +180,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 	for (uint8 colors = 0; colors < static_cast<uint8>(in_mesh->GetNumColorChannels()); ++colors)
 	{
-		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataTypes::FLOAT4));
+		meshInfo.VertexDescriptor.EmplaceBack(static_cast<uint8>(GAL::ShaderDataType::FLOAT4));
 		
 		for (uint32 vertex = 0; vertex < in_mesh->mNumVertices; ++vertex)
 		{

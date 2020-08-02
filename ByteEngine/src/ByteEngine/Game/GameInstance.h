@@ -13,7 +13,7 @@
 #include "ByteEngine/Debug/Assert.h"
 
 class World;
-class ComponentCollection;
+class ComponentCollection : public Object {};
 class System;
 
 namespace BE {

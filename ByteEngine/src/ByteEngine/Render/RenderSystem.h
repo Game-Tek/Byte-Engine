@@ -19,7 +19,8 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	
+	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[index]; }
+
 	struct InitializeRendererInfo
 	{
 		GTSL::Window* Window{ 0 };

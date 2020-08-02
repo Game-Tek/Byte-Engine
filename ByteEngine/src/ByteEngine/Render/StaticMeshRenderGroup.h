@@ -8,6 +8,8 @@
 #include "RenderTypes.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 
+class RenderSystem;
+
 class StaticMeshRenderGroup final : public RenderGroup
 {
 public:
@@ -15,6 +17,7 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	void Render(RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix);
 
 	struct AddStaticMeshInfo
 	{
@@ -64,6 +67,7 @@ private:
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindingsSets;
 	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
+	GTSL::Vector<uint16, BE::PersistentAllocatorReference> indeces;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	
 	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;

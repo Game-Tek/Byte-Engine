@@ -3,9 +3,13 @@
 #include <GTSL/Window.h>
 #include <Windows.h>
 
+
+#include "StaticMeshRenderGroup.h"
 #include "ByteEngine/Game/ComponentCollection.h"
 #include "ByteEngine/Debug/Assert.h"
+#include "ByteEngine/Game/CameraComponentCollection.h"
 
+class CameraComponentCollection;
 class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
@@ -203,48 +207,56 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderSystem::render(TaskInfo taskInfo)
 {
-	//auto& command_buffer = commandBuffers[index];
-	//
-	//Fence::WaitForFencesInfo wait_for_fences_info;
-	//wait_for_fences_info.RenderDevice = &renderDevice;
-	//wait_for_fences_info.Timeout = ~0ULL;
-	//wait_for_fences_info.WaitForAll = true;
-	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[index]);
-	//Fence::WaitForFences(wait_for_fences_info);
-	//
-	//Fence::ResetFencesInfo reset_fences_info;
-	//reset_fences_info.RenderDevice = &renderDevice;
-	//reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[index]);
-	//Fence::ResetFences(reset_fences_info);
-	//
-	//commandPools[index].ResetPool(&renderDevice);
-	//
-	//command_buffer.BeginRecording({});
-	//command_buffer.BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[index], renderArea, clearValues});;
-	//command_buffer.EndRenderPass({&renderDevice});
-	//command_buffer.EndRecording({});
-	//
-	//RenderContext::AcquireNextImageInfo acquire_next_image_info;
-	//acquire_next_image_info.RenderDevice = &renderDevice;
-	//acquire_next_image_info.Semaphore = &imageAvailableSemaphore[index];
-	//auto image_index = renderContext.AcquireNextImage(acquire_next_image_info);
-	//
-	//Queue::SubmitInfo submit_info;
-	//submit_info.RenderDevice = &renderDevice;
-	//submit_info.Fence = &inFlightFences[index];
-	//submit_info.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &imageAvailableSemaphore[index]);
-	//submit_info.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[index]);
-	//submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffers[index]);
-	//GTSL::Array<uint32, 8> wps{ (uint32)GAL::PipelineStage::COLOR_ATTACHMENT_OUTPUT };
-	//submit_info.WaitPipelineStages = wps;
-	//graphicsQueue.Submit(submit_info);
-	//
-	//RenderContext::PresentInfo present_info;
-	//present_info.RenderDevice = &renderDevice;
-	//present_info.Queue = &graphicsQueue;
-	//present_info.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[index]);
-	//present_info.ImageIndex = image_index;
-	//renderContext.Present(present_info);
+	auto& command_buffer = commandBuffers[index];
+	
+	Fence::WaitForFencesInfo wait_for_fences_info;
+	wait_for_fences_info.RenderDevice = &renderDevice;
+	wait_for_fences_info.Timeout = ~0ULL;
+	wait_for_fences_info.WaitForAll = true;
+	wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[index]);
+	Fence::WaitForFences(wait_for_fences_info);
+	
+	Fence::ResetFencesInfo reset_fences_info;
+	reset_fences_info.RenderDevice = &renderDevice;
+	reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &inFlightFences[index]);
+	Fence::ResetFences(reset_fences_info);
+	
+	commandPools[index].ResetPool(&renderDevice);
+	
+	command_buffer.BeginRecording({});
+	command_buffer.BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[index], renderArea, clearValues});;
+	auto view_matrices = ((CameraComponentCollection*)taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetViewMatrices();
+
+	GTSL::Matrix4 projection_matrix;
+	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 35.0f, 16.f / 9.f, 0.5f, 1000.f);
+
+	projection_matrix *= view_matrices[0];
+	
+	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(this, projection_matrix);
+	command_buffer.EndRenderPass({&renderDevice});
+	command_buffer.EndRecording({});
+	
+	RenderContext::AcquireNextImageInfo acquire_next_image_info;
+	acquire_next_image_info.RenderDevice = &renderDevice;
+	acquire_next_image_info.Semaphore = &imageAvailableSemaphore[index];
+	auto image_index = renderContext.AcquireNextImage(acquire_next_image_info);
+	
+	Queue::SubmitInfo submit_info;
+	submit_info.RenderDevice = &renderDevice;
+	submit_info.Fence = &inFlightFences[index];
+	submit_info.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &imageAvailableSemaphore[index]);
+	submit_info.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[index]);
+	submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffers[index]);
+	GTSL::Array<uint32, 8> wps{ (uint32)GAL::PipelineStage::COLOR_ATTACHMENT_OUTPUT };
+	submit_info.WaitPipelineStages = wps;
+	graphicsQueue.Submit(submit_info);
+	
+	RenderContext::PresentInfo present_info;
+	present_info.RenderDevice = &renderDevice;
+	present_info.Queue = &graphicsQueue;
+	present_info.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[index]);
+	present_info.ImageIndex = image_index;
+	renderContext.Present(present_info);
 
 	index = (index + 1) % swapchainImages.GetLength();
 }

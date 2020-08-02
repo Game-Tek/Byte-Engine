@@ -19,7 +19,7 @@ struct AccessType : GTSL::Flags<uint8>
 
 struct TaskInfo
 {
-	const class GameInstance* GameInstance = nullptr;
+	class GameInstance* GameInstance = nullptr;
 };
 
 struct TaskDependency

@@ -110,7 +110,7 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		CommandBuffer::BindIndexBufferInfo bind_index_buffer;
 		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
 		bind_index_buffer.Buffer = &meshBuffers[i];
-		bind_index_buffer.Offset = renderAllocations[i].Offset;
+		bind_index_buffer.Offset = renderAllocations[i].Offset + GTSL::Math::PowerOf2RoundUp(indeces[i] * sizeof(uint16), 256);	
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
 		CommandBuffer::DrawIndexedInfo draw_indexed_info;
@@ -183,7 +183,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	material_load_info.DoneFor = "FrameEnd";
 	material_load_info.StartOn = "FrameStart";
 	material_load_info.Name = addStaticMeshInfo.MaterialName;
-	material_load_info.DataBuffer = material_buffer;
+	material_load_info.DataBuffer = GTSL::Ranger<byte>(material_buffer.GetCapacity(), material_buffer.GetData());
 	void* mat_load_info;
 	GTSL::New<MaterialLoadInfo>(&mat_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, GTSL::MoveRef(material_buffer), index);
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);

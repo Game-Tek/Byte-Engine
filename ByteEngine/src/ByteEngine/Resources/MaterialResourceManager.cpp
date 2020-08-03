@@ -119,6 +119,12 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 {
 	auto material_info = materialInfos.At(loadInfo.Name);
 
+	uint32 mat_size = 0;
+	for (auto e : material_info.ShaderSizes) { mat_size += e; }
+	BE_ASSERT(mat_size <= loadInfo.DataBuffer.Bytes(), "Buffer can't hold required data!");
+
+	BE_ASSERT(material_info.MaterialOffset != material_info.ShaderSizes[0], ":|");
+	
 	package.SetPointer(material_info.MaterialOffset, GTSL::File::MoveFrom::BEGIN);
 
 	package.ReadFromFile(loadInfo.DataBuffer);

@@ -68,3 +68,19 @@ inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> 
 		datas[i] = GAL::ShaderDataTypeToVulkanShaderDataType(shaderDataTypes[i]);
 	}
 }
+
+inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
+{
+	switch(shader)
+	{
+	case GAL::ShaderType::VERTEX_SHADER: return GAL::VulkanShaderType::VERTEX;
+	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: return GAL::VulkanShaderType::TESSELLATION_CONTROL;
+	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: return GAL::VulkanShaderType::TESSELLATION_EVALUATION;
+	case GAL::ShaderType::GEOMETRY_SHADER: return GAL::VulkanShaderType::GEOMETRY;
+	case GAL::ShaderType::FRAGMENT_SHADER: return GAL::VulkanShaderType::FRAGMENT;
+	case GAL::ShaderType::COMPUTE_SHADER: return GAL::VulkanShaderType::COMPUTE;
+	default: GAL_DEBUG_BREAK;
+	}
+
+	return GAL::VulkanShaderType::VERTEX;
+}

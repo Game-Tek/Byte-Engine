@@ -136,7 +136,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	on_material_load_info.ShaderSizes = material_info.ShaderSizes;
 	for(auto& e : material_info.BindingSets)
 	{
-		on_material_load_info.BindingSets.EmplaceBack(GTSL::Ranger<GAL::BindingType>(material_info.BindingSets.GetLength(), reinterpret_cast<GAL::BindingType*>(material_info.BindingSets.begin())));
+		on_material_load_info.BindingSets.EmplaceBack(GTSL::Ranger<GAL::BindingType>(e.GetLength(), reinterpret_cast<GAL::BindingType*>(e.begin())));
 	}
 	on_material_load_info.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(material_info.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(material_info.VertexElements.begin()));
 	

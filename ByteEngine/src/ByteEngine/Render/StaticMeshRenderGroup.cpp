@@ -258,7 +258,7 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
 	for(uint32 i = 0; i < shaders.GetLength(); ++i)
 	{
-		shader_infos.PushBack({ static_cast<ShaderType>(onStaticMeshLoad.ShaderTypes[i]), &shaders[i] });
+		shader_infos.PushBack({ ConvertShaderType(onStaticMeshLoad.ShaderTypes[i]), &shaders[i] });
 	}
 
 	pipeline_create_info.Stages = shader_infos;

@@ -13,6 +13,8 @@ indeces(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAlloca
 
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
+	auto render_device = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"));
+	
 	BindingsSetLayout::CreateInfo bindings_set_layout_create_info;
 	bindings_set_layout_create_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
 	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
@@ -33,6 +35,28 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(bindingsSets.GetCapacity(), bindingsSets.begin());
 	allocate_bindings_sets_info.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ bindingsSetLayout, bindingsSetLayout, bindingsSetLayout };
 	bindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
+
+	DeviceMemory device_memory;
+	
+	RenderSystem::BufferScratchMemoryAllocationInfo allocation_info;
+	allocation_info.Size = sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES;
+	allocation_info.Offset = &offset;
+	allocation_info.AllocationId = &uniformAllocation;
+	allocation_info.Data = &uniformPointer;
+	allocation_info.DeviceMemory = &device_memory;
+	render_device->AllocateScratchBufferMemory(allocation_info);
+
+	Buffer::CreateInfo buffer_create_info;
+	buffer_create_info.RenderDevice = render_device->GetRenderDevice();
+	buffer_create_info.Size = allocation_info.Size;
+	buffer_create_info.BufferType = BufferType::UNIFORM;
+	uniformBuffer = Buffer(buffer_create_info);
+
+	Buffer::BindMemoryInfo bind_memory_info;
+	bind_memory_info.RenderDevice = render_device->GetRenderDevice();
+	bind_memory_info.Offset = offset;
+	bind_memory_info.Memory = &device_memory;
+	uniformBuffer.BindToMemory(bind_memory_info);
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
@@ -44,12 +68,25 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
 	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
 	for (auto& e : pipelines) { e.Destroy(render_system->GetRenderDevice()); }
+
+	uniformBuffer.Destroy(render_system->GetRenderDevice());
+	render_system->DeallocateScratchBufferMemory(sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES, offset, uniformAllocation);
+	BindingsPool::FreeBindingsSetInfo free_bindings_set_info;
+	free_bindings_set_info.RenderDevice = render_system->GetRenderDevice();
+	free_bindings_set_info.BindingsSet = bindingsSets;
+	bindingsPool.FreeBindingsSet(free_bindings_set_info);
+	bindingsSetLayout.Destroy(render_system->GetRenderDevice());
+	bindingsPool.Destroy(render_system->GetRenderDevice());
 }
 
-void StaticMeshRenderGroup::Render(RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix)
-{	
+void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix)
+{
+	auto positions = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"))->GetPositions();
+	
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
+		*(static_cast<GTSL::Matrix4*>(uniformPointer) + renderSystem->GetCurrentFrame()) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
+		
 		CommandBuffer::BindGraphicsPipelineInfo bind_pipeline_info;
 		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();
 		bind_pipeline_info.RenderExtent = renderSystem->GetRenderExtent();
@@ -87,7 +124,7 @@ void StaticMeshRenderGroup::Render(RenderSystem* renderSystem, GTSL::Matrix4 vie
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 buffer_size = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference], 256, buffer_size);
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], 256, buffer_size);
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
@@ -125,19 +162,20 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
-	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->ResourceNames[addStaticMeshInfo.ComponentReference];
+	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference];
 	load_static_meshInfo.IndicesAlignment = alignment;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
 	load_static_meshInfo.ActsOn = acts_on;
+	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
+	load_static_meshInfo.StartOn = "FrameStart";
+	load_static_meshInfo.DoneFor = "FrameEnd";
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
-	uint32 material_size;
+	uint32 material_size = 0;
 	addStaticMeshInfo.MaterialResourceManager->GetMaterialSize(addStaticMeshInfo.MaterialName, material_size);
 
 	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
 	
-	void* mat_load_info;
-	GTSL::New<MaterialLoadInfo>(&mat_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, material_buffer, index);
 	
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
 	material_load_info.ActsOn = acts_on;
@@ -145,8 +183,11 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	material_load_info.DoneFor = "FrameEnd";
 	material_load_info.StartOn = "FrameStart";
 	material_load_info.Name = addStaticMeshInfo.MaterialName;
-	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);
 	material_load_info.DataBuffer = material_buffer;
+	void* mat_load_info;
+	GTSL::New<MaterialLoadInfo>(&mat_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, GTSL::MoveRef(material_buffer), index);
+	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);
+	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onMaterialLoaded>(this);
 	addStaticMeshInfo.MaterialResourceManager->LoadMaterial(material_load_info);
 
 	++index;

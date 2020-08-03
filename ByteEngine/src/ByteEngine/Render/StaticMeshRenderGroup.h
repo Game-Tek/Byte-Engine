@@ -17,7 +17,7 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	void Render(RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix);
+	void Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix);
 
 	struct AddStaticMeshInfo
 	{
@@ -47,7 +47,7 @@ private:
 
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, const GTSL::Buffer& buffer, uint32 instance) : RenderSystem(renderSystem), Buffer(buffer), Instance(instance)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 instance) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Instance(instance)
 		{
 			
 		}
@@ -74,4 +74,9 @@ private:
 	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> perObjectBindingsSets;
 	GTSL::Vector<BindingsPool, BE::PersistentAllocatorReference> bindingsPools;
 	BindingsPool bindingsPool;
+
+	Buffer uniformBuffer;
+	AllocationId uniformAllocation;
+	uint32 offset;
+	void* uniformPointer;
 };

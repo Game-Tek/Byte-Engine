@@ -16,6 +16,7 @@ public:
 	}
 
 	void Initialize() override;
+	void PostInitialize() override;
 
 	void OnUpdate(const OnUpdateInfo& onUpdate) override;
 

@@ -95,7 +95,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 					const uint16 target_goal = recurring_goals[goal].GetTaskGoalIndex(recurring_goal_task);
 					
 					application->GetThreadPool()->EnqueueTask(recurring_goals[goal].GetTask(recurring_goal_task), on_done_del,
-						&semaphores[target_goal][semaphores[target_goal].EmplaceBack()], MakeTransferReference(done_args), task_info);
+						&semaphores[target_goal][semaphores[target_goal].EmplaceBack()], MoveRef(done_args), task_info);
 
 					--recurring_goal_number_of_tasks;
 					--recurring_goal_task;
@@ -121,7 +121,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 					const auto semaphore_index = semaphores[target_goal].EmplaceBack();
 					
 					application->GetThreadPool()->EnqueueTask(dynamic_goals[goal].GetTask(dynamic_goal_task), on_done_del, &semaphores[target_goal][semaphore_index],
-						MakeTransferReference(done_args), this, GTSL::MakeForwardReference<uint16>(dynamic_goal_task));
+						MoveRef(done_args), this, GTSL::ForwardRef<uint16>(dynamic_goal_task));
 
 					--dynamic_goal_number_of_tasks;
 					--dynamic_goal_task;

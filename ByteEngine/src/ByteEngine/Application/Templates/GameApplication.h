@@ -15,6 +15,7 @@ public:
 	~GameApplication() = default;
 	
 	void Initialize() override;
+	void PostInitialize() override;
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 	void Shutdown() override;
 

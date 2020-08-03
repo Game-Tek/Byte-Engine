@@ -165,8 +165,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	initializeInfo.GameInstance->AddTask("executeTransfers",
 		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
 
-	initializeInfo.GameInstance->AddTask("render",
-		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
+	//initializeInfo.GameInstance->AddTask("render",
+	//	GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -232,7 +232,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 
 	projection_matrix *= view_matrices[0];
 	
-	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(this, projection_matrix);
+	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, projection_matrix);
 	
 	command_buffer.EndRenderPass({&renderDevice});
 	command_buffer.EndRecording({});

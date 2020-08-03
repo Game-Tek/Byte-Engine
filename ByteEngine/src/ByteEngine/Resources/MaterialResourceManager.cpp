@@ -9,6 +9,11 @@
 
 static_assert((uint8)GAL::ShaderType::VERTEX_SHADER == 0, "Enum changed!");
 static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
+
+static_assert(sizeof(GAL::BindingType) == sizeof(uint8), "Enum size changed");
+static_assert(sizeof(GAL::ShaderType) == sizeof(uint8), "Enum size changed");
+static_assert(sizeof(GAL::ShaderDataType) == sizeof(uint8), "Enum size changed");
+
 static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs" };
 
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), materialInfos(16, GetPersistentAllocator())
@@ -129,7 +134,9 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	}
 	on_material_load_info.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(material_info.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(material_info.VertexElements.begin()));
 	
-	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MakeTransferReference(on_material_load_info));
+	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MoveRef(on_material_load_info));
+
+	using type = __underlying_type(GTSL::File::OpenMode);
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)

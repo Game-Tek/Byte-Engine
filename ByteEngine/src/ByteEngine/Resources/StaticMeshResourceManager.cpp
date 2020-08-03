@@ -27,8 +27,8 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	index_path += "/resources/StaticMeshes.beidx";
 	resources_path += "/resources/";
 
-	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
-	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
+	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
+	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
 	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 
@@ -103,7 +103,7 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	on_static_mesh_load.VertexCount = meshInfo.VerticesSize;
 	on_static_mesh_load.DataBuffer = GTSL::Ranger<byte>(mesh_size, loadStaticMeshInfo.DataBuffer.begin());
 	loadStaticMeshInfo.GameInstance->AddDynamicTask("OnStaticMeshLoad", loadStaticMeshInfo.OnStaticMeshLoad, loadStaticMeshInfo.ActsOn,
-		loadStaticMeshInfo.StartOn, loadStaticMeshInfo.DoneFor, GTSL::MakeTransferReference(on_static_mesh_load));
+		loadStaticMeshInfo.StartOn, loadStaticMeshInfo.DoneFor, GTSL::MoveRef(on_static_mesh_load));
 }
 
 void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, const uint32 alignment, uint32& meshSize)

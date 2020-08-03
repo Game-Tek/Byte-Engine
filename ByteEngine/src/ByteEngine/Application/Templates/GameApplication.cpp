@@ -54,14 +54,17 @@ void GameApplication::Initialize()
 	CreateResourceManager<MaterialResourceManager>();
 	CreateResourceManager<AudioResourceManager>();
 	CreateResourceManager<PipelineCacheResourceManager>();
+}
 
+void GameApplication::PostInitialize()
+{
 	gameInstance->AddGoal("FrameStart");
 	gameInstance->AddGoal("GameplayStart");
 	gameInstance->AddGoal("GameplayEnd");
 	gameInstance->AddGoal("RenderStart");
 	gameInstance->AddGoal("RenderEnd");
 	gameInstance->AddGoal("FrameEnd");
-	
+
 	auto renderer = gameInstance->AddSystem<RenderSystem>("RenderSystem");
 
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
@@ -71,7 +74,6 @@ void GameApplication::Initialize()
 	gameInstance->AddComponentCollection<CameraComponentCollection>("CameraComponentCollection");
 	gameInstance->AddComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

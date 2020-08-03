@@ -45,6 +45,7 @@ namespace BE
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
 		virtual void Initialize() = 0;
+		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
 
 		enum class UpdateContext : uint8
@@ -88,7 +89,7 @@ namespace BE
 		RM* CreateResourceManager()
 		{
 			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>::Create<RM>(systemAllocatorReference);
-			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MakeTransferReference(resource_manager)).operator ResourceManager*());
+			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MoveRef(resource_manager)).operator ResourceManager*());
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }

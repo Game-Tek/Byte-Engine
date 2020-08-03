@@ -33,9 +33,9 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		T* ret = (T*)systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData();
+		T* ret = static_cast<T*>(systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
 		objectNames.EmplaceBack(systemName);
-		initSystem((System*)ret, systemName);
+		initSystem(static_cast<System*>(ret), systemName);
 		return ret;
 	}
 
@@ -71,7 +71,7 @@ public:
 	                    const GTSL::Id64 startOn, const GTSL::Id64 doneFor, ARGS&&... args)
 	{
 		void* task_info;
-		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::MakeForwardReference<ARGS>(args)...);
+		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		
 		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
 		{
@@ -119,7 +119,7 @@ private:
 	template<typename... ARGS>
 	struct DynamicTaskInfo
 	{
-		DynamicTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::MakeForwardReference<ARGS>(args)...)
+		DynamicTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::ForwardRef<ARGS>(args)...)
 		{
 		}
 

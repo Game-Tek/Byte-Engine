@@ -6,6 +6,8 @@
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
 
+class ScratchMemoryAllocator;
+
 struct FreeSpace
 {
 	FreeSpace(const uint32 size, const uint32 offset) : Size(size), Offset(offset)
@@ -66,9 +68,9 @@ struct ScratchMemoryBlock
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void AllocateFirstBlock(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void Deallocate(uint32 size, uint32 offset, uint32 id);
+	bool TryAllocate(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void AllocateFirstBlock(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void Deallocate(ScratchMemoryAllocator* scratchMemoryAllocator, uint32 size, uint32 offset, uint32 id);
 private:
 	DeviceMemory deviceMemory;
 	void* mappedMemory = nullptr;
@@ -87,15 +89,18 @@ public:
 	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
 	{
 		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(size, offset, *reinterpret_cast<uint32*>(id + 4));
+		bufferMemoryBlocks[*id].Deallocate(this, size, offset, *reinterpret_cast<uint32*>(id + 4));
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
-	
+	uint32 GetBufferMemoryAlignment() const { return bufferMemoryAlignment; }
+
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
 	uint32 bufferMemoryType = 0;
+
+	uint32 bufferMemoryAlignment = 0;
 	
 	GTSL::Array<ScratchMemoryBlock, 32> bufferMemoryBlocks;
 };

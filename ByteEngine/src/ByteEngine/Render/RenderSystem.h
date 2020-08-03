@@ -19,6 +19,7 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	uint8 GetCurrentFrame() const { return index; }
 
 	struct InitializeRendererInfo
 	{

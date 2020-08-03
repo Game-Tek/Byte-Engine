@@ -53,8 +53,8 @@ public:
 	template<typename F, typename P, typename... ARGS, typename... PARGS>
 	void EnqueueTask(const GTSL::Delegate<F>& task, const GTSL::Delegate<P>& post_task, GTSL::Semaphore* semaphore, GTSL::Tuple<PARGS...>&& post_args, ARGS&&... args)
 	{
-		TaskInfo<F, ARGS...>* task_info = new TaskInfo<F, ARGS...>(task, GTSL::MakeForwardReference<ARGS>(args)...);
-		TaskInfo<P, PARGS...>* post_task_info = new TaskInfo<P, PARGS...>(post_task, GTSL::MakeTransferReference(post_args));
+		TaskInfo<F, ARGS...>* task_info = new TaskInfo<F, ARGS...>(task, GTSL::ForwardRef<ARGS>(args)...);
+		TaskInfo<P, PARGS...>* post_task_info = new TaskInfo<P, PARGS...>(post_task, GTSL::MoveRef(post_args));
 
 		auto work = [](void* voidTask) -> void
 		{
@@ -76,10 +76,10 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MakeTransferReference((void*)task_info), GTSL::MakeTransferReference((void*)post_task_info), GTSL::MakeTransferReference(semaphore)))) { return; }
+			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)))) { return; }
 		}
 
-		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MakeTransferReference((void*)task_info), GTSL::MakeTransferReference((void*)post_task_info), GTSL::MakeTransferReference(semaphore)));
+		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)));
 	}
 
 private:
@@ -99,11 +99,11 @@ private:
 	template<typename T, typename... ARGS>
 	struct TaskInfo
 	{
-		TaskInfo(const GTSL::Delegate<T>& delegate, GTSL::Tuple<ARGS...>&& args) : Delegate(delegate), Arguments(GTSL::MakeTransferReference(args))
+		TaskInfo(const GTSL::Delegate<T>& delegate, GTSL::Tuple<ARGS...>&& args) : Delegate(delegate), Arguments(GTSL::MoveRef(args))
 		{
 		}
 
-		TaskInfo(const GTSL::Delegate<T>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::MakeForwardReference<ARGS>(args)...)
+		TaskInfo(const GTSL::Delegate<T>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::ForwardRef<ARGS>(args)...)
 		{
 		}
 		

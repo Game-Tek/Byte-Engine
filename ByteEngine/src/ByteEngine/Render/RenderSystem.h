@@ -19,7 +19,7 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	uint8 GetCurrentFrame() const { return index; }
+	uint8 GetCurrentFrame() const { return currentFrameIndex; }
 
 	struct InitializeRendererInfo
 	{
@@ -79,7 +79,7 @@ public:
 	}
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
-	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[index]; }
+	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 
 	struct BufferCopyData
 	{
@@ -90,7 +90,7 @@ public:
 		uint32 Size = 0;
 		RenderAllocation Allocation;
 	};
-	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas.EmplaceBack(bufferCopyData); }
+	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
 
 	PipelineCache* GetPipelineCache() { return &pipelineCache; }
 
@@ -99,7 +99,7 @@ public:
 
 	RenderPass* GetRenderPass() { return &renderPass; }
 
-	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[index]; }
+	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[currentFrameIndex]; }
 	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 	
 private:
@@ -114,7 +114,7 @@ private:
 	
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> renderGroups;
 
-	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas;
+	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 
 	RenderPass renderPass;
 	GTSL::Array<ImageView, MAX_CONCURRENT_FRAMES> swapchainImages;
@@ -126,7 +126,6 @@ private:
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
 	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
-	GTSL::Array<GTSL::Pair<uint32, uint32>, MAX_CONCURRENT_FRAMES> transferredMeshes;
 
 	GTSL::FlatHashMap<Shader, BE::PersistentAllocatorReference> shaders;
 	
@@ -136,7 +135,7 @@ private:
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
 
-	uint8 index = 0;
+	uint8 currentFrameIndex = 0;
 
 	uint32 swapchainPresentMode{ 0 };
 	uint32 swapchainFormat{ 0 };

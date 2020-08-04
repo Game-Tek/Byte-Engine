@@ -104,13 +104,13 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
 		bind_vertex_info.RenderDevice = renderSystem->GetRenderDevice();
 		bind_vertex_info.Buffer = &meshBuffers[i];
-		bind_vertex_info.Offset = renderAllocations[i].Offset;
+		bind_vertex_info.Offset = 0;
 		renderSystem->GetCurrentCommandBuffer()->BindVertexBuffer(bind_vertex_info);
 		
 		CommandBuffer::BindIndexBufferInfo bind_index_buffer;
 		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
 		bind_index_buffer.Buffer = &meshBuffers[i];
-		bind_index_buffer.Offset = renderAllocations[i].Offset + GTSL::Math::PowerOf2RoundUp(indeces[i] * sizeof(uint16), 256);	
+		bind_index_buffer.Offset = renderAllocations[i].Offset + GTSL::Math::PowerOf2RoundUp(indeces[i] * sizeof(uint16), 256);	//TODO: NOOO
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
 		CommandBuffer::DrawIndexedInfo draw_indexed_info;
@@ -213,6 +213,12 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	create_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
 	create_info.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
 	Buffer device_buffer(create_info);
+
+	Buffer::BindMemoryInfo bind_memory_info;
+	bind_memory_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
+	bind_memory_info.Memory = &device_memory;
+	bind_memory_info.Offset = offset;
+	device_buffer.BindToMemory(bind_memory_info);
 	
 	RenderSystem::BufferCopyData buffer_copy_data;
 	buffer_copy_data.SourceOffset = 0;

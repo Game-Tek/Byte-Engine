@@ -101,6 +101,7 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	OnStaticMeshLoad on_static_mesh_load;
 	on_static_mesh_load.IndexCount = meshInfo.IndecesSize;
 	on_static_mesh_load.VertexCount = meshInfo.VerticesSize;
+	on_static_mesh_load.UserData = loadStaticMeshInfo.UserData;
 	on_static_mesh_load.DataBuffer = GTSL::Ranger<byte>(mesh_size, loadStaticMeshInfo.DataBuffer.begin());
 	loadStaticMeshInfo.GameInstance->AddDynamicTask("OnStaticMeshLoad", loadStaticMeshInfo.OnStaticMeshLoad, loadStaticMeshInfo.ActsOn,
 		loadStaticMeshInfo.StartOn, loadStaticMeshInfo.DoneFor, GTSL::MoveRef(on_static_mesh_load));

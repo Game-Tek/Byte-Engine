@@ -93,7 +93,7 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 
 	staticMeshPackage.SetPointer(meshInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 
-	byte* vertices = loadStaticMeshInfo.DataBuffer, *indices = static_cast<byte*>(GTSL::AlignPointer(loadStaticMeshInfo.IndicesAlignment, vertices + meshInfo.VerticesSize));
+	byte* vertices = loadStaticMeshInfo.DataBuffer, *indices = static_cast<byte*>(GTSL::AlignPointer(loadStaticMeshInfo.IndicesAlignment, vertices + meshInfo.VerticesSize)); //TODO: FIX
 	
 	[[maybe_unused]] const auto bytes_read = staticMeshPackage.ReadFromFile(loadStaticMeshInfo.DataBuffer); //TODO: READ VERTICES THEN READ INDICES INTO ALIGNED MEMORY TO CIRCUMVENT COPY
 	BE_ASSERT(bytes_read != 0, "Read 0 bytes!");
@@ -117,7 +117,7 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, const uint32 alignment, uint32& meshSize)
 {
 	auto& mesh = meshInfos.At(name);
-	meshSize = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, alignment) + mesh.IndecesSize;
+	meshSize = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, alignment) + mesh.IndecesSize; //TODO: FIX
 }
 
 void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh)

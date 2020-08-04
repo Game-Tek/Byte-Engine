@@ -63,10 +63,7 @@ using ShaderDataType = GAL::VulkanShaderDataType;
 
 inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> shaderDataTypes, const GTSL::Ranger<ShaderDataType> datas)
 {
-	for(uint64 i = 0; i < shaderDataTypes.ElementCount(); ++i)
-	{
-		datas[i] = GAL::ShaderDataTypeToVulkanShaderDataType(shaderDataTypes[i]);
-	}
+	for(uint64 i = 0; i < shaderDataTypes.ElementCount(); ++i) { datas[i] = ShaderDataTypeToVulkanShaderDataType(shaderDataTypes[i]); }
 }
 
 inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
@@ -83,4 +80,9 @@ inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
 	}
 
 	return GAL::VulkanShaderType::VERTEX;
+}
+
+inline void ConvertBindingTypes(const GTSL::Ranger<const GAL::BindingType> bindingsTypes, const GTSL::Ranger<BindingType> bindings)
+{
+	for (uint64 i = 0; i < bindingsTypes.ElementCount(); ++i) { bindings[i] = BindingTypeToVulkanBindingType(bindingsTypes[i]); }
 }

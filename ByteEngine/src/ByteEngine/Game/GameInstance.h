@@ -79,7 +79,7 @@ public:
 				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
 				DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call<void, TaskInfo, ARGS...>(info->Delegate, info->Arguments);
+				GTSL::Call(info->Delegate, info->Arguments);
 				GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
 			}
 

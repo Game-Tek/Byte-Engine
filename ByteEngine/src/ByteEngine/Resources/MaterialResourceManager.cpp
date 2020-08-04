@@ -10,11 +10,11 @@
 static_assert((uint8)GAL::ShaderType::VERTEX_SHADER == 0, "Enum changed!");
 static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
 
-static_assert(sizeof(GAL::BindingType) == sizeof(uint8), "Enum size changed");
-static_assert(sizeof(GAL::ShaderType) == sizeof(uint8), "Enum size changed");
-static_assert(sizeof(GAL::ShaderDataType) == sizeof(uint8), "Enum size changed");
-
 static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs" };
+
+using VertexElementsType = GTSL::UnderlyingType<GAL::ShaderDataType>;
+using ShaderTypeType = GTSL::UnderlyingType<GAL::ShaderType>;
+using BindingTypeType = GTSL::UnderlyingType<GAL::BindingType>;
 
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), materialInfos(16, GetPersistentAllocator())
 {
@@ -88,12 +88,12 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			shader.CloseFile();
 		}
 
-		material_info.VertexElements = GTSL::Ranger<uint8>(materialCreateInfo.VertexFormat.ElementCount(), (uint8*)materialCreateInfo.VertexFormat.begin());
-		material_info.ShaderTypes = GTSL::Ranger<uint8>(materialCreateInfo.ShaderTypes.ElementCount(), (uint8*)materialCreateInfo.ShaderTypes.begin());
+		material_info.VertexElements = GTSL::Ranger<const VertexElementsType>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
+		material_info.ShaderTypes = GTSL::Ranger<const ShaderTypeType>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
 
 		for(const auto& e : materialCreateInfo.BindingSets)
 		{
-			material_info.BindingSets.EmplaceBack(GTSL::Ranger<const uint8>(e.ElementCount(), reinterpret_cast<const uint8*>(e.begin())));
+			material_info.BindingSets.EmplaceBack(GTSL::Ranger<const BindingTypeType>(e.ElementCount(), reinterpret_cast<const BindingTypeType*>(e.begin())));
 		}
 		
 		materialInfos.Emplace(hashed_name, material_info);
@@ -141,8 +141,6 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	on_material_load_info.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(material_info.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(material_info.VertexElements.begin()));
 	
 	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MoveRef(on_material_load_info));
-
-	using type = __underlying_type(GTSL::File::OpenMode);
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)

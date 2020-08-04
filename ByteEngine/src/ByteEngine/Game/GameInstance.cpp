@@ -12,9 +12,18 @@
 
 #include <GTSL/Semaphore.h>
 
+const char* AccessTypeToString(const AccessType access)
+{
+	switch (access)
+	{
+	case AccessType::READ: return "READ";
+	case AccessType::READ_WRITE: return "READ_WRITE";
+	}
+}
+
 using namespace GTSL;
 
-GameInstance::GameInstance() : worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
+GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
 goals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
 dynamicTasksInfo(32, GetTransientAllocator()), task_sorter(64, GetPersistentAllocator())
@@ -63,6 +72,17 @@ void GameInstance::OnUpdate(BE::Application* application)
 	auto on_done = [](const Array<uint16, 64>& objects, const Array<AccessType, 64>& accesses, task_sorter_t* taskSorter) -> void
 	{
 		taskSorter->ReleaseResources(objects, accesses);
+		GTSL::StaticString<1024> log;
+
+		log += "Task finished";
+		log += '\n';
+		log += "With accesses: \n";
+		for (const auto& e : accesses) { log += AccessTypeToString(e); log += ", "; }
+		log += '\n';
+		log += "Accessed objects: \n";
+		for (const auto& e : objects) { log += e; log += ", "; }
+
+		BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, log);
 	};
 
 	const auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
@@ -97,6 +117,25 @@ void GameInstance::OnUpdate(BE::Application* application)
 					application->GetThreadPool()->EnqueueTask(recurring_goals[goal].GetTask(recurring_goal_task), on_done_del,
 						&semaphores[target_goal][semaphores[target_goal].EmplaceBack()], MoveRef(done_args), task_info);
 
+					GTSL::StaticString<1024> log;
+
+					log += "Dispatched recurring task ";
+					log += recurring_goal_task;
+					log += " of ";
+					log += recurring_goal_number_of_tasks;
+					log += '\n';
+					log += " Goal: ";
+					log += goal;
+					log += '\n';
+					log += "With accesses: \n";
+					for (const auto& e : access_types) { log += AccessTypeToString(e); log += ", "; }
+					log += '\n';
+					log += "Accessed objects: \n";
+					for (const auto& e : accessed_objects) { log += e; log += ", "; }
+
+					BE_LOG_WARNING(log);
+					
+					
 					--recurring_goal_number_of_tasks;
 					--recurring_goal_task;
 				}
@@ -123,6 +162,24 @@ void GameInstance::OnUpdate(BE::Application* application)
 					application->GetThreadPool()->EnqueueTask(dynamic_goals[goal].GetTask(dynamic_goal_task), on_done_del, &semaphores[target_goal][semaphore_index],
 						MoveRef(done_args), this, GTSL::ForwardRef<uint16>(dynamic_goal_task));
 
+					GTSL::StaticString<1024> log;
+					
+					log += "Dispatched dynamic task ";
+					log += dynamic_goal_task;
+					log += " of ";
+					log += dynamic_goal_number_of_tasks;
+					log += '\n';
+					log += " Goal: ";
+					log += goal;
+					log += '\n';
+					log += "With accesses: \n";
+					for (const auto& e : access_types) { log += AccessTypeToString(e); log += ", "; }
+					log += '\n';
+					log += "Accessed objects: \n";
+					for (const auto& e : accessed_objects) { log += e; log += ", "; }
+
+					BE_LOG_WARNING(log);
+					
 					--dynamic_goal_number_of_tasks;
 					--dynamic_goal_task;
 				}
@@ -185,14 +242,19 @@ void GameInstance::RemoveTask(const Id64 name, const Id64 doneFor)
 
 void GameInstance::AddGoal(Id64 name)
 {
-	{
+	{	
 		WriteLock lock(goalsMutex);
+		
 		goals.EmplaceBack(16, GetPersistentAllocator());
 		dynamicGoals.EmplaceBack(16, GetPersistentAllocator());
 	}
 
 	{
 		WriteLock lock(goalNamesMutex);
+
+		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
+		BE_ASSERT(i == goalNames.GetLength(), "There is already a goal with that name!")
+		
 		goalNames.EmplaceBack(name);
 	}
 }

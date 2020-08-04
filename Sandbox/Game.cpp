@@ -4,7 +4,6 @@
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
-#include <iostream>
 
 #include "ByteEngine/Game/CameraComponentCollection.h"
 

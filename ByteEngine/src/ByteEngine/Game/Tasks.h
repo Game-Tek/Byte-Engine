@@ -101,7 +101,7 @@ struct Goal
 
 	GTSL::Ranger<const AccessType> GetTaskAccessTypes(uint16 task) { return taskAccessTypes[task]; }
 	
-	uint16 GetNumberOfTasks() { return (uint16)tasks.GetLength(); }
+	uint16 GetNumberOfTasks() { return static_cast<uint16>(tasks.GetLength()); }
 	
 	uint16 GetTaskGoalIndex(const uint16 task) { return taskGoalIndex[task]; }
 
@@ -144,12 +144,15 @@ struct TaskSorter
 
 	bool CanRunTask(const GTSL::Ranger<const uint16>& objects, const GTSL::Ranger<const AccessType>& accesses)
 	{
+		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
+		
 		{
 			GTSL::ReadLock lock(mutex);
 			
 			for (uint32 i = 0; i < objects.ElementCount(); ++i)
 			{
 				if (currentObjectAccessState[objects[i]] == AccessType::READ_WRITE) { return false; }
+				if (currentObjectAccessState[objects[i]] == AccessType::READ && accesses[i] == AccessType::READ_WRITE) { return false; }
 			}
 		}
 
@@ -159,7 +162,7 @@ struct TaskSorter
 			for (uint32 i = 0; i < objects.ElementCount(); ++i)
 			{
 				currentObjectAccessState[objects[i]] = accesses[i];
-				++currentObjectAccessCount[i];
+				++currentObjectAccessCount[objects[i]];
 			}
 		}
 
@@ -169,11 +172,14 @@ struct TaskSorter
 	void ReleaseResources(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
 	{
 		GTSL::WriteLock lock(mutex);
+
+		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
 		
 		for (uint32 i = 0; i < objects.ElementCount(); ++i)
 		{
-			BE_ASSERT(currentObjectAccessCount[i] != 0, "Oops :/")
-			if (--currentObjectAccessCount[i] == 0) { currentObjectAccessState[i] = 0; }
+			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
+			BE_ASSERT(accesses[i] == AccessType::READ || accesses[i] == AccessType::READ_WRITE, "Unexpected value");
+			if (--currentObjectAccessCount[objects[i]] == 0) { currentObjectAccessState[objects[i]] = 0; }
 		}
 	}
 	

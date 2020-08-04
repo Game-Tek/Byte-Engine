@@ -170,6 +170,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.StartOn = "FrameStart";
 	load_static_meshInfo.DoneFor = "FrameEnd";
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
+	BE_LOG_MESSAGE("Started mesh loading")
 
 	uint32 material_size = 0;
 	addStaticMeshInfo.MaterialResourceManager->GetMaterialSize(addStaticMeshInfo.MaterialName, material_size);
@@ -180,8 +181,8 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
 	material_load_info.ActsOn = acts_on;
 	material_load_info.GameInstance = addStaticMeshInfo.GameInstance;
-	material_load_info.DoneFor = "FrameEnd";
 	material_load_info.StartOn = "FrameStart";
+	material_load_info.DoneFor = "FrameEnd";
 	material_load_info.Name = addStaticMeshInfo.MaterialName;
 	material_load_info.DataBuffer = GTSL::Ranger<byte>(material_buffer.GetCapacity(), material_buffer.GetData());
 	void* mat_load_info;
@@ -189,6 +190,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onMaterialLoaded>(this);
 	addStaticMeshInfo.MaterialResourceManager->LoadMaterial(material_load_info);
+	BE_LOG_MESSAGE("Started material loading")
 
 	++index;
 }
@@ -226,6 +228,8 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	indeces.Emplace(load_info->InstanceId, onStaticMeshLoad.IndexCount);
 
 	GTSL::Delete<MeshLoadInfo>(load_info, GetPersistentAllocator());
+
+	BE_LOG_MESSAGE("Loaded mesh")
 }
 
 void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad)
@@ -267,4 +271,6 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	
 	load_info->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(load_info, GetPersistentAllocator());
+
+	BE_LOG_MESSAGE("Loaded material")
 }

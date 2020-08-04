@@ -7,6 +7,10 @@
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
 
+namespace GAL {
+	enum class ShaderDataType : unsigned char;
+}
+
 namespace GTSL {
 	class Vector2;
 }
@@ -22,13 +26,24 @@ public:
 		/**
 		 * \brief Number of vertices the loaded mesh contains.
 		 */
-		GTSL::uint32 VertexCount;
+		uint32 VertexCount;
+		
 		/**
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
-		GTSL::uint16 IndexCount;
+		uint16 IndexCount;
+		
+		/**
+		 * \brief Size of a single vertex.
+		 */
+		uint16 VertexSize;
 
-		GTSL::Array<uint8, 32> VertexDescriptor;
+		/**
+		 * \brief Size of a single index to determine whether to use uint16 or uint32.
+		 */
+		uint8 IndexSize;
+
+		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 
 	struct LoadStaticMeshInfo : ResourceLoadInfo
@@ -55,18 +70,11 @@ public:
 
 	struct MeshInfo
 	{
-		GTSL::Array<uint8, 32> VertexDescriptor;
+		GTSL::Array<uint8, 20> VertexDescriptor;
 		uint32 VerticesSize = 0;
 		uint32 IndecesSize = 0;
 		uint32 ByteOffset = 0;
-
-		static uint64 VertexDescriptorHash(GTSL::Ranger<uint8> descriptors)
-		{
-			for(auto e : descriptors)
-			{
-				
-			}
-		}
+		uint8 IndexSize = 0;
 
 		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndecesSize; }
 		

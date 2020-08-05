@@ -57,6 +57,22 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	bind_memory_info.Offset = offset;
 	bind_memory_info.Memory = &device_memory;
 	uniformBuffer.BindToMemory(bind_memory_info);
+
+	for(auto& e : bindingsSets)
+	{
+		BindingsSet::BindingsSetUpdateInfo bindings_set_update_info;
+		bindings_set_update_info.RenderDevice = render_device->GetRenderDevice();
+
+		BindingsSetLayout::BufferBindingDescriptor binding_descriptor;
+		binding_descriptor.UniformCount = 1;
+		binding_descriptor.BindingType = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
+		binding_descriptor.Buffers = GTSL::Ranger<Buffer>(1, &uniformBuffer);
+		binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES };
+		binding_descriptor.Offsets = GTSL::Array<uint32, 1>{ 0 };
+		
+		bindings_set_update_info.BufferBindingsSetLayout.EmplaceBack(binding_descriptor);
+		e.Update(bindings_set_update_info);
+	}
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
@@ -131,13 +147,13 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	buffer_create_info.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_SOURCE;
 	Buffer scratch_buffer(buffer_create_info);
 
-	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
-	addStaticMeshInfo.RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
+	RenderDevice::MemoryRequirements memory_requirements;
+	addStaticMeshInfo.RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&scratch_buffer, memory_requirements);
 	
 	uint32 offset; void* data; DeviceMemory device_memory; AllocationId alloc_id;
 
-	const uint32 size = buffer_memory_requirements.Size;
-	const uint32 alignment = buffer_memory_requirements.Alignment;
+	const uint32 size = memory_requirements.Size;
+	const uint32 alignment = memory_requirements.Alignment;
 	
 	RenderSystem::BufferScratchMemoryAllocationInfo memory_allocation_info;
 	memory_allocation_info.Size = size;
@@ -156,13 +172,13 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	void* mesh_load_info;
 	GTSL::New<MeshLoadInfo>(&mesh_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, RenderAllocation{ size, offset, alloc_id }, index);
 
-	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };;
+	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
 	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference];
-	load_static_meshInfo.IndicesAlignment = alignment;
+	load_static_meshInfo.IndicesAlignment = sizeof(uint32);
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
 	load_static_meshInfo.ActsOn = acts_on;
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;

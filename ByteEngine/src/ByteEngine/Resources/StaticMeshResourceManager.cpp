@@ -31,13 +31,15 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	resources_path += "/resources/";
 
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
+	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
 	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 
 	if (indexFile.ReadFile(file_buffer))
 	{
 		GTSL::Extract(meshInfos, file_buffer);
+		file_buffer.Free(32, GetTransientAllocator());
+		return;
 	}
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
@@ -57,7 +59,8 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 			MeshInfo mesh_info; Mesh mesh(1024, GetTransientAllocator());
 
 			loadMesh(file_buffer, mesh_info, mesh);
-
+			file_buffer.Resize(0);
+			
 			mesh_info.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
 
 			Insert(mesh, file_buffer);
@@ -68,15 +71,15 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 			query_file.CloseFile();
 		}
 	};
+
 	
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, load);
 
-	indexFile.CloseFile();
-	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
-
 	file_buffer.Resize(0);
 	Insert(meshInfos, file_buffer);
+	
+	indexFile.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 	indexFile.WriteToFile(file_buffer);
 	
 	file_buffer.Free(32, GetTransientAllocator());

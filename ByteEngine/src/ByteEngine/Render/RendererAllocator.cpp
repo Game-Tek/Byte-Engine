@@ -18,10 +18,10 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX;
 	Buffer scratch_buffer(buffer_create_info);
 
-	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
-	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
+	RenderDevice::MemoryRequirements memory_requirements;
+	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, memory_requirements);
 
-	bufferMemoryType = buffer_memory_requirements.MemoryTypes;
+	bufferMemoryType = memory_requirements.MemoryTypes;
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 
@@ -312,10 +312,10 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.ImageTiling = (uint32)GAL::VulkanImageTiling::OPTIMAL;
 	auto image = Image(create_info);
 
-	RenderDevice::ImageMemoryRequirements image_memory_requirements;
+	RenderDevice::MemoryRequirements image_memory_requirements;
 	renderDevice.GetImageMemoryRequirements(&image, image_memory_requirements);
 
-	RenderDevice::BufferMemoryRequirements buffer_memory_requirements;
+	RenderDevice::MemoryRequirements buffer_memory_requirements;
 	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, buffer_memory_requirements);
 
 	bufferMemoryType = buffer_memory_requirements.MemoryTypes;

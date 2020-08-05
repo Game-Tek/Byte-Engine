@@ -24,6 +24,8 @@ struct RenderAllocation
 };
 
 #if (_WIN64)
+#undef OPAQUE
+
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
 using Image = GAL::VulkanImage;

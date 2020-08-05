@@ -45,19 +45,16 @@ namespace BE
 		 */
 		mutable GTSL::File logFile;
 
-		static constexpr uint16 maxLogLength{ 2048 };
+		static constexpr uint16 maxLogLength{ 8192 };
 
 		static constexpr uint32 bytesToDumpOn{ 256 };
-
-		static constexpr uint32 buffersInBuffer{ 3 };
 		
 		/**
 		 * \brief Default amount of characters the buffer can hold at a moment.
 		 */
-		static constexpr uint32 defaultBufferLength{ bytesToDumpOn * buffersInBuffer };
+		static constexpr uint32 defaultBufferLength{ bytesToDumpOn };
 
-		mutable std::atomic<uint32> posInSubBuffer{ 0 };
-		mutable std::atomic<uint32> subBufferIndex{ 0 };
+		mutable std::atomic<uint32> posInBuffer{ 0 };
 		
 		mutable UTF8* data{ nullptr };
 		

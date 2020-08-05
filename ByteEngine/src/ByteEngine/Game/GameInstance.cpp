@@ -82,7 +82,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 		log += "Accessed objects: \n";
 		for (const auto& e : objects) { log += e; log += ", "; }
 
-		BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, log);
+		//BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, log);
 	};
 
 	const auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
@@ -133,7 +133,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 					log += "Accessed objects: \n";
 					for (const auto& e : accessed_objects) { log += e; log += ", "; }
 
-					BE_LOG_WARNING(log);
+					//BE_LOG_WARNING(log);
 					
 					
 					--recurring_goal_number_of_tasks;
@@ -178,7 +178,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 					log += "Accessed objects: \n";
 					for (const auto& e : accessed_objects) { log += e; log += ", "; }
 
-					BE_LOG_WARNING(log);
+					//BE_LOG_WARNING(log);
 					
 					--dynamic_goal_number_of_tasks;
 					--dynamic_goal_task;

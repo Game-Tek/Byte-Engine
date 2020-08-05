@@ -82,7 +82,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix)
 {
 	auto positions = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"))->GetPositions();
-	
+
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
 		*(static_cast<GTSL::Matrix4*>(uniformPointer) + renderSystem->GetCurrentFrame()) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
@@ -95,10 +95,9 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		
 		CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
 		bind_bindings_set_info.RenderDevice = renderSystem->GetRenderDevice();
-		bind_bindings_set_info.BindingsSets; //CHECK
-		bind_bindings_set_info.Pipeline; //CHECK
-		bind_bindings_set_info.BindingsSetIndex; //CHECK
-		bind_bindings_set_info.Offsets; //CHECK
+		bind_bindings_set_info.BindingsSets = GTSL::Ranger<BindingsSet>(1, &bindingsSets[renderSystem->GetCurrentFrame()]);
+		bind_bindings_set_info.Pipeline = &pipelines[i];
+		bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(sizeof(GTSL::Matrix4)) * renderSystem->GetCurrentFrame() };
 		renderSystem->GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
 		
 		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
@@ -124,7 +123,7 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 buffer_size = 0, indices_offset = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], 256, buffer_size, &indices_offset);
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], sizeof(uint32), buffer_size, &indices_offset);
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();

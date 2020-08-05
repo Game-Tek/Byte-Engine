@@ -67,7 +67,8 @@ private:
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindingsSets;
 	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
-	GTSL::Vector<uint16, BE::PersistentAllocatorReference> indeces;
+	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffset;
+	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	
 	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;

@@ -98,13 +98,13 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	[[maybe_unused]] const auto bytes_read = staticMeshPackage.ReadFromFile(loadStaticMeshInfo.DataBuffer); //TODO: READ VERTICES THEN READ INDICES INTO ALIGNED MEMORY TO CIRCUMVENT COPY
 	BE_ASSERT(bytes_read != 0, "Read 0 bytes!");
 
-	GTSL::MemCopy(meshInfo.IndecesSize, vertices + meshInfo.VerticesSize, indices);
+	GTSL::MemCopy(meshInfo.IndicesSize, vertices + meshInfo.VerticesSize, indices);
 
-	const auto mesh_size = (indices + meshInfo.IndecesSize) - vertices;
+	const auto mesh_size = (indices + meshInfo.IndicesSize) - vertices;
 		
 	OnStaticMeshLoad on_static_mesh_load;
 	on_static_mesh_load.VertexSize = GAL::GraphicsPipeline::GetVertexSize(GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin())));
-	on_static_mesh_load.IndexCount = meshInfo.IndecesSize / meshInfo.IndexSize;
+	on_static_mesh_load.IndexCount = meshInfo.IndicesSize / meshInfo.IndexSize;
 	on_static_mesh_load.VertexCount = meshInfo.VerticesSize / on_static_mesh_load.VertexSize;
 	on_static_mesh_load.VertexDescriptor = GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin()));
 	on_static_mesh_load.IndexSize = meshInfo.IndexSize;
@@ -114,10 +114,11 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 		loadStaticMeshInfo.StartOn, loadStaticMeshInfo.DoneFor, GTSL::MoveRef(on_static_mesh_load));
 }
 
-void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, const uint32 alignment, uint32& meshSize)
+void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, const uint32 alignment, uint32& meshSize, uint32* indicesOffset)
 {
 	auto& mesh = meshInfos.At(name);
-	meshSize = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, alignment) + mesh.IndecesSize; //TODO: FIX
+	*indicesOffset = GTSL::Math::RoundUp(mesh.VerticesSize, alignment);
+	meshSize = *indicesOffset + mesh.IndicesSize;
 }
 
 void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, Mesh& mesh)
@@ -209,7 +210,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 		}
 	}
 
-	meshInfo.IndecesSize = in_mesh->mNumFaces * 3 * sizeof(uint32);
+	meshInfo.IndicesSize = in_mesh->mNumFaces * 3 * sizeof(uint32);
 	meshInfo.IndexSize = sizeof(uint32);
 }
 
@@ -217,7 +218,7 @@ void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& b
 {
 	GTSL::Insert(meshInfo.VertexDescriptor, buffer);
 	GTSL::Insert(meshInfo.VerticesSize, buffer);
-	GTSL::Insert(meshInfo.IndecesSize, buffer);
+	GTSL::Insert(meshInfo.IndicesSize, buffer);
 	GTSL::Insert(meshInfo.ByteOffset, buffer);
 	GTSL::Insert(meshInfo.IndexSize, buffer);
 }
@@ -226,7 +227,7 @@ void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer
 {
 	GTSL::Extract(meshInfo.VertexDescriptor, buffer);
 	GTSL::Extract(meshInfo.VerticesSize, buffer);
-	GTSL::Extract(meshInfo.IndecesSize, buffer);
+	GTSL::Extract(meshInfo.IndicesSize, buffer);
 	GTSL::Extract(meshInfo.ByteOffset, buffer);
 	GTSL::Extract(meshInfo.IndexSize, buffer);
 }

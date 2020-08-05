@@ -7,7 +7,7 @@
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers(64, GetPersistentAllocator()),
-indeces(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator())
+indicesOffset(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator())
 {
 }
 
@@ -87,11 +87,11 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 	{
 		*(static_cast<GTSL::Matrix4*>(uniformPointer) + renderSystem->GetCurrentFrame()) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
 		
-		CommandBuffer::BindGraphicsPipelineInfo bind_pipeline_info;
+		CommandBuffer::BindPipelineInfo bind_pipeline_info;
 		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();
-		bind_pipeline_info.RenderExtent = renderSystem->GetRenderExtent();
-		bind_pipeline_info.GraphicsPipeline = &pipelines[i];
-		renderSystem->GetCurrentCommandBuffer()->BindGraphicsPipeline(bind_pipeline_info);
+		bind_pipeline_info.Pipeline = &pipelines[i];
+		bind_pipeline_info.PipelineType = PipelineType::GRAPHICS;
+		renderSystem->GetCurrentCommandBuffer()->BindPipeline(bind_pipeline_info);
 		
 		CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
 		bind_bindings_set_info.RenderDevice = renderSystem->GetRenderDevice();
@@ -110,21 +110,21 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		CommandBuffer::BindIndexBufferInfo bind_index_buffer;
 		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
 		bind_index_buffer.Buffer = &meshBuffers[i];
-		bind_index_buffer.Offset = renderAllocations[i].Offset + GTSL::Math::PowerOf2RoundUp(indeces[i] * sizeof(uint16), 256);	//TODO: NOOO
+		bind_index_buffer.Offset = indicesOffset[i];
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
 		CommandBuffer::DrawIndexedInfo draw_indexed_info;
 		draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
 		draw_indexed_info.InstanceCount = 1;
-		draw_indexed_info.IndexCount = indeces[i];
+		draw_indexed_info.IndexCount = indicesCount[i];
 		renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
 	}
 }
 
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 buffer_size = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], 256, buffer_size);
+	uint32 buffer_size = 0, indices_offset = 0;
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], 256, buffer_size, &indices_offset);
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
@@ -170,13 +170,11 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.StartOn = "FrameStart";
 	load_static_meshInfo.DoneFor = "FrameEnd";
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
-	BE_LOG_MESSAGE("Started mesh loading")
 
 	uint32 material_size = 0;
 	addStaticMeshInfo.MaterialResourceManager->GetMaterialSize(addStaticMeshInfo.MaterialName, material_size);
 
 	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
-	
 	
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
 	material_load_info.ActsOn = acts_on;
@@ -190,8 +188,9 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onMaterialLoaded>(this);
 	addStaticMeshInfo.MaterialResourceManager->LoadMaterial(material_load_info);
-	BE_LOG_MESSAGE("Started material loading")
 
+	indicesOffset.Emplace(index, indices_offset);
+	
 	++index;
 }
 
@@ -231,11 +230,9 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	
 	meshBuffers.Emplace(load_info->InstanceId, device_buffer);
 	renderAllocations.Emplace(load_info->InstanceId, load_info->Allocation);
-	indeces.Emplace(load_info->InstanceId, onStaticMeshLoad.IndexCount);
+	indicesCount.Emplace(load_info->InstanceId, onStaticMeshLoad.IndexCount);
 
 	GTSL::Delete<MeshLoadInfo>(load_info, GetPersistentAllocator());
-
-	BE_LOG_MESSAGE("Loaded mesh")
 }
 
 void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad)
@@ -277,6 +274,4 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	
 	load_info->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(load_info, GetPersistentAllocator());
-
-	BE_LOG_MESSAGE("Loaded material")
 }

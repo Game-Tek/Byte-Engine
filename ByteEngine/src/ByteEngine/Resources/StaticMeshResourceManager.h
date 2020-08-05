@@ -53,7 +53,7 @@ public:
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
 
-	void GetMeshSize(GTSL::Id64 name, uint32 alignment, uint32& meshSize);
+	void GetMeshSize(GTSL::Id64 name, uint32 alignment, uint32& meshSize, uint32* indecesOffset);
 
 	struct Mesh
 	{
@@ -72,11 +72,11 @@ public:
 	{
 		GTSL::Array<uint8, 20> VertexDescriptor;
 		uint32 VerticesSize = 0;
-		uint32 IndecesSize = 0;
+		uint32 IndicesSize = 0;
 		uint32 ByteOffset = 0;
 		uint8 IndexSize = 0;
 
-		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndecesSize; }
+		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndicesSize; }
 		
 		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer);
 		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer);

@@ -7,7 +7,8 @@
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers(64, GetPersistentAllocator()),
-indicesOffset(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator())
+indicesOffset(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator()),
+indicesCount(64, GetPersistentAllocator())
 {
 }
 

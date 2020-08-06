@@ -62,6 +62,7 @@ using ShaderType = GAL::VulkanShaderType;
 using CullMode = GAL::CullMode;
 using ShaderDataType = GAL::VulkanShaderDataType;
 using PipelineType = GAL::VulkanPipelineType;
+using IndexType = GAL::VulkanIndexType;
 #endif
 
 inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> shaderDataTypes, const GTSL::Ranger<ShaderDataType> datas)

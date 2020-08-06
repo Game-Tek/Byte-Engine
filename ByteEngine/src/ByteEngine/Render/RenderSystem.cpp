@@ -106,7 +106,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		transferCommandBuffers.Resize(swapchainImages.GetLength());
 		
 		commandPools.EmplaceBack(CommandPool::CreateInfo{ &renderDevice, &graphicsQueue, true, GTSL::Ranger<CommandBuffer>(1, &commandBuffers[i]) });
-		commandBuffers.Resize(swapchainImages.GetLength());
 		
 		FrameBuffer::CreateInfo framebuffer_create_info;
 		framebuffer_create_info.RenderDevice = &renderDevice;
@@ -118,8 +117,16 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 
 		bufferCopyDatas[i].Initialize(16, GetPersistentAllocator());
+
+		commandBuffers[i].BeginRecording({});
+		commandBuffers[i].BeginRenderPass({ &renderDevice, &renderPass, &frameBuffers[i], renderArea, clearValues });;
+
+		commandBuffers[i].EndRenderPass({ &renderDevice });
+		commandBuffers[i].EndRecording({});
 	}
 
+	commandBuffers.Resize(swapchainImages.GetLength());
+	
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
@@ -167,8 +174,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	initializeInfo.GameInstance->AddTask("executeTransfers",
 		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
 
-	//initializeInfo.GameInstance->AddTask("render",
-	//	GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
+	initializeInfo.GameInstance->AddTask("render",
+		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -209,8 +216,6 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderSystem::render(TaskInfo taskInfo)
 {
-	auto& command_buffer = commandBuffers[currentFrameIndex];
-	
 	Fence::WaitForFencesInfo wait_for_fences_info;
 	wait_for_fences_info.RenderDevice = &renderDevice;
 	wait_for_fences_info.Timeout = ~0ULL;
@@ -225,24 +230,26 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	commandPools[currentFrameIndex].ResetPool(&renderDevice);
 	
-	command_buffer.BeginRecording({});
-	command_buffer.BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
+	commandBuffers[currentFrameIndex].BeginRecording({});
+	commandBuffers[currentFrameIndex].BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
 	auto view_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetViewMatrices();
-
+	
 	GTSL::Matrix4 projection_matrix;
 	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 35.0f, 16.f / 9.f, 0.5f, 1000.f);
-
+	
 	projection_matrix *= view_matrices[0];
 	
-	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, projection_matrix);
+	//static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, projection_matrix);
 	
-	command_buffer.EndRenderPass({&renderDevice});
-	command_buffer.EndRecording({});
-	
+	commandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
+	commandBuffers[currentFrameIndex].EndRecording({});
+
 	RenderContext::AcquireNextImageInfo acquire_next_image_info;
 	acquire_next_image_info.RenderDevice = &renderDevice;
-	acquire_next_image_info.Semaphore = &imageAvailableSemaphore[currentFrameIndex];
+	acquire_next_image_info.SignalSemaphore = &imageAvailableSemaphore[currentFrameIndex];
 	auto image_index = renderContext.AcquireNextImage(acquire_next_image_info);
+	
+	BE_ASSERT(image_index == currentFrameIndex, "Data mismatch");
 	
 	Queue::SubmitInfo submit_info;
 	submit_info.RenderDevice = &renderDevice;
@@ -265,11 +272,16 @@ void RenderSystem::render(TaskInfo taskInfo)
 }
 
 void RenderSystem::frameStart(TaskInfo taskInfo)
-{	
+{
+	//Fence::WaitForFencesInfo wait_for_fences_info;
+	//wait_for_fences_info.RenderDevice = &renderDevice;
+	//wait_for_fences_info.Timeout = ~0ULL;
+	//wait_for_fences_info.WaitForAll = true;
+	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
+	//Fence::WaitForFences(wait_for_fences_info);
+	
 	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
-	{
-		transferCommandPools[currentFrameIndex].ResetPool(&renderDevice);
-		
+	{		
 		for(uint32 i = 0; i < bufferCopyDatas[currentFrameIndex].GetLength(); ++i)
 		{
 			bufferCopyDatas[currentFrameIndex][i].SourceBuffer.Destroy(&renderDevice);
@@ -277,11 +289,17 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		}
 		
 		bufferCopyDatas[currentFrameIndex].ResizeDown(0);
+
+		Fence::ResetFencesInfo reset_fences_info;
+		reset_fences_info.RenderDevice = &renderDevice;
+		reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
+		Fence::ResetFences(reset_fences_info);
 	}
 	else
 	{
-		//BE_ASSERT()
 	}
+
+	transferCommandPools[currentFrameIndex].ResetPool(&renderDevice);
 
 }
 

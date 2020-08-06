@@ -28,7 +28,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
 	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{BindingType::UNIFORM_BUFFER_DYNAMIC, 3});
 	create_info.DescriptorPoolSizes = descriptor_pool_sizes;
-	create_info.MaxSets = 1;
+	create_info.MaxSets = MAX_CONCURRENT_FRAMES;
 	::new(&bindingsPool) BindingsPool(create_info);
 
 	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
@@ -37,10 +37,12 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	allocate_bindings_sets_info.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ bindingsSetLayout, bindingsSetLayout, bindingsSetLayout };
 	bindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
 
+	bindingsSets.Resize(3);
+	
 	DeviceMemory device_memory;
 	
 	RenderSystem::BufferScratchMemoryAllocationInfo allocation_info;
-	allocation_info.Size = sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES;
+	allocation_info.Size = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), render_device->GetRenderDevice()->GetMinUniformBufferOffset()) * MAX_CONCURRENT_FRAMES;
 	allocation_info.Offset = &offset;
 	allocation_info.AllocationId = &uniformAllocation;
 	allocation_info.Data = &uniformPointer;
@@ -68,7 +70,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 		binding_descriptor.UniformCount = 1;
 		binding_descriptor.BindingType = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
 		binding_descriptor.Buffers = GTSL::Ranger<Buffer>(1, &uniformBuffer);
-		binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES };
+		binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) };
 		binding_descriptor.Offsets = GTSL::Array<uint32, 1>{ 0 };
 		
 		bindings_set_update_info.BufferBindingsSetLayout.EmplaceBack(binding_descriptor);
@@ -100,9 +102,14 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 {
 	auto positions = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"))->GetPositions();
 
+	uint32 offset = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * renderSystem->GetCurrentFrame();
+	
+	BE_ASSERT(GTSL::AlignPointer(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset(), uniformPointer) == uniformPointer, "Oh!");
+	const auto data_pointer = static_cast<byte*>(uniformPointer) + offset;
+	
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
-		*(static_cast<GTSL::Matrix4*>(uniformPointer) + renderSystem->GetCurrentFrame()) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
+		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
 		
 		CommandBuffer::BindPipelineInfo bind_pipeline_info;
 		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();
@@ -114,7 +121,8 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		bind_bindings_set_info.RenderDevice = renderSystem->GetRenderDevice();
 		bind_bindings_set_info.BindingsSets = GTSL::Ranger<BindingsSet>(1, &bindingsSets[renderSystem->GetCurrentFrame()]);
 		bind_bindings_set_info.Pipeline = &pipelines[i];
-		bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(sizeof(GTSL::Matrix4)) * renderSystem->GetCurrentFrame() };
+		bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ offset };
+		bind_bindings_set_info.PipelineType = PipelineType::GRAPHICS;
 		renderSystem->GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
 		
 		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
@@ -127,6 +135,7 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
 		bind_index_buffer.Buffer = &meshBuffers[i];
 		bind_index_buffer.Offset = indicesOffset[i];
+		bind_index_buffer.IndexType = IndexType::UINT32;
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
 		CommandBuffer::DrawIndexedInfo draw_indexed_info;
@@ -205,7 +214,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onMaterialLoaded>(this);
 	addStaticMeshInfo.MaterialResourceManager->LoadMaterial(material_load_info);
 
-	indicesOffset.Emplace(index, indices_offset);
+	indicesOffset.Insert(index, indices_offset);
 	
 	++index;
 }
@@ -244,9 +253,9 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	buffer_copy_data.Allocation = load_info->Allocation;
 	load_info->RenderSystem->AddBufferCopy(buffer_copy_data);
 	
-	meshBuffers.Emplace(load_info->InstanceId, device_buffer);
-	renderAllocations.Emplace(load_info->InstanceId, load_info->Allocation);
-	indicesCount.Emplace(load_info->InstanceId, onStaticMeshLoad.IndexCount);
+	meshBuffers.Insert(load_info->InstanceId, device_buffer);
+	renderAllocations.Insert(load_info->InstanceId, load_info->Allocation);
+	indicesCount.Insert(load_info->InstanceId, onStaticMeshLoad.IndexCount);
 
 	GTSL::Delete<MeshLoadInfo>(load_info, GetPersistentAllocator());
 }
@@ -266,7 +275,7 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	bindings_set_layouts.EmplaceBack(bindingsSetLayout);
 
 	pipeline_create_info.BindingsSetLayouts = bindings_set_layouts;
-	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
+	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_NONE;
 	
 	GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
 	for(uint32 i = 0; i < onStaticMeshLoad.ShaderTypes.GetLength(); ++i)
@@ -286,7 +295,7 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 
 	pipeline_create_info.Stages = shader_infos;
 	pipeline_create_info.RenderPass = load_info->RenderSystem->GetRenderPass();
-	pipelines.Emplace(load_info->Instance, pipeline_create_info);
+	pipelines.Insert(load_info->Instance, pipeline_create_info);
 	
 	load_info->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(load_info, GetPersistentAllocator());

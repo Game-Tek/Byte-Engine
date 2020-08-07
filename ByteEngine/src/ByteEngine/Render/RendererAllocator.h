@@ -58,6 +58,7 @@ private:
 	
 	GTSL::Array<LocalMemoryBlock, 32> bufferMemoryBlocks;
 	GTSL::Array<LocalMemoryBlock, 32> textureMemoryBlocks;
+	uint32 bufferMemoryAlignment = 0, textureMemoryAlignment = 0;
 };
 
 
@@ -68,9 +69,9 @@ struct ScratchMemoryBlock
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	bool TryAllocate(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void AllocateFirstBlock(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void Deallocate(ScratchMemoryAllocator* scratchMemoryAllocator, uint32 size, uint32 offset, uint32 id);
+	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void AllocateFirstBlock(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
+	void Deallocate(uint32 size, uint32 offset, uint32 id);
 private:
 	DeviceMemory deviceMemory;
 	void* mappedMemory = nullptr;
@@ -89,11 +90,10 @@ public:
 	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
 	{
 		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(this, size, offset, *reinterpret_cast<uint32*>(id + 4));
+		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::RoundUpToPowerOf2Multiple(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
-	uint32 GetBufferMemoryAlignment() const { return bufferMemoryAlignment; }
 
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };

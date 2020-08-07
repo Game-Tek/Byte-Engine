@@ -12,6 +12,7 @@
 #include <GAL/Vulkan/VulkanCommandBuffer.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
+#include <ByteEngine\Debug\Assert.h>
 
 static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 
@@ -89,4 +90,10 @@ inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
 inline void ConvertBindingTypes(const GTSL::Ranger<const GAL::BindingType> bindingsTypes, const GTSL::Ranger<BindingType> bindings)
 {
 	for (uint64 i = 0; i < bindingsTypes.ElementCount(); ++i) { bindings[i] = BindingTypeToVulkanBindingType(bindingsTypes[i]); }
+}
+
+inline IndexType SelectIndexType(const uint64 indexSize)
+{
+	BE_ASSERT(indexSize == 2 || indexSize == 4, "Unexpected size");
+	return indexSize == 2 ? IndexType::UINT16 : IndexType::UINT32;
 }

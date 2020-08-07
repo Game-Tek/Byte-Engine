@@ -8,7 +8,7 @@ class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers(64, GetPersistentAllocator()),
 indicesOffset(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()), pipelines(64, GetPersistentAllocator()),
-indicesCount(64, GetPersistentAllocator())
+indicesCount(64, GetPersistentAllocator()), indexTypes(64, GetPersistentAllocator())
 {
 }
 
@@ -40,20 +40,23 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	bindingsSets.Resize(3);
 	
 	DeviceMemory device_memory;
+
+	Buffer::CreateInfo buffer_create_info;
+	buffer_create_info.RenderDevice = render_device->GetRenderDevice();
+	buffer_create_info.Size = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), render_device->GetRenderDevice()->GetMinUniformBufferOffset()) * MAX_CONCURRENT_FRAMES;
+	buffer_create_info.BufferType = BufferType::UNIFORM;
+	uniformBuffer = Buffer(buffer_create_info);
+
+	RenderDevice::MemoryRequirements memory_requirements;
+	render_device->GetRenderDevice()->GetBufferMemoryRequirements(&uniformBuffer, memory_requirements);
 	
 	RenderSystem::BufferScratchMemoryAllocationInfo allocation_info;
-	allocation_info.Size = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), render_device->GetRenderDevice()->GetMinUniformBufferOffset()) * MAX_CONCURRENT_FRAMES;
+	allocation_info.Size = memory_requirements.Size;
 	allocation_info.Offset = &offset;
 	allocation_info.AllocationId = &uniformAllocation;
 	allocation_info.Data = &uniformPointer;
 	allocation_info.DeviceMemory = &device_memory;
 	render_device->AllocateScratchBufferMemory(allocation_info);
-
-	Buffer::CreateInfo buffer_create_info;
-	buffer_create_info.RenderDevice = render_device->GetRenderDevice();
-	buffer_create_info.Size = allocation_info.Size;
-	buffer_create_info.BufferType = BufferType::UNIFORM;
-	uniformBuffer = Buffer(buffer_create_info);
 
 	Buffer::BindMemoryInfo bind_memory_info;
 	bind_memory_info.RenderDevice = render_device->GetRenderDevice();
@@ -135,21 +138,23 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
 		bind_index_buffer.Buffer = &meshBuffers[i];
 		bind_index_buffer.Offset = indicesOffset[i];
-		bind_index_buffer.IndexType = IndexType::UINT32;
+		bind_index_buffer.IndexType = indexTypes[i];
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
-		CommandBuffer::DrawIndexedInfo draw_indexed_info;
-		draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
-		draw_indexed_info.InstanceCount = 1;
-		draw_indexed_info.IndexCount = indicesCount[i];
-		renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
+		//CommandBuffer::DrawIndexedInfo draw_indexed_info;
+		//draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
+		//draw_indexed_info.InstanceCount = 1;
+		//draw_indexed_info.IndexCount = indicesCount[i];
+		//renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
+
+		vkCmdDraw(renderSystem->GetCurrentCommandBuffer()->GetVkCommandBuffer(), 3, 1, 0, 0);
 	}
 }
 
 void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 buffer_size = 0, indices_offset = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], sizeof(uint32), buffer_size, &indices_offset);
+	uint32 buffer_size = 0, indices_offset = 0; uint16 index_size = 0;
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference], &index_size, &index_size, &buffer_size, &indices_offset);
 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
@@ -159,11 +164,12 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 
 	RenderDevice::MemoryRequirements memory_requirements;
 	addStaticMeshInfo.RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&scratch_buffer, memory_requirements);
+
+	auto t = addStaticMeshInfo.RenderSystem->GetRenderDevice()->FindMemoryType(memory_requirements.MemoryTypes, MemoryType::COHERENT | MemoryType::SHARED);
 	
 	uint32 offset; void* data; DeviceMemory device_memory; AllocationId alloc_id;
 
 	const uint32 size = memory_requirements.Size;
-	const uint32 alignment = memory_requirements.Alignment;
 	
 	RenderSystem::BufferScratchMemoryAllocationInfo memory_allocation_info;
 	memory_allocation_info.Size = size;
@@ -188,7 +194,7 @@ void StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMesh
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(size, static_cast<byte*>(data));
 	load_static_meshInfo.Name = addStaticMeshInfo.RenderStaticMeshCollection->GetResourceNames()[addStaticMeshInfo.ComponentReference];
-	load_static_meshInfo.IndicesAlignment = sizeof(uint32);
+	load_static_meshInfo.IndicesAlignment = index_size;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
 	load_static_meshInfo.ActsOn = acts_on;
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
@@ -224,13 +230,6 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	MeshLoadInfo* load_info = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
 	uint32 offset = 0; DeviceMemory device_memory; AllocationId alloc_id;
-	
-	RenderSystem::BufferLocalMemoryAllocationInfo memory_allocation_info;
-	memory_allocation_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
-	memory_allocation_info.Offset = &offset;
-	memory_allocation_info.DeviceMemory = &device_memory;
-	memory_allocation_info.AllocationId = &alloc_id;
-	load_info->RenderSystem->AllocateLocalBufferMemory(memory_allocation_info);
 
 	Buffer::CreateInfo create_info;
 	create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
@@ -238,6 +237,16 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	create_info.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
 	Buffer device_buffer(create_info);
 
+	RenderDevice::MemoryRequirements memory_requirements;
+	load_info->RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&device_buffer, memory_requirements);
+
+	RenderSystem::BufferLocalMemoryAllocationInfo memory_allocation_info;
+	memory_allocation_info.Size = memory_requirements.Size;
+	memory_allocation_info.Offset = &offset;
+	memory_allocation_info.DeviceMemory = &device_memory;
+	memory_allocation_info.AllocationId = &alloc_id;
+	load_info->RenderSystem->AllocateLocalBufferMemory(memory_allocation_info);
+	
 	Buffer::BindMemoryInfo bind_memory_info;
 	bind_memory_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
 	bind_memory_info.Memory = &device_memory;
@@ -256,6 +265,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	meshBuffers.Insert(load_info->InstanceId, device_buffer);
 	renderAllocations.Insert(load_info->InstanceId, load_info->Allocation);
 	indicesCount.Insert(load_info->InstanceId, onStaticMeshLoad.IndexCount);
+	indexTypes.Insert(load_info->InstanceId, SelectIndexType(onStaticMeshLoad.IndexSize));
 
 	GTSL::Delete<MeshLoadInfo>(load_info, GetPersistentAllocator());
 }
@@ -275,7 +285,12 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	bindings_set_layouts.EmplaceBack(bindingsSetLayout);
 
 	pipeline_create_info.BindingsSetLayouts = bindings_set_layouts;
-	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_NONE;
+
+	pipeline_create_info.PipelineDescriptor.BlendEnable = false;
+	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_FRONT;
+	pipeline_create_info.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
+
+	pipeline_create_info.SurfaceExtent = { 1280, 720 };
 	
 	GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
 	for(uint32 i = 0; i < onStaticMeshLoad.ShaderTypes.GetLength(); ++i)

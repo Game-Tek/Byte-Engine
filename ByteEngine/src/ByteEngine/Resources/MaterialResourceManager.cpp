@@ -75,6 +75,10 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
 			const auto comp_res = Shader::CompileShader(f, materialCreateInfo.ShaderName, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
+			if(comp_res == false)
+			{
+				BE_LOG_ERROR(reinterpret_cast<const char*>(shader_error_buffer.GetData()));
+			}
 			BE_ASSERT(comp_res != false, shader_error_buffer.GetData());
 
 			material_info.ShaderSizes.EmplaceBack(shader_buffer.GetLength());

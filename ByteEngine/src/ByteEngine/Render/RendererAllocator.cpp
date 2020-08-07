@@ -25,16 +25,20 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 
+	bufferMemoryAlignment = memory_requirements.Alignment;
+	
 	scratch_buffer.Destroy(&renderDevice);
 }
 
 void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	uint32 i = 0, id = 0;
+
+	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
 	
 	for(auto& e : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(this, deviceMemory, size, offset, data, id))
+		if(e.TryAllocate(deviceMemory, aligned_size, offset, data, id))
 		{
 			*reinterpret_cast<uint8*>(allocId) = i;
 			*(reinterpret_cast<uint32*>(allocId) + 1) = id;
@@ -46,7 +50,7 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(this, deviceMemory, size, offset, data, id);
+	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, aligned_size, offset, data, id);
 
 	*reinterpret_cast<uint8*>(allocId) = i;
 	*(reinterpret_cast<uint32*>(allocId) + 1) = id;
@@ -63,6 +67,7 @@ void ScratchMemoryBlock::Initialize(const RenderDevice& renderDevice, const uint
 	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
+	memory_create_info.Name = "ScratchMemoryBlock";
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, MemoryType::SHARED | MemoryType::COHERENT);
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
@@ -85,10 +90,10 @@ void ScratchMemoryBlock::Free(const RenderDevice& renderDevice, const BE::Persis
 	deviceMemory.Destroy(&renderDevice);
 }
 
-bool ScratchMemoryBlock::TryAllocate(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
+bool ScratchMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
 {
 	uint32 i = 0;
-
+	
 	for (auto& e : freeSpaces)
 	{
 		if (e.Size >= size)
@@ -104,7 +109,7 @@ bool ScratchMemoryBlock::TryAllocate(ScratchMemoryAllocator* scratchMemoryAlloca
 			}
 			
 			e.Size -= size;
-			e.Offset += GTSL::Math::PowerOf2RoundUp(e.Offset + size, scratchMemoryAllocator->GetBufferMemoryAlignment());
+			e.Offset += size;
 
 			return true;
 		}
@@ -115,17 +120,17 @@ bool ScratchMemoryBlock::TryAllocate(ScratchMemoryAllocator* scratchMemoryAlloca
 	return false;
 }
 
-void ScratchMemoryBlock::AllocateFirstBlock(ScratchMemoryAllocator* scratchMemoryAllocator, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
+void ScratchMemoryBlock::AllocateFirstBlock(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
 {
 	*data = static_cast<byte*>(mappedMemory) + freeSpaces[0].Offset;
 	*offset = freeSpaces[0].Offset;
 	*deviceMemory = this->deviceMemory;
 
 	freeSpaces[0].Size -= size;
-	freeSpaces[0].Offset += GTSL::Math::PowerOf2RoundUp(size, scratchMemoryAllocator->GetBufferMemoryAlignment());
+	freeSpaces[0].Offset += size;
 }
 
-void ScratchMemoryBlock::Deallocate(ScratchMemoryAllocator* scratchMemoryAllocator,	const uint32 size, const uint32 offset, uint32 id)
+void ScratchMemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
 {
 	uint8 info = 0; uint32 i = 0;
 
@@ -187,6 +192,7 @@ void LocalMemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size,
 
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
+	memory_create_info.Name = "LocalMemoryBlock";
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, static_cast<uint32>(MemoryType::GPU));
 	::new(&deviceMemory) DeviceMemory(memory_create_info);
@@ -230,7 +236,7 @@ bool LocalMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size
 
 void LocalMemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, uint32& id)
 {
-	*offset = freeSpaces[0].Offset;
+	*offset = 0;
 	*deviceMemory = this->deviceMemory;
 
 	freeSpaces[0].Size -= size;
@@ -308,8 +314,8 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
 	create_info.ImageUses = ImageUse::TRANSFER_DESTINATION;
 	create_info.InitialLayout = GAL::ImageLayout::UNDEFINED;
-	create_info.SourceFormat = (uint32)ImageFormat::RGBA_I8;
-	create_info.ImageTiling = (uint32)GAL::VulkanImageTiling::OPTIMAL;
+	create_info.SourceFormat = static_cast<uint32>(ImageFormat::RGBA_I8);
+	create_info.ImageTiling = static_cast<uint32>(GAL::VulkanImageTiling::OPTIMAL);
 	auto image = Image(create_info);
 
 	RenderDevice::MemoryRequirements image_memory_requirements;
@@ -326,6 +332,9 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 
 	scratch_buffer.Destroy(&renderDevice);
 	image.Destroy(&renderDevice);
+
+	bufferMemoryAlignment = buffer_memory_requirements.Alignment;
+	textureMemoryAlignment = image_memory_requirements.Alignment;
 }
 
 void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
@@ -337,10 +346,12 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	uint32 i = 0, id = 0;
+
+	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
 	
 	for(auto& e : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(deviceMemory, size, offset))
+		if(e.TryAllocate(deviceMemory, aligned_size, offset))
 		{
 			*reinterpret_cast<uint8*>(allocId) = i;
 			*(reinterpret_cast<uint32*>(allocId) + 1) = id;
@@ -352,7 +363,7 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().Allocate(deviceMemory, size, offset, id);
+	bufferMemoryBlocks.back().Allocate(deviceMemory, aligned_size, offset, id);
 
 	*reinterpret_cast<uint8*>(allocId) = i;
 	*(reinterpret_cast<uint32*>(allocId) + 1) = id;

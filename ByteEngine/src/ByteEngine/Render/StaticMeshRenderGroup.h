@@ -70,6 +70,7 @@ private:
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffset;
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
+	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;
 	
 	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;
 	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> perObjectBindingsSets;

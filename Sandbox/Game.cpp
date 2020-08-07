@@ -55,7 +55,7 @@ void Game::PostInitialize()
 	
 	auto* collection = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"));
 	auto component = collection->AddMesh();
-	collection->SetMesh(component, "Box");
+	collection->SetMesh(component, "plane");
 	collection->SetPosition(component, GTSL::Vector3(0, 0, 0));
 
 	auto* static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(gameInstance->GetSystem("StaticMeshRenderGroup"));

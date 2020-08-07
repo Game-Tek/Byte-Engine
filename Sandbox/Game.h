@@ -2,6 +2,8 @@
 
 #include <ByteEngine.h>
 
+
+#include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -10,6 +12,8 @@ class Game final : public GameApplication
 	GameInstance* sandboxGameInstance{ nullptr };
 	GameInstance::WorldReference menuWorld;
 	GameInstance::WorldReference gameWorld;
+
+	uint32 camera;
 public:
 	Game() : GameApplication("Sandbox")
 	{
@@ -21,6 +25,8 @@ public:
 	void OnUpdate(const OnUpdateInfo& onUpdate) override;
 
 	void Shutdown() override;
+
+	void move(InputManager::Vector2DInputEvent data);
 	
 	~Game();
 

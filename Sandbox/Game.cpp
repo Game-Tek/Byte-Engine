@@ -16,12 +16,8 @@ void Game::Initialize()
 	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	auto mo = [&](InputManager::ActionInputEvent a)
-	{
-		//BE_BASIC_LOG_MESSAGE("Key: ", a.Value)
-	};
-	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("RightHatButton"), GTSL::Id64("S_Key") });
-	inputManagerInstance->RegisterActionInputEvent("ClickTest", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create(mo));
+	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove") });
+	inputManagerInstance->Register2DInputEvent("Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -51,11 +47,11 @@ void Game::PostInitialize()
 {
 	GameApplication::PostInitialize();
 
-	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCamera(GTSL::Vector3(0, 0, -750));
+	camera = static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCamera(GTSL::Vector3(0, 0, -500));
 	
 	auto* collection = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"));
 	auto component = collection->AddMesh();
-	collection->SetMesh(component, "plane");
+	collection->SetMesh(component, "Box");
 	collection->SetPosition(component, GTSL::Vector3(0, 0, 0));
 
 	auto* static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(gameInstance->GetSystem("StaticMeshRenderGroup"));
@@ -78,6 +74,11 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 void Game::Shutdown()
 {
 	GameApplication::Shutdown();
+}
+
+void Game::move(InputManager::Vector2DInputEvent data)
+{
+	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraRotation(camera, GTSL::Quaternion());
 }
 
 Game::~Game()

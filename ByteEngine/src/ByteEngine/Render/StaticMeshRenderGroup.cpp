@@ -141,13 +141,13 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 		bind_index_buffer.IndexType = indexTypes[i];
 		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
 		
-		//CommandBuffer::DrawIndexedInfo draw_indexed_info;
-		//draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
-		//draw_indexed_info.InstanceCount = 1;
-		//draw_indexed_info.IndexCount = indicesCount[i];
-		//renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
+		CommandBuffer::DrawIndexedInfo draw_indexed_info;
+		draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
+		draw_indexed_info.InstanceCount = 1;
+		draw_indexed_info.IndexCount = indicesCount[i];
+		renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
 
-		vkCmdDraw(renderSystem->GetCurrentCommandBuffer()->GetVkCommandBuffer(), 3, 1, 0, 0);
+		//vkCmdDraw(renderSystem->GetCurrentCommandBuffer()->GetVkCommandBuffer(), 3, 1, 0, 0);
 	}
 }
 
@@ -287,7 +287,7 @@ void StaticMeshRenderGroup::onMaterialLoaded(TaskInfo taskInfo, MaterialResource
 	pipeline_create_info.BindingsSetLayouts = bindings_set_layouts;
 
 	pipeline_create_info.PipelineDescriptor.BlendEnable = false;
-	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_FRONT;
+	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
 	pipeline_create_info.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
 
 	pipeline_create_info.SurfaceExtent = { 1280, 720 };

@@ -13,8 +13,8 @@ public:
 	{}
 
 	void AddCamera() { viewMatrices.EmplaceBack(); }
-	void AddCamera(const GTSL::Vector3 pos) { viewMatrices.EmplaceBack(GTSL::Math::Translation(pos)); }
-	void AddCamera(const GTSL::Matrix4& matrix) { viewMatrices.EmplaceBack(matrix); }
+	ComponentReference AddCamera(const GTSL::Vector3 pos) { return viewMatrices.EmplaceBack(GTSL::Math::Translation(pos)); }
+	ComponentReference AddCamera(const GTSL::Matrix4& matrix) { return viewMatrices.EmplaceBack(matrix); }
 
 	void RemoveCamera(const ComponentReference reference) { viewMatrices.Pop(reference); }
 	

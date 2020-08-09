@@ -101,7 +101,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 	bindingsPool.Destroy(render_system->GetRenderDevice());
 }
 
-void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix)
+void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix)
 {
 	auto positions = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"))->GetPositions();
 
@@ -112,7 +112,7 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 	
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = viewProjectionMatrix *= GTSL::Math::Translation(positions[i]);
+		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projMatrix * viewMatrix * GTSL::Math::Translation(positions[i]);
 		
 		CommandBuffer::BindPipelineInfo bind_pipeline_info;
 		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();

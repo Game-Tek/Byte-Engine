@@ -9,32 +9,61 @@
 class CameraComponentCollection : public ComponentCollection
 {
 public:
-	CameraComponentCollection() : viewMatrices(4, GetPersistentAllocator())
+	CameraComponentCollection() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator())
 	{}
 
-	void AddCamera() { viewMatrices.EmplaceBack(); }
-	ComponentReference AddCamera(const GTSL::Vector3 pos) { return viewMatrices.EmplaceBack(GTSL::Math::Translation(pos)); }
-	ComponentReference AddCamera(const GTSL::Matrix4& matrix) { return viewMatrices.EmplaceBack(matrix); }
+	void AddCamera()
+	{
+		positionMatrices.EmplaceBack(1);
+		rotationMatrices.EmplaceBack(1);
+	}
+	
+	ComponentReference AddCamera(const GTSL::Vector3 pos)
+	{
+		rotationMatrices.EmplaceBack(1);
+		return positionMatrices.EmplaceBack(GTSL::Math::Translation(pos));
+	}
+	
+	//ComponentReference AddCamera(const GTSL::Matrix4& matrix)
+	//{
+	//	return viewMatrices.EmplaceBack(matrix);
+	//}
 
-	void RemoveCamera(const ComponentReference reference) { viewMatrices.Pop(reference); }
+	void RemoveCamera(const ComponentReference reference)
+	{
+		positionMatrices.Pop(reference);
+		rotationMatrices.Pop(reference);
+	}
+
+	void SetCameraRotation(const ComponentReference reference, const GTSL::Matrix4 matrix4)
+	{
+		rotationMatrices[reference] = matrix4;
+	}
 	
 	void SetCameraPosition(const ComponentReference reference, const GTSL::Vector3 pos)
 	{
-		viewMatrices[reference] = GTSL::Math::Translation(pos);
+		positionMatrices[reference] = GTSL::Math::Translation(pos);
 	}
 
-	void AddCameraPosition(const ComponentReference reference, const GTSL::Vector3 pos)
+	void AddCameraPosition(const ComponentReference reference, GTSL::Vector3 pos)
 	{
-		GTSL::Math::Translate(viewMatrices[reference], pos);
+		GTSL::Math::Translate(positionMatrices[reference], pos);
 	}
 
 	void AddCameraRotation(const ComponentReference reference, const GTSL::Quaternion quaternion)
 	{
-		GTSL::Math::Rotate(viewMatrices[reference], quaternion);
+		GTSL::Math::Rotate(rotationMatrices[reference], quaternion);
+	}
+
+	void AddCameraRotation(const ComponentReference reference, const GTSL::Matrix4 matrix)
+	{
+		rotationMatrices[reference] = matrix * rotationMatrices[reference];
 	}
 	
-	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetViewMatrices() const { return viewMatrices; }
+	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetPositionMatrices() const { return positionMatrices; }
+	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetRotationMatrices() const { return rotationMatrices; }
 	
 private:
-	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> viewMatrices;
+	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;
+	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> rotationMatrices;
 };

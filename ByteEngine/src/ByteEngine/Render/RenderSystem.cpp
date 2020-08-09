@@ -231,9 +231,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 }
 
 void RenderSystem::render(TaskInfo taskInfo)
-{
-	BE_LOG_MESSAGE("Started rendering")
-	
+{	
 	Fence::WaitForFencesInfo wait_for_fences_info;
 	wait_for_fences_info.RenderDevice = &renderDevice;
 	wait_for_fences_info.Timeout = ~0ULL;
@@ -250,15 +248,24 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	commandBuffers[currentFrameIndex].BeginRecording({});
 	commandBuffers[currentFrameIndex].BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
-	auto view_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetViewMatrices();
+	auto position_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetPositionMatrices();
+	auto rotation_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetRotationMatrices();
 	
 	GTSL::Matrix4 projection_matrix;
-	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 35.0f, 16.f / 9.f, 0.5f, 1000.f);
-	projection_matrix(1, 1) *= -1.f;
+	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 45.0f, 16.f / 9.f, 0.5f, 1000.f);
+	//projection_matrix(1, 1) *= -1.f;
+
+	auto pos = position_matrices[0];
+
+	pos(0, 3) *= -1;
+	pos(1, 3) *= -1;
+	//pos(2, 3) *= -1;
 	
-	projection_matrix *= view_matrices[0];
+	auto view_matrix = rotation_matrices[0] * pos;
 	
-	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, projection_matrix);
+	auto matrix = projection_matrix * view_matrix;
+	
+	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
 	
 	commandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
 	commandBuffers[currentFrameIndex].EndRecording({});
@@ -354,8 +361,6 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(GAL::PipelineStage::TOP_OF_PIPE) };
 		transferQueue.Submit(submit_info);
 	}
-
-	BE_LOG_MESSAGE("Executed transfers")
 }
 
 void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const

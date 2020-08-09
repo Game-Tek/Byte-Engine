@@ -13,7 +13,11 @@ class Game final : public GameApplication
 	GameInstance::WorldReference menuWorld;
 	GameInstance::WorldReference gameWorld;
 
+	GTSL::Vector2 posDelta;
+	
 	uint32 camera;
+	void moveLeft(InputManager::ActionInputEvent data);
+	void moveRight(InputManager::ActionInputEvent data);
 public:
 	Game() : GameApplication("Sandbox")
 	{

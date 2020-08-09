@@ -7,6 +7,18 @@
 
 #include "ByteEngine/Game/CameraComponentCollection.h"
 
+#include <GTSL/Math/AxisAngle.h>
+
+void Game::moveLeft(InputManager::ActionInputEvent data)
+{
+	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraPosition(camera, GTSL::Vector3(-data.Value * 5, 0, 0));
+}
+
+void Game::moveRight(InputManager::ActionInputEvent data)
+{
+	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraPosition(camera, GTSL::Vector3(data.Value * 5, 0, 0));
+}
+
 void Game::Initialize()
 {
 	GameApplication::Initialize();
@@ -16,8 +28,15 @@ void Game::Initialize()
 	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	const GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove") });
+	GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove") });
 	inputManagerInstance->Register2DInputEvent("Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+
+	a.PopBack(); a.EmplaceBack("A_Key");
+	inputManagerInstance->RegisterActionInputEvent("Move Left", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
+	
+	a.PopBack(); a.EmplaceBack("D_Key");
+	inputManagerInstance->RegisterActionInputEvent("Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
+	
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -64,6 +83,14 @@ void Game::PostInitialize()
 	add_static_mesh_info.MaterialName = "BasicMaterial";
 	add_static_mesh_info.MaterialResourceManager = static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"));
 	static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
+
+	//static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraRotation(camera, GTSL::Rotator(0, 20, 0));
+	
+	//auto A = GTSL::Matrix4(2, 1, 23, 4, 3, 4, 5, 7, 9, 8, 2, 1, 4, 3, 0, 2);
+	//auto B = GTSL::Matrix4(2, 8, 2, 9, 3, 6, 4, 6, 4, 8, 5, 5, 5, 7, 2, 2);
+	//A *= B;//
+	
+	//A* GTSL::Quaternion();//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
@@ -78,7 +105,11 @@ void Game::Shutdown()
 
 void Game::move(InputManager::Vector2DInputEvent data)
 {
-	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraRotation(camera, GTSL::Quaternion());
+	posDelta += (data.Value - data.LastValue) * 6;
+	
+	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
+	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot(0, 0), rot(1, 0), rot(2, 0), -posDelta.Y));
+	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->SetCameraRotation(camera, rot);
 }
 
 Game::~Game()

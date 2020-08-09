@@ -17,7 +17,7 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	void Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewProjectionMatrix);
+	void Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix);
 
 	struct AddStaticMeshInfo
 	{

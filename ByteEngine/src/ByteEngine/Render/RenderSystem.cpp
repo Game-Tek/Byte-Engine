@@ -248,8 +248,8 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	commandBuffers[currentFrameIndex].BeginRecording({});
 	commandBuffers[currentFrameIndex].BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
-	auto position_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetPositionMatrices();
-	auto rotation_matrices = static_cast<CameraComponentCollection*>(taskInfo.GameInstance->GetComponentCollection("CameraComponentCollection"))->GetRotationMatrices();
+	auto position_matrices = taskInfo.GameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->GetPositionMatrices();
+	auto rotation_matrices = taskInfo.GameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->GetRotationMatrices();
 	
 	GTSL::Matrix4 projection_matrix;
 	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 45.0f, 16.f / 9.f, 0.5f, 1000.f);
@@ -265,7 +265,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	auto matrix = projection_matrix * view_matrix;
 	
-	static_cast<StaticMeshRenderGroup*>(taskInfo.GameInstance->GetSystem("StaticMeshRenderGroup"))->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
+	taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup")->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
 	
 	commandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
 	commandBuffers[currentFrameIndex].EndRecording({});

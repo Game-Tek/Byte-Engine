@@ -93,7 +93,10 @@ namespace BE
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
-		ResourceManager* GetResourceManager(const GTSL::Id64 name) { return resourceManagers.At(name); }
+		
+		template<class T>
+		T* GetResourceManager(const GTSL::Id64 name) { return static_cast<T*>(resourceManagers.At(name).GetData()); }
+		
 		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }

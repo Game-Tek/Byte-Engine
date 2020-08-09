@@ -60,8 +60,11 @@ public:
 
 	void UnloadWorld(WorldReference worldId);
 
-	ComponentCollection* GetComponentCollection(const GTSL::Id64 collectionName) { return componentCollections.At(collectionName); }
-	System* GetSystem(const GTSL::Id64 systemName) { return systems.At(systemName); }
+	template<class T>
+	T* GetComponentCollection(const GTSL::Id64 collectionName) { return static_cast<T*>(componentCollections.At(collectionName).GetData()); }
+	
+	template<class T>
+	T* GetSystem(const GTSL::Id64 systemName) { return static_cast<T*>(systems.At(systemName).GetData()); }
 	
 	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 startsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);

@@ -11,12 +11,12 @@
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
-	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraPosition(camera, GTSL::Vector3(-data.Value * 5, 0, 0));
+	gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->AddCameraPosition(camera, GTSL::Vector3(-data.Value * 5, 0, 0));
 }
 
 void Game::moveRight(InputManager::ActionInputEvent data)
 {
-	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraPosition(camera, GTSL::Vector3(data.Value * 5, 0, 0));
+	gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->AddCameraPosition(camera, GTSL::Vector3(data.Value * 5, 0, 0));
 }
 
 void Game::Initialize()
@@ -54,7 +54,7 @@ void Game::Initialize()
 	GTSL::Array<GTSL::Ranger<const GAL::BindingType>, 10> b_array;
 	b_array.EmplaceBack(binding_sets[0]);
 	material_create_info.BindingSets = b_array;
-	static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"))->CreateMaterial(material_create_info);
+	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
 	//show loading screen
 	//load menu
@@ -66,22 +66,22 @@ void Game::PostInitialize()
 {
 	GameApplication::PostInitialize();
 
-	camera = static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCamera(GTSL::Vector3(0, 0, -500));
+	camera = gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->AddCamera(GTSL::Vector3(0, 0, -500));
 	
-	auto* collection = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"));
+	auto* collection = gameInstance->GetComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
 	auto component = collection->AddMesh();
 	collection->SetMesh(component, "Box");
 	collection->SetPosition(component, GTSL::Vector3(0, 0, 0));
 
-	auto* static_mesh_renderer = static_cast<StaticMeshRenderGroup*>(gameInstance->GetSystem("StaticMeshRenderGroup"));
+	auto* static_mesh_renderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
-	add_static_mesh_info.RenderSystem = static_cast<RenderSystem*>(gameInstance->GetSystem("RenderSystem"));
+	add_static_mesh_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	add_static_mesh_info.GameInstance = gameInstance;
 	add_static_mesh_info.ComponentReference = component;
 	add_static_mesh_info.RenderStaticMeshCollection = collection;
-	add_static_mesh_info.StaticMeshResourceManager = static_cast<StaticMeshResourceManager*>(GetResourceManager("StaticMeshResourceManager"));
+	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	add_static_mesh_info.MaterialName = "BasicMaterial";
-	add_static_mesh_info.MaterialResourceManager = static_cast<MaterialResourceManager*>(GetResourceManager("MaterialResourceManager"));
+	add_static_mesh_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 
 	//static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->AddCameraRotation(camera, GTSL::Rotator(0, 20, 0));
@@ -109,7 +109,7 @@ void Game::move(InputManager::Vector2DInputEvent data)
 	
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot(0, 0), rot(1, 0), rot(2, 0), -posDelta.Y));
-	static_cast<CameraComponentCollection*>(gameInstance->GetComponentCollection("CameraComponentCollection"))->SetCameraRotation(camera, rot);
+	gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->SetCameraRotation(camera, rot);
 }
 
 Game::~Game()

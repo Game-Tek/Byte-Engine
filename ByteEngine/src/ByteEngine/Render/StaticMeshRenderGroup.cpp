@@ -14,17 +14,17 @@ indicesCount(64, GetPersistentAllocator()), indexTypes(64, GetPersistentAllocato
 
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
-	auto render_device = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"));
+	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
 	BindingsSetLayout::CreateInfo bindings_set_layout_create_info;
-	bindings_set_layout_create_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
+	bindings_set_layout_create_info.RenderDevice = render_device->GetRenderDevice();
 	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
 	binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::UNIFORM_BUFFER_DYNAMIC, ShaderStage::VERTEX, 1 });
 	bindings_set_layout_create_info.BindingsDescriptors = binding_descriptors;
 	::new(&bindingsSetLayout) BindingsSetLayout(bindings_set_layout_create_info);
 	
 	BindingsPool::CreateInfo create_info;
-	create_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
+	create_info.RenderDevice = render_device->GetRenderDevice();
 	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
 	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{BindingType::UNIFORM_BUFFER_DYNAMIC, 3});
 	create_info.DescriptorPoolSizes = descriptor_pool_sizes;
@@ -32,7 +32,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	::new(&bindingsPool) BindingsPool(create_info);
 
 	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
-	allocate_bindings_sets_info.RenderDevice = static_cast<RenderSystem*>(initializeInfo.GameInstance->GetSystem("RenderSystem"))->GetRenderDevice();
+	allocate_bindings_sets_info.RenderDevice = render_device->GetRenderDevice();
 	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(bindingsSets.GetCapacity(), bindingsSets.begin());
 	allocate_bindings_sets_info.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ bindingsSetLayout, bindingsSetLayout, bindingsSetLayout };
 	bindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
@@ -85,7 +85,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 
 void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	RenderSystem* render_system = static_cast<RenderSystem*>(shutdownInfo.GameInstance->GetSystem("RenderSystem"));
+	RenderSystem* render_system = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
 	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
 	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
@@ -103,7 +103,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix)
 {
-	auto positions = static_cast<RenderStaticMeshCollection*>(gameInstance->GetComponentCollection("RenderStaticMeshCollection"))->GetPositions();
+	auto positions = gameInstance->GetComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection")->GetPositions();
 
 	uint32 offset = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * renderSystem->GetCurrentFrame();
 	

@@ -93,10 +93,6 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 
 	uniformBuffer.Destroy(render_system->GetRenderDevice());
 	render_system->DeallocateScratchBufferMemory(sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES, offset, uniformAllocation);
-	BindingsPool::FreeBindingsSetInfo free_bindings_set_info;
-	free_bindings_set_info.RenderDevice = render_system->GetRenderDevice();
-	free_bindings_set_info.BindingsSet = bindingsSets;
-	bindingsPool.FreeBindingsSet(free_bindings_set_info);
 	bindingsSetLayout.Destroy(render_system->GetRenderDevice());
 	bindingsPool.Destroy(render_system->GetRenderDevice());
 }

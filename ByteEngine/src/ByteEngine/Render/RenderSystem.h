@@ -99,7 +99,7 @@ public:
 
 	RenderPass* GetRenderPass() { return &renderPass; }
 
-	CommandBuffer* GetCurrentCommandBuffer() { return &commandBuffers[currentFrameIndex]; }
+	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 	
 private:
@@ -121,8 +121,8 @@ private:
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> inFlightFences;
-	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> commandBuffers;
-	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> commandPools;
+	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
+	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
 	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;

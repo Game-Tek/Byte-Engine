@@ -313,7 +313,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.Extent = { 1280, 720 };
 	create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
 	create_info.ImageUses = ImageUse::TRANSFER_DESTINATION;
-	create_info.InitialLayout = GAL::ImageLayout::UNDEFINED;
+	create_info.InitialLayout = ImageLayout::UNDEFINED;
 	create_info.SourceFormat = static_cast<uint32>(ImageFormat::RGBA_I8);
 	create_info.ImageTiling = static_cast<uint32>(GAL::VulkanImageTiling::OPTIMAL);
 	auto image = Image(create_info);

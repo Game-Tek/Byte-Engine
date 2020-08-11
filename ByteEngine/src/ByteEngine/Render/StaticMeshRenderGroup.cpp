@@ -112,7 +112,8 @@ void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* ren
 	
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
 	{
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projMatrix * viewMatrix * GTSL::Math::Translation(positions[i]);
+		auto pos = GTSL::Math::Translation(positions[i]); pos(2, 3) *= -1.f;
+		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projMatrix * viewMatrix * pos;
 		
 		CommandBuffer::BindPipelineInfo bind_pipeline_info;
 		bind_pipeline_info.RenderDevice = renderSystem->GetRenderDevice();

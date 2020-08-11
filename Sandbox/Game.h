@@ -14,9 +14,12 @@ class Game final : public GameApplication
 	GameInstance::WorldReference gameWorld;
 
 	GTSL::Vector2 posDelta;
+	GTSL::Vector3 moveDir;
 	
 	uint32 camera;
 	void moveLeft(InputManager::ActionInputEvent data);
+	void moveForward(InputManager::ActionInputEvent data);
+	void moveBackwards(InputManager::ActionInputEvent data);
 	void moveRight(InputManager::ActionInputEvent data);
 public:
 	Game() : GameApplication("Sandbox")

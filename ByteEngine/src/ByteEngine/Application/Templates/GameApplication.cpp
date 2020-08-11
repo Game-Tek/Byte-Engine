@@ -115,7 +115,6 @@ void GameApplication::SetupInputSources()
 
 void GameApplication::RegisterMouse()
 {
-
 	inputManagerInstance->Register2DInputSource("MouseMove");
 
 	auto mouse_move = [](const GTSL::Vector2 a)

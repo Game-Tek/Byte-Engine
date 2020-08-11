@@ -57,7 +57,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
 	if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
 
-	GAL::RenderContext::CreateInfo render_context_create_info;
+	RenderContext::CreateInfo render_context_create_info;
+	render_context_create_info.Name = "Render System Render Context";
 	render_context_create_info.RenderDevice = &renderDevice;
 	render_context_create_info.DesiredFramesInFlight = 2;
 	render_context_create_info.PresentMode = swapchainPresentMode;
@@ -91,6 +92,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	RenderContext::GetImagesInfo get_images_info;
 	get_images_info.RenderDevice = &renderDevice;
 	get_images_info.SwapchainImagesFormat = swapchainFormat;
+	get_images_info.ImageViewName = GTSL::StaticString<64>("Swapchain image view ");
 	swapchainImages = renderContext.GetImages(get_images_info);
 
 	clearValues.EmplaceBack(0, 0, 0, 0);
@@ -113,17 +115,53 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		fence_create_info.IsSignaled = false;
 		transferFences.EmplaceBack(fence_create_info);
 
-		CommandPool::CreateInfo command_pool_create_info;
-		command_pool_create_info.RenderDevice = &renderDevice;
-		command_pool_create_info.Name = "GraphicsCommandPools";
-		command_pool_create_info.Queue = &graphicsQueue;
-		command_pool_create_info.IsPrimary = true;
-		command_pool_create_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &commandBuffers[i]);
-		commandPools.EmplaceBack(command_pool_create_info);
-		command_pool_create_info.Name = "TransferCommandPools";
-		command_pool_create_info.Queue = &transferQueue;
-		command_pool_create_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &transferCommandBuffers[i]);
-		transferCommandPools.EmplaceBack(command_pool_create_info);
+		{
+			GTSL::StaticString<64> command_pool_name("Transfer command pool "); command_pool_name += i;
+			
+			CommandPool::CreateInfo command_pool_create_info;
+			command_pool_create_info.RenderDevice = &renderDevice;
+			command_pool_create_info.Name = command_pool_name.begin();
+			command_pool_create_info.Queue = &graphicsQueue;
+
+			commandPools.EmplaceBack(command_pool_create_info);
+			
+			GTSL::StaticString<64> command_buffer_name("Graphics command buffer "); command_buffer_name += i;
+
+			CommandPool::AllocateCommandBuffersInfo allocate_command_buffers_info;
+			allocate_command_buffers_info.IsPrimary = true;
+			allocate_command_buffers_info.RenderDevice = &renderDevice;
+
+			CommandBuffer::CreateInfo command_buffer_create_info; command_buffer_create_info.RenderDevice = &renderDevice; command_buffer_create_info.Name = command_buffer_name.begin();
+
+			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
+			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
+			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &commandBuffers[i]);
+			commandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
+		}
+
+		{
+			GTSL::StaticString<64> command_pool_name("Transfer command pool "); command_pool_name += i;
+			
+			CommandPool::CreateInfo command_pool_create_info;
+			command_pool_create_info.RenderDevice = &renderDevice;
+			command_pool_create_info.Name = command_pool_name.begin();
+			command_pool_create_info.Queue = &transferQueue;
+			transferCommandPools.EmplaceBack(command_pool_create_info);
+			
+			GTSL::StaticString<64> command_buffer_name("Transfer command buffer "); command_buffer_name += i;
+
+			CommandPool::AllocateCommandBuffersInfo allocate_command_buffers_info;
+			allocate_command_buffers_info.RenderDevice = &renderDevice;
+			allocate_command_buffers_info.IsPrimary = true;
+
+			CommandBuffer::CreateInfo command_buffer_create_info; command_buffer_create_info.RenderDevice = &renderDevice; command_buffer_create_info.Name = command_buffer_name.begin();
+			
+			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
+			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
+			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &transferCommandBuffers[i]);
+			
+			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
+		}
 			
 		FrameBuffer::CreateInfo framebuffer_create_info;
 		framebuffer_create_info.RenderDevice = &renderDevice;

@@ -9,18 +9,20 @@
 class CameraComponentCollection : public ComponentCollection
 {
 public:
-	CameraComponentCollection() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator())
+	CameraComponentCollection() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())
 	{}
 
 	void AddCamera()
 	{
 		positionMatrices.EmplaceBack(1);
 		rotationMatrices.EmplaceBack(1);
+		fovs.EmplaceBack(45.0f);
 	}
 	
 	ComponentReference AddCamera(const GTSL::Vector3 pos)
 	{
 		rotationMatrices.EmplaceBack(1);
+		fovs.EmplaceBack(45.0f);
 		return positionMatrices.EmplaceBack(GTSL::Math::Translation(pos));
 	}
 	
@@ -33,6 +35,7 @@ public:
 	{
 		positionMatrices.Pop(reference);
 		rotationMatrices.Pop(reference);
+		fovs.Pop(reference);
 	}
 
 	void SetCameraRotation(const ComponentReference reference, const GTSL::Matrix4 matrix4)
@@ -62,8 +65,10 @@ public:
 	
 	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetPositionMatrices() const { return positionMatrices; }
 	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetRotationMatrices() const { return rotationMatrices; }
+	[[nodiscard]] GTSL::Ranger<const float32> GetFieldOfViews() const { return fovs; }
 	
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> rotationMatrices;
+	GTSL::Vector<float32, BE::PersistentAllocatorReference> fovs;
 };

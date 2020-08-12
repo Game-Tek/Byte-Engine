@@ -15,12 +15,14 @@ class Game final : public GameApplication
 
 	GTSL::Vector2 posDelta;
 	GTSL::Vector3 moveDir;
+	float32 fov = 45.0f;
 	
 	uint32 camera;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);
 	void moveRight(InputManager::ActionInputEvent data);
+	void zoom(InputManager::LinearInputEvent data);
 public:
 	Game() : GameApplication("Sandbox")
 	{

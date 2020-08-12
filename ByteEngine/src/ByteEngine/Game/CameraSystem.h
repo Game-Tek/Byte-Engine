@@ -1,17 +1,18 @@
 #pragma once
 
-#include "ComponentCollection.h"
-
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Vector.hpp>
 
-class CameraComponentCollection : public ComponentCollection
+class CameraSystem : public System
 {
 public:
-	CameraComponentCollection() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())
+	CameraSystem() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())
 	{}
 
+	void Initialize(const InitializeInfo& initializeInfo) override {}
+	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
+	
 	void AddCamera()
 	{
 		positionMatrices.EmplaceBack(1);
@@ -66,7 +67,8 @@ public:
 	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetPositionMatrices() const { return positionMatrices; }
 	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetRotationMatrices() const { return rotationMatrices; }
 	[[nodiscard]] GTSL::Ranger<const float32> GetFieldOfViews() const { return fovs; }
-	
+	void SetFieldOfView(const ComponentReference componentReference, const float32 fov) { fovs[componentReference] = fov; }
+
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> rotationMatrices;

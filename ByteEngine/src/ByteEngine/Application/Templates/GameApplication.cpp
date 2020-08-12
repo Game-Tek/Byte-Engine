@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
-#include "ByteEngine/Game/CameraComponentCollection.h"
+#include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
@@ -10,9 +10,9 @@
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
-#include <ByteEngine\Render\RenderStaticMeshCollection.h>
 #include <ByteEngine\Render\RenderSystem.h>
 
+#include "ByteEngine/Render/MaterialRenderSystem.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
 #pragma comment(lib, "XInput.lib")
@@ -71,9 +71,9 @@ void GameApplication::PostInitialize()
 	initialize_renderer_info.Window = &window;
 	renderer->InitializeRenderer(initialize_renderer_info);
 	
-	gameInstance->AddComponentCollection<CameraComponentCollection>("CameraComponentCollection");
-	gameInstance->AddComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
+	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	gameInstance->AddSystem<MaterialRenderSystem>("MaterialRenderSystem");
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

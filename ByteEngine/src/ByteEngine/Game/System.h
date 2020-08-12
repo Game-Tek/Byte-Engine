@@ -1,6 +1,22 @@
 #pragma once
 
+
 #include "ByteEngine/Object.h"
+#include <GTSL/Id.h>
+
+using ComponentReference = uint32;
+
+namespace GTSL
+{
+	template<typename T, class ALLOC>
+	class Vector;
+}
+
+template<typename T, class ALLOC = BE::PersistentAllocatorReference>
+using Vector = GTSL::Vector<T, ALLOC>;
+
+using Id = GTSL::Id64;
+using Id32 = GTSL::Id32;
 
 /**
  * \brief Systems persist across levels and can process world components regardless of the current level.

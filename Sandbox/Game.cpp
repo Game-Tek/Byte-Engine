@@ -5,9 +5,11 @@
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 
-#include "ByteEngine/Game/CameraComponentCollection.h"
+#include "ByteEngine/Game/CameraSystem.h"
 
 #include <GTSL/Math/AxisAngle.h>
+
+#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
@@ -27,6 +29,11 @@ void Game::moveBackwards(InputManager::ActionInputEvent data)
 void Game::moveRight(InputManager::ActionInputEvent data)
 {
 	moveDir.X = data.Value;
+}
+
+void Game::zoom(InputManager::LinearInputEvent data)
+{
+	fov += -(data.Value / 100);
 }
 
 void Game::Initialize()
@@ -49,6 +56,8 @@ void Game::Initialize()
 	inputManagerInstance->RegisterActionInputEvent("Move Backward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
 	a.PopBack(); a.EmplaceBack("D_Key");
 	inputManagerInstance->RegisterActionInputEvent("Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
+	a.PopBack(); a.EmplaceBack("MouseWheel");
+	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
 	
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
@@ -79,24 +88,21 @@ void Game::PostInitialize()
 {
 	GameApplication::PostInitialize();
 
-	camera = gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->AddCamera(GTSL::Vector3(0, 0, -250));
+	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
 	
-	auto* collection = gameInstance->GetComponentCollection<RenderStaticMeshCollection>("RenderStaticMeshCollection");
-	auto component = collection->AddMesh();
-	collection->SetMesh(component, "Box");
-	collection->SetPosition(component, GTSL::Vector3(25, 50, 200));
-
 	auto* static_mesh_renderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
-	add_static_mesh_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	add_static_mesh_info.GameInstance = gameInstance;
-	add_static_mesh_info.ComponentReference = component;
-	add_static_mesh_info.RenderStaticMeshCollection = collection;
-	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	add_static_mesh_info.MaterialName = "BasicMaterial";
-	add_static_mesh_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 
+	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
+	add_static_mesh_info.MeshName = "Box";
+	add_static_mesh_info.GameInstance = gameInstance;
+	add_static_mesh_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
+	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
+	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
+	
 	//window.ShowMouse(false);
 }
 
@@ -104,7 +110,8 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
 	GameApplication::OnUpdate(onUpdate);
 
-	gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->AddCameraPosition(camera, GTSL::Vector3(moveDir * 10));
+	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, GTSL::Vector3(moveDir * 10));
+	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetFieldOfView(camera, fov);
 }
 
 void Game::Shutdown()
@@ -118,7 +125,7 @@ void Game::move(InputManager::Vector2DInputEvent data)
 	
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y));
-	gameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->SetCameraRotation(camera, rot);
+	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetCameraRotation(camera, rot);
 }
 
 Game::~Game()

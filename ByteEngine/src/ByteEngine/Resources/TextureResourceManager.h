@@ -26,6 +26,7 @@ public:
 		GAL::ImageFormat TextureFormat;
 		float32 LODPercentage{ 0.0f };
 	};
+	uint32 GetTextureSize(const GTSL::Id64 name) { return textureAssets.At(name).ImageSize; }
 	
 	struct TextureLoadInfo : ResourceLoadInfo
 	{
@@ -33,7 +34,6 @@ public:
 		GTSL::Extent3D TextureExtent;
 		float32 LODPercentage{ 0.0f };
 	};
-
 	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
 
 private:

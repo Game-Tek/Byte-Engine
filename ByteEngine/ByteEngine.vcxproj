@@ -200,14 +200,15 @@
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Debug\Assert.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
-    <ClInclude Include="src\ByteEngine\Game\CameraComponentCollection.h" />
+    <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
+    <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
+    <ClInclude Include="src\ByteEngine\Render\MaterialRenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
-    <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerators.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerator.h" />
@@ -217,7 +218,6 @@
     <ClInclude Include="src\ByteEngine\Physics\RigidBody.h" />
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
     <ClInclude Include="src\ByteEngine\Game\World.h" />
-    <ClInclude Include="src\ByteEngine\Render\RenderStaticMeshCollection.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
@@ -256,6 +256,7 @@
     <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
     <ClCompile Include="src\ByteEngine\Object.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\MaterialSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RendererAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />

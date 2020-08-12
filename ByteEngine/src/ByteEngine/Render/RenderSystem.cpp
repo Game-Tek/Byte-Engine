@@ -3,13 +3,11 @@
 #include <GTSL/Window.h>
 #include <Windows.h>
 
-
 #include "StaticMeshRenderGroup.h"
-#include "ByteEngine/Game/ComponentCollection.h"
 #include "ByteEngine/Debug/Assert.h"
-#include "ByteEngine/Game/CameraComponentCollection.h"
+#include "ByteEngine/Game/CameraSystem.h"
 
-class CameraComponentCollection;
+class CameraSystem;
 class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
@@ -298,11 +296,12 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	graphicsCommandBuffers[currentFrameIndex].BeginRecording({});
 	graphicsCommandBuffers[currentFrameIndex].BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
-	auto position_matrices = taskInfo.GameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->GetPositionMatrices();
-	auto rotation_matrices = taskInfo.GameInstance->GetComponentCollection<CameraComponentCollection>("CameraComponentCollection")->GetRotationMatrices();
+	auto position_matrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
+	auto rotation_matrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
+	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
 	
 	GTSL::Matrix4 projection_matrix;
-	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, 45.0f, 16.f / 9.f, 0.5f, 1000.f);
+	GTSL::Math::BuildPerspectiveMatrix(projection_matrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
 	//projection_matrix(1, 1) *= -1.f;
 
 	auto pos = position_matrices[0];

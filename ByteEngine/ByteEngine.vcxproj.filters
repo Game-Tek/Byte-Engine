@@ -120,9 +120,7 @@
     <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
-    <ClInclude Include="src\ByteEngine\Game\ComponentCollection.h" />
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
-    <ClInclude Include="src\ByteEngine\Render\RenderStaticMeshCollection.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
@@ -133,7 +131,9 @@
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
-    <ClInclude Include="src\ByteEngine\Game\CameraComponentCollection.h" />
+    <ClInclude Include="src\ByteEngine\Render\MaterialRenderSystem.h" />
+    <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
+    <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -171,5 +171,6 @@
     <ClCompile Include="src\ByteEngine\Render\RendererAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Object.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\MaterialSystem.cpp" />
   </ItemGroup>
 </Project>

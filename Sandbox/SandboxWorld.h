@@ -1,11 +1,8 @@
 #pragma once
 
 #include "ByteEngine/Game/World.h"
-#include "ByteEngine/Render/RenderStaticMeshCollection.h"
 #include "ByteEngine/Render/RenderSystem.h"
-#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
-#include "ByteEngine/Resources/TextureResourceManager.h"
 
 class MenuWorld : public World
 {

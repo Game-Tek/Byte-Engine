@@ -38,15 +38,6 @@ public:
 		initSystem(static_cast<System*>(ret), systemName);
 		return ret;
 	}
-
-	template<typename T>
-	T* AddComponentCollection(const GTSL::Id64 componentCollectionName)
-	{
-		T* pointer = static_cast<T*>(componentCollections.Emplace(componentCollectionName, GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
-		objectNames.EmplaceBack(componentCollectionName);
-		initCollection(pointer);
-		return pointer;
-	}
 	
 	struct CreateNewWorldInfo
 	{
@@ -59,9 +50,6 @@ public:
 	}
 
 	void UnloadWorld(WorldReference worldId);
-
-	template<class T>
-	T* GetComponentCollection(const GTSL::Id64 collectionName) { return static_cast<T*>(componentCollections.At(collectionName).GetData()); }
 	
 	template<class T>
 	T* GetSystem(const GTSL::Id64 systemName) { return static_cast<T*>(systems.At(systemName).GetData()); }
@@ -115,7 +103,6 @@ public:
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	GTSL::FlatHashMap<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
-	GTSL::FlatHashMap<GTSL::SmartPointer<ComponentCollection, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> componentCollections;
 
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> objectNames;
 	
@@ -147,7 +134,6 @@ private:
 	TaskSorter<BE::PersistentAllocatorReference> task_sorter;
 
 	void initWorld(uint8 worldId);
-	void initCollection(ComponentCollection* collection);
 	void initSystem(System* system, GTSL::Id64 name);
 
 	uint16 getGoalIndex(const GTSL::Id64 name)

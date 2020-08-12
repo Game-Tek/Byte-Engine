@@ -17,19 +17,22 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	
 	void Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix);
 
 	struct AddStaticMeshInfo
 	{
-		ComponentReference ComponentReference = 0;
-		GTSL::Id64 MaterialName;
-		class RenderSystem* RenderSystem = nullptr;
+		Id MeshName;
+		RenderSystem* RenderSystem = nullptr;
 		class GameInstance* GameInstance = nullptr;
-		const class RenderStaticMeshCollection* RenderStaticMeshCollection = nullptr;
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
-		MaterialResourceManager* MaterialResourceManager = nullptr;
 	};
-	void AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
+	ComponentReference AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
+
+	[[nodiscard]] GTSL::Ranger<GTSL::Vector3> GetPositions() const { return positions; }
+	[[nodiscard]] GTSL::Ranger<const GTSL::Id64> GetResourceNames() const { return resourceNames; }
+
+	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component] = vector3; }
 	
 private:
 	struct MeshLoadInfo
@@ -44,41 +47,22 @@ private:
 		RenderAllocation Allocation;
 		uint32 InstanceId;
 	};
-
-	struct MaterialLoadInfo
-	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 instance) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Instance(instance)
-		{
-			
-		}
-
-		RenderSystem* RenderSystem = nullptr;
-		GTSL::Buffer Buffer;
-		uint32 Instance = 0;
-	};
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
-	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
-
-	BindingsSetLayout bindingsSetLayout;
 
 	uint32 index = 0;
-
-	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> bindingsSets;
 	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffset;
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;
-	
-	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;
-	GTSL::Vector<GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES>, BE::PersistentAllocatorReference> perObjectBindingsSets;
-	GTSL::Vector<BindingsPool, BE::PersistentAllocatorReference> bindingsPools;
-	BindingsPool bindingsPool;
 
 	Buffer uniformBuffer;
 	AllocationId uniformAllocation;
 	uint32 offset;
 	void* uniformPointer;
+
+	GTSL::Array<GTSL::Id64, 16> resourceNames;
+	GTSL::Vector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
 };

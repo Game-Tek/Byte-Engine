@@ -96,12 +96,12 @@ TextureResourceManager::~TextureResourceManager()
 
 void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 {
-	auto& audio_resource_info = textureInfos.At(textureLoadInfo.Name);
+	auto& texture_info = textureInfos.At(textureLoadInfo.Name);
 
 	if (!textureAssets.Find(textureLoadInfo.Name))
 	{
-		indexFile.SetPointer(audio_resource_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-		//packageFile.ReadFromFile()
+		indexFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+		packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
 	}
 
 	//handle resource is loaded

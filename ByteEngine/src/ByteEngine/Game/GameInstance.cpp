@@ -2,7 +2,6 @@
 
 #include "ByteEngine/Game/World.h"
 #include "ByteEngine/Game/System.h"
-#include "ByteEngine/Game/ComponentCollection.h"
 
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
@@ -21,9 +20,7 @@ const char* AccessTypeToString(const AccessType access)
 	}
 }
 
-using namespace GTSL;
-
-GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), componentCollections(64, GetPersistentAllocator()),
+GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()),
 goals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
 dynamicTasksInfo(32, GetTransientAllocator()), task_sorter(64, GetPersistentAllocator())
@@ -35,7 +32,7 @@ GameInstance::~GameInstance()
 	{
 		System::ShutdownInfo shutdown_info;
 		shutdown_info.GameInstance = this;
-		ForEach(systems, [&](SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(shutdown_info); });
+		ForEach(systems, [&](GTSL::SmartPointer<System, BE::PersistentAllocatorReference>& system) { system->Shutdown(shutdown_info); });
 	}
 		
 	World::DestroyInfo destroy_info;
@@ -47,13 +44,13 @@ void GameInstance::OnUpdate(BE::Application* application)
 {
 	PROFILE;
 
-	Vector<Goal<TaskType, BE::TAR>, BE::TAR> recurring_goals(64, GetTransientAllocator());
-	Vector<Goal<DynamicTaskFunctionType, BE::TAR>, BE::TAR> dynamic_goals(64, GetTransientAllocator());
-	Vector<Vector<Semaphore, BE::TAR>, BE::TAR> semaphores(64, GetTransientAllocator());
+	GTSL::Vector<Goal<TaskType, BE::TAR>, BE::TAR> recurring_goals(64, GetTransientAllocator());
+	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::TAR>, BE::TAR> dynamic_goals(64, GetTransientAllocator());
+	GTSL::Vector<GTSL::Vector<GTSL::Semaphore, BE::TAR>, BE::TAR> semaphores(64, GetTransientAllocator());
 	
 	{
-		ReadLock lock(goalsMutex);
-		ReadLock lock_2(dynamicTasksMutex);
+		GTSL::ReadLock lock(goalsMutex);
+		GTSL::ReadLock lock_2(dynamicTasksMutex);
 		
 		for (uint32 i = 0; i < goals.GetLength(); ++i)
 		{
@@ -67,9 +64,9 @@ void GameInstance::OnUpdate(BE::Application* application)
 	task_info.GameInstance = this;
 
 	using task_sorter_t = decltype(task_sorter);
-	using on_done_args = Tuple<Array<uint16, 64>, Array<AccessType, 64>, task_sorter_t*>;
+	using on_done_args = GTSL::Tuple<GTSL::Array<uint16, 64>, GTSL::Array<AccessType, 64>, task_sorter_t*>;
 	
-	auto on_done = [](const Array<uint16, 64>& objects, const Array<AccessType, 64>& accesses, task_sorter_t* taskSorter) -> void
+	auto on_done = [](const GTSL::Array<uint16, 64>& objects, const GTSL::Array<AccessType, 64>& accesses, task_sorter_t* taskSorter) -> void
 	{
 		taskSorter->ReleaseResources(objects, accesses);
 		GTSL::StaticString<1024> log;
@@ -85,7 +82,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 		//BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, log);
 	};
 
-	const auto on_done_del = Delegate<void(const Array<uint16, 64>&, const Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
+	const auto on_done_del = GTSL::Delegate<void(const GTSL::Array<uint16, 64>&, const GTSL::Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);
 
 	const uint32 goal_count = recurring_goals.GetLength();
 
@@ -105,8 +102,8 @@ void GameInstance::OnUpdate(BE::Application* application)
 			
 			while (recurring_goal_number_of_tasks > 0) //try recurring goals
 			{	
-				Ranger<const uint16> accessed_objects = recurring_goals[goal].GetTaskAccessedObjects(recurring_goal_task);
-				Ranger<const AccessType> access_types = recurring_goals[goal].GetTaskAccessTypes(recurring_goal_task);
+				GTSL::Ranger<const uint16> accessed_objects = recurring_goals[goal].GetTaskAccessedObjects(recurring_goal_task);
+				GTSL::Ranger<const AccessType> access_types = recurring_goals[goal].GetTaskAccessTypes(recurring_goal_task);
 
 				if (task_sorter.CanRunTask(accessed_objects, access_types))
 				{
@@ -150,8 +147,8 @@ void GameInstance::OnUpdate(BE::Application* application)
 			
 			while (dynamic_goal_number_of_tasks > 0) //try dynamic goals
 			{
-				Ranger<const uint16> accessed_objects = dynamic_goals[goal].GetTaskAccessedObjects(dynamic_goal_task);
-				Ranger<const AccessType> access_types = dynamic_goals[goal].GetTaskAccessTypes(dynamic_goal_task);
+				GTSL::Ranger<const uint16> accessed_objects = dynamic_goals[goal].GetTaskAccessedObjects(dynamic_goal_task);
+				GTSL::Ranger<const AccessType> access_types = dynamic_goals[goal].GetTaskAccessTypes(dynamic_goal_task);
 
 				if (task_sorter.CanRunTask(accessed_objects, access_types))
 				{
@@ -192,7 +189,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 		}
 
 		{
-			WriteLock lock(dynamicTasksMutex);
+			GTSL::WriteLock lock(dynamicTasksMutex);
 			dynamicGoals[goal].Clear();
 		}
 	} //goals
@@ -206,30 +203,30 @@ void GameInstance::UnloadWorld(const WorldReference worldId)
 	worlds.Pop(worldId);
 }
 
-void GameInstance::AddTask(const Id64 name, const Delegate<void(TaskInfo)> function, const Ranger<const TaskDependency> actsOn, const Id64 startsOn, const Id64 doneFor)
+void GameInstance::AddTask(const GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo)> function, const GTSL::Ranger<const TaskDependency> actsOn, const GTSL::Id64 startsOn, const GTSL::Id64 doneFor)
 {
-	Array<uint16, 32> objects; Array<AccessType, 32> accesses;
+	GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
 	uint16 goal_index, target_goal_index;
 
 	{
-		ReadLock lock(goalNamesMutex);
+		GTSL::ReadLock lock(goalNamesMutex);
 		decomposeTaskDescriptor(actsOn, objects, accesses);
 		goal_index = getGoalIndex(startsOn);
 		target_goal_index = getGoalIndex(doneFor);
 	}
 
 	{
-		WriteLock lock(goalsMutex);
+		GTSL::WriteLock lock(goalsMutex);
 		goals[goal_index].AddTask(name, function, objects, accesses, target_goal_index, GetPersistentAllocator());
 	}
 }
 
-void GameInstance::RemoveTask(const Id64 name, const Id64 doneFor)
+void GameInstance::RemoveTask(const GTSL::Id64 name, const GTSL::Id64 doneFor)
 {
 	uint16 i = 0;
 	{
-		ReadLock lock(goalNamesMutex);
+		GTSL::ReadLock lock(goalNamesMutex);
 		i = getGoalIndex(name);
 	}
 	
@@ -240,17 +237,17 @@ void GameInstance::RemoveTask(const Id64 name, const Id64 doneFor)
 	BE_ASSERT(false, "No task under specified name!")
 }
 
-void GameInstance::AddGoal(Id64 name)
+void GameInstance::AddGoal(GTSL::Id64 name)
 {
 	{	
-		WriteLock lock(goalsMutex);
+		GTSL::WriteLock lock(goalsMutex);
 		
 		goals.EmplaceBack(16, GetPersistentAllocator());
 		dynamicGoals.EmplaceBack(16, GetPersistentAllocator());
 	}
 
 	{
-		WriteLock lock(goalNamesMutex);
+		GTSL::WriteLock lock(goalNamesMutex);
 
 		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
 		BE_ASSERT(i == goalNames.GetLength(), "There is already a goal with that name!")
@@ -266,12 +263,7 @@ void GameInstance::initWorld(const uint8 worldId)
 	worlds[worldId]->InitializeWorld(initialize_info);
 }
 
-void GameInstance::initCollection(ComponentCollection* collection)
-{
-	//collection->Initialize();
-}
-
-void GameInstance::initSystem(System* system, const Id64 name)
+void GameInstance::initSystem(System* system, const GTSL::Id64 name)
 {
 	System::InitializeInfo initialize_info;
 	initialize_info.GameInstance = this;

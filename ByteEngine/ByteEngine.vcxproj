@@ -204,7 +204,6 @@
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
     <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
-    <ClInclude Include="src\ByteEngine\Render\MaterialRenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
@@ -236,7 +235,6 @@
     <ClInclude Include="src\ByteEngine\Utility\Shapes\BoxWithFalloff.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.h" />
-    <ClInclude Include="src\ByteEngine\Camera.h" />
     <ClInclude Include="src\ByteEngine\Application\InputManager.h" />
     <ClInclude Include="src\ByteEngine\Debug\Logger.h" />
     <ClInclude Include="src\ByteEngine\Application\Clock.h" />
@@ -270,7 +268,6 @@
     <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\ByteEngine\Camera.cpp" />
     <ClCompile Include="src\ByteEngine\Application\InputManager.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\Logger.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Clock.cpp" />

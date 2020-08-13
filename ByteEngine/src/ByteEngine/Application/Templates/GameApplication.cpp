@@ -4,15 +4,15 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
-#include "ByteEngine/Resources/TextureResourceManager.h"
+#include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
-#include <ByteEngine\Render\RenderSystem.h>
+#include "ByteEngine/Resources/TextureResourceManager.h"
 
-#include "ByteEngine/Render/MaterialRenderSystem.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
 #pragma comment(lib, "XInput.lib")
@@ -73,7 +73,7 @@ void GameApplication::PostInitialize()
 	
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	gameInstance->AddSystem<MaterialRenderSystem>("MaterialRenderSystem");
+	gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

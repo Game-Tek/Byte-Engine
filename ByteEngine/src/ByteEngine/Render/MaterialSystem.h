@@ -20,8 +20,15 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	
-	ComponentReference CreateMaterial(Id name);
+
+	struct CreateMaterialInfo
+	{
+		Id MaterialName;
+		MaterialResourceManager* MaterialResourceManager = nullptr;
+		GameInstance* GameInstance = nullptr;
+		RenderSystem* RenderSystem = nullptr;
+	};
+	ComponentReference CreateMaterial(const CreateMaterialInfo& info);
 
 	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id32 parameterName, void* data)
 	{
@@ -53,18 +60,23 @@ private:
 
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 instance) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Instance(instance)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer) : RenderSystem(renderSystem), Buffer(MoveRef(buffer))
 		{
 
 		}
 
 		RenderSystem* RenderSystem = nullptr;
 		GTSL::Buffer Buffer;
-		uint32 Instance = 0;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
 
-	BindingsSetLayout bindingsSetLayout;
-	GTSL::Vector<GraphicsPipeline, BE::PersistentAllocatorReference> pipelines;
-	BindingsPool bindingsPool;
+	struct MaterialInstance
+	{
+		BindingsSetLayout BindingsSetLayout;
+		GraphicsPipeline Pipeline;
+		BindingsPool bindingsPool;
+		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+	};
+	
+	GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> instances;
 };

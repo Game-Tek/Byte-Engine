@@ -310,7 +310,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 
 	Image::CreateInfo create_info;
 	create_info.RenderDevice = &renderDevice;
-	create_info.Extent = { 1280, 720 };
+	create_info.Extent = { 1280, 720, 1 };
 	create_info.Dimensions = GAL::ImageDimensions::IMAGE_2D;
 	create_info.ImageUses = ImageUse::TRANSFER_DESTINATION;
 	create_info.InitialLayout = ImageLayout::UNDEFINED;

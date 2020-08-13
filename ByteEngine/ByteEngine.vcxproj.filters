@@ -110,7 +110,6 @@
     <ClInclude Include="src\ByteEngine\Utility\Shapes\Cone.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\SphereWithFallof.h" />
-    <ClInclude Include="src\ByteEngine\Camera.h" />
     <ClInclude Include="src\ByteEngine\Core.h">
       <Filter>Engine</Filter>
     </ClInclude>
@@ -131,7 +130,6 @@
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
-    <ClInclude Include="src\ByteEngine\Render\MaterialRenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
   </ItemGroup>
@@ -158,7 +156,6 @@
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
-    <ClCompile Include="src\ByteEngine\Camera.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
     <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />

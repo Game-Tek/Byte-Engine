@@ -314,7 +314,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	auto matrix = projection_matrix * view_matrix;
 	
-	taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup")->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
+	//taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup")->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
 	
 	graphicsCommandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
 	graphicsCommandBuffers[currentFrameIndex].EndRecording({});

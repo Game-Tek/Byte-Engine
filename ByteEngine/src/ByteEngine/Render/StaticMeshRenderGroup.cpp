@@ -14,6 +14,8 @@ indicesCount(64, GetPersistentAllocator()), indexTypes(64, GetPersistentAllocato
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+
+	positions.Initialize(16, GetPersistentAllocator());
 	
 	DeviceMemory device_memory;
 
@@ -140,6 +142,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
 	indicesOffset.Insert(index, indices_offset);
+	positions.EmplaceBack();
 	
 	return index++;
 }

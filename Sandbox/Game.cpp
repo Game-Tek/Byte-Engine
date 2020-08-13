@@ -9,6 +9,8 @@
 
 #include <GTSL/Math/AxisAngle.h>
 
+
+#include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
@@ -91,6 +93,7 @@ void Game::PostInitialize()
 	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
 	
 	auto* static_mesh_renderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
 	add_static_mesh_info.MeshName = "Box";
@@ -100,7 +103,14 @@ void Game::PostInitialize()
 	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
+	MaterialSystem::CreateMaterialInfo create_material_info;
+	create_material_info.GameInstance = gameInstance;
+	create_material_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	create_material_info.MaterialName = "BasicMaterial";
+	material_system->CreateMaterial(create_material_info);
+	
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
 	//window.ShowMouse(false);

@@ -120,7 +120,7 @@ private:
 	GTSL::Array<ImageView, MAX_CONCURRENT_FRAMES> swapchainImages;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
-	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> inFlightFences;
+	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> graphicsFences;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;

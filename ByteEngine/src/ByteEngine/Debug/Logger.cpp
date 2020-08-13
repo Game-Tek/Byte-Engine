@@ -43,9 +43,10 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 	const uint32 time_length = snprintf(buffer, 1024, "[Time: %02d:%02d:%02d]", time.Hour, time.Minute, time.Second);
 	string += buffer;
 
-	const uint32 text_chars_to_write = text.Bytes() + 2 > string.GetCapacity() - string.GetLength() ? string.GetLength() - 2 : text.Bytes();
+	const uint32 text_chars_to_write = text.Bytes() + 1 > string.GetCapacity() - string.GetLength() ? string.GetLength() - 1 : text.Bytes();
 
-	string += GTSL::Ranger<const UTF8>(text_chars_to_write, text.begin()); string += '\n'; string += '\0';
+	string += GTSL::Ranger<const UTF8>(text_chars_to_write, text.begin()); string += '\n';
+	//string += '\0';
 	
 	if(verbosityLevel >= minLogLevel)
 	{

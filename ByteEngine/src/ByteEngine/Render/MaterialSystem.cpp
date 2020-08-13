@@ -5,14 +5,6 @@
 void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	instances.Initialize(32, GetPersistentAllocator());
-	
-	//CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
-	//bind_bindings_set_info.RenderDevice = renderSystem->GetRenderDevice();
-	//bind_bindings_set_info.BindingsSets = GTSL::Ranger<BindingsSet>(1, &bindingsSets[renderSystem->GetCurrentFrame()]);
-	//bind_bindings_set_info.Pipeline = &pipelines[i];
-	//bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ offset };
-	//bind_bindings_set_info.PipelineType = PipelineType::GRAPHICS;
-	//renderSystem->GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
 }
 
 void MaterialSystem::Shutdown(const ShutdownInfo& shutdownInfo)

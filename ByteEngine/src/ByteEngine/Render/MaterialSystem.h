@@ -21,6 +21,15 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
+	struct MaterialInstance
+	{
+		BindingsSetLayout BindingsSetLayout;
+		GraphicsPipeline Pipeline;
+		BindingsPool bindingsPool;
+		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+	};
+	GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference>& GetMaterialInstances() { return instances; }
+	
 	struct CreateMaterialInfo
 	{
 		Id MaterialName;
@@ -69,14 +78,6 @@ private:
 		GTSL::Buffer Buffer;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
-
-	struct MaterialInstance
-	{
-		BindingsSetLayout BindingsSetLayout;
-		GraphicsPipeline Pipeline;
-		BindingsPool bindingsPool;
-		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
-	};
 	
 	GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> instances;
 };

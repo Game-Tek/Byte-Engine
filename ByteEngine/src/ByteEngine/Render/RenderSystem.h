@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GTSL/Buffer.h>
+#include <GTSL/Pair.h>
 
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -146,6 +147,11 @@ private:
 	void executeTransfers(TaskInfo taskInfo);
 
 	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
+	void* allocateApiMemory(void* data, uint64 size, uint64 alignment);
+	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
+	void deallocateApiMemory(void* data, void* allocation);
+
+	GTSL::FlatHashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
 	
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;

@@ -14,21 +14,28 @@ class RenderStaticMeshCollection;
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
 	renderGroups.Initialize(16, GetPersistentAllocator());
-	
-	RenderDevice::CreateInfo createinfo;
-	createinfo.ApplicationName = GTSL::StaticString<128>("Test");
-	GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
-	queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
-	queue_create_infos[0].QueuePriority = 1.0f;
-	queue_create_infos[1].Capabilities = static_cast<uint8>(QueueCapabilities::TRANSFER);
-	queue_create_infos[1].QueuePriority = 1.0f;
-	createinfo.QueueCreateInfos = queue_create_infos;
-	auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
-	createinfo.Queues = queues;
-	createinfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
-	::new(&renderDevice) RenderDevice(createinfo);
+	apiAllocations.Initialize(16, GetPersistentAllocator());
 
-	graphicsQueue = queues[0]; transferQueue = queues[1];
+	{		
+		RenderDevice::CreateInfo create_info;
+		create_info.ApplicationName = GTSL::StaticString<128>("Test");
+		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
+		queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
+		queue_create_infos[0].QueuePriority = 1.0f;
+		queue_create_infos[1].Capabilities = static_cast<uint8>(QueueCapabilities::TRANSFER);
+		queue_create_infos[1].QueuePriority = 1.0f;
+		create_info.QueueCreateInfos = queue_create_infos;
+		auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
+		create_info.Queues = queues;
+		create_info.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
+		//create_info.AllocationInfo.UserData = this;
+		//create_info.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
+		//create_info.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
+		//create_info.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
+		renderDevice = RenderDevice(create_info);
+
+		graphicsQueue = queues[0]; transferQueue = queues[1];
+	}
 	
 	swapchainPresentMode = static_cast<uint32>(PresentMode::FIFO);
 	swapchainColorSpace = static_cast<uint32>(ColorSpace::NONLINEAR_SRGB);
@@ -36,13 +43,12 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	
 	Surface::CreateInfo surface_create_info;
 	surface_create_info.RenderDevice = &renderDevice;
-
+	surface_create_info.Name = "Surface";
 	GAL::WindowsWindowData window_data;
 	GTSL::Window::Win32NativeHandles native_handles;
 	initializeRenderer.Window->GetNativeHandles(&native_handles);
 	window_data.WindowHandle = native_handles.HWND;
 	window_data.InstanceHandle = GetModuleHandleA(nullptr);
-
 	surface_create_info.SystemData = &window_data;
 	::new(&surface) Surface(surface_create_info);
 
@@ -56,6 +62,22 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
 	if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
 
+	RenderPass::CreateInfo render_pass_create_info;
+	render_pass_create_info.RenderDevice = &renderDevice;
+	render_pass_create_info.Descriptor.DepthStencilAttachmentAvailable = false;
+	GTSL::Array<GAL::AttachmentDescriptor, 8> attachment_descriptors;
+	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::UNDEFINED, GAL::ImageLayout::PRESENTATION });
+	render_pass_create_info.Descriptor.RenderPassColorAttachments = attachment_descriptors;
+
+	GTSL::Array<GAL::AttachmentReference, 8> write_attachment_references;
+	write_attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
+
+	GTSL::Array<GAL::SubPassDescriptor, 8> sub_pass_descriptors;
+	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
+	render_pass_create_info.Descriptor.SubPasses = sub_pass_descriptors;
+
+	renderPass = RenderPass(render_pass_create_info);
+	
 	RenderContext::CreateInfo render_context_create_info;
 	render_context_create_info.Name = "Render System Render Context";
 	render_context_create_info.RenderDevice = &renderDevice;
@@ -68,25 +90,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GTSL::Extent2D window_extent;
 	initializeRenderer.Window->GetFramebufferExtent(window_extent);
 	render_context_create_info.SurfaceArea = window_extent;
-	::new(&renderContext) RenderContext(render_context_create_info);
+	renderContext = RenderContext(render_context_create_info);
 
 	initializeRenderer.Window->GetFramebufferExtent(renderArea);
-	
-	RenderPass::CreateInfo render_pass_create_info;
-	render_pass_create_info.RenderDevice = &renderDevice;
-	render_pass_create_info.Descriptor.DepthStencilAttachmentAvailable = false;
-	GTSL::Array<GAL::AttachmentDescriptor, 8> attachment_descriptors;
-	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::UNDEFINED, GAL::ImageLayout::PRESENTATION });
-	render_pass_create_info.Descriptor.RenderPassColorAttachments = attachment_descriptors;
-	
-	GTSL::Array<GAL::AttachmentReference, 8> write_attachment_references;
-	write_attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
-	
-	GTSL::Array<GAL::SubPassDescriptor, 8> sub_pass_descriptors;
-	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
-	render_pass_create_info.Descriptor.SubPasses = sub_pass_descriptors;
-
-	::new(&renderPass) RenderPass(render_pass_create_info);
 	
 	RenderContext::GetImagesInfo get_images_info;
 	get_images_info.RenderDevice = &renderDevice;
@@ -438,5 +444,54 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
 	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
 	default: break;
+	}
+}
+
+void* RenderSystem::allocateApiMemory(void* data, const uint64 size, const uint64 alignment)
+{
+	void* allocation; uint64 allocated_size;
+	GetPersistentAllocator().Allocate(size, alignment, &allocation, &allocated_size);
+	apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	return allocation;
+}
+
+void* RenderSystem::reallocateApiMemory(void* data, void* oldAllocation, uint64 size, uint64 alignment)
+{
+	void* allocation; uint64 allocated_size;
+	
+	if(oldAllocation)
+	{
+		const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
+		
+		GetPersistentAllocator().Allocate(size, old_alloc.Second, &allocation, &allocated_size);
+		apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+		
+		GTSL::MemCopy(old_alloc.First, oldAllocation, allocation);
+		
+		GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, oldAllocation);
+		apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
+		return allocation;
+	}
+
+	if (size)
+	{
+		GetPersistentAllocator().Allocate(size, alignment, &allocation, &allocated_size);
+		apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+		return allocation;
+	}
+	
+	const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
+	GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, oldAllocation);
+	apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
+	return nullptr;
+}
+
+void RenderSystem::deallocateApiMemory(void* data, void* allocation)
+{
+	if (data)
+	{
+		const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(allocation));
+		GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, allocation);
+		apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
 	}
 }

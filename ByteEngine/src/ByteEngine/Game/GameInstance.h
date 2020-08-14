@@ -33,10 +33,13 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::Id64 systemName)
 	{
-		T* ret = static_cast<T*>(systems.Emplace(systemName, GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator())).GetData());
+		GTSL::WriteLock lock(systemsMutex);
+		
+		auto l = systems.EmplaceBack(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
+		systemsMap.Emplace(systemName, systems[l]);
 		objectNames.EmplaceBack(systemName);
-		initSystem(static_cast<System*>(ret), systemName);
-		return ret;
+		initSystem(systems[l], systemName);
+		return static_cast<T*>(systems[l].GetData());
 	}
 	
 	struct CreateNewWorldInfo
@@ -52,7 +55,7 @@ public:
 	void UnloadWorld(WorldReference worldId);
 	
 	template<class T>
-	T* GetSystem(const GTSL::Id64 systemName) { return static_cast<T*>(systems.At(systemName).GetData()); }
+	T* GetSystem(const GTSL::Id64 systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
 	
 	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 startsOn, GTSL::Id64 doneFor);
 	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
@@ -101,8 +104,10 @@ public:
 	void AddGoal(GTSL::Id64 name);
 	
 private:
+	GTSL::ReadWriteMutex systemsMutex;
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
-	GTSL::FlatHashMap<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::Vector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
 
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> objectNames;
 	
@@ -120,7 +125,7 @@ private:
 	using TaskType = GTSL::Delegate<void(TaskInfo)>;
 	
 	GTSL::ReadWriteMutex goalsMutex;
-	GTSL::Vector<Goal<TaskType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> goals;
+	GTSL::Vector<Goal<TaskType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
 
 	GTSL::ReadWriteMutex goalNamesMutex;
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> goalNames;
@@ -133,6 +138,8 @@ private:
 
 	TaskSorter<BE::PersistentAllocatorReference> task_sorter;
 
+	uint32 scalingFactor = 16;
+	
 	void initWorld(uint8 worldId);
 	void initSystem(System* system, GTSL::Id64 name);
 

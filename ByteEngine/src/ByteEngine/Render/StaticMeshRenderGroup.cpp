@@ -15,7 +15,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	positions.Initialize(16, GetPersistentAllocator());
+	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	
 	DeviceMemory device_memory;
 

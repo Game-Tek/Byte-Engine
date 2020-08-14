@@ -50,7 +50,7 @@ struct Goal
 	taskNames(other.taskNames, allocatorReference),
 	tasks(other.tasks, allocatorReference)
 	{
-		for(uint32 i = 0; i< other.taskAccessedObjects.GetLength(); ++i)
+		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i)
 		{
 			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocatorReference);
 			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocatorReference);
@@ -79,6 +79,20 @@ struct Goal
 		taskNames.EmplaceBack(name);
 		taskGoalIndex.EmplaceBack(goalIndex);
 		tasks.EmplaceBack(task);
+	}
+
+	template<class ALLOC>
+	void AddTask(const Goal<TASK, ALLOC>& other, const uint16 taskS, const uint16 taskE, const ALLOCATOR& allocator)
+	{
+		for (uint32 i = taskS; i < taskE; ++i)
+		{
+			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocator);
+			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocator);
+		}
+		
+		taskNames.PushBack(GTSL::Ranger<const GTSL::Id64>(taskE - taskS, other.taskNames.begin() + taskS));
+		taskGoalIndex.PushBack(GTSL::Ranger<const uint16>(taskE - taskS, other.taskGoalIndex.begin() + taskS));
+		tasks.PushBack(GTSL::Ranger<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
 	}
 
 	void RemoveTask(const GTSL::Id64 name)

@@ -36,6 +36,11 @@ public:
 	struct InitializeInfo
 	{
 		class GameInstance* GameInstance{ nullptr };
+		/**
+		 * \brief Rough estimate for number of components present during average run of the application.
+		 * Can be used for initialization of data structures to allocate "enough" space during start as to avoid as many re-allocations further down the line.
+		 */
+		uint32 ScalingFactor = 0;
 	};
 	virtual void Initialize(const InitializeInfo& initializeInfo) = 0;
 

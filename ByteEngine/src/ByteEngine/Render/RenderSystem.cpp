@@ -28,11 +28,11 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
 		create_info.Queues = queues;
 		create_info.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
-		//create_info.AllocationInfo.UserData = this;
-		//create_info.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
-		//create_info.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
-		//create_info.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
-		renderDevice = RenderDevice(create_info);
+		create_info.AllocationInfo.UserData = this;
+		create_info.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
+		create_info.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
+		create_info.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
+		::new(&renderDevice) RenderDevice(create_info);
 
 		graphicsQueue = queues[0]; transferQueue = queues[1];
 	}
@@ -76,7 +76,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
 	render_pass_create_info.Descriptor.SubPasses = sub_pass_descriptors;
 
-	renderPass = RenderPass(render_pass_create_info);
+	new(&renderPass) RenderPass(render_pass_create_info);
 	
 	RenderContext::CreateInfo render_context_create_info;
 	render_context_create_info.Name = "Render System Render Context";
@@ -90,7 +90,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GTSL::Extent2D window_extent;
 	initializeRenderer.Window->GetFramebufferExtent(window_extent);
 	render_context_create_info.SurfaceArea = window_extent;
-	renderContext = RenderContext(render_context_create_info);
+	new(&renderContext) RenderContext(render_context_create_info);
 
 	initializeRenderer.Window->GetFramebufferExtent(renderArea);
 	

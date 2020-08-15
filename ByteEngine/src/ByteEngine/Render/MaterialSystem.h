@@ -39,6 +39,7 @@ public:
 		Id RenderGroupName;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
+		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
 		GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> Instances;

@@ -46,25 +46,26 @@ using BindingsPool = GAL::VulkanBindingsPool;
 using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
+using PipelineLayout = GAL::VulkanPipelineLayout;
 using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
 
+using CullMode = GAL::CullMode;
 using ImageUse = GAL::VulkanImageUse;
 using ImageFormat = GAL::VulkanFormat;
+using IndexType = GAL::VulkanIndexType;
 using ColorSpace = GAL::VulkanColorSpace;
 using BufferType = GAL::VulkanBufferType;
 using MemoryType = GAL::VulkanMemoryType;
+using ShaderType = GAL::VulkanShaderType;
 using PresentMode = GAL::VulkanPresentMode;
 using ImageTiling = GAL::VulkanImageTiling;
-using QueueCapabilities = GAL::VulkanQueueCapabilities;
 using ShaderStage = GAL::VulkanShaderStage;
 using BindingType = GAL::VulkanBindingType;
-using ShaderType = GAL::VulkanShaderType;
-using CullMode = GAL::CullMode;
-using ShaderDataType = GAL::VulkanShaderDataType;
-using PipelineType = GAL::VulkanPipelineType;
-using IndexType = GAL::VulkanIndexType;
 using ImageLayout = GAL::VulkanImageLayout;
+using PipelineType = GAL::VulkanPipelineType;
+using ShaderDataType = GAL::VulkanShaderDataType;
+using QueueCapabilities = GAL::VulkanQueueCapabilities;
 #endif
 
 inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> shaderDataTypes, const GTSL::Ranger<ShaderDataType> datas)

@@ -21,14 +21,32 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
+	void SetGlobalState(GameInstance* gameInstance, GTSL::Array<GTSL::Array<BindingType, 6>, 6> globalState);
+	void AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 name, GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings);
+	
 	struct MaterialInstance
 	{
 		BindingsSetLayout BindingsSetLayout;
 		GraphicsPipeline Pipeline;
-		BindingsPool bindingsPool;
+		BindingsPool BindingsPool;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+
+		MaterialInstance() = default;
 	};
-	GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference>& GetMaterialInstances() { return instances; }
+
+	struct RenderGroupData
+	{
+		Id RenderGroupName;
+		BindingsSetLayout BindingsSetLayout;
+		BindingsPool BindingsPool;
+		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+
+		GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> Instances;
+
+		RenderGroupData() = default;
+	};
+
+	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference>& GetRenderGroups() { return renderGroups; }
 	
 	struct CreateMaterialInfo
 	{
@@ -67,6 +85,12 @@ private:
 
 	ComponentReference component = 0;
 
+	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
+
+	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
+	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
+	BindingsPool globalBindingsPool;
+	
 	struct MaterialLoadInfo
 	{
 		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer) : RenderSystem(renderSystem), Buffer(MoveRef(buffer))
@@ -78,6 +102,4 @@ private:
 		GTSL::Buffer Buffer;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
-	
-	GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> instances;
 };

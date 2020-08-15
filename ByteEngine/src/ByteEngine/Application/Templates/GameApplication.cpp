@@ -17,6 +17,13 @@
 
 #pragma comment(lib, "XInput.lib")
 
+#ifndef HID_USAGE_PAGE_GENERIC
+#define HID_USAGE_PAGE_GENERIC ((unsigned short) 0x01)
+#endif
+#ifndef HID_USAGE_GENERIC_MOUSE
+#define HID_USAGE_GENERIC_MOUSE ((unsigned short) 0x02)
+#endif
+
 void GameApplication::Initialize()
 {
 	Application::Initialize();
@@ -70,10 +77,20 @@ void GameApplication::PostInitialize()
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
 	renderer->InitializeRenderer(initialize_renderer_info);
+
+	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
+	{
+		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings;
+		bindings[0].EmplaceBack(BindingType::COMBINED_IMAGE_SAMPLER);
+		materialSystem->SetGlobalState(gameInstance, bindings);
+	}
 	
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
+	{
+		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings; bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
+		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
+	}
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

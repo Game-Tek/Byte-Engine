@@ -320,27 +320,34 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	auto view_matrix = rotation_matrices[0] * pos;
 	auto matrix = projection_matrix * view_matrix;
-	auto& materials = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetMaterialInstances();
+	auto& renderGroups = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetRenderGroups();
 
-	//GTSL::ForEach(materials, [&](const MaterialSystem::MaterialInstance& materialInstance)
-	//{
-	//	CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
-	//	bind_bindings_set_info.RenderDevice = GetRenderDevice();
-	//	bind_bindings_set_info.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
-	//	bind_bindings_set_info.Pipeline = &materialInstance.Pipeline;
-	//	bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
-	//	bind_bindings_set_info.PipelineType = PipelineType::GRAPHICS;
-	//	GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
-	//
-	//	CommandBuffer::BindPipelineInfo bind_pipeline_info;
-	//	bind_pipeline_info.RenderDevice = GetRenderDevice();
-	//	bind_pipeline_info.PipelineType = PipelineType::GRAPHICS;
-	//	bind_pipeline_info.Pipeline = &materialInstance.Pipeline;
-	//
-	//	taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup")->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
-	//}
-	//);
+	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
+	{
+		CommandBuffer::BindBindingsSetInfo bind_bindings_set_info;
+		bind_bindings_set_info.RenderDevice = GetRenderDevice();
+		bind_bindings_set_info.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &renderGroups.BindingsSets[GetCurrentFrame()]);
+		bind_bindings_set_info.Pipeline = &renderGroupData.Pipeline;
+		bind_bindings_set_info.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
+		bind_bindings_set_info.PipelineType = PipelineType::GRAPHICS;
+		GetCurrentCommandBuffer()->BindBindingsSet(bind_bindings_set_info);
 	
+		CommandBuffer::BindPipelineInfo bind_pipeline_info;
+		bind_pipeline_info.RenderDevice = GetRenderDevice();
+		bind_pipeline_info.PipelineType = PipelineType::GRAPHICS;
+		bind_pipeline_info.Pipeline = &materialInstance.Pipeline;
+
+		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
+		{
+			materialInstance.Pipeline;
+			materialInstance.BindingsSetLayout;
+			materialInstance.BindingsSets;
+		}
+		);
+
+		taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName)->Render(taskInfo.GameInstance, this, view_matrix, projection_matrix);
+	}
+	);
 	
 	graphicsCommandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
 	graphicsCommandBuffers[currentFrameIndex].EndRecording({});

@@ -20,6 +20,7 @@ public:
 	struct MaterialInfo
 	{
 		uint32 MaterialOffset = 0;
+		GTSL::Id64 RenderGroup;
 		GTSL::Array<uint32, 12> ShaderSizes;
 		GTSL::Array<uint8, 20> VertexElements;
 		GTSL::Array<GTSL::Array<uint8, 12>, 12> BindingSets;
@@ -31,6 +32,7 @@ public:
 	struct MaterialCreateInfo
 	{
 		GTSL::StaticString<128> ShaderName;
+		GTSL::StaticString<128> RenderGroup;
 		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 		GTSL::Ranger<const GTSL::Ranger<const GAL::BindingType>> BindingSets;
 		GTSL::Ranger<const GAL::ShaderType> ShaderTypes;
@@ -41,6 +43,7 @@ public:
 	
 	struct OnMaterialLoadInfo : OnResourceLoad
 	{
+		GTSL::Id64 RenderGroup;
 		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
 		GTSL::Array<GTSL::Array<GAL::BindingType, 12>, 12> BindingSets;
 		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;

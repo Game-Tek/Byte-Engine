@@ -47,8 +47,8 @@ using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
 using PipelineLayout = GAL::VulkanPipelineLayout;
-using GraphicsPipeline = GAL::VulkanGraphicsPipeline;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
+using RasterizationPipeline = GAL::VulkanRasterizationPipeline;
 
 using CullMode = GAL::CullMode;
 using ImageUse = GAL::VulkanImageUse;

@@ -18,6 +18,16 @@ struct FreeSpace
 	uint32 Offset = 0;
 };
 
+struct AllocID
+{
+	uint32 Index = 0;
+	uint32 BlockInfo = 0;
+
+	AllocID() = default;
+
+	operator AllocationId() const { return static_cast<uint64>(BlockInfo) << 32 | Index; }
+};
+
 struct LocalMemoryBlock
 {
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
@@ -86,7 +96,7 @@ public:
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference);
 	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
 	{
 		uint8* id = reinterpret_cast<uint8*>(&allocId);

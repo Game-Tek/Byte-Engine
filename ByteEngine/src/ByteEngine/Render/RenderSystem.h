@@ -33,12 +33,12 @@ public:
 
 	struct BufferScratchMemoryAllocationInfo
 	{
+		Buffer Buffer;
+
 		DeviceMemory* DeviceMemory = nullptr;
 		void** Data = nullptr;
 		
-		uint32 Size = 0;
-		uint32* Offset = nullptr;
-		AllocationId* AllocationId = nullptr;
+		RenderAllocation* Allocation = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
@@ -51,18 +51,20 @@ public:
 	};
 	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
 	{
+		RenderDevice::MemoryRequirements memoryRequirements;
+		renderDevice.GetBufferMemoryRequirements(&allocationInfo.Buffer, memoryRequirements);
+		
 		scratchMemoryAllocator.AllocateBuffer(renderDevice,
 			allocationInfo.DeviceMemory,
-			allocationInfo.Size,
-			allocationInfo.Offset,
+			memoryRequirements.Size,
+			allocationInfo.Allocation,
 			allocationInfo.Data,
-			allocationInfo.AllocationId,
 			GetPersistentAllocator());
 	}
 	
-	void DeallocateScratchBufferMemory(const uint32 size, const uint32 offset, const AllocationId allocId)
+	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
 	{
-		scratchMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
+		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation.Size, allocation.Offset, allocation.AllocationId);
 	}
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)

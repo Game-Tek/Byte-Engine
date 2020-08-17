@@ -219,6 +219,53 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 	renderGroupData.Instances.Initialize(32, GetPersistentAllocator());
 	renderGroupData.RenderGroupName = renderGroupName;
 
+	for (uint32 i = 0; i < bindings.GetLength(); ++i)
+	{
+		BindingsSet::BindingsSetUpdateInfo bindingsSetUpdateInfo;
+		bindingsSetUpdateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		
+		for (uint32 j = 0; j < bindings[i].GetLength(); ++j)
+		{
+			if (bindings[i][j] == GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC)
+			{
+				Buffer::CreateInfo bufferInfo;
+				bufferInfo.RenderDevice = renderSystem->GetRenderDevice();
+				bufferInfo.Size = 1024;
+				bufferInfo.BufferType = BufferType::UNIFORM;
+				renderGroupData.Buffer = Buffer(bufferInfo);
+
+				DeviceMemory memory;
+				
+				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
+				memoryAllocationInfo.Buffer = renderGroupData.Buffer;
+				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
+				memoryAllocationInfo.Data = &renderGroupData.Data;
+				memoryAllocationInfo.DeviceMemory = &memory;
+				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
+
+				Buffer::BindMemoryInfo bindMemory;
+				bindMemory.RenderDevice = renderSystem->GetRenderDevice();
+				bindMemory.Memory = &memory;
+				bindMemory.Offset = renderGroupData.Allocation.Offset;
+				renderGroupData.Buffer.BindToMemory(bindMemory);
+				
+				BindingsSetLayout::BufferBindingDescriptor binding_descriptor;
+				binding_descriptor.UniformCount = 1;
+				binding_descriptor.BindingType = bindings[i][j];
+				binding_descriptor.Buffers = GTSL::Ranger<Buffer>(1, &renderGroupData.Buffer);
+				binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) };
+				binding_descriptor.Offsets = GTSL::Array<uint32, 1>{ 0 };
+				bindingsSetUpdateInfo.BufferBindingsSetLayout.EmplaceBack(binding_descriptor);
+			}
+			else
+			{
+				__debugbreak();
+			}
+		}
+		
+		renderGroupData.BindingsSets[i].Update(bindingsSetUpdateInfo);
+	}
+	
 	if constexpr (_DEBUG)
 	{
 		GTSL::StaticString<1024> string("Set render group "); string += renderGroupName; string += " state with \n";
@@ -339,7 +386,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	
 	GTSL::Array<ShaderDataType, 10> shader_datas(onMaterialLoadInfo.VertexElements.GetLength());
 	ConvertShaderDataType(onMaterialLoadInfo.VertexElements, shader_datas);
-	GraphicsPipeline::CreateInfo pipelineCreateInfo;
+	RasterizationPipeline::CreateInfo pipelineCreateInfo;
 	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 	pipelineCreateInfo.VertexDescriptor = shader_datas;
 	pipelineCreateInfo.IsInheritable = true;
@@ -391,7 +438,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	pipelineCreateInfo.Stages = shader_infos;
 	pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
 	pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
-	instance.Pipeline = GraphicsPipeline(pipelineCreateInfo);
+	instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 
 	loadInfo->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(loadInfo, GetPersistentAllocator());

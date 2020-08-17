@@ -30,30 +30,33 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	scratch_buffer.Destroy(&renderDevice);
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference)
 {
-	uint32 i = 0, id = 0;
+	uint32 i = 0, id = 0; AllocID allocationId;
 
 	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
-	
-	for(auto& e : bufferMemoryBlocks)
+
+	for (auto& e : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(deviceMemory, aligned_size, offset, data, id))
+		if (e.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset, data, id))
 		{
-			*reinterpret_cast<uint8*>(allocId) = i;
-			*(reinterpret_cast<uint32*>(allocId) + 1) = id;
+			allocationId.Index = i;
+			allocationId.BlockInfo = id;
+			renderAllocation->AllocationId = allocationId;
+			
 			return;
 		}
-		
+
 		++i;
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, aligned_size, offset, data, id);
+	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, aligned_size, &renderAllocation->Offset, data, id);
 
-	*reinterpret_cast<uint8*>(allocId) = i;
-	*(reinterpret_cast<uint32*>(allocId) + 1) = id;
+	allocationId.Index = i;
+	allocationId.BlockInfo = id;
+	renderAllocation->AllocationId = allocationId;
 }
 
 void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::PersistentAllocatorReference& allocatorReference)

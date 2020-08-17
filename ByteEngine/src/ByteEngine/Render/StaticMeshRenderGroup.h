@@ -59,8 +59,7 @@ private:
 	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;
 
 	Buffer uniformBuffer;
-	AllocationId uniformAllocation;
-	uint32 offset;
+	RenderAllocation uniformAllocation;
 	void* uniformPointer;
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;

@@ -24,21 +24,17 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	buffer_create_info.Size = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), render_device->GetRenderDevice()->GetMinUniformBufferOffset()) * MAX_CONCURRENT_FRAMES;
 	buffer_create_info.BufferType = BufferType::UNIFORM;
 	uniformBuffer = Buffer(buffer_create_info);
-
-	RenderDevice::MemoryRequirements memory_requirements;
-	render_device->GetRenderDevice()->GetBufferMemoryRequirements(&uniformBuffer, memory_requirements);
 	
-	RenderSystem::BufferScratchMemoryAllocationInfo allocation_info;
-	allocation_info.Size = memory_requirements.Size;
-	allocation_info.Offset = &offset;
-	allocation_info.AllocationId = &uniformAllocation;
-	allocation_info.Data = &uniformPointer;
-	allocation_info.DeviceMemory = &device_memory;
-	render_device->AllocateScratchBufferMemory(allocation_info);
+	RenderSystem::BufferScratchMemoryAllocationInfo allocationInfo;
+	allocationInfo.Buffer = uniformBuffer;
+	allocationInfo.Allocation = &uniformAllocation;
+	allocationInfo.Data = &uniformPointer;
+	allocationInfo.DeviceMemory = &device_memory;
+	render_device->AllocateScratchBufferMemory(allocationInfo);
 
 	Buffer::BindMemoryInfo bind_memory_info;
 	bind_memory_info.RenderDevice = render_device->GetRenderDevice();
-	bind_memory_info.Offset = offset;
+	bind_memory_info.Offset = uniformAllocation.Offset;
 	bind_memory_info.Memory = &device_memory;
 	uniformBuffer.BindToMemory(bind_memory_info);
 	
@@ -53,7 +49,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
 
 	uniformBuffer.Destroy(render_system->GetRenderDevice());
-	render_system->DeallocateScratchBufferMemory(sizeof(GTSL::Matrix4) * MAX_CONCURRENT_FRAMES, offset, uniformAllocation);
+	render_system->DeallocateScratchBufferMemory(uniformAllocation);
 }
 
 void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix)
@@ -105,26 +101,25 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	RenderDevice::MemoryRequirements memory_requirements;
 	addStaticMeshInfo.RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&scratch_buffer, memory_requirements);
 	
-	uint32 offset; void* data; DeviceMemory device_memory; AllocationId alloc_id;
+	void* data; DeviceMemory device_memory; RenderAllocation allocation;
 
 	const uint32 size = memory_requirements.Size;
 	
-	RenderSystem::BufferScratchMemoryAllocationInfo memory_allocation_info;
-	memory_allocation_info.Size = size;
-	memory_allocation_info.Offset = &offset;
-	memory_allocation_info.Data = &data;
-	memory_allocation_info.AllocationId = &alloc_id;
-	memory_allocation_info.DeviceMemory = &device_memory;
-	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memory_allocation_info);
+	RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
+	memoryAllocationInfo.Buffer = scratch_buffer;
+	memoryAllocationInfo.Data = &data;
+	memoryAllocationInfo.Allocation = &allocation;
+	memoryAllocationInfo.DeviceMemory = &device_memory;
+	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
-	Buffer::BindMemoryInfo bind_memory_info;
-	bind_memory_info.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
-	bind_memory_info.Memory = &device_memory;
-	bind_memory_info.Offset = offset;
-	scratch_buffer.BindToMemory(bind_memory_info);
+	Buffer::BindMemoryInfo bindMemoryInfo;
+	bindMemoryInfo.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
+	bindMemoryInfo.Memory = &device_memory;
+	bindMemoryInfo.Offset = allocation.Offset;
+	scratch_buffer.BindToMemory(bindMemoryInfo);
 	
 	void* mesh_load_info;
-	GTSL::New<MeshLoadInfo>(&mesh_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, RenderAllocation{ size, offset, alloc_id }, index);
+	GTSL::New<MeshLoadInfo>(&mesh_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index);
 
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
 	

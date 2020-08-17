@@ -27,7 +27,7 @@ public:
 	struct MaterialInstance
 	{
 		BindingsSetLayout BindingsSetLayout;
-		GraphicsPipeline Pipeline;
+		RasterizationPipeline Pipeline;
 		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
@@ -42,6 +42,10 @@ public:
 		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+
+		Buffer Buffer;
+		void* Data;
+		RenderAllocation Allocation;
 
 		GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> Instances;
 

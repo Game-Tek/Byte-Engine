@@ -282,7 +282,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 }
 
 void RenderSystem::render(TaskInfo taskInfo)
-{	
+{
 	Fence::WaitForFencesInfo waitForFencesInfo;
 	waitForFencesInfo.RenderDevice = &renderDevice;
 	waitForFencesInfo.Timeout = ~0ULL;
@@ -296,13 +296,15 @@ void RenderSystem::render(TaskInfo taskInfo)
 	Fence::ResetFences(resetFencesInfo);
 	
 	graphicsCommandPools[currentFrameIndex].ResetPool(&renderDevice);
+
+	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	auto positionMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
 	auto rotationMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
 	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
 	
-	graphicsCommandBuffers[currentFrameIndex].BeginRecording({});
-	graphicsCommandBuffers[currentFrameIndex].BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
+	commandBuffer.BeginRecording({});
+	commandBuffer.BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
 	
 	GTSL::Matrix4 projectionMatrix;
 	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
@@ -330,7 +332,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	globalBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialSystem->globalBindingsSets[GetCurrentFrame()]);
 	globalBind.PipelineLayout = &materialSystem->globalPipelineLayout;
 	globalBind.PipelineType = PipelineType::GRAPHICS;
-	GetCurrentCommandBuffer()->BindBindingsSets(globalBind);
+	commandBuffer.BindBindingsSets(globalBind);
 	
 	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
 	{
@@ -344,7 +346,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 		renderGroupBind.PipelineLayout = &renderGroupData.PipelineLayout;
 		renderGroupBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
 		renderGroupBind.PipelineType = PipelineType::GRAPHICS;
-		GetCurrentCommandBuffer()->BindBindingsSets(renderGroupBind);
+		commandBuffer.BindBindingsSets(renderGroupBind);
 
 		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
 		{
@@ -358,13 +360,13 @@ void RenderSystem::render(TaskInfo taskInfo)
 			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
 			materialBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() }; //CHECK
 			materialBind.PipelineType = PipelineType::GRAPHICS;
-			GetCurrentCommandBuffer()->BindBindingsSets(materialBind);
+			commandBuffer.BindBindingsSets(materialBind);
 			
 			CommandBuffer::BindPipelineInfo bindPipelineInfo;
 			bindPipelineInfo.RenderDevice = GetRenderDevice();
 			bindPipelineInfo.PipelineType = PipelineType::GRAPHICS;
 			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-			GetCurrentCommandBuffer()->BindPipeline(bindPipelineInfo);
+			commandBuffer.BindPipeline(bindPipelineInfo);
 
 			bindingsSets.PopBack();
 		}
@@ -375,8 +377,8 @@ void RenderSystem::render(TaskInfo taskInfo)
 	}
 	);
 	
-	graphicsCommandBuffers[currentFrameIndex].EndRenderPass({ &renderDevice });
-	graphicsCommandBuffers[currentFrameIndex].EndRecording({});
+	commandBuffer.EndRenderPass({ &renderDevice });
+	commandBuffer.EndRecording({});
 
 	RenderContext::AcquireNextImageInfo acquireNextImageInfo;
 	acquireNextImageInfo.RenderDevice = &renderDevice;
@@ -390,7 +392,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	submitInfo.Fence = &graphicsFences[currentFrameIndex];
 	submitInfo.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &imageAvailableSemaphore[currentFrameIndex]);
 	submitInfo.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[currentFrameIndex]);
-	submitInfo.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &graphicsCommandBuffers[currentFrameIndex]);
+	submitInfo.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
 	GTSL::Array<uint32, 8> wps{ (uint32)GAL::PipelineStage::COLOR_ATTACHMENT_OUTPUT };
 	submitInfo.WaitPipelineStages = wps;
 	graphicsQueue.Submit(submitInfo);
@@ -413,22 +415,23 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	//wait_for_fences_info.WaitForAll = true;
 	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
 	//Fence::WaitForFences(wait_for_fences_info);//
+
+	auto& copyData = bufferCopyDatas[GetCurrentFrame()];
 	
 	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
-		for(uint32 i = 0; i < bufferCopyDatas[currentFrameIndex].GetLength(); ++i)
+		for(uint32 i = 0; i < copyData.GetLength(); ++i)
 		{
-			bufferCopyDatas[currentFrameIndex][i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation.Size, bufferCopyDatas[currentFrameIndex][i].Allocation.Offset, bufferCopyDatas[currentFrameIndex][i].Allocation.AllocationId);
+			copyData[i].SourceBuffer.Destroy(&renderDevice);
+			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation);
 		}
 		
-		bufferCopyDatas[currentFrameIndex].ResizeDown(0);
+		copyData.ResizeDown(0);
 
 		Fence::ResetFencesInfo reset_fences_info;
 		reset_fences_info.RenderDevice = &renderDevice;
 		reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
 		Fence::ResetFences(reset_fences_info);
-		
 	}
 	
 	transferCommandPools[currentFrameIndex].ResetPool(&renderDevice); //should only be done if frame is finished transferring but must also implement check in execute transfers

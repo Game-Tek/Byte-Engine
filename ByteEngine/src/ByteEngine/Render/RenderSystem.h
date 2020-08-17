@@ -21,6 +21,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	uint8 GetCurrentFrame() const { return currentFrameIndex; }
+	[[nodiscard]] uint8 GetFrameCount() const { return swapchainImages.GetLength(); }
 
 	struct InitializeRendererInfo
 	{
@@ -95,9 +96,6 @@ public:
 
 	PipelineCache* GetPipelineCache() { return &pipelineCache; }
 
-	void AddShader(const GTSL::Id64 name, const Shader shader) { shaders.Emplace(name, shader); }
-	Shader* GetShader(const GTSL::Id64 name) { return &shaders.At(name); }
-
 	RenderPass* GetRenderPass() { return &renderPass; }
 
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -127,8 +125,6 @@ private:
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
 	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
-
-	GTSL::FlatHashMap<Shader, BE::PersistentAllocatorReference> shaders;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;

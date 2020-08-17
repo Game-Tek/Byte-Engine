@@ -140,7 +140,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
 			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
-			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &graphicsCommandBuffers[i]);
+			graphicsCommandBuffers.Resize(graphicsCommandBuffers.GetLength() + 1);
+			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, graphicsCommandBuffers.begin() + i);
 			graphicsCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
 		}
 
@@ -163,8 +164,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			
 			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
 			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
-			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &transferCommandBuffers[i]);
-			
+			transferCommandBuffers.Resize(transferCommandBuffers.GetLength() + 1);
+			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, transferCommandBuffers.begin() + i);
 			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
 		}
 			
@@ -177,11 +178,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 		frameBuffers.EmplaceBack(framebuffer_create_info);
 
-		bufferCopyDatas[i].Initialize(16, GetPersistentAllocator());
+		bufferCopyDatas.EmplaceBack(16, GetPersistentAllocator());
 	}
-
-	transferCommandBuffers.Resize(swapchainImages.GetLength());		
-	graphicsCommandBuffers.Resize(swapchainImages.GetLength());
 	
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
@@ -238,8 +236,6 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {	
 	graphicsQueue.Wait();
 	transferQueue.Wait();
-	
-	ForEach(shaders, [&](Shader& shader){ shader.Destroy(&renderDevice); });
 
 	for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
 	{
@@ -320,37 +316,62 @@ void RenderSystem::render(TaskInfo taskInfo)
 	
 	auto viewMatrix = rotationMatrices[0] * pos;
 	auto matrix = projectionMatrix * viewMatrix;
+	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto& renderGroups = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetRenderGroups();
 
+	GTSL::Array<BindingsSet, 32> bindingsSets;
+
+	bindingsSets.EmplaceBack(materialSystem->globalBindingsSets[GetCurrentFrame()]);
+	
+	CommandBuffer::BindBindingsSetInfo globalBind;
+	globalBind.RenderDevice = GetRenderDevice();
+	globalBind.FirstSet = 0;
+	globalBind.BoundSets = 1;
+	globalBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialSystem->globalBindingsSets[GetCurrentFrame()]);
+	globalBind.PipelineLayout = &materialSystem->globalPipelineLayout;
+	globalBind.PipelineType = PipelineType::GRAPHICS;
+	GetCurrentCommandBuffer()->BindBindingsSets(globalBind);
+	
 	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
 	{
-		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-		bindBindingsSetInfo.RenderDevice = GetRenderDevice();
-		bindBindingsSetInfo.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &renderGroupData.BindingsSets[GetCurrentFrame()]);
-		bindBindingsSetInfo.PipelineLayout = &renderGroupData.PipelineLayout;
-		bindBindingsSetInfo.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
-		bindBindingsSetInfo.PipelineType = PipelineType::GRAPHICS;
-		GetCurrentCommandBuffer()->BindBindingsSet(bindBindingsSetInfo);
+		bindingsSets.EmplaceBack(renderGroupData.BindingsSets[GetCurrentFrame()]);
+		
+		CommandBuffer::BindBindingsSetInfo renderGroupBind;
+		renderGroupBind.RenderDevice = GetRenderDevice();
+		renderGroupBind.FirstSet = 1;
+		renderGroupBind.BoundSets = 1;
+		renderGroupBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &renderGroupData.BindingsSets[GetCurrentFrame()]);
+		renderGroupBind.PipelineLayout = &renderGroupData.PipelineLayout;
+		renderGroupBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
+		renderGroupBind.PipelineType = PipelineType::GRAPHICS;
+		GetCurrentCommandBuffer()->BindBindingsSets(renderGroupBind);
 
 		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
 		{
-			CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-			bindBindingsSetInfo.RenderDevice = GetRenderDevice();
-			bindBindingsSetInfo.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
-			bindBindingsSetInfo.PipelineLayout = &renderGroupData.PipelineLayout;
-			bindBindingsSetInfo.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() }; //CHECK
-			bindBindingsSetInfo.PipelineType = PipelineType::GRAPHICS;
-			GetCurrentCommandBuffer()->BindBindingsSet(bindBindingsSetInfo);
+			bindingsSets.EmplaceBack(materialInstance.BindingsSets[GetCurrentFrame()]);
+			
+			CommandBuffer::BindBindingsSetInfo materialBind;
+			materialBind.RenderDevice = GetRenderDevice();
+			materialBind.FirstSet = 2;
+			materialBind.BoundSets = 1;
+			materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
+			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
+			materialBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() }; //CHECK
+			materialBind.PipelineType = PipelineType::GRAPHICS;
+			GetCurrentCommandBuffer()->BindBindingsSets(materialBind);
 			
 			CommandBuffer::BindPipelineInfo bindPipelineInfo;
 			bindPipelineInfo.RenderDevice = GetRenderDevice();
 			bindPipelineInfo.PipelineType = PipelineType::GRAPHICS;
 			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
 			GetCurrentCommandBuffer()->BindPipeline(bindPipelineInfo);
+
+			bindingsSets.PopBack();
 		}
 		);
 
-		taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName)->Render(taskInfo.GameInstance, this, viewMatrix, projectionMatrix);
+		bindingsSets.PopBack();
+		//taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName)->Render(taskInfo.GameInstance, this, viewMatrix, projectionMatrix);
 	}
 	);
 	
@@ -391,7 +412,7 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	//wait_for_fences_info.Timeout = ~0ULL;
 	//wait_for_fences_info.WaitForAll = true;
 	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
-	//Fence::WaitForFences(wait_for_fences_info);
+	//Fence::WaitForFences(wait_for_fences_info);//
 	
 	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
@@ -452,7 +473,7 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 {
 	switch (messageSeverity)
 	{
-	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message); break;
+	case RenderDevice::MessageSeverity::MESSAGE: /*BE_LOG_MESSAGE(message);*/ break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
 	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
 	default: break;

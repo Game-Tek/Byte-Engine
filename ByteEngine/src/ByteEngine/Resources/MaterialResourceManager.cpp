@@ -136,6 +136,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	BE_ASSERT(read != 0, "Read 0 bytes!");
 	
 	OnMaterialLoadInfo onMaterialLoadInfo;
+	onMaterialLoadInfo.ResourceName = loadInfo.Name;
 	onMaterialLoadInfo.UserData = loadInfo.UserData;
 	onMaterialLoadInfo.DataBuffer = loadInfo.DataBuffer;
 	onMaterialLoadInfo.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));

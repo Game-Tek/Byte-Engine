@@ -70,6 +70,7 @@ void Game::Initialize()
 	/// </summary>
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
+	material_create_info.RenderGroup = "StaticMeshRenderGroup";
 	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
 	GTSL::Array<GTSL::Array<GAL::BindingType, 8>, 8> binding_sets(1);
 	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
@@ -110,7 +111,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material_system->CreateMaterial(create_material_info);
 	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);////////
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
 	//window.ShowMouse(false);

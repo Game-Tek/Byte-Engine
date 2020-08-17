@@ -80,7 +80,7 @@ void GameApplication::PostInitialize()
 
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 	{
-		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings;
+		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1);
 		bindings[0].EmplaceBack(BindingType::COMBINED_IMAGE_SAMPLER);
 		materialSystem->SetGlobalState(gameInstance, bindings);
 	}
@@ -88,7 +88,7 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	{
-		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings; bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
+		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1); bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
 	}
 }

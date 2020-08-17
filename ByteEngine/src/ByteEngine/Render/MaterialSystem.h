@@ -21,14 +21,15 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
-	void SetGlobalState(GameInstance* gameInstance, GTSL::Array<GTSL::Array<BindingType, 6>, 6> globalState);
-	void AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 name, GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings);
+	void SetGlobalState(GameInstance* gameInstance, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& globalState);
+	void AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 renderGroupName, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& bindings);
 	
 	struct MaterialInstance
 	{
 		BindingsSetLayout BindingsSetLayout;
 		GraphicsPipeline Pipeline;
 		BindingsPool BindingsPool;
+		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
 		MaterialInstance() = default;
@@ -58,13 +59,13 @@ public:
 	};
 	ComponentReference CreateMaterial(const CreateMaterialInfo& info);
 
-	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id32 parameterName, void* data)
+	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, uint8 id, void* data)
 	{
-		uint32 parameter = 0;
-		for (auto e : shaderParameters[material].ParameterNames) { if (e == parameterName) break; ++parameter; }
+		//uint32 parameter = 0;
+		//for (auto e : shaderParameters[material].ParameterNames) { if (e == parameterName) break; ++parameter; }
 
 		byte* FILL = 0;
-		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + shaderParameters[material].ParameterOffset[parameter]);
+		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + shaderParameters[material].ParameterOffset[id]);
 	}
 
 	void SetMaterialTexture(const ComponentReference material, Image* image)
@@ -72,7 +73,10 @@ public:
 		
 	}
 
-	
+	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
+	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
+	BindingsPool globalBindingsPool;
+	PipelineLayout globalPipelineLayout;
 private:
 	struct ShaderParameters
 	{
@@ -87,10 +91,6 @@ private:
 	ComponentReference component = 0;
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
-
-	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
-	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
-	BindingsPool globalBindingsPool;
 	
 	struct MaterialLoadInfo
 	{
@@ -102,5 +102,5 @@ private:
 		RenderSystem* RenderSystem = nullptr;
 		GTSL::Buffer Buffer;
 	};
-	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad);
+	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
 };

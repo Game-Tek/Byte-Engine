@@ -2,6 +2,19 @@
 
 #include "RenderSystem.h"
 
+BindingType;
+
+const char* BindingTypeString(const BindingType binding)
+{
+	switch (binding)
+	{
+	case BindingType::UNIFORM_BUFFER_DYNAMIC: return "UNIFORM_BUFFER_DYNAMIC";
+	case BindingType::COMBINED_IMAGE_SAMPLER: return "COMBINED_IMAGE_SAMPLER";
+	case BindingType::UNIFORM_BUFFER: return "UNIFORM_BUFFER";
+	default: return "null";
+	}
+}
+
 void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	renderGroups.Initialize(32, GetPersistentAllocator());
@@ -25,25 +38,31 @@ void MaterialSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	});
 }
 
-void MaterialSystem::SetGlobalState(GameInstance* gameInstance, GTSL::Array<GTSL::Array<BindingType, 6>, 6> globalState)
+void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& globalState)
 {
 	RenderSystem* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	BE_ASSERT(globalState.GetLength() == 1, "Only one binding set is supported");
+	BE_ASSERT(globalState[0].GetLength() == 1 && globalState.GetLength() == 1, "Only one binding set is supported");
 	
 	for(uint32 i = 0; i < globalState.GetLength(); ++i)
 	{
-		BindingsSetLayout::CreateInfo bindings_set_layout_create_info;
-		bindings_set_layout_create_info.RenderDevice = renderSystem->GetRenderDevice();
+		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
+		bindingsSetLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
 		for(uint32 j = 0; j < globalState[i].GetLength(); ++j)
 		{
 			binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ globalState[i][j], ShaderStage::ALL, 1 });
 		}
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<128> name("Global state");
+			bindingsSetLayoutCreateInfo.Name = name.begin();
+		}
 		
-		bindings_set_layout_create_info.BindingsDescriptors = binding_descriptors;
-		globalBindingsSetLayout.EmplaceBack(bindings_set_layout_create_info);
+		bindingsSetLayoutCreateInfo.BindingsDescriptors = binding_descriptors;
+		globalBindingsSetLayout.EmplaceBack(bindingsSetLayoutCreateInfo);
 	}
 
 	BindingsPool::CreateInfo bindingsPoolCreateInfo;
@@ -56,24 +75,64 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, GTSL::Array<GTSL
 	bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
 	::new(&globalBindingsPool) BindingsPool(bindingsPoolCreateInfo);
 
-	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
-	allocate_bindings_sets_info.RenderDevice = renderSystem->GetRenderDevice();
-	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(2, globalBindingsSets.begin());
-	GTSL::Array<BindingsSetLayout, 6 * MAX_CONCURRENT_FRAMES> bindingsSetLayouts;
-	for(uint32 i = 0; i < globalState.GetLength(); ++i)
 	{
-		for (uint32 j = 0; i < 2; ++i)
+		BindingsPool::AllocateBindingsSetsInfo allocateBindingsSetsInfo;
+		allocateBindingsSetsInfo.RenderDevice = renderSystem->GetRenderDevice();
+		allocateBindingsSetsInfo.BindingsSets = GTSL::Ranger<BindingsSet>(2, globalBindingsSets.begin());
+		GTSL::Array<BindingsSetLayout, 6 * MAX_CONCURRENT_FRAMES> bindingsSetLayouts;
+		for (uint32 i = 0; i < globalState.GetLength(); ++i)
 		{
-			bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[i]);
+			for (uint32 j = 0; j < 2; ++j)
+			{
+				bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[i]);
+			}
 		}
+		allocateBindingsSetsInfo.BindingsSetLayouts = bindingsSetLayouts;
+		allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 1 };
+		globalBindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
+
+		globalBindingsSets.Resize(renderSystem->GetFrameCount());
 	}
-	allocate_bindings_sets_info.BindingsSetLayouts = bindingsSetLayouts;
-	globalBindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
+	
+	{
+		PipelineLayout::CreateInfo pipelineLayout;
+		pipelineLayout.RenderDevice = renderSystem->GetRenderDevice();
+		
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<128> name("Pipeline Layout. Material system global state");
+			pipelineLayout.Name = name.begin();
+		}
+
+		pipelineLayout.BindingsSetLayouts = globalBindingsSetLayout;
+		globalPipelineLayout.Initialize(pipelineLayout);
+	}
+
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<1024> string("Set global state with: \n");
+
+		uint32 i = 0, j = 0;
+		for(auto& e : globalState)
+		{
+			string += "Set: "; string += i; string += '\n';
+			
+			for(auto& b : e)
+			{
+				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(b); string += '\n';
+				++j;
+			}
+			
+			++i;
+		}
+		
+		BE_LOG_WARNING(string);
+	}
 }
 
-void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 name, GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings)
+void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 renderGroupName, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& bindings)
 {
-	RenderGroupData& renderGroupData = renderGroups.Emplace(name);
+	RenderGroupData& renderGroupData = renderGroups.Emplace(renderGroupName);
 
 	RenderSystem* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
@@ -81,8 +140,8 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 
 	for (uint32 i = 0; i < bindings.GetLength(); ++i)
 	{
-		BindingsSetLayout::CreateInfo bindings_set_layout_create_info;
-		bindings_set_layout_create_info.RenderDevice = renderSystem->GetRenderDevice();
+		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
+		bindingsSetLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
 		for (uint32 j = 0; j < bindings[i].GetLength(); ++j)
@@ -90,34 +149,94 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 			binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindings[i][j], ShaderStage::ALL, 1 });
 		}
 
-		bindings_set_layout_create_info.BindingsDescriptors = binding_descriptors;
-		renderGroupData.BindingsSetLayout = BindingsSetLayout(bindings_set_layout_create_info);
+		bindingsSetLayoutCreateInfo.BindingsDescriptors = binding_descriptors;
+		bindingsSetLayoutCreateInfo.SpecialBindings = GTSL::Ranger<const uint32>();
+		
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<128> name("Render group "); name += renderGroupName;
+			bindingsSetLayoutCreateInfo.Name = name.begin();
+		}
+		
+		renderGroupData.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
 	}
 
-	BindingsPool::CreateInfo bindingsPoolCreateInfo;
-	bindingsPoolCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
-	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::UNIFORM_BUFFER_DYNAMIC, 6 });
-	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::COMBINED_IMAGE_SAMPLER, 16 });
-	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::STORAGE_BUFFER_DYNAMIC, 16 });
-	bindingsPoolCreateInfo.DescriptorPoolSizes = descriptor_pool_sizes;
-	bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
-	::new(&renderGroupData.BindingsPool) BindingsPool(bindingsPoolCreateInfo);
-	
-	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
-	allocate_bindings_sets_info.RenderDevice = renderSystem->GetRenderDevice();
-	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(2, globalBindingsSets.begin());
-	GTSL::Array<BindingsSetLayout, 6 * MAX_CONCURRENT_FRAMES> bindingsSetLayouts;
-	for (uint32 i = 0; i < bindings.GetLength(); ++i)
 	{
-		for (uint32 j = 0; i < 2; ++i)
+		BindingsPool::CreateInfo bindingsPoolCreateInfo;
+		bindingsPoolCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
+		descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::UNIFORM_BUFFER_DYNAMIC, 6 });
+		descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::UNIFORM_BUFFER, 6 });
+		descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::COMBINED_IMAGE_SAMPLER, 16 });
+		descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::STORAGE_BUFFER_DYNAMIC, 16 });
+		bindingsPoolCreateInfo.DescriptorPoolSizes = descriptor_pool_sizes;
+		bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
+		::new(&renderGroupData.BindingsPool) BindingsPool(bindingsPoolCreateInfo);
+	}
+
+	{
+		BindingsPool::AllocateBindingsSetsInfo allocateBindingsSetsInfo;
+		allocateBindingsSetsInfo.RenderDevice = renderSystem->GetRenderDevice();
+		allocateBindingsSetsInfo.BindingsSets = GTSL::Ranger<BindingsSet>(2, renderGroupData.BindingsSets.begin());
 		{
-			bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[i]);
+			GTSL::Array<BindingsSetLayout, 6 * MAX_CONCURRENT_FRAMES> bindingsSetLayouts;
+			for (uint32 i = 0; i < bindings.GetLength(); ++i)
+			{
+				for (uint32 j = 0; j < 2; ++j)
+				{
+					bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[i]);
+				}
+			}
+
+			allocateBindingsSetsInfo.BindingsSetLayouts = bindingsSetLayouts;
+			allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 1 };
+			renderGroupData.BindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
+
+			renderGroupData.BindingsSets.Resize(renderSystem->GetFrameCount());
 		}
 	}
-	allocate_bindings_sets_info.BindingsSetLayouts = bindingsSetLayouts;
-	renderGroupData.BindingsPool.AllocateBindingsSets(allocate_bindings_sets_info);
+		
+	{
+		GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+		bindingsSetLayouts.PushBack(GTSL::Ranger<BindingsSetLayout>(globalBindingsSetLayout)); //global bindings
+		bindingsSetLayouts.EmplaceBack(renderGroupData.BindingsSetLayout); //render group bindings
+
+		PipelineLayout::CreateInfo pipelineLayout;
+		pipelineLayout.RenderDevice = renderSystem->GetRenderDevice();
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<128> name("Render group: "); name += renderGroupName;
+			pipelineLayout.Name = name.begin();
+		}
+		
+		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
+		renderGroupData.PipelineLayout.Initialize(pipelineLayout);
+	}
+	
 	renderGroupData.Instances.Initialize(32, GetPersistentAllocator());
+	renderGroupData.RenderGroupName = renderGroupName;
+
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<1024> string("Set render group "); string += renderGroupName; string += " state with \n";
+
+		uint32 i = 0, j = 0;
+		for (auto& e : bindings)
+		{
+			string += "Set: "; string += i; string += '\n';
+
+			for (auto& b : e)
+			{
+				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(b); string += '\n';
+				++j;
+			}
+
+			++i;
+		}
+
+		BE_LOG_WARNING(string);
+	}
 }
 
 ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
@@ -128,7 +247,6 @@ ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info
 	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
 
 	const auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
 	material_load_info.ActsOn = acts_on;
 	material_load_info.GameInstance = info.GameInstance;
@@ -146,87 +264,154 @@ ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info
 	return component++;
 }
 
-void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onStaticMeshLoad)
+void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo)
 {
-	auto load_info = DYNAMIC_CAST(MaterialLoadInfo, onStaticMeshLoad.UserData);
+	auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
 
-	auto& instance = renderGroups.At(onStaticMeshLoad.RenderGroup).Instances.Emplace(onStaticMeshLoad.ResourceName);
+	auto& renderGroup = renderGroups.At(onMaterialLoadInfo.RenderGroup);
+	auto& instance = renderGroup.Instances.Emplace(onMaterialLoadInfo.ResourceName);
 
-	BindingsSetLayout::CreateInfo bindings_set_layout_create_info;
-	bindings_set_layout_create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
-	binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::UNIFORM_BUFFER_DYNAMIC, ShaderStage::VERTEX, 1 });
-	bindings_set_layout_create_info.BindingsDescriptors = binding_descriptors;
-	instance.BindingsSetLayout = BindingsSetLayout(bindings_set_layout_create_info);
-
-	BindingsPool::CreateInfo create_info;
-	create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
-	descriptor_pool_sizes.PushBack(BindingsPool::DescriptorPoolSize{ BindingType::UNIFORM_BUFFER_DYNAMIC, 3 });
-	create_info.DescriptorPoolSizes = descriptor_pool_sizes;
-	create_info.MaxSets = MAX_CONCURRENT_FRAMES;
-	instance.BindingsPool = BindingsPool(create_info);
-
-	BindingsPool::AllocateBindingsSetsInfo allocate_bindings_sets_info;
-	allocate_bindings_sets_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	allocate_bindings_sets_info.BindingsSets = GTSL::Ranger<BindingsSet>(instance.BindingsSets.GetCapacity(), instance.BindingsSets.begin());
-	allocate_bindings_sets_info.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ instance.BindingsSetLayout, instance.BindingsSetLayout, instance.BindingsSetLayout };
-	instance.BindingsPool.AllocateBindingsSets(allocate_bindings_sets_info); instance.BindingsSets.Resize(3);
-
-	for (auto& e : instance.BindingsSets)
+	BindingsPool::CreateInfo bindingsPoolCreateInfo;
+	bindingsPoolCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptorPoolSizes;
+	
+	BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
+	bindingsSetLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
+	for(auto& e : onMaterialLoadInfo.BindingSets[0])
 	{
-		//BindingsSet::BindingsSetUpdateInfo bindings_set_update_info;
-		//bindings_set_update_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-		//
-		//BindingsSetLayout::BufferBindingDescriptor binding_descriptor;
-		//binding_descriptor.UniformCount = 1;
-		//binding_descriptor.BindingType = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
-		//binding_descriptor.Buffers = GTSL::Ranger<Buffer>(1, &uniformBuffer);
-		//binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) };
-		//binding_descriptor.Offsets = GTSL::Array<uint32, 1>{ 0 };
-		//
-		//bindings_set_update_info.BufferBindingsSetLayout.EmplaceBack(binding_descriptor);
-		//e.Update(bindings_set_update_info);
+		auto bindingType = GAL::BindingTypeToVulkanBindingType(e);
+		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ShaderStage::ALL, 1 });
+		descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
+	}
+	bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
+	bindingsSetLayoutCreateInfo.SpecialBindings = GTSL::Ranger<const uint32>();
+
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<128> name("Material "); name += onMaterialLoadInfo.ResourceName;
+		bindingsSetLayoutCreateInfo.Name = name.begin();
 	}
 	
-	GTSL::Array<ShaderDataType, 10> shader_datas(onStaticMeshLoad.VertexElements.GetLength());
-	ConvertShaderDataType(onStaticMeshLoad.VertexElements, shader_datas);
-	GraphicsPipeline::CreateInfo pipeline_create_info;
-	pipeline_create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-	pipeline_create_info.VertexDescriptor = shader_datas;
-	pipeline_create_info.IsInheritable = true;
+	instance.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
+
+	bindingsPoolCreateInfo.DescriptorPoolSizes = descriptorPoolSizes;
+	bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
+	instance.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
+
+	BindingsPool::AllocateBindingsSetsInfo allocateBindingsSetsInfo;
+	allocateBindingsSetsInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+	allocateBindingsSetsInfo.BindingsSets = GTSL::Ranger<BindingsSet>(loadInfo->RenderSystem->GetFrameCount(), instance.BindingsSets.begin());
+	allocateBindingsSetsInfo.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ instance.BindingsSetLayout, instance.BindingsSetLayout, instance.BindingsSetLayout };
+	allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>();
+	instance.BindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
+	instance.BindingsSets.Resize(loadInfo->RenderSystem->GetFrameCount());
+
+	for (uint32 i = 0; i < onMaterialLoadInfo.BindingSets.GetLength(); ++i)
+	{
+		BindingsSet::BindingsSetUpdateInfo bindings_set_update_info;
+		bindings_set_update_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		
+		for (uint32 j = 0; j < onMaterialLoadInfo.BindingSets[i].GetLength(); ++j)
+		{
+			if (bindingDescriptors[j].BindingType == GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC)
+			{
+				//TODO: ALLOCATE BUFFER
+				
+				BindingsSetLayout::BufferBindingDescriptor binding_descriptor;
+				binding_descriptor.UniformCount = 1;
+				binding_descriptor.BindingType = bindingDescriptors[j].BindingType;
+				binding_descriptor.Buffers = GTSL::Ranger<Buffer>(1, &uniformBuffer);
+				binding_descriptor.Sizes = GTSL::Array<uint32, 1>{ sizeof(GTSL::Matrix4) };
+				binding_descriptor.Offsets = GTSL::Array<uint32, 1>{ 0 };
+				bindings_set_update_info.BufferBindingsSetLayout.EmplaceBack(binding_descriptor);
+			}
+			else
+			{
+				__debugbreak();
+			}
+		}
+		
+		instance.BindingsSets[i].Update(bindings_set_update_info);
+	}
+	
+	GTSL::Array<ShaderDataType, 10> shader_datas(onMaterialLoadInfo.VertexElements.GetLength());
+	ConvertShaderDataType(onMaterialLoadInfo.VertexElements, shader_datas);
+	GraphicsPipeline::CreateInfo pipelineCreateInfo;
+	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+	pipelineCreateInfo.VertexDescriptor = shader_datas;
+	pipelineCreateInfo.IsInheritable = true;
 
 	GTSL::Array<BindingsSetLayout, 10> bindings_set_layouts;
 	bindings_set_layouts.EmplaceBack(instance.BindingsSetLayout);
+	
+	{
+		GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+		bindingsSetLayouts.PushBack(GTSL::Ranger<BindingsSetLayout>(globalBindingsSetLayout)); //global bindings
+		bindingsSetLayouts.EmplaceBack(renderGroup.BindingsSetLayout); //render group bindings
+		bindingsSetLayouts.EmplaceBack(instance.BindingsSetLayout); //instance group bindings
 
-	pipeline_create_info.BindingsSetLayouts = bindings_set_layouts;
+		PipelineLayout::CreateInfo pipelineLayout;
+		pipelineLayout.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<128> name("Pipeline Layout. Material: "); name += onMaterialLoadInfo.ResourceName;
+			pipelineLayout.Name = name.begin();
+		}
+		
+		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
+		instance.PipelineLayout.Initialize(pipelineLayout);
+	}
 
-	pipeline_create_info.PipelineDescriptor.BlendEnable = false;
-	pipeline_create_info.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
-	pipeline_create_info.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
+	pipelineCreateInfo.PipelineDescriptor.BlendEnable = false;
+	pipelineCreateInfo.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
+	pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
 
-	pipeline_create_info.SurfaceExtent = { 1280, 720 };
+	pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
 
 	GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
-	for (uint32 i = 0; i < onStaticMeshLoad.ShaderTypes.GetLength(); ++i)
+	for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
 	{
 		Shader::CreateInfo create_info;
-		create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
-		create_info.ShaderData = GTSL::Ranger<const byte>(onStaticMeshLoad.ShaderSizes[i], onStaticMeshLoad.DataBuffer + offset);
+		create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
 		shaders.EmplaceBack(create_info);
-		offset += onStaticMeshLoad.ShaderSizes[i];
+		offset += onMaterialLoadInfo.ShaderSizes[i];
 	}
 
 	GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
 	for (uint32 i = 0; i < shaders.GetLength(); ++i)
 	{
-		shader_infos.PushBack({ ConvertShaderType(onStaticMeshLoad.ShaderTypes[i]), &shaders[i] });
+		shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
 	}
 
-	pipeline_create_info.Stages = shader_infos;
-	pipeline_create_info.RenderPass = load_info->RenderSystem->GetRenderPass();
-	instance.Pipeline = GraphicsPipeline(pipeline_create_info);
+	pipelineCreateInfo.Stages = shader_infos;
+	pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
+	pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
+	instance.Pipeline = GraphicsPipeline(pipelineCreateInfo);
 
-	load_info->Buffer.Free(32, GetPersistentAllocator());
-	GTSL::Delete<MaterialLoadInfo>(load_info, GetPersistentAllocator());
+	loadInfo->Buffer.Free(32, GetPersistentAllocator());
+	GTSL::Delete<MaterialLoadInfo>(loadInfo, GetPersistentAllocator());
+
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<1024> string("Added material "); string += onMaterialLoadInfo.ResourceName; string += " state with \n";
+		
+		uint32 i = 0, j = 0;
+		for (auto& e : onMaterialLoadInfo.BindingSets)
+		{
+			string += "Set: "; string += i; string += '\n';
+
+			for (auto& b : e)
+			{
+				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(GAL::BindingTypeToVulkanBindingType(b)); string += '\n';
+				++j;
+			}
+
+			++i;
+		}
+
+		BE_LOG_WARNING(string);
+	}
 }

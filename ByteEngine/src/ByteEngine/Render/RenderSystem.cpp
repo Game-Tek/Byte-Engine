@@ -348,6 +348,17 @@ void RenderSystem::render(TaskInfo taskInfo)
 		renderGroupBind.PipelineType = PipelineType::GRAPHICS;
 		commandBuffer.BindBindingsSets(renderGroupBind);
 
+		const auto renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
+
+		auto positions = renderGroup->GetPositions();
+
+		uint32 offset = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
+		BE_ASSERT(GTSL::AlignPointer(GetRenderDevice()->GetMinUniformBufferOffset(), renderGroupData.Data) == renderGroupData.Data, "Oh!");
+		const auto data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
+
+		auto pos = GTSL::Math::Translation(positions[0]); pos(2, 3) *= -1.f;
+		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projectionMatrix * viewMatrix * pos;
+		
 		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
 		{
 			bindingsSets.EmplaceBack(materialInstance.BindingsSets[GetCurrentFrame()]);
@@ -368,12 +379,13 @@ void RenderSystem::render(TaskInfo taskInfo)
 			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
 			commandBuffer.BindPipeline(bindPipelineInfo);
 
+			renderGroup->Render(taskInfo.GameInstance, this);
+			
 			bindingsSets.PopBack();
 		}
 		);
 
 		bindingsSets.PopBack();
-		//taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName)->Render(taskInfo.GameInstance, this, viewMatrix, projectionMatrix);
 	}
 	);
 	

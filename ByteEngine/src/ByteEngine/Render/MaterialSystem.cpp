@@ -262,8 +262,11 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 				__debugbreak();
 			}
 		}
-		
-		renderGroupData.BindingsSets[i].Update(bindingsSetUpdateInfo);
+
+		for (auto& e : renderGroupData.BindingsSets)
+		{
+			e.Update(bindingsSetUpdateInfo);
+		}
 	}
 	
 	if constexpr (_DEBUG)

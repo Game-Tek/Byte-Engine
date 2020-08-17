@@ -83,6 +83,7 @@ public:
 	}
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
+	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
 	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 
 	struct BufferCopyData
@@ -100,7 +101,7 @@ public:
 
 	RenderPass* GetRenderPass() { return &renderPass; }
 
-	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
+	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 	
 private:

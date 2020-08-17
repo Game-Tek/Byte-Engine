@@ -17,27 +17,6 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 
 	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	
-	DeviceMemory device_memory;
-
-	Buffer::CreateInfo buffer_create_info;
-	buffer_create_info.RenderDevice = render_device->GetRenderDevice();
-	buffer_create_info.Size = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), render_device->GetRenderDevice()->GetMinUniformBufferOffset()) * MAX_CONCURRENT_FRAMES;
-	buffer_create_info.BufferType = BufferType::UNIFORM;
-	uniformBuffer = Buffer(buffer_create_info);
-	
-	RenderSystem::BufferScratchMemoryAllocationInfo allocationInfo;
-	allocationInfo.Buffer = uniformBuffer;
-	allocationInfo.Allocation = &uniformAllocation;
-	allocationInfo.Data = &uniformPointer;
-	allocationInfo.DeviceMemory = &device_memory;
-	render_device->AllocateScratchBufferMemory(allocationInfo);
-
-	Buffer::BindMemoryInfo bind_memory_info;
-	bind_memory_info.RenderDevice = render_device->GetRenderDevice();
-	bind_memory_info.Offset = uniformAllocation.Offset;
-	bind_memory_info.Memory = &device_memory;
-	uniformBuffer.BindToMemory(bind_memory_info);
-	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
 
@@ -47,25 +26,12 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 	
 	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
 	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
-
-	uniformBuffer.Destroy(render_system->GetRenderDevice());
-	render_system->DeallocateScratchBufferMemory(uniformAllocation);
 }
 
-void StaticMeshRenderGroup::Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix)
-{
-	auto positions = GetPositions();
-
-	uint32 offset = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * renderSystem->GetCurrentFrame();
-	
-	BE_ASSERT(GTSL::AlignPointer(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset(), uniformPointer) == uniformPointer, "Oh!");
-	const auto data_pointer = static_cast<byte*>(uniformPointer) + offset;
-	
+void StaticMeshRenderGroup::Render(GameInstance* gameInstance, const RenderSystem* renderSystem)
+{	
 	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
-	{
-		auto pos = GTSL::Math::Translation(positions[i]); pos(2, 3) *= -1.f;
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projMatrix * viewMatrix * pos;
-		
+	{		
 		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
 		bind_vertex_info.RenderDevice = renderSystem->GetRenderDevice();
 		bind_vertex_info.Buffer = &meshBuffers[i];

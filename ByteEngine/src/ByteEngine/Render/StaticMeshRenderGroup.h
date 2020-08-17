@@ -18,7 +18,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
-	void Render(GameInstance* gameInstance, RenderSystem* renderSystem, GTSL::Matrix4 viewMatrix, GTSL::Matrix4 projMatrix);
+	void Render(GameInstance* gameInstance, const RenderSystem* renderSystem);
 
 	struct AddStaticMeshInfo
 	{
@@ -57,10 +57,6 @@ private:
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;
-
-	Buffer uniformBuffer;
-	RenderAllocation uniformAllocation;
-	void* uniformPointer;
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	GTSL::Vector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;

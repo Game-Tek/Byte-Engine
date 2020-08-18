@@ -10,7 +10,7 @@
 static_assert((uint8)GAL::ShaderType::VERTEX_SHADER == 0, "Enum changed!");
 static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
 
-static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs" };
+static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs", ".rgs", ".ahs", ".chs", ".ms", ".is", ".cs" };
 
 using VertexElementsType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 using ShaderTypeType = GTSL::UnderlyingType<GAL::ShaderType>;

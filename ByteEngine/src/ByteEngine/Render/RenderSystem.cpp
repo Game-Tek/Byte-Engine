@@ -179,7 +179,7 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 
 void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 {
-	if ((extent.Width != 0 || extent.Height != 0) && extent != renderArea)
+	if (extent != 0 && extent != renderArea)
 	{
 		graphicsQueue.Wait();
 
@@ -322,7 +322,13 @@ void RenderSystem::render(TaskInfo taskInfo)
 	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
 	
 	commandBuffer.BeginRecording({});
-	commandBuffer.BeginRenderPass({&renderDevice, &renderPass, &frameBuffers[currentFrameIndex], renderArea, clearValues});;
+	CommandBuffer::BeginRenderPassInfo beginRenderPass;
+	beginRenderPass.RenderDevice = GetRenderDevice();
+	beginRenderPass.RenderPass = &renderPass;
+	beginRenderPass.Framebuffer = &frameBuffers[currentFrameIndex];
+	beginRenderPass.RenderArea = renderArea;
+	beginRenderPass.ClearValues = clearValues;
+	commandBuffer.BeginRenderPass(beginRenderPass);
 	
 	GTSL::Matrix4 projectionMatrix;
 	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
@@ -406,8 +412,10 @@ void RenderSystem::render(TaskInfo taskInfo)
 		bindingsSets.PopBack();
 	}
 	);
-	
-	commandBuffer.EndRenderPass({ &renderDevice });
+
+	CommandBuffer::EndRenderPassInfo endRenderPass;
+	endRenderPass.RenderDevice = GetRenderDevice();
+	commandBuffer.EndRenderPass(endRenderPass);
 	commandBuffer.EndRecording({});
 
 	RenderContext::AcquireNextImageInfo acquireNextImageInfo;

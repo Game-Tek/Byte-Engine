@@ -2,8 +2,6 @@
 
 #include "RenderSystem.h"
 
-BindingType;
-
 const char* BindingTypeString(const BindingType binding)
 {
 	switch (binding)

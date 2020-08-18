@@ -21,7 +21,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	uint8 GetCurrentFrame() const { return currentFrameIndex; }
-	[[nodiscard]] uint8 GetFrameCount() const { return swapchainImages.GetLength(); }
+	[[nodiscard]] uint8 GetFrameCount() const { return 2; }
 
 	struct InitializeRendererInfo
 	{
@@ -103,6 +103,8 @@ public:
 
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
+
+	void OnResize(TaskInfo taskInfo, GTSL::Extent2D extent);
 	
 private:
 	RenderDevice renderDevice;

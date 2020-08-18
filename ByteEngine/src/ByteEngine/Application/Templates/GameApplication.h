@@ -28,4 +28,6 @@ protected:
 	void RegisterMouse();
 	void RegisterKeyboard();
 	void RegisterControllers();
+
+	void onWindowResize(const GTSL::Extent2D& extent);
 };

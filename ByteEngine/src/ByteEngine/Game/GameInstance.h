@@ -100,7 +100,7 @@ public:
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
-	
+
 	void AddGoal(GTSL::Id64 name);
 	
 private:

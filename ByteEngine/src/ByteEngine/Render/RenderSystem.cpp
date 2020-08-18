@@ -40,69 +40,36 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	swapchainPresentMode = static_cast<uint32>(PresentMode::FIFO);
 	swapchainColorSpace = static_cast<uint32>(ColorSpace::NONLINEAR_SRGB);
 	swapchainFormat = static_cast<uint32>(ImageFormat::BGRA_I8);
+
+	clearValues.EmplaceBack(0, 0, 0, 0);
+
+	Surface::CreateInfo surfaceCreateInfo;
+	surfaceCreateInfo.RenderDevice = &renderDevice;
+	surfaceCreateInfo.Name = "Surface";
+	GTSL::Window::Win32NativeHandles handles;
+	initializeRenderer.Window->GetNativeHandles(&handles);
+	GAL::WindowsWindowData windowsWindowData;
+	windowsWindowData.InstanceHandle = GetModuleHandle(NULL);
+	windowsWindowData.WindowHandle = handles.HWND;
+	surfaceCreateInfo.SystemData = &handles;
+	new(&surface) Surface(surfaceCreateInfo);
 	
-	Surface::CreateInfo surface_create_info;
-	surface_create_info.RenderDevice = &renderDevice;
-	surface_create_info.Name = "Surface";
-	GAL::WindowsWindowData window_data;
-	GTSL::Window::Win32NativeHandles native_handles;
-	initializeRenderer.Window->GetNativeHandles(&native_handles);
-	window_data.WindowHandle = native_handles.HWND;
-	window_data.InstanceHandle = GetModuleHandleA(nullptr);
-	surface_create_info.SystemData = &window_data;
-	::new(&surface) Surface(surface_create_info);
-
-	BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
-
-	GTSL::Array<GTSL::uint32, 4> present_modes{ swapchainPresentMode };
-	auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
-	if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
-
-	GTSL::Array<GTSL::Pair<uint32, uint32>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
-	res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
-	if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
-
-	RenderPass::CreateInfo render_pass_create_info;
-	render_pass_create_info.RenderDevice = &renderDevice;
-	render_pass_create_info.Descriptor.DepthStencilAttachmentAvailable = false;
+	RenderPass::CreateInfo renderPassCreateInfo;
+	renderPassCreateInfo.RenderDevice = &renderDevice;
+	renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = false;
 	GTSL::Array<GAL::AttachmentDescriptor, 8> attachment_descriptors;
 	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::UNDEFINED, GAL::ImageLayout::PRESENTATION });
-	render_pass_create_info.Descriptor.RenderPassColorAttachments = attachment_descriptors;
+	renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachment_descriptors;
 
 	GTSL::Array<GAL::AttachmentReference, 8> write_attachment_references;
 	write_attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
 
 	GTSL::Array<GAL::SubPassDescriptor, 8> sub_pass_descriptors;
 	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
-	render_pass_create_info.Descriptor.SubPasses = sub_pass_descriptors;
-
-	new(&renderPass) RenderPass(render_pass_create_info);
+	renderPassCreateInfo.Descriptor.SubPasses = sub_pass_descriptors;
+	new(&renderPass) RenderPass(renderPassCreateInfo);
 	
-	RenderContext::CreateInfo render_context_create_info;
-	render_context_create_info.Name = "Render System Render Context";
-	render_context_create_info.RenderDevice = &renderDevice;
-	render_context_create_info.DesiredFramesInFlight = 2;
-	render_context_create_info.PresentMode = swapchainPresentMode;
-	render_context_create_info.Format = swapchainFormat;
-	render_context_create_info.ColorSpace = swapchainColorSpace;
-	render_context_create_info.ImageUses = ImageUse::COLOR_ATTACHMENT;
-	render_context_create_info.Surface = &surface;
-	GTSL::Extent2D window_extent;
-	initializeRenderer.Window->GetFramebufferExtent(window_extent);
-	render_context_create_info.SurfaceArea = window_extent;
-	new(&renderContext) RenderContext(render_context_create_info);
-
-	initializeRenderer.Window->GetFramebufferExtent(renderArea);
-	
-	RenderContext::GetImagesInfo get_images_info;
-	get_images_info.RenderDevice = &renderDevice;
-	get_images_info.SwapchainImagesFormat = swapchainFormat;
-	get_images_info.ImageViewName = GTSL::StaticString<64>("Swapchain image view. Frame: ");
-	swapchainImages = renderContext.GetImages(get_images_info);
-
-	clearValues.EmplaceBack(0, 0, 0, 0);
-
-	for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
+	for (uint32 i = 0; i < 2; ++i)
 	{
 		Semaphore::CreateInfo semaphore_create_info;
 		semaphore_create_info.RenderDevice = &renderDevice;
@@ -168,15 +135,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, transferCommandBuffers.begin() + i);
 			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
 		}
-			
-		FrameBuffer::CreateInfo framebuffer_create_info;
-		framebuffer_create_info.RenderDevice = &renderDevice;
-		framebuffer_create_info.RenderPass = &renderPass;
-		framebuffer_create_info.Extent = window_extent;
-		framebuffer_create_info.ImageViews = GTSL::Ranger<const ImageView>(1, &swapchainImages[i]);
-		framebuffer_create_info.ClearValues = clearValues;
-
-		frameBuffers.EmplaceBack(framebuffer_create_info);
 
 		bufferCopyDatas.EmplaceBack(16, GetPersistentAllocator());
 	}
@@ -217,6 +175,66 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 	get_images_info.RenderDevice = &renderDevice;
 	get_images_info.SwapchainImagesFormat = swapchainFormat;
 	swapchainImages = renderContext.GetImages(get_images_info);
+}
+
+void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
+{
+	if ((extent.Width != 0 || extent.Height != 0) && extent != renderArea)
+	{
+		graphicsQueue.Wait();
+
+		BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
+
+		GTSL::Array<GTSL::uint32, 4> present_modes{ swapchainPresentMode };
+		auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
+		if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
+
+		GTSL::Array<GTSL::Pair<uint32, uint32>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
+		res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
+		if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
+		
+		RenderContext::RecreateInfo recreate;
+		recreate.RenderDevice = GetRenderDevice();
+		recreate.SurfaceArea = extent;
+		recreate.ColorSpace = swapchainColorSpace;
+		recreate.DesiredFramesInFlight = 2;
+		recreate.Format = swapchainFormat;
+		recreate.PresentMode = swapchainPresentMode;
+		recreate.Surface = &surface;
+		recreate.ImageUses = ImageUse::COLOR_ATTACHMENT;
+		renderContext.Recreate(recreate);
+
+		for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
+
+		RenderContext::GetImagesInfo get_images_info;
+		get_images_info.RenderDevice = &renderDevice;
+		get_images_info.SwapchainImagesFormat = swapchainFormat;
+		get_images_info.ImageViewName = GTSL::StaticString<64>("Swapchain image view. Frame: ");
+		swapchainImages = renderContext.GetImages(get_images_info);
+
+		for (auto& e : frameBuffers)
+		{
+			e.Destroy(GetRenderDevice());
+		}
+
+		frameBuffers.Resize(0);
+		
+		for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
+		{
+			FrameBuffer::CreateInfo framebuffer_create_info;
+			framebuffer_create_info.RenderDevice = &renderDevice;
+			framebuffer_create_info.RenderPass = &renderPass;
+			framebuffer_create_info.Extent = extent;
+			framebuffer_create_info.ImageViews = GTSL::Ranger<const ImageView>(1, &swapchainImages[i]);
+			framebuffer_create_info.ClearValues = clearValues;
+
+			frameBuffers.EmplaceBack(framebuffer_create_info);
+		}
+
+		renderArea = extent;
+		
+		BE_LOG_MESSAGE("Resized window")
+	}
 }
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
@@ -397,7 +415,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	acquireNextImageInfo.SignalSemaphore = &imageAvailableSemaphore[currentFrameIndex];
 	auto imageIndex = renderContext.AcquireNextImage(acquireNextImageInfo);
 	
-	BE_ASSERT(imageIndex == currentFrameIndex, "Data mismatch");
+	//BE_ASSERT(imageIndex == currentFrameIndex, "Data mismatch");
 	
 	Queue::SubmitInfo submitInfo;
 	submitInfo.RenderDevice = &renderDevice;

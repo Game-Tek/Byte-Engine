@@ -31,13 +31,10 @@ void GameApplication::Initialize()
 	GTSL::Window::WindowCreateInfo create_window_info;
 	create_window_info.Application = &systemApplication;
 	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
-	create_window_info.Extent = {1280, 720};
+	create_window_info.Extent = { 1280, 720 };
 	::new(&window) GTSL::Window(create_window_info);
 
-	auto window_resize = [](const GTSL::Extent2D& a)
-	{
-	};
-	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create(window_resize));
+	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::onWindowResize>(this));
 
 	auto window_close = []()
 	{
@@ -52,10 +49,8 @@ void GameApplication::Initialize()
 	};
 	window.SetOnWindowMoveDelegate(GTSL::Delegate<void(uint16, uint16)>::Create(window_move));
 	
-	window.ShowWindow();
-
 	SetupInputSources();
-
+	
 	CreateResourceManager<StaticMeshResourceManager>();
 	CreateResourceManager<TextureResourceManager>();
 	CreateResourceManager<MaterialResourceManager>();
@@ -64,7 +59,7 @@ void GameApplication::Initialize()
 }
 
 void GameApplication::PostInitialize()
-{
+{	
 	gameInstance->AddGoal("FrameStart");
 	gameInstance->AddGoal("GameplayStart");
 	gameInstance->AddGoal("GameplayEnd");
@@ -77,6 +72,9 @@ void GameApplication::PostInitialize()
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
 	renderer->InitializeRenderer(initialize_renderer_info);
+	GTSL::Extent2D size;
+	window.GetFramebufferExtent(size);
+	renderer->OnResize(TaskInfo{}, size);
 
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 	{
@@ -91,6 +89,8 @@ void GameApplication::PostInitialize()
 		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1); bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
 	}
+
+	window.ShowWindow();
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
@@ -415,4 +415,17 @@ void GameApplication::RegisterControllers()
 	gamepad.OnFrontButtonsChange = GTSL::Delegate<void(GTSL::GamepadQuery::GamepadButtonPosition, bool)>::Create(on_front_buttons_change);
 	gamepad.OnSticksChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, bool)>::Create(on_sticks_button_change);
 	gamepad.OnTriggersChange = GTSL::Delegate<void(GTSL::GamepadQuery::Side, float32)>::Create(on_trigger_change);
+}
+
+using namespace GTSL;
+
+void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
+{
+	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE } };
+
+	auto ext = extent;
+	
+	gameInstance->AddDynamicTask("WindowResize", Delegate<void(TaskInfo, Extent2D)>::Create<RenderSystem, &RenderSystem::OnResize>(renderSystem), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
 }

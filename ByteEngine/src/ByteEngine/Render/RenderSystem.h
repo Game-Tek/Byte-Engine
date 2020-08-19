@@ -1,6 +1,5 @@
 #pragma once
 
-#include <GTSL/Buffer.h>
 #include <GTSL/Pair.h>
 
 #include "ByteEngine/Game/System.h"
@@ -113,7 +112,6 @@ private:
 	RenderContext renderContext;
 
 	PipelineCache pipelineCache;
-	GTSL::Buffer pipelineCacheBuffer;
 	
 	GTSL::Extent2D renderArea;
 	

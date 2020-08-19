@@ -5,6 +5,7 @@
 
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
+#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
@@ -143,11 +144,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
-	PipelineCache::CreateInfo pipeline_cache_create_info;
-	pipeline_cache_create_info.RenderDevice = &renderDevice;
-	::new(&pipelineCache) PipelineCache(pipeline_cache_create_info);
-
-	bool pipelineCacheAvailable = false;
+	bool pipelineCacheAvailable;
 	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
 
 	if(pipelineCacheAvailable)
@@ -155,6 +152,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		uint32 cacheSize = 0;
 		initializeRenderer.PipelineCacheResourceManager->GetCacheSize(cacheSize);
 
+		GTSL::Buffer pipelineCacheBuffer;
 		pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
 
 		initializeRenderer.PipelineCacheResourceManager->GetCache(pipelineCacheBuffer);
@@ -164,6 +162,15 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		pipelineCacheCreateInfo.Name = "Pipeline Cache";
 		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
 		new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
+		
+		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
+	}
+	else
+	{
+		PipelineCache::CreateInfo pipelineCacheCreateInfo;
+		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
+		pipelineCacheCreateInfo.Name = "Pipeline Cache";
+		::new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
 	}
 	
 	BE_LOG_MESSAGE("Initialized successfully");
@@ -296,16 +303,16 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 
-	uint32 cache_size = 0;
-	pipelineCache.GetCacheSize(&renderDevice, cache_size);
-	
-	if(cache_size)
+	uint32 cacheSize = 0;
+	pipelineCache.GetCacheSize(&renderDevice, cacheSize);
+
+	if(cacheSize)
 	{
-		pipelineCacheBuffer.Allocate(cache_size, 32, GetPersistentAllocator());
-		pipelineCache.GetCache(&renderDevice, cache_size, pipelineCacheBuffer);
-	}
-	else
-	{
+		auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
+		GTSL::Buffer pipelineCacheBuffer;
+		pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
+		pipelineCache.GetCache(&renderDevice, cacheSize, pipelineCacheBuffer);
+		pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
 		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 	}
 }

@@ -412,7 +412,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		{
 			for (uint32 j = 0; j < onMaterialLoadInfo.Uniforms[i].GetLength(); ++j)
 			{
-				instance.ShaderParameters.ParameterNames.EmplaceBack(onMaterialLoadInfo.Uniforms[i][j]);
+				instance.ShaderParameters.ParameterNames.EmplaceBack(onMaterialLoadInfo.Uniforms[i][j].Name);
 				offset += ShaderDataTypesSize(onMaterialLoadInfo.Uniforms[i][j].Type);
 				instance.ShaderParameters.ParameterOffset.EmplaceBack(offset);
 			}

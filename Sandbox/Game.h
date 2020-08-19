@@ -23,6 +23,7 @@ class Game final : public GameApplication
 	void moveBackwards(InputManager::ActionInputEvent data);
 	void moveRight(InputManager::ActionInputEvent data);
 	void zoom(InputManager::LinearInputEvent data);
+	void view(InputManager::Vector2DInputEvent data);
 public:
 	Game() : GameApplication("Sandbox")
 	{

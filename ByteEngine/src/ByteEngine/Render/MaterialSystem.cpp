@@ -105,27 +105,6 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		pipelineLayout.BindingsSetLayouts = globalBindingsSetLayout;
 		globalPipelineLayout.Initialize(pipelineLayout);
 	}
-
-	if constexpr (_DEBUG)
-	{
-		GTSL::StaticString<1024> string("Set global state with: \n");
-
-		uint32 i = 0, j = 0;
-		for(auto& e : globalState)
-		{
-			string += "Set: "; string += i; string += '\n';
-			
-			for(auto& b : e)
-			{
-				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(b); string += '\n';
-				++j;
-			}
-			
-			++i;
-		}
-		
-		BE_LOG_WARNING(string);
-	}
 }
 
 void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 renderGroupName, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& bindings)
@@ -266,27 +245,6 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 			e.Update(bindingsSetUpdateInfo);
 		}
 	}
-	
-	if constexpr (_DEBUG)
-	{
-		GTSL::StaticString<1024> string("Set render group "); string += renderGroupName; string += " state with \n";
-
-		uint32 i = 0, j = 0;
-		for (auto& e : bindings)
-		{
-			string += "Set: "; string += i; string += '\n';
-
-			for (auto& b : e)
-			{
-				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(b); string += '\n';
-				++j;
-			}
-
-			++i;
-		}
-
-		BE_LOG_WARNING(string);
-	}
 }
 
 ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
@@ -330,7 +288,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 	for(auto& e : onMaterialLoadInfo.BindingSets[0])
 	{
-		auto bindingType = GAL::BindingTypeToVulkanBindingType(e);
+		auto bindingType = BindingTypeToVulkanBindingType(e.Type);
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ShaderStage::ALL, 1 });
 		descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
 	}
@@ -420,48 +378,44 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 	pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
 
-	GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
-	for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
 	{
-		Shader::CreateInfo create_info;
-		create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-		create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
-		shaders.EmplaceBack(create_info);
-		offset += onMaterialLoadInfo.ShaderSizes[i];
+		GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
+		for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
+		{
+			Shader::CreateInfo create_info;
+			create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+			create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
+			shaders.EmplaceBack(create_info);
+			offset += onMaterialLoadInfo.ShaderSizes[i];
+		}
+
+		GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
+		for (uint32 i = 0; i < shaders.GetLength(); ++i)
+		{
+			shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
+		}
+
+		pipelineCreateInfo.Stages = shader_infos;
+		pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
+		pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
+		instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 	}
-
-	GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
-	for (uint32 i = 0; i < shaders.GetLength(); ++i)
-	{
-		shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
-	}
-
-	pipelineCreateInfo.Stages = shader_infos;
-	pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
-	pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
-	instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
-
+	
 	loadInfo->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete<MaterialLoadInfo>(loadInfo, GetPersistentAllocator());
 
-	if constexpr (_DEBUG)
+	//SETUP MATERIAL UNIFORMS FROM LOADED DATA
 	{
-		GTSL::StaticString<1024> string("Added material "); string += onMaterialLoadInfo.ResourceName; string += " state with \n";
+		uint32 offset = 0;
 		
-		uint32 i = 0, j = 0;
-		for (auto& e : onMaterialLoadInfo.BindingSets)
+		for (uint32 i = 0; i < onMaterialLoadInfo.Uniforms.GetLength(); ++i)
 		{
-			string += "Set: "; string += i; string += '\n';
-
-			for (auto& b : e)
+			for (uint32 j = 0; j < onMaterialLoadInfo.Uniforms[i].GetLength(); ++j)
 			{
-				string += '	'; string += "Binding: "; string += j; string += " of type "; string += BindingTypeString(GAL::BindingTypeToVulkanBindingType(b)); string += '\n';
-				++j;
+				instance.ShaderParameters.ParameterNames.EmplaceBack(onMaterialLoadInfo.Uniforms[i][j]);
+				offset += ShaderDataTypesSize(onMaterialLoadInfo.Uniforms[i][j].Type);
+				instance.ShaderParameters.ParameterOffset.EmplaceBack(offset);
 			}
-
-			++i;
 		}
-
-		BE_LOG_WARNING(string);
 	}
 }

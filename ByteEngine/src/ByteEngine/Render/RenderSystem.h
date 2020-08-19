@@ -20,12 +20,13 @@ public:
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	uint8 GetCurrentFrame() const { return currentFrameIndex; }
+	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameCount() const { return 2; }
 
 	struct InitializeRendererInfo
 	{
 		GTSL::Window* Window{ 0 };
+		class PipelineCacheResourceManager* PipelineCacheResourceManager;
 	};
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	

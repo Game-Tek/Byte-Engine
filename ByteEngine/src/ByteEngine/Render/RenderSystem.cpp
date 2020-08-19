@@ -7,6 +7,7 @@
 #include "StaticMeshRenderGroup.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Game/CameraSystem.h"
+#include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 
 class CameraSystem;
 class RenderStaticMeshCollection;
@@ -145,14 +146,24 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	PipelineCache::CreateInfo pipeline_cache_create_info;
 	pipeline_cache_create_info.RenderDevice = &renderDevice;
 	::new(&pipelineCache) PipelineCache(pipeline_cache_create_info);
-	
-	uint32 pipeline_cache_size = 0;
-	pipelineCache.GetCacheSize(&renderDevice, pipeline_cache_size);
 
-	if(pipeline_cache_size)
+	bool pipelineCacheAvailable = false;
+	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
+
+	if(pipelineCacheAvailable)
 	{
-		pipelineCacheBuffer.Allocate(pipeline_cache_size, 32, GetPersistentAllocator());
-		pipelineCache.GetCache(&renderDevice, pipeline_cache_size, pipelineCacheBuffer);
+		uint32 cacheSize = 0;
+		initializeRenderer.PipelineCacheResourceManager->GetCacheSize(cacheSize);
+
+		pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
+
+		initializeRenderer.PipelineCacheResourceManager->GetCache(pipelineCacheBuffer);
+		
+		PipelineCache::CreateInfo pipelineCacheCreateInfo;
+		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
+		pipelineCacheCreateInfo.Name = "Pipeline Cache";
+		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
+		new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
 	}
 	
 	BE_LOG_MESSAGE("Initialized successfully");

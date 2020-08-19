@@ -95,10 +95,21 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.VertexElements = GTSL::Ranger<const VertexElementsType>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
 		materialInfo.ShaderTypes = GTSL::Ranger<const ShaderTypeType>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
-		
-		for(const auto& e : materialCreateInfo.BindingSets)
+
+		for(uint32 i = 0; i < materialCreateInfo.Bindings.ElementCount(); ++i)
 		{
-			materialInfo.BindingSets.EmplaceBack(GTSL::Ranger<const BindingTypeType>(e.ElementCount(), reinterpret_cast<const BindingTypeType*>(e.begin())));
+			for(uint32 j = 0; j < materialCreateInfo.Bindings[i].ElementCount(); ++j)
+			{
+				materialInfo.BindingSets[i].EmplaceBack(materialCreateInfo.Bindings[i][j]);
+			}
+		}
+
+		for(uint32 i = 0; i < materialCreateInfo.Uniforms.ElementCount(); ++i)
+		{
+			for(uint32 j = 0; j < materialCreateInfo.Uniforms[i].ElementCount(); ++j)
+			{
+				materialInfo.Uniforms[i].EmplaceBack(materialCreateInfo.Uniforms[i][j]);
+			}
 		}
 		
 		materialInfos.Emplace(hashed_name, materialInfo);
@@ -142,13 +153,46 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
 	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
-	for(auto& e : materialInfo.BindingSets)
+	
+	for (uint32 i = 0; i < materialInfo.BindingSets.GetLength(); ++i)
 	{
-		onMaterialLoadInfo.BindingSets.EmplaceBack(GTSL::Ranger<GAL::BindingType>(e.GetLength(), reinterpret_cast<GAL::BindingType*>(e.begin())));
+		for (uint32 j = 0; j < materialInfo.BindingSets[i].GetLength(); ++j)
+		{
+			onMaterialLoadInfo.BindingSets[i].EmplaceBack(materialInfo.BindingSets[i][j]);
+		}
 	}
+
+	for (uint32 i = 0; i < materialInfo.Uniforms.GetLength(); ++i)
+	{
+		for (uint32 j = 0; j < materialInfo.Uniforms[i].GetLength(); ++j)
+		{
+			onMaterialLoadInfo.Uniforms[i].EmplaceBack(materialInfo.Uniforms[i][j]);
+		}
+	}
+	
 	onMaterialLoadInfo.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
 	
 	loadInfo.GameInstance->AddDynamicTask(loadInfo.Name, loadInfo.OnMaterialLoad, loadInfo.ActsOn, loadInfo.StartOn, loadInfo.DoneFor, GTSL::MoveRef(onMaterialLoadInfo));
+}
+
+void Insert(const MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
+{
+	Insert(materialInfo.Type, buffer);
+}
+
+void Extract(MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
+{
+	Extract(materialInfo.Type, buffer);
+}
+
+void Insert(const MaterialResourceManager::MaterialInfo::Uniform& materialInfo, GTSL::Buffer& buffer)
+{
+	Insert(materialInfo.Name, buffer); Insert(materialInfo.Type, buffer);
+}
+
+void Extract(MaterialResourceManager::MaterialInfo::Uniform& materialInfo, GTSL::Buffer& buffer)
+{
+	Extract(reinterpret_cast<uint64&>(materialInfo.Name), buffer); Extract(materialInfo.Type, buffer);
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
@@ -158,6 +202,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
+	Insert(materialInfo.Uniforms, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
 }
 
@@ -168,5 +213,6 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
 	Extract(materialInfo.BindingSets, buffer);
+	Extract(materialInfo.Uniforms, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);
 }

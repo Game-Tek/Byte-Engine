@@ -47,10 +47,10 @@ void Game::Initialize()
 	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove") });
+	GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove"), "RightStick" });
 	inputManagerInstance->Register2DInputEvent("Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 
-	a.PopBack(); a.EmplaceBack("W_Key");
+	a.PopBack(); a.PopBack(); a.EmplaceBack("W_Key");
 	inputManagerInstance->RegisterActionInputEvent("Move Forward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
 	a.PopBack(); a.EmplaceBack("A_Key");
 	inputManagerInstance->RegisterActionInputEvent("Move Left", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
@@ -60,6 +60,8 @@ void Game::Initialize()
 	inputManagerInstance->RegisterActionInputEvent("Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
 	a.PopBack(); a.EmplaceBack("MouseWheel");
 	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
+	a.PopBack(); a.EmplaceBack("LeftStick");
+	inputManagerInstance->Register2DInputEvent("View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 	
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
@@ -72,13 +74,18 @@ void Game::Initialize()
 	material_create_info.ShaderName = "BasicMaterial";
 	material_create_info.RenderGroup = "StaticMeshRenderGroup";
 	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
-	GTSL::Array<GTSL::Array<GAL::BindingType, 8>, 8> binding_sets(1);
-	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
+	GTSL::Array<GTSL::Array<MaterialResourceManager::MaterialCreateInfo::MaterialUniform, 8>, 8> uniforms(1);
+	GTSL::Array<GTSL::Array<MaterialResourceManager::MaterialCreateInfo::Binding, 8>, 8> binding_sets(1);
+	uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
+	uniforms[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
 	material_create_info.VertexFormat = format;
 	material_create_info.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	GTSL::Array<GTSL::Ranger<const GAL::BindingType>, 10> b_array;
+	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::MaterialCreateInfo::Binding>, 10> b_array;
+	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::MaterialCreateInfo::MaterialUniform>, 10> u_array;
 	b_array.EmplaceBack(binding_sets[0]);
-	material_create_info.BindingSets = b_array;
+	u_array.EmplaceBack(uniforms[0]);
+	material_create_info.Bindings = b_array;
+	material_create_info.Uniforms = u_array;
 	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
 	//show loading screen//

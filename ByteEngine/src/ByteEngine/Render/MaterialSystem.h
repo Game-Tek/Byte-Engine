@@ -32,6 +32,12 @@ public:
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
+		struct ShaderParameters
+		{
+			GTSL::Array<Id, 12> ParameterNames;
+			GTSL::Array<uint32, 12> ParameterOffset;
+		} ShaderParameters;
+		
 		MaterialInstance() = default;
 	};
 
@@ -69,7 +75,7 @@ public:
 		//for (auto e : shaderParameters[material].ParameterNames) { if (e == parameterName) break; ++parameter; }
 
 		byte* FILL = 0;
-		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + shaderParameters[material].ParameterOffset[id]);
+		//GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + shaderParameters[material].ParameterOffset[id]);
 	}
 
 	void SetMaterialTexture(const ComponentReference material, Image* image)
@@ -82,15 +88,8 @@ public:
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 private:
-	struct ShaderParameters
-	{
-		GTSL::Array<Id32, 12> ParameterNames;
-
-		GTSL::Array<uint32, 12> ParameterOffset;
-	};
 	
 	Vector<Id> materialNames;
-	Vector<ShaderParameters> shaderParameters;
 
 	ComponentReference component = 0;
 

@@ -71,6 +71,7 @@ void GameApplication::PostInitialize()
 
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
+	initialize_renderer_info.PipelineCacheResourceManager = GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
 	renderer->InitializeRenderer(initialize_renderer_info);
 	GTSL::Extent2D size;
 	window.GetFramebufferExtent(size);

@@ -5,6 +5,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/StaticString.hpp>
 #include <GTSL/DynamicType.h>
+#include <GTSL/Array.hpp>
 
 #include "ByteEngine/Game/Tasks.h"
 

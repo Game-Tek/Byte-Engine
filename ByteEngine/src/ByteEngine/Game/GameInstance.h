@@ -7,6 +7,8 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Algorithm.h>
 #include <GTSL/Allocator.h>
+#include <GTSL/Array.hpp>
+
 
 #include "Tasks.h"
 

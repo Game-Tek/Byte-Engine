@@ -10,6 +10,8 @@
 #include <GTSL/Math/AxisAngle.h>
 
 
+
+#include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
@@ -62,7 +64,6 @@ void Game::Initialize()
 	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
 	a.PopBack(); a.EmplaceBack("LeftStick");
 	inputManagerInstance->Register2DInputEvent("View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-	
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -74,22 +75,22 @@ void Game::Initialize()
 	material_create_info.ShaderName = "BasicMaterial";
 	material_create_info.RenderGroup = "StaticMeshRenderGroup";
 	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
-	GTSL::Array<GTSL::Array<MaterialResourceManager::MaterialCreateInfo::MaterialUniform, 8>, 8> uniforms(1);
-	GTSL::Array<GTSL::Array<MaterialResourceManager::MaterialCreateInfo::Binding, 8>, 8> binding_sets(1);
+	GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
+	GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
 	uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-	uniforms[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
+	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
 	material_create_info.VertexFormat = format;
 	material_create_info.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::MaterialCreateInfo::Binding>, 10> b_array;
-	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::MaterialCreateInfo::MaterialUniform>, 10> u_array;
+	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
+	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
 	b_array.EmplaceBack(binding_sets[0]);
 	u_array.EmplaceBack(uniforms[0]);
 	material_create_info.Bindings = b_array;
 	material_create_info.Uniforms = u_array;
 	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
-	//show loading screen//
-	//load menu//
+	//show loading screen
+	//load menu
 	//show menu
 	//start game
 }
@@ -118,8 +119,9 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material_system->CreateMaterial(create_material_info);
 	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
+
 	
 	//window.ShowMouse(false);
 }
@@ -130,6 +132,16 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, GTSL::Vector3(moveDir * 10));
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetFieldOfView(camera, fov);
+
+	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+
+	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 10000.0f);
+	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 10000.0f);
+	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 10000.0f);
+	
+	GTSL::RGBA color(r, g, b, 1.0);
+	
+	material_system->SetMaterialParameter(0, GAL::ShaderDataType::FLOAT4, "Color", &color);
 }
 
 void Game::Shutdown()

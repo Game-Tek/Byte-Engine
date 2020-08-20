@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GTSL/Array.hpp>
+
 #include "ResourceManager.h"
 
 #include <GTSL/Delegate.hpp>

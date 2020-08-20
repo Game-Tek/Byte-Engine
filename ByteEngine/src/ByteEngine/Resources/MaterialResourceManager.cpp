@@ -73,7 +73,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 			shader.ReadFile(shader_source_buffer);
 
 			auto f = GTSL::Ranger<const UTF8>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-			const auto comp_res = Shader::CompileShader(f, materialCreateInfo.ShaderName, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
+			const auto comp_res = Shader::CompileShader(f, resources_path, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 			if(comp_res == false)
 			{
@@ -98,6 +98,8 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 
 		for(uint32 i = 0; i < materialCreateInfo.Bindings.ElementCount(); ++i)
 		{
+			materialInfo.BindingSets.EmplaceBack();
+			
 			for(uint32 j = 0; j < materialCreateInfo.Bindings[i].ElementCount(); ++j)
 			{
 				materialInfo.BindingSets[i].EmplaceBack(materialCreateInfo.Bindings[i][j]);
@@ -106,6 +108,8 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 
 		for(uint32 i = 0; i < materialCreateInfo.Uniforms.ElementCount(); ++i)
 		{
+			materialInfo.Uniforms.EmplaceBack();
+			
 			for(uint32 j = 0; j < materialCreateInfo.Uniforms[i].ElementCount(); ++j)
 			{
 				materialInfo.Uniforms[i].EmplaceBack(materialCreateInfo.Uniforms[i][j]);
@@ -156,6 +160,8 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	
 	for (uint32 i = 0; i < materialInfo.BindingSets.GetLength(); ++i)
 	{
+		onMaterialLoadInfo.BindingSets.EmplaceBack();
+		
 		for (uint32 j = 0; j < materialInfo.BindingSets[i].GetLength(); ++j)
 		{
 			onMaterialLoadInfo.BindingSets[i].EmplaceBack(materialInfo.BindingSets[i][j]);
@@ -164,6 +170,8 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 
 	for (uint32 i = 0; i < materialInfo.Uniforms.GetLength(); ++i)
 	{
+		onMaterialLoadInfo.Uniforms.EmplaceBack();
+		
 		for (uint32 j = 0; j < materialInfo.Uniforms[i].GetLength(); ++j)
 		{
 			onMaterialLoadInfo.Uniforms[i].EmplaceBack(materialInfo.Uniforms[i][j]);

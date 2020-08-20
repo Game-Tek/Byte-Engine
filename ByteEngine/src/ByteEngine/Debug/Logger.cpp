@@ -1,7 +1,7 @@
 #include "Logger.h"
 
 #include <cstdio>
-
+#include <GTSL/Memory.h>
 
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"

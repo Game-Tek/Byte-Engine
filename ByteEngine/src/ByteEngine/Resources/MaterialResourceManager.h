@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GTSL/Algorithm.h>
+#include <GTSL/Array.hpp>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
@@ -51,8 +52,8 @@ public:
 			friend void Extract(Uniform& materialInfo, GTSL::Buffer& buffer);
 		};
 		
-		GTSL::Array<GTSL::Array<Binding, 12>, 12> BindingSets;
-		GTSL::Array<GTSL::Array<Uniform, 12>, 12> Uniforms;
+		GTSL::Array<GTSL::Array<Binding, 6>, 6> BindingSets;
+		GTSL::Array<GTSL::Array<Uniform, 6>, 6> Uniforms;
 		GTSL::Array<uint8, 12> ShaderTypes;
 		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
@@ -63,6 +64,7 @@ public:
 		GAL::BindingType Type;
 
 		Binding() = default;
+		Binding(const GAL::BindingType type) : Type(type) {}
 		Binding(const MaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)) {}
 	};
 
@@ -72,6 +74,7 @@ public:
 		GAL::ShaderDataType Type;
 
 		Uniform() = default;
+		Uniform(const GTSL::Id64 name, const GAL::ShaderDataType type) : Name(name), Type(type) {}
 		Uniform(const MaterialInfo::Uniform& other) : Name(other.Name), Type(static_cast<GAL::ShaderDataType>(other.Type)) {}
 	};
 	

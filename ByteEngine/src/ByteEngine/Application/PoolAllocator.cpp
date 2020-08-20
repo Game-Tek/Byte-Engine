@@ -3,6 +3,8 @@
 #include <GTSL/Bitman.h>
 #include <GTSL/Math/Math.hpp>
 #include <new>
+#include <GTSL/Memory.h>
+
 
 #include "ByteEngine/Debug/Assert.h"
 

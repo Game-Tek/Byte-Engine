@@ -32,10 +32,14 @@ public:
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
+		Buffer Buffer;
+		void* Data;
+		RenderAllocation Allocation;
+		
 		struct ShaderParameters
 		{
-			GTSL::Array<Id, 12> ParameterNames;
-			GTSL::Array<uint32, 12> ParameterOffset;
+			GTSL::Array<Id, 6> ParameterNames;
+			GTSL::Array<uint32, 6> ParameterOffset;
 		} ShaderParameters;
 		
 		MaterialInstance() = default;
@@ -69,13 +73,17 @@ public:
 	};
 	ComponentReference CreateMaterial(const CreateMaterialInfo& info);
 
-	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, uint8 id, void* data)
+	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName, void* data)
 	{
-		//uint32 parameter = 0;
-		//for (auto e : shaderParameters[material].ParameterNames) { if (e == parameterName) break; ++parameter; }
+		auto& mat = *renderGroups.begin()->Instances.begin();
+		uint32 parameter = 0;
+		for (auto e : mat.ShaderParameters.ParameterNames) { if (e == parameterName) break; ++parameter; }
+		BE_ASSERT(parameter != mat.ShaderParameters.ParameterNames.GetLength(), "Ooops");
 
-		byte* FILL = 0;
-		//GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + shaderParameters[material].ParameterOffset[id]);
+		byte* FILL = static_cast<byte*>(mat.Data);
+		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
+		FILL = static_cast<byte*>(mat.Data) + 64;
+		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
 	}
 
 	void SetMaterialTexture(const ComponentReference material, Image* image)

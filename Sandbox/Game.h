@@ -18,6 +18,7 @@ class Game final : public GameApplication
 	float32 fov = 45.0f;
 	
 	uint32 camera;
+	System::ComponentReference material;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

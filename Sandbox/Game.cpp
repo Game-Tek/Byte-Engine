@@ -117,7 +117,7 @@ void Game::PostInitialize()
 	create_material_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	create_material_info.MaterialName = "BasicMaterial";
-	material_system->CreateMaterial(create_material_info);
+	material = material_system->CreateMaterial(create_material_info);
 	
 	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
@@ -141,7 +141,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	
 	GTSL::RGBA color(r, g, b, 1.0);
 	
-	material_system->SetMaterialParameter(0, GAL::ShaderDataType::FLOAT4, "Color", &color);
+	material_system->SetMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);
 }
 
 void Game::Shutdown()
@@ -152,7 +152,7 @@ void Game::Shutdown()
 void Game::move(InputManager::Vector2DInputEvent data)
 {
 	posDelta += (data.Value - data.LastValue) * 10;
-	
+
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y));
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetCameraRotation(camera, rot);

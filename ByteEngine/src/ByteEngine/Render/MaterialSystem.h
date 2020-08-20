@@ -35,6 +35,8 @@ public:
 		Buffer Buffer;
 		void* Data;
 		RenderAllocation Allocation;
+
+		uint32 DataSize = 0;
 		
 		struct ShaderParameters
 		{
@@ -73,18 +75,8 @@ public:
 	};
 	ComponentReference CreateMaterial(const CreateMaterialInfo& info);
 
-	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName, void* data)
-	{
-		auto& mat = *renderGroups.begin()->Instances.begin();
-		uint32 parameter = 0;
-		for (auto e : mat.ShaderParameters.ParameterNames) { if (e == parameterName) break; ++parameter; }
-		BE_ASSERT(parameter != mat.ShaderParameters.ParameterNames.GetLength(), "Ooops");
-
-		byte* FILL = static_cast<byte*>(mat.Data);
-		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
-		FILL = static_cast<byte*>(mat.Data) + 64;
-		GTSL::MemCopy(GAL::ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
-	}
+	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName,
+	                          void* data);
 
 	void SetMaterialTexture(const ComponentReference material, Image* image)
 	{
@@ -97,7 +89,7 @@ public:
 	PipelineLayout globalPipelineLayout;
 	
 private:
-	Vector<Id> materialNames;
+	Vector<GTSL::Pair<Id, Id>> materialNames;
 
 	ComponentReference component = 0;
 
@@ -105,13 +97,16 @@ private:
 	
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer) : RenderSystem(renderSystem), Buffer(MoveRef(buffer))
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 index) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index)
 		{
 
 		}
 
 		RenderSystem* RenderSystem = nullptr;
 		GTSL::Buffer Buffer;
+		uint32 Component;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
+
+	uint16 minUniformBufferOffset = 0;
 };

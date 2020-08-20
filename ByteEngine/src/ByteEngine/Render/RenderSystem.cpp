@@ -411,7 +411,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 			materialBind.BoundSets = 1;
 			materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
 			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
-			materialBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() }; //CHECK
+			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::RoundUpToPowerOf2Multiple(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset())) }; //CHECK
 			materialBind.PipelineType = PipelineType::GRAPHICS;
 			commandBuffer.BindBindingsSets(materialBind);
 			

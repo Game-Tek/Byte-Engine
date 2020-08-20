@@ -84,7 +84,7 @@ inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
 	}
 }
 
-inline BindingType ConvertBindingTypes(const GAL::BindingType bindingsType)
+inline BindingType ConvertBindingType(const GAL::BindingType bindingsType)
 {
 	if constexpr (API == GAL::RenderAPI::VULKAN)
 	{

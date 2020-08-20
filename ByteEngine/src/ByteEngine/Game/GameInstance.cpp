@@ -36,7 +36,7 @@ GameInstance::~GameInstance()
 		//Call shutdown in reverse order since systems initialized last during application start
 		//may depend on those created before them also for shutdown
 		
-		for(auto* end = systems.end() - 1; end > systems.begin(); --end) { (*end)->Shutdown(shutdownInfo); }
+		for(auto* end = systems.end() - 1; end > systems.begin() - 1; --end) { (*end)->Shutdown(shutdownInfo); }
 	}
 		
 	World::DestroyInfo destroy_info;

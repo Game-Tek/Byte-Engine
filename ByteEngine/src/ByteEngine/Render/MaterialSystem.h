@@ -95,8 +95,8 @@ public:
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
-private:
 	
+private:
 	Vector<Id> materialNames;
 
 	ComponentReference component = 0;

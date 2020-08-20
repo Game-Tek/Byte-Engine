@@ -26,7 +26,7 @@ struct RenderAllocation
 
 #if (_WIN64)
 #undef OPAQUE
-
+constexpr GAL::RenderAPI API = GAL::RenderAPI::VULKAN;
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
 using Image = GAL::VulkanImage;
@@ -68,30 +68,28 @@ using ShaderDataType = GAL::VulkanShaderDataType;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
 #endif
 
-inline void ConvertShaderDataType(const GTSL::Ranger<const GAL::ShaderDataType> shaderDataTypes, const GTSL::Ranger<ShaderDataType> datas)
+inline ShaderDataType ConvertShaderDataType(const GAL::ShaderDataType type)
 {
-	for(uint64 i = 0; i < shaderDataTypes.ElementCount(); ++i) { datas[i] = ShaderDataTypeToVulkanShaderDataType(shaderDataTypes[i]); }
+	if constexpr (API == GAL::RenderAPI::VULKAN)
+	{
+		return ShaderDataTypeToVulkanShaderDataType(type);
+	}
 }
 
 inline ShaderType ConvertShaderType(const GAL::ShaderType shader)
 {
-	switch(shader)
+	if constexpr (API == GAL::RenderAPI::VULKAN)
 	{
-	case GAL::ShaderType::VERTEX_SHADER: return GAL::VulkanShaderType::VERTEX;
-	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: return GAL::VulkanShaderType::TESSELLATION_CONTROL;
-	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: return GAL::VulkanShaderType::TESSELLATION_EVALUATION;
-	case GAL::ShaderType::GEOMETRY_SHADER: return GAL::VulkanShaderType::GEOMETRY;
-	case GAL::ShaderType::FRAGMENT_SHADER: return GAL::VulkanShaderType::FRAGMENT;
-	case GAL::ShaderType::COMPUTE_SHADER: return GAL::VulkanShaderType::COMPUTE;
-	default: GAL_DEBUG_BREAK;
+		return ShaderTypeToVulkanShaderType(shader);
 	}
-
-	return GAL::VulkanShaderType::VERTEX;
 }
 
-inline void ConvertBindingTypes(const GTSL::Ranger<const GAL::BindingType> bindingsTypes, const GTSL::Ranger<BindingType> bindings)
+inline BindingType ConvertBindingTypes(const GAL::BindingType bindingsType)
 {
-	for (uint64 i = 0; i < bindingsTypes.ElementCount(); ++i) { bindings[i] = BindingTypeToVulkanBindingType(bindingsTypes[i]); }
+	if constexpr (API == GAL::RenderAPI::VULKAN)
+	{
+		return BindingTypeToVulkanBindingType(bindingsType);
+	}
 }
 
 inline IndexType SelectIndexType(const uint64 indexSize)

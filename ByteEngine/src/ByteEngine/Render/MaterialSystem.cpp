@@ -367,11 +367,14 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		}
 	}
 	
-	GTSL::Array<ShaderDataType, 10> shaderDatas(onMaterialLoadInfo.VertexElements.GetLength());
-	ConvertShaderDataType(onMaterialLoadInfo.VertexElements, shaderDatas);
+	GTSL::Array<ShaderDataType, 10> vertexDescriptor(onMaterialLoadInfo.VertexElements.GetLength());
+	for(uint32 i = 0; i < onMaterialLoadInfo.VertexElements.GetLength(); ++i)
+	{
+		vertexDescriptor[i] = ConvertShaderDataType(onMaterialLoadInfo.VertexElements[i]);
+	}
 	RasterizationPipeline::CreateInfo pipelineCreateInfo;
 	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-	pipelineCreateInfo.VertexDescriptor = shaderDatas;
+	pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 	pipelineCreateInfo.IsInheritable = true;
 
 	GTSL::Array<BindingsSetLayout, 10> bindings_set_layouts;
@@ -422,6 +425,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		pipelineCreateInfo.Stages = shader_infos;
 		pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
 		pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
+		pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache();
 		instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 	}
 	

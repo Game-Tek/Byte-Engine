@@ -1,6 +1,5 @@
 #include "TextureSystem.h"
 
-
 #include "RenderSystem.h"
 #include "RenderTypes.h"
 
@@ -23,7 +22,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
 		
 		void* loadInfo;
-		GTSL::New<LoadInfo>(&loadInfo, GetPersistentAllocator(), component, Buffer(scratchBufferCreateInfo));
+		GTSL::New<LoadInfo>(&loadInfo, GetPersistentAllocator(), component, Buffer(scratchBufferCreateInfo), info.RenderSystem);
 
 		textureLoadInfo.UserData = DYNAMIC_TYPE(LoadInfo, loadInfo);
 	}
@@ -36,46 +35,43 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
 {
 	auto* loadInfo = DYNAMIC_CAST(LoadInfo, onTextureLoadInfo.UserData);
-	RenderSystem* renderSystem;
 
 	TextureComponent textureComponent;
-
-	{
-		Buffer::CreateInfo bufferCreateInfo;
-		bufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		bufferCreateInfo.Size = onTextureLoadInfo.DataBuffer.ElementCount();
-		bufferCreateInfo.BufferType = BufferType::TRANSFER_DESTINATION; // | TEXTURE;
-
-		textureComponent.TextureBuffer = Buffer(bufferCreateInfo);
-	}
-
-	{
-		DeviceMemory deviceMemory;
-		
-		RenderSystem::BufferLocalMemoryAllocationInfo allocationInfo;
-		allocationInfo.DeviceMemory = &deviceMemory;
-		allocationInfo.Allocation = &textureComponent.Allocation;
-		renderSystem->AllocateLocalBufferMemory(allocationInfo);
-	}
-
-	{
-		RenderSystem::BufferCopyData bufferCopyData;
-		
-		//renderSystem->AddBufferCopy();
-	}
 	
 	{
 		Texture::CreateInfo textureCreateInfo;
-		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		textureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.ImageUses = ImageUse::TRANSFER_DESTINATION | ImageUse::SAMPLE;
 		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
 		textureCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
 		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
-		textureCreateInfo.InitialLayout = TextureLayout::TRANSFER_DST;
+		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		textureCreateInfo.MipLevels = 1;
 
 		textureComponent.Texture = Texture(textureCreateInfo);
+	}
+
+	{
+		DeviceMemory deviceMemory;
+
+		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
+		allocationInfo.DeviceMemory = &deviceMemory;
+		allocationInfo.Allocation = &textureComponent.Allocation;
+		allocationInfo.Texture = textureComponent.Texture;
+		
+		loadInfo->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
+	}
+	
+	{
+		RenderSystem::TextureCopyData textureCopyData;
+		textureCopyData.DestinationTexture = textureComponent.Texture;
+		textureCopyData.SourceBuffer = loadInfo->Buffer;
+		textureCopyData.Allocation = textureComponent.Allocation;
+		textureCopyData.Layout = TextureLayout::TRANSFER_DST;
+		textureCopyData.Extent = onTextureLoadInfo.Extent;
+
+		loadInfo->RenderSystem->AddTextureCopy(textureCopyData);
 	}
 	
 	textures.Insert(loadInfo->Component, textureComponent);

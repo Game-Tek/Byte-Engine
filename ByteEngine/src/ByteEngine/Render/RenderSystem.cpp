@@ -472,17 +472,25 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
 	//Fence::WaitForFences(wait_for_fences_info);//
 
-	auto& copyData = bufferCopyDatas[GetCurrentFrame()];
+	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
+	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 	
 	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
-		for(uint32 i = 0; i < copyData.GetLength(); ++i)
+		for(uint32 i = 0; i < bufferCopyData.GetLength(); ++i)
 		{
-			copyData[i].SourceBuffer.Destroy(&renderDevice);
+			bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
+			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation);
+		}
+
+		for(uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+		{
+			textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
 			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation);
 		}
 		
-		copyData.ResizeDown(0);
+		bufferCopyData.ResizeDown(0);
+		textureCopyData.ResizeDown(0);
 
 		Fence::ResetFencesInfo reset_fences_info;
 		reset_fences_info.RenderDevice = &renderDevice;
@@ -496,10 +504,10 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 
 void RenderSystem::executeTransfers(TaskInfo taskInfo)
 {
-	CommandBuffer::BeginRecordingInfo begin_recording_info;
-	begin_recording_info.RenderDevice = &renderDevice;
-	begin_recording_info.PrimaryCommandBuffer = &transferCommandBuffers[currentFrameIndex];
-	transferCommandBuffers[currentFrameIndex].BeginRecording(begin_recording_info);
+	CommandBuffer::BeginRecordingInfo beginRecordingInfo;
+	beginRecordingInfo.RenderDevice = &renderDevice;
+	beginRecordingInfo.PrimaryCommandBuffer = &transferCommandBuffers[currentFrameIndex];
+	transferCommandBuffers[currentFrameIndex].BeginRecording(beginRecordingInfo);
 	
 	for(auto& e : bufferCopyDatas[currentFrameIndex])
 	{
@@ -513,16 +521,35 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
 	}
 
-	CommandBuffer::EndRecordingInfo end_recording_info;
-	end_recording_info.RenderDevice = &renderDevice;
-	transferCommandBuffers[currentFrameIndex].EndRecording(end_recording_info);
+	for(auto& e : textureCopyDatas[GetCurrentFrame()])
+	{
+		//transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		
+		CommandBuffer::CopyBufferToImageInfo copyBufferToImageInfo;
+		copyBufferToImageInfo.RenderDevice = GetRenderDevice();
+		copyBufferToImageInfo.DestinationImage = &e.DestinationTexture;
+		copyBufferToImageInfo.Offset = { 0, 0, 0 };
+		copyBufferToImageInfo.Extent = e.Extent;
+		copyBufferToImageInfo.SourceBuffer = &e.SourceBuffer;
+		copyBufferToImageInfo.TextureLayout = e.Layout;
+		GetTransferCommandBuffer()->CopyBufferToImage(copyBufferToImageInfo);
+
+		//transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		
+		CommandBuffer::TransitionImageInfo transitionImageInfo;
+		//GetTransferCommandBuffer()->TransitionImage();
+	}
 	
-	if (bufferCopyDatas[currentFrameIndex].GetLength())
+	CommandBuffer::EndRecordingInfo endRecordingInfo;
+	endRecordingInfo.RenderDevice = &renderDevice;
+	GetTransferCommandBuffer()->EndRecording(endRecordingInfo);
+	
+	if (bufferCopyDatas[currentFrameIndex].GetLength() || textureCopyDatas[GetCurrentFrame()].GetLength())
 	{
 		Queue::SubmitInfo submit_info;
 		submit_info.RenderDevice = &renderDevice;
 		submit_info.Fence = &transferFences[currentFrameIndex];
-		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &transferCommandBuffers[currentFrameIndex]);
+		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, GetTransferCommandBuffer());
 		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(GAL::PipelineStage::TRANSFER) };
 		transferQueue.Submit(submit_info);
 	}

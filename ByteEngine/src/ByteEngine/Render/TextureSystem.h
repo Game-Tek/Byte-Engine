@@ -22,12 +22,13 @@ public:
 private:
 	struct LoadInfo
 	{
-		LoadInfo(uint32 component, Buffer buffer) : Component(component), Buffer(buffer)
+		LoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem) : Component(component), Buffer(buffer), RenderSystem(renderSystem)
 		{
 		}
 
 		uint32 Component;
 		Buffer Buffer;
+		RenderSystem* RenderSystem;
 	};
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo);
 
@@ -36,7 +37,6 @@ private:
 	struct TextureComponent
 	{
 		Texture Texture;
-		Buffer TextureBuffer;
 		RenderAllocation Allocation;
 	};
 	Vector<TextureComponent> textures;

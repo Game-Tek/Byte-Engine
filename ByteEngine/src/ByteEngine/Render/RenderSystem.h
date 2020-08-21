@@ -22,6 +22,24 @@ public:
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameCount() const { return 2; }
 
+	struct AllocateLocalTextureMemoryInfo
+	{
+		Texture Texture; DeviceMemory* DeviceMemory; RenderAllocation* Allocation;
+	};
+	void AllocateLocalTextureMemory(const AllocateLocalTextureMemoryInfo& allocationInfo)
+	{
+		RenderDevice::MemoryRequirements memoryRequirements;
+		renderDevice.GetImageMemoryRequirements(&allocationInfo.Texture, memoryRequirements);
+		
+		localMemoryAllocator.AllocateTexture(renderDevice, allocationInfo.DeviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
+
+		Texture::BindMemoryInfo bindMemoryInfo;
+		bindMemoryInfo.RenderDevice = GetRenderDevice();
+		bindMemoryInfo.Memory = allocationInfo.DeviceMemory;
+		bindMemoryInfo.Offset = allocationInfo.Allocation->Offset;
+		allocationInfo.Texture.BindToMemory(bindMemoryInfo);
+	}
+
 	struct InitializeRendererInfo
 	{
 		GTSL::Window* Window{ 0 };
@@ -94,6 +112,20 @@ public:
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
 
+	struct TextureCopyData
+	{
+		Buffer SourceBuffer;
+		Texture DestinationTexture;
+		
+		uint32 SourceOffset = 0;
+		RenderAllocation Allocation;
+
+		GTSL::Extent3D Extent;
+		
+		TextureLayout Layout;
+	};
+	void AddTextureCopy(const TextureCopyData& textureCopyData) { textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData); }
+	
 	PipelineCache* GetPipelineCache() { return &pipelineCache; }
 
 	RenderPass* GetRenderPass() { return &renderPass; }
@@ -115,6 +147,7 @@ private:
 	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> renderGroups;
 
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
+	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
 
 	RenderPass renderPass;
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainImages;

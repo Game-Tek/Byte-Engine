@@ -348,29 +348,51 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 
 void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
 {
-	uint32 i = 0, id = 0; AllocID allocId;
+	AllocID allocId;
 
 	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
 	
-	for(auto& e : bufferMemoryBlocks)
+	for(auto& block : bufferMemoryBlocks)
 	{
-		if(e.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset))
+		//TODO: GET BLOCK INFO
+		if(block.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset))
 		{
-			allocId.Index = i;
-			allocId.BlockInfo = id;
 			renderAllocation->AllocationId = allocId;
 			return;
 		}
 		
-		++i;
+		++allocId.Index;
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().Allocate(deviceMemory, aligned_size, &renderAllocation->Offset, id);
+	bufferMemoryBlocks.back().Allocate(deviceMemory, aligned_size, &renderAllocation->Offset, allocId.BlockInfo);
 
-	allocId.Index = i;
-	allocId.BlockInfo = id;
+	renderAllocation->AllocationId = allocId;
+}
+
+void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference)
+{
+	AllocID allocId;
+
+	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+
+	for (auto& block : textureMemoryBlocks)
+	{
+		//TODO: GET BLOCK INFO
+		if (block.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset))
+		{
+			renderAllocation->AllocationId = allocId;
+			return;
+		}
+
+		++allocId.Index;
+	}
+
+	textureMemoryBlocks.EmplaceBack();
+	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, persistentAllocatorReference);
+	textureMemoryBlocks.back().Allocate(deviceMemory, aligned_size, &renderAllocation->Offset, allocId.BlockInfo);
+
 	renderAllocation->AllocationId = allocId;
 }
 

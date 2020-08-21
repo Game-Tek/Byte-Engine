@@ -25,6 +25,8 @@ struct AllocID
 
 	AllocID() = default;
 
+	AllocID(const AllocationId& allocation) : Index(static_cast<uint32>(allocation)), BlockInfo(allocation >> 32) {}
+
 	operator AllocationId() const { return static_cast<uint64>(BlockInfo) << 32 | Index; }
 };
 
@@ -56,10 +58,12 @@ public:
 	
 	void DeallocateBuffer(const RenderDevice& renderDevice, const uint32 size, const uint32 offset, AllocationId allocId)
 	{
-		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
+		auto alloc = AllocID(allocId);
+		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, alloc.BlockInfo);
 	}
-	
+
+	void AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
+
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 	

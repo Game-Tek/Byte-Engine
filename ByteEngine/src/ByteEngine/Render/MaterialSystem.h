@@ -78,7 +78,7 @@ public:
 	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName,
 	                          void* data);
 
-	void SetMaterialTexture(const ComponentReference material, Image* image)
+	void SetMaterialTexture(const ComponentReference material, Texture* image)
 	{
 		
 	}

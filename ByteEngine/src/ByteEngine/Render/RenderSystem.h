@@ -45,10 +45,9 @@ public:
 	{
 		DeviceMemory* DeviceMemory = nullptr;
 		
-		uint32 Size = 0;
-		uint32* Offset = nullptr;
-		AllocationId* AllocationId = nullptr;
+		RenderAllocation* Allocation;
 	};
+	
 	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
 	{
 		RenderDevice::MemoryRequirements memoryRequirements;
@@ -71,9 +70,7 @@ public:
 	{
 		localMemoryAllocator.AllocateBuffer(renderDevice,
 			memoryAllocationInfo.DeviceMemory,
-			memoryAllocationInfo.Size,
-			memoryAllocationInfo.Offset,
-			memoryAllocationInfo.AllocationId,
+			memoryAllocationInfo.Allocation,
 			GetPersistentAllocator());
 	}
 
@@ -120,7 +117,7 @@ private:
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 
 	RenderPass renderPass;
-	GTSL::Array<ImageView, MAX_CONCURRENT_FRAMES> swapchainImages;
+	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainImages;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> graphicsFences;

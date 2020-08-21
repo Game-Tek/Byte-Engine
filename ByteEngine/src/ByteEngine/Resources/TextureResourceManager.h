@@ -23,7 +23,9 @@ public:
 	
 	struct OnTextureLoadInfo : OnResourceLoad
 	{
-		GAL::ImageFormat TextureFormat;
+		GAL::TextureFormat TextureFormat;
+		GTSL::Extent3D Extent;
+		GAL::Dimension Dimensions;
 		float32 LODPercentage{ 0.0f };
 	};
 	uint32 GetTextureSize(const GTSL::Id64 name) { return textureAssets.At(name).ImageSize; }

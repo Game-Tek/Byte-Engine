@@ -41,7 +41,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	
 	swapchainPresentMode = static_cast<uint32>(PresentMode::FIFO);
 	swapchainColorSpace = static_cast<uint32>(ColorSpace::NONLINEAR_SRGB);
-	swapchainFormat = static_cast<uint32>(ImageFormat::BGRA_I8);
+	swapchainFormat = static_cast<uint32>(TextureFormat::BGRA_I8);
 
 	clearValues.EmplaceBack(0, 0, 0, 0);
 
@@ -59,15 +59,15 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	RenderPass::CreateInfo renderPassCreateInfo;
 	renderPassCreateInfo.RenderDevice = &renderDevice;
 	renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = false;
-	GTSL::Array<GAL::AttachmentDescriptor, 8> attachment_descriptors;
-	attachment_descriptors.PushBack(GAL::AttachmentDescriptor{ (uint32)ImageFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, GAL::ImageLayout::UNDEFINED, GAL::ImageLayout::PRESENTATION });
+	GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachment_descriptors;
+	attachment_descriptors.PushBack(RenderPass::AttachmentDescriptor{ (uint32)TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
 	renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachment_descriptors;
 
-	GTSL::Array<GAL::AttachmentReference, 8> write_attachment_references;
-	write_attachment_references.PushBack(GAL::AttachmentReference{ 0, GAL::ImageLayout::COLOR_ATTACHMENT });
+	GTSL::Array<RenderPass::AttachmentReference, 8> write_attachment_references;
+	write_attachment_references.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
 
-	GTSL::Array<GAL::SubPassDescriptor, 8> sub_pass_descriptors;
-	sub_pass_descriptors.PushBack(GAL::SubPassDescriptor{ GTSL::Ranger<GAL::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
+	GTSL::Array<RenderPass::SubPassDescriptor, 8> sub_pass_descriptors;
+	sub_pass_descriptors.PushBack(RenderPass::SubPassDescriptor{ GTSL::Ranger<RenderPass::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
 	renderPassCreateInfo.Descriptor.SubPasses = sub_pass_descriptors;
 	new(&renderPass) RenderPass(renderPassCreateInfo);
 	
@@ -243,7 +243,7 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 			framebuffer_create_info.RenderDevice = &renderDevice;
 			framebuffer_create_info.RenderPass = &renderPass;
 			framebuffer_create_info.Extent = extent;
-			framebuffer_create_info.ImageViews = GTSL::Ranger<const ImageView>(1, &swapchainImages[i]);
+			framebuffer_create_info.ImageViews = GTSL::Ranger<const TextureView>(1, &swapchainImages[i]);
 			framebuffer_create_info.ClearValues = clearValues;
 
 			frameBuffers.EmplaceBack(framebuffer_create_info);
@@ -394,7 +394,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 
 		auto positions = renderGroup->GetPositions();
 
-		uint32 offset = GTSL::Math::RoundUpToPowerOf2Multiple(sizeof(GTSL::Matrix4), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
+		uint32 offset = GTSL::Math::PowerOf2RoundUp(static_cast<uint32>(sizeof(GTSL::Matrix4)), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
 		BE_ASSERT(GTSL::AlignPointer(GetRenderDevice()->GetMinUniformBufferOffset(), renderGroupData.Data) == renderGroupData.Data, "Oh!");
 		const auto data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
 
@@ -411,7 +411,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 			materialBind.BoundSets = 1;
 			materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
 			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
-			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::RoundUpToPowerOf2Multiple(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset())) }; //CHECK
+			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset())) }; //CHECK
 			materialBind.PipelineType = PipelineType::GRAPHICS;
 			commandBuffer.BindBindingsSets(materialBind);
 			

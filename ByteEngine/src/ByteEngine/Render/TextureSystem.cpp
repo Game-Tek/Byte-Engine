@@ -36,7 +36,47 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
 {
 	auto* loadInfo = DYNAMIC_CAST(LoadInfo, onTextureLoadInfo.UserData);
-	auto* renderSystem;
+	RenderSystem* renderSystem;
 
+	TextureComponent textureComponent;
+
+	{
+		Buffer::CreateInfo bufferCreateInfo;
+		bufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		bufferCreateInfo.Size = onTextureLoadInfo.DataBuffer.ElementCount();
+		bufferCreateInfo.BufferType = BufferType::TRANSFER_DESTINATION; // | TEXTURE;
+
+		textureComponent.TextureBuffer = Buffer(bufferCreateInfo);
+	}
+
+	{
+		DeviceMemory deviceMemory;
+		
+		RenderSystem::BufferLocalMemoryAllocationInfo allocationInfo;
+		allocationInfo.DeviceMemory = &deviceMemory;
+		allocationInfo.Allocation = &textureComponent.Allocation;
+		renderSystem->AllocateLocalBufferMemory(allocationInfo);
+	}
+
+	{
+		RenderSystem::BufferCopyData bufferCopyData;
+		
+		//renderSystem->AddBufferCopy();
+	}
 	
+	{
+		Texture::CreateInfo textureCreateInfo;
+		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
+		textureCreateInfo.ImageUses = ImageUse::TRANSFER_DESTINATION | ImageUse::SAMPLE;
+		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
+		textureCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
+		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
+		textureCreateInfo.InitialLayout = TextureLayout::TRANSFER_DST;
+		textureCreateInfo.MipLevels = 1;
+
+		textureComponent.Texture = Texture(textureCreateInfo);
+	}
+	
+	textures.Insert(loadInfo->Component, textureComponent);
 }

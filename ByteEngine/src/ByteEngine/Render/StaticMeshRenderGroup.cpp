@@ -110,45 +110,45 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
-	MeshLoadInfo* load_info = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
+	MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
-	uint32 offset = 0; DeviceMemory device_memory; AllocationId alloc_id;
+	RenderAllocation allocation; DeviceMemory device_memory;
 
 	Buffer::CreateInfo create_info;
-	create_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
+	create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 	create_info.Size = onStaticMeshLoad.DataBuffer.Bytes();
 	create_info.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
 	Buffer device_buffer(create_info);
 
 	RenderDevice::MemoryRequirements memory_requirements;
-	load_info->RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&device_buffer, memory_requirements);
+	loadInfo->RenderSystem->GetRenderDevice()->GetBufferMemoryRequirements(&device_buffer, memory_requirements);
 
-	RenderSystem::BufferLocalMemoryAllocationInfo memory_allocation_info;
-	memory_allocation_info.Size = memory_requirements.Size;
-	memory_allocation_info.Offset = &offset;
-	memory_allocation_info.DeviceMemory = &device_memory;
-	memory_allocation_info.AllocationId = &alloc_id;
-	load_info->RenderSystem->AllocateLocalBufferMemory(memory_allocation_info);
+	{
+		RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
+		memoryAllocationInfo.DeviceMemory = &device_memory;
+		memoryAllocationInfo.Allocation = &allocation;
+		loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
+	}
 	
 	Buffer::BindMemoryInfo bind_memory_info;
-	bind_memory_info.RenderDevice = load_info->RenderSystem->GetRenderDevice();
+	bind_memory_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 	bind_memory_info.Memory = &device_memory;
-	bind_memory_info.Offset = offset;
+	bind_memory_info.Offset = allocation.Offset;
 	device_buffer.BindToMemory(bind_memory_info);
 	
 	RenderSystem::BufferCopyData buffer_copy_data;
 	buffer_copy_data.SourceOffset = 0;
 	buffer_copy_data.DestinationOffset = 0;
-	buffer_copy_data.SourceBuffer = load_info->ScratchBuffer;
+	buffer_copy_data.SourceBuffer = loadInfo->ScratchBuffer;
 	buffer_copy_data.DestinationBuffer = device_buffer;
 	buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
-	buffer_copy_data.Allocation = load_info->Allocation;
-	load_info->RenderSystem->AddBufferCopy(buffer_copy_data);
+	buffer_copy_data.Allocation = loadInfo->Allocation;
+	loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
 	
-	meshBuffers.Insert(load_info->InstanceId, device_buffer);
-	renderAllocations.Insert(load_info->InstanceId, load_info->Allocation);
-	indicesCount.Insert(load_info->InstanceId, onStaticMeshLoad.IndexCount);
-	indexTypes.Insert(load_info->InstanceId, SelectIndexType(onStaticMeshLoad.IndexSize));
+	meshBuffers.Insert(loadInfo->InstanceId, device_buffer);
+	renderAllocations.Insert(loadInfo->InstanceId, loadInfo->Allocation);
+	indicesCount.Insert(loadInfo->InstanceId, onStaticMeshLoad.IndexCount);
+	indexTypes.Insert(loadInfo->InstanceId, SelectIndexType(onStaticMeshLoad.IndexSize));
 
-	GTSL::Delete<MeshLoadInfo>(load_info, GetPersistentAllocator());
+	GTSL::Delete<MeshLoadInfo>(loadInfo, GetPersistentAllocator());
 }

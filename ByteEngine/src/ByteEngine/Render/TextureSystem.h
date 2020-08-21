@@ -32,4 +32,12 @@ private:
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo);
 
 	ComponentReference component = 0;
+
+	struct TextureComponent
+	{
+		Texture Texture;
+		Buffer TextureBuffer;
+		RenderAllocation Allocation;
+	};
+	Vector<TextureComponent> textures;
 };

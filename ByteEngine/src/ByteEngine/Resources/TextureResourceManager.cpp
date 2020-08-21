@@ -55,10 +55,10 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 			switch (channel_count)
 			{
-			case 1: texture_info.Format = static_cast<uint8>(GAL::ImageFormat::R_I8); break;
-			case 2: texture_info.Format = static_cast<uint8>(GAL::ImageFormat::RG_I8); break;
-			case 3: texture_info.Format = static_cast<uint8>(GAL::ImageFormat::RGB_I8); break;
-			case 4: texture_info.Format = static_cast<uint8>(GAL::ImageFormat::RGBA_I8); break;
+			case 1: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::R_I8); break;
+			case 2: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::RG_I8); break;
+			case 3: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::RGB_I8); break;
+			case 4: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::RGBA_I8); break;
 			default: BE_ASSERT(false, "Non valid texture format count!");
 			}
 

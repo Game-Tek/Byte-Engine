@@ -289,7 +289,7 @@ void MaterialSystem::SetMaterialParameter(const ComponentReference material, GAL
 	//TODO: DEFER WRITING TO NOT OVERWRITE RUNNING FRAME
 	byte* FILL = static_cast<byte*>(mat.Data);
 	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
-	FILL = static_cast<byte*>(mat.Data) + GTSL::Math::RoundUpToPowerOf2Multiple(mat.DataSize, minUniformBufferOffset);
+	FILL = static_cast<byte*>(mat.Data) + GTSL::Math::PowerOf2RoundUp(mat.DataSize, static_cast<uint32>(minUniformBufferOffset));
 	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL + mat.ShaderParameters.ParameterOffset[parameter]);
 }
 

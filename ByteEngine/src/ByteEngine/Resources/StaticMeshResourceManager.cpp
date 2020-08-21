@@ -125,7 +125,7 @@ void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, uint16* index
 {
 	auto& mesh = meshInfos.At(name);
 	*indexSize = mesh.IndexSize;
-	*indicesOffset = GTSL::Math::RoundUpToPowerOf2Multiple(mesh.VerticesSize, *indicesAlignment);
+	*indicesOffset = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, static_cast<uint32>(*indicesAlignment));
 	*meshSize = *indicesOffset + mesh.IndicesSize;
 }
 

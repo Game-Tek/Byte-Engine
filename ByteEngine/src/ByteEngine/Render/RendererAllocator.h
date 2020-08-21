@@ -52,13 +52,12 @@ public:
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, uint32* offset,
-	                    AllocationId* allocId, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void DeallocateBuffer(const RenderDevice& renderDevice, const uint32 size, const uint32 offset, AllocationId allocId)
 	{
 		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(size, offset, *reinterpret_cast<uint32*>(id + 4));
+		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
 	}
 	
 private:
@@ -100,7 +99,7 @@ public:
 	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
 	{
 		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::RoundUpToPowerOf2Multiple(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
+		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);

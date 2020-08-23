@@ -21,6 +21,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	{		
 		RenderDevice::CreateInfo create_info;
 		create_info.ApplicationName = GTSL::StaticString<128>("Test");
+		
 		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
 		queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
 		queue_create_infos[0].QueuePriority = 1.0f;

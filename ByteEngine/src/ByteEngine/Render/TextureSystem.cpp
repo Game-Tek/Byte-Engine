@@ -42,7 +42,7 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.ImageUses = ImageUse::TRANSFER_DESTINATION | ImageUse::SAMPLE;
+		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
 		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
 		textureCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
 		textureCreateInfo.Extent = onTextureLoadInfo.Extent;

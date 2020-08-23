@@ -37,7 +37,7 @@ void Game::moveRight(InputManager::ActionInputEvent data)
 
 void Game::zoom(InputManager::LinearInputEvent data)
 {
-	fov += -(data.Value / 100);
+	fov += (data.Value / 100);
 }
 
 void Game::Initialize()
@@ -120,7 +120,7 @@ void Game::PostInitialize()
 	material = material_system->CreateMaterial(create_material_info);
 	
 	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
-	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
+	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);//
 
 	
 	//window.ShowMouse(false);
@@ -135,12 +135,14 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
-	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 10000.0f);
-	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 10000.0f);
-	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 10000.0f);
+	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 1000000.0f);
+	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
+	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
+	//auto r = 1.0f;
+	//auto g = 1.0f;
+	//auto b = 1.0f;
 	
 	GTSL::RGBA color(r, g, b, 1.0);
-	
 	material_system->SetMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);
 }
 
@@ -151,7 +153,7 @@ void Game::Shutdown()
 
 void Game::move(InputManager::Vector2DInputEvent data)
 {
-	posDelta += (data.Value - data.LastValue) * 10;
+	posDelta += (data.Value - data.LastValue) * 1;
 
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y));

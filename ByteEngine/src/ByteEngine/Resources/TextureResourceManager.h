@@ -32,7 +32,7 @@ public:
 	
 	struct TextureLoadInfo : ResourceLoadInfo
 	{
-		GTSL::Delegate<void(OnTextureLoadInfo)> OnTextureLoadInfo;
+		GTSL::Delegate<void(TaskInfo, OnTextureLoadInfo)> OnTextureLoadInfo;
 		GTSL::Extent3D TextureExtent;
 		float32 LODPercentage{ 0.0f };
 	};

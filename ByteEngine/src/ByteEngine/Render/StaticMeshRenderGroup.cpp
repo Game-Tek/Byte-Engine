@@ -25,7 +25,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 	RenderSystem* render_system = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
 	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
-	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e.Size, e.Offset, e.AllocationId); }
+	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e); }
 }
 
 void StaticMeshRenderGroup::Render(GameInstance* gameInstance, const RenderSystem* renderSystem)

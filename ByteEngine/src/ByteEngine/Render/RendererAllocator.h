@@ -56,10 +56,10 @@ public:
 
 	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
 	
-	void DeallocateBuffer(const RenderDevice& renderDevice, const uint32 size, const uint32 offset, AllocationId allocId)
+	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
-		auto alloc = AllocID(allocId);
-		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, alloc.BlockInfo);
+		const auto alloc = AllocID(allocation.AllocationId);
+		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
 	}
 
 	void AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
@@ -100,10 +100,10 @@ public:
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference);
-	void DeallocateBuffer(const RenderDevice& renderDevice, uint32 size, uint32 offset, AllocationId allocId)
+	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
-		uint8* id = reinterpret_cast<uint8*>(&allocId);
-		bufferMemoryBlocks[*id].Deallocate(GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment), offset, *reinterpret_cast<uint32*>(id + 4));
+		const auto alloc = AllocID(allocation.AllocationId);
+		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);

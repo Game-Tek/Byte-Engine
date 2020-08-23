@@ -32,30 +32,28 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 
 void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference)
 {
-	uint32 i = 0, id = 0; AllocID allocationId;
+	AllocID allocationId;
 
-	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
 
 	for (auto& e : bufferMemoryBlocks)
 	{
-		if (e.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset, data, id))
+		if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, data, allocationId.BlockInfo))
 		{
-			allocationId.Index = i;
-			allocationId.BlockInfo = id;
+			renderAllocation->Size = alignedSize;
 			renderAllocation->AllocationId = allocationId;
 			
 			return;
 		}
 
-		++i;
+		++allocationId.Index;
 	}
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, aligned_size, &renderAllocation->Offset, data, id);
+	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, data, allocationId.BlockInfo);
 
-	allocationId.Index = i;
-	allocationId.BlockInfo = id;
+	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocationId;
 }
 
@@ -315,7 +313,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.RenderDevice = &renderDevice;
 	create_info.Extent = { 1280, 720, 1 };
 	create_info.Dimensions = Dimension::SQUARE;
-	create_info.ImageUses = ImageUse::TRANSFER_DESTINATION;
+	create_info.Uses = TextureUses::TRANSFER_DESTINATION;
 	create_info.InitialLayout = TextureLayout::UNDEFINED;
 	create_info.SourceFormat = TextureFormat::RGBA_I8;
 	create_info.Tiling = TextureTiling::OPTIMAL;
@@ -350,13 +348,14 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 {
 	AllocID allocId;
 
-	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
 	
 	for(auto& block : bufferMemoryBlocks)
 	{
 		//TODO: GET BLOCK INFO
-		if(block.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset))
+		if(block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
 		{
+			renderAllocation->Size = alignedSize;
 			renderAllocation->AllocationId = allocId;
 			return;
 		}
@@ -366,8 +365,9 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().Allocate(deviceMemory, aligned_size, &renderAllocation->Offset, allocId.BlockInfo);
+	bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, allocId.BlockInfo);
 
+	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocId;
 }
 
@@ -375,13 +375,14 @@ void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, Dev
 {
 	AllocID allocId;
 
-	const auto aligned_size = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
 
 	for (auto& block : textureMemoryBlocks)
 	{
 		//TODO: GET BLOCK INFO
-		if (block.TryAllocate(deviceMemory, aligned_size, &renderAllocation->Offset))
+		if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
 		{
+			renderAllocation->Size = alignedSize;
 			renderAllocation->AllocationId = allocId;
 			return;
 		}
@@ -391,8 +392,9 @@ void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, Dev
 
 	textureMemoryBlocks.EmplaceBack();
 	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, persistentAllocatorReference);
-	textureMemoryBlocks.back().Allocate(deviceMemory, aligned_size, &renderAllocation->Offset, allocId.BlockInfo);
+	textureMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, allocId.BlockInfo);
 
+	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocId;
 }
 

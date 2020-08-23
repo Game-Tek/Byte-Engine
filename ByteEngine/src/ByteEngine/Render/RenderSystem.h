@@ -81,7 +81,7 @@ public:
 	
 	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
 	{
-		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation.Size, allocation.Offset, allocation.AllocationId);
+		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation);
 	}
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
@@ -92,9 +92,9 @@ public:
 			GetPersistentAllocator());
 	}
 
-	void DeallocateLocalBufferMemory(const uint32 size, const uint32 offset, const AllocationId allocId)
+	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)
 	{
-		localMemoryAllocator.DeallocateBuffer(renderDevice, size, offset, allocId);
+		localMemoryAllocator.DeallocateBuffer(renderDevice, renderAllocation);
 	}
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }

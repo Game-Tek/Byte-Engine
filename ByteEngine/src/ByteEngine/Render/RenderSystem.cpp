@@ -138,7 +138,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
 		}
 
-		bufferCopyDatas.EmplaceBack(16, GetPersistentAllocator());
+		bufferCopyDatas.EmplaceBack(128, GetPersistentAllocator());
+		textureCopyDatas.EmplaceBack(128, GetPersistentAllocator());
 	}
 	
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
@@ -219,7 +220,7 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 		recreate.Format = swapchainFormat;
 		recreate.PresentMode = swapchainPresentMode;
 		recreate.Surface = &surface;
-		recreate.ImageUses = ImageUse::COLOR_ATTACHMENT;
+		recreate.ImageUses = TextureUses::COLOR_ATTACHMENT;
 		renderContext.Recreate(recreate);
 
 		for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
@@ -411,7 +412,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 			materialBind.BoundSets = 1;
 			materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
 			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
-			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset())) }; //CHECK
+			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset()) * GetCurrentFrame()) }; //CHECK
 			materialBind.PipelineType = PipelineType::GRAPHICS;
 			commandBuffer.BindBindingsSets(materialBind);
 			
@@ -521,23 +522,52 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
 	}
 
-	for(auto& e : textureCopyDatas[GetCurrentFrame()])
 	{
-		//transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 		
-		CommandBuffer::CopyBufferToImageInfo copyBufferToImageInfo;
-		copyBufferToImageInfo.RenderDevice = GetRenderDevice();
-		copyBufferToImageInfo.DestinationImage = &e.DestinationTexture;
-		copyBufferToImageInfo.Offset = { 0, 0, 0 };
-		copyBufferToImageInfo.Extent = e.Extent;
-		copyBufferToImageInfo.SourceBuffer = &e.SourceBuffer;
-		copyBufferToImageInfo.TextureLayout = e.Layout;
-		GetTransferCommandBuffer()->CopyBufferToImage(copyBufferToImageInfo);
+		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), GetTransientAllocator());
+		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), GetTransientAllocator());
 
-		//transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 		
-		CommandBuffer::TransitionImageInfo transitionImageInfo;
-		//GetTransferCommandBuffer()->TransitionImage();
+		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+		{
+			sourceTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
+			sourceTextureBarriers[i].SourceAccessFlags = 0;
+			sourceTextureBarriers[i].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
+			sourceTextureBarriers[i].CurrentLayout = TextureLayout::UNDEFINED;
+			sourceTextureBarriers[i].TargetLayout = TextureLayout::TRANSFER_DST;
+
+			destinationTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
+			destinationTextureBarriers[i].SourceAccessFlags = AccessFlags::TRANSFER_WRITE;
+			destinationTextureBarriers[i].DestinationAccessFlags = AccessFlags::SHADER_READ;
+			destinationTextureBarriers[i].CurrentLayout = TextureLayout::TRANSFER_DST;
+			destinationTextureBarriers[i].TargetLayout = TextureLayout::SHADER_READ_ONLY;
+		}
+
+
+		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
+		pipelineBarrierInfo.RenderDevice = GetRenderDevice();
+		pipelineBarrierInfo.TextureBarriers = sourceTextureBarriers;
+		pipelineBarrierInfo.InitialStage = PipelineStage::TOP_OF_PIPE;
+		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
+		GetTransferCommandBuffer()->AddPipelineBarrier(pipelineBarrierInfo);
+
+		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+		{
+			CommandBuffer::CopyBufferToImageInfo copyBufferToImageInfo;
+			copyBufferToImageInfo.RenderDevice = GetRenderDevice();
+			copyBufferToImageInfo.DestinationImage = &textureCopyData[i].DestinationTexture;
+			copyBufferToImageInfo.Offset = { 0, 0, 0 };
+			copyBufferToImageInfo.Extent = textureCopyData[i].Extent;
+			copyBufferToImageInfo.SourceBuffer = &textureCopyData[i].SourceBuffer;
+			copyBufferToImageInfo.TextureLayout = textureCopyData[i].Layout;
+			GetTransferCommandBuffer()->CopyBufferToImage(copyBufferToImageInfo);
+		}
+			
+		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;
+		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
+		pipelineBarrierInfo.FinalStage = PipelineStage::FRAGMENT_SHADER;
+		GetTransferCommandBuffer()->AddPipelineBarrier(pipelineBarrierInfo);
 	}
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;
@@ -578,39 +608,21 @@ void* RenderSystem::reallocateApiMemory(void* data, void* oldAllocation, uint64 
 {
 	void* allocation; uint64 allocated_size;
 	
-	if(oldAllocation)
-	{
-		const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
-		
-		GetPersistentAllocator().Allocate(size, old_alloc.Second, &allocation, &allocated_size);
-		apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
-		
-		GTSL::MemCopy(old_alloc.First, oldAllocation, allocation);
-		
-		GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, oldAllocation);
-		apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
-		return allocation;
-	}
-
-	if (size)
-	{
-		GetPersistentAllocator().Allocate(size, alignment, &allocation, &allocated_size);
-		apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
-		return allocation;
-	}
-	
 	const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
+	
+	GetPersistentAllocator().Allocate(size, old_alloc.Second, &allocation, &allocated_size);
+	apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	
+	GTSL::MemCopy(old_alloc.First, oldAllocation, allocation);
+	
 	GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, oldAllocation);
 	apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
-	return nullptr;
+	return allocation;
 }
 
 void RenderSystem::deallocateApiMemory(void* data, void* allocation)
 {
-	if (data)
-	{
-		const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(allocation));
-		GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, allocation);
-		apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
-	}
+	const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(allocation));
+	GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, allocation);
+	apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
 }

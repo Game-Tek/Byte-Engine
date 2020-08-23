@@ -58,7 +58,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Global state");
+			GTSL::StaticString<128> name("Bindings set layout. Material system global state");
 			bindingsSetLayoutCreateInfo.Name = name.begin();
 		}
 		
@@ -125,7 +125,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Render group "); name += renderGroupName;
+			GTSL::StaticString<64> name("Bindings set layout. Render group: "); name += renderGroupName;
 			setLayout.Name = name.begin();
 		}
 		
@@ -188,7 +188,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Render group: "); name += renderGroupName;
+			GTSL::StaticString<128> name("Pipeline layout. Render group: "); name += renderGroupName;
 			pipelineLayout.Name = name.begin();
 		}
 		
@@ -210,6 +210,13 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 			{
 				Buffer::CreateInfo bufferInfo;
 				bufferInfo.RenderDevice = renderSystem->GetRenderDevice();
+
+				if constexpr (_DEBUG)
+				{
+					GTSL::StaticString<64> name("Uniform Buffer. Render group: "); name += renderGroupName;
+					bufferInfo.Name = name.begin();
+				}
+				
 				bufferInfo.Size = 1024;
 				bufferInfo.BufferType = BufferType::UNIFORM;
 				renderGroupData.Buffer = Buffer(bufferInfo);
@@ -320,7 +327,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 	if constexpr (_DEBUG)
 	{
-		GTSL::StaticString<128> name("Material "); name += onMaterialLoadInfo.ResourceName;
+		GTSL::StaticString<128> name("Bindings set layout. Material: "); name += onMaterialLoadInfo.ResourceName;
 		bindingsSetLayoutCreateInfo.Name = name.begin();
 	}
 	
@@ -345,6 +352,12 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	}
 	RasterizationPipeline::CreateInfo pipelineCreateInfo;
 	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName;
+		pipelineCreateInfo.Name = name.begin();
+	}
 	pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 	pipelineCreateInfo.IsInheritable = true;
 
@@ -430,6 +443,13 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			if (onMaterialLoadInfo.BindingSets[i][j].Type == GAL::BindingType::UNIFORM_BUFFER_DYNAMIC)
 			{
 				Buffer::CreateInfo bufferInfo;
+
+				if constexpr (_DEBUG)
+				{
+					GTSL::StaticString<64> name("Uniform Buffer. Material: "); name += onMaterialLoadInfo.ResourceName;
+					bufferInfo.Name = name.begin();
+				}
+				
 				bufferInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 				bufferInfo.Size = 1024;
 				bufferInfo.BufferType = BufferType::UNIFORM;

@@ -186,11 +186,13 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 void Insert(const MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
 {
 	Insert(materialInfo.Type, buffer);
+	Insert(materialInfo.Stage, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
 {
 	Extract(materialInfo.Type, buffer);
+	Extract(materialInfo.Stage, buffer);
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo::Uniform& materialInfo, GTSL::Buffer& buffer)

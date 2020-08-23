@@ -71,6 +71,14 @@ using ShaderDataType = GAL::VulkanShaderDataType;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
 #endif
 
+inline ShaderStage ConvertShaderStage(const GAL::ShaderStage::value_type shaderStage)
+{
+	if constexpr (API == GAL::RenderAPI::VULKAN)
+	{
+		return GAL::ShaderStageToVulkanShaderStage(shaderStage);
+	}
+}
+
 inline ShaderDataType ConvertShaderDataType(const GAL::ShaderDataType type)
 {
 	if constexpr (API == GAL::RenderAPI::VULKAN)

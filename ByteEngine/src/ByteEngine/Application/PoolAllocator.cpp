@@ -8,7 +8,7 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
-PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(18), systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(19), systemAllocatorReference(allocatorReference)
 {
 	uint64 allocator_allocated_size{ 0 }; //debug
 	

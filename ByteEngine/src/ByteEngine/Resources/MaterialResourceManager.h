@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GAL/RenderCore.h>
 #include <GTSL/Algorithm.h>
 #include <GTSL/Array.hpp>
 #include <GTSL/Delegate.hpp>
@@ -32,9 +33,10 @@ public:
 		struct Binding
 		{
 			uint8 Type = 0;
+			GAL::ShaderStage::value_type Stage;
 
 			Binding() = default;
-			Binding(const MaterialResourceManager::Binding& binding) : Type(static_cast<GTSL::UnderlyingType<GAL::BindingType>>(binding.Type)) {}
+			Binding(const MaterialResourceManager::Binding& binding) : Type(static_cast<GTSL::UnderlyingType<GAL::BindingType>>(binding.Type)), Stage(binding.Stage) {}
 
 			friend void Insert(const Binding& materialInfo, GTSL::Buffer& buffer);
 			friend void Extract(Binding& materialInfo, GTSL::Buffer& buffer);
@@ -62,10 +64,11 @@ public:
 	struct Binding
 	{
 		GAL::BindingType Type;
+		GAL::ShaderStage::value_type Stage;
 
 		Binding() = default;
-		Binding(const GAL::BindingType type) : Type(type) {}
-		Binding(const MaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)) {}
+		Binding(const GAL::BindingType type, const GAL::ShaderStage::value_type pipelineStage) : Type(type), Stage(pipelineStage) {}
+		Binding(const MaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)), Stage(other.Stage) {}
 	};
 
 	struct Uniform

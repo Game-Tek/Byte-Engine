@@ -451,7 +451,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	submitInfo.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &imageAvailableSemaphore[currentFrameIndex]);
 	submitInfo.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[currentFrameIndex]);
 	submitInfo.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
-	GTSL::Array<uint32, 8> wps{ (uint32)GAL::PipelineStage::COLOR_ATTACHMENT_OUTPUT };
+	GTSL::Array<uint32, 8> wps{ (uint32)PipelineStage::COLOR_ATTACHMENT_OUTPUT };
 	submitInfo.WaitPipelineStages = wps;
 	graphicsQueue.Submit(submitInfo);
 	
@@ -581,7 +581,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		submit_info.RenderDevice = &renderDevice;
 		submit_info.Fence = &transferFences[currentFrameIndex];
 		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, GetTransferCommandBuffer());
-		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(GAL::PipelineStage::TRANSFER) };
+		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(PipelineStage::TRANSFER) };
 		transferQueue.Submit(submit_info);
 	}
 }

@@ -77,10 +77,8 @@ void Game::Initialize()
 	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
 	GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
 	GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
-	//GTSL::Array<GAL::ShaderStage::value_type, 8> binding_sets_stages(1);//
 	uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC);
-	//binding_sets_stages[0].
+	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
 	material_create_info.VertexFormat = format;
 	material_create_info.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
 	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;

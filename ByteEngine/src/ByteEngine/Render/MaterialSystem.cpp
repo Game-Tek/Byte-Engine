@@ -374,7 +374,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	for(auto& e : onMaterialLoadInfo.BindingSets[0])
 	{
 		auto bindingType = BindingTypeToVulkanBindingType(e.Type);
-		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ShaderStage::ALL, 1 });
+		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ConvertShaderStage(e.Stage), 1 });
 		descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
 	}
 	bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;

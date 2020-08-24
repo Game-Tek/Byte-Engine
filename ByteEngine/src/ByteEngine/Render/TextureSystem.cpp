@@ -43,16 +43,26 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName;
 			scratchBufferCreateInfo.Name = name.begin();
 		}
-		
-		scratchBufferCreateInfo.Size = info.TextureResourceManager->GetTextureSize(info.TextureName);
+
+		{
+			uint32 textureSize; GAL::TextureFormat textureFormat; GTSL::Extent3D textureExtent;
+			info.TextureResourceManager->GetTextureSizeFormatExtent(info.TextureName, &textureSize, &textureFormat, &textureExtent);
+			
+			RenderDevice::FindSupportedImageFormat findFormatInfo;
+			findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;
+			findFormatInfo.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
+			GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+			findFormatInfo.Candidates = candidates;
+			const auto supportedFormat = info.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
+
+			scratchBufferCreateInfo.Size = textureExtent.Width * textureExtent.Depth * textureExtent.Height * FormatSize(supportedFormat);
+		}
+
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
-
-		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
-
-		//TODO: SET SIZE TO SUPPORTED FORMAT FINAL BUFFER SIZE
 		
-		void* scratchBufferData;
-		RenderAllocation allocation;
+		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
+		
+		void* scratchBufferData; RenderAllocation allocation;
 
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;

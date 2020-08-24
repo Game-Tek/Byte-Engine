@@ -128,7 +128,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 
 	

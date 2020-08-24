@@ -134,3 +134,35 @@ inline TextureFormat ConvertFormat(const GAL::TextureFormat format)
 		return GAL::TextureFormatToVulkanTextureFormat(format);
 	}
 }
+
+inline uint8 FormatSize(const TextureFormat format)
+{
+	switch (format)
+	{
+	case GAL::VulkanTextureFormat::UNDEFINED: return 0;
+	case GAL::VulkanTextureFormat::R_I8: break;
+	case GAL::VulkanTextureFormat::R_I16: break;
+	case GAL::VulkanTextureFormat::R_I32: break;
+	case GAL::VulkanTextureFormat::R_I64: break;
+	case GAL::VulkanTextureFormat::RG_I8: break;
+	case GAL::VulkanTextureFormat::RG_I16: break;
+	case GAL::VulkanTextureFormat::RG_I32: break;
+	case GAL::VulkanTextureFormat::RG_I64: break;
+	case GAL::VulkanTextureFormat::RGB_I8: return 3;
+	case GAL::VulkanTextureFormat::RGB_I16: break;
+	case GAL::VulkanTextureFormat::RGB_I32: break;
+	case GAL::VulkanTextureFormat::RGB_I64: break;
+	case GAL::VulkanTextureFormat::RGBA_I8: return 4;
+	case GAL::VulkanTextureFormat::RGBA_I16: break;
+	case GAL::VulkanTextureFormat::RGBA_I32: break;
+	case GAL::VulkanTextureFormat::RGBA_I64: break;
+	case GAL::VulkanTextureFormat::BGRA_I8: return 4;
+	case GAL::VulkanTextureFormat::BGR_I8: break;
+	case GAL::VulkanTextureFormat::DEPTH16: break;
+	case GAL::VulkanTextureFormat::DEPTH32: break;
+	case GAL::VulkanTextureFormat::DEPTH16_STENCIL8: break;
+	case GAL::VulkanTextureFormat::DEPTH24_STENCIL8: break;
+	case GAL::VulkanTextureFormat::DEPTH32_STENCIL8: break;
+	default: return 0;
+	}
+}

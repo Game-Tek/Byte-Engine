@@ -30,7 +30,14 @@ public:
 		GAL::Dimension Dimensions;
 		float32 LODPercentage{ 0.0f };
 	};
-	uint32 GetTextureSize(const GTSL::Id64 name) { return textureInfos.At(name).ImageSize; }
+	
+	void GetTextureSizeFormatExtent(const GTSL::Id64 name, uint32* size, GAL::TextureFormat* format, GTSL::Extent3D* extent)
+	{
+		auto& e = textureInfos.At(name);
+		*size = e.ImageSize;
+		*format = static_cast<GAL::TextureFormat>(e.Format);
+		*extent = e.Extent;
+	}
 	
 	struct TextureLoadInfo : ResourceLoadInfo
 	{

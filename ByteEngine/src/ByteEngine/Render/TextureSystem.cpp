@@ -49,6 +49,8 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 
 		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
 
+		//TODO: SET SIZE TO SUPPORTED FORMAT FINAL BUFFER SIZE
+		
 		void* scratchBufferData;
 		RenderAllocation allocation;
 
@@ -77,9 +79,21 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 {
 	auto* loadInfo = DYNAMIC_CAST(LoadInfo, onTextureLoadInfo.UserData);
 
+	RenderDevice::FindSupportedImageFormat findFormat;
+	findFormat.TextureTiling = TextureTiling::OPTIMAL;
+	findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
+	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(onTextureLoadInfo.TextureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+	findFormat.Candidates = candidates;
+	auto supportedFormat = loadInfo->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
+	
 	TextureComponent textureComponent;
 	
 	{
+		if (candidates[0] != supportedFormat)
+		{
+			Texture::ConvertImageToFormat(onTextureLoadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, onTextureLoadInfo.Extent, GTSL::AlignedPointer<byte, 16>(onTextureLoadInfo.DataBuffer.begin()), 1);
+		}
+		
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 
@@ -92,7 +106,7 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
 		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
-		textureCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
+		textureCreateInfo.SourceFormat = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
 		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		textureCreateInfo.MipLevels = 1;
@@ -100,6 +114,14 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		textureComponent.Texture = Texture(textureCreateInfo);
 	}
 
+	{
+		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
+		allocationInfo.Allocation = &textureComponent.Allocation;
+		allocationInfo.Texture = textureComponent.Texture;
+
+		loadInfo->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
+	}
+	
 	{
 		TextureView::CreateInfo textureViewCreateInfo;
 		textureViewCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
@@ -112,20 +134,12 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		
 		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
 		textureViewCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
-		textureViewCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
+		textureViewCreateInfo.SourceFormat = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
 		textureViewCreateInfo.Extent = onTextureLoadInfo.Extent;
 		textureViewCreateInfo.Image = textureComponent.Texture;
 		textureViewCreateInfo.MipLevels = 1;
 
 		textureComponent.TextureView = TextureView(textureViewCreateInfo);
-	}
-
-	{
-		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
-		allocationInfo.Allocation = &textureComponent.Allocation;
-		allocationInfo.Texture = textureComponent.Texture;
-		
-		loadInfo->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
 	}
 	
 	{

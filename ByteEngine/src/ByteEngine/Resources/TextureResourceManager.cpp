@@ -9,6 +9,7 @@
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
+#include "ByteEngine/Game/GameInstance.h"
 
 #undef Extract
 
@@ -68,6 +69,8 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			const uint32 size = static_cast<uint32>(x) * y * channel_count;
 
 			texture_info.ImageSize = size;
+			texture_info.Dimensions = GAL::Dimension::SQUARE;
+			texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 
 			packageFile.WriteToFile(GTSL::Ranger<byte>(size, data));
 
@@ -104,7 +107,17 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	indexFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 	packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
 
-	//handle resource is loaded
+	OnTextureLoadInfo onTextureLoadInfo;
+	onTextureLoadInfo.ResourceName = textureLoadInfo.Name;
+	onTextureLoadInfo.UserData = textureLoadInfo.UserData;
+	onTextureLoadInfo.DataBuffer = textureLoadInfo.DataBuffer;
+	
+	onTextureLoadInfo.Extent = texture_info.Extent;
+	onTextureLoadInfo.Dimensions = texture_info.Dimensions;
+	onTextureLoadInfo.LODPercentage = 1.0f;
+	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
+	
+	textureLoadInfo.GameInstance->AddDynamicTask("Texture load", textureLoadInfo.OnTextureLoadInfo, textureLoadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
 }
 
 void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
@@ -112,6 +125,9 @@ void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer
 	Insert(textureInfo.ByteOffset, buffer);
 	Insert(textureInfo.ImageSize, buffer);
 	Insert(textureInfo.Format, buffer);
+	Insert(textureInfo.Dimensions, buffer);
+	//Insert(static_cast<GTSL::UnderlyingType<GAL::Dimension>>(textureInfo.Dimensions), buffer);
+	Insert(textureInfo.Extent, buffer);
 }
 
 void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
@@ -119,4 +135,7 @@ void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buf
 	Extract(textureInfo.ByteOffset, buffer);
 	Extract(textureInfo.ImageSize, buffer);
 	Extract(textureInfo.Format, buffer);
+	Extract(textureInfo.Dimensions, buffer);
+	//Extract(reinterpret_cast<GTSL::UnderlyingType<GAL::Dimension>&>(textureInfo.Dimensions), buffer);
+	Extract(textureInfo.Extent, buffer);
 }

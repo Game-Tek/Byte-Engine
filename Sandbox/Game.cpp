@@ -88,7 +88,7 @@ void Game::Initialize()
 	material_create_info.Uniforms = u_array;
 	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
-	//show loading screen
+	//show loading screen////
 	//load menu
 	//show menu
 	//start game
@@ -128,7 +128,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 
 	

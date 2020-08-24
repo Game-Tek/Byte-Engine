@@ -18,6 +18,8 @@ public:
 	{
 		uint32 ByteOffset = 0;
 		uint32 ImageSize = 0;
+		GAL::Dimension Dimensions;
+		GTSL::Extent3D Extent;
 		uint8 Format = 0;
 	};
 	

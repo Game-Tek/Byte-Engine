@@ -9,11 +9,10 @@
 
 #include <GTSL/Math/AxisAngle.h>
 
-
-
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Render/TextureSystem.h"
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
@@ -37,7 +36,7 @@ void Game::moveRight(InputManager::ActionInputEvent data)
 
 void Game::zoom(InputManager::LinearInputEvent data)
 {
-	fov += -(data.Value / 100);
+	fov += -(data.Value / 75);
 }
 
 void Game::Initialize()
@@ -103,15 +102,25 @@ void Game::PostInitialize()
 	
 	auto* static_mesh_renderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
-
+	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	
 	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
 	add_static_mesh_info.MeshName = "Box";
 	add_static_mesh_info.GameInstance = gameInstance;
-	add_static_mesh_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	add_static_mesh_info.RenderSystem = renderSystem;
 	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 
+	{
+		TextureSystem::CreateTextureInfo createTextureInfo;
+		createTextureInfo.RenderSystem = renderSystem;
+		createTextureInfo.GameInstance = gameInstance;
+		createTextureInfo.TextureName = "hydrant_Albedo";
+		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	}
+	
 	MaterialSystem::CreateMaterialInfo create_material_info;
 	create_material_info.GameInstance = gameInstance;
 	create_material_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -119,8 +128,8 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
-	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);//
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
+	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 
 	
 	//window.ShowMouse(false);

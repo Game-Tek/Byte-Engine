@@ -28,7 +28,7 @@ public:
 		GAL::Dimension Dimensions;
 		float32 LODPercentage{ 0.0f };
 	};
-	uint32 GetTextureSize(const GTSL::Id64 name) { return textureAssets.At(name).ImageSize; }
+	uint32 GetTextureSize(const GTSL::Id64 name) { return textureInfos.At(name).ImageSize; }
 	
 	struct TextureLoadInfo : ResourceLoadInfo
 	{
@@ -41,7 +41,6 @@ public:
 private:
 	GTSL::File packageFile, indexFile;
 	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureInfos;
-	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureAssets;
 	
 };
 

@@ -53,7 +53,7 @@ private:
 	uint32 index = 0;
 	
 	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
-	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffset;
+	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffsets;
 	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;

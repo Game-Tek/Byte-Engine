@@ -268,21 +268,12 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 				bufferInfo.Size = 1024;
 				bufferInfo.BufferType = BufferType::UNIFORM;
 				renderGroupData.Buffer = Buffer(bufferInfo);
-
-				DeviceMemory memory;
 				
 				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
 				memoryAllocationInfo.Buffer = renderGroupData.Buffer;
 				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
 				memoryAllocationInfo.Data = &renderGroupData.Data;
-				memoryAllocationInfo.DeviceMemory = &memory;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
-
-				Buffer::BindMemoryInfo bindMemory;
-				bindMemory.RenderDevice = renderSystem->GetRenderDevice();
-				bindMemory.Memory = &memory;
-				bindMemory.Offset = renderGroupData.Allocation.Offset;
-				renderGroupData.Buffer.BindToMemory(bindMemory);
 				
 				BindingsSetLayout::BufferBindingDescriptor binding_descriptor;
 				binding_descriptor.UniformCount = 1;
@@ -528,20 +519,11 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				bufferInfo.BufferType = BufferType::UNIFORM;
 				instance.Buffer = Buffer(bufferInfo);
 
-				DeviceMemory memory;
-
 				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
 				memoryAllocationInfo.Buffer = instance.Buffer;
 				memoryAllocationInfo.Allocation = &instance.Allocation;
 				memoryAllocationInfo.Data = &instance.Data;
-				memoryAllocationInfo.DeviceMemory = &memory;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
-
-				Buffer::BindMemoryInfo bindMemory;
-				bindMemory.RenderDevice = renderSystem->GetRenderDevice();
-				bindMemory.Memory = &memory;
-				bindMemory.Offset = instance.Allocation.Offset;
-				instance.Buffer.BindToMemory(bindMemory);
 
 				BindingsSetLayout::BufferBindingDescriptor bufferBindingDescriptor;
 				bufferBindingDescriptor.UniformCount = 1;

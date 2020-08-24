@@ -8,6 +8,7 @@
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 #include "ByteEngine/Render/RenderSystem.h"
+#include "ByteEngine/Render/TextureSystem.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
@@ -91,6 +92,8 @@ void GameApplication::PostInitialize()
 		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
 	}
 
+	gameInstance->AddSystem<TextureSystem>("TextureSystem");
+	
 	window.ShowWindow();
 }
 

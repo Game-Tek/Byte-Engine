@@ -32,6 +32,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	if (indexFile.ReadFile(file_buffer))
 	{
 		GTSL::Extract(textureInfos, file_buffer);
+		return;
 	}
 	
 	auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
@@ -39,7 +40,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 		auto file_path = resources_path;
 		file_path += queryResult.FileNameWithExtension;
 		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
-		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
+		const auto hashed_name = GTSL::Id64(name);
 
 		if (!textureInfos.Find(hashed_name))
 		{
@@ -65,6 +66,8 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			texture_info.ByteOffset = static_cast<uint32>(packageFile.GetFileSize());
 
 			const uint32 size = static_cast<uint32>(x) * y * channel_count;
+
+			texture_info.ImageSize = size;
 
 			packageFile.WriteToFile(GTSL::Ranger<byte>(size, data));
 
@@ -98,11 +101,8 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 {
 	auto& texture_info = textureInfos.At(textureLoadInfo.Name);
 
-	if (!textureAssets.Find(textureLoadInfo.Name))
-	{
-		indexFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-		packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
-	}
+	indexFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+	packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
 
 	//handle resource is loaded
 }

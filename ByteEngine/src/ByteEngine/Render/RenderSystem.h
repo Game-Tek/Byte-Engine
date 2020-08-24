@@ -24,18 +24,20 @@ public:
 
 	struct AllocateLocalTextureMemoryInfo
 	{
-		Texture Texture; DeviceMemory* DeviceMemory; RenderAllocation* Allocation;
+		Texture Texture; RenderAllocation* Allocation;
 	};
 	void AllocateLocalTextureMemory(const AllocateLocalTextureMemoryInfo& allocationInfo)
 	{
+		DeviceMemory deviceMemory;
+		
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetImageMemoryRequirements(&allocationInfo.Texture, memoryRequirements);
 		
-		localMemoryAllocator.AllocateTexture(renderDevice, allocationInfo.DeviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateTexture(renderDevice, &deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
 
 		Texture::BindMemoryInfo bindMemoryInfo;
 		bindMemoryInfo.RenderDevice = GetRenderDevice();
-		bindMemoryInfo.Memory = allocationInfo.DeviceMemory;
+		bindMemoryInfo.Memory = &deviceMemory;
 		bindMemoryInfo.Offset = allocationInfo.Allocation->Offset;
 		allocationInfo.Texture.BindToMemory(bindMemoryInfo);
 	}
@@ -52,17 +54,13 @@ public:
 	struct BufferScratchMemoryAllocationInfo
 	{
 		Buffer Buffer;
-
-		DeviceMemory* DeviceMemory = nullptr;
 		void** Data = nullptr;
-		
 		RenderAllocation* Allocation = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
 	{
-		DeviceMemory* DeviceMemory = nullptr;
-		
+		Buffer Buffer;
 		RenderAllocation* Allocation;
 	};
 	
@@ -71,12 +69,15 @@ public:
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetBufferMemoryRequirements(&allocationInfo.Buffer, memoryRequirements);
 		
-		scratchMemoryAllocator.AllocateBuffer(renderDevice,
-			allocationInfo.DeviceMemory,
-			memoryRequirements.Size,
-			allocationInfo.Allocation,
-			allocationInfo.Data,
-			GetPersistentAllocator());
+		DeviceMemory deviceMemory;
+		
+		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, memoryRequirements.Size, allocationInfo.Allocation, allocationInfo.Data, GetPersistentAllocator());
+
+		Buffer::BindMemoryInfo bindMemoryInfo;
+		bindMemoryInfo.RenderDevice = GetRenderDevice();
+		bindMemoryInfo.Memory = &deviceMemory;
+		bindMemoryInfo.Offset = allocationInfo.Allocation->Offset;
+		allocationInfo.Buffer.BindToMemory(bindMemoryInfo);
 	}
 	
 	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
@@ -86,10 +87,18 @@ public:
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
 	{
-		localMemoryAllocator.AllocateBuffer(renderDevice,
-			memoryAllocationInfo.DeviceMemory,
-			memoryAllocationInfo.Allocation,
-			GetPersistentAllocator());
+		RenderDevice::MemoryRequirements memoryRequirements;
+		renderDevice.GetBufferMemoryRequirements(&memoryAllocationInfo.Buffer, memoryRequirements);
+
+		DeviceMemory deviceMemory;
+		
+		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
+
+		Buffer::BindMemoryInfo bindMemoryInfo;
+		bindMemoryInfo.RenderDevice = GetRenderDevice();
+		bindMemoryInfo.Memory = &deviceMemory;
+		bindMemoryInfo.Offset = memoryAllocationInfo.Allocation->Offset;
+		memoryAllocationInfo.Buffer.BindToMemory(bindMemoryInfo);
 	}
 
 	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)

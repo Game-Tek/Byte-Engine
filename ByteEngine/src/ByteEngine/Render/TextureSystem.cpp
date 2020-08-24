@@ -3,6 +3,25 @@
 #include "RenderSystem.h"
 #include "RenderTypes.h"
 
+void TextureSystem::Initialize(const InitializeInfo& initializeInfo)
+{
+	textures.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+
+	BE_LOG_MESSAGE("Initialized TextureSystem")
+}
+
+void TextureSystem::Shutdown(const ShutdownInfo& shutdownInfo)
+{
+	auto* renderSystem = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+
+	for(auto& e : textures)
+	{
+		e.TextureView.Destroy(renderSystem->GetRenderDevice());
+		e.Texture.Destroy(renderSystem->GetRenderDevice());
+		renderSystem->DeallocateLocalBufferMemory(e.Allocation);
+	}
+}
+
 System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo& info)
 {	
 	TextureResourceManager::TextureLoadInfo textureLoadInfo;
@@ -18,12 +37,34 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 	{
 		Buffer::CreateInfo scratchBufferCreateInfo;
 		scratchBufferCreateInfo.RenderDevice = info.RenderSystem->GetRenderDevice();
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName;
+			scratchBufferCreateInfo.Name = name.begin();
+		}
+		
 		scratchBufferCreateInfo.Size = info.TextureResourceManager->GetTextureSize(info.TextureName);
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
-		
-		void* loadInfo;
-		GTSL::New<LoadInfo>(&loadInfo, GetPersistentAllocator(), component, Buffer(scratchBufferCreateInfo), info.RenderSystem);
 
+		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
+
+		void* scratchBufferData;
+		RenderAllocation allocation;
+
+		{
+			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
+			scratchMemoryAllocation.Buffer = scratchBuffer;
+			scratchMemoryAllocation.Allocation = &allocation;
+			scratchMemoryAllocation.Data = &scratchBufferData;
+			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
+		}
+
+		void* loadInfo;
+		GTSL::New<LoadInfo>(&loadInfo, GetPersistentAllocator(), component, scratchBuffer, info.RenderSystem, allocation);
+
+		textureLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
+		
 		textureLoadInfo.UserData = DYNAMIC_TYPE(LoadInfo, loadInfo);
 	}
 	
@@ -41,6 +82,13 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 	{
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Texture. Texture: "); name += onTextureLoadInfo.ResourceName;
+			textureCreateInfo.Name = name.begin();
+		}
+		
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
 		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
@@ -53,10 +101,27 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 	}
 
 	{
-		DeviceMemory deviceMemory;
+		TextureView::CreateInfo textureViewCreateInfo;
+		textureViewCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Texture view. Texture: "); name += onTextureLoadInfo.ResourceName;
+			textureViewCreateInfo.Name = name.begin();
+		}
+		
+		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
+		textureViewCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
+		textureViewCreateInfo.SourceFormat = ConvertFormat(onTextureLoadInfo.TextureFormat);
+		textureViewCreateInfo.Extent = onTextureLoadInfo.Extent;
+		textureViewCreateInfo.Image = textureComponent.Texture;
+		textureViewCreateInfo.MipLevels = 1;
+
+		textureComponent.TextureView = TextureView(textureViewCreateInfo);
+	}
+
+	{
 		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
-		allocationInfo.DeviceMemory = &deviceMemory;
 		allocationInfo.Allocation = &textureComponent.Allocation;
 		allocationInfo.Texture = textureComponent.Texture;
 		
@@ -67,7 +132,7 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		RenderSystem::TextureCopyData textureCopyData;
 		textureCopyData.DestinationTexture = textureComponent.Texture;
 		textureCopyData.SourceBuffer = loadInfo->Buffer;
-		textureCopyData.Allocation = textureComponent.Allocation;
+		textureCopyData.Allocation = loadInfo->RenderAllocation;
 		textureCopyData.Layout = TextureLayout::TRANSFER_DST;
 		textureCopyData.Extent = onTextureLoadInfo.Extent;
 
@@ -75,4 +140,6 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 	}
 	
 	textures.Insert(loadInfo->Component, textureComponent);
+
+	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 }

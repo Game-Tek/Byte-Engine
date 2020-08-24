@@ -62,6 +62,7 @@ using PresentMode = GAL::VulkanPresentMode;
 using ShaderStage = GAL::VulkanShaderStage;
 using BindingType = GAL::VulkanBindingType;
 using AccessFlags = GAL::VulkanAccessFlags;
+using TextureType = GAL::VulkanTextureType;
 using PipelineType = GAL::VulkanPipelineType;
 using PipelineStage = GAL::VulkanPipelineStage;
 using TextureFormat = GAL::VulkanTextureFormat;
@@ -70,6 +71,14 @@ using TextureLayout = GAL::VulkanTextureLayout;
 using ShaderDataType = GAL::VulkanShaderDataType;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
 #endif
+
+inline TextureType::value_type ConvertTextureType(const GAL::TextureType type)
+{
+	if constexpr (API == GAL::RenderAPI::VULKAN)
+	{
+		return TextureTypeToVulkanTextureType(type);
+	}
+}
 
 inline ShaderStage ConvertShaderStage(const GAL::ShaderStage::value_type shaderStage)
 {

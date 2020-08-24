@@ -9,7 +9,9 @@ class RenderSystem;
 class TextureSystem : public System
 {
 public:
-
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	
 	struct CreateTextureInfo
 	{
 		Id TextureName;
@@ -22,13 +24,14 @@ public:
 private:
 	struct LoadInfo
 	{
-		LoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem) : Component(component), Buffer(buffer), RenderSystem(renderSystem)
+		LoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
 		{
 		}
 
 		uint32 Component;
 		Buffer Buffer;
 		RenderSystem* RenderSystem;
+		RenderAllocation RenderAllocation;
 	};
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo);
 
@@ -37,6 +40,7 @@ private:
 	struct TextureComponent
 	{
 		Texture Texture;
+		TextureView TextureView;
 		RenderAllocation Allocation;
 	};
 	Vector<TextureComponent> textures;

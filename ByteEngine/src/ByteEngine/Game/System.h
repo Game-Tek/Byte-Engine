@@ -15,7 +15,6 @@ namespace GTSL
 template<typename T, class ALLOC = BE::PersistentAllocatorReference>
 using Vector = GTSL::Vector<T, ALLOC>;
 
-using Id = GTSL::Id64;
 using Id32 = GTSL::Id32;
 
 /**

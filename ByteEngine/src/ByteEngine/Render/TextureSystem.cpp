@@ -1,5 +1,7 @@
 #include "TextureSystem.h"
 
+
+#include "MaterialSystem.h"
 #include "RenderSystem.h"
 #include "RenderTypes.h"
 
@@ -30,7 +32,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 
 	textureLoadInfo.OnTextureLoadInfo = GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<TextureSystem, &TextureSystem::onTextureLoad>(this);
 
-	const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "TextureSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ_WRITE } };
+	const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "TextureSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
 	
 	textureLoadInfo.ActsOn = loadTaskDependencies;
 
@@ -40,7 +42,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName;
+			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName.GetHash();
 			scratchBufferCreateInfo.Name = name.begin();
 		}
 
@@ -179,6 +181,8 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 	}
 	
 	textures.Insert(loadInfo->Component, textureComponent);
-
+	
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
+
+	taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->SetMaterialTexture(0, Id(), 0, &textureComponent.TextureView, &textureComponent.TextureSampler);
 }

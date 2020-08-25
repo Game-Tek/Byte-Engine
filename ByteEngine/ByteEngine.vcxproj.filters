@@ -133,6 +133,7 @@
     <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\TextureSystem.h" />
+    <ClInclude Include="src\ByteEngine\Id.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

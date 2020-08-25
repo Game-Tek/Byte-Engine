@@ -7,6 +7,8 @@
 #include <GTSL/Flags.h>
 
 
+
+#include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
 
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
@@ -68,7 +70,7 @@ struct Goal
 		return *this;
 	}
 	
-	void AddTask(GTSL::Id64 name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, uint16 goalIndex, const ALLOCATOR& allocator)
+	void AddTask(Id name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, uint16 goalIndex, const ALLOCATOR& allocator)
 	{
 		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
 		taskAccessTypes.EmplaceBack(16, allocator);
@@ -90,7 +92,7 @@ struct Goal
 			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocator);
 		}
 		
-		taskNames.PushBack(GTSL::Ranger<const GTSL::Id64>(taskE - taskS, other.taskNames.begin() + taskS));
+		taskNames.PushBack(GTSL::Ranger<const Id>(taskE - taskS, other.taskNames.begin() + taskS));
 		taskGoalIndex.PushBack(GTSL::Ranger<const uint16>(taskE - taskS, other.taskGoalIndex.begin() + taskS));
 		tasks.PushBack(GTSL::Ranger<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
 	}
@@ -114,6 +116,8 @@ struct Goal
 	GTSL::Ranger<const uint16> GetTaskAccessedObjects(uint16 task) { return taskAccessedObjects[task]; }
 
 	GTSL::Ranger<const AccessType> GetTaskAccessTypes(uint16 task) { return taskAccessTypes[task]; }
+
+	Id GetTaskName(const uint16 task) const { return taskNames[task]; }
 	
 	uint16 GetNumberOfTasks() { return static_cast<uint16>(tasks.GetLength()); }
 	
@@ -138,7 +142,7 @@ private:
 	
 	GTSL::Vector<uint16, ALLOCATOR> taskGoalIndex;
 	
-	GTSL::Vector<GTSL::Id64, ALLOCATOR> taskNames;
+	GTSL::Vector<Id, ALLOCATOR> taskNames;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 
 	friend struct Goal;

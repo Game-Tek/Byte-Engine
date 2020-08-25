@@ -266,8 +266,10 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	initializeInfo.GameInstance->AddTask("executeTransfers",
 		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
 
-	initializeInfo.GameInstance->AddTask("render",
-		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
+	{
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE }/*, { "MaterialSystem", AccessType::READ_WRITE }*/ };
+		initializeInfo.GameInstance->AddTask("render", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
+	}
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)

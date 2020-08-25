@@ -17,8 +17,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	renderGroups.Initialize(32, GetPersistentAllocator());
 
-	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	minUniformBufferOffset = renderSystem->GetRenderDevice()->GetMinUniformBufferOffset();
+	//auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	minUniformBufferOffset = 64;//renderSystem->GetRenderDevice()->GetMinUniformBufferOffset(); //TODO: FIX!!!
 	
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
@@ -27,7 +27,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, };
-		initializeInfo.GameInstance->AddTask("UpdateCounter", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderEnd", "FrameEnd");
+		initializeInfo.GameInstance->AddTask("UpdateCounter", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateCounter>(this), taskDependencies, "RenderEnd", "FrameEnd");
 	}
 
 	perFrameBindingsUpdateData.Resize(2);
@@ -384,6 +384,9 @@ void MaterialSystem::SetMaterialTexture(const ComponentReference material, Id pa
 	{
 	case 0:
 	{
+		textureBindingsUpdateInfo.TextureView = *image;
+		textureBindingsUpdateInfo.Sampler = *sampler;
+		textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
 		perFrameBindingsUpdateData[frame].Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
 		break;
 	}
@@ -401,27 +404,33 @@ void MaterialSystem::SetMaterialTexture(const ComponentReference material, Id pa
 
 void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 {
+	BE_LOG_MESSAGE("Updating descriptors")
+	
 	BindingsSet::BindingsSetUpdateInfo bindingsUpdateInfo;
 	bindingsUpdateInfo.RenderDevice = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem")->GetRenderDevice();
 
 	{
 		auto& bindingsUpdate = perFrameBindingsUpdateData[frame].Global;
-
-		Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1/*bindings sets*/, bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(), GetTransientAllocator());
-		for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
+		
+		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength())
 		{
-			bindingUpdateInfos[i].Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
-			bindingUpdateInfos[i].ArrayElement = 0;
-			bindingUpdateInfos[i].Count = bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength();
-			bindingUpdateInfos[i].BindingsUpdates = bindingsUpdate.BufferBindingDescriptorsUpdates.GetData();
+
+			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1/*bindings sets*/, bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(), GetTransientAllocator());
+			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
+			{
+				bindingUpdateInfos[i].Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
+				bindingUpdateInfos[i].ArrayElement = 0;
+				bindingUpdateInfos[i].Count = bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(); //TODO: NOOOO!
+				bindingUpdateInfos[i].BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates.GetData();
+			}
+
+			bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
+
+			globalBindingsSets[frame].Update(bindingsUpdateInfo);
+
+			bindingsUpdate.BufferBindingDescriptorsUpdates.ResizeDown(0);
+			bindingsUpdate.TextureBindingDescriptorsUpdates.ResizeDown(0);
 		}
-
-		bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
-
-		globalBindingsSets[frame].Update(bindingsUpdateInfo);
-
-		bindingsUpdate.BufferBindingDescriptorsUpdates.ResizeDown(0);
-		bindingsUpdate.TextureBindingDescriptorsUpdates.ResizeDown(0);
 	}
 
 	{
@@ -440,11 +449,13 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 			bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
 
-			renderGroups.At(updates.Name).BindingsSets[frame].Update(bindingsUpdateInfo);
+				renderGroups.At(updates.Name).BindingsSets[frame].Update(bindingsUpdateInfo);
 
 			updates.BufferBindingDescriptorsUpdates.ResizeDown(0);
 			updates.TextureBindingDescriptorsUpdates.ResizeDown(0);
 		});
+
+		bindingsUpdate.Clear();
 	}
 
 	{
@@ -468,6 +479,8 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			updates.BufferBindingDescriptorsUpdates.ResizeDown(0);
 			updates.TextureBindingDescriptorsUpdates.ResizeDown(0);
 		});
+
+		bindingsUpdate.Clear();
 	}
 }
 

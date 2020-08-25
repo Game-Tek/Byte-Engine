@@ -67,7 +67,7 @@ void GameApplication::PostInitialize()
 	gameInstance->AddGoal("RenderStart");
 	gameInstance->AddGoal("RenderEnd");
 	gameInstance->AddGoal("FrameEnd");
-
+	
 	auto renderer = gameInstance->AddSystem<RenderSystem>("RenderSystem");
 
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;

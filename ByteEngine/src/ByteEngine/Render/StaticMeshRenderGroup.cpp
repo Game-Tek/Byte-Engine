@@ -63,7 +63,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 	if constexpr (_DEBUG)
 	{
-		GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += addStaticMeshInfo.MeshName;
+		GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += addStaticMeshInfo.MeshName.GetHash();
 		bufferCreateInfo.Name = name.begin();
 	}
 	

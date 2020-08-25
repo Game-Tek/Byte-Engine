@@ -1,5 +1,8 @@
 #include "Game.h"
 
+#include <GTSL/Semaphore.h>
+
+
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
@@ -132,11 +135,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 
-	//Check timing
-	GTSL::Array<TaskDependency, 6> taskDependencies{ { "TestSystem", AccessType::READ } };
-	gameInstance->AddDynamicTask("AddTexture", GTSL::Delegate<void(TaskInfo, uint32)>::Create<TestSystem, &TestSystem::SetTexture>(gameInstance->AddSystem<TestSystem>("TestSystem")), taskDependencies, "FrameStart", "RenderStart", GTSL::MoveRef(texture));
-	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
 	//window.ShowMouse(false);//

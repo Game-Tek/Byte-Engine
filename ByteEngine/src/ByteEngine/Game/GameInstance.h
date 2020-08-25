@@ -11,6 +11,7 @@
 
 
 #include "Tasks.h"
+#include "ByteEngine/Id.h"
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -33,7 +34,7 @@ public:
 	using WorldReference = uint8;
 
 	template<typename T>
-	T* AddSystem(const GTSL::Id64 systemName)
+	T* AddSystem(const Id systemName)
 	{
 		GTSL::WriteLock lock(systemsMutex);
 		
@@ -57,14 +58,14 @@ public:
 	void UnloadWorld(WorldReference worldId);
 	
 	template<class T>
-	T* GetSystem(const GTSL::Id64 systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
+	T* GetSystem(const Id systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
 	
-	void AddTask(GTSL::Id64 name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, GTSL::Id64 startsOn, GTSL::Id64 doneFor);
-	void RemoveTask(GTSL::Id64 name, GTSL::Id64 doneFor);
+	void AddTask(Id name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, Id startsOn, Id doneFor);
+	void RemoveTask(Id name, Id doneFor);
 
 	template<typename... ARGS>
-	void AddDynamicTask(const GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies,
-	                    const GTSL::Id64 startOn, const GTSL::Id64 doneFor, ARGS&&... args)
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies,
+	                    const Id startOn, const Id doneFor, ARGS&&... args)
 	{
 		void* task_info;
 		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
@@ -104,7 +105,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddDynamicTask(const GTSL::Id64 name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, ARGS&&... args)
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, ARGS&&... args)
 	{
 		void* task_info;
 		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
@@ -139,7 +140,7 @@ public:
 		}
 	}
 
-	void AddGoal(GTSL::Id64 name);
+	void AddGoal(Id name);
 	
 private:
 	GTSL::ReadWriteMutex systemsMutex;
@@ -147,7 +148,7 @@ private:
 	GTSL::Vector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
 
-	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> objectNames;
+	GTSL::Vector<Id, BE::PersistentAllocatorReference> objectNames;
 	
 	template<typename... ARGS>
 	struct DynamicTaskInfo
@@ -166,7 +167,7 @@ private:
 	GTSL::Vector<Goal<TaskType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
 
 	GTSL::ReadWriteMutex goalNamesMutex;
-	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> goalNames;
+	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
 
 	using DynamicTaskFunctionType = GTSL::Delegate<void(GameInstance*, uint32 i)>;
 	
@@ -174,14 +175,14 @@ private:
 	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
 	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
-	TaskSorter<BE::PersistentAllocatorReference> task_sorter;
+	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 
 	uint32 scalingFactor = 16;
 	
 	void initWorld(uint8 worldId);
 	void initSystem(System* system, GTSL::Id64 name);
 
-	uint16 getGoalIndex(const GTSL::Id64 name)
+	uint16 getGoalIndex(const Id name)
 	{
 		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
 		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")

@@ -92,8 +92,6 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
 	load_static_meshInfo.ActsOn = acts_on;
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
-	load_static_meshInfo.StartOn = "FrameStart";
-	load_static_meshInfo.DoneFor = "FrameEnd";
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);

@@ -76,7 +76,7 @@ namespace BE
 		void Shutdown() const;
 
 		template<typename... ARGS>
-		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS&& ...args)
+		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args)
 		{
 			GTSL::StaticString<maxLogLength> text;
 			text += obj->GetName(); text += ": ";

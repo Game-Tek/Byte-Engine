@@ -9,10 +9,14 @@
 
 #include <GTSL/Math/AxisAngle.h>
 
+
+#include "TestSystem.h"
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/TextureSystem.h"
+
+class TestSystem;
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
@@ -88,7 +92,7 @@ void Game::Initialize()
 	material_create_info.Uniforms = u_array;
 	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
-	//show loading screen////
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -118,7 +122,7 @@ void Game::PostInitialize()
 		createTextureInfo.GameInstance = gameInstance;
 		createTextureInfo.TextureName = "hydrant_Albedo";
 		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+		texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
 	}
 	
 	MaterialSystem::CreateMaterialInfo create_material_info;
@@ -127,22 +131,25 @@ void Game::PostInitialize()
 	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
-	
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
-	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 
+	//Check timing
+	GTSL::Array<TaskDependency, 6> taskDependencies{ { "TestSystem", AccessType::READ } };
+	gameInstance->AddDynamicTask("AddTexture", GTSL::Delegate<void(TaskInfo, uint32)>::Create<TestSystem, &TestSystem::SetTexture>(gameInstance->AddSystem<TestSystem>("TestSystem")), taskDependencies, "FrameStart", "RenderStart", GTSL::MoveRef(texture));
 	
-	//window.ShowMouse(false);
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
+	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
+	
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
+	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	
 	GameApplication::OnUpdate(onUpdate);
 
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, GTSL::Vector3(moveDir * 10));
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(fov));
-
-	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 1000000.0f);
 	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
@@ -150,6 +157,8 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	//auto r = 1.0f;
 	//auto g = 1.0f;
 	//auto b = 1.0f;
+
+	auto* textureSystem = gameInstance->GetSystem<TextureSystem>("TextureSystem");
 	
 	GTSL::RGBA color(r, g, b, 1.0);
 	material_system->SetMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);

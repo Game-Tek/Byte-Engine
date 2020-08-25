@@ -162,6 +162,21 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 
 		loadInfo->RenderSystem->AddTextureCopy(textureCopyData);
 	}
+
+	{
+		TextureSampler::CreateInfo textureSamplerCreateInfo;
+		textureSamplerCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Texture sampler. Texture: "); name += onTextureLoadInfo.ResourceName;
+			textureSamplerCreateInfo.Name = name.begin();
+		}
+
+		textureSamplerCreateInfo.Anisotropy = 0;
+
+		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
+	}
 	
 	textures.Insert(loadInfo->Component, textureComponent);
 

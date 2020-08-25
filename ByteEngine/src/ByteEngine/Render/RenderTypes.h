@@ -36,6 +36,7 @@ using Surface = GAL::VulkanSurface;
 using Pipeline = GAL::VulkanPipeline;
 using Semaphore = GAL::VulkanSemaphore;
 using RenderPass = GAL::VulkanRenderPass;
+using TextureSampler = GAL::VulkanSampler;
 using TextureView = GAL::VulkanTextureView;
 using BindingsSet = GAL::VulkanBindingsSet;
 using FrameBuffer = GAL::VulkanFramebuffer;

@@ -194,4 +194,7 @@ private:
 	
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;
+
+	//VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT
+	Vector<PipelineCache> pipelineCaches;
 };

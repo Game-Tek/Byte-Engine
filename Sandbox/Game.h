@@ -19,6 +19,7 @@ class Game final : public GameApplication
 	
 	uint32 camera;
 	System::ComponentReference material;
+	System::ComponentReference texture;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

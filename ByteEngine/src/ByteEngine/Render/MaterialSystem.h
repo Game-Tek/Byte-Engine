@@ -78,10 +78,7 @@ public:
 	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName,
 	                          void* data);
 
-	void SetMaterialTexture(const ComponentReference material, Texture* image)
-	{
-		
-	}
+	void SetMaterialTexture(const ComponentReference material, Id parameterName, const uint8 n, TextureView* image, TextureSampler* sampler);
 
 	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
@@ -89,8 +86,27 @@ public:
 	PipelineLayout globalPipelineLayout;
 	
 private:
+	void updateDescriptors(TaskInfo taskInfo);
+	void updateCounter(TaskInfo taskInfo);
+
 	Vector<GTSL::Pair<Id, Id>> materialNames;
 
+	struct BindingsUpdateData
+	{
+		struct Updates
+		{
+			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
+			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
+			Id Name;
+			Id Name2;
+		};
+
+		Updates Global;
+		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> RenderGroups;
+		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> Materials;
+	};
+	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
+	
 	ComponentReference component = 0;
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
@@ -109,4 +125,6 @@ private:
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
 
 	uint16 minUniformBufferOffset = 0;
+
+	uint8 frame;
 };

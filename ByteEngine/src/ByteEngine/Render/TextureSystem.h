@@ -11,7 +11,16 @@ class TextureSystem : public System
 public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	
+	TextureView* GetTextureView(uint32 componentReference)
+	{
+		return &textures[componentReference].TextureView;
+	}
+
+	TextureSampler* GetTextureSampler(const ComponentReference componentReference)
+	{
+		return &textures[componentReference].TextureSampler;
+	}
+
 	struct CreateTextureInfo
 	{
 		Id TextureName;
@@ -41,6 +50,7 @@ private:
 	{
 		Texture Texture;
 		TextureView TextureView;
+		TextureSampler TextureSampler;
 		RenderAllocation Allocation;
 	};
 	Vector<TextureComponent> textures;

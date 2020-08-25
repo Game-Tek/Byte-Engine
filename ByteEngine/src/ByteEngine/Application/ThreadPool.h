@@ -1,6 +1,9 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
+#include "ByteEngine/Object.h"
+
+#include "ByteEngine/Debug/Logger.h"
 
 #include <GTSL/Array.hpp>
 #include <GTSL/Atomic.hpp>
@@ -13,14 +16,14 @@
 
 //https://github.com/mvorbrodt/blog
 
-class ThreadPool
+class ThreadPool : public Object
 {
 public:
-	explicit ThreadPool() : queues(threadCount)
-	{
+	explicit ThreadPool() : Object("Thread Pool"), queues(threadCount)
+	{		
 		//lambda
 		auto workers_loop = [](ThreadPool* pool, const uint8 i)
-		{
+		{			
 			while (true)
 			{		
 				Tasks task;
@@ -39,7 +42,7 @@ public:
 		for (uint8 i = 0; i < threadCount; ++i)
 		{
 			//Constructing threads with function and I parameter
-			threads.EmplaceBack(GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
+			threads.EmplaceBack(GetPersistentAllocator(), i, GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
 			threads[i].SetPriority(GTSL::Thread::Priority::HIGH);
 		}
 	}
@@ -47,7 +50,7 @@ public:
 	~ThreadPool()
 	{
 		for (auto& queue : queues) { queue.Done(); }
-		for (auto& thread : threads) { thread.Join(); }
+		for (auto& thread : threads) { thread.Join(GetPersistentAllocator()); }
 	}
 
 	template<typename F, typename P, typename... ARGS, typename... PARGS>
@@ -70,16 +73,16 @@ public:
 			delete post_task_info;
 		};
 		
-		const auto current_index = ++index;
+		const auto currentIndex = ++index;
 
 		for (auto n = 0; n < threadCount * K; ++n)
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(current_index + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)))) { return; }
+			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)))) { return; }
 		}
 
-		queues[current_index % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)));
+		queues[currentIndex % threadCount].Push(Tasks(GTSL::Delegate<void(void*)>::Create(work), GTSL::MoveRef((void*)task_info), GTSL::MoveRef((void*)post_task_info), GTSL::MoveRef(semaphore)));
 	}
 
 private:

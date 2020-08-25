@@ -162,6 +162,7 @@
     <ClInclude Include="Game.h" />
     <ClInclude Include="SandboxGameInstance.h" />
     <ClInclude Include="SandboxWorld.h" />
+    <ClInclude Include="TestSystem.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

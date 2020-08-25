@@ -44,9 +44,6 @@ public:
 		 * \brief Instance of game instance to call to dispatch task when resource is loaded.
 		 */
 		class GameInstance* GameInstance = nullptr;
-
-		GTSL::Id64 StartOn;
-		GTSL::Id64 DoneFor;
 		
 		GTSL::Array<TaskDependency, 64> ActsOn;
 	};

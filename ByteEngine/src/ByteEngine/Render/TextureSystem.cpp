@@ -74,8 +74,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
 
-		void* loadInfo;
-		GTSL::New<LoadInfo>(&loadInfo, GetPersistentAllocator(), component, scratchBuffer, info.RenderSystem, allocation);
+		auto* loadInfo = GTSL::New<LoadInfo>(GetPersistentAllocator(), component, scratchBuffer, info.RenderSystem, allocation);
 
 		textureLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
 		

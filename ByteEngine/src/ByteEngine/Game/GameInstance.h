@@ -59,27 +59,67 @@ public:
 	
 	template<class T>
 	T* GetSystem(const Id systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
+
+	template<typename... ARGS>
+	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
+	{
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+
+		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
+		{
+			{
+				GTSL::ReadLock lock(gameInstance->recurringTasksMutex);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->recurringTasksInfo[i]);
+				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+				GTSL::Call(info->Delegate, info->Arguments);
+				GTSL::Delete(info, gameInstance->GetTransientAllocator());
+			}
+
+			gameInstance->taskSorter.ReleaseResources(taskIndex);
+
+			{
+				GTSL::WriteLock lock(gameInstance->recurringTasksMutex);
+				gameInstance->recurringTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
+			}
+		};
+
+		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+
+		uint16 start_on_goal_index, task_objective_index;
+
+		{
+			GTSL::ReadLock lock(goalNamesMutex);
+			decomposeTaskDescriptor(dependencies, objects, accesses);
+			start_on_goal_index = getGoalIndex(startOn);
+			task_objective_index = getGoalIndex(doneFor);
+		}
+
+		{
+			GTSL::WriteLock lock(recurringTasksMutex);
+			recurringGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
+			recurringTasksInfo.EmplaceBack(taskInfo);
+		}
+	}
 	
-	void AddTask(Id name, GTSL::Delegate<void(TaskInfo)> function, GTSL::Ranger<const TaskDependency> actsOn, Id startsOn, Id doneFor);
 	void RemoveTask(Id name, Id doneFor);
 
 	template<typename... ARGS>
-	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies,
-	                    const Id startOn, const Id doneFor, ARGS&&... args)
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
-		void* task_info;
-		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* task_info = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		
-		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
+		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
 		{
 			{
 				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
-				DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 				GTSL::Call(info->Delegate, info->Arguments);
-				GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
+				GTSL::Delete(info, gameInstance->GetTransientAllocator());
 			}
 
+			gameInstance->taskSorter.ReleaseResources(taskIndex);
+			
 			{
 				GTSL::WriteLock lock(gameInstance->dynamicTasksMutex);
 				gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
@@ -99,7 +139,7 @@ public:
 		
 		{
 			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
+			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -107,19 +147,20 @@ public:
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, ARGS&&... args)
 	{
-		void* task_info;
-		GTSL::New<DynamicTaskInfo<TaskInfo, ARGS...>>(&task_info, GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* task_info = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
-		auto task = [](GameInstance* gameInstance, const uint32 i) -> void
+		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
 		{
 			{
 				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
-				DynamicTaskInfo<TaskInfo, ARGS...>* info = static_cast<DynamicTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 				GTSL::Call(info->Delegate, info->Arguments);
-				GTSL::Delete<DynamicTaskInfo<TaskInfo, ARGS...>>(gameInstance->dynamicTasksInfo[i], gameInstance->GetTransientAllocator());
+				GTSL::Delete(info, gameInstance->GetTransientAllocator());
 			}
 
+			gameInstance->taskSorter.ReleaseResources(taskIndex);
+			
 			{
 				GTSL::WriteLock lock(gameInstance->dynamicTasksMutex);
 				gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
@@ -135,7 +176,7 @@ public:
 
 		{
 			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[0].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32)>::Create(task), objects, accesses, 1, GetPersistentAllocator());
+			dynamicGoals[0].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, 1, GetPersistentAllocator());
 			dynamicTasksInfo.EmplaceBack(task_info);
 		}
 	}
@@ -151,9 +192,9 @@ private:
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> objectNames;
 	
 	template<typename... ARGS>
-	struct DynamicTaskInfo
+	struct DispatchTaskInfo
 	{
-		DynamicTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::ForwardRef<ARGS>(args)...)
+		DispatchTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::ForwardRef<ARGS>(args)...)
 		{
 		}
 
@@ -161,19 +202,20 @@ private:
 		GTSL::Tuple<ARGS...> Arguments;
 	};
 	
-	using TaskType = GTSL::Delegate<void(TaskInfo)>;
+	using DispatchFunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32)>;
 	
 	GTSL::ReadWriteMutex goalsMutex;
-	GTSL::Vector<Goal<TaskType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
+	GTSL::Vector<Goal<DispatchFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
 
 	GTSL::ReadWriteMutex goalNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
 
-	using DynamicTaskFunctionType = GTSL::Delegate<void(GameInstance*, uint32 i)>;
+	GTSL::ReadWriteMutex recurringTasksMutex;
+	GTSL::Vector<void*, BE::TAR> recurringTasksInfo;
 	
 	GTSL::ReadWriteMutex dynamicTasksMutex;
 	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
-	GTSL::Vector<Goal<DynamicTaskFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
+	GTSL::Vector<Goal<DispatchFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 

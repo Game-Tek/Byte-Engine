@@ -5,8 +5,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
-
-
+#include <GTSL/Result.h>
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
@@ -152,7 +151,8 @@ template<class ALLOCATOR>
 struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
-	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator)
+	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
+	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator)
 	{
 		currentObjectAccessState.Resize(num);
 		for (auto& e : currentObjectAccessState) { e = 0; }
@@ -160,14 +160,16 @@ struct TaskSorter
 		for (auto& e : currentObjectAccessCount) { e = 0; }
 	}
 
-	bool CanRunTask(const GTSL::Ranger<const uint16>& objects, const GTSL::Ranger<const AccessType>& accesses)
+	GTSL::Result<uint32> CanRunTask(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
 	{
 		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
+
+		const auto elementCount = objects.ElementCount();
 		
 		{
 			GTSL::ReadLock lock(mutex);
 			
-			for (uint32 i = 0; i < objects.ElementCount(); ++i)
+			for (uint32 i = 0; i < elementCount; ++i)
 			{
 				if (currentObjectAccessState[objects[i]] == AccessType::READ_WRITE) { return false; }
 				if (currentObjectAccessState[objects[i]] == AccessType::READ && accesses[i] == AccessType::READ_WRITE) { return false; }
@@ -177,33 +179,35 @@ struct TaskSorter
 		{
 			GTSL::WriteLock lock(mutex);
 			
-			for (uint32 i = 0; i < objects.ElementCount(); ++i)
+			for (uint32 i = 0; i < elementCount; ++i)
 			{
 				currentObjectAccessState[objects[i]] = accesses[i];
 				++currentObjectAccessCount[objects[i]];
 			}
-		}
+			
+			auto i = ongoingTasksAccesses.EmplaceBack(accesses);
+			auto j = ongoingTasksObjects.EmplaceBack(objects);
 
-		return true;
+			BE_ASSERT(i == j, "Error")
+			return GTSL::Result<uint32>(GTSL::MoveRef(i), true);
+		}
 	}
 
-	void ReleaseResources(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
+	void ReleaseResources(const uint32 i)
 	{
 		GTSL::WriteLock lock(mutex);
 
-		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
-		
-		for (uint32 i = 0; i < objects.ElementCount(); ++i)
-		{
-			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
-			BE_ASSERT(accesses[i] == AccessType::READ || accesses[i] == AccessType::READ_WRITE, "Unexpected value");
-			if (--currentObjectAccessCount[objects[i]] == 0) { currentObjectAccessState[objects[i]] = 0; }
-		}
+		ongoingTasksAccesses.Pop(i);
+		ongoingTasksObjects.Pop(i);
 	}
 	
 private:
 	GTSL::Vector<AccessType::value_type, ALLOCATOR> currentObjectAccessState;
 	GTSL::Vector<uint16, ALLOCATOR> currentObjectAccessCount;
+
+	//TODO: should be a keep vector so as not to move data when popping elements
+	GTSL::Vector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
+	GTSL::Vector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
 
 	GTSL::ReadWriteMutex mutex;
 };

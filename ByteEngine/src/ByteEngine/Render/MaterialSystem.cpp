@@ -338,9 +338,8 @@ ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info
 	material_load_info.GameInstance = info.GameInstance;
 	material_load_info.Name = info.MaterialName;
 	material_load_info.DataBuffer = GTSL::Ranger<byte>(material_buffer.GetCapacity(), material_buffer.GetData());
-	void* mat_load_info;
-	GTSL::New<MaterialLoadInfo>(&mat_load_info, GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), component);
-	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, mat_load_info);
+	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), component);
+	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, matLoadInfo);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
 	info.MaterialResourceManager->LoadMaterial(material_load_info);
 
@@ -644,7 +643,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	}
 	
 	loadInfo->Buffer.Free(32, GetPersistentAllocator());
-	GTSL::Delete<MaterialLoadInfo>(loadInfo, GetPersistentAllocator());
+	GTSL::Delete(loadInfo, GetPersistentAllocator());
 
 	//SETUP MATERIAL UNIFORMS FROM LOADED DATA
 	{

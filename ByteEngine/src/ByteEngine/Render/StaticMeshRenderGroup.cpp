@@ -79,10 +79,9 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	memoryAllocationInfo.Allocation = &allocation;
 	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 	
-	void* mesh_load_info;
-	GTSL::New<MeshLoadInfo>(&mesh_load_info, GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index);
+	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index);
 
-	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, {"StaticMeshRenderGroup", AccessType::READ_WRITE} };
+	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
@@ -141,5 +140,5 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	indicesCount.Insert(loadInfo->InstanceId, onStaticMeshLoad.IndexCount);
 	indexTypes.Insert(loadInfo->InstanceId, SelectIndexType(onStaticMeshLoad.IndexSize));
 
-	GTSL::Delete<MeshLoadInfo>(loadInfo, GetPersistentAllocator());
+	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }

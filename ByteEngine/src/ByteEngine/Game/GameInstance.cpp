@@ -51,7 +51,8 @@ GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, 
 GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
 recurringGoals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
-dynamicTasksInfo(32, GetTransientAllocator()), taskSorter(64, GetPersistentAllocator())
+dynamicTasksInfo(32, GetTransientAllocator()), taskSorter(64, GetPersistentAllocator()),
+recurringTasksInfo(32, GetPersistentAllocator())
 {
 }
 
@@ -121,18 +122,14 @@ void GameInstance::OnUpdate(BE::Application* application)
 			
 			while (recurringGoalNumberOfTasks > 0) //try recurring goals
 			{
-				GTSL::Ranger<const uint16> accessed_objects = localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask);
-				GTSL::Ranger<const AccessType> access_types = localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask);
-
-				if (auto res = taskSorter.CanRunTask(accessed_objects, access_types))
+				if (auto res = taskSorter.CanRunTask(localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask)))
 				{
 					const uint16 targetGoalIndex = localRecurringGoals[goal].GetTaskGoalIndex(recurringGoalTask);
 					const auto semaphoreIndex = semaphores[targetGoalIndex].EmplaceBack();
 					
-					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(recurringGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::ForwardRef<uint16>(recurringGoalTask), res.Get());
+					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(recurringGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(recurringGoalTask), GTSL::MoveRef(res.Get()));
 
-					BE_LOG_WARNING(genTaskLog("Dispatched recurring task ", localRecurringGoals[goal].GetTaskName(recurringGoalTask), goalNames[goal], access_types, accessed_objects, objectNames));
-					
+					//BE_LOG_WARNING(genTaskLog("Dispatched recurring task ", localRecurringGoals[goal].GetTaskName(recurringGoalTask), goalNames[goal], localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask), objectNames));
 					
 					--recurringGoalNumberOfTasks;
 					--recurringGoalTask;
@@ -148,18 +145,15 @@ void GameInstance::OnUpdate(BE::Application* application)
 			
 			while (dynamicGoalNumberOfTasks > 0) //try dynamic goals
 			{
-				GTSL::Ranger<const uint16> accessed_objects = localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask);
-				GTSL::Ranger<const AccessType> access_types = localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask);
-
-				if (auto res = taskSorter.CanRunTask(accessed_objects, access_types))
+				if (auto res = taskSorter.CanRunTask(localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask)))
 				{
 					const uint16 targetGoalIndex = localDynamicGoals[goal].GetTaskGoalIndex(dynamicGoalTask);
 					
 					const auto semaphoreIndex = semaphores[targetGoalIndex].EmplaceBack();
 					
-					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(dynamicGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::ForwardRef<uint16>(dynamicGoalTask), res.Get());
+					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(dynamicGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(dynamicGoalTask), GTSL::MoveRef(res.Get()));
 
-					BE_LOG_WARNING(genTaskLog("Dispatched dynamic task ", localDynamicGoals[goal].GetTaskName(dynamicGoalTask), goalNames[goal], access_types, accessed_objects, objectNames));
+					//BE_LOG_WARNING(genTaskLog("Dispatched dynamic task ", localDynamicGoals[goal].GetTaskName(dynamicGoalTask), goalNames[goal], localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask), objectNames));
 					
 					--dynamicGoalNumberOfTasks;
 					--dynamicGoalTask;

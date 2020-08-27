@@ -9,7 +9,6 @@
 #include <GTSL/Allocator.h>
 #include <GTSL/Array.hpp>
 
-
 #include "Tasks.h"
 #include "ByteEngine/Id.h"
 
@@ -75,12 +74,9 @@ public:
 				GTSL::Delete(info, gameInstance->GetTransientAllocator());
 			}
 
-			gameInstance->taskSorter.ReleaseResources(taskIndex);
+			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended recurring task ", i, " with data index ", taskIndex);
 
-			{
-				GTSL::WriteLock lock(gameInstance->recurringTasksMutex);
-				gameInstance->recurringTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
-			}
+			gameInstance->taskSorter.ReleaseResources(taskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -119,11 +115,7 @@ public:
 			}
 
 			gameInstance->taskSorter.ReleaseResources(taskIndex);
-			
-			{
-				GTSL::WriteLock lock(gameInstance->dynamicTasksMutex);
-				gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
-			}
+			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended dynamic task ", i, " with data index ", taskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -160,11 +152,7 @@ public:
 			}
 
 			gameInstance->taskSorter.ReleaseResources(taskIndex);
-			
-			{
-				GTSL::WriteLock lock(gameInstance->dynamicTasksMutex);
-				gameInstance->dynamicTasksInfo.Pop(i); //TODO: CHECK WHERE TO POP
-			}
+			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended dynamic task ", i, " with data index ", taskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -211,7 +199,7 @@ private:
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
 
 	GTSL::ReadWriteMutex recurringTasksMutex;
-	GTSL::Vector<void*, BE::TAR> recurringTasksInfo;
+	GTSL::Vector<void*, BE::PersistentAllocatorReference> recurringTasksInfo;
 	
 	GTSL::ReadWriteMutex dynamicTasksMutex;
 	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;

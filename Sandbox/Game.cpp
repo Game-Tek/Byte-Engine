@@ -1,7 +1,6 @@
 #include "Game.h"
 
-#include <GTSL/Semaphore.h>
-
+#include <GTSL/KeepVector.h>
 
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
@@ -11,7 +10,6 @@
 #include "ByteEngine/Game/CameraSystem.h"
 
 #include <GTSL/Math/AxisAngle.h>
-
 
 #include "TestSystem.h"
 #include "ByteEngine/Application/Clock.h"
@@ -135,7 +133,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);//
+	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
 	//window.ShowMouse(false);//

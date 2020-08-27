@@ -5,6 +5,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
+#include <GTSL/KeepVector.h>
 #include <GTSL/Result.h>
 
 #include "ByteEngine/Id.h"
@@ -185,29 +186,42 @@ struct TaskSorter
 				++currentObjectAccessCount[objects[i]];
 			}
 			
-			auto i = ongoingTasksAccesses.EmplaceBack(accesses);
-			auto j = ongoingTasksObjects.EmplaceBack(objects);
+			auto i = ongoingTasksAccesses.Emplace(accesses);
+			auto j = ongoingTasksObjects.Emplace(objects);
 
 			BE_ASSERT(i == j, "Error")
 			return GTSL::Result<uint32>(GTSL::MoveRef(i), true);
 		}
 	}
 
-	void ReleaseResources(const uint32 i)
+	void ReleaseResources(const uint32 taskIndex)
 	{
 		GTSL::WriteLock lock(mutex);
 
-		ongoingTasksAccesses.Pop(i);
-		ongoingTasksObjects.Pop(i);
+		const auto count = ongoingTasksAccesses[taskIndex].GetLength();
+		auto& objects = ongoingTasksObjects[taskIndex];
+		auto& accesses = ongoingTasksAccesses[taskIndex];
+		
+		for (uint32 i = 0; i < count; ++i)
+		{
+			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
+			BE_ASSERT(accesses[i] == AccessType::READ || accesses[i] == AccessType::READ_WRITE, "Unexpected value");
+			if (--currentObjectAccessCount[objects[i]] == 0) //if task is done
+			{
+				currentObjectAccessState[objects[i]] = 0;
+			}
+
+		}
+		
+		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);
 	}
 	
 private:
 	GTSL::Vector<AccessType::value_type, ALLOCATOR> currentObjectAccessState;
 	GTSL::Vector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	//TODO: should be a keep vector so as not to move data when popping elements
-	GTSL::Vector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
-	GTSL::Vector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
+	GTSL::KeepVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
+	GTSL::KeepVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
 
 	GTSL::ReadWriteMutex mutex;
 };

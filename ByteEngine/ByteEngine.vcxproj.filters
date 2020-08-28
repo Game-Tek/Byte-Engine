@@ -135,6 +135,7 @@
     <ClInclude Include="src\ByteEngine\Render\TextureSystem.h" />
     <ClInclude Include="src\ByteEngine\Id.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
+    <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

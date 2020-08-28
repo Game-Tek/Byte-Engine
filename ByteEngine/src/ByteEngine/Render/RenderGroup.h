@@ -6,6 +6,8 @@
 
 #include <GTSL/Array.hpp>
 
+class MaterialSystem;
+class RenderSystem;
 /**
  * \brief A render group represents a group of meshes that share the same characteristics and can be rendered together.
  */
@@ -16,6 +18,9 @@ public:
 
 	struct RenderInfo
 	{
+		GameInstance* GameInstance;
+		RenderSystem* RenderSystem;
+		MaterialSystem* MaterialSystem;
 	};
 	virtual void Render(const RenderInfo&) = 0;
 };

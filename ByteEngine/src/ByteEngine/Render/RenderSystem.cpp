@@ -149,6 +149,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	bool pipelineCacheAvailable;
 	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
 
+	pipelineCaches.Initialize(7/*TODO: should be dynamic by threads*/);
+	
 	if(pipelineCacheAvailable)
 	{
 		uint32 cacheSize = 0;
@@ -164,6 +166,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		pipelineCacheCreateInfo.Name = "Pipeline Cache";
 		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
 		new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
+
+		//for every thread create pipeline cache
 		
 		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 	}
@@ -268,7 +272,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	{
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE }/*, { "MaterialSystem", AccessType::READ_WRITE }*/ };
-		initializeInfo.GameInstance->AddTask("render", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::render>(this), actsOn, "RenderStart", "FrameEnd");
+		initializeInfo.GameInstance->AddTask("render", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderSetup>(this), actsOn, "RenderStart", "FrameEnd");
 	}
 }
 
@@ -321,7 +325,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	}
 }
 
-void RenderSystem::render(TaskInfo taskInfo)
+void RenderSystem::renderSetup(TaskInfo taskInfo)
 {
 	Fence::WaitForFencesInfo waitForFencesInfo;
 	waitForFencesInfo.RenderDevice = &renderDevice;
@@ -434,6 +438,11 @@ void RenderSystem::render(TaskInfo taskInfo)
 	//	bindingsSets.PopBack();
 	//}
 	//);
+}
+
+void RenderSystem::renderFinish(TaskInfo taskInfo)
+{
+	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	CommandBuffer::EndRenderPassInfo endRenderPass;
 	endRenderPass.RenderDevice = GetRenderDevice();
@@ -444,9 +453,9 @@ void RenderSystem::render(TaskInfo taskInfo)
 	acquireNextImageInfo.RenderDevice = &renderDevice;
 	acquireNextImageInfo.SignalSemaphore = &imageAvailableSemaphore[currentFrameIndex];
 	auto imageIndex = renderContext.AcquireNextImage(acquireNextImageInfo);
-	
+
 	//BE_ASSERT(imageIndex == currentFrameIndex, "Data mismatch");
-	
+
 	Queue::SubmitInfo submitInfo;
 	submitInfo.RenderDevice = &renderDevice;
 	submitInfo.Fence = &graphicsFences[currentFrameIndex];
@@ -456,7 +465,7 @@ void RenderSystem::render(TaskInfo taskInfo)
 	GTSL::Array<uint32, 8> wps{ (uint32)PipelineStage::COLOR_ATTACHMENT_OUTPUT };
 	submitInfo.WaitPipelineStages = wps;
 	graphicsQueue.Submit(submitInfo);
-	
+
 	RenderContext::PresentInfo presentInfo;
 	presentInfo.RenderDevice = &renderDevice;
 	presentInfo.Queue = &graphicsQueue;

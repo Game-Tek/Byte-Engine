@@ -134,6 +134,7 @@
     <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\TextureSystem.h" />
     <ClInclude Include="src\ByteEngine\Id.h" />
+    <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -172,5 +173,6 @@
     <ClCompile Include="src\ByteEngine\Object.cpp" />
     <ClCompile Include="src\ByteEngine\Render\MaterialSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextureSystem.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
   </ItemGroup>
 </Project>

@@ -191,6 +191,7 @@
     </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />
     <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
@@ -251,6 +252,7 @@
     <ClInclude Include="src\ByteEngine.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\StackAllocator.cpp" />

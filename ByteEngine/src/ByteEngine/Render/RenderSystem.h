@@ -136,11 +136,12 @@ public:
 	void AddTextureCopy(const TextureCopyData& textureCopyData) { textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData); }
 	
 	PipelineCache* GetPipelineCache() { return &pipelineCache; }
+	PipelineCache* GetPipelineCache(const uint8 thread) { return &pipelineCaches[thread]; }
 
 	RenderPass* GetRenderPass() { return &renderPass; }
 
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
-	GTSL::Extent2D GetRenderExtent() const { return renderArea; }
+	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
 	void OnResize(TaskInfo taskInfo, GTSL::Extent2D extent);
 	
@@ -181,7 +182,8 @@ private:
 	uint32 swapchainFormat{ 0 };
 	uint32 swapchainColorSpace{ 0 };
 	
-	void render(TaskInfo taskInfo);
+	void renderSetup(TaskInfo taskInfo);
+	void renderFinish(TaskInfo taskInfo);
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);
 

@@ -8,4 +8,10 @@
 class RenderGroup : public System
 {
 public:
+	virtual GTSL::Array<TaskDependency, 8> GetRenderDependencies() = 0;
+
+	struct RenderInfo
+	{
+	};
+	virtual void Render(const RenderInfo&) = 0;
 };

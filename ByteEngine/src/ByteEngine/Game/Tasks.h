@@ -14,7 +14,9 @@
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
 struct AccessType : GTSL::Flags<uint8>
-{	
+{
+	AccessType(const value_type val) : GTSL::Flags<uint8>(val) {}
+	
 	static constexpr value_type READ = 1;
 	static constexpr value_type READ_WRITE = 4;
 };

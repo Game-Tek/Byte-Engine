@@ -7,7 +7,7 @@ class Id
 {
 public:
 	Id() = default;
-	Id(const UTF8* name) noexcept : hashedName(name), stringName(name) {}
+	constexpr Id(const UTF8* name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 
 	[[nodiscard]] const UTF8* GetString() const { return stringName; }

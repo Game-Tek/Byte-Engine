@@ -5,6 +5,7 @@
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/MaterialSystem.h"
+#include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 #include "ByteEngine/Render/RenderSystem.h"
@@ -24,6 +25,8 @@
 #ifndef HID_USAGE_GENERIC_MOUSE
 #define HID_USAGE_GENERIC_MOUSE ((unsigned short) 0x02)
 #endif
+
+class RenderOrchestrator;
 
 void GameApplication::Initialize()
 {
@@ -65,6 +68,8 @@ void GameApplication::PostInitialize()
 	gameInstance->AddGoal("GameplayStart");
 	gameInstance->AddGoal("GameplayEnd");
 	gameInstance->AddGoal("RenderStart");
+	gameInstance->AddGoal("RenderSetup");
+	gameInstance->AddGoal("RenderFinished");
 	gameInstance->AddGoal("RenderEnd");
 	gameInstance->AddGoal("FrameEnd");
 	
@@ -84,15 +89,20 @@ void GameApplication::PostInitialize()
 		bindings[0].EmplaceBack(BindingType::COMBINED_IMAGE_SAMPLER);
 		materialSystem->SetGlobalState(gameInstance, bindings);
 	}
+
+	auto* staticMeshRenderGroup = gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	
-	gameInstance->AddSystem<CameraSystem>("CameraSystem");
-	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	{
 		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1); bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
 	}
 
+	gameInstance->AddSystem<CameraSystem>("CameraSystem");
+
 	gameInstance->AddSystem<TextureSystem>("TextureSystem");
+	
+	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+	renderOrchestrator->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", staticMeshRenderGroup);
 	
 	window.ShowWindow();
 }

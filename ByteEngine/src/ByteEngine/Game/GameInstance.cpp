@@ -78,8 +78,8 @@ void GameInstance::OnUpdate(BE::Application* application)
 {
 	PROFILE;
 
-	GTSL::Vector<Goal<DispatchFunctionType, BE::TAR>, BE::TAR> localRecurringGoals(64, GetTransientAllocator());
-	GTSL::Vector<Goal<DispatchFunctionType, BE::TAR>, BE::TAR> localDynamicGoals(64, GetTransientAllocator());
+	GTSL::Vector<Goal<FunctionType, BE::TAR>, BE::TAR> localRecurringGoals(64, GetTransientAllocator());
+	GTSL::Vector<Goal<FunctionType, BE::TAR>, BE::TAR> localDynamicGoals(64, GetTransientAllocator());
 	GTSL::Vector<GTSL::Vector<GTSL::Semaphore, BE::TAR>, BE::TAR> semaphores(64, GetTransientAllocator());
 
 	uint32 goalCount;

@@ -136,7 +136,7 @@ void Game::PostInitialize()
 	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
 	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

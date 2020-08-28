@@ -33,6 +33,7 @@ public:
 
 protected:
 	[[nodiscard]] BE::Logger* getLogger() const;
+	uint8 getThread() const;
 	
 private:
 	const UTF8* name = "Object";

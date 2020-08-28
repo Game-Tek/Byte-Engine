@@ -14,6 +14,10 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	}
 }
 
+void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
+{
+}
+
 void RenderOrchestrator::Render(TaskInfo taskInfo)
 {
 	RenderGroup::RenderInfo renderInfo;

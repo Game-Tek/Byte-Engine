@@ -135,7 +135,6 @@ public:
 	};
 	void AddTextureCopy(const TextureCopyData& textureCopyData) { textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData); }
 	
-	PipelineCache* GetPipelineCache() { return &pipelineCache; }
 	PipelineCache* GetPipelineCache(const uint8 thread) { return &pipelineCaches[thread]; }
 
 	RenderPass* GetRenderPass() { return &renderPass; }
@@ -149,8 +148,6 @@ private:
 	RenderDevice renderDevice;
 	Surface surface;
 	RenderContext renderContext;
-
-	PipelineCache pipelineCache;
 	
 	GTSL::Extent2D renderArea;
 	
@@ -197,6 +194,5 @@ private:
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;
 
-	//VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT
 	Vector<PipelineCache> pipelineCaches;
 };

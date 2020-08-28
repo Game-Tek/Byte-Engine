@@ -7,6 +7,7 @@
 #include <GTSL/Flags.h>
 #include <GTSL/KeepVector.h>
 #include <GTSL/Result.h>
+#include <GTSL/Array.hpp>
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
@@ -15,7 +16,8 @@
 
 struct AccessType : GTSL::Flags<uint8>
 {
-	AccessType(const value_type val) : GTSL::Flags<uint8>(val) {}
+	AccessType() = default;
+	AccessType(const value_type val) : Flags<uint8>(val) {}
 	
 	static constexpr value_type READ = 1;
 	static constexpr value_type READ_WRITE = 4;

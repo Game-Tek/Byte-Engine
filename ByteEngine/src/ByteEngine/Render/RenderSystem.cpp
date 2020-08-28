@@ -149,7 +149,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	bool pipelineCacheAvailable;
 	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
 
-	pipelineCaches.Initialize(7/*TODO: should be dynamic by threads*/);
+	pipelineCaches.Initialize(7/*TODO: should be dynamic by threads*/, GetPersistentAllocator());
 	
 	if(pipelineCacheAvailable)
 	{
@@ -163,11 +163,19 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		PipelineCache::CreateInfo pipelineCacheCreateInfo;
 		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
-		pipelineCacheCreateInfo.Name = "Pipeline Cache";
+		pipelineCacheCreateInfo.ExternallySync = false;
 		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
-		new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
 
-		//for every thread create pipeline cache
+		for(uint8 i = 0; i < 7; ++i)
+		{
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<32> name("Pipeline cache. Thread: "); name += i;
+				pipelineCacheCreateInfo.Name = name.begin();
+			}
+			
+			pipelineCaches.EmplaceBack(pipelineCacheCreateInfo);
+		}
 		
 		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 	}
@@ -175,8 +183,18 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	{
 		PipelineCache::CreateInfo pipelineCacheCreateInfo;
 		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
-		pipelineCacheCreateInfo.Name = "Pipeline Cache";
-		::new(&pipelineCache) PipelineCache(pipelineCacheCreateInfo);
+		pipelineCacheCreateInfo.ExternallySync = false;
+		
+		for (uint8 i = 0; i < 7; ++i)
+		{
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<32> name("Pipeline cache. Thread: "); name += i;
+				pipelineCacheCreateInfo.Name = name.begin();
+			}
+			
+			pipelineCaches.EmplaceBack(pipelineCacheCreateInfo);
+		}
 	}
 	
 	BE_LOG_MESSAGE("Initialized successfully");
@@ -311,17 +329,24 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 
-	uint32 cacheSize = 0;
-	pipelineCache.GetCacheSize(&renderDevice, cacheSize);
-
-	if(cacheSize)
 	{
-		auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
-		GTSL::Buffer pipelineCacheBuffer;
-		pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
-		pipelineCache.GetCache(&renderDevice, cacheSize, pipelineCacheBuffer);
-		pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
-		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
+		uint32 cacheSize = 0;
+
+		PipelineCache::CreateFromMultipleInfo createPipelineCacheInfo;
+		createPipelineCacheInfo.RenderDevice = GetRenderDevice();
+		createPipelineCacheInfo.Caches = pipelineCaches;
+		const PipelineCache pipelineCache(createPipelineCacheInfo);
+		pipelineCache.GetCacheSize(GetRenderDevice(), cacheSize);
+
+		if (cacheSize)
+		{
+			auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
+			GTSL::Buffer pipelineCacheBuffer;
+			pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
+			pipelineCache.GetCache(&renderDevice, cacheSize, pipelineCacheBuffer);
+			pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
+			pipelineCacheBuffer.Free(32, GetPersistentAllocator());
+		}
 	}
 }
 

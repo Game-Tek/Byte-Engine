@@ -638,7 +638,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		pipelineCreateInfo.Stages = shader_infos;
 		pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
 		pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
-		pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache();
+		pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache(getThread());
 		instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 	}
 	

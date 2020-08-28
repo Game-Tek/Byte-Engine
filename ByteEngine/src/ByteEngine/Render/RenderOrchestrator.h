@@ -16,14 +16,15 @@ class RenderOrchestrator : public System
 {
 public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
 	void Render(TaskInfo taskInfo);
 
 	void AddRenderGroup(GameInstance* gameInstance, Id renderGroupName, RenderGroup* renderGroup);
 	void RemoveRenderGroup(GameInstance* gameInstance, Id renderGroupName);
 private:
-	static constexpr Id RENDER_TASK_NAME{ "RenderRenderGroups" };
-	static constexpr Id CLASS_NAME{ "RenderOrchestrator" };
+	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
+	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 64>, BE::PersistentAllocatorReference> systemsAccesses;

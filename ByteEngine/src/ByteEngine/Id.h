@@ -7,6 +7,10 @@ class Id
 {
 public:
 	Id() = default;
+	
+	template<uint64 N>
+	constexpr Id(char const (&s)[N]) : hashedName(s) {}
+	
 	constexpr Id(const UTF8* name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 

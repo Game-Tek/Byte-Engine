@@ -2,6 +2,10 @@
 
 #include "ByteEngine/Game/System.h"
 
+#include "ByteEngine/Game/Tasks.h"
+
+#include <GTSL/Array.hpp>
+
 /**
  * \brief A render group represents a group of meshes that share the same characteristics and can be rendered together.
  */

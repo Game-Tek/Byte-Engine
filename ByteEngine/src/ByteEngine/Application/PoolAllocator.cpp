@@ -44,6 +44,7 @@ PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint6
 
 void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const
 {
+	GTSL::Lock lock(globalLock);
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 	uint64 allocation_min_size{ 0 }; GTSL::NextPowerOfTwo(GTSL::Math::PowerOf2RoundUp(size, alignment), allocation_min_size);
 
@@ -68,6 +69,7 @@ void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, vo
 
 void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name) const
 {
+	GTSL::Lock lock(globalLock);
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 	uint64 allocation_min_size { 0 }; GTSL::NextPowerOfTwo(size, allocation_min_size);
 	uint8 set_bit{ 0 }; GTSL::FindFirstSetBit(allocation_min_size, set_bit);

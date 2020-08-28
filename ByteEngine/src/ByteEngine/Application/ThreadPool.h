@@ -58,7 +58,7 @@ public:
 	template<typename F, typename... ARGS>
 	void EnqueueTask(const GTSL::Delegate<F>& task, GTSL::Semaphore* semaphore, ARGS&&... args)
 	{
-		TaskInfo<F, ARGS...>* taskInfo = GTSL::New<TaskInfo<F, ARGS...>>(GetPersistentAllocator(), task, GTSL::ForwardRef<ARGS>(args)...);
+		TaskInfo<F, ARGS...>* taskInfoAlloc = GTSL::New<TaskInfo<F, ARGS...>>(GetPersistentAllocator(), task, GTSL::ForwardRef<ARGS>(args)...);
 
 		auto work = [](ThreadPool* threadPool, void* voidTask) -> void
 		{
@@ -68,7 +68,7 @@ public:
 			GTSL::Call(taskInfo->Delegate, taskInfo->Arguments);
 			static_cast<GTSL::Semaphore*>(GTSL::Get<TUPLE_SEMAPHORE_INDEX>(*task))->Post();
 
-			GTSL::Delete(taskInfo, threadPool->GetPersistentAllocator());
+			GTSL::Delete<TaskInfo<F, ARGS...>>(taskInfo, threadPool->GetPersistentAllocator());
 		};
 		
 		const auto currentIndex = ++index;
@@ -77,10 +77,10 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfo), GTSL::MoveRef(semaphore)))) { return; }
+			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc), GTSL::MoveRef(semaphore)))) { return; }
 		}
 
-		queues[currentIndex % threadCount].Push(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfo), GTSL::MoveRef(semaphore)));
+		queues[currentIndex % threadCount].Push(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc), GTSL::MoveRef(semaphore)));
 	}
 
 private:

@@ -259,12 +259,12 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
-	const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
-	initializeInfo.GameInstance->AddTask("frameStart",
-		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, "FrameStart", "RenderStart");
+	{
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
+		initializeInfo.GameInstance->AddTask("frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, "FrameStart", "RenderStart");
 
-	initializeInfo.GameInstance->AddTask("executeTransfers",
-		GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
+		initializeInfo.GameInstance->AddTask("executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
+	}
 
 	{
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE }/*, { "MaterialSystem", AccessType::READ_WRITE }*/ };
@@ -352,89 +352,89 @@ void RenderSystem::render(TaskInfo taskInfo)
 	beginRenderPass.ClearValues = clearValues;
 	commandBuffer.BeginRenderPass(beginRenderPass);
 	
-	GTSL::Matrix4 projectionMatrix;
-	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
-	//projection_matrix(1, 1) *= -1.f;
-
-	auto pos = positionMatrices[0];
-
-	pos(0, 3) *= -1;
-	pos(1, 3) *= -1;
-	//pos(2, 3) *= -1;
+	//GTSL::Matrix4 projectionMatrix;
+	//GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
+	////projection_matrix(1, 1) *= -1.f;
+	//
+	//auto pos = positionMatrices[0];
+	//
+	//pos(0, 3) *= -1;
+	//pos(1, 3) *= -1;
+	////pos(2, 3) *= -1;
+	//
+	//auto viewMatrix = rotationMatrices[0] * pos;
+	//auto matrix = projectionMatrix * viewMatrix;
+	//auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	//auto& renderGroups = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetRenderGroups();
+	//
+	//GTSL::Array<BindingsSet, 32> bindingsSets;
+	//
+	//bindingsSets.EmplaceBack(materialSystem->globalBindingsSets[GetCurrentFrame()]);
+	//
+	//CommandBuffer::BindBindingsSetInfo globalBind;
+	//globalBind.RenderDevice = GetRenderDevice();
+	//globalBind.FirstSet = 0;
+	//globalBind.BoundSets = 1;
+	//globalBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialSystem->globalBindingsSets[GetCurrentFrame()]);
+	//globalBind.PipelineLayout = &materialSystem->globalPipelineLayout;
+	//globalBind.PipelineType = PipelineType::GRAPHICS;
+	//commandBuffer.BindBindingsSets(globalBind);
+	//
+	//GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
+	//{
+	//	bindingsSets.EmplaceBack(renderGroupData.BindingsSets[GetCurrentFrame()]);
+	//	
+	//	CommandBuffer::BindBindingsSetInfo renderGroupBind;
+	//	renderGroupBind.RenderDevice = GetRenderDevice();
+	//	renderGroupBind.FirstSet = 1;
+	//	renderGroupBind.BoundSets = 1;
+	//	renderGroupBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &renderGroupData.BindingsSets[GetCurrentFrame()]);
+	//	renderGroupBind.PipelineLayout = &renderGroupData.PipelineLayout;
+	//	renderGroupBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
+	//	renderGroupBind.PipelineType = PipelineType::GRAPHICS;
+	//	commandBuffer.BindBindingsSets(renderGroupBind);
+	//
+	//	const auto renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
+	//
+	//	auto positions = renderGroup->GetPositions();
+	//
+	//	uint32 offset = GTSL::Math::PowerOf2RoundUp(static_cast<uint32>(sizeof(GTSL::Matrix4)), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
+	//	BE_ASSERT(GTSL::AlignPointer(GetRenderDevice()->GetMinUniformBufferOffset(), renderGroupData.Data) == renderGroupData.Data, "Oh!");
+	//	const auto data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
+	//
+	//	auto pos = GTSL::Math::Translation(positions[0]); pos(2, 3) *= -1.f;
+	//	*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projectionMatrix * viewMatrix * pos;
+	//	
+	//	GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
+	//	{
+	//		bindingsSets.EmplaceBack(materialInstance.BindingsSets[GetCurrentFrame()]);
+	//		
+	//		CommandBuffer::BindBindingsSetInfo materialBind;
+	//		materialBind.RenderDevice = GetRenderDevice();
+	//		materialBind.FirstSet = 2;
+	//		materialBind.BoundSets = 1;
+	//		materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
+	//		materialBind.PipelineLayout = &materialInstance.PipelineLayout;
+	//		materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset()) * GetCurrentFrame()) }; //CHECK
+	//		materialBind.PipelineType = PipelineType::GRAPHICS;
+	//		commandBuffer.BindBindingsSets(materialBind);
+	//		
+	//		CommandBuffer::BindPipelineInfo bindPipelineInfo;
+	//		bindPipelineInfo.RenderDevice = GetRenderDevice();
+	//		bindPipelineInfo.PipelineType = PipelineType::GRAPHICS;
+	//		bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+	//		commandBuffer.BindPipeline(bindPipelineInfo);
+	//
+	//		renderGroup->Render(taskInfo.GameInstance, this);
+	//		
+	//		bindingsSets.PopBack();
+	//	}
+	//	);
+	//
+	//	bindingsSets.PopBack();
+	//}
+	//);
 	
-	auto viewMatrix = rotationMatrices[0] * pos;
-	auto matrix = projectionMatrix * viewMatrix;
-	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
-	auto& renderGroups = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetRenderGroups();
-
-	GTSL::Array<BindingsSet, 32> bindingsSets;
-
-	bindingsSets.EmplaceBack(materialSystem->globalBindingsSets[GetCurrentFrame()]);
-	
-	CommandBuffer::BindBindingsSetInfo globalBind;
-	globalBind.RenderDevice = GetRenderDevice();
-	globalBind.FirstSet = 0;
-	globalBind.BoundSets = 1;
-	globalBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialSystem->globalBindingsSets[GetCurrentFrame()]);
-	globalBind.PipelineLayout = &materialSystem->globalPipelineLayout;
-	globalBind.PipelineType = PipelineType::GRAPHICS;
-	commandBuffer.BindBindingsSets(globalBind);
-	
-	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
-	{
-		bindingsSets.EmplaceBack(renderGroupData.BindingsSets[GetCurrentFrame()]);
-		
-		CommandBuffer::BindBindingsSetInfo renderGroupBind;
-		renderGroupBind.RenderDevice = GetRenderDevice();
-		renderGroupBind.FirstSet = 1;
-		renderGroupBind.BoundSets = 1;
-		renderGroupBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &renderGroupData.BindingsSets[GetCurrentFrame()]);
-		renderGroupBind.PipelineLayout = &renderGroupData.PipelineLayout;
-		renderGroupBind.Offsets = GTSL::Array<uint32, 1>{ renderDevice.GetMinUniformBufferOffset() * GetCurrentFrame() };
-		renderGroupBind.PipelineType = PipelineType::GRAPHICS;
-		commandBuffer.BindBindingsSets(renderGroupBind);
-
-		const auto renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
-
-		auto positions = renderGroup->GetPositions();
-
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(static_cast<uint32>(sizeof(GTSL::Matrix4)), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
-		BE_ASSERT(GTSL::AlignPointer(GetRenderDevice()->GetMinUniformBufferOffset(), renderGroupData.Data) == renderGroupData.Data, "Oh!");
-		const auto data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
-
-		auto pos = GTSL::Math::Translation(positions[0]); pos(2, 3) *= -1.f;
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projectionMatrix * viewMatrix * pos;
-		
-		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
-		{
-			bindingsSets.EmplaceBack(materialInstance.BindingsSets[GetCurrentFrame()]);
-			
-			CommandBuffer::BindBindingsSetInfo materialBind;
-			materialBind.RenderDevice = GetRenderDevice();
-			materialBind.FirstSet = 2;
-			materialBind.BoundSets = 1;
-			materialBind.BindingsSets = GTSL::Ranger<const BindingsSet>(1, &materialInstance.BindingsSets[GetCurrentFrame()]);
-			materialBind.PipelineLayout = &materialInstance.PipelineLayout;
-			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset()) * GetCurrentFrame()) }; //CHECK
-			materialBind.PipelineType = PipelineType::GRAPHICS;
-			commandBuffer.BindBindingsSets(materialBind);
-			
-			CommandBuffer::BindPipelineInfo bindPipelineInfo;
-			bindPipelineInfo.RenderDevice = GetRenderDevice();
-			bindPipelineInfo.PipelineType = PipelineType::GRAPHICS;
-			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-			commandBuffer.BindPipeline(bindPipelineInfo);
-
-			renderGroup->Render(taskInfo.GameInstance, this);
-			
-			bindingsSets.PopBack();
-		}
-		);
-
-		bindingsSets.PopBack();
-	}
-	);
-
 	CommandBuffer::EndRenderPassInfo endRenderPass;
 	endRenderPass.RenderDevice = GetRenderDevice();
 	commandBuffer.EndRenderPass(endRenderPass);

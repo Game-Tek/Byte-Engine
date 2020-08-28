@@ -4,6 +4,7 @@
 
 #include <GTSL/Allocator.h>
 #include <GTSL/Atomic.hpp>
+#include <GTSL/Mutex.h>
 #include <GTSL/Ranger.h>
 
 #include "ByteEngine/Game/System.h"
@@ -59,6 +60,8 @@ private:
 	Pool* poolsData{ nullptr };
 	const uint32 POOL_COUNT{ 0 };
 	BE::SystemAllocatorReference* systemAllocatorReference{ nullptr };
+
+	mutable GTSL::Mutex globalLock;
 
 	[[nodiscard]] GTSL::Ranger<Pool> pools() const { return GTSL::Ranger<Pool>(POOL_COUNT, poolsData); }
 };

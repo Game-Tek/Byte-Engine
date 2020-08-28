@@ -51,8 +51,9 @@ GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, 
 GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
 recurringGoals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
-dynamicTasksInfo(32, GetTransientAllocator()), taskSorter(64, GetPersistentAllocator()),
-recurringTasksInfo(32, GetPersistentAllocator())
+taskSorter(64, GetPersistentAllocator()),
+recurringTasksInfo(32, GetPersistentAllocator()),
+dynamicTasksInfo(32, GetPersistentAllocator())
 {
 }
 
@@ -98,14 +99,14 @@ void GameInstance::OnUpdate(BE::Application* application)
 	for(uint32 goal = 0; goal < goalCount; ++goal)
 	{
 		{
-			GTSL::ReadLock lock(goalsMutex);
+			GTSL::ReadLock lock(recurringGoalsMutex);
 			localRecurringGoals.EmplaceBack(recurringGoals[goal], GetTransientAllocator());
 		}
 		
 		uint16 recurringGoalNumberOfTasks = localRecurringGoals[goal].GetNumberOfTasks();
 
 		{
-			GTSL::ReadLock lock(dynamicTasksMutex);
+			GTSL::ReadLock lock(dynamicGoalsMutex);
 			localDynamicGoals.EmplaceBack(dynamicGoals[goal], GetTransientAllocator());
 		}
 		
@@ -127,8 +128,10 @@ void GameInstance::OnUpdate(BE::Application* application)
 					const uint16 targetGoalIndex = localRecurringGoals[goal].GetTaskGoalIndex(recurringGoalTask);
 					const auto semaphoreIndex = semaphores[targetGoalIndex].EmplaceBack();
 					
-					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(recurringGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(recurringGoalTask), GTSL::MoveRef(res.Get()));
+					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(recurringGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(goal), GTSL::MoveRef(recurringGoalTask), GTSL::MoveRef(res.Get()));
 
+					//BE_LOG_MESSAGE(localRecurringGoals[goal].GetTaskName(recurringGoalTask).GetString())
+					
 					//BE_LOG_WARNING(genTaskLog("Dispatched recurring task ", localRecurringGoals[goal].GetTaskName(recurringGoalTask), goalNames[goal], localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask), objectNames));
 					
 					--recurringGoalNumberOfTasks;
@@ -148,10 +151,9 @@ void GameInstance::OnUpdate(BE::Application* application)
 				if (auto res = taskSorter.CanRunTask(localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask)))
 				{
 					const uint16 targetGoalIndex = localDynamicGoals[goal].GetTaskGoalIndex(dynamicGoalTask);
-					
 					const auto semaphoreIndex = semaphores[targetGoalIndex].EmplaceBack();
 					
-					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(dynamicGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(dynamicGoalTask), GTSL::MoveRef(res.Get()));
+					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(dynamicGoalTask), &semaphores[targetGoalIndex][semaphoreIndex], this, GTSL::MoveRef(goal), GTSL::MoveRef(dynamicGoalTask), GTSL::MoveRef(res.Get()));
 
 					//BE_LOG_WARNING(genTaskLog("Dispatched dynamic task ", localDynamicGoals[goal].GetTaskName(dynamicGoalTask), goalNames[goal], localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask), objectNames));
 					
@@ -166,23 +168,29 @@ void GameInstance::OnUpdate(BE::Application* application)
 			}
 
 			{
-				GTSL::ReadLock lock(goalsMutex);
+				GTSL::ReadLock lock(recurringGoalsMutex);
 				localRecurringGoals[goal].AddTask(recurringGoals[goal], localRecurringGoals[goal].GetNumberOfTasks(), recurringGoals[goal].GetNumberOfTasks(), GetTransientAllocator());
 				recurringGoalNumberOfTasks += localRecurringGoals[goal].GetNumberOfTasks() - recurringGoals[goal].GetNumberOfTasks();
 			}
 			
 			{
-				GTSL::ReadLock lock(dynamicTasksMutex);
+				GTSL::ReadLock lock(dynamicGoalsMutex);
 				localDynamicGoals[goal].AddTask(dynamicGoals[goal], localDynamicGoals[goal].GetNumberOfTasks(), dynamicGoals[goal].GetNumberOfTasks(), GetTransientAllocator());
 				dynamicGoalNumberOfTasks += localDynamicGoals[goal].GetNumberOfTasks() - dynamicGoals[goal].GetNumberOfTasks();
 			}
 		}
-
-		{
-			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[goal].Clear();
-		}
 	} //goals
+
+	{
+		GTSL::WriteLock lock(dynamicGoalsMutex);
+		GTSL::WriteLock lock2(dynamicTasksInfoMutex);
+		
+		for (uint32 i = 0; i < goalCount; ++i)
+		{
+			dynamicGoals[i].Clear();
+			dynamicTasksInfo[i].ResizeDown(0);
+		}
+	}
 }
 
 void GameInstance::UnloadWorld(const WorldReference worldId)
@@ -200,10 +208,11 @@ void GameInstance::RemoveTask(const Id name, const Id doneFor)
 		GTSL::ReadLock lock(goalNamesMutex);
 		i = getGoalIndex(name);
 	}
-	
-	goalsMutex.WriteLock();
-	recurringGoals[i].RemoveTask(name);
-	goalsMutex.WriteUnlock();
+
+	{
+		GTSL::WriteLock lock(recurringGoalsMutex);
+		recurringGoals[i].RemoveTask(name);
+	}
 
 	BE_ASSERT(false, "No task under specified name!")
 }
@@ -211,12 +220,26 @@ void GameInstance::RemoveTask(const Id name, const Id doneFor)
 void GameInstance::AddGoal(Id name)
 {
 	{	
-		GTSL::WriteLock lock(goalsMutex);
+		GTSL::WriteLock lock(recurringGoalsMutex);
 		
 		recurringGoals.EmplaceBack(16, GetPersistentAllocator());
+	}
+
+	{
+		GTSL::WriteLock lock(dynamicGoalsMutex);
 		dynamicGoals.EmplaceBack(16, GetPersistentAllocator());
 	}
 
+	{
+		GTSL::WriteLock lock(recurringTasksInfoMutex);
+		recurringTasksInfo.EmplaceBack(64, GetPersistentAllocator());
+	}
+	
+	{
+		GTSL::WriteLock lock(dynamicTasksInfoMutex);
+		dynamicTasksInfo.EmplaceBack(64, GetPersistentAllocator());
+	}
+	
 	{
 		GTSL::WriteLock lock(goalNamesMutex);
 

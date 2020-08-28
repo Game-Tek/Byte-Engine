@@ -26,7 +26,7 @@ struct TaskInfo
 
 struct TaskDependency
 {
-	GTSL::Id64 AccessedObject;
+	Id AccessedObject;
 	AccessType Access;
 };
 

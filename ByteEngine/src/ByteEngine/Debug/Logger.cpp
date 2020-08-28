@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <GTSL/Memory.h>
+#include <GTSL/Thread.h>
+
 
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
@@ -37,7 +39,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 	
 	char buffer[1024];
 
-	const uint32 date_length = snprintf(buffer, 1024, "[Date: %02d/%02hhu/%02d]", day_of_month, month, year);
+	const uint32 date_length = snprintf(buffer, 1024, "Counter: %u, Thread: %u, [Date: %02d/%02d/%02d]", counter++, GTSL::Thread::ThisTreadID(), day_of_month, month, year);
 	string += buffer;
 
 	const uint32 time_length = snprintf(buffer, 1024, "[Time: %02d:%02d:%02d]", time.Hour, time.Minute, time.Second);

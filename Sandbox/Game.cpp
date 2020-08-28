@@ -93,7 +93,7 @@ void Game::Initialize()
 	material_create_info.Uniforms = u_array;
 	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -152,7 +152,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 	//auto r = 1.0f;
-	//auto g = 1.0f;
+	//auto g = 1.0f;//
 	//auto b = 1.0f;
 
 	auto* textureSystem = gameInstance->GetSystem<TextureSystem>("TextureSystem");

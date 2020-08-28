@@ -62,38 +62,39 @@ public:
 	template<typename... ARGS>
 	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
-		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
-		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 goalTaskIndex, const uint32 dynamicTaskIndex) -> void
 		{
+			//gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::MESSAGE, "Started recurring task ", i, " ", taskIndex);
+			
 			{
-				GTSL::ReadLock lock(gameInstance->recurringTasksMutex);
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->recurringTasksInfo[i]);
+				GTSL::ReadLock lock(gameInstance->recurringTasksInfoMutex);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->recurringTasksInfo[goal][goalTaskIndex]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 				GTSL::Call(info->Delegate, info->Arguments);
-				GTSL::Delete(info, gameInstance->GetTransientAllocator());
 			}
 
-			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended recurring task ", i, " with data index ", taskIndex);
-
-			gameInstance->taskSorter.ReleaseResources(taskIndex);
+			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
+			//gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::MESSAGE, "Ended recurring task ", i, " ", taskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
-		uint16 start_on_goal_index, task_objective_index;
+		uint16 startOnGoalIndex, taskObjectiveIndex;
 
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			start_on_goal_index = getGoalIndex(startOn);
-			task_objective_index = getGoalIndex(doneFor);
+			startOnGoalIndex = getGoalIndex(startOn);
+			taskObjectiveIndex = getGoalIndex(doneFor);
 		}
 
 		{
-			GTSL::WriteLock lock(recurringTasksMutex);
-			recurringGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
-			recurringTasksInfo.EmplaceBack(taskInfo);
+			GTSL::WriteLock lock(recurringTasksInfoMutex);
+			GTSL::WriteLock lock2(recurringGoalsMutex);
+			recurringGoals[startOnGoalIndex].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>::Create(task), objects, accesses, taskObjectiveIndex, GetPersistentAllocator());
+			recurringTasksInfo[startOnGoalIndex].EmplaceBack(taskInfo);
 		}
 	}
 	
@@ -102,57 +103,60 @@ public:
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
-		auto* task_info = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		
-		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 goalTaskIndex, const uint32 dynamicTaskIndex) -> void
 		{
 			{
-				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+				auto t = gameInstance->goalNames[goal];
+				
+				GTSL::ReadLock lock(gameInstance->dynamicTasksInfoMutex);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[goal][goalTaskIndex]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 				GTSL::Call(info->Delegate, info->Arguments);
-				GTSL::Delete(info, gameInstance->GetTransientAllocator());
+				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetTransientAllocator());
 			}
 
-			gameInstance->taskSorter.ReleaseResources(taskIndex);
-			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended dynamic task ", i, " with data index ", taskIndex);
+			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
-		uint16 start_on_goal_index, task_objective_index;
+		uint16 startOnGoalIndex, taskObjectiveIndex;
 		
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			start_on_goal_index = getGoalIndex(startOn);
-			task_objective_index = getGoalIndex(doneFor);
+			startOnGoalIndex = getGoalIndex(startOn);
+			taskObjectiveIndex = getGoalIndex(doneFor);
 		}
+
+		BE_LOG_MESSAGE("Added task ", name.GetString(), " in goal ", startOn.GetString());
 		
 		{
-			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[start_on_goal_index].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, task_objective_index, GetPersistentAllocator());
-			dynamicTasksInfo.EmplaceBack(task_info);
+			GTSL::WriteLock lock(dynamicTasksInfoMutex);
+			GTSL::WriteLock lock2(dynamicGoalsMutex);
+			dynamicGoals[startOnGoalIndex].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>::Create(task), objects, accesses, taskObjectiveIndex, GetPersistentAllocator());
+			dynamicTasksInfo[startOnGoalIndex].EmplaceBack(taskInfo);
 		}
 	}
 
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, ARGS&&... args)
 	{
-		auto* task_info = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetTransientAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
-		auto task = [](GameInstance* gameInstance, const uint32 i, const uint32 taskIndex) -> void
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 goalTaskIndex, const uint32 dynamicTaskIndex) -> void
 		{
 			{
-				GTSL::ReadLock lock(gameInstance->dynamicTasksMutex);
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[i]);
+				GTSL::ReadLock lock(gameInstance->dynamicTasksInfoMutex);
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(gameInstance->dynamicTasksInfo[goal][goalTaskIndex]);
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 				GTSL::Call(info->Delegate, info->Arguments);
-				GTSL::Delete(info, gameInstance->GetTransientAllocator());
+				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetTransientAllocator());
 			}
 
-			gameInstance->taskSorter.ReleaseResources(taskIndex);
-			gameInstance->getLogger()->PrintObjectLog(gameInstance, BE::Logger::VerbosityLevel::SUCCESS, "Ended dynamic task ", i, " with data index ", taskIndex);
+			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
 		};
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
@@ -162,10 +166,13 @@ public:
 			decomposeTaskDescriptor(dependencies, objects, accesses);
 		}
 
+		BE_LOG_MESSAGE("Added task ", name.GetString(), " in goal ", goalNames[0].GetString());
+		
 		{
-			GTSL::WriteLock lock(dynamicTasksMutex);
-			dynamicGoals[0].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32)>::Create(task), objects, accesses, 1, GetPersistentAllocator());
-			dynamicTasksInfo.EmplaceBack(task_info);
+			GTSL::WriteLock lock(dynamicTasksInfoMutex);
+			GTSL::WriteLock lock2(dynamicGoalsMutex);
+			dynamicGoals[0].AddTask(name, GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>::Create(task), objects, accesses, 1, GetPersistentAllocator());
+			dynamicTasksInfo[0].EmplaceBack(taskInfo);
 		}
 	}
 
@@ -190,20 +197,21 @@ private:
 		GTSL::Tuple<ARGS...> Arguments;
 	};
 	
-	using DispatchFunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32)>;
+	using DispatchFunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>;
 	
-	GTSL::ReadWriteMutex goalsMutex;
+	GTSL::ReadWriteMutex recurringGoalsMutex;
 	GTSL::Vector<Goal<DispatchFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
+	GTSL::ReadWriteMutex dynamicGoalsMutex;
+	GTSL::Vector<Goal<DispatchFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
 	GTSL::ReadWriteMutex goalNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
 
-	GTSL::ReadWriteMutex recurringTasksMutex;
-	GTSL::Vector<void*, BE::PersistentAllocatorReference> recurringTasksInfo;
+	GTSL::ReadWriteMutex recurringTasksInfoMutex;
+	GTSL::Vector<GTSL::Vector<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
 	
-	GTSL::ReadWriteMutex dynamicTasksMutex;
-	GTSL::Vector<void*, BE::TAR> dynamicTasksInfo;
-	GTSL::Vector<Goal<DispatchFunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
+	GTSL::ReadWriteMutex dynamicTasksInfoMutex;
+	GTSL::Vector<GTSL::Vector<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 

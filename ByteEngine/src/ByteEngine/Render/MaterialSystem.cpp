@@ -280,7 +280,6 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64
 	}
 	
 	renderGroupData.Instances.Initialize(32, GetPersistentAllocator());
-	renderGroupData.RenderGroupName = renderGroupName;
 
 	for (uint32 i = 0; i < bindings.GetLength(); ++i)
 	{
@@ -572,8 +571,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	
 	instance.BindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
 	instance.BindingsSets.Resize(loadInfo->RenderSystem->GetFrameCount());
-
-	instance.Name = onMaterialLoadInfo.ResourceName;
 	
 	RasterizationPipeline::CreateInfo pipelineCreateInfo;
 	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();

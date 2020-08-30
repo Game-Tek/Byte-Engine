@@ -49,7 +49,7 @@ GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, 
 }
 
 GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
-recurringGoals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), objectNames(64, GetPersistentAllocator()),
+recurringGoals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()),
 dynamicGoals(32, GetPersistentAllocator()),
 taskSorter(64, GetPersistentAllocator()),
 recurringTasksInfo(32, GetPersistentAllocator()),
@@ -65,8 +65,12 @@ GameInstance::~GameInstance()
 
 		//Call shutdown in reverse order since systems initialized last during application start
 		//may depend on those created before them also for shutdown
+		auto shutdownSystem = [&](System* system) -> void
+		{
+			system->Shutdown(shutdownInfo);
+		};
 		
-		for(auto* end = systems.end() - 1; end > systems.begin() - 1; --end) { (*end)->Shutdown(shutdownInfo); }
+		GTSL::ReverseForEach(systems, shutdownSystem);
 	}
 		
 	World::DestroyInfo destroy_info;

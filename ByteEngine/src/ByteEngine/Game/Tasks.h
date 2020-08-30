@@ -164,10 +164,6 @@ struct TaskSorter
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
 	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator)
 	{
-		currentObjectAccessState.Resize(num);
-		for (auto& e : currentObjectAccessState) { e = 0; }
-		currentObjectAccessCount.Resize(num);
-		for (auto& e : currentObjectAccessCount) { e = 0; }
 	}
 
 	GTSL::Result<uint32> CanRunTask(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
@@ -224,10 +220,17 @@ struct TaskSorter
 		
 		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);
 	}
-	
+
+	void AddSystem()
+	{
+		GTSL::WriteLock lock(mutex);
+		currentObjectAccessState.Emplace(0);
+		currentObjectAccessCount.Emplace(0);
+	}
+
 private:
-	GTSL::Vector<AccessType::value_type, ALLOCATOR> currentObjectAccessState;
-	GTSL::Vector<uint16, ALLOCATOR> currentObjectAccessCount;
+	GTSL::KeepVector<AccessType::value_type, ALLOCATOR> currentObjectAccessState;
+	GTSL::KeepVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
 	GTSL::KeepVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
 	GTSL::KeepVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;

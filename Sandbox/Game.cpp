@@ -124,7 +124,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}
+	//}//
 	
 	MaterialSystem::CreateMaterialInfo create_material_info;
 	create_material_info.GameInstance = gameInstance;
@@ -132,9 +132,6 @@ void Game::PostInitialize()
 	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
-
-	//GetMaterialCollection()->SetMaterialParam(meshMatId, VECTOR3, "Color", &value);
-	//GetMaterialCollection()->SetMaterialTexture(meshMatId, "BrokenWall", brokenWall);
 	
 	//window.ShowMouse(false);
 }

@@ -56,7 +56,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	
 	bindingsManager.AddBinding(materialSystem->globalBindingsSets[currentFrame], PipelineType::RASTER, materialSystem->globalPipelineLayout);
 	
-	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
+	GTSL::PairForEach(renderGroups, [&](uint64 renderGroupKey, MaterialSystem::RenderGroupData& renderGroupData)
 	{
 		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * currentFrame;
 		auto* const data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
@@ -64,7 +64,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		auto renderGroupOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(64/*matrix size*/, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
 		bindingsManager.AddBinding(renderGroupData.BindingsSets[currentFrame], renderGroupOffsets, PipelineType::RASTER, renderGroupData.PipelineLayout);
 
-		auto* const renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
+		auto* const renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	
 		auto positions = renderGroup->GetPositions();
 	
@@ -72,12 +72,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pos(2, 3) *= -1.f;
 		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projectionMatrix * viewMatrix * pos;
 		
-		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
+		GTSL::PairForEach(renderGroupData.Instances, [&](const uint64 materialKey, const MaterialSystem::MaterialInstance& materialInstance)
 		{
 			auto materialOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
 			bindingsManager.AddBinding(materialInstance.BindingsSets[currentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
 
-			if (materialSystem->IsMaterialReady(renderGroupData.RenderGroupName, materialInstance.Name))
+			if (materialSystem->IsMaterialReady(renderGroupKey, materialKey))
 			{				
 				CommandBuffer::BindPipelineInfo bindPipelineInfo;
 				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();

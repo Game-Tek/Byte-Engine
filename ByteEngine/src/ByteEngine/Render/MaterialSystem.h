@@ -44,14 +44,11 @@ public:
 			GTSL::Array<uint32, 6> ParameterOffset;
 		} ShaderParameters;
 
-		Id Name;
-
 		MaterialInstance() = default;
 	};
 
 	struct RenderGroupData
 	{
-		Id RenderGroupName;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
@@ -87,7 +84,7 @@ public:
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 
-	bool IsMaterialReady(const Id renderGroup, const Id material) { return isRenderGroupReady.At(renderGroup) && isMaterialReady.At(material); }
+	bool IsMaterialReady(const uint64 renderGroup, const uint64 material) { return isRenderGroupReady.At(renderGroup) && isMaterialReady.At(material); }
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);

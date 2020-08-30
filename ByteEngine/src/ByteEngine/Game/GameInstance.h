@@ -163,10 +163,10 @@ public:
 private:
 	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
-	GTSL::Vector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::KeepVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
 
-	GTSL::Vector<Id, BE::PersistentAllocatorReference> objectNames;
+	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	template<typename... ARGS>
 	struct DispatchTaskInfo
@@ -214,9 +214,7 @@ private:
 		
 		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
 		{
-			object[i] = 0;
-			for (auto object_name : objectNames) { if (object_name == (taskDependencies + i)->AccessedObject) break; ++object[i]; }
-			BE_ASSERT(object[i] != objectNames.GetLength(), "No object found with that name!")
+			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject);
 			access[i] = (taskDependencies + i)->Access;
 		}
 	}
@@ -273,13 +271,16 @@ public:
 
 		{
 			GTSL::WriteLock lock(systemsMutex);
-			auto l = systems.EmplaceBack(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
+			auto l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
 			systemsMap.Emplace(systemName, systems[l]);
-			objectNames.EmplaceBack(systemName);
+			systemsIndirectionTable.Emplace(systemName, l);
 			system = systems[l];
 		}
 
 		initSystem(system, systemName);
+
+		taskSorter.AddSystem();
+		
 		return static_cast<T*>(system);
 	}
 };

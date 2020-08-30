@@ -30,6 +30,9 @@ struct TaskInfo
 
 struct TaskDependency
 {
+	TaskDependency() = default;
+	TaskDependency(const Id object, const AccessType access) : AccessedObject(object), Access(access) {}
+	
 	Id AccessedObject;
 	AccessType Access;
 };
@@ -101,7 +104,7 @@ struct Goal
 		tasks.PushBack(GTSL::Ranger<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
 	}
 
-	void RemoveTask(const GTSL::Id64 name)
+	void RemoveTask(const Id name)
 	{
 		auto res = taskNames.Find(name);
 		BE_ASSERT(res != taskNames.end(), "No task by that name");
@@ -115,17 +118,17 @@ struct Goal
 		tasks.Pop(i);
 	}
 
-	TASK GetTask(const uint32 i) { return tasks[i]; }
+	[[nodiscard]] TASK GetTask(const uint32 i) const { return tasks[i]; }
 
-	GTSL::Ranger<const uint16> GetTaskAccessedObjects(uint16 task) { return taskAccessedObjects[task]; }
+	[[nodiscard]] GTSL::Ranger<const uint16> GetTaskAccessedObjects(uint16 task) const { return taskAccessedObjects[task]; }
 
-	GTSL::Ranger<const AccessType> GetTaskAccessTypes(uint16 task) { return taskAccessTypes[task]; }
+	[[nodiscard]] GTSL::Ranger<const AccessType> GetTaskAccessTypes(uint16 task) const { return taskAccessTypes[task]; }
 
-	Id GetTaskName(const uint16 task) const { return taskNames[task]; }
-	
-	uint16 GetNumberOfTasks() { return static_cast<uint16>(tasks.GetLength()); }
-	
-	uint16 GetTaskGoalIndex(const uint16 task) { return taskGoalIndex[task]; }
+	[[nodiscard]] Id GetTaskName(const uint16 task) const { return taskNames[task]; }
+
+	[[nodiscard]] uint16 GetNumberOfTasks() const { return static_cast<uint16>(tasks.GetLength()); }
+
+	[[nodiscard]] uint16 GetTaskGoalIndex(const uint16 task) const { return taskGoalIndex[task]; }
 
 	void Clear()
 	{
@@ -139,7 +142,9 @@ struct Goal
 		taskNames.ResizeDown(0);
 		tasks.ResizeDown(0);
 	}
-	
+
+	bool DoesTaskExist(const Id id) const { return taskNames.Find(id) != taskNames.end(); }
+
 private:
 	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
 	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> taskAccessTypes;

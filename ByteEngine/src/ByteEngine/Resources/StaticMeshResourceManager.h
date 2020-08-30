@@ -34,6 +34,8 @@ public:
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
 		uint16 IndexCount;
+
+		uint32 IndicesOffset;
 		
 		/**
 		 * \brief Size of a single vertex.

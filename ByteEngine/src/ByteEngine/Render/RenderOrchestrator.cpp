@@ -30,13 +30,12 @@ void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderOrchestrator::Render(TaskInfo taskInfo)
 {
-	RenderGroup::RenderInfo renderInfo;
-	renderInfo.GameInstance = taskInfo.GameInstance;
-	renderInfo.RenderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	renderInfo.MaterialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
-
-	auto& commandBuffer = *renderInfo.RenderSystem->GetCurrentCommandBuffer();
-
+	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
+	uint8 currentFrame = renderSystem->GetCurrentFrame();
+	
+	BindingsManager<BE::TAR> bindingsManager(GetTransientAllocator(), renderSystem, renderSystem->GetCurrentCommandBuffer());
+	
 	auto positionMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
 	auto rotationMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
 	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
@@ -44,30 +43,30 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	GTSL::Matrix4 projectionMatrix;
 	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
 	
-	auto pos = positionMatrices[0];
+	auto cameraPosition = positionMatrices[0];
 	
-	pos(0, 3) *= -1;
-	pos(1, 3) *= -1;
+	cameraPosition(0, 3) *= -1;
+	cameraPosition(1, 3) *= -1;
 	
-	auto viewMatrix = rotationMatrices[0] * pos;
+	auto viewMatrix = rotationMatrices[0] * cameraPosition;
 	auto matrix = projectionMatrix * viewMatrix;
+	
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto& renderGroups = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->GetRenderGroups();
 	
-	BindingsManager<BE::TAR> bindingsManager(GetTransientAllocator(), renderInfo.RenderSystem, const_cast<CommandBuffer*>(renderInfo.RenderSystem->GetCurrentCommandBuffer()));
-	
-	bindingsManager.AddBinding(materialSystem->globalBindingsSets[renderInfo.RenderSystem->GetCurrentFrame()], PipelineType::GRAPHICS, materialSystem->globalPipelineLayout);
+	bindingsManager.AddBinding(materialSystem->globalBindingsSets[currentFrame], PipelineType::RASTER, materialSystem->globalPipelineLayout);
 	
 	GTSL::ForEach(renderGroups, [&](MaterialSystem::RenderGroupData& renderGroupData)
 	{
-		bindingsManager.AddBinding(renderGroupData.BindingsSets[renderInfo.RenderSystem->GetCurrentFrame()], PipelineType::GRAPHICS, renderGroupData.PipelineLayout);
-	
-		const auto renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
+		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * currentFrame;
+		auto* const data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
+
+		auto renderGroupOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(64/*matrix size*/, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
+		bindingsManager.AddBinding(renderGroupData.BindingsSets[currentFrame], renderGroupOffsets, PipelineType::RASTER, renderGroupData.PipelineLayout);
+
+		auto* const renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>(renderGroupData.RenderGroupName);
 	
 		auto positions = renderGroup->GetPositions();
-	
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(static_cast<uint32>(sizeof(GTSL::Matrix4)), GetRenderDevice()->GetMinUniformBufferOffset()) * GetCurrentFrame();
-		const auto data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
 	
 		auto pos = GTSL::Math::Translation(positions[0]);
 		pos(2, 3) *= -1.f;
@@ -75,16 +74,39 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		
 		GTSL::ForEach(renderGroupData.Instances, [&](const MaterialSystem::MaterialInstance& materialInstance)
 		{
-			bindingsManager.AddBinding(materialInstance.BindingsSets[renderInfo.RenderSystem->GetCurrentFrame()], PipelineType::GRAPHICS, materialInstance.PipelineLayout);
-			materialBind.Offsets = GTSL::Array<uint32, 1>{ static_cast<uint32>(GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderDevice.GetMinUniformBufferOffset()) * GetCurrentFrame()) }; //CHECK
-			
-			CommandBuffer::BindPipelineInfo bindPipelineInfo;
-			bindPipelineInfo.RenderDevice = GetRenderDevice();
-			bindPipelineInfo.PipelineType = PipelineType::GRAPHICS;
-			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-			commandBuffer.BindPipeline(bindPipelineInfo);
-	
-			renderGroup->Render(taskInfo.GameInstance, this);
+			auto materialOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
+			bindingsManager.AddBinding(materialInstance.BindingsSets[currentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+
+			if (materialSystem->IsMaterialReady(renderGroupData.RenderGroupName, materialInstance.Name))
+			{				
+				CommandBuffer::BindPipelineInfo bindPipelineInfo;
+				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+				bindPipelineInfo.PipelineType = PipelineType::RASTER;
+				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+				commandBuffer.BindPipeline(bindPipelineInfo);
+
+				for (const auto& e : renderGroup->GetMeshes())
+				{
+					CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+					bindVertexInfo.RenderDevice = renderSystem->GetRenderDevice();
+					bindVertexInfo.Buffer = &e.Buffer;
+					bindVertexInfo.Offset = 0;
+					renderSystem->GetCurrentCommandBuffer()->BindVertexBuffer(bindVertexInfo);
+
+					CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+					bindIndexBuffer.RenderDevice = renderSystem->GetRenderDevice();
+					bindIndexBuffer.Buffer = &e.Buffer;
+					bindIndexBuffer.Offset = e.IndicesOffset;
+					bindIndexBuffer.IndexType = e.IndexType;
+					renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bindIndexBuffer);
+
+					CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+					drawIndexedInfo.RenderDevice = renderSystem->GetRenderDevice();
+					drawIndexedInfo.InstanceCount = 1;
+					drawIndexedInfo.IndexCount = e.IndicesCount;
+					renderSystem->GetCurrentCommandBuffer()->DrawIndexed(drawIndexedInfo);
+				}
+			}
 			
 			bindingsManager.PopBindings();
 		}
@@ -93,18 +115,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		bindingsManager.PopBindings();
 	}
 	);
-	
-	//for(const auto e : systems)
-	//{
-	//	taskInfo.GameInstance->GetSystem<RenderGroup>(e)->Render(renderInfo);
-	//}
 }
 
 void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGroupName, RenderGroup* renderGroup)
 {
 	systems.EmplaceBack(renderGroupName);
-	systemsAccesses.EmplaceBack(renderGroup->GetRenderDependencies());
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderFinished");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
 	{
@@ -127,19 +143,14 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 	
 	systems.Pop(element - systems.begin());
 	systemsAccesses.Pop(element - systems.begin());
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderFinished");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
 	{
-		uint32 i = 0;
-
-		for(uint32 j = 0; j < dependencies.GetLength(); ++j)
+		for(uint32 i = 0; i < dependencies.GetLength(); ++i)
 		{
-			for(uint32 k = 0; k < systemsAccesses[j].GetLength(); ++k)
-			{
-				dependencies[i] = systemsAccesses[j][k];
-				++i;
-			}
+			dependencies[i].AccessedObject = systems[i];
+			dependencies[i].Access = AccessType::READ;
 		}
 	}
 

@@ -32,18 +32,6 @@ public:
 	void OnUpdate(BE::Application* application);
 
 	using WorldReference = uint8;
-
-	template<typename T>
-	T* AddSystem(const Id systemName)
-	{
-		GTSL::WriteLock lock(systemsMutex);
-		
-		auto l = systems.EmplaceBack(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
-		systemsMap.Emplace(systemName, systems[l]);
-		objectNames.EmplaceBack(systemName);
-		initSystem(systems[l], systemName);
-		return static_cast<T*>(systems[l].GetData());
-	}
 	
 	struct CreateNewWorldInfo
 	{
@@ -63,6 +51,8 @@ public:
 	template<typename... ARGS>
 	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
+		if constexpr (_DEBUG) { if (assertTask(name, startOn, doneFor, dependencies)) { return; } }
+		
 		auto taskInfo = GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>::Create<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 goalTaskIndex, const uint32 dynamicTaskIndex) -> void
@@ -96,7 +86,7 @@ public:
 		}
 	}
 	
-	void RemoveTask(Id name, Id doneFor);
+	void RemoveTask(Id name, Id startOn);
 
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
@@ -171,7 +161,7 @@ public:
 	void AddGoal(Id name);
 	
 private:
-	GTSL::ReadWriteMutex systemsMutex;
+	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	GTSL::Vector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
@@ -189,18 +179,18 @@ private:
 		GTSL::Tuple<ARGS...> Arguments;
 	};
 	
-	GTSL::ReadWriteMutex recurringGoalsMutex;
+	mutable GTSL::ReadWriteMutex recurringGoalsMutex;
 	GTSL::Vector<Goal<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
-	GTSL::ReadWriteMutex dynamicGoalsMutex;
+	mutable GTSL::ReadWriteMutex dynamicGoalsMutex;
 	GTSL::Vector<Goal<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
 
-	GTSL::ReadWriteMutex goalNamesMutex;
+	mutable GTSL::ReadWriteMutex goalNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
 
-	GTSL::ReadWriteMutex recurringTasksInfoMutex;
+	mutable GTSL::ReadWriteMutex recurringTasksInfoMutex;
 	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
 	
-	GTSL::ReadWriteMutex dynamicTasksInfoMutex;
+	mutable GTSL::ReadWriteMutex dynamicTasksInfoMutex;
 	GTSL::Vector<GTSL::Vector<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
@@ -210,7 +200,7 @@ private:
 	void initWorld(uint8 worldId);
 	void initSystem(System* system, GTSL::Id64 name);
 
-	uint16 getGoalIndex(const Id name)
+	uint16 getGoalIndex(const Id name) const
 	{
 		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
 		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
@@ -229,5 +219,67 @@ private:
 			BE_ASSERT(object[i] != objectNames.GetLength(), "No object found with that name!")
 			access[i] = (taskDependencies + i)->Access;
 		}
+	}
+
+	[[nodiscard]] bool assertTask(const Id name, const Id startGoal, const Id endGoal, const GTSL::Ranger<const TaskDependency> dependencies) const
+	{
+		{
+			GTSL::ReadLock lock(goalNamesMutex);
+			
+			if (goalNames.Find(startGoal) == goalNames.end())
+			{
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				return true;
+			}
+
+			//assert done for exists
+			if (goalNames.Find(endGoal) == goalNames.end())
+			{
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " ending for goal ", endGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				return true;
+			}
+		}
+
+		{
+			GTSL::ReadLock lock(recurringGoalsMutex);
+			
+			if (recurringGoals[getGoalIndex(startGoal)].DoesTaskExist(name))
+			{
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " which already exists to goal ", startGoal.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+				return true;
+			}
+		}
+
+		{
+			GTSL::ReadLock lock(systemsMutex);
+
+			for(auto e : dependencies)
+			{
+				if (!systemsMap.Find(e.AccessedObject)) {
+					BE_LOG_WARNING("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+public:
+	template<typename T>
+	T* AddSystem(const Id systemName)
+	{
+		System* system;
+
+		{
+			GTSL::WriteLock lock(systemsMutex);
+			auto l = systems.EmplaceBack(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
+			systemsMap.Emplace(systemName, systems[l]);
+			objectNames.EmplaceBack(systemName);
+			system = systems[l];
+		}
+
+		initSystem(system, systemName);
+		return static_cast<T*>(system);
 	}
 };

@@ -19,23 +19,24 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	apiAllocations.Initialize(16, GetPersistentAllocator());
 
 	{		
-		RenderDevice::CreateInfo create_info;
-		create_info.ApplicationName = GTSL::StaticString<128>("Test");
+		RenderDevice::CreateInfo createInfo;
+		createInfo.ApplicationName = GTSL::StaticString<128>("Test");
 		
 		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
 		queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
 		queue_create_infos[0].QueuePriority = 1.0f;
 		queue_create_infos[1].Capabilities = static_cast<uint8>(QueueCapabilities::TRANSFER);
 		queue_create_infos[1].QueuePriority = 1.0f;
-		create_info.QueueCreateInfos = queue_create_infos;
+		createInfo.QueueCreateInfos = queue_create_infos;
 		auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
-		create_info.Queues = queues;
-		create_info.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
-		create_info.AllocationInfo.UserData = this;
-		create_info.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
-		create_info.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
-		create_info.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
-		::new(&renderDevice) RenderDevice(create_info);
+		createInfo.Queues = queues;
+		createInfo.Extensions = GTSL::Array<RenderDevice::Extension, 16>{ RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
+		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
+		createInfo.AllocationInfo.UserData = this;
+		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
+		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
+		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
+		::new(&renderDevice) RenderDevice(createInfo);
 
 		graphicsQueue = queues[0]; transferQueue = queues[1];
 	}
@@ -290,7 +291,12 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	{
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE }/*, { "MaterialSystem", AccessType::READ_WRITE }*/ };
-		initializeInfo.GameInstance->AddTask("render", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderSetup>(this), actsOn, "RenderStart", "FrameEnd");
+		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderSetup>(this), actsOn, "RenderStart", "FrameEnd");
+	}
+
+	{
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
+		initializeInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
 	}
 }
 

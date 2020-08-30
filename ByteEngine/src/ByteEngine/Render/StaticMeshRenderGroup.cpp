@@ -5,17 +5,16 @@
 
 class RenderStaticMeshCollection;
 
-StaticMeshRenderGroup::StaticMeshRenderGroup() : meshBuffers(64, GetPersistentAllocator()),
-indicesOffsets(64, GetPersistentAllocator()), renderAllocations(64, GetPersistentAllocator()),
-indicesCount(64, GetPersistentAllocator()), indexTypes(64, GetPersistentAllocator())
+StaticMeshRenderGroup::StaticMeshRenderGroup()
 {
 }
 
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-
 	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+	meshes.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator()),
+	renderAllocations.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
@@ -24,33 +23,11 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	RenderSystem* render_system = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
-	for (auto& e : meshBuffers) { e.Destroy(render_system->GetRenderDevice()); }
-	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e); }
-}
-
-void StaticMeshRenderGroup::Render(GameInstance* gameInstance, const RenderSystem* renderSystem)
-{	
-	for(uint32 i = 0; i < meshBuffers.GetLength(); ++i)
-	{		
-		CommandBuffer::BindVertexBufferInfo bind_vertex_info;
-		bind_vertex_info.RenderDevice = renderSystem->GetRenderDevice();
-		bind_vertex_info.Buffer = &meshBuffers[i];
-		bind_vertex_info.Offset = 0;
-		renderSystem->GetCurrentCommandBuffer()->BindVertexBuffer(bind_vertex_info);
-		
-		CommandBuffer::BindIndexBufferInfo bind_index_buffer;
-		bind_index_buffer.RenderDevice = renderSystem->GetRenderDevice();
-		bind_index_buffer.Buffer = &meshBuffers[i];
-		bind_index_buffer.Offset = indicesOffsets[i];
-		bind_index_buffer.IndexType = indexTypes[i];
-		renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bind_index_buffer);
-		
-		CommandBuffer::DrawIndexedInfo draw_indexed_info;
-		draw_indexed_info.RenderDevice = renderSystem->GetRenderDevice();
-		draw_indexed_info.InstanceCount = 1;
-		draw_indexed_info.IndexCount = indicesCount[i];
-		renderSystem->GetCurrentCommandBuffer()->DrawIndexed(draw_indexed_info);
+	for (auto& e : meshes)
+	{
+		e.Buffer.Destroy(render_system->GetRenderDevice());
 	}
+	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e); }
 }
 
 ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
@@ -94,7 +71,6 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
-	indicesOffsets.Insert(index, indicesOffset);
 	positions.EmplaceBack();
 	
 	return index++;
@@ -134,11 +110,18 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
 	buffer_copy_data.Allocation = loadInfo->Allocation;
 	loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
+
+	{
+		Mesh mesh;
+		mesh.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+		mesh.IndicesCount = onStaticMeshLoad.IndexCount;
+		mesh.IndicesOffset = onStaticMeshLoad.IndicesOffset;
+		mesh.Buffer = deviceBuffer;
+		
+		meshes.Insert(loadInfo->InstanceId, mesh);
+	}
 	
-	meshBuffers.Insert(loadInfo->InstanceId, deviceBuffer);
 	renderAllocations.Insert(loadInfo->InstanceId, loadInfo->Allocation);
-	indicesCount.Insert(loadInfo->InstanceId, onStaticMeshLoad.IndexCount);
-	indexTypes.Insert(loadInfo->InstanceId, SelectIndexType(onStaticMeshLoad.IndexSize));
 
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }

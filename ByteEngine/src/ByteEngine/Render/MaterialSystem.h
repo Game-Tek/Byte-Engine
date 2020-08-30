@@ -43,7 +43,9 @@ public:
 			GTSL::Array<Id, 6> ParameterNames;
 			GTSL::Array<uint32, 6> ParameterOffset;
 		} ShaderParameters;
-		
+
+		Id Name;
+
 		MaterialInstance() = default;
 	};
 
@@ -84,12 +86,15 @@ public:
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
-	
+
+	bool IsMaterialReady(const Id renderGroup, const Id material) { return isRenderGroupReady.At(renderGroup) && isMaterialReady.At(material); }
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
 	Vector<GTSL::Pair<Id, Id>> materialNames;
+	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isRenderGroupReady;
+	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isMaterialReady;
 
 	struct BindingsUpdateData
 	{

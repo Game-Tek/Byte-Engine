@@ -124,8 +124,11 @@ inline Dimension ConvertDimension(const GAL::Dimension dimension)
 
 inline IndexType SelectIndexType(const uint64 indexSize)
 {
-	BE_ASSERT(indexSize == 2 || indexSize == 4, "Unexpected size");
-	return indexSize == 2 ? IndexType::UINT16 : IndexType::UINT32;
+	if constexpr (API == GAL::RenderAPI::VULKAN)
+	{
+		BE_ASSERT(indexSize == 2 || indexSize == 4, "Unexpected size");
+		return indexSize == 2 ? IndexType::UINT16 : IndexType::UINT32;
+	}
 }
 
 inline TextureFormat ConvertFormat(const GAL::TextureFormat format)

@@ -17,8 +17,6 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	
-	void Render(GameInstance* gameInstance, const RenderSystem* renderSystem);
 
 	struct AddStaticMeshInfo
 	{
@@ -33,6 +31,8 @@ public:
 	[[nodiscard]] GTSL::Ranger<const GTSL::Id64> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component] = vector3; }
+
+	
 	
 private:
 	struct MeshLoadInfo
@@ -51,13 +51,20 @@ private:
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
 	uint32 index = 0;
+
+	struct Mesh
+	{
+		Buffer Buffer;
+		uint32 IndicesOffset;
+		uint32 IndicesCount;
+		IndexType IndexType;
+	};
 	
-	GTSL::Vector<Buffer, BE::PersistentAllocatorReference> meshBuffers;
-	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesOffsets;
-	GTSL::Vector<uint32, BE::PersistentAllocatorReference> indicesCount;
+	GTSL::Vector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
-	GTSL::Vector<IndexType, BE::PersistentAllocatorReference> indexTypes;
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	GTSL::Vector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+public:
+	GTSL::Ranger<const Mesh> GetMeshes() const { return meshes; }
 };

@@ -116,7 +116,6 @@
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
     <ClInclude Include="src\ByteEngine\PlayableAsset.h" />
-    <ClInclude Include="src\ByteEngine\ScreenQuad.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Debug\FunctionTimer.h" />
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />

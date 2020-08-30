@@ -139,6 +139,7 @@ public:
 
 	RenderPass* GetRenderPass() { return &renderPass; }
 
+	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 

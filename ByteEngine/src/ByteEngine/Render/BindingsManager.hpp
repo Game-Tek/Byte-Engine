@@ -28,6 +28,22 @@ public:
 		boundBindingsPerSet.EmplaceBack(1);
 	}
 
+	void AddBinding(BindingsSet binding, const GTSL::Ranger<const uint32> offsets, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
+	{
+		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
+		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
+		bindBindingsSetInfo.FirstSet = boundSets;
+		bindBindingsSetInfo.BoundSets = 1;
+		bindBindingsSetInfo.BindingsSets = GTSL::Ranger<BindingsSet>(1, &binding);
+		bindBindingsSetInfo.PipelineLayout = &pipelineLayout;
+		bindBindingsSetInfo.PipelineType = pipelineType;
+		bindBindingsSetInfo.Offsets = offsets;
+		commandBuffer->BindBindingsSets(bindBindingsSetInfo);
+
+		boundSets += 1;
+		boundBindingsPerSet.EmplaceBack(1);
+	}
+
 	void AddBindings(const GTSL::Ranger<BindingsSet> bindings, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
 	{
 		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
@@ -52,6 +68,6 @@ private:
 	RenderSystem* renderSystem;
 	CommandBuffer* commandBuffer;
 
-	Vector<uint8> boundBindingsPerSet;
+	Vector<uint8, ALLOCATOR> boundBindingsPerSet;
 	uint32 boundSets = 0;
 };

@@ -113,6 +113,7 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	on_static_mesh_load.VertexSize = GAL::GraphicsPipeline::GetVertexSize(GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin())));
 	on_static_mesh_load.IndexCount = meshInfo.IndicesSize / meshInfo.IndexSize;
 	on_static_mesh_load.VertexCount = meshInfo.VerticesSize / on_static_mesh_load.VertexSize;
+	on_static_mesh_load.IndicesOffset = indices - vertices;
 	on_static_mesh_load.VertexDescriptor = GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin()));
 	on_static_mesh_load.IndexSize = meshInfo.IndexSize;
 	on_static_mesh_load.UserData = loadStaticMeshInfo.UserData;

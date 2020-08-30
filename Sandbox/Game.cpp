@@ -117,14 +117,14 @@ void Game::PostInitialize()
 	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 
-	{
-		TextureSystem::CreateTextureInfo createTextureInfo;
-		createTextureInfo.RenderSystem = renderSystem;
-		createTextureInfo.GameInstance = gameInstance;
-		createTextureInfo.TextureName = "hydrant_Albedo";
-		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	}
+	//{
+	//	TextureSystem::CreateTextureInfo createTextureInfo;
+	//	createTextureInfo.RenderSystem = renderSystem;
+	//	createTextureInfo.GameInstance = gameInstance;
+	//	createTextureInfo.TextureName = "hydrant_Albedo";
+	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	//}
 	
 	MaterialSystem::CreateMaterialInfo create_material_info;
 	create_material_info.GameInstance = gameInstance;

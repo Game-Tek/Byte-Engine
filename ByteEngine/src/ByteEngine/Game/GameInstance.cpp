@@ -201,27 +201,55 @@ void GameInstance::UnloadWorld(const WorldReference worldId)
 	worlds.Pop(worldId);
 }
 
-void GameInstance::RemoveTask(const Id name, const Id doneFor)
+void GameInstance::RemoveTask(const Id name, const Id startOn)
 {
 	uint16 i = 0;
+
+	if constexpr (_DEBUG) {
+		GTSL::ReadLock lock(goalNamesMutex);
+		GTSL::WriteLock lock2(recurringGoalsMutex);
+		
+		if(goalNames.Find(startOn) == goalNames.end()) {
+			BE_LOG_WARNING("Tried to remove task ", name.GetString(), " from goal ", startOn.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			return;
+		}
+
+		i = getGoalIndex(startOn);
+		
+		if(!recurringGoals[i].DoesTaskExist(name)) {
+			BE_LOG_WARNING("Tried to remove task ", name.GetString(), " which doesn't exist from goal ", startOn.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+			return;
+		}
+	}
+	
 	{
 		GTSL::ReadLock lock(goalNamesMutex);
-		i = getGoalIndex(name);
+		i = getGoalIndex(startOn);
 	}
 
 	{
 		GTSL::WriteLock lock(recurringGoalsMutex);
 		recurringGoals[i].RemoveTask(name);
 	}
-
-	BE_ASSERT(false, "No task under specified name!")
 }
 
 void GameInstance::AddGoal(Id name)
 {
-	{	
+	if constexpr (_DEBUG) {
+		GTSL::WriteLock lock(goalNamesMutex);
+		if (goalNames.Find(name) != goalNames.end()) {
+			BE_LOG_WARNING("Tried to add goal ", name.GetString(), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
+			return;
+		}
+	}
+
+	{
+		GTSL::WriteLock lock(goalNamesMutex);
+		goalNames.EmplaceBack(name);
+	}
+	
+	{
 		GTSL::WriteLock lock(recurringGoalsMutex);
-		
 		recurringGoals.EmplaceBack(16, GetPersistentAllocator());
 	}
 
@@ -234,19 +262,10 @@ void GameInstance::AddGoal(Id name)
 		GTSL::WriteLock lock(recurringTasksInfoMutex);
 		recurringTasksInfo.EmplaceBack(64, GetPersistentAllocator());
 	}
-	
+
 	{
 		GTSL::WriteLock lock(dynamicTasksInfoMutex);
 		dynamicTasksInfo.EmplaceBack(64, GetPersistentAllocator());
-	}
-	
-	{
-		GTSL::WriteLock lock(goalNamesMutex);
-
-		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
-		BE_ASSERT(i == goalNames.GetLength(), "There is already a goal with that name!")
-		
-		goalNames.EmplaceBack(name);
 	}
 }
 
@@ -264,24 +283,3 @@ void GameInstance::initSystem(System* system, const GTSL::Id64 name)
 	initializeInfo.ScalingFactor = scalingFactor;
 	system->Initialize(initializeInfo);
 }
-
-//using task_sorter_t = decltype(taskSorter);
-//using on_done_args = GTSL::Tuple<GTSL::Array<uint16, 64>, GTSL::Array<AccessType, 64>, task_sorter_t*>;
-
-//auto on_done = [](const GTSL::Array<uint16, 64>& objects, const GTSL::Array<AccessType, 64>& accesses, task_sorter_t* taskSorter) -> void
-//{
-//	taskSorter->ReleaseResources(objects, accesses);
-//	GTSL::StaticString<1024> log;
-//
-//	log += "Task finished";
-//	log += '\n';
-//	log += "With accesses: \n	";
-//	for (const auto& e : accesses) { log += AccessTypeToString(e); log += ", "; }
-//	log += '\n';
-//	log += "Accessed objects: \n	";
-//	for (const auto& e : objects) { log += e; log += ", "; }
-//
-//	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, log);
-//};
-
-//const auto onDoneDel = GTSL::Delegate<void(const GTSL::Array<uint16, 64>&, const GTSL::Array<AccessType, 64>&, task_sorter_t*)>::Create(on_done);

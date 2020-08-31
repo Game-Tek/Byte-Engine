@@ -53,7 +53,7 @@ using RasterizationPipeline = GAL::VulkanRasterizationPipeline;
 
 using CullMode = GAL::CullMode;
 using IndexType = GAL::VulkanIndexType;
-using Dimension = GAL::VulkanDimensions;
+using Dimensions = GAL::VulkanDimensions;
 using ColorSpace = GAL::VulkanColorSpace;
 using BufferType = GAL::VulkanBufferType;
 using MemoryType = GAL::VulkanMemoryType;
@@ -114,7 +114,7 @@ inline BindingType ConvertBindingType(const GAL::BindingType bindingsType)
 }
 
 
-inline Dimension ConvertDimension(const GAL::Dimension dimension)
+inline Dimensions ConvertDimension(const GAL::Dimension dimension)
 {
 	if constexpr (API == GAL::RenderAPI::VULKAN)
 	{

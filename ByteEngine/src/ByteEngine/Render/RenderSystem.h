@@ -33,6 +33,8 @@ public:
 		
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetImageMemoryRequirements(&allocationInfo.Texture, memoryRequirements);
+
+		allocationInfo.Allocation->Size = memoryRequirements.Size;
 		
 		localMemoryAllocator.AllocateTexture(renderDevice, &deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
 
@@ -92,6 +94,8 @@ public:
 		renderDevice.GetBufferMemoryRequirements(&memoryAllocationInfo.Buffer, memoryRequirements);
 
 		DeviceMemory deviceMemory;
+
+		memoryAllocationInfo.Allocation->Size = memoryRequirements.Size;
 		
 		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
 
@@ -168,6 +172,10 @@ private:
 	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
 	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
+
+	RenderAllocation depthTextureAllocation;
+	Texture depthTexture;
+	TextureView depthTextureView;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;

@@ -73,7 +73,7 @@ void Game::Initialize()
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	/// <summary>
-	/// Push bindings only for actual shader
+	/// Push bindings only for actual shader//
 	/// </summary>
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
@@ -95,7 +95,7 @@ void Game::Initialize()
 	
 	//show loading screen
 	//load menu
-	//show menu//
+	//show menu
 	//start game
 }
 
@@ -133,7 +133,7 @@ void Game::PostInitialize()
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
@@ -149,7 +149,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 	//auto r = 1.0f;
-	//auto g = 1.0f;//
+	//auto g = 1.0f;
 	//auto b = 1.0f;
 
 	auto* textureSystem = gameInstance->GetSystem<TextureSystem>("TextureSystem");

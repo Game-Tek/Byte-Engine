@@ -117,7 +117,7 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
 		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
-		textureCreateInfo.SourceFormat = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
+		textureCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
 		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		textureCreateInfo.MipLevels = 1;
@@ -145,9 +145,8 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		
 		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
 		textureViewCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
-		textureViewCreateInfo.SourceFormat = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
-		textureViewCreateInfo.Extent = onTextureLoadInfo.Extent;
-		textureViewCreateInfo.Image = textureComponent.Texture;
+		textureViewCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
+		textureViewCreateInfo.Texture = textureComponent.Texture;
 		textureViewCreateInfo.MipLevels = 1;
 
 		textureComponent.TextureView = TextureView(textureViewCreateInfo);

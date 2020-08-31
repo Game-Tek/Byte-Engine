@@ -619,6 +619,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 	pipelineCreateInfo.PipelineDescriptor.BlendEnable = false;
 	pipelineCreateInfo.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
+	pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
 	pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
 
 	pipelineCreateInfo.SurfaceExtent = { 1280, 720 };

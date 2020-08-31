@@ -7,7 +7,6 @@
 #include "StaticMeshRenderGroup.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
-#include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 
 class CameraSystem;
@@ -46,10 +45,11 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	swapchainFormat = static_cast<uint32>(TextureFormat::BGRA_I8);
 
 	clearValues.EmplaceBack(0, 0, 0, 0);
-
+	clearValues.EmplaceBack(1, 0, 1, 1);
+	
 	Surface::CreateInfo surfaceCreateInfo;
 	surfaceCreateInfo.RenderDevice = &renderDevice;
-	surfaceCreateInfo.Name = "Surface";
+	if constexpr (_DEBUG) { surfaceCreateInfo.Name = "Surface"; }
 	GTSL::Window::Win32NativeHandles handles;
 	initializeRenderer.Window->GetNativeHandles(&handles);
 	GAL::WindowsWindowData windowsWindowData;
@@ -57,21 +57,61 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	windowsWindowData.WindowHandle = handles.HWND;
 	surfaceCreateInfo.SystemData = &handles;
 	new(&surface) Surface(surfaceCreateInfo);
+
+	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
+	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	
-	RenderPass::CreateInfo renderPassCreateInfo;
-	renderPassCreateInfo.RenderDevice = &renderDevice;
-	renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = false;
-	GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachment_descriptors;
-	attachment_descriptors.PushBack(RenderPass::AttachmentDescriptor{ (uint32)TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
-	renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachment_descriptors;
+	{
+		Texture::CreateInfo depthTextureCreateInfo;
+		depthTextureCreateInfo.RenderDevice = GetRenderDevice();
+		if constexpr (_DEBUG) { depthTextureCreateInfo.Name = "Depth texture"; }
+		depthTextureCreateInfo.Extent = GTSL::Extent3D{ 1264, 681, 1 };
+		depthTextureCreateInfo.Dimensions = Dimensions::SQUARE;
+		depthTextureCreateInfo.Format = TextureFormat::DEPTH24_STENCIL8;
+		depthTextureCreateInfo.MipLevels = 1;
+		depthTextureCreateInfo.Uses = TextureUses::DEPTH_STENCIL_ATTACHMENT;
+		depthTextureCreateInfo.Tiling = TextureTiling::OPTIMAL;
+		depthTextureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
+		new(&depthTexture) Texture(depthTextureCreateInfo);
 
-	GTSL::Array<RenderPass::AttachmentReference, 8> write_attachment_references;
-	write_attachment_references.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
+		AllocateLocalTextureMemoryInfo allocateLocalTextureMemoryInfo;
+		allocateLocalTextureMemoryInfo.Texture = depthTexture;
+		allocateLocalTextureMemoryInfo.Allocation = &depthTextureAllocation;
+		AllocateLocalTextureMemory(allocateLocalTextureMemoryInfo);
+		
+		TextureView::CreateInfo depthTextureViewCreateInfo;
+		depthTextureViewCreateInfo.RenderDevice = GetRenderDevice();
+		if constexpr (_DEBUG) { depthTextureViewCreateInfo.Name = "Depth texture view"; }
+		depthTextureViewCreateInfo.Dimensions = Dimensions::SQUARE;
+		depthTextureViewCreateInfo.Format = TextureFormat::DEPTH24_STENCIL8;
+		depthTextureViewCreateInfo.MipLevels = 1;
+		depthTextureViewCreateInfo.Type = TextureType::DEPTH | TextureType::STENCIL;
+		depthTextureViewCreateInfo.Texture = depthTexture;
+		new(&depthTextureView) TextureView(depthTextureViewCreateInfo);
+	}
 
-	GTSL::Array<RenderPass::SubPassDescriptor, 8> sub_pass_descriptors;
-	sub_pass_descriptors.PushBack(RenderPass::SubPassDescriptor{ GTSL::Ranger<RenderPass::AttachmentReference>(), write_attachment_references, GTSL::Ranger<uint8>(), nullptr });
-	renderPassCreateInfo.Descriptor.SubPasses = sub_pass_descriptors;
-	new(&renderPass) RenderPass(renderPassCreateInfo);
+	{
+		RenderPass::CreateInfo renderPassCreateInfo;
+		renderPassCreateInfo.RenderDevice = &renderDevice;
+		if constexpr (_DEBUG) { renderPassCreateInfo.Name = "RenderPass"; }
+		renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = true;
+		GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachmentDescriptors;
+		attachmentDescriptors.PushBack(RenderPass::AttachmentDescriptor{ TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
+		renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachmentDescriptors;
+		renderPassCreateInfo.Descriptor.DepthStencilAttachment = RenderPass::AttachmentDescriptor{ TextureFormat::DEPTH24_STENCIL8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::UNDEFINED, TextureLayout::UNDEFINED, TextureLayout::DEPTH_STENCIL_ATTACHMENT };
+
+		GTSL::Array<RenderPass::AttachmentReference, 8> writeAttachmentReferences;
+		writeAttachmentReferences.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
+
+		RenderPass::AttachmentReference depthAttachmentReference;
+		depthAttachmentReference.Index = 1;
+		depthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+		
+		GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
+		subPassDescriptors.PushBack(RenderPass::SubPassDescriptor{ GTSL::Ranger<RenderPass::AttachmentReference>(), writeAttachmentReferences, GTSL::Ranger<uint8>(), &depthAttachmentReference });
+		renderPassCreateInfo.Descriptor.SubPasses = subPassDescriptors;
+		new(&renderPass) RenderPass(renderPassCreateInfo);
+	}
 	
 	for (uint32 i = 0; i < 2; ++i)
 	{
@@ -92,49 +132,68 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		transferFences.EmplaceBack(fence_create_info);
 
 		{
-			GTSL::StaticString<64> command_pool_name("Transfer command pool. Frame: "); command_pool_name += i;
+			CommandPool::CreateInfo commandPoolCreateInfo;
+			commandPoolCreateInfo.RenderDevice = &renderDevice;
 			
-			CommandPool::CreateInfo command_pool_create_info;
-			command_pool_create_info.RenderDevice = &renderDevice;
-			command_pool_create_info.Name = command_pool_name.begin();
-			command_pool_create_info.Queue = &graphicsQueue;
-
-			graphicsCommandPools.EmplaceBack(command_pool_create_info);
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> commandPoolName("Transfer command pool. Frame: "); commandPoolName += i;
+				commandPoolCreateInfo.Name = commandPoolName.begin();
+			}
 			
-			GTSL::StaticString<64> command_buffer_name("Graphics command buffer. Frame: "); command_buffer_name += i;
+			commandPoolCreateInfo.Queue = &graphicsQueue;
 
-			CommandPool::AllocateCommandBuffersInfo allocate_command_buffers_info;
-			allocate_command_buffers_info.IsPrimary = true;
-			allocate_command_buffers_info.RenderDevice = &renderDevice;
+			graphicsCommandPools.EmplaceBack(commandPoolCreateInfo);
 
-			CommandBuffer::CreateInfo command_buffer_create_info; command_buffer_create_info.RenderDevice = &renderDevice; command_buffer_create_info.Name = command_buffer_name.begin();
+			CommandPool::AllocateCommandBuffersInfo allocateCommandBuffersInfo;
+			allocateCommandBuffersInfo.IsPrimary = true;
+			allocateCommandBuffersInfo.RenderDevice = &renderDevice;
 
-			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
-			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
+			CommandBuffer::CreateInfo commandBufferCreateInfo;
+			commandBufferCreateInfo.RenderDevice = &renderDevice;
+
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> commandBufferName("Graphics command buffer. Frame: "); commandBufferName += i;
+				commandBufferCreateInfo.Name = commandBufferName.begin();
+			}
+
+			GTSL::Array<CommandBuffer::CreateInfo, 5> createInfos; createInfos.EmplaceBack(commandBufferCreateInfo);
+			allocateCommandBuffersInfo.CommandBufferCreateInfos = createInfos;
 			graphicsCommandBuffers.Resize(graphicsCommandBuffers.GetLength() + 1);
-			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, graphicsCommandBuffers.begin() + i);
-			graphicsCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
+			allocateCommandBuffersInfo.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, graphicsCommandBuffers.begin() + i);
+			graphicsCommandPools[i].AllocateCommandBuffer(allocateCommandBuffersInfo);
 		}
 
 		{
-			GTSL::StaticString<64> command_pool_name("Transfer command pool. Frame: "); command_pool_name += i;
 			
-			CommandPool::CreateInfo command_pool_create_info;
-			command_pool_create_info.RenderDevice = &renderDevice;
-			command_pool_create_info.Name = command_pool_name.begin();
-			command_pool_create_info.Queue = &transferQueue;
-			transferCommandPools.EmplaceBack(command_pool_create_info);
+			CommandPool::CreateInfo commandPoolCreateInfo;
+			commandPoolCreateInfo.RenderDevice = &renderDevice;
 			
-			GTSL::StaticString<64> command_buffer_name("Transfer command buffer. Frame: "); command_buffer_name += i;
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> commandPoolName("Transfer command pool. Frame: "); commandPoolName += i;
+				commandPoolCreateInfo.Name = commandPoolName.begin();
+			}
+			
+			commandPoolCreateInfo.Queue = &transferQueue;
+			transferCommandPools.EmplaceBack(commandPoolCreateInfo);
 
 			CommandPool::AllocateCommandBuffersInfo allocate_command_buffers_info;
 			allocate_command_buffers_info.RenderDevice = &renderDevice;
 			allocate_command_buffers_info.IsPrimary = true;
 
-			CommandBuffer::CreateInfo command_buffer_create_info; command_buffer_create_info.RenderDevice = &renderDevice; command_buffer_create_info.Name = command_buffer_name.begin();
+			CommandBuffer::CreateInfo commandBufferCreateInfo;
+			commandBufferCreateInfo.RenderDevice = &renderDevice;
 			
-			GTSL::Array<CommandBuffer::CreateInfo, 5> create_infos; create_infos.EmplaceBack(command_buffer_create_info);
-			allocate_command_buffers_info.CommandBufferCreateInfos = create_infos;
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> commandBufferName("Transfer command buffer. Frame: "); commandBufferName += i;
+				commandBufferCreateInfo.Name = commandBufferName.begin();	
+			}
+			
+			GTSL::Array<CommandBuffer::CreateInfo, 5> createInfos; createInfos.EmplaceBack(commandBufferCreateInfo);
+			allocate_command_buffers_info.CommandBufferCreateInfos = createInfos;
 			transferCommandBuffers.Resize(transferCommandBuffers.GetLength() + 1);
 			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, transferCommandBuffers.begin() + i);
 			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
@@ -143,9 +202,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		bufferCopyDatas.EmplaceBack(128, GetPersistentAllocator());
 		textureCopyDatas.EmplaceBack(128, GetPersistentAllocator());
 	}
-	
-	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
-	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 	bool pipelineCacheAvailable;
 	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
@@ -264,14 +320,15 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 		
 		for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
 		{
-			FrameBuffer::CreateInfo framebuffer_create_info;
-			framebuffer_create_info.RenderDevice = &renderDevice;
-			framebuffer_create_info.RenderPass = &renderPass;
-			framebuffer_create_info.Extent = extent;
-			framebuffer_create_info.ImageViews = GTSL::Ranger<const TextureView>(1, &swapchainImages[i]);
-			framebuffer_create_info.ClearValues = clearValues;
+			FrameBuffer::CreateInfo framebufferCreateInfo;
+			framebufferCreateInfo.RenderDevice = &renderDevice;
+			framebufferCreateInfo.RenderPass = &renderPass;
+			framebufferCreateInfo.Extent = extent;
+			GTSL::Array<TextureView, 16> textureViews;
+			textureViews.EmplaceBack(swapchainImages[i]); textureViews.EmplaceBack(depthTextureView);
+			framebufferCreateInfo.TextureViews = textureViews;
 
-			frameBuffers.EmplaceBack(framebuffer_create_info);
+			frameBuffers.EmplaceBack(framebufferCreateInfo);
 		}
 
 		renderArea = extent;
@@ -321,6 +378,11 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	renderContext.Destroy(&renderDevice);
 	surface.Destroy(&renderDevice);
 
+	depthTexture.Destroy(GetRenderDevice());
+	depthTextureView.Destroy(GetRenderDevice());
+
+	//DeallocateLocalTextureMemory();
+	
 	for(auto& e : imageAvailableSemaphore) { e.Destroy(&renderDevice); }
 	for(auto& e : renderFinishedSemaphore) { e.Destroy(&renderDevice); }
 	for(auto& e : graphicsFences) { e.Destroy(&renderDevice); }

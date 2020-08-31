@@ -93,8 +93,13 @@ void GameApplication::PostInitialize()
 	auto* staticMeshRenderGroup = gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	
 	{
-		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1); bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
-		materialSystem->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", bindings);
+		MaterialSystem::AddRenderGroupInfo addRenderGroupInfo;
+		addRenderGroupInfo.Name = "StaticMeshRenderGroup";
+		addRenderGroupInfo.Bindings.EmplaceBack();
+		addRenderGroupInfo.Bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
+		addRenderGroupInfo.Data.EmplaceBack();
+		addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::MAT4);
+		materialSystem->AddRenderGroup(gameInstance, addRenderGroupInfo);
 	}
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");

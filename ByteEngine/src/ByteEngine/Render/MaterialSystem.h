@@ -4,6 +4,7 @@
 #include <GTSL/Array.hpp>
 #include <GTSL/Buffer.h>
 #include <GTSL/Vector.hpp>
+#include <GTSL/StaticMap.hpp>
 
 #include "RenderTypes.h"
 #include "ByteEngine/Game/System.h"
@@ -22,7 +23,14 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	void SetGlobalState(GameInstance* gameInstance, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& globalState);
-	void AddRenderGroup(GameInstance* gameInstance, const GTSL::Id64 renderGroupName, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& bindings);
+
+	struct AddRenderGroupInfo
+	{
+		Id Name;
+		GTSL::Array<GTSL::Array<BindingType, 6>, 6> Bindings;
+		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 6>, 6> Data;
+	};
+	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);
 	
 	struct MaterialInstance
 	{
@@ -38,11 +46,7 @@ public:
 
 		uint32 DataSize = 0;
 		
-		struct ShaderParameters
-		{
-			GTSL::Array<Id, 6> ParameterNames;
-			GTSL::Array<uint32, 6> ParameterOffset;
-		} ShaderParameters;
+		GTSL::StaticMap<GTSL::Pair<Id, uint32>, 16> Parameters;
 
 		MaterialInstance() = default;
 	};
@@ -54,6 +58,8 @@ public:
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
+		uint32 DataSize;
+		
 		Buffer Buffer;
 		void* Data;
 		RenderAllocation Allocation;

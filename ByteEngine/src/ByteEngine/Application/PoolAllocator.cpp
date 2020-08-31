@@ -8,7 +8,7 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
-PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(19), systemAllocatorReference(allocatorReference)
+PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : POOL_COUNT(23), systemAllocatorReference(allocatorReference)
 {
 	uint64 allocator_allocated_size{ 0 }; //debug
 	
@@ -16,7 +16,7 @@ PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) :
 
 	for (uint8 i = 0, j = POOL_COUNT; i < POOL_COUNT; ++i, --j)
 	{	
-		const auto slot_count = j * POOL_COUNT; //pools with smaller slot sizes get more slots
+		const auto slot_count = j * POOL_COUNT / 4; //pools with smaller slot sizes get more slots
 		const auto slot_size = 1 << i;
 
 		::new(poolsData + i) Pool(slot_count, slot_size, allocator_allocated_size, allocatorReference);

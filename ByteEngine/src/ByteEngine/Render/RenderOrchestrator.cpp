@@ -61,7 +61,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * currentFrame;
 		auto* const data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
 
-		auto renderGroupOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(64/*matrix size*/, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
+		auto renderGroupOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(renderGroupData.DataSize, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
 		bindingsManager.AddBinding(renderGroupData.BindingsSets[currentFrame], renderGroupOffsets, PipelineType::RASTER, renderGroupData.PipelineLayout);
 
 		auto* const renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");

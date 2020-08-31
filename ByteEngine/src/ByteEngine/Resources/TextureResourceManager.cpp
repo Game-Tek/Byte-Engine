@@ -25,14 +25,15 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	index_path += "/resources/Textures.beidx";
 	package_path += "/resources/Textures.bepkg";
 
-	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
-	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
+	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
+	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
 	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048 * 2, 32, GetTransientAllocator());
 
 	if (indexFile.ReadFile(file_buffer))
 	{
 		GTSL::Extract(textureInfos, file_buffer);
+		file_buffer.Free(32, GetTransientAllocator());
 		return;
 	}
 	

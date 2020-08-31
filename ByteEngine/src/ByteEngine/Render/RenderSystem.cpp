@@ -301,10 +301,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
-{	
-	graphicsQueue.Wait();
-	transferQueue.Wait();
-
+{
 	for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
 	{
 		CommandPool::FreeCommandBuffersInfo free_command_buffers_info;
@@ -354,6 +351,12 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 			pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 		}
 	}
+}
+
+void RenderSystem::Wait()
+{
+	graphicsQueue.Wait();
+	transferQueue.Wait();
 }
 
 void RenderSystem::renderSetup(TaskInfo taskInfo)
@@ -536,7 +539,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		submit_info.RenderDevice = &renderDevice;
 		submit_info.Fence = &transferFences[currentFrameIndex];
 		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, GetTransferCommandBuffer());
-		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ static_cast<uint32>(PipelineStage::TRANSFER) };
+		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ /*static_cast<uint32>(PipelineStage::TRANSFER)*/ };
 		transferQueue.Submit(submit_info);
 	}
 }

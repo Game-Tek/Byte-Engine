@@ -390,7 +390,11 @@ void MaterialSystem::SetMaterialTexture(const ComponentReference material, Id pa
 		textureBindingsUpdateInfo.TextureView = *image;
 		textureBindingsUpdateInfo.Sampler = *sampler;
 		textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
-		perFrameBindingsUpdateData[frame].Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
+
+		for(auto& e : perFrameBindingsUpdateData)
+		{
+			e.Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
+		}
 		break;
 	}
 	case 1:
@@ -699,7 +703,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdateInfo;
 					bufferBindingsUpdateInfo.Buffer = instance.Buffer;
 					bufferBindingsUpdateInfo.Offset = 0;
-					bufferBindingsUpdateInfo.Range = 16/*vec4 size, should be dynamic*/;
+					bufferBindingsUpdateInfo.Range = instance.DataSize;
 
 					e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
 				}

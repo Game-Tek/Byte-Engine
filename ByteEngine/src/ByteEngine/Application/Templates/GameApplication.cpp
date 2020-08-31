@@ -134,6 +134,8 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 
 void GameApplication::Shutdown()
 {
+	gameInstance->GetSystem<RenderSystem>("RenderSystem")->Wait();
+	
 	Application::Shutdown();
 }
 

@@ -21,6 +21,7 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameCount() const { return 2; }
+	void Wait();
 
 	struct AllocateLocalTextureMemoryInfo
 	{

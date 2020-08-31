@@ -78,7 +78,7 @@ void Game::Initialize()
 	MaterialResourceManager::MaterialCreateInfo material_create_info;
 	material_create_info.ShaderName = "BasicMaterial";
 	material_create_info.RenderGroup = "StaticMeshRenderGroup";
-	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3 };
+	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 	GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
 	GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
 	uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
@@ -95,7 +95,7 @@ void Game::Initialize()
 	
 	//show loading screen
 	//load menu
-	//show menu
+	//show menu//
 	//start game
 }
 
@@ -110,21 +110,21 @@ void Game::PostInitialize()
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
 	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
-	add_static_mesh_info.MeshName = "Box";
+	add_static_mesh_info.MeshName = "hydrant";
 	add_static_mesh_info.GameInstance = gameInstance;
 	add_static_mesh_info.RenderSystem = renderSystem;
 	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
 	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 
-	//{
-	//	TextureSystem::CreateTextureInfo createTextureInfo;
-	//	createTextureInfo.RenderSystem = renderSystem;
-	//	createTextureInfo.GameInstance = gameInstance;
-	//	createTextureInfo.TextureName = "hydrant_Albedo";
-	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}//
+	{
+		TextureSystem::CreateTextureInfo createTextureInfo;
+		createTextureInfo.RenderSystem = renderSystem;
+		createTextureInfo.GameInstance = gameInstance;
+		createTextureInfo.TextureName = "hydrant_Albedo";
+		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	}
 	
 	MaterialSystem::CreateMaterialInfo create_material_info;
 	create_material_info.GameInstance = gameInstance;

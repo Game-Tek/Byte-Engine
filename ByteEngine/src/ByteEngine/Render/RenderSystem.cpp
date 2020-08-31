@@ -40,9 +40,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		graphicsQueue = queues[0]; transferQueue = queues[1];
 	}
 	
-	swapchainPresentMode = static_cast<uint32>(PresentMode::FIFO);
-	swapchainColorSpace = static_cast<uint32>(ColorSpace::NONLINEAR_SRGB);
-	swapchainFormat = static_cast<uint32>(TextureFormat::BGRA_I8);
+	swapchainPresentMode = PresentMode::FIFO;
+	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
+	swapchainFormat = TextureFormat::BGRA_I8;
 
 	clearValues.EmplaceBack(0, 0, 0, 0);
 	clearValues.EmplaceBack(1, 0, 1, 1);
@@ -55,7 +55,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GAL::WindowsWindowData windowsWindowData;
 	windowsWindowData.InstanceHandle = GetModuleHandle(NULL);
 	windowsWindowData.WindowHandle = handles.HWND;
-	surfaceCreateInfo.SystemData = &handles;
+	surfaceCreateInfo.SystemData = &windowsWindowData;
 	new(&surface) Surface(surfaceCreateInfo);
 
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
@@ -259,21 +259,39 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 void RenderSystem::UpdateWindow(GTSL::Window& window)
 {
-	RenderContext::RecreateInfo recreate_info;
-	recreate_info.RenderDevice = &renderDevice;
-	recreate_info.DesiredFramesInFlight = swapchainImages.GetLength();
-	recreate_info.PresentMode = swapchainPresentMode;
-	recreate_info.ColorSpace = swapchainColorSpace;
-	recreate_info.Format = swapchainFormat;
-	window.GetFramebufferExtent(recreate_info.SurfaceArea);
-	renderContext.Recreate(recreate_info);
+	RenderContext::RecreateInfo recreateInfo;
+	recreateInfo.RenderDevice = &renderDevice;
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<64> name("Swapchain");
+		recreateInfo.Name = name.begin();
+	}
+	recreateInfo.DesiredFramesInFlight = swapchainImages.GetLength();
+	recreateInfo.PresentMode = swapchainPresentMode;
+	recreateInfo.ColorSpace = swapchainColorSpace;
+	recreateInfo.Format = swapchainFormat;
+	window.GetFramebufferExtent(recreateInfo.SurfaceArea);
+	renderContext.Recreate(recreateInfo);
 
 	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 	
-	RenderContext::GetImagesInfo get_images_info;
+	RenderContext::GetTextureViewsInfo get_images_info;
 	get_images_info.RenderDevice = &renderDevice;
-	get_images_info.SwapchainImagesFormat = swapchainFormat;
-	swapchainImages = renderContext.GetImages(get_images_info);
+	GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
+	{
+		for(uint8 i = 0; i < GetFrameCount(); ++i)
+		{
+			textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
+				textureViewCreateInfos[i].Name = name.begin();
+			}
+			textureViewCreateInfos[i].Format = swapchainFormat;
+		}
+	}
+	get_images_info.TextureViewCreateInfos = textureViewCreateInfos;
+	swapchainImages = renderContext.GetTextureViews(get_images_info);
 }
 
 void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
@@ -284,32 +302,49 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 
 		BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
 
-		GTSL::Array<GTSL::uint32, 4> present_modes{ swapchainPresentMode };
+		GTSL::Array<PresentMode, 4> present_modes{ swapchainPresentMode };
 		auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
 		if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
 
-		GTSL::Array<GTSL::Pair<uint32, uint32>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
+		GTSL::Array<GTSL::Pair<ColorSpace, TextureFormat>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
 		res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
 		if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
 		
 		RenderContext::RecreateInfo recreate;
 		recreate.RenderDevice = GetRenderDevice();
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Swapchain");
+			recreate.Name = name.begin();
+		}
 		recreate.SurfaceArea = extent;
 		recreate.ColorSpace = swapchainColorSpace;
 		recreate.DesiredFramesInFlight = 2;
 		recreate.Format = swapchainFormat;
 		recreate.PresentMode = swapchainPresentMode;
 		recreate.Surface = &surface;
-		recreate.ImageUses = TextureUses::COLOR_ATTACHMENT;
+		recreate.TextureUses = TextureUses::COLOR_ATTACHMENT;
 		renderContext.Recreate(recreate);
 
 		for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
 
-		RenderContext::GetImagesInfo get_images_info;
+		RenderContext::GetTextureViewsInfo get_images_info;
 		get_images_info.RenderDevice = &renderDevice;
-		get_images_info.SwapchainImagesFormat = swapchainFormat;
-		get_images_info.ImageViewName = GTSL::StaticString<64>("Swapchain image view. Frame: ");
-		swapchainImages = renderContext.GetImages(get_images_info);
+		GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
+		{
+			for (uint8 i = 0; i < GetFrameCount(); ++i)
+			{
+				textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
+				if constexpr (_DEBUG)
+				{
+					GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
+					textureViewCreateInfos[i].Name = name.begin();
+				}
+				textureViewCreateInfos[i].Format = swapchainFormat;
+			}
+		}
+		get_images_info.TextureViewCreateInfos = textureViewCreateInfos;
+		swapchainImages = renderContext.GetTextureViews(get_images_info);
 
 		for (auto& e : frameBuffers)
 		{
@@ -322,6 +357,13 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 		{
 			FrameBuffer::CreateInfo framebufferCreateInfo;
 			framebufferCreateInfo.RenderDevice = &renderDevice;
+			
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> name("Framebuffer. Frame: "); name += i;
+				framebufferCreateInfo.Name = name.begin();
+			}
+			
 			framebufferCreateInfo.RenderPass = &renderPass;
 			framebufferCreateInfo.Extent = extent;
 			GTSL::Array<TextureView, 16> textureViews;

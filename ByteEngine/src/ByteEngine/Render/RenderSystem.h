@@ -185,9 +185,9 @@ private:
 
 	uint8 currentFrameIndex = 0;
 
-	uint32 swapchainPresentMode{ 0 };
-	uint32 swapchainFormat{ 0 };
-	uint32 swapchainColorSpace{ 0 };
+	PresentMode swapchainPresentMode;
+	TextureFormat swapchainFormat;
+	ColorSpace swapchainColorSpace;
 	
 	void renderSetup(TaskInfo taskInfo);
 	void renderFinish(TaskInfo taskInfo);

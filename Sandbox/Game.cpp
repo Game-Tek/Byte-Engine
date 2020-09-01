@@ -15,6 +15,7 @@
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Render/TextSystem.h"
 #include "ByteEngine/Render/TextureSystem.h"
 
 class TestSystem;
@@ -132,6 +133,13 @@ void Game::PostInitialize()
 	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	create_material_info.MaterialName = "BasicMaterial";
 	material = material_system->CreateMaterial(create_material_info);
+
+	{
+		TextSystem::AddTextInfo addTextInfo;
+		addTextInfo.Position = { 0, 0 };
+		addTextInfo.Text = "Hello screen!";
+		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
+	}
 	
 	//window.ShowMouse(false);//
 }

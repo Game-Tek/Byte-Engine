@@ -166,7 +166,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 
 	RenderSystem* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	BE_ASSERT(addRenderGroupInfo.Bindings.GetLength() == 1, "Only one binding set is supported");
+	BE_ASSERT(addRenderGroupInfo.Bindings.GetLength() < 2, "Only one binding set is supported");
 
 	for (auto& e : perFrameBindingsUpdateData)
 	{

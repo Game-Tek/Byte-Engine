@@ -225,8 +225,10 @@
     <ClInclude Include="src\ByteEngine\Game\World.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
+    <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\TextureSystem.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
@@ -267,8 +269,10 @@
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextureSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />

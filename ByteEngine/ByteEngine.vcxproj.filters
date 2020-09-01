@@ -135,6 +135,8 @@
     <ClInclude Include="src\ByteEngine\Id.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
+    <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -174,5 +176,7 @@
     <ClCompile Include="src\ByteEngine\Render\MaterialSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextureSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
   </ItemGroup>
 </Project>

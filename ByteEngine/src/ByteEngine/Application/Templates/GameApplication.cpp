@@ -9,6 +9,7 @@
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 #include "ByteEngine/Render/RenderSystem.h"
+#include "ByteEngine/Render/TextSystem.h"
 #include "ByteEngine/Render/TextureSystem.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
@@ -60,6 +61,7 @@ void GameApplication::Initialize()
 	CreateResourceManager<MaterialResourceManager>();
 	CreateResourceManager<AudioResourceManager>();
 	CreateResourceManager<PipelineCacheResourceManager>();
+	CreateResourceManager<FontResourceManager>();
 }
 
 void GameApplication::PostInitialize()
@@ -105,6 +107,8 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 
 	gameInstance->AddSystem<TextureSystem>("TextureSystem");
+
+	gameInstance->AddSystem<TextSystem>("TextSystem");
 	
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 	renderOrchestrator->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", staticMeshRenderGroup);

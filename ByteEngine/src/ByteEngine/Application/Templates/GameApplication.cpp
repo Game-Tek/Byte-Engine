@@ -108,10 +108,11 @@ void GameApplication::PostInitialize()
 
 	gameInstance->AddSystem<TextureSystem>("TextureSystem");
 
-	gameInstance->AddSystem<TextSystem>("TextSystem");
+	auto* textSystem = gameInstance->AddSystem<TextSystem>("TextSystem");
 	
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 	renderOrchestrator->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", staticMeshRenderGroup);
+	renderOrchestrator->AddRenderGroup(gameInstance, "TextSystem", reinterpret_cast<RenderGroup*>(textSystem));
 	
 	window.ShowWindow();
 }

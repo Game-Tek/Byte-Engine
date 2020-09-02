@@ -36,12 +36,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	perFrameBindingsUpdateData.Resize(2);
 	for(auto& e : perFrameBindingsUpdateData)
 	{
-		e.Global.BufferBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
-		e.Global.TextureBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
-		
-		e.RenderGroups.Initialize(32, GetPersistentAllocator());
-		
-		e.Materials.Initialize(32, GetPersistentAllocator());
+		e.Initialize(32, GetPersistentAllocator());
 	}
 	
 	frame = 0;
@@ -175,9 +170,11 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		updateData.Name = addRenderGroupInfo.Name;
 		updateData.BufferBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
 		updateData.TextureBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
+		updateData.BufferBindingTypes.Initialize(32, GetPersistentAllocator());
 	}
 
 	renderGroupData.DataSize = 0;
+	
 	for (uint32 i = 0; i < addRenderGroupInfo.Bindings.GetLength(); ++i)
 	{
 		BindingsSetLayout::CreateInfo setLayout;
@@ -194,9 +191,13 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		for (uint32 j = 0; j < addRenderGroupInfo.Bindings[i].GetLength(); ++j)
 		{
 			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ addRenderGroupInfo.Bindings[i][j], ShaderStage::ALL, 1 });
-			renderGroupData.DataSize += ShaderDataTypesSize(addRenderGroupInfo.Data[i][j]);
 		}
 
+		for (uint32 t = 0; t < addRenderGroupInfo.Data[i].GetLength(); ++t)
+		{
+			renderGroupData.DataSize += ShaderDataTypesSize(addRenderGroupInfo.Data[i][t]);
+		}
+		
 		setLayout.BindingsDescriptors = bindingDescriptors;
 		setLayout.SpecialBindings = GTSL::Ranger<const uint32>();
 
@@ -302,7 +303,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 					bufferInfo.Name = name.begin();
 				}
 
-				bufferInfo.Size = 1024;
+				bufferInfo.Size = 1024 * 1024;
 				bufferInfo.BufferType = BufferType::UNIFORM;
 				renderGroupData.Buffer = Buffer(bufferInfo);
 
@@ -320,11 +321,41 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 					bufferBindingsUpdateInfo.Range = renderGroupData.DataSize;
 
 					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
+					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingTypes.EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 				}
 			}
-			else
+
+			if (addRenderGroupInfo.Bindings[i][j] == GAL::VulkanBindingType::STORAGE_BUFFER_DYNAMIC)
 			{
-				__debugbreak();
+				Buffer::CreateInfo bufferInfo;
+				bufferInfo.RenderDevice = renderSystem->GetRenderDevice();
+
+				if constexpr (_DEBUG)
+				{
+					GTSL::StaticString<64> name("Uniform Buffer. Render group: "); name += addRenderGroupInfo.Name;
+					bufferInfo.Name = name.begin();
+				}
+
+				bufferInfo.Size = 1024 * 1024;
+				bufferInfo.BufferType = BufferType::STORAGE;
+				renderGroupData.Buffer = Buffer(bufferInfo);
+
+				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
+				memoryAllocationInfo.Buffer = renderGroupData.Buffer;
+				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
+				memoryAllocationInfo.Data = &renderGroupData.Data;
+				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
+
+				for (auto& e : perFrameBindingsUpdateData)
+				{
+					BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdateInfo;
+					bufferBindingsUpdateInfo.Buffer = renderGroupData.Buffer;
+					bufferBindingsUpdateInfo.Offset = 0;
+					bufferBindingsUpdateInfo.Range = renderGroupData.DataSize;
+
+					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
+					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingTypes.EmplaceBack(BindingType::STORAGE_BUFFER_DYNAMIC);
+				}
 			}
 		}
 	}
@@ -443,7 +474,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1, 1, GetTransientAllocator());
 			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
 			{
-				bindingUpdateInfos[i].Type = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
+				bindingUpdateInfos[i].Type = updates.BufferBindingTypes[i];
 				bindingUpdateInfos[i].ArrayElement = 0;
 				bindingUpdateInfos[i].Count = updates.BufferBindingDescriptorsUpdates.GetLength();
 				bindingUpdateInfos[i].BindingsUpdates = updates.BufferBindingDescriptorsUpdates.GetData();
@@ -456,6 +487,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 			updates.BufferBindingDescriptorsUpdates.ResizeDown(0);
 			updates.TextureBindingDescriptorsUpdates.ResizeDown(0);
+			updates.BufferBindingTypes.ResizeDown(0);
 		});
 
 		bindingsUpdate.Clear();
@@ -469,7 +501,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1, 1, GetTransientAllocator());
 			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
 			{
-				bindingUpdateInfos[i].Type = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
+				bindingUpdateInfos[i].Type = updates.BufferBindingTypes[i];
 				bindingUpdateInfos[i].ArrayElement = 0;
 				bindingUpdateInfos[i].Count = updates.BufferBindingDescriptorsUpdates.GetLength();
 				bindingUpdateInfos[i].BindingsUpdates = updates.BufferBindingDescriptorsUpdates.GetData();
@@ -481,6 +513,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			isMaterialReady.At(updates.Name2) = true;
 			
 			updates.BufferBindingDescriptorsUpdates.ResizeDown(0);
+			updates.BufferBindingTypes.ResizeDown(0);
 			updates.TextureBindingDescriptorsUpdates.ResizeDown(0);
 		});
 
@@ -505,6 +538,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		updateData.Name2 = onMaterialLoadInfo.ResourceName;
 		updateData.BufferBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
 		updateData.TextureBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
+		updateData.BufferBindingTypes.Initialize(32, GetPersistentAllocator());
 	}
 	
 	auto* renderSystem = loadInfo->RenderSystem;
@@ -526,11 +560,14 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
 	bindingsSetLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
-	for(auto& e : onMaterialLoadInfo.BindingSets[0])
+	if (onMaterialLoadInfo.BindingSets.GetLength() != 0) //TODO: ADD SUPPORT FOR MULTIPLE BINDING SETS
 	{
-		auto bindingType = BindingTypeToVulkanBindingType(e.Type);
-		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ConvertShaderStage(e.Stage), 1 });
-		descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
+		for (auto& e : onMaterialLoadInfo.BindingSets[0])
+		{
+			auto bindingType = BindingTypeToVulkanBindingType(e.Type);
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ConvertShaderStage(e.Stage), 1 });
+			descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
+		}
 	}
 	bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
 	bindingsSetLayoutCreateInfo.SpecialBindings = GTSL::Ranger<const uint32>();
@@ -703,6 +740,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					bufferBindingsUpdateInfo.Range = instance.DataSize;
 
 					e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
+					e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingTypes.EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 				}
 			}
 			else

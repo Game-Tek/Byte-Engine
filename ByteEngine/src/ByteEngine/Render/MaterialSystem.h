@@ -102,9 +102,10 @@ private:
 	struct BindingsUpdateData
 	{
 		struct Updates
-		{
+		{			
 			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
 			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
+			Vector<BindingType> BufferBindingTypes;
 			Id Name;
 			Id Name2;
 		};
@@ -112,6 +113,15 @@ private:
 		Updates Global;
 		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> RenderGroups;
 		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> Materials;
+
+		BindingsUpdateData() = default;
+		void Initialize(const uint32 num, const BE::PersistentAllocatorReference& allocator)
+		{
+			Global.BufferBindingDescriptorsUpdates.Initialize(8, allocator);
+			Global.TextureBindingDescriptorsUpdates.Initialize(8, allocator);
+			Global.BufferBindingTypes.Initialize(8, allocator);
+			RenderGroups.Initialize(4, allocator); Materials.Initialize(4, allocator);
+		}
 	};
 	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
 	

@@ -1,9 +1,7 @@
 #include "RenderOrchestrator.h"
 
-
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Matrix4.h>
-
 
 #include "RenderGroup.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -12,7 +10,68 @@
 
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
+#include "TextSystem.h"
 #include "ByteEngine/Game/CameraSystem.h"
+
+struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
+{
+	void Render(const RenderInfo& renderInfo) override
+	{
+		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderInfo.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * renderInfo.CurrentFrame;
+		auto* const data_pointer = static_cast<byte*>(renderInfo.RenderGroupData->Data) + offset;
+
+		auto* const renderGroup = renderInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+		auto positions = renderGroup->GetPositions();
+		auto pos = GTSL::Math::Translation(positions[0]);
+		pos(2, 3) *= -1.f;
+		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = renderInfo.ProjectionMatrix * renderInfo.ViewMatrix * pos;
+
+		for (const auto& e : renderGroup->GetMeshes())
+		{
+			CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+			bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+			bindVertexInfo.Buffer = &e.Buffer;
+			bindVertexInfo.Offset = 0;
+			renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
+
+			CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+			bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+			bindIndexBuffer.Buffer = &e.Buffer;
+			bindIndexBuffer.Offset = e.IndicesOffset;
+			bindIndexBuffer.IndexType = e.IndexType;
+			renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
+
+			CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+			drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+			drawIndexedInfo.InstanceCount = 1;
+			drawIndexedInfo.IndexCount = e.IndicesCount;
+			renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+		}
+	}
+};
+
+struct TextRenderManager : RenderOrchestrator::RenderManager
+{
+	void Render(const RenderInfo& renderInfo) override
+	{
+		uint32 offset = GTSL::Math::PowerOf2RoundUp(renderInfo.RenderGroupData->DataSize, renderInfo.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * renderInfo.CurrentFrame;
+		auto* const dataPointer = static_cast<byte*>(renderInfo.RenderGroupData->Data) + offset;
+
+		auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
+		auto& text = textSystem->GetTexts()[0];
+		auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
+
+		//curve is aligned to glsl std140
+		GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), dataPointer);
+
+		CommandBuffer::DrawInfo drawInfo;
+		drawInfo.FirstInstance = 0;
+		drawInfo.FirstVertex = 0;
+		drawInfo.InstanceCount = glyph.NumTriangles / 2;
+		drawInfo.VertexCount = 3;
+		renderInfo.CommandBuffer->Draw(drawInfo);
+	}
+};
 
 void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 {
@@ -22,10 +81,19 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		const GTSL::Array<TaskDependency, 4> dependencies{ { CLASS_NAME, AccessType::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
 	}
+
+	renderManagers.Initialize(16, GetPersistentAllocator());
+
+	renderManagers.Emplace(Id("StaticMeshRenderGroup"), new StaticMeshRenderManager());
+	renderManagers.Emplace(Id("TextSystem"), new TextRenderManager());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
 {
+	ForEach(renderManagers, [&](RenderManager* renderManager)
+	{
+		delete renderManager;
+	});
 }
 
 void RenderOrchestrator::Render(TaskInfo taskInfo)
@@ -58,19 +126,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	
 	GTSL::PairForEach(renderGroups, [&](uint64 renderGroupKey, MaterialSystem::RenderGroupData& renderGroupData)
 	{
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * currentFrame;
-		auto* const data_pointer = static_cast<byte*>(renderGroupData.Data) + offset;
-
 		auto renderGroupOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(renderGroupData.DataSize, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
 		bindingsManager.AddBinding(renderGroupData.BindingsSets[currentFrame], renderGroupOffsets, PipelineType::RASTER, renderGroupData.PipelineLayout);
-
-		auto* const renderGroup = taskInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	
-		auto positions = renderGroup->GetPositions();
-	
-		auto pos = GTSL::Math::Translation(positions[0]);
-		pos(2, 3) *= -1.f;
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = projectionMatrix * viewMatrix * pos;
 		
 		GTSL::PairForEach(renderGroupData.Instances, [&](const uint64 materialKey, const MaterialSystem::MaterialInstance& materialInstance)
 		{
@@ -85,26 +142,17 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
 				commandBuffer.BindPipeline(bindPipelineInfo);
 
-				for (const auto& e : renderGroup->GetMeshes())
 				{
-					CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-					bindVertexInfo.RenderDevice = renderSystem->GetRenderDevice();
-					bindVertexInfo.Buffer = &e.Buffer;
-					bindVertexInfo.Offset = 0;
-					renderSystem->GetCurrentCommandBuffer()->BindVertexBuffer(bindVertexInfo);
-
-					CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-					bindIndexBuffer.RenderDevice = renderSystem->GetRenderDevice();
-					bindIndexBuffer.Buffer = &e.Buffer;
-					bindIndexBuffer.Offset = e.IndicesOffset;
-					bindIndexBuffer.IndexType = e.IndexType;
-					renderSystem->GetCurrentCommandBuffer()->BindIndexBuffer(bindIndexBuffer);
-
-					CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-					drawIndexedInfo.RenderDevice = renderSystem->GetRenderDevice();
-					drawIndexedInfo.InstanceCount = 1;
-					drawIndexedInfo.IndexCount = e.IndicesCount;
-					renderSystem->GetCurrentCommandBuffer()->DrawIndexed(drawIndexedInfo);
+					RenderManager::RenderInfo renderInfo;
+					renderInfo.RenderSystem = renderSystem;
+					renderInfo.GameInstance = taskInfo.GameInstance;
+					renderInfo.CommandBuffer = &commandBuffer;
+					renderInfo.MaterialSystem = materialSystem;
+					renderInfo.RenderGroupData = &renderGroupData;
+					renderInfo.CurrentFrame = renderSystem->GetCurrentFrame();
+					renderInfo.ProjectionMatrix = projectionMatrix;
+					renderInfo.ViewMatrix = viewMatrix;
+					renderManagers.At(renderGroupKey)->Render(renderInfo);
 				}
 			}
 			

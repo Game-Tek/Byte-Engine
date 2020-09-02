@@ -73,28 +73,39 @@ void Game::Initialize()
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
-	/// <summary>
-	/// Push bindings only for actual shader//
-	/// </summary>
-	MaterialResourceManager::MaterialCreateInfo material_create_info;
-	material_create_info.ShaderName = "BasicMaterial";
-	material_create_info.RenderGroup = "StaticMeshRenderGroup";
-	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-	GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
-	GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
-	uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-	binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
-	material_create_info.VertexFormat = format;
-	material_create_info.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
-	GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
-	b_array.EmplaceBack(binding_sets[0]);
-	u_array.EmplaceBack(uniforms[0]);
-	material_create_info.Bindings = b_array;
-	material_create_info.Uniforms = u_array;
-	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(material_create_info);
+	{
+		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.ShaderName = "BasicMaterial";
+		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
+		GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
+		GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
+		uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
+		binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
+		b_array.EmplaceBack(binding_sets[0]);
+		u_array.EmplaceBack(uniforms[0]);
+		materialCreateInfo.Bindings = b_array;
+		materialCreateInfo.Uniforms = u_array;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	}
+
+	{
+		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.ShaderName = "TextMaterial";
+		materialCreateInfo.RenderGroup = "TextSystem";
+		GTSL::Array<GAL::ShaderDataType, 8> format;
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -126,22 +137,33 @@ void Game::PostInitialize()
 		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
 	}
-	
-	MaterialSystem::CreateMaterialInfo create_material_info;
-	create_material_info.GameInstance = gameInstance;
-	create_material_info.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	create_material_info.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	create_material_info.MaterialName = "BasicMaterial";
-	material = material_system->CreateMaterial(create_material_info);
+
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.MaterialName = "BasicMaterial";
+		material = material_system->CreateMaterial(createMaterialInfo);
+	}
+
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.MaterialName = "TextMaterial";
+		textMaterial = material_system->CreateMaterial(createMaterialInfo);
+	}
 
 	{
 		TextSystem::AddTextInfo addTextInfo;
 		addTextInfo.Position = { 0, 0 };
-		addTextInfo.Text = "Hello screen!";
+		addTextInfo.Text = "H";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

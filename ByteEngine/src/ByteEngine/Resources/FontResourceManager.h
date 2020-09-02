@@ -26,6 +26,10 @@ public:
 		GTSL::Vector2 p1;//Bezier control point or random off glyph point
 		GTSL::Vector2 p2;
 		bool IsCurve = false;
+
+	private:
+		bool a, b, c; //int
+		uint32 d;
 	};
 
 	struct FontMetaData

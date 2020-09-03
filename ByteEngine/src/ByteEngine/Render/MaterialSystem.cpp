@@ -23,6 +23,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
 		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "FrameStart", "RenderStart");
+		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderStart", "RenderSetup");
 	}
 	
 	{
@@ -74,7 +75,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
 		for(uint32 j = 0; j < globalState[i].GetLength(); ++j)
 		{
-			binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ globalState[i][j], ShaderStage::ALL, 1 });
+			binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ globalState[i][j], ShaderStage::ALL, 1, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 		}
 
 		if constexpr (_DEBUG)
@@ -190,16 +191,15 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		for (uint32 j = 0; j < addRenderGroupInfo.Bindings[i].GetLength(); ++j)
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ addRenderGroupInfo.Bindings[i][j], ShaderStage::ALL, 1 });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ addRenderGroupInfo.Bindings[i][j], ShaderStage::ALL, 1, 0 });
 		}
 
-		for (uint32 t = 0; t < addRenderGroupInfo.Data[i].GetLength(); ++t)
-		{
-			renderGroupData.DataSize += ShaderDataTypesSize(addRenderGroupInfo.Data[i][t]);
-		}
+		//for (uint32 t = 0; t < addRenderGroupInfo.Data[i].GetLength(); ++t)
+		//{
+		//	renderGroupData.DataSize += ShaderDataTypesSize(addRenderGroupInfo.Data[i][t]);
+		//}
 		
 		setLayout.BindingsDescriptors = bindingDescriptors;
-		setLayout.SpecialBindings = GTSL::Ranger<const uint32>();
 
 		renderGroupData.BindingsSetLayout = BindingsSetLayout(setLayout);
 	}
@@ -332,7 +332,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 
 				if constexpr (_DEBUG)
 				{
-					GTSL::StaticString<64> name("Uniform Buffer. Render group: "); name += addRenderGroupInfo.Name;
+					GTSL::StaticString<64> name("Storage buffer. Render group: "); name += addRenderGroupInfo.Name;
 					bufferInfo.Name = name.begin();
 				}
 
@@ -345,17 +345,6 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
 				memoryAllocationInfo.Data = &renderGroupData.Data;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
-
-				for (auto& e : perFrameBindingsUpdateData)
-				{
-					BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdateInfo;
-					bufferBindingsUpdateInfo.Buffer = renderGroupData.Buffer;
-					bufferBindingsUpdateInfo.Offset = 0;
-					bufferBindingsUpdateInfo.Range = renderGroupData.DataSize;
-
-					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
-					e.RenderGroups.At(addRenderGroupInfo.Name).BufferBindingTypes.EmplaceBack(BindingType::STORAGE_BUFFER_DYNAMIC);
-				}
 			}
 		}
 	}
@@ -463,6 +452,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 			bindingsUpdate.BufferBindingDescriptorsUpdates.ResizeDown(0);
 			bindingsUpdate.TextureBindingDescriptorsUpdates.ResizeDown(0);
+			bindingsUpdate.BufferBindingTypes.ResizeDown(0);
 		}
 	}
 
@@ -471,7 +461,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 		GTSL::ForEach(bindingsUpdate, [&](BindingsUpdateData::Updates& updates)
 		{
-			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1, 1, GetTransientAllocator());
+			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(16, updates.BufferBindingDescriptorsUpdates.GetLength(), GetTransientAllocator());
 			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
 			{
 				bindingUpdateInfos[i].Type = updates.BufferBindingTypes[i];
@@ -498,7 +488,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 		GTSL::ForEach(bindingsUpdate, [&](BindingsUpdateData::Updates& updates)
 		{
-			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1, 1, GetTransientAllocator());
+			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(16, updates.BufferBindingDescriptorsUpdates.GetLength(), GetTransientAllocator());
 			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
 			{
 				bindingUpdateInfos[i].Type = updates.BufferBindingTypes[i];
@@ -529,160 +519,162 @@ void MaterialSystem::updateCounter(TaskInfo taskInfo)
 void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo)
 {
 	auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
-
-	for (auto& e : perFrameBindingsUpdateData)
-	{
-		auto& updateData = e.Materials.Emplace(onMaterialLoadInfo.ResourceName);
-
-		updateData.Name = onMaterialLoadInfo.RenderGroup;
-		updateData.Name2 = onMaterialLoadInfo.ResourceName;
-		updateData.BufferBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
-		updateData.TextureBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
-		updateData.BufferBindingTypes.Initialize(32, GetPersistentAllocator());
-	}
 	
 	auto* renderSystem = loadInfo->RenderSystem;
 	
 	auto& renderGroup = renderGroups.At(onMaterialLoadInfo.RenderGroup);
 	auto& instance = renderGroup.Instances.Emplace(onMaterialLoadInfo.ResourceName);
 
-	BindingsPool::CreateInfo bindingsPoolCreateInfo;
-	bindingsPoolCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-	if constexpr (_DEBUG)
-	{
-		GTSL::StaticString<64> name("Bindings pool. Material: "); name += onMaterialLoadInfo.ResourceName;
-		bindingsPoolCreateInfo.Name = name.begin();
-	}
+	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+	bindingsSetLayouts.PushBack(GTSL::Ranger<BindingsSetLayout>(globalBindingsSetLayout)); //global bindings
+	bindingsSetLayouts.EmplaceBack(renderGroup.BindingsSetLayout); //render group bindings
 	
-	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptorPoolSizes;
-	
-	BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
-	bindingsSetLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 	if (onMaterialLoadInfo.BindingSets.GetLength() != 0) //TODO: ADD SUPPORT FOR MULTIPLE BINDING SETS
 	{
+		for (auto& e : perFrameBindingsUpdateData)
+		{
+			auto& updateData = e.Materials.Emplace(onMaterialLoadInfo.ResourceName);
+
+			updateData.Name = onMaterialLoadInfo.RenderGroup;
+			updateData.Name2 = onMaterialLoadInfo.ResourceName;
+			updateData.BufferBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
+			updateData.TextureBindingDescriptorsUpdates.Initialize(32, GetPersistentAllocator());
+			updateData.BufferBindingTypes.Initialize(32, GetPersistentAllocator());
+		}
+		
+		BindingsPool::CreateInfo bindingsPoolCreateInfo;
+		bindingsPoolCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Bindings pool. Material: "); name += onMaterialLoadInfo.ResourceName;
+			bindingsPoolCreateInfo.Name = name.begin();
+		}
+
+		GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptorPoolSizes;
+
+		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
+		bindingsSetLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		for (auto& e : onMaterialLoadInfo.BindingSets[0])
 		{
 			auto bindingType = BindingTypeToVulkanBindingType(e.Type);
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ConvertShaderStage(e.Stage), 1 });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ConvertShaderStage(e.Stage), 0 });
 			descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ bindingType, 3 }); //TODO: ASK FOR CORRECT NUMBER OF DESCRIPTORS
 		}
-	}
-	bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
-	bindingsSetLayoutCreateInfo.SpecialBindings = GTSL::Ranger<const uint32>();
-
-	if constexpr (_DEBUG)
-	{
-		GTSL::StaticString<128> name("Bindings set layout. Material: "); name += onMaterialLoadInfo.ResourceName;
-		bindingsSetLayoutCreateInfo.Name = name.begin();
-	}
-	
-	instance.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
-
-	bindingsPoolCreateInfo.DescriptorPoolSizes = descriptorPoolSizes;
-	bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
-	instance.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
-
-	BindingsPool::AllocateBindingsSetsInfo allocateBindingsSetsInfo;
-	allocateBindingsSetsInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-	allocateBindingsSetsInfo.BindingsSets = GTSL::Ranger<BindingsSet>(loadInfo->RenderSystem->GetFrameCount(), instance.BindingsSets.begin());
-	allocateBindingsSetsInfo.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ instance.BindingsSetLayout, instance.BindingsSetLayout, instance.BindingsSetLayout };
-	allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>();
-
-	{
-		GTSL::Array<GAL::VulkanCreateInfo, MAX_CONCURRENT_FRAMES> bindingsSetsCreateInfo(2); //TODO: FILL WITH CORRECT VALUE
+		bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
 
 		if constexpr (_DEBUG)
 		{
-			for (uint32 j = 0; j < 2; ++j)
+			GTSL::StaticString<128> name("Bindings set layout. Material: "); name += onMaterialLoadInfo.ResourceName;
+			bindingsSetLayoutCreateInfo.Name = name.begin();
+		}
+
+		instance.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
+
+		bindingsPoolCreateInfo.DescriptorPoolSizes = descriptorPoolSizes;
+		bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
+		instance.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
+
+		BindingsPool::AllocateBindingsSetsInfo allocateBindingsSetsInfo;
+		allocateBindingsSetsInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		allocateBindingsSetsInfo.BindingsSets = GTSL::Ranger<BindingsSet>(loadInfo->RenderSystem->GetFrameCount(), instance.BindingsSets.begin());
+		allocateBindingsSetsInfo.BindingsSetLayouts = GTSL::Array<BindingsSetLayout, MAX_CONCURRENT_FRAMES>{ instance.BindingsSetLayout, instance.BindingsSetLayout, instance.BindingsSetLayout };
+		allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>();
+
+		{
+			GTSL::Array<GAL::VulkanCreateInfo, MAX_CONCURRENT_FRAMES> bindingsSetsCreateInfo(loadInfo->RenderSystem->GetFrameCount());
+
+			if constexpr (_DEBUG)
 			{
-				GTSL::StaticString<64> name("BindingsSet. Material: "); name += onMaterialLoadInfo.ResourceName;
-				
-				bindingsSetsCreateInfo[j].RenderDevice = renderSystem->GetRenderDevice();
-				bindingsSetsCreateInfo[j].Name = name.begin();
+				for (uint32 j = 0; j < 2; ++j)
+				{
+					GTSL::StaticString<64> name("BindingsSet. Material: "); name += onMaterialLoadInfo.ResourceName;
+
+					bindingsSetsCreateInfo[j].RenderDevice = renderSystem->GetRenderDevice();
+					bindingsSetsCreateInfo[j].Name = name.begin();
+				}
 			}
+
+			allocateBindingsSetsInfo.BindingsSetCreateInfos = bindingsSetsCreateInfo;
 		}
 
-		allocateBindingsSetsInfo.BindingsSetCreateInfos = bindingsSetsCreateInfo;
-	}
-	
-	instance.BindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
-	instance.BindingsSets.Resize(loadInfo->RenderSystem->GetFrameCount());
-	
-	RasterizationPipeline::CreateInfo pipelineCreateInfo;
-	pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		instance.BindingsPool.AllocateBindingsSets(allocateBindingsSetsInfo);
+		instance.BindingsSets.Resize(loadInfo->RenderSystem->GetFrameCount());
 
-	if constexpr (_DEBUG)
-	{
-		GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName;
-		pipelineCreateInfo.Name = name.begin();
-	}
-
-	{
-
-		GTSL::Array<ShaderDataType, 10> vertexDescriptor(onMaterialLoadInfo.VertexElements.GetLength());
-		for (uint32 i = 0; i < onMaterialLoadInfo.VertexElements.GetLength(); ++i)
-		{
-			vertexDescriptor[i] = ConvertShaderDataType(onMaterialLoadInfo.VertexElements[i]);
-		}
-
-		pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
-	}
-	
-	pipelineCreateInfo.IsInheritable = true;
-
-	GTSL::Array<BindingsSetLayout, 10> bindings_set_layouts;
-	bindings_set_layouts.EmplaceBack(instance.BindingsSetLayout);
-	
-	{
-		GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
-		bindingsSetLayouts.PushBack(GTSL::Ranger<BindingsSetLayout>(globalBindingsSetLayout)); //global bindings
-		bindingsSetLayouts.EmplaceBack(renderGroup.BindingsSetLayout); //render group bindings
 		bindingsSetLayouts.EmplaceBack(instance.BindingsSetLayout); //instance group bindings
+	}
 
-		PipelineLayout::CreateInfo pipelineLayout;
-		pipelineLayout.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-		
+	{
+		RasterizationPipeline::CreateInfo pipelineCreateInfo;
+		pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Pipeline Layout. Material: "); name += onMaterialLoadInfo.ResourceName;
-			pipelineLayout.Name = name.begin();
+			GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName;
+			pipelineCreateInfo.Name = name.begin();
 		}
-		
-		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
-		instance.PipelineLayout.Initialize(pipelineLayout);
-	}
 
-	pipelineCreateInfo.PipelineDescriptor.BlendEnable = false;
-	pipelineCreateInfo.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
-	pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
-	pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
-
-	pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
-
-	{
-		GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
-		for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
 		{
-			Shader::CreateInfo create_info;
-			create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-			create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
-			shaders.EmplaceBack(create_info);
-			offset += onMaterialLoadInfo.ShaderSizes[i];
+
+			GTSL::Array<ShaderDataType, 10> vertexDescriptor(onMaterialLoadInfo.VertexElements.GetLength());
+			for (uint32 i = 0; i < onMaterialLoadInfo.VertexElements.GetLength(); ++i)
+			{
+				vertexDescriptor[i] = ConvertShaderDataType(onMaterialLoadInfo.VertexElements[i]);
+			}
+
+			pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 		}
 
-		GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
-		for (uint32 i = 0; i < shaders.GetLength(); ++i)
+		pipelineCreateInfo.IsInheritable = true;
+
+		GTSL::Array<BindingsSetLayout, 10> bindings_set_layouts;
+		bindings_set_layouts.EmplaceBack(instance.BindingsSetLayout);
+
 		{
-			shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
+			PipelineLayout::CreateInfo pipelineLayout;
+			pipelineLayout.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<128> name("Pipeline Layout. Material: "); name += onMaterialLoadInfo.ResourceName;
+				pipelineLayout.Name = name.begin();
+			}
+
+			pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
+			instance.PipelineLayout.Initialize(pipelineLayout);
 		}
 
-		pipelineCreateInfo.Stages = shader_infos;
-		pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
-		pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
-		pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache(getThread());
-		instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
+		pipelineCreateInfo.PipelineDescriptor.BlendEnable = false;
+		pipelineCreateInfo.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
+		pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
+		pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
+
+		pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
+
+		{
+			GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
+			for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
+			{
+				Shader::CreateInfo create_info;
+				create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+				create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
+				shaders.EmplaceBack(create_info);
+				offset += onMaterialLoadInfo.ShaderSizes[i];
+			}
+
+			GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
+			for (uint32 i = 0; i < shaders.GetLength(); ++i)
+			{
+				shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
+			}
+
+			pipelineCreateInfo.Stages = shader_infos;
+			pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
+			pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
+			pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache(getThread());
+			instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);
+		}
 	}
 	
 	loadInfo->Buffer.Free(32, GetPersistentAllocator());
@@ -703,7 +695,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 		instance.DataSize = offset;
 	}
-
+	
 	for (uint32 i = 0; i < onMaterialLoadInfo.BindingSets.GetLength(); ++i)
 	{
 		BindingsSet::BindingsSetUpdateInfo bindingsSetUpdateInfo;
@@ -731,17 +723,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				memoryAllocationInfo.Allocation = &instance.Allocation;
 				memoryAllocationInfo.Data = &instance.Data;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
-
-				for (auto& e : perFrameBindingsUpdateData)
-				{
-					BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdateInfo;
-					bufferBindingsUpdateInfo.Buffer = instance.Buffer;
-					bufferBindingsUpdateInfo.Offset = 0;
-					bufferBindingsUpdateInfo.Range = instance.DataSize;
-
-					e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
-					e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingTypes.EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
-				}
 			}
 			else
 			{
@@ -750,6 +731,18 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		}
 	}
 
-	materialNames.Insert(loadInfo->Component, onMaterialLoadInfo.RenderGroup, onMaterialLoadInfo.ResourceName);
+	materialNames.EmplaceAt(loadInfo->Component, onMaterialLoadInfo.RenderGroup, onMaterialLoadInfo.ResourceName);
 	isMaterialReady.Emplace(onMaterialLoadInfo.ResourceName, false);
 }
+
+
+//for (auto& e : perFrameBindingsUpdateData)
+//{
+//BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdateInfo;
+//bufferBindingsUpdateInfo.Buffer = instance.Buffer;
+//bufferBindingsUpdateInfo.Offset = 0;
+//bufferBindingsUpdateInfo.Range = instance.DataSize;
+//
+//e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingDescriptorsUpdates.EmplaceBack(bufferBindingsUpdateInfo);
+//e.Materials.At(onMaterialLoadInfo.ResourceName).BufferBindingTypes.EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
+//}

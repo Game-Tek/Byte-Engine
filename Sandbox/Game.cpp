@@ -105,7 +105,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game

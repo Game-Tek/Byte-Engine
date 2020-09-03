@@ -17,15 +17,8 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
 	{
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(renderInfo.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * renderInfo.CurrentFrame;
-		auto* const data_pointer = static_cast<byte*>(renderInfo.RenderGroupData->Data) + offset;
-
 		auto* const renderGroup = renderInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-		auto positions = renderGroup->GetPositions();
-		auto pos = GTSL::Math::Translation(positions[0]);
-		pos(2, 3) *= -1.f;
-		*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = renderInfo.ProjectionMatrix * renderInfo.ViewMatrix * pos;
-
+		
 		for (const auto& e : renderGroup->GetMeshes())
 		{
 			CommandBuffer::BindVertexBufferInfo bindVertexInfo;
@@ -48,28 +41,45 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 			renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
 		}
 	}
+
+	void Setup(const SetupInfo& info) override
+	{
+		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(info.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * info.RenderSystem->GetCurrentFrame();
+		//auto* const data_pointer = static_cast<byte*>(info.RenderGroupData->Data) + offset;
+
+		auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+		auto positions = renderGroup->GetPositions();
+		auto pos = GTSL::Math::Translation(positions[0]);
+		pos(2, 3) *= -1.f;
+		//*reinterpret_cast<GTSL::Matrix4*>(data_pointer) = info.ProjectionMatrix * info.ViewMatrix * pos;
+	}
 };
 
 struct TextRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
 	{
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(renderInfo.RenderGroupData->DataSize, renderInfo.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * renderInfo.CurrentFrame;
-		auto* const dataPointer = static_cast<byte*>(renderInfo.RenderGroupData->Data) + offset;
-
 		auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
 		auto& text = textSystem->GetTexts()[0];
 		auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
-
-		//curve is aligned to glsl std140
-		GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), dataPointer);
-
+		
 		CommandBuffer::DrawInfo drawInfo;
 		drawInfo.FirstInstance = 0;
 		drawInfo.FirstVertex = 0;
 		drawInfo.InstanceCount = glyph.NumTriangles / 2;
 		drawInfo.VertexCount = 3;
 		renderInfo.CommandBuffer->Draw(drawInfo);
+	}
+
+	void Setup(const SetupInfo& info) override
+	{
+		//auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
+		//
+		//auto& text = textSystem->GetTexts()[0];
+		//auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
+		//
+		////curve is aligned to glsl std140
+		//GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), dataPointer);
 	}
 };
 
@@ -79,6 +89,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	
 	{
 		const GTSL::Array<TaskDependency, 4> dependencies{ { CLASS_NAME, AccessType::READ_WRITE } };
+		initializeInfo.GameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
 	}
 
@@ -94,6 +105,15 @@ void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
 	{
 		delete renderManager;
 	});
+}
+
+void RenderOrchestrator::Setup(TaskInfo taskInfo)
+{
+	RenderManager::SetupInfo setupInfo;
+	setupInfo.GameInstance = taskInfo.GameInstance;
+	setupInfo.RenderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	setupInfo.MaterialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	GTSL::ForEach(renderManagers, [&](RenderManager* renderManager) { renderManager->Setup(setupInfo); });
 }
 
 void RenderOrchestrator::Render(TaskInfo taskInfo)
@@ -132,7 +152,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		GTSL::PairForEach(renderGroupData.Instances, [&](const uint64 materialKey, const MaterialSystem::MaterialInstance& materialInstance)
 		{
 			auto materialOffsets = GTSL::Array<uint32, 1>{ GTSL::Math::PowerOf2RoundUp(materialInstance.DataSize, renderSystem->GetRenderDevice()->GetMinUniformBufferOffset()) * currentFrame };
-			bindingsManager.AddBinding(materialInstance.BindingsSets[currentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+			if (materialInstance.BindingsSets.GetLength())
+			{
+				bindingsManager.AddBinding(materialInstance.BindingsSets[currentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+			}
 
 			if (materialSystem->IsMaterialReady(renderGroupKey, materialKey))
 			{				
@@ -155,8 +178,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					renderManagers.At(renderGroupKey)->Render(renderInfo);
 				}
 			}
-			
-			bindingsManager.PopBindings();
+
+			if (materialInstance.BindingsSets.GetLength())
+			{
+				bindingsManager.PopBindings();
+			}
 		}
 		);
 	
@@ -168,6 +194,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGroupName, RenderGroup* renderGroup)
 {
 	systems.EmplaceBack(renderGroupName);
+	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
 	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
@@ -180,7 +207,9 @@ void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGro
 	}
 
 	dependencies.EmplaceBack("RenderSystem", AccessType::READ);
+	dependencies.EmplaceBack("MaterialSystem", AccessType::READ);
 
+	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
 }
 
@@ -191,6 +220,7 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 	
 	systems.Pop(element - systems.begin());
 	systemsAccesses.Pop(element - systems.begin());
+	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
 	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
@@ -203,6 +233,8 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 	}
 
 	dependencies.EmplaceBack("RenderSystem", AccessType::READ);
+	dependencies.EmplaceBack("MaterialSystem", AccessType::READ);
 	
+	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
 }

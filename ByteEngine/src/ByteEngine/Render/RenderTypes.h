@@ -65,6 +65,7 @@ using BindingType = GAL::VulkanBindingType;
 using AccessFlags = GAL::VulkanAccessFlags;
 using TextureType = GAL::VulkanTextureType;
 using PipelineType = GAL::VulkanPipelineType;
+using BindingFlags = GAL::VulkanBindingFlags;
 using PipelineStage = GAL::VulkanPipelineStage;
 using TextureFormat = GAL::VulkanTextureFormat;
 using TextureTiling = GAL::VulkanTextureTiling;

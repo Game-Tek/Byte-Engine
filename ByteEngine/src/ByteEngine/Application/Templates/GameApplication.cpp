@@ -99,8 +99,6 @@ void GameApplication::PostInitialize()
 		addRenderGroupInfo.Name = "StaticMeshRenderGroup";
 		addRenderGroupInfo.Bindings.EmplaceBack();
 		addRenderGroupInfo.Bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
-		addRenderGroupInfo.Data.EmplaceBack();
-		addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::MAT4);
 		materialSystem->AddRenderGroup(gameInstance, addRenderGroupInfo);
 	}
 

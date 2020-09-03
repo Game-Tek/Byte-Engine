@@ -15,9 +15,9 @@ void TextSystem::Initialize(const InitializeInfo& initializeInfo)
 		addRenderGroupInfo.Bindings.EmplaceBack();
 		addRenderGroupInfo.Bindings.back().EmplaceBack(BindingType::STORAGE_BUFFER_DYNAMIC);
 		
-		addRenderGroupInfo.Data.EmplaceBack();
-		addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::FLOAT4);
-		addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::FLOAT4); //8 floats, 32 bytes
+		//addRenderGroupInfo.Data.EmplaceBack();
+		//addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::FLOAT4);
+		//addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::FLOAT4); //8 floats, 32 bytes
 		
 		initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->AddRenderGroup(initializeInfo.GameInstance, addRenderGroupInfo);
 	}

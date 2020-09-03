@@ -28,7 +28,6 @@ public:
 	{
 		Id Name;
 		GTSL::Array<GTSL::Array<BindingType, 6>, 6> Bindings;
-		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 6>, 6> Data;
 	};
 	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);
 	
@@ -95,7 +94,7 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
-	Vector<GTSL::Pair<Id, Id>> materialNames;
+	GTSL::KeepVector<GTSL::Pair<Id, Id>, BE::PersistentAllocatorReference> materialNames;
 	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isRenderGroupReady;
 	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isMaterialReady;
 

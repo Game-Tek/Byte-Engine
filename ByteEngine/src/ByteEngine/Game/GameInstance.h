@@ -84,6 +84,8 @@ public:
 			recurringGoals[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, GetPersistentAllocator());
 			recurringTasksInfo[startOnGoalIndex].EmplaceBack(GTSL::MoveRef(taskInfo));
 		}
+
+		BE_LOG_MESSAGE("Added recurring task ", name.GetString(), " to goal ", startOn.GetString(), " to be done before ", doneFor.GetString())
 	}
 	
 	void RemoveTask(Id name, Id startOn);
@@ -123,6 +125,8 @@ public:
 			dynamicGoals[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, GetPersistentAllocator());
 			dynamicTasksInfo[startOnGoalIndex].EmplaceBack(taskInfo);
 		}
+
+		BE_LOG_MESSAGE("Added dynamic task ", name.GetString(), " to goal ", startOn.GetString(), " to be done before ", doneFor.GetString())
 	}
 
 	template<typename... ARGS>
@@ -148,6 +152,7 @@ public:
 		{
 			GTSL::ReadLock lock(goalNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
+			BE_LOG_MESSAGE("Added dynamic task ", name.GetString(), " to goal ", goalNames[0].GetString(), " to be done before ", goalNames[1].GetString())
 		}
 		
 		{

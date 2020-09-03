@@ -25,6 +25,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
+	void Setup(TaskInfo taskInfo);
 	void Render(TaskInfo taskInfo);
 
 	void AddRenderGroup(GameInstance* gameInstance, Id renderGroupName, RenderGroup* renderGroup);
@@ -43,10 +44,19 @@ public:
 			MaterialSystem* MaterialSystem;
 		};
 		virtual void Render(const RenderInfo& renderInfo) = 0;
+
+		struct SetupInfo
+		{
+			GameInstance* GameInstance;
+			RenderSystem* RenderSystem;
+			MaterialSystem* MaterialSystem;
+		};
+		virtual void Setup(const SetupInfo& info) = 0;
 	};
 	
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
+	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;

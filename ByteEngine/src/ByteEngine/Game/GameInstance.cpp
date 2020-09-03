@@ -235,6 +235,8 @@ void GameInstance::RemoveTask(const Id name, const Id startOn)
 		GTSL::WriteLock lock(recurringGoalsMutex);
 		recurringGoals[i].RemoveTask(name);
 	}
+
+	BE_LOG_MESSAGE("Removed recurring task ", name.GetString(), " from goal ", startOn.GetString())
 }
 
 void GameInstance::AddGoal(Id name)
@@ -271,6 +273,8 @@ void GameInstance::AddGoal(Id name)
 		GTSL::WriteLock lock(dynamicTasksInfoMutex);
 		dynamicTasksInfo.EmplaceBack(64, GetPersistentAllocator());
 	}
+
+	BE_LOG_MESSAGE("Added goal ", name.GetString())
 }
 
 void GameInstance::initWorld(const uint8 worldId)

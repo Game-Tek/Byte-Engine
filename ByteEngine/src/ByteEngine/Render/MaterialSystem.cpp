@@ -293,7 +293,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 					bufferInfo.Name = name.begin();
 				}
 
-				bufferInfo.Size = 1024;
+				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
 				bufferInfo.BufferType = BufferType::UNIFORM;
 				renderGroupData.Buffer = Buffer(bufferInfo);
 
@@ -328,7 +328,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 					bufferInfo.Name = name.begin();
 				}
 
-				bufferInfo.Size = 1024 * 1024;
+				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
 				bufferInfo.BufferType = BufferType::STORAGE;
 				renderGroupData.Buffer = Buffer(bufferInfo);
 
@@ -653,9 +653,12 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		}
 
 		pipelineCreateInfo.PipelineDescriptor.BlendEnable = false;
-		pipelineCreateInfo.PipelineDescriptor.CullMode = CullMode::CULL_BACK;
-		pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS_OR_EQUAL;
-		pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = GAL::BlendOperation::ADD;
+		pipelineCreateInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
+		pipelineCreateInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest;
+		pipelineCreateInfo.PipelineDescriptor.DepthWrite = onMaterialLoadInfo.DepthWrite;
+		pipelineCreateInfo.PipelineDescriptor.StencilTest = false;
+		pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
+		pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = onMaterialLoadInfo.ColorBlendOperation;
 
 		pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
 

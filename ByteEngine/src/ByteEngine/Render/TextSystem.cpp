@@ -16,7 +16,10 @@ void TextSystem::Initialize(const InitializeInfo& initializeInfo)
 		addRenderGroupInfo.Bindings.back().EmplaceBack(BindingType::STORAGE_BUFFER_DYNAMIC);
 
 		addRenderGroupInfo.Range.EmplaceBack();
-		addRenderGroupInfo.Range.back().EmplaceBack(64);
+		addRenderGroupInfo.Range.back().EmplaceBack(512*512);
+
+		addRenderGroupInfo.Size.EmplaceBack();
+		addRenderGroupInfo.Size.back().EmplaceBack(1024*1024);
 		
 		//addRenderGroupInfo.Data.EmplaceBack();
 		//addRenderGroupInfo.Data.back().EmplaceBack(GAL::ShaderDataType::FLOAT4);

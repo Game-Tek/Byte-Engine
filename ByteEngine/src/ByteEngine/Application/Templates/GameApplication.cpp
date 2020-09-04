@@ -101,6 +101,8 @@ void GameApplication::PostInitialize()
 		addRenderGroupInfo.Bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 		addRenderGroupInfo.Range.EmplaceBack();
 		addRenderGroupInfo.Range[0].EmplaceBack(64);
+		addRenderGroupInfo.Size.EmplaceBack();
+		addRenderGroupInfo.Size.back().EmplaceBack(128);
 		materialSystem->AddRenderGroup(gameInstance, addRenderGroupInfo);
 	}
 

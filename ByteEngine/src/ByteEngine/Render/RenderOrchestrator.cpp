@@ -104,11 +104,9 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 		auto& renderGroupInstance = renderGroups.At(renderGroupName);
 
 		{
-			auto offset = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
+			auto offset = GTSL::Array<uint32, 1>{ 0 };
 			renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
 		}
-
-		auto materialOffsets = GTSL::Array<uint32, 1>{ 0 };
 		
 		auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
 		auto& materialInstance = materialInstances[1];
@@ -128,7 +126,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			CommandBuffer::DrawInfo drawInfo;
 			drawInfo.FirstInstance = 0;
 			drawInfo.FirstVertex = 0;
-			drawInfo.InstanceCount = 1;//glyph.NumTriangles / 2;
+			drawInfo.InstanceCount = glyph.NumTriangles;
 			drawInfo.VertexCount = 3;
 			renderInfo.CommandBuffer->Draw(drawInfo);
 		}
@@ -138,19 +136,37 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 
 	void Setup(const SetupInfo& info) override
 	{
-		//auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
-		//
-		//auto& text = textSystem->GetTexts()[0];
-		//auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
-		//
-		////curve is aligned to glsl std140
-		//GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), dataPointer);
+		auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
+		
+		auto& text = textSystem->GetTexts()[0];
+		auto& glyph = const_cast<FontResourceManager::Glyph&>(textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0])));
 
-		MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
-		updateInfo.RenderGroup = "TextSystem";
-		updateInfo.Data = GTSL::Ranger<const byte>(64, static_cast<const byte*>(nullptr));
-		updateInfo.Offset = 0;
-		info.MaterialSystem->UpdateRenderGroupData(updateInfo);
+		byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
+
+		GTSL::Vector4 windingPoint(-glyph.BoundingBox[0], -glyph.BoundingBox[3], 0, 1);
+
+		//vec2 positions[3] = vec2[](
+		//	vec2(-0.5, 0.5),
+		//	vec2(0.5, 0.5),
+		//	vec2(0.0, -0.5)
+		//	);
+		
+		//glyph.PathList[0].Curves[0].p0.X = -0.5;
+		//glyph.PathList[0].Curves[0].p0.Y = 0.5;
+		//glyph.PathList[0].Curves[0].p1.X = 0.5;
+		//glyph.PathList[0].Curves[0].p1.Y = 0.5;
+		//glyph.PathList[0].Curves[0].p2.X = 0.0;
+		//glyph.PathList[0].Curves[0].p2.Y = -0.5;
+		
+		//curve is aligned to glsl std140
+		GTSL::MemCopy(sizeof(GTSL::Vector4), &windingPoint, data); data += sizeof(GTSL::Vector4);
+		GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), data);	
+
+		//MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
+		//updateInfo.RenderGroup = "TextSystem";
+		//updateInfo.Data = GTSL::Ranger<const byte>(64, static_cast<const byte*>(nullptr));
+		//updateInfo.Offset = 0;
+		//info.MaterialSystem->UpdateRenderGroupData(updateInfo);
 	}
 };
 

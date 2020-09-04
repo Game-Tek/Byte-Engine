@@ -90,6 +90,10 @@ void Game::Initialize()
 		u_array.EmplaceBack(uniforms[0]);
 		materialCreateInfo.Bindings = b_array;
 		materialCreateInfo.Uniforms = u_array;
+		materialCreateInfo.DepthWrite = true;
+		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 
@@ -100,12 +104,14 @@ void Game::Initialize()
 		GTSL::Array<GAL::ShaderDataType, 8> format;
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
-		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
+		materialCreateInfo.DepthWrite = false;
+		materialCreateInfo.DepthTest = false;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -159,7 +165,7 @@ void Game::PostInitialize()
 	{
 		TextSystem::AddTextInfo addTextInfo;
 		addTextInfo.Position = { 0, 0 };
-		addTextInfo.Text = "g";
+		addTextInfo.Text = "1";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
 	

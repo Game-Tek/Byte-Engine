@@ -28,6 +28,7 @@ public:
 	{
 		Id Name;
 		GTSL::Array<GTSL::Array<BindingType, 6>, 6> Bindings;
+		GTSL::Array<GTSL::Array<uint32, 6>, 6> Size;
 		GTSL::Array<GTSL::Array<uint32, 6>, 6> Range;
 	};
 	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);

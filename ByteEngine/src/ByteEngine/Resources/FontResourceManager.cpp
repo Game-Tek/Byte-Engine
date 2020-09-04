@@ -652,10 +652,10 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		uint32 currentOffset = glyf_offset + glyph_index[i];
 
 		get2b(&currentGlyph.NumContours, data + currentOffset); currentOffset += sizeof(int16);
-		get2b(&currentGlyph.BoundingBox[0], data + currentOffset); currentOffset += sizeof(int16);
-		get2b(&currentGlyph.BoundingBox[1], data + currentOffset); currentOffset += sizeof(int16);
-		get2b(&currentGlyph.BoundingBox[2], data + currentOffset); currentOffset += sizeof(int16);
-		get2b(&currentGlyph.BoundingBox[3], data + currentOffset); currentOffset += sizeof(int16);
+		get2b(&currentGlyph.BoundingBox[0], data + currentOffset); currentOffset += sizeof(int16); //xMin
+		get2b(&currentGlyph.BoundingBox[1], data + currentOffset); currentOffset += sizeof(int16); //yMin
+		get2b(&currentGlyph.BoundingBox[2], data + currentOffset); currentOffset += sizeof(int16); //xMax
+		get2b(&currentGlyph.BoundingBox[3], data + currentOffset); currentOffset += sizeof(int16); //yMax
 
 		Vector2 glyphCenter;
 		glyphCenter.X = (currentGlyph.BoundingBox[0] + currentGlyph.BoundingBox[2]) / 2.0f;

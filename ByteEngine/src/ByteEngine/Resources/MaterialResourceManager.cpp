@@ -96,6 +96,11 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.ShaderTypes = GTSL::Ranger<const ShaderTypeType>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
 
+		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
+		materialInfo.DepthTest = materialCreateInfo.DepthTest;
+		materialInfo.DepthWrite = materialCreateInfo.DepthWrite;
+		materialInfo.CullMode = materialCreateInfo.CullMode;
+		
 		for(uint32 i = 0; i < materialCreateInfo.Bindings.ElementCount(); ++i)
 		{
 			materialInfo.BindingSets.EmplaceBack();
@@ -157,6 +162,10 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
 	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
+	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
+	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
+	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
+	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
 	
 	for (uint32 i = 0; i < materialInfo.BindingSets.GetLength(); ++i)
 	{
@@ -214,6 +223,11 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.BindingSets, buffer);
 	Insert(materialInfo.Uniforms, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
+	
+	Insert(materialInfo.DepthTest, buffer);
+	Insert(materialInfo.DepthWrite, buffer);
+	Insert(materialInfo.CullMode, buffer);
+	Insert(materialInfo.ColorBlendOperation, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
@@ -225,4 +239,9 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.BindingSets, buffer);
 	Extract(materialInfo.Uniforms, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);
+
+	Extract(materialInfo.DepthTest, buffer);
+	Extract(materialInfo.DepthWrite, buffer);
+	Extract(materialInfo.CullMode, buffer);
+	Extract(materialInfo.ColorBlendOperation, buffer);
 }

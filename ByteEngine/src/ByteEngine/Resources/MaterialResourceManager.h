@@ -29,6 +29,8 @@ public:
 		GTSL::Id64 RenderGroup;
 		GTSL::Array<uint32, 12> ShaderSizes;
 		GTSL::Array<uint8, 20> VertexElements;
+		bool DepthWrite; bool DepthTest;
+		GAL::CullMode CullMode;
 
 		struct Binding
 		{
@@ -57,6 +59,7 @@ public:
 		GTSL::Array<GTSL::Array<Binding, 6>, 6> BindingSets;
 		GTSL::Array<GTSL::Array<Uniform, 6>, 6> Uniforms;
 		GTSL::Array<uint8, 12> ShaderTypes;
+		GAL::BlendOperation ColorBlendOperation;
 		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 	};
@@ -90,6 +93,10 @@ public:
 		GTSL::Ranger<const GTSL::Ranger<const Binding>> Bindings;
 		GTSL::Ranger<const GTSL::Ranger<const Uniform>> Uniforms;
 		GTSL::Ranger<const GAL::ShaderType> ShaderTypes;
+		bool DepthWrite;
+		bool DepthTest;
+		GAL::CullMode CullMode;
+		GAL::BlendOperation ColorBlendOperation;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 
@@ -103,6 +110,10 @@ public:
 		GTSL::Array<GTSL::Array<Uniform, 12>, 12> Uniforms;
 		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
 		GTSL::Array<uint32, 20> ShaderSizes;
+		bool DepthWrite;
+		bool DepthTest;
+		GAL::CullMode CullMode;
+		GAL::BlendOperation ColorBlendOperation;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo

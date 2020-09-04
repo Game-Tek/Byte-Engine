@@ -105,7 +105,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -159,11 +159,11 @@ void Game::PostInitialize()
 	{
 		TextSystem::AddTextInfo addTextInfo;
 		addTextInfo.Position = { 0, 0 };
-		addTextInfo.Text = "H";
+		addTextInfo.Text = "g";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

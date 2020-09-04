@@ -10,6 +10,8 @@
 #include <GTSL/Vector.hpp>
 
 
+
+#include "BindingsManager.hpp"
 #include "MaterialSystem.h"
 #include "RenderTypes.h"
 #include "ByteEngine/Game/Tasks.h"
@@ -35,13 +37,12 @@ public:
 	{
 		struct RenderInfo
 		{
-			GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
-			MaterialSystem::RenderGroupData* RenderGroupData;
 			GameInstance* GameInstance;
 			CommandBuffer* CommandBuffer;
 			uint8 CurrentFrame;
 			RenderSystem* RenderSystem;
 			MaterialSystem* MaterialSystem;
+			BindingsManager<BE::TAR>* BindingsManager;
 		};
 		virtual void Render(const RenderInfo& renderInfo) = 0;
 
@@ -50,6 +51,7 @@ public:
 			GameInstance* GameInstance;
 			RenderSystem* RenderSystem;
 			MaterialSystem* MaterialSystem;
+			GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
 		};
 		virtual void Setup(const SetupInfo& info) = 0;
 	};

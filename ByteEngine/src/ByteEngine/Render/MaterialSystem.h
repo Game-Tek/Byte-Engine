@@ -16,7 +16,7 @@ class RenderSystem;
 class MaterialSystem : public System
 {
 public:
-	MaterialSystem() : System("MaterialSystem"), materialNames(16, GetPersistentAllocator())
+	MaterialSystem() : System("MaterialSystem")
 	{}
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
@@ -28,6 +28,7 @@ public:
 	{
 		Id Name;
 		GTSL::Array<GTSL::Array<BindingType, 6>, 6> Bindings;
+		GTSL::Array<GTSL::Array<uint32, 6>, 6> Range;
 	};
 	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);
 	
@@ -45,10 +46,13 @@ public:
 
 		uint32 DataSize = 0;
 		
-		GTSL::StaticMap<GTSL::Pair<Id, uint32>, 16> Parameters;
+		GTSL::StaticMap<uint32, 16> Parameters;
+		BindingType BindingType;
 
 		MaterialInstance() = default;
 	};
+
+	[[nodiscard]] const GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference>& GetMaterialInstances() const { return materials; }
 
 	struct RenderGroupData
 	{
@@ -56,14 +60,11 @@ public:
 		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
-
-		uint32 DataSize;
 		
 		Buffer Buffer;
 		void* Data;
 		RenderAllocation Allocation;
-
-		GTSL::FlatHashMap<MaterialInstance, BE::PersistentAllocatorReference> Instances;
+		BindingType BindingType;
 
 		RenderGroupData() = default;
 	};
@@ -84,19 +85,28 @@ public:
 
 	void SetMaterialTexture(const ComponentReference material, Id parameterName, const uint8 n, TextureView* image, TextureSampler* sampler);
 
+	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Data; }
+	
+	struct UpdateRenderGroupDataInfo
+	{
+		Id RenderGroup;
+		GTSL::Ranger<const byte> Data;
+		uint32 Offset = 0;
+	};
+	void UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo);
+	
 	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
 	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 
-	bool IsMaterialReady(const uint64 renderGroup, const uint64 material) { return isRenderGroupReady.At(renderGroup) && isMaterialReady.At(material); }
+	bool IsMaterialReady(const uint64 material) { return isMaterialReady[material]; }
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
-	GTSL::KeepVector<GTSL::Pair<Id, Id>, BE::PersistentAllocatorReference> materialNames;
 	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isRenderGroupReady;
-	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isMaterialReady;
+	GTSL::KeepVector<uint8, BE::PersistentAllocatorReference> isMaterialReady;
 
 	struct BindingsUpdateData
 	{
@@ -105,13 +115,11 @@ private:
 			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
 			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
 			Vector<BindingType> BufferBindingTypes;
-			Id Name;
-			Id Name2;
 		};
 
 		Updates Global;
 		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> RenderGroups;
-		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> Materials;
+		GTSL::KeepVector<Updates, BE::PersistentAllocatorReference> Materials;
 
 		BindingsUpdateData() = default;
 		void Initialize(const uint32 num, const BE::PersistentAllocatorReference& allocator)
@@ -119,14 +127,16 @@ private:
 			Global.BufferBindingDescriptorsUpdates.Initialize(8, allocator);
 			Global.TextureBindingDescriptorsUpdates.Initialize(8, allocator);
 			Global.BufferBindingTypes.Initialize(8, allocator);
-			RenderGroups.Initialize(4, allocator); Materials.Initialize(4, allocator);
+			RenderGroups.Initialize(8, allocator);
+			Materials.Initialize(32, allocator);
 		}
 	};
 	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
 	
-	ComponentReference component = 0;
+	ComponentReference material = 0;
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
+	GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference> materials;
 	
 	struct MaterialLoadInfo
 	{

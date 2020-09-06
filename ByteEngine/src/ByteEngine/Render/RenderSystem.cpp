@@ -95,13 +95,17 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		renderPassCreateInfo.RenderDevice = &renderDevice;
 		if constexpr (_DEBUG) { renderPassCreateInfo.Name = "RenderPass"; }
 		renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = true;
-		GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachmentDescriptors;
-		attachmentDescriptors.PushBack(RenderPass::AttachmentDescriptor{ TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
-		renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachmentDescriptors;
+		{
+			GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachmentDescriptors;
+			attachmentDescriptors.PushBack(RenderPass::AttachmentDescriptor{ TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
+			renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachmentDescriptors;
+		}
 		renderPassCreateInfo.Descriptor.DepthStencilAttachment = RenderPass::AttachmentDescriptor{ TextureFormat::DEPTH24_STENCIL8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::UNDEFINED, TextureLayout::UNDEFINED, TextureLayout::DEPTH_STENCIL_ATTACHMENT };
 
 		GTSL::Array<RenderPass::AttachmentReference, 8> writeAttachmentReferences;
+		GTSL::Array<RenderPass::AttachmentReference, 8> readAttachmentReferences;
 		writeAttachmentReferences.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
+		readAttachmentReferences.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
 
 		RenderPass::AttachmentReference depthAttachmentReference;
 		depthAttachmentReference.Index = 1;
@@ -109,6 +113,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
 		subPassDescriptors.PushBack(RenderPass::SubPassDescriptor{ GTSL::Ranger<RenderPass::AttachmentReference>(), writeAttachmentReferences, GTSL::Ranger<uint8>(), &depthAttachmentReference });
+		subPassDescriptors.PushBack(RenderPass::SubPassDescriptor{ readAttachmentReferences, writeAttachmentReferences, GTSL::Ranger<uint8>(), nullptr });
 		renderPassCreateInfo.Descriptor.SubPasses = subPassDescriptors;
 		new(&renderPass) RenderPass(renderPassCreateInfo);
 	}

@@ -111,7 +111,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -168,8 +168,10 @@ void Game::PostInitialize()
 		addTextInfo.Text = "1";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
+
+	//GetResourceManager<FontResourceManager>("FontResourceManager")->GetFontFromSDF(GTSL::StaticString<64>("Rage"));
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

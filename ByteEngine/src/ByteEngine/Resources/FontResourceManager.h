@@ -72,6 +72,8 @@ public:
 	
 	Font GetFont(const GTSL::Ranger<const UTF8> fontName);
 
+	Font GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName);
+
 private:
 	int8 parseData(const char* data, Font* fontData);
 };

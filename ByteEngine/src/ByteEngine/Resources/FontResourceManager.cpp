@@ -1,5 +1,8 @@
 #include "FontResourceManager.h"
 
+#undef INFINITE
+#include "msdfgen-master/msdfgen.h"
+
 /*
 * ttf-parser
 *  A single header ttf parser
@@ -428,6 +431,62 @@ FontResourceManager::Font FontResourceManager::GetFont(const Ranger<const UTF8> 
 	
 	return fontData;
 }
+
+//FontResourceManager::Font FontResourceManager::GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName)
+//{
+//	StaticString<255> basePath(BE::Application::Get()->GetPathToApplication()); basePath += "/resources/";
+//	StaticString<255> path(basePath); path += fontName; path += ".ttf";
+//
+//	File fontFile; fontFile.OpenFile(path, static_cast<uint8>(File::AccessMode::READ), File::OpenMode::LEAVE_CONTENTS);
+//	Buffer fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+//
+//	fontFile.ReadFile(fileBuffer);
+//	
+//	Font fontData;
+//	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
+//
+//	for(uint32 glyph = 0; glyph < fontData.Glyphs.size(); ++glyph)
+//	{
+//		msdfgen::Bitmap<float, 3> bitmap(32, 32);
+//		msdfgen::Shape shape;
+//
+//		for(uint16 cont = 0; cont < fontData.Glyphs[glyph].NumContours; ++cont)
+//		{
+//			msdfgen::Contour contour;
+//
+//			for(uint32 path = 0; path < fontData.Glyphs[glyph].PathList.GetLength(); ++path)
+//			{
+//				for(auto& curve : fontData.Glyphs[glyph].PathList[path].Curves)
+//				{
+//					msdfgen::EdgeHolder edgeHolder(msdfgen::Vector2(static_cast<double>(curve.p0.X), static_cast<double>(curve.p0.Y)), msdfgen::Vector2(static_cast<double>(curve.p1.X), static_cast<double>(curve.p1.Y)));
+//					contour.addEdge(edgeHolder);
+//				}
+//			}
+//
+//			shape.addContour(contour);
+//		}
+//		
+//		shape.normalize();
+//		auto bounds = shape.getBounds();
+//		shape.bound(bounds.l, bounds.b, bounds.r, bounds.t);
+//
+//		if (shape.edgeCount())
+//		{
+//			msdfgen::edgeColoringSimple(shape, 3.0);
+//			msdfgen::generateMSDF(bitmap, shape, 12.0, 4, msdfgen::Vector2(3, 20));
+//		}
+//
+//		GTSL::StaticString<64> name(basePath); name += fontData.Glyphs[glyph].Character; name += ".bmp";
+//		msdfgen::saveBmp(bitmap, name.begin());
+//	}
+//
+//	BE_ASSERT(result > -1, "Failed to parse!")
+//
+//	fileBuffer.Free(8, GetTransientAllocator());
+//	fontFile.CloseFile();
+//
+//	return fontData;
+//}
 
 int8 FontResourceManager::parseData(const char* data, Font* fontData)
 {

@@ -8,6 +8,8 @@
 #include "ByteEngine/Game/Tasks.h"
 #include <ByteEngine\Render\BindingsManager.hpp>
 
+
+#include "FrameManager.h"
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
 #include "TextSystem.h"
@@ -17,61 +19,64 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
 	{
-		auto* const renderGroup = renderInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-
-		auto renderGroupName = Id("StaticMeshRenderGroup");
-
-		auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
-		auto& renderGroupInstance = renderGroups.At(renderGroupName);
-
+		if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 0)
 		{
-			auto offset = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
-			renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
-		}
+			auto* const renderGroup = renderInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
-		auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-		auto& materialInstance = materialInstances[0];
-		
-		if (materialInstance.BindingsSets.GetLength())
-		{
-			auto materialOffsets = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
-			renderInfo.BindingsManager->AddBinding(materialInstance.BindingsSets[renderInfo.CurrentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
-		}
+			auto renderGroupName = Id("StaticMeshRenderGroup");
 
-		if (renderInfo.MaterialSystem->IsMaterialReady(0))
-		{
-			CommandBuffer::BindPipelineInfo bindPipelineInfo;
-			bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-			bindPipelineInfo.PipelineType = PipelineType::RASTER;
-			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-			renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-			for (const auto& e : renderGroup->GetMeshes())
+			auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
+			auto& renderGroupInstance = renderGroups.At(renderGroupName);
+
 			{
-				CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-				bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-				bindVertexInfo.Buffer = &e.Buffer;
-				bindVertexInfo.Offset = 0;
-				renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
-				CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-				bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-				bindIndexBuffer.Buffer = &e.Buffer;
-				bindIndexBuffer.Offset = e.IndicesOffset;
-				bindIndexBuffer.IndexType = e.IndexType;
-				renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
-				CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-				drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-				drawIndexedInfo.InstanceCount = 1;
-				drawIndexedInfo.IndexCount = e.IndicesCount;
-				renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+				auto offset = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
+				renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
 			}
-		}
-		
-		if (materialInstance.BindingsSets.GetLength())
-		{
-			renderInfo.BindingsManager->PopBindings(); //material
-		}
 
-		renderInfo.BindingsManager->PopBindings(); //render group
+			auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+			auto& materialInstance = materialInstances[0];
+
+			if (materialInstance.BindingsSets.GetLength())
+			{
+				auto materialOffsets = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
+				renderInfo.BindingsManager->AddBinding(materialInstance.BindingsSets[renderInfo.CurrentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+			}
+
+			if (renderInfo.MaterialSystem->IsMaterialReady(0))
+			{
+				CommandBuffer::BindPipelineInfo bindPipelineInfo;
+				bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+				bindPipelineInfo.PipelineType = PipelineType::RASTER;
+				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+				renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+				for (const auto& e : renderGroup->GetMeshes())
+				{
+					CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+					bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+					bindVertexInfo.Buffer = &e.Buffer;
+					bindVertexInfo.Offset = 0;
+					renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
+					CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+					bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+					bindIndexBuffer.Buffer = &e.Buffer;
+					bindIndexBuffer.Offset = e.IndicesOffset;
+					bindIndexBuffer.IndexType = e.IndexType;
+					renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
+					CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+					drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+					drawIndexedInfo.InstanceCount = 1;
+					drawIndexedInfo.IndexCount = e.IndicesCount;
+					renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+				}
+			}
+
+			if (materialInstance.BindingsSets.GetLength())
+			{
+				renderInfo.BindingsManager->PopBindings(); //material
+			}
+
+			renderInfo.BindingsManager->PopBindings(); //render group
+		}
 	}
 
 	void Setup(const SetupInfo& info) override
@@ -98,40 +103,43 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
 	{
-		Id renderGroupName = "TextSystem";
-
-		auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
-		auto& renderGroupInstance = renderGroups.At(renderGroupName);
-
+		if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 1)
 		{
-			auto offset = GTSL::Array<uint32, 1>{ 0 };
-			renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+			Id renderGroupName = "TextSystem";
+
+			auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
+			auto& renderGroupInstance = renderGroups.At(renderGroupName);
+
+			{
+				auto offset = GTSL::Array<uint32, 1>{ 0 };
+				renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+			}
+
+			auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+			auto& materialInstance = materialInstances[1];
+
+			if (renderInfo.MaterialSystem->IsMaterialReady(1))
+			{
+				CommandBuffer::BindPipelineInfo bindPipelineInfo;
+				bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+				bindPipelineInfo.PipelineType = PipelineType::RASTER;
+				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+				renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+
+				auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
+				auto& text = textSystem->GetTexts()[0];
+				auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
+
+				CommandBuffer::DrawInfo drawInfo;
+				drawInfo.FirstInstance = 0;
+				drawInfo.FirstVertex = 0;
+				drawInfo.InstanceCount = glyph.NumTriangles;
+				drawInfo.VertexCount = 3;
+				renderInfo.CommandBuffer->Draw(drawInfo);
+			}
+
+			renderInfo.BindingsManager->PopBindings();
 		}
-		
-		auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-		auto& materialInstance = materialInstances[1];
-		
-		if (renderInfo.MaterialSystem->IsMaterialReady(1))
-		{
-			CommandBuffer::BindPipelineInfo bindPipelineInfo;
-			bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-			bindPipelineInfo.PipelineType = PipelineType::RASTER;
-			bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-			renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-
-			auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
-			auto& text = textSystem->GetTexts()[0];
-			auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
-
-			CommandBuffer::DrawInfo drawInfo;
-			drawInfo.FirstInstance = 0;
-			drawInfo.FirstVertex = 0;
-			drawInfo.InstanceCount = glyph.NumTriangles;
-			drawInfo.VertexCount = 3;
-			renderInfo.CommandBuffer->Draw(drawInfo);
-		}
-
-		renderInfo.BindingsManager->PopBindings();
 	}
 
 	void Setup(const SetupInfo& info) override
@@ -234,18 +242,53 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	GTSL::Array<Id, 16> renderGroups;
 
 	renderGroups.EmplaceBack("StaticMeshRenderGroup"); renderGroups.EmplaceBack("TextSystem");
+
+	auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
 	
-	for(auto e : renderGroups)
+	for (uint8 rp = 0; rp < frameManager->GetRenderPassCount(); ++rp)
 	{
-		RenderManager::RenderInfo renderInfo;
-		renderInfo.RenderSystem = renderSystem;
-		renderInfo.GameInstance = taskInfo.GameInstance;
-		renderInfo.CommandBuffer = &commandBuffer;
-		renderInfo.MaterialSystem = materialSystem;
-		renderInfo.CurrentFrame = renderSystem->GetCurrentFrame();
-		renderInfo.BindingsManager = &bindingsManager;
-		renderManagers.At(e)->Render(renderInfo);
+		auto renderPass = frameManager->GetRenderPass(rp);
+		auto frameBuffer = frameManager->GetFrameBuffer(rp);
+
+		CommandBuffer::BeginRenderPassInfo beginRenderPass;
+		beginRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+		beginRenderPass.RenderPass = &renderPass;
+		beginRenderPass.Framebuffer = &frameBuffer;
+		beginRenderPass.RenderArea = renderSystem->GetRenderExtent();
+		beginRenderPass.ClearValues = frameManager->GetClearValues(rp);
+		commandBuffer.BeginRenderPass(beginRenderPass);
+		
+		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp)
+		{
+			for (auto e : renderGroups)
+			{
+				RenderManager::RenderInfo renderInfo;
+				renderInfo.RenderSystem = renderSystem;
+				renderInfo.GameInstance = taskInfo.GameInstance;
+				renderInfo.CommandBuffer = &commandBuffer;
+				renderInfo.MaterialSystem = materialSystem;
+				renderInfo.CurrentFrame = renderSystem->GetCurrentFrame();
+				renderInfo.BindingsManager = &bindingsManager;
+				renderInfo.RenderPass = rp; renderInfo.SubPass = sp;
+				renderManagers.At(e)->Render(renderInfo);
+			}
+
+			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+		}
+
+		CommandBuffer::EndRenderPassInfo endRenderPass;
+		endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+		commandBuffer.EndRenderPass(endRenderPass);
 	}
+
+	CommandBuffer::CopyTextureToTextureInfo copyTexture;
+	copyTexture.RenderDevice = renderSystem->GetRenderDevice();
+	copyTexture.SourceTexture = frameManager->GetAttachmentTexture("Color");
+	copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
+	copyTexture.Extent = renderSystem->GetRenderExtent();
+	copyTexture.SourceLayout = TextureLayout::COLOR_ATTACHMENT;
+	copyTexture.DestinationLayout = TextureLayout::PRESENTATION;
+	commandBuffer.CopyTextureToTexture(copyTexture);
 	
 	bindingsManager.PopBindings();
 }
@@ -267,6 +310,7 @@ void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGro
 
 	dependencies.EmplaceBack("RenderSystem", AccessType::READ);
 	dependencies.EmplaceBack("MaterialSystem", AccessType::READ);
+	dependencies.EmplaceBack("FrameManager", AccessType::READ);
 
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
@@ -293,6 +337,7 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 
 	dependencies.EmplaceBack("RenderSystem", AccessType::READ);
 	dependencies.EmplaceBack("MaterialSystem", AccessType::READ);
+	dependencies.EmplaceBack("FrameManager", AccessType::READ);
 	
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");

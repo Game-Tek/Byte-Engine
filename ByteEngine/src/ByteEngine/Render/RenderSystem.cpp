@@ -43,9 +43,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	swapchainPresentMode = PresentMode::FIFO;
 	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
 	swapchainFormat = TextureFormat::BGRA_I8;
-
-	clearValues.EmplaceBack(0, 0, 0, 0);
-	clearValues.EmplaceBack(1, 0, 1, 1);
 	
 	Surface::CreateInfo surfaceCreateInfo;
 	surfaceCreateInfo.RenderDevice = &renderDevice;
@@ -60,63 +57,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
-	
-	{
-		Texture::CreateInfo depthTextureCreateInfo;
-		depthTextureCreateInfo.RenderDevice = GetRenderDevice();
-		if constexpr (_DEBUG) { depthTextureCreateInfo.Name = "Depth texture"; }
-		depthTextureCreateInfo.Extent = GTSL::Extent3D{ 1264, 681, 1 };
-		depthTextureCreateInfo.Dimensions = Dimensions::SQUARE;
-		depthTextureCreateInfo.Format = TextureFormat::DEPTH24_STENCIL8;
-		depthTextureCreateInfo.MipLevels = 1;
-		depthTextureCreateInfo.Uses = TextureUses::DEPTH_STENCIL_ATTACHMENT;
-		depthTextureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		depthTextureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
-		new(&depthTexture) Texture(depthTextureCreateInfo);
-
-		AllocateLocalTextureMemoryInfo allocateLocalTextureMemoryInfo;
-		allocateLocalTextureMemoryInfo.Texture = depthTexture;
-		allocateLocalTextureMemoryInfo.Allocation = &depthTextureAllocation;
-		AllocateLocalTextureMemory(allocateLocalTextureMemoryInfo);
-		
-		TextureView::CreateInfo depthTextureViewCreateInfo;
-		depthTextureViewCreateInfo.RenderDevice = GetRenderDevice();
-		if constexpr (_DEBUG) { depthTextureViewCreateInfo.Name = "Depth texture view"; }
-		depthTextureViewCreateInfo.Dimensions = Dimensions::SQUARE;
-		depthTextureViewCreateInfo.Format = TextureFormat::DEPTH24_STENCIL8;
-		depthTextureViewCreateInfo.MipLevels = 1;
-		depthTextureViewCreateInfo.Type = TextureType::DEPTH | TextureType::STENCIL;
-		depthTextureViewCreateInfo.Texture = depthTexture;
-		new(&depthTextureView) TextureView(depthTextureViewCreateInfo);
-	}
-
-	{
-		RenderPass::CreateInfo renderPassCreateInfo;
-		renderPassCreateInfo.RenderDevice = &renderDevice;
-		if constexpr (_DEBUG) { renderPassCreateInfo.Name = "RenderPass"; }
-		renderPassCreateInfo.Descriptor.DepthStencilAttachmentAvailable = true;
-		{
-			GTSL::Array<RenderPass::AttachmentDescriptor, 8> attachmentDescriptors;
-			attachmentDescriptors.PushBack(RenderPass::AttachmentDescriptor{ TextureFormat::BGRA_I8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::STORE, TextureLayout::UNDEFINED, TextureLayout::PRESENTATION });
-			renderPassCreateInfo.Descriptor.RenderPassColorAttachments = attachmentDescriptors;
-		}
-		renderPassCreateInfo.Descriptor.DepthStencilAttachment = RenderPass::AttachmentDescriptor{ TextureFormat::DEPTH24_STENCIL8, GAL::RenderTargetLoadOperations::CLEAR, GAL::RenderTargetStoreOperations::UNDEFINED, TextureLayout::UNDEFINED, TextureLayout::DEPTH_STENCIL_ATTACHMENT };
-
-		GTSL::Array<RenderPass::AttachmentReference, 8> writeAttachmentReferences;
-		GTSL::Array<RenderPass::AttachmentReference, 8> readAttachmentReferences;
-		writeAttachmentReferences.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
-		readAttachmentReferences.PushBack(RenderPass::AttachmentReference{ 0, TextureLayout::COLOR_ATTACHMENT });
-
-		RenderPass::AttachmentReference depthAttachmentReference;
-		depthAttachmentReference.Index = 1;
-		depthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
-		
-		GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
-		subPassDescriptors.PushBack(RenderPass::SubPassDescriptor{ GTSL::Ranger<RenderPass::AttachmentReference>(), writeAttachmentReferences, GTSL::Ranger<uint8>(), &depthAttachmentReference });
-		subPassDescriptors.PushBack(RenderPass::SubPassDescriptor{ readAttachmentReferences, writeAttachmentReferences, GTSL::Ranger<uint8>(), nullptr });
-		renderPassCreateInfo.Descriptor.SubPasses = subPassDescriptors;
-		new(&renderPass) RenderPass(renderPassCreateInfo);
-	}
 	
 	for (uint32 i = 0; i < 2; ++i)
 	{
@@ -262,29 +202,43 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	BE_LOG_MESSAGE("Initialized successfully");
 }
 
-void RenderSystem::UpdateWindow(GTSL::Window& window)
+void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 {
-	RenderContext::RecreateInfo recreateInfo;
-	recreateInfo.RenderDevice = &renderDevice;
+	graphicsQueue.Wait();
+
+	BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
+
+	GTSL::Array<PresentMode, 4> present_modes{ swapchainPresentMode };
+	auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
+	if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
+
+	GTSL::Array<GTSL::Pair<ColorSpace, TextureFormat>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
+	res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
+	if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
+	
+	RenderContext::RecreateInfo recreate;
+	recreate.RenderDevice = GetRenderDevice();
 	if constexpr (_DEBUG)
 	{
 		GTSL::StaticString<64> name("Swapchain");
-		recreateInfo.Name = name.begin();
+		recreate.Name = name.begin();
 	}
-	recreateInfo.DesiredFramesInFlight = swapchainImages.GetLength();
-	recreateInfo.PresentMode = swapchainPresentMode;
-	recreateInfo.ColorSpace = swapchainColorSpace;
-	recreateInfo.Format = swapchainFormat;
-	window.GetFramebufferExtent(recreateInfo.SurfaceArea);
-	renderContext.Recreate(recreateInfo);
+	recreate.SurfaceArea = extent;
+	recreate.ColorSpace = swapchainColorSpace;
+	recreate.DesiredFramesInFlight = 2;
+	recreate.Format = swapchainFormat;
+	recreate.PresentMode = swapchainPresentMode;
+	recreate.Surface = &surface;
+	recreate.TextureUses = TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_DESTINATION;
+	renderContext.Recreate(recreate);
 
-	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
-	
+	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
+
 	RenderContext::GetTextureViewsInfo get_images_info;
 	get_images_info.RenderDevice = &renderDevice;
 	GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
 	{
-		for(uint8 i = 0; i < GetFrameCount(); ++i)
+		for (uint8 i = 0; i < GetFrameCount(); ++i)
 		{
 			textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
 			if constexpr (_DEBUG)
@@ -296,92 +250,13 @@ void RenderSystem::UpdateWindow(GTSL::Window& window)
 		}
 	}
 	get_images_info.TextureViewCreateInfos = textureViewCreateInfos;
-	swapchainImages = renderContext.GetTextureViews(get_images_info);
-}
+	
+	swapchainTextures = renderContext.GetTextures({});
+	swapchainTextureViews = renderContext.GetTextureViews(get_images_info);
 
-void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
-{
-	if (extent != 0 && extent != renderArea)
-	{
-		graphicsQueue.Wait();
-
-		BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
-
-		GTSL::Array<PresentMode, 4> present_modes{ swapchainPresentMode };
-		auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
-		if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
-
-		GTSL::Array<GTSL::Pair<ColorSpace, TextureFormat>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
-		res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
-		if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
-		
-		RenderContext::RecreateInfo recreate;
-		recreate.RenderDevice = GetRenderDevice();
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Swapchain");
-			recreate.Name = name.begin();
-		}
-		recreate.SurfaceArea = extent;
-		recreate.ColorSpace = swapchainColorSpace;
-		recreate.DesiredFramesInFlight = 2;
-		recreate.Format = swapchainFormat;
-		recreate.PresentMode = swapchainPresentMode;
-		recreate.Surface = &surface;
-		recreate.TextureUses = TextureUses::COLOR_ATTACHMENT;
-		renderContext.Recreate(recreate);
-
-		for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
-
-		RenderContext::GetTextureViewsInfo get_images_info;
-		get_images_info.RenderDevice = &renderDevice;
-		GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
-		{
-			for (uint8 i = 0; i < GetFrameCount(); ++i)
-			{
-				textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
-				if constexpr (_DEBUG)
-				{
-					GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
-					textureViewCreateInfos[i].Name = name.begin();
-				}
-				textureViewCreateInfos[i].Format = swapchainFormat;
-			}
-		}
-		get_images_info.TextureViewCreateInfos = textureViewCreateInfos;
-		swapchainImages = renderContext.GetTextureViews(get_images_info);
-
-		for (auto& e : frameBuffers)
-		{
-			e.Destroy(GetRenderDevice());
-		}
-
-		frameBuffers.Resize(0);
-		
-		for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
-		{
-			FrameBuffer::CreateInfo framebufferCreateInfo;
-			framebufferCreateInfo.RenderDevice = &renderDevice;
-			
-			if constexpr (_DEBUG)
-			{
-				GTSL::StaticString<64> name("Framebuffer. Frame: "); name += i;
-				framebufferCreateInfo.Name = name.begin();
-			}
-			
-			framebufferCreateInfo.RenderPass = &renderPass;
-			framebufferCreateInfo.Extent = extent;
-			GTSL::Array<TextureView, 16> textureViews;
-			textureViews.EmplaceBack(swapchainImages[i]); textureViews.EmplaceBack(depthTextureView);
-			framebufferCreateInfo.TextureViews = textureViews;
-
-			frameBuffers.EmplaceBack(framebufferCreateInfo);
-		}
-
-		renderArea = extent;
-		
-		BE_LOG_MESSAGE("Resized window")
-	}
+	renderArea = extent;
+	
+	BE_LOG_MESSAGE("Resized window")
 }
 
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
@@ -406,7 +281,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	for (uint32 i = 0; i < swapchainImages.GetLength(); ++i)
+	for (uint32 i = 0; i < swapchainTextures.GetLength(); ++i)
 	{
 		CommandPool::FreeCommandBuffersInfo free_command_buffers_info;
 		free_command_buffers_info.RenderDevice = &renderDevice;
@@ -421,12 +296,8 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 		transferCommandPools[i].Destroy(&renderDevice);
 	}
 	
-	renderPass.Destroy(&renderDevice);
 	renderContext.Destroy(&renderDevice);
 	surface.Destroy(&renderDevice);
-
-	depthTexture.Destroy(GetRenderDevice());
-	depthTextureView.Destroy(GetRenderDevice());
 
 	//DeallocateLocalTextureMemory();
 	
@@ -435,8 +306,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	for(auto& e : graphicsFences) { e.Destroy(&renderDevice); }
 	for(auto& e : transferFences) { e.Destroy(&renderDevice); }
 
-	for (auto& e : frameBuffers) { e.Destroy(&renderDevice); }
-	for (auto& e : swapchainImages) { e.Destroy(&renderDevice); }
+	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
@@ -487,24 +357,14 @@ void RenderSystem::renderSetup(TaskInfo taskInfo)
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	commandBuffer.BeginRecording({});
-	CommandBuffer::BeginRenderPassInfo beginRenderPass;
-	beginRenderPass.RenderDevice = GetRenderDevice();
-	beginRenderPass.RenderPass = &renderPass;
-	beginRenderPass.Framebuffer = &frameBuffers[currentFrameIndex];
-	beginRenderPass.RenderArea = renderArea;
-	beginRenderPass.ClearValues = clearValues;
-	commandBuffer.BeginRenderPass(beginRenderPass);
 }
 
 void RenderSystem::renderFinish(TaskInfo taskInfo)
 {
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
-	
-	CommandBuffer::EndRenderPassInfo endRenderPass;
-	endRenderPass.RenderDevice = GetRenderDevice();
-	commandBuffer.EndRenderPass(endRenderPass);
-	commandBuffer.EndRecording({});
 
+	commandBuffer.EndRecording({});
+	
 	RenderContext::AcquireNextImageInfo acquireNextImageInfo;
 	acquireNextImageInfo.RenderDevice = &renderDevice;
 	acquireNextImageInfo.SignalSemaphore = &imageAvailableSemaphore[currentFrameIndex];
@@ -529,7 +389,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	presentInfo.ImageIndex = imageIndex;
 	renderContext.Present(presentInfo);
 
-	currentFrameIndex = (currentFrameIndex + 1) % swapchainImages.GetLength();
+	currentFrameIndex = (currentFrameIndex + 1) % swapchainTextureViews.GetLength();
 }
 
 void RenderSystem::frameStart(TaskInfo taskInfo)
@@ -622,14 +482,14 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
 		{
-			CommandBuffer::CopyBufferToImageInfo copyBufferToImageInfo;
+			CommandBuffer::CopyBufferToTextureInfo copyBufferToImageInfo;
 			copyBufferToImageInfo.RenderDevice = GetRenderDevice();
-			copyBufferToImageInfo.DestinationImage = &textureCopyData[i].DestinationTexture;
+			copyBufferToImageInfo.DestinationTexture = &textureCopyData[i].DestinationTexture;
 			copyBufferToImageInfo.Offset = { 0, 0, 0 };
 			copyBufferToImageInfo.Extent = textureCopyData[i].Extent;
 			copyBufferToImageInfo.SourceBuffer = &textureCopyData[i].SourceBuffer;
 			copyBufferToImageInfo.TextureLayout = textureCopyData[i].Layout;
-			GetTransferCommandBuffer()->CopyBufferToImage(copyBufferToImageInfo);
+			GetTransferCommandBuffer()->CopyBufferToTexture(copyBufferToImageInfo);
 		}
 			
 		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;

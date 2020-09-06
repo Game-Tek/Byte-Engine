@@ -21,6 +21,7 @@ public:
 
 protected:
 	GTSL::Window window;
+	GTSL::Extent2D oldSize;
 
 	GTSL::GamepadQuery gamepad;
 	

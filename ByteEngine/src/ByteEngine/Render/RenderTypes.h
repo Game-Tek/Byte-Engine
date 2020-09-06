@@ -12,7 +12,9 @@
 #include <GAL/Vulkan/VulkanCommandBuffer.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
-#include <ByteEngine\Debug\Assert.h>
+#include <GAL/Vulkan/VulkanBindings.h>
+
+#include "ByteEngine/Debug/Assert.h"
 
 static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 

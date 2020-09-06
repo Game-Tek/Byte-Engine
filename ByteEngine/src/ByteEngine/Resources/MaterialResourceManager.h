@@ -8,12 +8,6 @@
 #include <GTSL/FlatHashMap.h>
 #include "ResourceManager.h"
 
-namespace GAL {
-	enum class BindingType : unsigned char;
-	enum class ShaderType : unsigned char;
-	enum class ShaderDataType : unsigned char;
-}
-
 class MaterialResourceManager final : public ResourceManager
 {
 public:
@@ -22,6 +16,20 @@ public:
 
 	struct Uniform;
 	struct Binding;
+
+	struct StencilState
+	{
+		GAL::StencilCompareOperation FailOperation;
+		GAL::StencilCompareOperation PassOperation;
+		GAL::StencilCompareOperation DepthFailOperation;
+		GAL::CompareOperation CompareOperation;
+		GTSL::uint32 CompareMask;
+		GTSL::uint32 WriteMask;
+		GTSL::uint32 Reference;
+
+		friend void Insert(const StencilState& materialInfo, GTSL::Buffer& buffer);
+		friend void Extract(StencilState& materialInfo, GTSL::Buffer& buffer);
+	};
 	
 	struct MaterialInfo
 	{
@@ -31,6 +39,7 @@ public:
 		GTSL::Array<uint8, 20> VertexElements;
 		bool DepthWrite; bool DepthTest;
 		GAL::CullMode CullMode;
+		GTSL::Id64 RenderPass;
 
 		struct Binding
 		{
@@ -60,6 +69,10 @@ public:
 		GTSL::Array<GTSL::Array<Uniform, 6>, 6> Uniforms;
 		GTSL::Array<uint8, 12> ShaderTypes;
 		GAL::BlendOperation ColorBlendOperation;
+
+		StencilState Front;
+		StencilState Back;
+		
 		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
 	};
@@ -88,6 +101,7 @@ public:
 	{
 		GTSL::StaticString<128> ShaderName;
 		GTSL::StaticString<128> RenderGroup;
+		GTSL::Id64 RenderPass;
 		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 		
 		GTSL::Ranger<const GTSL::Ranger<const Binding>> Bindings;
@@ -97,6 +111,9 @@ public:
 		bool DepthTest;
 		GAL::CullMode CullMode;
 		GAL::BlendOperation ColorBlendOperation;
+
+		StencilState Front;
+		StencilState Back;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 
@@ -114,6 +131,10 @@ public:
 		bool DepthTest;
 		GAL::CullMode CullMode;
 		GAL::BlendOperation ColorBlendOperation;
+
+		StencilState Front;
+		StencilState Back;
+		GTSL::Id64 RenderPass;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo

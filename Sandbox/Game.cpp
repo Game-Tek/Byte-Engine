@@ -77,6 +77,7 @@ void Game::Initialize()
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.ShaderName = "BasicMaterial";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		materialCreateInfo.RenderPass = "MainRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
 		GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
@@ -101,6 +102,7 @@ void Game::Initialize()
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.ShaderName = "TextMaterial";
 		materialCreateInfo.RenderGroup = "TextSystem";
+		materialCreateInfo.RenderPass = "MainRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format;
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
@@ -108,10 +110,25 @@ void Game::Initialize()
 		materialCreateInfo.DepthTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+
+		{
+			MaterialResourceManager::StencilState stencilState;
+			stencilState.CompareOperation = GAL::CompareOperation::EQUAL;
+			stencilState.CompareMask = 0xFFFFFFFF;
+			stencilState.DepthFailOperation = GAL::StencilCompareOperation::REPLACE;
+			stencilState.FailOperation = GAL::StencilCompareOperation::REPLACE;
+			stencilState.PassOperation = GAL::StencilCompareOperation::INVERT;
+			stencilState.Reference = 0xFFFFFFFF;
+			stencilState.WriteMask = 0xFFFFFFFF;
+
+			materialCreateInfo.Front = stencilState;
+			materialCreateInfo.Back = stencilState;
+		}
+		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game

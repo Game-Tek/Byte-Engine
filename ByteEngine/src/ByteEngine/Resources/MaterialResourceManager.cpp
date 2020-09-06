@@ -95,11 +95,15 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.VertexElements = GTSL::Ranger<const VertexElementsType>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
 		materialInfo.ShaderTypes = GTSL::Ranger<const ShaderTypeType>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
-
+		materialInfo.RenderPass = materialCreateInfo.RenderPass;
+		
 		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
 		materialInfo.DepthTest = materialCreateInfo.DepthTest;
 		materialInfo.DepthWrite = materialCreateInfo.DepthWrite;
 		materialInfo.CullMode = materialCreateInfo.CullMode;
+
+		materialInfo.Front = materialCreateInfo.Front;
+		materialInfo.Back = materialCreateInfo.Back;
 		
 		for(uint32 i = 0; i < materialCreateInfo.Bindings.ElementCount(); ++i)
 		{
@@ -162,10 +166,13 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
 	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
+	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
 	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
 	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
 	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
+	onMaterialLoadInfo.Front = materialInfo.Front;
+	onMaterialLoadInfo.Back = materialInfo.Back;
 	
 	for (uint32 i = 0; i < materialInfo.BindingSets.GetLength(); ++i)
 	{
@@ -218,6 +225,8 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 {
 	Insert(materialInfo.MaterialOffset, buffer);
 	Insert(materialInfo.RenderGroup, buffer);
+	Insert(materialInfo.RenderPass, buffer);
+	
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
@@ -228,12 +237,17 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.DepthWrite, buffer);
 	Insert(materialInfo.CullMode, buffer);
 	Insert(materialInfo.ColorBlendOperation, buffer);
+
+	Insert(materialInfo.Front, buffer);
+	Insert(materialInfo.Back, buffer);
 }
 
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
 	Extract(materialInfo.MaterialOffset, buffer);
 	Extract(reinterpret_cast<uint64&>(materialInfo.RenderGroup), buffer);
+	Extract(reinterpret_cast<uint64&>(materialInfo.RenderPass), buffer);
+	
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
 	Extract(materialInfo.BindingSets, buffer);
@@ -244,4 +258,29 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.DepthWrite, buffer);
 	Extract(materialInfo.CullMode, buffer);
 	Extract(materialInfo.ColorBlendOperation, buffer);
+
+	Extract(materialInfo.Front, buffer);
+	Extract(materialInfo.Back, buffer);
+}
+
+void Insert(const MaterialResourceManager::StencilState& stencilState, GTSL::Buffer& buffer)
+{
+	Insert(stencilState.FailOperation, buffer);
+	Insert(stencilState.PassOperation, buffer);
+	Insert(stencilState.DepthFailOperation, buffer);
+	Insert(stencilState.CompareOperation, buffer);
+	Insert(stencilState.CompareMask, buffer);
+	Insert(stencilState.WriteMask, buffer);
+	Insert(stencilState.Reference, buffer);
+}
+
+void Extract(MaterialResourceManager::StencilState& stencilState, GTSL::Buffer& buffer)
+{
+	Extract(stencilState.FailOperation, buffer);
+	Extract(stencilState.PassOperation, buffer);
+	Extract(stencilState.DepthFailOperation, buffer);
+	Extract(stencilState.CompareOperation, buffer);
+	Extract(stencilState.CompareMask, buffer);
+	Extract(stencilState.WriteMask, buffer);
+	Extract(stencilState.Reference, buffer);
 }

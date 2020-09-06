@@ -51,8 +51,6 @@ public:
 		class PipelineCacheResourceManager* PipelineCacheResourceManager;
 	};
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
-	
-	void UpdateWindow(GTSL::Window& window);
 
 	struct BufferScratchMemoryAllocationInfo
 	{
@@ -142,7 +140,7 @@ public:
 	
 	PipelineCache* GetPipelineCache(const uint8 thread) { return &pipelineCaches[thread]; }
 
-	RenderPass* GetRenderPass() { return &renderPass; }
+	GTSL::Ranger<const Texture> GetSwapchainTextures() const { return swapchainTextures; }
 
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -162,20 +160,15 @@ private:
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
 
-	RenderPass renderPass;
-	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainImages;
+	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
+	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
+	
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> graphicsFences;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
-	GTSL::Array<FrameBuffer, MAX_CONCURRENT_FRAMES> frameBuffers;
-	GTSL::Array<GTSL::RGBA, MAX_CONCURRENT_FRAMES> clearValues;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
-
-	RenderAllocation depthTextureAllocation;
-	Texture depthTexture;
-	TextureView depthTextureView;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;

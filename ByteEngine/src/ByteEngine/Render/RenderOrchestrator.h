@@ -43,6 +43,7 @@ public:
 			RenderSystem* RenderSystem;
 			MaterialSystem* MaterialSystem;
 			BindingsManager<BE::TAR>* BindingsManager;
+			uint8 RenderPass, SubPass;
 		};
 		virtual void Render(const RenderInfo& renderInfo) = 0;
 

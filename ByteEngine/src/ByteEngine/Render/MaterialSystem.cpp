@@ -1,5 +1,7 @@
 #include "MaterialSystem.h"
 
+
+#include "FrameManager.h"
 #include "RenderSystem.h"
 
 const char* BindingTypeString(const BindingType binding)
@@ -364,7 +366,7 @@ ComponentReference MaterialSystem::CreateMaterial(const CreateMaterialInfo& info
 
 	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
 	
-	const auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	const auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE }, { "FrameManager", AccessType::READ } };
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
 	material_load_info.ActsOn = acts_on;
 	material_load_info.GameInstance = info.GameInstance;
@@ -660,6 +662,22 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
 		pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = onMaterialLoadInfo.ColorBlendOperation;
 
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.CompareOperation = onMaterialLoadInfo.Front.CompareOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.CompareMask = onMaterialLoadInfo.Front.CompareMask;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.DepthFailOperation = onMaterialLoadInfo.Front.DepthFailOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.FailOperation = onMaterialLoadInfo.Front.FailOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.PassOperation = onMaterialLoadInfo.Front.PassOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.Reference = onMaterialLoadInfo.Front.Reference;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Front.WriteMask = onMaterialLoadInfo.Front.WriteMask;
+
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.CompareOperation = onMaterialLoadInfo.Back.CompareOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.CompareMask = onMaterialLoadInfo.Back.CompareMask;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.DepthFailOperation = onMaterialLoadInfo.Back.DepthFailOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.FailOperation = onMaterialLoadInfo.Back.FailOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.PassOperation = onMaterialLoadInfo.Back.PassOperation;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.Reference = onMaterialLoadInfo.Back.Reference;
+		pipelineCreateInfo.PipelineDescriptor.StencilOperations.Back.WriteMask = onMaterialLoadInfo.Back.WriteMask;
+
 		pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
 
 		{
@@ -680,7 +698,8 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			}
 
 			pipelineCreateInfo.Stages = shader_infos;
-			pipelineCreateInfo.RenderPass = loadInfo->RenderSystem->GetRenderPass();
+			auto renderPass = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager")->GetRenderPass(static_cast<Id>(onMaterialLoadInfo.RenderPass));
+			pipelineCreateInfo.RenderPass = &renderPass;
 			pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
 			pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache(getThread());
 			instance.Pipeline = RasterizationPipeline(pipelineCreateInfo);

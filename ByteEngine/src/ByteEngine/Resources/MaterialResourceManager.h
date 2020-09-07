@@ -19,13 +19,13 @@ public:
 
 	struct StencilState
 	{
-		GAL::StencilCompareOperation FailOperation;
-		GAL::StencilCompareOperation PassOperation;
-		GAL::StencilCompareOperation DepthFailOperation;
-		GAL::CompareOperation CompareOperation;
-		GTSL::uint32 CompareMask;
-		GTSL::uint32 WriteMask;
-		GTSL::uint32 Reference;
+		GAL::StencilCompareOperation FailOperation = GAL::StencilCompareOperation::KEEP;
+		GAL::StencilCompareOperation PassOperation = GAL::StencilCompareOperation::KEEP;
+		GAL::StencilCompareOperation DepthFailOperation = GAL::StencilCompareOperation::KEEP;
+		GAL::CompareOperation CompareOperation = GAL::CompareOperation::NEVER;
+		GTSL::uint32 CompareMask = 0;
+		GTSL::uint32 WriteMask = 0;
+		GTSL::uint32 Reference = 0;
 
 		friend void Insert(const StencilState& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(StencilState& materialInfo, GTSL::Buffer& buffer);
@@ -35,9 +35,10 @@ public:
 	{
 		uint32 MaterialOffset = 0;
 		GTSL::Id64 RenderGroup;
+		GTSL::Id64 SubPass;
 		GTSL::Array<uint32, 12> ShaderSizes;
 		GTSL::Array<uint8, 20> VertexElements;
-		bool DepthWrite; bool DepthTest;
+		bool DepthWrite; bool DepthTest; bool StencilTest;
 		GAL::CullMode CullMode;
 		GTSL::Id64 RenderPass;
 
@@ -102,6 +103,7 @@ public:
 		GTSL::StaticString<128> ShaderName;
 		GTSL::StaticString<128> RenderGroup;
 		GTSL::Id64 RenderPass;
+		GTSL::Id64 SubPass;
 		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 		
 		GTSL::Ranger<const GTSL::Ranger<const Binding>> Bindings;
@@ -114,6 +116,7 @@ public:
 
 		StencilState Front;
 		StencilState Back;
+		bool StencilTest;
 	};
 	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
 
@@ -135,6 +138,8 @@ public:
 		StencilState Front;
 		StencilState Back;
 		GTSL::Id64 RenderPass;
+		GTSL::Id64 SubPass;
+		bool StencilTest;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo

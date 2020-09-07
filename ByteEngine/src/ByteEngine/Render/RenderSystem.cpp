@@ -232,10 +232,42 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 	recreate.TextureUses = TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_DESTINATION;
 	renderContext.Recreate(recreate);
 
+	auto oldLength = swapchainTextures.GetLength();
+	
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
-	RenderContext::GetTextureViewsInfo get_images_info;
-	get_images_info.RenderDevice = &renderDevice;
+	{
+		RenderContext::GetTexturesInfo getTexturesInfo;
+		getTexturesInfo.RenderDevice = GetRenderDevice();
+		swapchainTextures = renderContext.GetTextures(getTexturesInfo);
+
+		textureBarriers.Resize(swapchainTextures.GetLength());
+		
+		for (uint8 i = oldLength; i < swapchainTextures.GetLength(); ++i)
+		{
+			textureBarriers[i].Initialize(32, GetPersistentAllocator());
+		}
+
+		if(textureBarriers[0].GetLength())
+		{
+			textureBarriers[0].ResizeDown(0);
+		}
+		
+		for(uint32 i = 0; i < swapchainTextures.GetLength(); ++i)
+		{
+			CommandBuffer::TextureBarrier textureBarrier;
+			textureBarrier.Texture = swapchainTextures[i];
+			textureBarrier.CurrentLayout = TextureLayout::UNDEFINED;
+			textureBarrier.TargetLayout = TextureLayout::PRESENTATION;
+			textureBarrier.SourceAccessFlags = AccessFlags::TRANSFER_READ;
+			textureBarrier.DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
+
+			textureBarriers[0].EmplaceBack(textureBarrier);
+		}
+	}
+	
+	RenderContext::GetTextureViewsInfo getTextureViewsInfo;
+	getTextureViewsInfo.RenderDevice = &renderDevice;
 	GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
 	{
 		for (uint8 i = 0; i < GetFrameCount(); ++i)
@@ -249,10 +281,11 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 			textureViewCreateInfos[i].Format = swapchainFormat;
 		}
 	}
-	get_images_info.TextureViewCreateInfos = textureViewCreateInfos;
-	
-	swapchainTextures = renderContext.GetTextures({});
-	swapchainTextureViews = renderContext.GetTextureViews(get_images_info);
+	getTextureViewsInfo.TextureViewCreateInfos = textureViewCreateInfos;
+
+	{
+		swapchainTextureViews = renderContext.GetTextureViews(getTextureViewsInfo);
+	}
 
 	renderArea = extent;
 	
@@ -298,7 +331,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	
 	renderContext.Destroy(&renderDevice);
 	surface.Destroy(&renderDevice);
-
+	
 	//DeallocateLocalTextureMemory();
 	
 	for(auto& e : imageAvailableSemaphore) { e.Destroy(&renderDevice); }
@@ -450,6 +483,18 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
 	}
 
+	{
+		if (textureBarriers[currentFrameIndex].GetLength())
+		{
+			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
+			pipelineBarrierInfo.RenderDevice = GetRenderDevice();
+			pipelineBarrierInfo.TextureBarriers = textureBarriers[currentFrameIndex];
+			pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
+			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
+			GetTransferCommandBuffer()->AddPipelineBarrier(pipelineBarrierInfo);
+		}
+	}
+	
 	{
 		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 		

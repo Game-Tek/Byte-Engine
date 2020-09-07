@@ -78,6 +78,7 @@ void Game::Initialize()
 		materialCreateInfo.ShaderName = "BasicMaterial";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "MainRenderPass";
+		materialCreateInfo.SubPass = "Scene";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
 		GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
@@ -93,6 +94,7 @@ void Game::Initialize()
 		materialCreateInfo.Uniforms = u_array;
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
@@ -103,11 +105,13 @@ void Game::Initialize()
 		materialCreateInfo.ShaderName = "TextMaterial";
 		materialCreateInfo.RenderGroup = "TextSystem";
 		materialCreateInfo.RenderPass = "MainRenderPass";
+		materialCreateInfo.SubPass = "Text";
 		GTSL::Array<GAL::ShaderDataType, 8> format;
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
 		materialCreateInfo.DepthWrite = false;
 		materialCreateInfo.DepthTest = false;
+		materialCreateInfo.StencilTest = true;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 
@@ -128,7 +132,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game

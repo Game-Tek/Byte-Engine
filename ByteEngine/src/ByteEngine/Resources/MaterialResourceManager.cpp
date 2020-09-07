@@ -95,12 +95,15 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.VertexElements = GTSL::Ranger<const VertexElementsType>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
 		materialInfo.ShaderTypes = GTSL::Ranger<const ShaderTypeType>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
+		
 		materialInfo.RenderPass = materialCreateInfo.RenderPass;
+		materialInfo.SubPass = materialCreateInfo.SubPass;
 		
 		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
 		materialInfo.DepthTest = materialCreateInfo.DepthTest;
 		materialInfo.DepthWrite = materialCreateInfo.DepthWrite;
 		materialInfo.CullMode = materialCreateInfo.CullMode;
+		materialInfo.StencilTest = materialCreateInfo.StencilTest;
 
 		materialInfo.Front = materialCreateInfo.Front;
 		materialInfo.Back = materialCreateInfo.Back;
@@ -166,10 +169,14 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.ShaderTypes = GTSL::Ranger<GAL::ShaderType>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
 	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
+	
 	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
+	onMaterialLoadInfo.SubPass = materialInfo.SubPass;
+	
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
 	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
 	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
+	onMaterialLoadInfo.StencilTest = materialInfo.StencilTest;
 	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
@@ -226,6 +233,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.MaterialOffset, buffer);
 	Insert(materialInfo.RenderGroup, buffer);
 	Insert(materialInfo.RenderPass, buffer);
+	Insert(materialInfo.SubPass, buffer);
 	
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
@@ -235,6 +243,7 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	
 	Insert(materialInfo.DepthTest, buffer);
 	Insert(materialInfo.DepthWrite, buffer);
+	Insert(materialInfo.StencilTest, buffer);
 	Insert(materialInfo.CullMode, buffer);
 	Insert(materialInfo.ColorBlendOperation, buffer);
 
@@ -247,6 +256,7 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.MaterialOffset, buffer);
 	Extract(reinterpret_cast<uint64&>(materialInfo.RenderGroup), buffer);
 	Extract(reinterpret_cast<uint64&>(materialInfo.RenderPass), buffer);
+	Extract(reinterpret_cast<uint64&>(materialInfo.SubPass), buffer);
 	
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
@@ -256,6 +266,7 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 
 	Extract(materialInfo.DepthTest, buffer);
 	Extract(materialInfo.DepthWrite, buffer);
+	Extract(materialInfo.StencilTest, buffer);
 	Extract(materialInfo.CullMode, buffer);
 	Extract(materialInfo.ColorBlendOperation, buffer);
 

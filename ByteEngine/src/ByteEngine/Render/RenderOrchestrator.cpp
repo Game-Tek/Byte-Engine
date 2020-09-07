@@ -273,7 +273,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				renderManagers.At(e)->Render(renderInfo);
 			}
 
-			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+			if (sp < frameManager->GetSubPassCount(rp) - 1)
+			{
+				commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+			}
 		}
 
 		CommandBuffer::EndRenderPassInfo endRenderPass;
@@ -281,14 +284,44 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.EndRenderPass(endRenderPass);
 	}
 
+	{
+		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
+		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
+		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
+		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
+		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
+		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
+		textureBarriers[0].CurrentLayout = TextureLayout::PRESENTATION;
+		textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_DST;
+		textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
+		textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
+		pipelineBarrierInfo.TextureBarriers = textureBarriers;
+		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+	}
+
 	CommandBuffer::CopyTextureToTextureInfo copyTexture;
 	copyTexture.RenderDevice = renderSystem->GetRenderDevice();
 	copyTexture.SourceTexture = frameManager->GetAttachmentTexture("Color");
 	copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
-	copyTexture.Extent = renderSystem->GetRenderExtent();
-	copyTexture.SourceLayout = TextureLayout::COLOR_ATTACHMENT;
-	copyTexture.DestinationLayout = TextureLayout::PRESENTATION;
+	copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
+	copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
+	copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
 	commandBuffer.CopyTextureToTexture(copyTexture);
+
+	{
+		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
+		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
+		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
+		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
+		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
+		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
+		textureBarriers[0].CurrentLayout = TextureLayout::TRANSFER_DST;
+		textureBarriers[0].TargetLayout = TextureLayout::PRESENTATION;
+		textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
+		textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
+		pipelineBarrierInfo.TextureBarriers = textureBarriers;
+		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+	}
 	
 	bindingsManager.PopBindings();
 }

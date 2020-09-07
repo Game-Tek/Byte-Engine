@@ -30,12 +30,6 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 	RenderPass::CreateInfo renderPassCreateInfo;
 	renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 	if constexpr (_DEBUG) { renderPassCreateInfo.Name = "RenderPass"; }
-
-	FrameBuffer::CreateInfo framebufferCreateInfo;
-	framebufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) { framebufferCreateInfo.Name = "FrameBuffer"; }
-
-	GTSL::Array<TextureView, 16> textureViews;
 	
 	{
 		GTSL::Array<RenderPass::AttachmentDescriptor, 16> attachmentDescriptors;
@@ -58,16 +52,20 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 
 			renderPassData.ClearValues.EmplaceBack(attachment.ClearValue);
 
-			textureViews.EmplaceBack(attachment.TextureView);
+			renderPassData.AttachmentNames.EmplaceBack(e.Name);
 		}
 		
-		renderPassCreateInfo.Descriptor.RenderPassAttachments = attachmentDescriptors;
+		renderPassCreateInfo.RenderPassAttachments = attachmentDescriptors;
 	}
 
-	GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors(subPassData.ElementCount());
+	GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
 	GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> readAttachmentReferences(subPassData.ElementCount());
 	GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(subPassData.ElementCount());
+	GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(subPassData.ElementCount());
 
+	subPasseses.EmplaceBack();
+	subPassMap.EmplaceBack();
+	
 	for (uint32 s = 0; s < subPassData.ElementCount(); ++s)
 	{
 		RenderPass::SubPassDescriptor subPassDescriptor;
@@ -104,6 +102,38 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 			
 		subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
 
+		{
+			auto isUsed = [&](Id name) -> bool
+			{
+				bool result = false;
+				
+				for(uint8 i = s + static_cast<uint8>(1); i < subPassData.ElementCount(); ++i)
+				{
+					for(auto e : subPassData[s].ReadAttachments)
+					{
+						if (e == name) { result = true; }
+					}
+
+					for(auto e : subPassData[s].WriteAttachments)
+					{
+						if (e == name) { result = true; }
+					}
+				}
+
+				return result;
+			};
+
+			for(uint32 a = 0; a < attachmentInfos.ElementCount(); ++a)
+			{
+				if(isUsed(attachmentInfos[a].Name))
+				{
+					preserveAttachmentReferences[s].EmplaceBack(a);
+				}
+			}
+		}
+		
+		subPassDescriptor.PreserveAttachments = preserveAttachmentReferences[s];
+		
 		if (subPassData[s].DepthStencilAttachment.Name)
 		{
 			auto& attachmentInfo = renderPassData.Attachments.At(subPassData[s].DepthStencilAttachment.Name);
@@ -118,17 +148,64 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 		}
 			
 		subPassDescriptors.EmplaceBack(subPassDescriptor);
+		
+		subPasseses.back().EmplaceBack();
+		subPassMap.back().Emplace(subPassData[s].Name, s);
 	}
 
-	renderPassCreateInfo.Descriptor.SubPasses = subPassDescriptors;
+	renderPassCreateInfo.SubPasses = subPassDescriptors;
+
+	GTSL::Array<RenderPass::SubPassDependency, 8> subPassDependencies(subPassData.ElementCount());
+	{
+		uint8 subPass = 0;
+		
+		{
+			auto& e = subPassDependencies[0];
+			e.SourceSubPass = RenderPass::EXTERNAL;
+			e.DestinationSubPass = subPass;
+			
+			e.SourceAccessFlags = 0;
+			e.DestinationAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+
+			e.SourcePipelineStage = PipelineStage::TOP_OF_PIPE;
+			e.DestinationPipelineStage = PipelineStage::ALL_GRAPHICS;
+
+			++subPass;
+		}
+
+		for (auto* begin = subPassDependencies.begin() + subPass; begin != subPassDependencies.end() - 1; ++begin)
+		{
+			auto& e = *begin;
+			e.SourceSubPass = subPass;
+			e.DestinationSubPass = subPass + 1;
+
+			e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+			e.DestinationAccessFlags = 0;
+
+			e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
+			e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
+
+			++subPass;
+		}
+
+		if(subPass < subPassDependencies.GetLength())
+		{
+			auto& e = subPassDependencies[subPass];
+			
+			e.SourceSubPass = subPass;
+			e.DestinationSubPass = RenderPass::EXTERNAL;
+			
+			e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+			e.DestinationAccessFlags = 0;
+
+			e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
+			e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
+		}
+	}
+	
+	renderPassCreateInfo.SubPassDependencies = subPassDependencies;
 
 	renderPassData.RenderPass = RenderPass(renderPassCreateInfo);
-
-	framebufferCreateInfo.TextureViews = textureViews;
-	framebufferCreateInfo.RenderPass = &renderPassData.RenderPass;
-	framebufferCreateInfo.Extent = renderSystem->GetRenderExtent();
-
-	renderPassData.FrameBuffer = FrameBuffer(framebufferCreateInfo);
 }
 
 void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
@@ -140,7 +217,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { textureCreateInfo.Name = attachment.Name.GetString(); }
-		textureCreateInfo.Extent = renderSystem->GetRenderExtent();
+		textureCreateInfo.Extent = { newSize.Width, newSize.Height, 1 };
 		textureCreateInfo.Dimensions = Dimensions::SQUARE;
 		textureCreateInfo.Format = attachment.Format;
 		textureCreateInfo.MipLevels = 1;
@@ -174,4 +251,21 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 	renderSystem->Wait();
 	
 	GTSL::ForEach(attachments, resize);
+	
+	for(auto& renderPass : renderPasses)
+	{
+		FrameBuffer::CreateInfo framebufferCreateInfo;
+		framebufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+		if constexpr (_DEBUG) { framebufferCreateInfo.Name = "FrameBuffer"; }
+
+		GTSL::Array<TextureView, 8> textureViews;
+
+		for(auto e : renderPass.AttachmentNames) { textureViews.EmplaceBack(attachments.At(e).TextureView); }
+		
+		framebufferCreateInfo.TextureViews = textureViews;
+		framebufferCreateInfo.RenderPass = &renderPass.RenderPass;
+		framebufferCreateInfo.Extent = renderSystem->GetRenderExtent();
+
+		renderPass.FrameBuffer = FrameBuffer(framebufferCreateInfo);
+	}
 }

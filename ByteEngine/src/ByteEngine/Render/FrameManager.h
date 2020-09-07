@@ -36,6 +36,7 @@ public:
 	{
 		GTSL::Array<Id, 8> ReadAttachments, WriteAttachments;
 		GTSL::Array<TextureLayout, 8> ReadAttachmentsLayouts, WriteAttachmentsLayouts;
+		Id Name;
 
 		struct AttachmentUse
 		{
@@ -49,7 +50,10 @@ public:
 	void OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize);
 	
 	[[nodiscard]] RenderPass GetRenderPass(const uint8 rp) const { return renderPasses[rp].RenderPass; }
-	[[nodiscard]] RenderPass GetRenderPass(const Id rp) const { return renderPasses[renderPassesMap.At(rp)].RenderPass; }
+
+	unsigned char GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name); }
+	[[nodiscard]] uint8 GetSubPassIndex(const uint8 renderPass, const Id subPassName) const { return subPassMap[renderPass].At(subPassName); }
+	
 	[[nodiscard]] FrameBuffer GetFrameBuffer(const uint8 rp) const { return renderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 GetRenderPassCount() const { return renderPasses.GetLength(); }
 	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasseses[renderPass].GetLength(); }
@@ -66,6 +70,7 @@ private:
 		RenderPass RenderPass;
 		GTSL::StaticMap<RenderPassAttachment, 8> Attachments;
 		GTSL::Array<GTSL::RGBA, 8> ClearValues;
+		GTSL::Array<Id, 8> AttachmentNames;
 
 		FrameBuffer FrameBuffer;
 	};
@@ -78,6 +83,8 @@ private:
 		uint8 DepthAttachment;
 	};
 	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasseses;
+
+	GTSL::Array<GTSL::StaticMap<uint8, 16>, 8> subPassMap;
 
 	struct Attachment
 	{

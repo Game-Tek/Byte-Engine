@@ -169,6 +169,8 @@ private:
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
+
+	GTSL::Array<Vector<CommandBuffer::TextureBarrier>, MAX_CONCURRENT_FRAMES> textureBarriers;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;

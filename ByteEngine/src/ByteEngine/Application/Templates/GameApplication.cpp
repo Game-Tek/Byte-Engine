@@ -112,7 +112,7 @@ void GameApplication::PostInitialize()
 	
 	{
 		auto* frameManager = gameInstance->AddSystem<FrameManager>("FrameManager");
-		frameManager->AddAttachment(renderer, "Color", TextureFormat::RGBA_I8, TextureUses::COLOR_ATTACHMENT, TextureType::COLOR);
+		frameManager->AddAttachment(renderer, "Color", TextureFormat::RGBA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
 		frameManager->AddAttachment(renderer, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
 		frameManager->AddAttachment(renderer, "TextStencil", TextureFormat::STENCIL_8, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::STENCIL);
 
@@ -125,24 +125,26 @@ void GameApplication::PostInitialize()
 
 		attachments[1].Name = "RenderDepth";
 		attachments[1].StartState = TextureLayout::UNDEFINED;
-		attachments[1].EndState = TextureLayout::UNDEFINED;
+		attachments[1].EndState = TextureLayout::DEPTH_ATTACHMENT;
 		attachments[1].Load = GAL::RenderTargetLoadOperations::CLEAR;
 		attachments[1].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
 
 		attachments[2].Name = "TextStencil";
 		attachments[2].StartState = TextureLayout::UNDEFINED;
-		attachments[2].EndState = TextureLayout::UNDEFINED;
+		attachments[2].EndState = TextureLayout::STENCIL_ATTACHMENT;
 		attachments[2].Load = GAL::RenderTargetLoadOperations::CLEAR;
 		attachments[2].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
 
 		GTSL::Array<FrameManager::SubPassData, 6> subPasses;
 		FrameManager::SubPassData geoRenderPass;
+		geoRenderPass.Name = "Scene";
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
-		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_ATTACHMENT;
 		geoRenderPass.WriteAttachments.EmplaceBack("Color");
 		geoRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
 
 		FrameManager::SubPassData textRenderPass;
+		textRenderPass.Name = "Text";
 		textRenderPass.DepthStencilAttachment.Name = "TextStencil";
 		textRenderPass.DepthStencilAttachment.Layout = TextureLayout::STENCIL_ATTACHMENT;
 		textRenderPass.WriteAttachments.EmplaceBack("Color");
@@ -490,18 +492,23 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 {
-	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	auto* frameManager = gameInstance->GetSystem<FrameManager>("FrameManager");
-
 	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE } };
 
 	auto ext = extent;
 
+	auto resize = [](TaskInfo info, Extent2D newSize)
+	{
+		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+		auto* frameManager = info.GameInstance->GetSystem<FrameManager>("FrameManager");
+
+		renderSystem->OnResize(info, newSize);
+		frameManager->OnResize(info, newSize);
+	};
+	
 	if (extent != 0 && extent != oldSize)
 	{
-		gameInstance->AddDynamicTask("RenderSystemWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create<RenderSystem, &RenderSystem::OnResize>(renderSystem), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
-		gameInstance->AddDynamicTask("FrameManagerWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create<FrameManager, &FrameManager::OnResize>(frameManager), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
+		gameInstance->AddDynamicTask("RenderSystemWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
+		gameInstance->AddDynamicTask("FrameManagerWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
 		oldSize = extent;
 	}
-	
 }

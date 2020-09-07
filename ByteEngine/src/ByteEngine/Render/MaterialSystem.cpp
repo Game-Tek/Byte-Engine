@@ -658,7 +658,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		pipelineCreateInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
 		pipelineCreateInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest;
 		pipelineCreateInfo.PipelineDescriptor.DepthWrite = onMaterialLoadInfo.DepthWrite;
-		pipelineCreateInfo.PipelineDescriptor.StencilTest = false;
+		pipelineCreateInfo.PipelineDescriptor.StencilTest = onMaterialLoadInfo.StencilTest;
 		pipelineCreateInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
 		pipelineCreateInfo.PipelineDescriptor.ColorBlendOperation = onMaterialLoadInfo.ColorBlendOperation;
 
@@ -698,7 +698,13 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			}
 
 			pipelineCreateInfo.Stages = shader_infos;
-			auto renderPass = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager")->GetRenderPass(static_cast<Id>(onMaterialLoadInfo.RenderPass));
+
+			auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
+			
+			auto renderPassIndex = frameManager->GetRenderPassIndex(onMaterialLoadInfo.RenderPass);
+			
+			auto renderPass = frameManager->GetRenderPass(renderPassIndex);
+			pipelineCreateInfo.SubPass = frameManager->GetSubPassIndex(renderPassIndex, onMaterialLoadInfo.SubPass);
 			pipelineCreateInfo.RenderPass = &renderPass;
 			pipelineCreateInfo.PipelineLayout = &instance.PipelineLayout;
 			pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache(getThread());

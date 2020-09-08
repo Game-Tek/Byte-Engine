@@ -111,28 +111,14 @@ void Game::Initialize()
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
 		materialCreateInfo.DepthWrite = false;
 		materialCreateInfo.DepthTest = false;
-		materialCreateInfo.StencilTest = true;
+		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-
-		{
-			MaterialResourceManager::StencilState stencilState;
-			stencilState.CompareOperation = GAL::CompareOperation::EQUAL;
-			stencilState.CompareMask = 0xFFFFFFFF;
-			stencilState.DepthFailOperation = GAL::StencilCompareOperation::REPLACE;
-			stencilState.FailOperation = GAL::StencilCompareOperation::REPLACE;
-			stencilState.PassOperation = GAL::StencilCompareOperation::INVERT;
-			stencilState.Reference = 0xFFFFFFFF;
-			stencilState.WriteMask = 0xFFFFFFFF;
-
-			materialCreateInfo.Front = stencilState;
-			materialCreateInfo.Back = stencilState;
-		}
 		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -186,11 +172,11 @@ void Game::PostInitialize()
 	{
 		TextSystem::AddTextInfo addTextInfo;
 		addTextInfo.Position = { 0, 0 };
-		addTextInfo.Text = "1";
+		addTextInfo.Text = "YA";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
 
-	//GetResourceManager<FontResourceManager>("FontResourceManager")->GetFontFromSDF(GTSL::StaticString<64>("Rage"));
+	GetResourceManager<FontResourceManager>("FontResourceManager")->LoadImageFont(GTSL::StaticString<64>("Rage"));
 	
 	//window.ShowMouse(false);
 }

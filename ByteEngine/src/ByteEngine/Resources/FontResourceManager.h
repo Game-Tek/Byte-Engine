@@ -3,6 +3,9 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <GTSL/Buffer.h>
+#include <GTSL/Extent.h>
+#include <GTSL/FlatHashMap.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vector2.h>
 
@@ -18,17 +21,16 @@ namespace GTSL {
 class FontResourceManager : public ResourceManager
 {
 public:
-	FontResourceManager() : ResourceManager("FontResourceManager") {}
+	FontResourceManager() : ResourceManager("FontResourceManager"), fonts(4, GetPersistentAllocator()) {}
 	
 	struct Curve
 	{
 		GTSL::Vector2 p0;
 		GTSL::Vector2 p1;//Bezier control point or random off glyph point
 		GTSL::Vector2 p2;
-		bool IsCurve = false;
+		uint32 IsCurve = false;
 
 	private:
-		bool a, b, c; //int
 		uint32 d;
 	};
 
@@ -69,11 +71,37 @@ public:
 		FontMetaData Metadata;
 		uint64 LastUsed;
 	};
+
+	struct Character
+	{
+		GTSL::Extent2D Size;       // Size of glyph
+		GTSL::Extent2D Bearing;    // Offset from baseline to left/top of glyph
+		uint32 Advance;    // Offset to advance to next glyph
+	};
+	
+	struct ImageFont
+	{
+		std::map<char, Character> Characters;
+		GTSL::Buffer ImageData;
+	};
 	
 	Font GetFont(const GTSL::Ranger<const UTF8> fontName);
 
-	Font GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName);
+	void LoadImageFont(const GTSL::Ranger<const UTF8> fontName);
+	ImageFont& GetImageFont(const GTSL::Ranger<const UTF8> fontName) { return fonts.At(Id(fontName.begin())); }
 
+	~FontResourceManager()
+	{
+		auto deallocate = [&](ImageFont& imageFont)
+		{
+			imageFont.ImageData.Free(8, GetPersistentAllocator());
+		};
+		
+		GTSL::ForEach(fonts, deallocate);
+	}
+	
 private:
 	int8 parseData(const char* data, Font* fontData);
+
+	GTSL::FlatHashMap<ImageFont, BE::PersistentAllocatorReference> fonts;
 };

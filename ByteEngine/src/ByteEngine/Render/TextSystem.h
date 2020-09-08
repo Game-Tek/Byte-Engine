@@ -21,8 +21,6 @@ public:
 		GTSL::StaticString<64> Text;
 	};
 	ComponentReference AddText(const AddTextInfo& addTextInfo);
-
-	const FontResourceManager::Font& GetRenderingFont() const { return renderingFont; }
 	
 	struct Text
 	{
@@ -32,6 +30,4 @@ public:
 	GTSL::Ranger<const Text> GetTexts() const { return components; }
 private:
 	Vector<Text> components;
-
-	FontResourceManager::Font renderingFont;
 };

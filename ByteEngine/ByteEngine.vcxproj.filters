@@ -137,30 +137,8 @@
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
-    <ClInclude Include="ext\msdfgen-master\core\arithmetics.hpp" />
-    <ClInclude Include="ext\msdfgen-master\core\Bitmap.h" />
-    <ClInclude Include="ext\msdfgen-master\core\Bitmap.hpp" />
-    <ClInclude Include="ext\msdfgen-master\core\BitmapRef.hpp" />
-    <ClInclude Include="ext\msdfgen-master\core\Contour.h" />
-    <ClInclude Include="ext\msdfgen-master\core\contour-combiners.h" />
-    <ClInclude Include="ext\msdfgen-master\core\EdgeColor.h" />
-    <ClInclude Include="ext\msdfgen-master\core\edge-coloring.h" />
-    <ClInclude Include="ext\msdfgen-master\core\EdgeHolder.h" />
-    <ClInclude Include="ext\msdfgen-master\core\edge-segments.h" />
-    <ClInclude Include="ext\msdfgen-master\core\edge-selectors.h" />
-    <ClInclude Include="ext\msdfgen-master\core\equation-solver.h" />
-    <ClInclude Include="ext\msdfgen-master\core\estimate-sdf-error.h" />
-    <ClInclude Include="ext\msdfgen-master\core\pixel-conversion.hpp" />
-    <ClInclude Include="ext\msdfgen-master\core\rasterization.h" />
-    <ClInclude Include="ext\msdfgen-master\core\render-sdf.h" />
-    <ClInclude Include="ext\msdfgen-master\core\save-bmp.h" />
-    <ClInclude Include="ext\msdfgen-master\core\save-tiff.h" />
-    <ClInclude Include="ext\msdfgen-master\core\Scanline.h" />
-    <ClInclude Include="ext\msdfgen-master\core\Shape.h" />
-    <ClInclude Include="ext\msdfgen-master\core\shape-description.h" />
-    <ClInclude Include="ext\msdfgen-master\core\SignedDistance.h" />
-    <ClInclude Include="ext\msdfgen-master\core\Vector2.h" />
     <ClInclude Include="src\ByteEngine\Render\FrameManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\trueType.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -202,24 +180,7 @@
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\Contour.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\contour-combiners.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\edge-coloring.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\EdgeHolder.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\edge-segments.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\edge-selectors.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\equation-solver.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\estimate-sdf-error.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\msdfgen.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\rasterization.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\render-sdf.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\save-bmp.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\save-tiff.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\Scanline.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\Shape.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\shape-description.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\SignedDistance.cpp" />
-    <ClCompile Include="ext\msdfgen-master\core\Vector2.cpp" />
     <ClCompile Include="src\ByteEngine\Render\FrameManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\trueType.cpp" />
   </ItemGroup>
 </Project>

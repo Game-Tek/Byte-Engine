@@ -13,7 +13,33 @@
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
 #include "TextSystem.h"
+#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/CameraSystem.h"
+
+GTSL::Matrix4 PrepareOrthographicProjectionMatrix(float left_plane, float right_plane, float bottom_plane, float top_plane, float near_plane, float far_plane) {
+	GTSL::Matrix4 orthographic_projection_matrix = {
+	  2.0f / (right_plane - left_plane),
+	  0.0f,
+	  0.0f,
+	  0.0f,
+
+	  0.0f,
+	  2.0f / (bottom_plane - top_plane),
+	  0.0f,
+	  0.0f,
+
+	  0.0f,
+	  0.0f,
+	  1.0f / (near_plane - far_plane),
+	  0.0f,
+
+	  -(right_plane + left_plane) / (right_plane - left_plane),
+	  -(bottom_plane + top_plane) / (bottom_plane - top_plane),
+	  near_plane / (near_plane - far_plane),
+	  1.0f
+	};
+	return orthographic_projection_matrix;
+}
 
 struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 {
@@ -105,71 +131,95 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 	{
 		if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 1)
 		{
-			Id renderGroupName = "TextSystem";
-
-			auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
-			auto& renderGroupInstance = renderGroups.At(renderGroupName);
-
+			auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
+			
+			if (textSystem->GetTexts().ElementCount())
 			{
-				auto offset = GTSL::Array<uint32, 1>{ 0 };
-				renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+				Id renderGroupName = "TextSystem";
+
+				auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
+				auto& renderGroupInstance = renderGroups.At(renderGroupName);
+
+				{
+					auto offset = GTSL::Array<uint32, 1>{ 0 };
+					renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+				}
+
+				auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+				auto& materialInstance = materialInstances[1];
+
+				if (renderInfo.MaterialSystem->IsMaterialReady(1))
+				{
+					CommandBuffer::BindPipelineInfo bindPipelineInfo;
+					bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+					bindPipelineInfo.PipelineType = PipelineType::RASTER;
+					bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+					renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+
+					auto& text = textSystem->GetTexts()[0];
+
+					CommandBuffer::DrawInfo drawInfo;
+					drawInfo.FirstInstance = 0;
+					drawInfo.FirstVertex = 0;
+					drawInfo.InstanceCount = 1;
+					drawInfo.VertexCount = (text.String.GetLength() - 1) * 6;
+					renderInfo.CommandBuffer->Draw(drawInfo);
+				}
+
+				renderInfo.BindingsManager->PopBindings();
 			}
-
-			auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-			auto& materialInstance = materialInstances[1];
-
-			if (renderInfo.MaterialSystem->IsMaterialReady(1))
-			{
-				CommandBuffer::BindPipelineInfo bindPipelineInfo;
-				bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-				bindPipelineInfo.PipelineType = PipelineType::RASTER;
-				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-				renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-
-				auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
-				auto& text = textSystem->GetTexts()[0];
-				auto& glyph = textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0]));
-
-				CommandBuffer::DrawInfo drawInfo;
-				drawInfo.FirstInstance = 0;
-				drawInfo.FirstVertex = 0;
-				drawInfo.InstanceCount = glyph.NumTriangles;
-				drawInfo.VertexCount = 3;
-				renderInfo.CommandBuffer->Draw(drawInfo);
-			}
-
-			renderInfo.BindingsManager->PopBindings();
 		}
 	}
 
 	void Setup(const SetupInfo& info) override
 	{
 		auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
+
+		float32 scale = 2.0f;
 		
-		auto& text = textSystem->GetTexts()[0];
-		auto& glyph = const_cast<FontResourceManager::Glyph&>(textSystem->GetRenderingFont().Glyphs.at(textSystem->GetRenderingFont().GlyphMap.at(text.String[0])));
+		if (textSystem->GetTexts().ElementCount())
+		{
+			auto& text = textSystem->GetTexts()[0];
+			auto& imageFont = BE::Application::Get()->GetResourceManager<FontResourceManager>("FontResourceManager")->GetImageFont(GTSL::StaticString<64>("Rage"));
 
-		byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
+			auto x = text.Position.X;
+			auto y = text.Position.Y;
+			
+			byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
 
-		GTSL::Vector4 windingPoint(-glyph.BoundingBox[0], -glyph.BoundingBox[3], 0, 1);
+			GTSL::Matrix4 ortho;
+			auto renderExtent = info.RenderSystem->GetRenderExtent();
+			GTSL::Math::MakeOrthoMatrix(ortho, renderExtent.Width / 2, -(renderExtent.Width / 2), renderExtent.Height / 2, -(renderExtent.Height / 2), 1, 100);
+			GTSL::MemCopy(sizeof(ortho), &ortho, data); data += sizeof(ortho);
+			
+			for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
+			{
+				auto& ch = imageFont.Characters.at(*c);
 
-		//vec2 positions[3] = vec2[](
-		//	vec2(-0.5, 0.5),
-		//	vec2(0.5, 0.5),
-		//	vec2(0.0, -0.5)
-		//	);
-		
-		//glyph.PathList[0].Curves[0].p0.X = -0.5;
-		//glyph.PathList[0].Curves[0].p0.Y = 0.5;
-		//glyph.PathList[0].Curves[0].p1.X = 0.5;
-		//glyph.PathList[0].Curves[0].p1.Y = 0.5;
-		//glyph.PathList[0].Curves[0].p2.X = 0.0;
-		//glyph.PathList[0].Curves[0].p2.Y = -0.5;
-		
-		//curve is aligned to glsl std140
-		GTSL::MemCopy(sizeof(GTSL::Vector4), &windingPoint, data); data += sizeof(GTSL::Vector4);
-		GTSL::MemCopy(glyph.PathList[0].Curves.GetLengthSize(), glyph.PathList[0].Curves.GetData(), data);	
+				float xpos = x + ch.Bearing.Width * scale;
+				float ypos = y - (ch.Size.Height - ch.Bearing.Height) * scale;
 
+				float w = ch.Size.Width * scale;
+				float h = ch.Size.Height * scale;
+				
+				// update VBO for each character
+				float vertices[6][4] = {
+					{ xpos,     ypos + h,   0.0f, 0.0f },
+					{ xpos,     ypos,       0.0f, 1.0f },
+					{ xpos + w, ypos,       1.0f, 1.0f },
+
+					{ xpos,     ypos + h,   0.0f, 0.0f },
+					{ xpos + w, ypos,       1.0f, 1.0f },
+					{ xpos + w, ypos + h,   1.0f, 0.0f }
+				};
+				
+				// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+				x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
+				
+				GTSL::MemCopy(sizeof(vertices), vertices, data); data += sizeof(vertices);
+			}
+
+		}
 		//MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 		//updateInfo.RenderGroup = "TextSystem";
 		//updateInfo.Data = GTSL::Ranger<const byte>(64, static_cast<const byte*>(nullptr));
@@ -322,6 +372,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.TextureBarriers = textureBarriers;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 	}
+
+	renderSystem->Wait();
 	
 	bindingsManager.PopBindings();
 }

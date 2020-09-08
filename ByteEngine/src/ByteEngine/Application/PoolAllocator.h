@@ -28,7 +28,7 @@ public:
 	public:
 		Pool() = default;
 		
-		Pool(uint16 slotsCount, uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference);
+		Pool(uint32 slotsCount, uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference);
 
 		void Allocate(uint64 size, uint64 alignment, void** data, uint64* allocatedSize);
 

@@ -23,7 +23,7 @@ PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) :
 	}
 }
 
-PoolAllocator::Pool::Pool(const uint16 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount), slotsCount(MAX_SLOTS_COUNT)
+PoolAllocator::Pool::Pool(const uint32 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount), slotsCount(MAX_SLOTS_COUNT)
 {
 	uint64 pool_allocated_size{ 0 };
 	

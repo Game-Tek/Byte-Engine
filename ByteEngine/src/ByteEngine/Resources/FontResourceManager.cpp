@@ -1,7 +1,8 @@
 #include "FontResourceManager.h"
 
-#undef INFINITE
-#include "msdfgen-master/msdfgen.h"
+//#undef INFINITE
+//#include "msdfgen-master/msdfgen.h"
+//#include "msdfgen-ext.h"
 
 /*
 * ttf-parser
@@ -63,7 +64,7 @@ struct Flags
 	bool xShort;
 	bool yShort;
 	bool repeat;
-	bool offCurve;
+	bool isControlPoint;
 };
 
 enum COMPOUND_GLYPH_FLAGS
@@ -432,60 +433,69 @@ FontResourceManager::Font FontResourceManager::GetFont(const Ranger<const UTF8> 
 	return fontData;
 }
 
-//FontResourceManager::Font FontResourceManager::GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName)
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+void FontResourceManager::LoadImageFont(const GTSL::Ranger<const UTF8> fontName)
+{
+	StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
+	
+	FT_Library ft;
+	if (FT_Init_FreeType(&ft)) { BE_ASSERT(false); }
+
+	FT_Face face;
+	if (FT_New_Face(ft, path.begin(), 0, &face)) { BE_ASSERT(false); }
+
+	FT_Set_Pixel_Sizes(face, 0, 48);
+
+	ImageFont imageFont;
+	
+	imageFont.ImageData.Allocate(1024 * 1024 * 3, 8, GetPersistentAllocator());
+	
+	for (unsigned char c = 0; c < 128; c++)
+	{
+		// load character glyph 
+		if (FT_Load_Char(face, c, FT_LOAD_RENDER))
+		{
+			BE_ASSERT(false);
+			continue;
+		}
+
+
+		imageFont.ImageData.WriteBytes(face->glyph->bitmap.width * face->glyph->bitmap.rows, face->glyph->bitmap.buffer);
+		
+		Character character = {
+			Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
+			Extent2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
+			face->glyph->advance.x
+		};
+		imageFont.Characters.insert(std::pair<char, Character>(c, character));
+	}
+
+	fonts.Emplace(Id(fontName.begin()), GTSL::MoveRef(imageFont));
+	
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+}
+
+//void FontResourceManager::GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName)
 //{
 //	StaticString<255> basePath(BE::Application::Get()->GetPathToApplication()); basePath += "/resources/";
 //	StaticString<255> path(basePath); path += fontName; path += ".ttf";
 //
-//	File fontFile; fontFile.OpenFile(path, static_cast<uint8>(File::AccessMode::READ), File::OpenMode::LEAVE_CONTENTS);
-//	Buffer fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+//	auto handle = msdfgen::initializeFreetype();
+//	msdfgen::FontHandle* font = msdfgen::loadFont(handle, path.begin());
 //
-//	fontFile.ReadFile(fileBuffer);
-//	
-//	Font fontData;
-//	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
-//
-//	for(uint32 glyph = 0; glyph < fontData.Glyphs.size(); ++glyph)
+//	msdfgen::Shape shape;
+//	msdfgen::loadGlyph(shape, font, 'c');
 //	{
-//		msdfgen::Bitmap<float, 3> bitmap(32, 32);
-//		msdfgen::Shape shape;
-//
-//		for(uint16 cont = 0; cont < fontData.Glyphs[glyph].NumContours; ++cont)
-//		{
-//			msdfgen::Contour contour;
-//
-//			for(uint32 path = 0; path < fontData.Glyphs[glyph].PathList.GetLength(); ++path)
-//			{
-//				for(auto& curve : fontData.Glyphs[glyph].PathList[path].Curves)
-//				{
-//					msdfgen::EdgeHolder edgeHolder(msdfgen::Vector2(static_cast<double>(curve.p0.X), static_cast<double>(curve.p0.Y)), msdfgen::Vector2(static_cast<double>(curve.p1.X), static_cast<double>(curve.p1.Y)));
-//					contour.addEdge(edgeHolder);
-//				}
-//			}
-//
-//			shape.addContour(contour);
-//		}
-//		
 //		shape.normalize();
-//		auto bounds = shape.getBounds();
-//		shape.bound(bounds.l, bounds.b, bounds.r, bounds.t);
-//
-//		if (shape.edgeCount())
-//		{
-//			msdfgen::edgeColoringSimple(shape, 3.0);
-//			msdfgen::generateMSDF(bitmap, shape, 12.0, 4, msdfgen::Vector2(3, 20));
-//		}
-//
-//		GTSL::StaticString<64> name(basePath); name += fontData.Glyphs[glyph].Character; name += ".bmp";
+//		msdfgen::edgeColoringSimple(shape, 3.0);
+//		msdfgen::Bitmap<float, 3> bitmap(64, 64);
+//		msdfgen::generateMSDF(bitmap, shape, 4.0, 1, msdfgen::Vector2(4.0, 4.0));
+//		GTSL::StaticString<64> name(basePath); name += "c"; name += ".bmp";
 //		msdfgen::saveBmp(bitmap, name.begin());
 //	}
-//
-//	BE_ASSERT(result > -1, "Failed to parse!")
-//
-//	fileBuffer.Free(8, GetTransientAllocator());
-//	fontFile.CloseFile();
-//
-//	return fontData;
 //}
 
 int8 FontResourceManager::parseData(const char* data, Font* fontData)
@@ -768,7 +778,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					flags[j] = flags[j - 1];
 					repeat--;
 				}
-				flagsEnum[j].offCurve = (!(flags[j] & 0b00000001)) != 0;
+				flagsEnum[j].isControlPoint = (!(flags[j] & 0b00000001)) != 0;
 				flagsEnum[j].xShort = (flags[j] & 0b00000010) != 0;
 				flagsEnum[j].yShort = (flags[j] & 0b00000100) != 0;
 				flagsEnum[j].repeat = (flags[j] & 0b00001000) != 0;
@@ -849,14 +859,14 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				const uint16& point_index_0 = point_index[path][0];
 				const ::Flags& flags_0 = flagsEnum[point_index_0];
 				
-				//If the first point is off curve
-				if (flags_0.offCurve)
+				//If the first point is control point
+				if (flags_0.isControlPoint)
 				{
 					const uint16& point_index_m1 = point_index[path][numPointsPerContour - 1];
 					const ::Flags& flags_m1 = flagsEnum[point_index_m1];
 					const ShortVector& p0 = points[point_index_0];
 					const ShortVector& pm1 = points[point_index_m1];
-					if (flags_m1.offCurve)
+					if (flags_m1.isControlPoint)
 					{
 						prev_point.X = (p0.X + pm1.X) / 2.0f;
 						prev_point.Y = (p0.Y + pm1.Y) / 2.0f;
@@ -878,14 +888,14 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 					Curve curve;
 
-					if (flags0.offCurve)
+					if (flags0.isControlPoint)
 					{
 						curve.p0.X = prev_point.X;
 						curve.p0.Y = prev_point.Y;
 						curve.p1.X = p0.X;
 						curve.p1.Y = p0.Y;
 
-						if (flags1.offCurve)
+						if (flags1.isControlPoint)
 						{
 							curve.p2.X = (p0.X + p1.X) / 2.0f;
 							curve.p2.Y = (p0.Y + p1.Y) / 2.0f;
@@ -899,7 +909,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							//No change to prev_point
 						}
 					}
-					else if (!flags1.offCurve)
+					else if (!flags1.isControlPoint)
 					{
 						curve.p0.X = p0.X;
 						curve.p0.Y = p0.Y;
@@ -917,7 +927,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 						const ::Flags& flags2 = flagsEnum[point_index2];
 						const ShortVector& p2 = points[point_index2];
 
-						if (flags2.offCurve)
+						if (flags2.isControlPoint)
 						{
 							curve.p0.X = p0.X;
 							curve.p0.Y = p0.Y;
@@ -942,7 +952,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							prev_point.Y = p0.Y;
 						}
 					}
-					if (flags0.offCurve || flags1.offCurve)
+					if (flags0.isControlPoint || flags1.isControlPoint)
 					{
 						curve.IsCurve = true;
 						Curve lineCurve;
@@ -954,7 +964,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 						lineCurve.p2.X = glyphCenter.X + 0.5f;
 						lineCurve.p2.Y = glyphCenter.Y + 0.5f;
 						currentGlyph.PathList[path].Curves.PushBack(lineCurve);
-						if (flags0.offCurve == false) { ++pointInContour; }
+						if (flags0.isControlPoint == false) { ++pointInContour; }
 					}
 					else
 					{
@@ -965,7 +975,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				}
 				
 				currentGlyph.NumTriangles += static_cast<uint32>(currentGlyph.PathList[path].Curves.GetLength());
-			}
+			} //for contour
 		}
 		else
 		{ //Composite glyph

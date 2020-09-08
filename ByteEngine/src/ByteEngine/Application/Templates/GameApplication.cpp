@@ -112,11 +112,10 @@ void GameApplication::PostInitialize()
 	
 	{
 		auto* frameManager = gameInstance->AddSystem<FrameManager>("FrameManager");
-		frameManager->AddAttachment(renderer, "Color", TextureFormat::RGBA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
+		frameManager->AddAttachment(renderer, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
 		frameManager->AddAttachment(renderer, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
-		frameManager->AddAttachment(renderer, "TextStencil", TextureFormat::STENCIL_8, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::STENCIL);
 
-		GTSL::Array<FrameManager::AttachmentInfo, 6> attachments(3);
+		GTSL::Array<FrameManager::AttachmentInfo, 6> attachments(2);
 		attachments[0].Name = "Color";
 		attachments[0].StartState = TextureLayout::UNDEFINED;
 		attachments[0].EndState = TextureLayout::TRANSFER_SRC;
@@ -129,12 +128,6 @@ void GameApplication::PostInitialize()
 		attachments[1].Load = GAL::RenderTargetLoadOperations::CLEAR;
 		attachments[1].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
 
-		attachments[2].Name = "TextStencil";
-		attachments[2].StartState = TextureLayout::UNDEFINED;
-		attachments[2].EndState = TextureLayout::STENCIL_ATTACHMENT;
-		attachments[2].Load = GAL::RenderTargetLoadOperations::CLEAR;
-		attachments[2].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
-
 		GTSL::Array<FrameManager::SubPassData, 6> subPasses;
 		FrameManager::SubPassData geoRenderPass;
 		geoRenderPass.Name = "Scene";
@@ -145,8 +138,6 @@ void GameApplication::PostInitialize()
 
 		FrameManager::SubPassData textRenderPass;
 		textRenderPass.Name = "Text";
-		textRenderPass.DepthStencilAttachment.Name = "TextStencil";
-		textRenderPass.DepthStencilAttachment.Layout = TextureLayout::STENCIL_ATTACHMENT;
 		textRenderPass.WriteAttachments.EmplaceBack("Color");
 		textRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
 

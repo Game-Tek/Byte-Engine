@@ -10,9 +10,9 @@ void FrameManager::AddAttachment(RenderSystem* renderSystem, const Id name, Text
 	attachment.Type = type;
 	attachment.Uses = uses;
 
-	if(type & TextureType::DEPTH)
+	if(type & (TextureType::DEPTH | TextureType::STENCIL))
 	{
-		attachment.ClearValue = GTSL::RGBA(1, 0, 1, 1);
+		attachment.ClearValue = GTSL::RGBA(1/*depth*/, 0/*stencil*/, 0, 0);
 	}
 	else
 	{
@@ -161,8 +161,8 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 		
 		{
 			auto& e = subPassDependencies[0];
-			e.SourceSubPass = RenderPass::EXTERNAL;
-			e.DestinationSubPass = subPass;
+			e.SourceSubPass = 0;
+			e.DestinationSubPass = 1;
 			
 			e.SourceAccessFlags = 0;
 			e.DestinationAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
@@ -192,8 +192,8 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 		{
 			auto& e = subPassDependencies[subPass];
 			
-			e.SourceSubPass = subPass;
-			e.DestinationSubPass = RenderPass::EXTERNAL;
+			e.SourceSubPass = 0;
+			e.DestinationSubPass = 1;
 			
 			e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
 			e.DestinationAccessFlags = 0;

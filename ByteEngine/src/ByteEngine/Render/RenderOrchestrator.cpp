@@ -180,7 +180,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 		if (textSystem->GetTexts().ElementCount())
 		{
 			auto& text = textSystem->GetTexts()[0];
-			auto& imageFont = BE::Application::Get()->GetResourceManager<FontResourceManager>("FontResourceManager")->GetImageFont(GTSL::StaticString<64>("Rage"));
+			auto& imageFont = textSystem->GetFont();
 
 			auto x = text.Position.X;
 			auto y = text.Position.Y;

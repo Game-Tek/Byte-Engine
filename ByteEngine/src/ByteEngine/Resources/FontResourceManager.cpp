@@ -33,11 +33,13 @@
 #endif
 
 #include <GTSL/Buffer.h>
+#include <GTSL/Filesystem.h>
 #include <GTSL/Math/Vector2.h>
 
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
+#include "ByteEngine/Game/GameInstance.h"
 
 using namespace GTSL;
 
@@ -433,13 +435,45 @@ FontResourceManager::Font FontResourceManager::GetFont(const Ranger<const UTF8> 
 	return fontData;
 }
 
+void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
+{
+	OnFontLoadInfo onFontLoadInfo;
+	onFontLoadInfo.ResourceName = fontLoadInfo.Name;
+	onFontLoadInfo.DataBuffer = fontLoadInfo.DataBuffer;
+	onFontLoadInfo.UserData = fontLoadInfo.UserData;
+
+	auto& font = fonts.At(fontLoadInfo.Name);
+	
+	onFontLoadInfo.Font = &font;
+	onFontLoadInfo.TextureFormat = GAL::TextureFormat::R_I8;
+	onFontLoadInfo.Extent = { 1024, 1024 };
+	
+	fontLoadInfo.GameInstance->AddDynamicTask("loadFont", fontLoadInfo.OnFontLoadDelegate, fontLoadInfo.ActsOn, GTSL::MoveRef(onFontLoadInfo));
+}
+
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
-void FontResourceManager::LoadImageFont(const GTSL::Ranger<const UTF8> fontName)
+void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSize, GAL::TextureFormat* textureFormat, GTSL::Extent3D* extent3D)
 {
-	StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
-	
+	StaticString<255> queryPath(BE::Application::Get()->GetPathToApplication()); queryPath += "/resources/"; queryPath += "*.ttf";
+	StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/";
+
+	GTSL::FileQuery query(queryPath);
+
+	auto queryFunc = [&](GTSL::FileQuery::QueryResult& queryResult)
+	{
+		auto nameOnly = queryResult.FileNameWithExtension;
+		nameOnly.Drop(nameOnly.FindLast('.'));
+
+		if (Id(nameOnly.begin()) == id)
+		{
+			path += queryResult.FileNameWithExtension;
+		}
+	};
+
+	GTSL::ForEach(query, queryFunc);
+
 	FT_Library ft;
 	if (FT_Init_FreeType(&ft)) { BE_ASSERT(false); }
 
@@ -449,9 +483,9 @@ void FontResourceManager::LoadImageFont(const GTSL::Ranger<const UTF8> fontName)
 	FT_Set_Pixel_Sizes(face, 0, 48);
 
 	ImageFont imageFont;
-	
+
 	imageFont.ImageData.Allocate(1024 * 1024 * 3, 8, GetPersistentAllocator());
-	
+
 	for (unsigned char c = 0; c < 128; c++)
 	{
 		// load character glyph 
@@ -463,7 +497,7 @@ void FontResourceManager::LoadImageFont(const GTSL::Ranger<const UTF8> fontName)
 
 
 		imageFont.ImageData.WriteBytes(face->glyph->bitmap.width * face->glyph->bitmap.rows, face->glyph->bitmap.buffer);
-		
+
 		Character character = {
 			Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
 			Extent2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
@@ -472,10 +506,15 @@ void FontResourceManager::LoadImageFont(const GTSL::Ranger<const UTF8> fontName)
 		imageFont.Characters.insert(std::pair<char, Character>(c, character));
 	}
 
-	fonts.Emplace(Id(fontName.begin()), GTSL::MoveRef(imageFont));
+	*textureSize = imageFont.ImageData.GetLength();
+	*textureFormat = GAL::TextureFormat::RG_I8;
+	*extent3D = { 1024, 1024, 1};
 	
+	fonts.Emplace(id, GTSL::MoveRef(imageFont));
+
 	FT_Done_Face(face);
 	FT_Done_FreeType(ft);
+
 }
 
 //void FontResourceManager::GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName)

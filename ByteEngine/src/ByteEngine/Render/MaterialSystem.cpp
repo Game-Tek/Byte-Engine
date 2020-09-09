@@ -384,53 +384,26 @@ void MaterialSystem::SetMaterialParameter(const ComponentReference material, GAL
 {
 	auto& mat = materials[material];
 
-	auto& param = mat.Parameters.At(parameterName);
-
+	auto* matData = static_cast<byte*>(mat.Data) + mat.DataSize * material;
+	
 	//TODO: DEFER WRITING TO NOT OVERWRITE RUNNING FRAME
-	byte* FILL = static_cast<byte*>(mat.Data);
-	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL + param);
-	FILL = static_cast<byte*>(mat.Data) + GTSL::Math::PowerOf2RoundUp(mat.DataSize, static_cast<uint32>(minUniformBufferOffset));
-	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL + param);
+	byte* FILL = matData + mat.Parameters.At(parameterName);
+	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
+	FILL += GTSL::Math::PowerOf2RoundUp(mat.DataSize, static_cast<uint32>(minUniformBufferOffset));
+	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
 }
 
-void MaterialSystem::SetMaterialTexture(const ComponentReference material, Id parameterName, const uint8 n, TextureView* image, TextureSampler* sampler)
+void MaterialSystem::AddTexture(TextureView* image, TextureSampler* sampler)
 {
-	//auto& mat = renderGroups.At(materialNames[material].First).Instances.At(materialNames[material].Second);
-
-	//uint32 parameter = 0;
-	//for (auto e : mat.ShaderParameters.ParameterNames)
-	//{
-	//	if (e == parameterName) break;
-	//	++parameter;
-	//}
-	//BE_ASSERT(parameter != mat.ShaderParameters.ParameterNames.GetLength(), "Ooops");
-
 	BindingsSet::TextureBindingsUpdateInfo textureBindingsUpdateInfo;
 
-	switch (n)
+	textureBindingsUpdateInfo.TextureView = *image;
+	textureBindingsUpdateInfo.Sampler = *sampler;
+	textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
+	for (auto& e : perFrameBindingsUpdateData)
 	{
-	case 0:
-	{
-		textureBindingsUpdateInfo.TextureView = *image;
-		textureBindingsUpdateInfo.Sampler = *sampler;
-		textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
-
-		for(auto& e : perFrameBindingsUpdateData)
-		{
-			e.Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
-		}
-		break;
+		e.Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
 	}
-	case 1:
-	{
-		break;
-	}
-	case 2:
-	{
-		break;
-	}
-	}
-	
 }
 
 void MaterialSystem::UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo)

@@ -50,6 +50,13 @@ public:
 
 	struct OnResourceLoad
 	{
+		OnResourceLoad& operator=(const ResourceLoadInfo& resourceLoadInfo)
+		{
+			UserData = resourceLoadInfo.UserData;
+			DataBuffer = resourceLoadInfo.DataBuffer;
+			ResourceName = resourceLoadInfo.Name;
+		}
+		
 		/**
 		 * \brief Pointer to the user provided data on the resource request.
 		 */

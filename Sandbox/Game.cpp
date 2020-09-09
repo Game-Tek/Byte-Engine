@@ -114,6 +114,18 @@ void Game::Initialize()
 		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
+		GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
+		uniforms[0].EmplaceBack("Atlas", GAL::ShaderDataType::INT);
+		binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
+		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
+		b_array.EmplaceBack(binding_sets[0]);
+		u_array.EmplaceBack(uniforms[0]);
+		materialCreateInfo.Bindings = b_array;
+		materialCreateInfo.Uniforms = u_array;		
 		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
@@ -152,6 +164,15 @@ void Game::PostInitialize()
 	}
 
 	{
+		TextureSystem::CreateTextureInfo createTextureInfo;
+		createTextureInfo.RenderSystem = renderSystem;
+		createTextureInfo.GameInstance = gameInstance;
+		createTextureInfo.TextureName = "hydrant_Albedo";
+		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	}
+
+	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
 		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -175,8 +196,6 @@ void Game::PostInitialize()
 		addTextInfo.Text = "YA";
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
-
-	GetResourceManager<FontResourceManager>("FontResourceManager")->LoadImageFont(GTSL::StaticString<64>("Rage"));
 	
 	//window.ShowMouse(false);
 }

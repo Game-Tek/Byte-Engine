@@ -32,6 +32,12 @@ public:
 		GTSL::Array<GTSL::Array<uint32, 6>, 6> Range;
 	};
 	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);
+
+	struct MaterialData
+	{
+		uint16 TextureIndices[8];
+		uint8 Parameters[32];
+	};
 	
 	struct MaterialInstance
 	{
@@ -47,7 +53,7 @@ public:
 
 		uint32 DataSize = 0;
 		
-		GTSL::StaticMap<uint32, 16> Parameters;
+		GTSL::StaticMap<uint16, 16> Parameters;
 		BindingType BindingType;
 
 		MaterialInstance() = default;
@@ -84,7 +90,7 @@ public:
 	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName,
 	                          void* data);
 
-	void SetMaterialTexture(const ComponentReference material, Id parameterName, const uint8 n, TextureView* image, TextureSampler* sampler);
+	void AddTexture(TextureView* image, TextureSampler* sampler);
 
 	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Data; }
 	

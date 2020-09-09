@@ -3,7 +3,9 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <GAL/RenderCore.h>
 #include <GTSL/Buffer.h>
+#include <GTSL/Delegate.hpp>
 #include <GTSL/Extent.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Vector.hpp>
@@ -87,8 +89,18 @@ public:
 	
 	Font GetFont(const GTSL::Ranger<const UTF8> fontName);
 
-	void LoadImageFont(const GTSL::Ranger<const UTF8> fontName);
-	ImageFont& GetImageFont(const GTSL::Ranger<const UTF8> fontName) { return fonts.At(Id(fontName.begin())); }
+	struct OnFontLoadInfo : OnResourceLoad
+	{
+		ImageFont* Font;
+		GAL::TextureFormat TextureFormat;
+		GTSL::Extent2D Extent;
+	};
+	
+	struct FontLoadInfo : ResourceLoadInfo
+	{
+		GTSL::Delegate<void(TaskInfo, OnFontLoadInfo)> OnFontLoadDelegate;
+	};
+	void LoadImageFont(const FontLoadInfo& fontLoadInfo);
 
 	~FontResourceManager()
 	{
@@ -99,6 +111,8 @@ public:
 		
 		GTSL::ForEach(fonts, deallocate);
 	}
+
+	void GetFontAtlasSizeFormatExtent(Id id, uint32* textureSize, GAL::TextureFormat* textureFormat, GTSL::Extent3D* extent3D);
 	
 private:
 	int8 parseData(const char* data, Font* fontData);

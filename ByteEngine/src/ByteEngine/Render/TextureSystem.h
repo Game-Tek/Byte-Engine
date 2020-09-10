@@ -44,8 +44,6 @@ private:
 	};
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo);
 
-	ComponentReference component = 0;
-
 	struct TextureComponent
 	{
 		Texture Texture;
@@ -53,5 +51,5 @@ private:
 		TextureSampler TextureSampler;
 		RenderAllocation Allocation;
 	};
-	Vector<TextureComponent> textures;
+	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 };

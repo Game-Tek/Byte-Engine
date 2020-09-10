@@ -442,13 +442,13 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		for(uint32 i = 0; i < bufferCopyData.GetLength(); ++i)
 		{
 			bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation);
+			DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
 		}
 
 		for(uint32 i = 0; i < textureCopyData.GetLength(); ++i)
 		{
 			textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(bufferCopyDatas[currentFrameIndex][i].Allocation);
+			DeallocateScratchBufferMemory(textureCopyData[i].Allocation);
 		}
 		
 		bufferCopyData.ResizeDown(0);

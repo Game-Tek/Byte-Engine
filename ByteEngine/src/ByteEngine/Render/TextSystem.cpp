@@ -7,6 +7,7 @@
 void TextSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	components.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+	textures.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 
 	{
 		MaterialSystem::AddRenderGroupInfo addRenderGroupInfo;
@@ -38,7 +39,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 	text.Position = info.Position;
 	text.String = info.Text;
 
-	auto fontName = Id(info.Text.begin());
+	auto fontName = Id("Rage");
 	auto component = components.EmplaceBack(text);
 	
 	FontResourceManager::FontLoadInfo fontLoadInfo;

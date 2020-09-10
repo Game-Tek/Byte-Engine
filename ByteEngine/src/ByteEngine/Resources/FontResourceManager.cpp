@@ -446,7 +446,7 @@ void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
 	
 	onFontLoadInfo.Font = &font;
 	onFontLoadInfo.TextureFormat = GAL::TextureFormat::R_I8;
-	onFontLoadInfo.Extent = { 1024, 1024 };
+	onFontLoadInfo.Extent = { font.Extent.Width, font.Extent.Height, 1 };
 	
 	fontLoadInfo.GameInstance->AddDynamicTask("loadFont", fontLoadInfo.OnFontLoadDelegate, fontLoadInfo.ActsOn, GTSL::MoveRef(onFontLoadInfo));
 }
@@ -485,7 +485,8 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 	ImageFont imageFont;
 
 	imageFont.ImageData.Allocate(1024 * 1024 * 3, 8, GetPersistentAllocator());
-
+	imageFont.Extent.Height = 128;
+	
 	for (unsigned char c = 0; c < 128; c++)
 	{
 		// load character glyph 
@@ -495,20 +496,31 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 			continue;
 		}
 
-
+		BE_ASSERT(face->glyph->bitmap.rows <= imageFont.Extent.Height);
+		
 		imageFont.ImageData.WriteBytes(face->glyph->bitmap.width * face->glyph->bitmap.rows, face->glyph->bitmap.buffer);
-
+		for(uint32 i = 0; i < 128 - face->glyph->bitmap.rows; ++i)
+		{
+			uint8 black = 0;
+			imageFont.ImageData.WriteBytes(1, &black);
+		}
+		
 		Character character = {
 			Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
 			Extent2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
+						//x pos in texture	//y size so as to consider y pos from top
+			Extent2D(imageFont.Extent.Width, face->glyph->bitmap.rows),
 			face->glyph->advance.x
 		};
+		
+		imageFont.Extent.Width += face->glyph->bitmap.width;
+		
 		imageFont.Characters.insert(std::pair<char, Character>(c, character));
 	}
-
+	
 	*textureSize = imageFont.ImageData.GetLength();
-	*textureFormat = GAL::TextureFormat::RG_I8;
-	*extent3D = { 1024, 1024, 1};
+	*textureFormat = GAL::TextureFormat::R_I8;
+	*extent3D = { imageFont.Extent.Width, imageFont.Extent.Height, 1 };
 	
 	fonts.Emplace(id, GTSL::MoveRef(imageFont));
 

@@ -16,12 +16,13 @@ void TextureSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	auto* renderSystem = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	for(auto& e : textures)
-	{
-		e.TextureView.Destroy(renderSystem->GetRenderDevice());
-		e.Texture.Destroy(renderSystem->GetRenderDevice());
-		renderSystem->DeallocateLocalBufferMemory(e.Allocation);
-	}
+	GTSL::ForEach(textures, [&](TextureComponent& e)
+		{
+			e.TextureView.Destroy(renderSystem->GetRenderDevice());
+			e.Texture.Destroy(renderSystem->GetRenderDevice());
+			//renderSystem->DeallocateLocalBufferMemory(e.Allocation);
+		}
+	);
 }
 
 System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo& info)
@@ -36,6 +37,8 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 	
 	textureLoadInfo.ActsOn = loadTaskDependencies;
 
+	auto component = textures.GetFirstFreeIndex().Get();
+	
 	{
 		Buffer::CreateInfo scratchBufferCreateInfo;
 		scratchBufferCreateInfo.RenderDevice = info.RenderSystem->GetRenderDevice();
@@ -74,6 +77,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
 
+		
 		auto* loadInfo = GTSL::New<LoadInfo>(GetPersistentAllocator(), component, scratchBuffer, info.RenderSystem, allocation);
 
 		textureLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
@@ -83,7 +87,7 @@ System::ComponentReference TextureSystem::CreateTexture(const CreateTextureInfo&
 	
 	info.TextureResourceManager->LoadTexture(textureLoadInfo);
 	
-	return component++;
+	return component;
 }
 
 void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
@@ -178,7 +182,7 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
 	}
 	
-	textures.Insert(loadInfo->Component, textureComponent);
+	textures.EmplaceAt(loadInfo->Component, textureComponent);
 	
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 

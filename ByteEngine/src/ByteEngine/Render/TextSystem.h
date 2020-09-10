@@ -19,6 +19,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	FontResourceManager::ImageFont& GetFont() { return *font; }
+	int32 GetAtlasTextureIndex() const { return 1; }
 
 	struct AddTextInfo
 	{
@@ -43,6 +44,9 @@ private:
 
 	struct LoadInfo
 	{
+		LoadInfo(uint32 component, ComponentReference material, Buffer buffer, RenderSystem* renderSystem, RenderAllocation allocation) : Component(component), Material(material),
+		Buffer(buffer), RenderSystem(renderSystem), Allocation(allocation) {}
+		
 		uint32 Component;
 		ComponentReference Material;
 		Buffer Buffer;

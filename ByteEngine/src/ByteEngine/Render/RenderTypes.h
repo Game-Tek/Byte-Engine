@@ -147,7 +147,7 @@ inline uint8 FormatSize(const TextureFormat format)
 	switch (format)
 	{
 	case GAL::VulkanTextureFormat::UNDEFINED: return 0;
-	case GAL::VulkanTextureFormat::R_I8: break;
+	case GAL::VulkanTextureFormat::R_I8: return 1;
 	case GAL::VulkanTextureFormat::R_I16: break;
 	case GAL::VulkanTextureFormat::R_I32: break;
 	case GAL::VulkanTextureFormat::R_I64: break;

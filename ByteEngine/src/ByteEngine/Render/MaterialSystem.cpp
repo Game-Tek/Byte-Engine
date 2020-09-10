@@ -75,10 +75,10 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
 		bindingsSetLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 
-		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> binding_descriptors;
+		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		for(uint32 j = 0; j < globalState[i].GetLength(); ++j)
 		{
-			binding_descriptors.PushBack(BindingsSetLayout::BindingDescriptor{ globalState[i][j], ShaderStage::ALL, 1, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ globalState[i][j], ShaderStage::ALL, 25/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 		}
 
 		if constexpr (_DEBUG)
@@ -87,7 +87,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 			bindingsSetLayoutCreateInfo.Name = name.begin();
 		}
 		
-		bindingsSetLayoutCreateInfo.BindingsDescriptors = binding_descriptors;
+		bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
 		globalBindingsSetLayout.EmplaceBack(bindingsSetLayoutCreateInfo);
 	}
 
@@ -420,14 +420,18 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 		
 		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength())
 		{
-
-			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(1/*bindings sets*/, bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(), GetTransientAllocator());
-			for (uint32 i = 0; i < bindingUpdateInfos.GetLength(); ++i)
+			auto length = bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength();
+			
+			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(2/*bindings sets*/, GetTransientAllocator());
 			{
-				bindingUpdateInfos[i].Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
-				bindingUpdateInfos[i].ArrayElement = 0;
-				bindingUpdateInfos[i].Count = bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(); //TODO: NOOOO!
-				bindingUpdateInfos[i].BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates.GetData();
+				BindingsSet::BindingUpdateInfo bindingUpdateInfo;
+
+				bindingUpdateInfo.Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
+				bindingUpdateInfo.ArrayElement = 0;
+				bindingUpdateInfo.Count = bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(); //TODO: NOOOO!
+				bindingUpdateInfo.BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates.GetData();
+
+				bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
 			}
 
 			bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;

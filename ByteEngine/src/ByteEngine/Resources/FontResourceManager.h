@@ -78,6 +78,7 @@ public:
 	{
 		GTSL::Extent2D Size;       // Size of glyph
 		GTSL::Extent2D Bearing;    // Offset from baseline to left/top of glyph
+		GTSL::Extent2D Position;
 		uint32 Advance;    // Offset to advance to next glyph
 	};
 	
@@ -85,6 +86,7 @@ public:
 	{
 		std::map<char, Character> Characters;
 		GTSL::Buffer ImageData;
+		GTSL::Extent2D Extent;
 	};
 	
 	Font GetFont(const GTSL::Ranger<const UTF8> fontName);
@@ -93,7 +95,7 @@ public:
 	{
 		ImageFont* Font;
 		GAL::TextureFormat TextureFormat;
-		GTSL::Extent2D Extent;
+		GTSL::Extent3D Extent;
 	};
 	
 	struct FontLoadInfo : ResourceLoadInfo

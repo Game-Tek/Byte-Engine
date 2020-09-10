@@ -161,8 +161,8 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 					CommandBuffer::DrawInfo drawInfo;
 					drawInfo.FirstInstance = 0;
 					drawInfo.FirstVertex = 0;
-					drawInfo.InstanceCount = 1;
-					drawInfo.VertexCount = (text.String.GetLength() - 1) * 6;
+					drawInfo.InstanceCount = (text.String.GetLength() - 1);
+					drawInfo.VertexCount = 6;
 					renderInfo.CommandBuffer->Draw(drawInfo);
 				}
 
@@ -179,6 +179,8 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 		
 		if (textSystem->GetTexts().ElementCount())
 		{
+			int32 atlasIndex = textSystem->GetAtlasTextureIndex();
+			
 			auto& text = textSystem->GetTexts()[0];
 			auto& imageFont = textSystem->GetFont();
 
@@ -187,10 +189,13 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			
 			byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
 
+			uint32 offset = 0;
+			
 			GTSL::Matrix4 ortho;
 			auto renderExtent = info.RenderSystem->GetRenderExtent();
-			GTSL::Math::MakeOrthoMatrix(ortho, renderExtent.Width / 2, -(renderExtent.Width / 2), renderExtent.Height / 2, -(renderExtent.Height / 2), 1, 100);
-			GTSL::MemCopy(sizeof(ortho), &ortho, data); data += sizeof(ortho);
+			GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(renderExtent.Width) * 0.5f, static_cast<float32>(renderExtent.Width) * -0.5f, static_cast<float32>(renderExtent.Height) * 0.5f, static_cast<float32>(renderExtent.Height) * -0.5f, 1, 100);
+			GTSL::MemCopy(sizeof(ortho), &ortho, data + offset); offset += sizeof(ortho);
+			GTSL::MemCopy(sizeof(uint32), &atlasIndex, data + offset); offset += sizeof(uint32); offset += sizeof(uint32) * 3;
 			
 			for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
 			{
@@ -215,8 +220,20 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 				
 				// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
 				x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
+
+				uint32 val = ch.Position.Width;
+				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+				val = ch.Position.Height;
+				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+
+				offset += sizeof(val) * 2;
 				
-				GTSL::MemCopy(sizeof(vertices), vertices, data); data += sizeof(vertices);
+				for (uint32 v = 0; v < 6; ++v)
+				{
+					GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][0], data + offset); offset += sizeof(GTSL::Vector2); //vertices
+					GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][2], data + offset); offset += sizeof(GTSL::Vector2); //uv
+				}
+				
 			}
 
 		}

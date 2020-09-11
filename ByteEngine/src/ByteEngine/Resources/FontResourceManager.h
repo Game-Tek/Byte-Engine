@@ -16,6 +16,15 @@
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
 
+struct IVector2D
+{
+	IVector2D() = default;
+
+	IVector2D(const int32 x, const int32 y) : X(x), Y(y) {}
+	
+	int32 X = 0, Y = 0;
+};
+
 namespace GTSL {
 	class Buffer;
 }
@@ -73,11 +82,11 @@ public:
 		FontMetaData Metadata;
 		uint64 LastUsed;
 	};
-
+	
 	struct Character
 	{
 		GTSL::Extent2D Size;       // Size of glyph
-		GTSL::Extent2D Bearing;    // Offset from baseline to left/top of glyph
+		IVector2D Bearing;    // Offset from baseline to left/top of glyph
 		GTSL::Extent2D Position;
 		uint32 Advance;    // Offset to advance to next glyph
 	};

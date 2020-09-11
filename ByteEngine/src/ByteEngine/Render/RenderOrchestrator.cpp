@@ -201,8 +201,8 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			{
 				auto& ch = imageFont.Characters.at(*c);
 		
-				float xpos = x + ch.Bearing.Width * scale;
-				float ypos = y - (ch.Size.Height - ch.Bearing.Height) * scale;
+				float xpos = x + ch.Bearing.X * scale;
+				float ypos = y - (ch.Size.Height - ch.Bearing.Y) * scale;
 		
 				float w = ch.Size.Width * scale;
 				float h = ch.Size.Height * scale;

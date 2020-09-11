@@ -112,7 +112,7 @@ void Game::Initialize()
 		materialCreateInfo.DepthWrite = false;
 		materialCreateInfo.DepthTest = false;
 		materialCreateInfo.StencilTest = false;
-		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
@@ -179,7 +179,7 @@ void Game::PostInitialize()
 		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);/
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

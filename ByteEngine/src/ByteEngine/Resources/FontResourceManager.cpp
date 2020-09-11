@@ -510,7 +510,7 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 		
 		Character character = {
 			Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
-			Extent2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
+			IVector2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
 						//x pos in texture	//y size so as to consider y pos from top
 			Extent2D(imageFont.Extent.Width, face->glyph->bitmap.rows),
 			face->glyph->advance.x

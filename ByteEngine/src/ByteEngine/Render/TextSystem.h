@@ -19,7 +19,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	FontResourceManager::ImageFont& GetFont() { return *font; }
-	int32 GetAtlasTextureIndex() const { return 1; }
+	int32 GetAtlasTextureIndex() const { return 0; }
 
 	struct AddTextInfo
 	{

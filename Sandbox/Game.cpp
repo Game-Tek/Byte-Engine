@@ -170,8 +170,8 @@ void Game::PostInitialize()
 
 	{
 		TextSystem::AddTextInfo addTextInfo;
-		addTextInfo.Position = { 0, 0 };
-		addTextInfo.Text = "YA";
+		addTextInfo.Position = { -100, 0 };
+		addTextInfo.Text = "el coso de agua";
 		addTextInfo.Material = textMaterial;
 		addTextInfo.FontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
 		addTextInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");

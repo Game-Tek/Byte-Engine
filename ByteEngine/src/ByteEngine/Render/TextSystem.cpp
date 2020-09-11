@@ -39,7 +39,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 	text.Position = info.Position;
 	text.String = info.Text;
 
-	auto fontName = Id("Rage");
+	auto fontName = Id("FTLTLT");
 	auto component = components.EmplaceBack(text);
 	
 	FontResourceManager::FontLoadInfo fontLoadInfo;
@@ -58,7 +58,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.Text.begin();
+			GTSL::StaticString<64> name("Scratch Buffer. Font class: "); name += info.Text.begin();
 			scratchBufferCreateInfo.Name = name.begin();
 		}
 
@@ -69,11 +69,11 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 			RenderDevice::FindSupportedImageFormat findFormatInfo;
 			findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;
 			findFormatInfo.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-			GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+			GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureFormat));
 			findFormatInfo.Candidates = candidates;
 			const auto supportedFormat = info.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
 
-			scratchBufferCreateInfo.Size = textureExtent.Width * textureExtent.Depth * textureExtent.Height * FormatSize(supportedFormat);
+			scratchBufferCreateInfo.Size = textureExtent.Width * textureExtent.Height * FormatSize(supportedFormat);
 		}
 
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
@@ -109,24 +109,19 @@ void TextSystem::onFontLoad(TaskInfo taskInfo, FontResourceManager::OnFontLoadIn
 	RenderDevice::FindSupportedImageFormat findFormat;
 	findFormat.TextureTiling = TextureTiling::OPTIMAL;
 	findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(loadInfo.TextureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(loadInfo.TextureFormat));
 	findFormat.Candidates = candidates;
 	auto supportedFormat = info->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
 
 	AtlasData textureComponent;
 
 	{
-		if (candidates[0] != supportedFormat)
-		{
-			Texture::ConvertImageToFormat(loadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, loadInfo.Extent, GTSL::AlignedPointer<byte, 16>(loadInfo.DataBuffer.begin()), 1);
-		}
-
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = info->RenderSystem->GetRenderDevice();
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Texture. Texture: "); name += loadInfo.ResourceName;
+			GTSL::StaticString<64> name("Texture. Font atlas: "); name += loadInfo.ResourceName;
 			textureCreateInfo.Name = name.begin();
 		}
 
@@ -155,7 +150,7 @@ void TextSystem::onFontLoad(TaskInfo taskInfo, FontResourceManager::OnFontLoadIn
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Texture view. Texture: "); name += loadInfo.ResourceName;
+			GTSL::StaticString<64> name("Texture view. Font atlas: "); name += loadInfo.ResourceName;
 			textureViewCreateInfo.Name = name.begin();
 		}
 
@@ -185,7 +180,7 @@ void TextSystem::onFontLoad(TaskInfo taskInfo, FontResourceManager::OnFontLoadIn
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Texture sampler. Texture: "); name += loadInfo.ResourceName;
+			GTSL::StaticString<64> name("Texture sampler. Font alas: "); name += loadInfo.ResourceName;
 			textureSamplerCreateInfo.Name = name.begin();
 		}
 

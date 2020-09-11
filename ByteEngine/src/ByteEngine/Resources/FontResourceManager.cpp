@@ -443,6 +443,8 @@ void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
 	onFontLoadInfo.UserData = fontLoadInfo.UserData;
 
 	auto& font = fonts.At(fontLoadInfo.Name);
+
+	GTSL::MemCopy(font.ImageData.GetLength(), font.ImageData.GetData(), onFontLoadInfo.DataBuffer.begin());
 	
 	onFontLoadInfo.Font = &font;
 	onFontLoadInfo.TextureFormat = GAL::TextureFormat::R_I8;
@@ -477,33 +479,34 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 	FT_Library ft;
 	if (FT_Init_FreeType(&ft)) { BE_ASSERT(false); }
 
-	FT_Face face;
-	if (FT_New_Face(ft, path.begin(), 0, &face)) { BE_ASSERT(false); }
-
-	FT_Set_Pixel_Sizes(face, 0, 48);
+	GTSL::Vector<FT_Face, BE::TransientAllocatorReference> faces(255, GetTransientAllocator());
 
 	ImageFont imageFont;
 
 	imageFont.ImageData.Allocate(1024 * 1024 * 3, 8, GetPersistentAllocator());
-	imageFont.Extent.Height = 128;
+
+	constexpr uint8 MAX_HEIGHT = 64;
+	
+	imageFont.Extent.Height = MAX_HEIGHT;
 	
 	for (unsigned char c = 0; c < 128; c++)
 	{
+		FT_Face face;
+		if (FT_New_Face(ft, path.begin(), 0, &face)) { BE_ASSERT(false); }
+
+		
+		FT_Set_Pixel_Sizes(face, 0, 48);
+		
 		// load character glyph 
 		if (FT_Load_Char(face, c, FT_LOAD_RENDER))
 		{
 			BE_ASSERT(false);
 			continue;
 		}
+		
+		faces.EmplaceBack(face);
 
 		BE_ASSERT(face->glyph->bitmap.rows <= imageFont.Extent.Height);
-		
-		imageFont.ImageData.WriteBytes(face->glyph->bitmap.width * face->glyph->bitmap.rows, face->glyph->bitmap.buffer);
-		for(uint32 i = 0; i < 128 - face->glyph->bitmap.rows; ++i)
-		{
-			uint8 black = 0;
-			imageFont.ImageData.WriteBytes(1, &black);
-		}
 		
 		Character character = {
 			Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
@@ -517,6 +520,27 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 		
 		imageFont.Characters.insert(std::pair<char, Character>(c, character));
 	}
+
+	for (uint32 r = 0; r < MAX_HEIGHT; ++r)
+	{
+		for (auto& face : faces)
+		{
+			if (r < face->glyph->bitmap.rows)
+			{
+				imageFont.ImageData.WriteBytes(face->glyph->bitmap.width, face->glyph->bitmap.buffer + face->glyph->bitmap.width * r);
+			}
+			else
+			{
+				const auto bytesToFill = face->glyph->bitmap.width;
+
+				for (uint32 i = 0; i < bytesToFill; ++i)
+				{
+					uint8 black = 0;
+					imageFont.ImageData.WriteBytes(1, &black);
+				}
+			}
+		}
+	}
 	
 	*textureSize = imageFont.ImageData.GetLength();
 	*textureFormat = GAL::TextureFormat::R_I8;
@@ -524,7 +548,11 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 	
 	fonts.Emplace(id, GTSL::MoveRef(imageFont));
 
-	FT_Done_Face(face);
+	for(auto& e : faces)
+	{
+		FT_Done_Face(e);
+	}
+	
 	FT_Done_FreeType(ft);
 
 }

@@ -136,18 +136,18 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			if (textSystem->GetTexts().ElementCount())
 			{
 				Id renderGroupName = "TextSystem";
-
+		
 				auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
 				auto& renderGroupInstance = renderGroups.At(renderGroupName);
-
+		
 				{
 					auto offset = GTSL::Array<uint32, 1>{ 0 };
 					renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
 				}
-
+		
 				auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
 				auto& materialInstance = materialInstances[1];
-
+		
 				if (renderInfo.MaterialSystem->IsMaterialReady(1))
 				{
 					CommandBuffer::BindPipelineInfo bindPipelineInfo;
@@ -155,9 +155,9 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 					bindPipelineInfo.PipelineType = PipelineType::RASTER;
 					bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
 					renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-
+		
 					auto& text = textSystem->GetTexts()[0];
-
+		
 					CommandBuffer::DrawInfo drawInfo;
 					drawInfo.FirstInstance = 0;
 					drawInfo.FirstVertex = 0;
@@ -165,7 +165,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 					drawInfo.VertexCount = 6;
 					renderInfo.CommandBuffer->Draw(drawInfo);
 				}
-
+		
 				renderInfo.BindingsManager->PopBindings();
 			}
 		}
@@ -174,8 +174,8 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 	void Setup(const SetupInfo& info) override
 	{
 		auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
-
-		float32 scale = 2.0f;
+		
+		float32 scale = 1.0f;
 		
 		if (textSystem->GetTexts().ElementCount())
 		{
@@ -183,12 +183,12 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			
 			auto& text = textSystem->GetTexts()[0];
 			auto& imageFont = textSystem->GetFont();
-
+		
 			auto x = text.Position.X;
 			auto y = text.Position.Y;
 			
 			byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
-
+		
 			uint32 offset = 0;
 			
 			GTSL::Matrix4 ortho;
@@ -200,33 +200,36 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 			for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
 			{
 				auto& ch = imageFont.Characters.at(*c);
-
+		
 				float xpos = x + ch.Bearing.Width * scale;
 				float ypos = y - (ch.Size.Height - ch.Bearing.Height) * scale;
-
+		
 				float w = ch.Size.Width * scale;
 				float h = ch.Size.Height * scale;
 				
 				// update VBO for each character
 				float vertices[6][4] = {
-					{ xpos,     ypos + h,   0.0f, 0.0f },
-					{ xpos,     ypos,       0.0f, 1.0f },
-					{ xpos + w, ypos,       1.0f, 1.0f },
-
-					{ xpos,     ypos + h,   0.0f, 0.0f },
-					{ xpos + w, ypos,       1.0f, 1.0f },
-					{ xpos + w, ypos + h,   1.0f, 0.0f }
+					{ xpos,     -(ypos + h),   0.0f, 0.0f },
+					{ xpos,     -(ypos),       0.0f, 1.0f },
+					{ xpos + w, -(ypos),       1.0f, 1.0f },
+		
+					{ xpos,     -(ypos + h),   0.0f, 0.0f },
+					{ xpos + w, -(ypos),       1.0f, 1.0f },
+					{ xpos + w, -(ypos + h),   1.0f, 0.0f }
 				};
 				
 				// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
 				x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
-
+		
 				uint32 val = ch.Position.Width;
 				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
 				val = ch.Position.Height;
 				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
 
-				offset += sizeof(val) * 2;
+				val = ch.Size.Width;
+				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+				val = ch.Size.Height;
+				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
 				
 				for (uint32 v = 0; v < 6; ++v)
 				{
@@ -235,7 +238,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 				}
 				
 			}
-
+		
 		}
 		//MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 		//updateInfo.RenderGroup = "TextSystem";

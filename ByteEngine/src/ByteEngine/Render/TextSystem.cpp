@@ -7,7 +7,6 @@
 void TextSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	components.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
-	textures.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 
 	{
 		MaterialSystem::AddRenderGroupInfo addRenderGroupInfo;
@@ -80,19 +79,18 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 
 		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
 
-		void* scratchBufferData; RenderAllocation allocation;
+		HostRenderAllocation allocation;
 
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
 			scratchMemoryAllocation.Buffer = scratchBuffer;
 			scratchMemoryAllocation.Allocation = &allocation;
-			scratchMemoryAllocation.Data = &scratchBufferData;
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
 
 		auto* loadInfo = GTSL::New<LoadInfo>(GetPersistentAllocator(), component, info.Material, scratchBuffer, info.RenderSystem, allocation);
 
-		fontLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
+		//fontLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
 
 		fontLoadInfo.UserData = DYNAMIC_TYPE(LoadInfo, loadInfo);
 	}
@@ -105,96 +103,6 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 void TextSystem::onFontLoad(TaskInfo taskInfo, FontResourceManager::OnFontLoadInfo loadInfo)
 {
 	auto* info = DYNAMIC_CAST(LoadInfo, loadInfo.UserData);
-
-	RenderDevice::FindSupportedImageFormat findFormat;
-	findFormat.TextureTiling = TextureTiling::OPTIMAL;
-	findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(loadInfo.TextureFormat));
-	findFormat.Candidates = candidates;
-	auto supportedFormat = info->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
-
-	AtlasData textureComponent;
-
-	{
-		Texture::CreateInfo textureCreateInfo;
-		textureCreateInfo.RenderDevice = info->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture. Font atlas: "); name += loadInfo.ResourceName;
-			textureCreateInfo.Name = name.begin();
-		}
-
-		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-		textureCreateInfo.Dimensions = Dimensions::SQUARE;
-		textureCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
-		textureCreateInfo.Extent = loadInfo.Extent;
-		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
-		textureCreateInfo.MipLevels = 1;
-
-		textureComponent.Texture = Texture(textureCreateInfo);
-	}
-
-	{
-		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
-		allocationInfo.Allocation = &textureComponent.Allocation;
-		allocationInfo.Texture = textureComponent.Texture;
-
-		info->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
-	}
-
-	{
-		TextureView::CreateInfo textureViewCreateInfo;
-		textureViewCreateInfo.RenderDevice = info->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture view. Font atlas: "); name += loadInfo.ResourceName;
-			textureViewCreateInfo.Name = name.begin();
-		}
-
-		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
-		textureViewCreateInfo.Dimensions = Dimensions::SQUARE;
-		textureViewCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
-		textureViewCreateInfo.Texture = textureComponent.Texture;
-		textureViewCreateInfo.MipLevels = 1;
-
-		textureComponent.TextureView = TextureView(textureViewCreateInfo);
-	}
-
-	{
-		RenderSystem::TextureCopyData textureCopyData;
-		textureCopyData.DestinationTexture = textureComponent.Texture;
-		textureCopyData.SourceBuffer = info->Buffer;
-		textureCopyData.Allocation = info->Allocation;
-		textureCopyData.Layout = TextureLayout::TRANSFER_DST;
-		textureCopyData.Extent = loadInfo.Extent;
-
-		info->RenderSystem->AddTextureCopy(textureCopyData);
-	}
-
-	{
-		TextureSampler::CreateInfo textureSamplerCreateInfo;
-		textureSamplerCreateInfo.RenderDevice = info->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture sampler. Font alas: "); name += loadInfo.ResourceName;
-			textureSamplerCreateInfo.Name = name.begin();
-		}
-
-		textureSamplerCreateInfo.Anisotropy = 0;
-
-		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
-	}
-
-	textures.EmplaceAt(info->Component, textureComponent);
-
-	BE_LOG_MESSAGE("Loaded texture ", loadInfo.ResourceName)
-
-	taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->AddTexture(&textureComponent.TextureView, &textureComponent.TextureSampler);
-	//taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->SetMaterialParameter(info->Material, Id("Atlas"));
 
 	font = loadInfo.Font;
 	

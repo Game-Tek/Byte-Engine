@@ -59,48 +59,55 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 				renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
 			}
 
-			auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-			auto& materialInstance = materialInstances[0];
-
-			if (materialInstance.BindingsSets.GetLength())
-			{
-				auto materialOffsets = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
-				renderInfo.BindingsManager->AddBinding(materialInstance.BindingsSets[renderInfo.CurrentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
-			}
-
-			if (renderInfo.MaterialSystem->IsMaterialReady(0))
-			{
-				CommandBuffer::BindPipelineInfo bindPipelineInfo;
-				bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-				bindPipelineInfo.PipelineType = PipelineType::RASTER;
-				bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-				renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-				for (const auto& e : renderGroup->GetMeshes())
+			GTSL::ForEach(renderGroup->GetMeshes(), [&](GTSL::KeepVector<StaticMeshRenderGroup::Mesh, BE::PersistentAllocatorReference>& e)
 				{
-					CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-					bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					bindVertexInfo.Buffer = &e.Buffer;
-					bindVertexInfo.Offset = 0;
-					renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
-					CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-					bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					bindIndexBuffer.Buffer = &e.Buffer;
-					bindIndexBuffer.Offset = e.IndicesOffset;
-					bindIndexBuffer.IndexType = e.IndexType;
-					renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
-					CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-					drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					drawIndexedInfo.InstanceCount = 1;
-					drawIndexedInfo.IndexCount = e.IndicesCount;
-					renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+					GTSL::ForEach(e, [&](StaticMeshRenderGroup::Mesh& i)
+						{
+							if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
+							{
+								auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+								auto& materialInstance = materialInstances[i.Material.MaterialInstance];
+
+								if (materialInstance.BindingsSets.GetLength())
+								{
+									auto materialOffsets = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
+									renderInfo.BindingsManager->AddBinding(materialInstance.BindingsSets[renderInfo.CurrentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+								}
+								
+								CommandBuffer::BindPipelineInfo bindPipelineInfo;
+								bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+								bindPipelineInfo.PipelineType = PipelineType::RASTER;
+								bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+								renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+
+								CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+								bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+								bindVertexInfo.Buffer = &i.Buffer;
+								bindVertexInfo.Offset = 0;
+								renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
+								CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+								bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+								bindIndexBuffer.Buffer = &i.Buffer;
+								bindIndexBuffer.Offset = i.IndicesOffset;
+								bindIndexBuffer.IndexType = i.IndexType;
+								renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
+								CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+								drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+								drawIndexedInfo.InstanceCount = 1;
+								drawIndexedInfo.IndexCount = i.IndicesCount;
+								renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+
+								if (materialInstance.BindingsSets.GetLength())
+								{
+									renderInfo.BindingsManager->PopBindings(); //material
+								}
+							}
+
+						}
+					);
 				}
-			}
-
-			if (materialInstance.BindingsSets.GetLength())
-			{
-				renderInfo.BindingsManager->PopBindings(); //material
-			}
-
+			);
+			
 			renderInfo.BindingsManager->PopBindings(); //render group
 		}
 	}
@@ -148,7 +155,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 				auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
 				auto& materialInstance = materialInstances[1];
 		
-				if (renderInfo.MaterialSystem->IsMaterialReady(1))
+				if (renderInfo.MaterialSystem->IsMaterialReady(MaterialHandle{}))
 				{
 					CommandBuffer::BindPipelineInfo bindPipelineInfo;
 					bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();

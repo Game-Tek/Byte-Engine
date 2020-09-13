@@ -75,27 +75,25 @@ void Game::Initialize()
 
 	{
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "BasicMaterial";
+		materialCreateInfo.ShaderName = "HydrantMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "MainRenderPass";
 		materialCreateInfo.SubPass = "Scene";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-		GTSL::Array<GTSL::Array<MaterialResourceManager::Uniform, 8>, 8> uniforms(1);
-		GTSL::Array<GTSL::Array<MaterialResourceManager::Binding, 8>, 8> binding_sets(1);
-		uniforms[0].EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-		binding_sets[0].EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
+		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
+		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Binding>, 10> b_array;
-		GTSL::Array<GTSL::Ranger<const MaterialResourceManager::Uniform>, 10> u_array;
-		b_array.EmplaceBack(binding_sets[0]);
-		u_array.EmplaceBack(uniforms[0]);
-		materialCreateInfo.Bindings = b_array;
-		materialCreateInfo.Uniforms = u_array;
+
+		materialCreateInfo.MaterialParameters.EmplaceBack("Albedo", GAL::ShaderDataType::INT);
+		materialCreateInfo.PerInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
+		
+		materialCreateInfo.Bindings = binding_sets;
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
 		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
@@ -113,9 +111,28 @@ void Game::Initialize()
 		materialCreateInfo.DepthTest = false;
 		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+		materialCreateInfo.BlendEnable = true;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
+
+	//{
+	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+	//	materialCreateInfo.ShaderName = "BoxMat";
+	//	materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+	//	materialCreateInfo.RenderPass = "MainRenderPass";
+	//	materialCreateInfo.SubPass = "Scene";
+	//	GTSL::Array<GAL::ShaderDataType, 8> format;
+	//	materialCreateInfo.VertexFormat = format;
+	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+	//	materialCreateInfo.DepthWrite = false;
+	//	materialCreateInfo.DepthTest = false;
+	//	materialCreateInfo.StencilTest = false;
+	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+	//	materialCreateInfo.BlendEnable = false;
+	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	//}
 	
 	//show loading screen
 	//load menu
@@ -129,57 +146,72 @@ void Game::PostInitialize()
 
 	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
 	
-	auto* static_mesh_renderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	
-	StaticMeshRenderGroup::AddStaticMeshInfo add_static_mesh_info;
-	add_static_mesh_info.MeshName = "hydrant";
-	add_static_mesh_info.GameInstance = gameInstance;
-	add_static_mesh_info.RenderSystem = renderSystem;
-	add_static_mesh_info.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	const auto component = static_mesh_renderer->AddStaticMesh(add_static_mesh_info);
-	static_mesh_renderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-
-	{
-		TextureSystem::CreateTextureInfo createTextureInfo;
-		createTextureInfo.RenderSystem = renderSystem;
-		createTextureInfo.GameInstance = gameInstance;
-		createTextureInfo.TextureName = "hydrant_Albedo";
-		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	}
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
 		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.MaterialName = "BasicMaterial";
+		createMaterialInfo.MaterialName = "HydrantMat";
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
 	{
-		MaterialSystem::CreateMaterialInfo createMaterialInfo;
-		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.MaterialName = "TextMaterial";
-		textMaterial = material_system->CreateMaterial(createMaterialInfo);
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "hydrant";
+		addStaticMeshInfo.Material = material;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
+	//{
+	//	TextureSystem::CreateTextureInfo createTextureInfo;
+	//	createTextureInfo.RenderSystem = renderSystem;
+	//	createTextureInfo.GameInstance = gameInstance;
+	//	createTextureInfo.TextureName = "hydrant_Albedo";
+	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	//}
+	//
+
 	{
-		TextSystem::AddTextInfo addTextInfo;
-		addTextInfo.Position = { -100, 0 };
-		addTextInfo.Text = "el coso de agua";
-		addTextInfo.Material = textMaterial;
-		addTextInfo.FontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
-		addTextInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-		addTextInfo.GameInstance = gameInstance;
-		auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
+		MaterialSystem::CreateTextureInfo createTextureInfo;
+		createTextureInfo.RenderSystem = renderSystem;
+		createTextureInfo.GameInstance = gameInstance;
+		createTextureInfo.TextureName = "hydrant_Albedo";
+		createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		texture = material_system->CreateTexture(createTextureInfo);
+
+		material_system->SetMaterialParameter(material, GAL::ShaderDataType::INT, "Albedo", &texture);
 	}
 	
-	//window.ShowMouse(false);/
+	//{
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	createMaterialInfo.GameInstance = gameInstance;
+	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.MaterialName = "TextMaterial";
+	//	textMaterial = material_system->CreateMaterial(createMaterialInfo);
+	//}
+
+	//{
+	//	TextSystem::AddTextInfo addTextInfo;
+	//	addTextInfo.Position = { 450, -300 };
+	//	addTextInfo.Text = "H: 97";
+	//	addTextInfo.Material = textMaterial;
+	//	addTextInfo.FontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
+	//	addTextInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//	addTextInfo.GameInstance = gameInstance;
+	//	auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
+	//}
+	
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
@@ -201,7 +233,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto* textureSystem = gameInstance->GetSystem<TextureSystem>("TextureSystem");
 	
 	GTSL::RGBA color(r, g, b, 1.0);
-	material_system->SetMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);
+	material_system->SetDynamicMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);
 }
 
 void Game::Shutdown()

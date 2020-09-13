@@ -186,7 +186,5 @@ void TextureSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnT
 	
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 
-	taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem")->AddTexture(&textureComponent.TextureView, &textureComponent.TextureSampler);
-
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }

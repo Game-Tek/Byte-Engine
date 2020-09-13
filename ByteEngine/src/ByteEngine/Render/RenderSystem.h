@@ -20,7 +20,6 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
-	[[nodiscard]] uint8 GetFrameCount() const { return 2; }
 	void Wait();
 
 	struct AllocateLocalTextureMemoryInfo
@@ -55,8 +54,7 @@ public:
 	struct BufferScratchMemoryAllocationInfo
 	{
 		Buffer Buffer;
-		void** Data = nullptr;
-		RenderAllocation* Allocation = nullptr;
+		HostRenderAllocation* Allocation = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
@@ -72,7 +70,7 @@ public:
 		
 		DeviceMemory deviceMemory;
 		
-		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, memoryRequirements.Size, allocationInfo.Allocation, allocationInfo.Data, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, memoryRequirements.Size, allocationInfo.Allocation, GetPersistentAllocator());
 
 		Buffer::BindMemoryInfo bindMemoryInfo;
 		bindMemoryInfo.RenderDevice = GetRenderDevice();
@@ -120,7 +118,7 @@ public:
 		 */
 		uint32 SourceOffset = 0, DestinationOffset = 0;
 		uint32 Size = 0;
-		RenderAllocation Allocation;
+		HostRenderAllocation Allocation;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
 
@@ -130,7 +128,7 @@ public:
 		Texture DestinationTexture;
 		
 		uint32 SourceOffset = 0;
-		RenderAllocation Allocation;
+		HostRenderAllocation Allocation;
 
 		GTSL::Extent3D Extent;
 		
@@ -138,7 +136,7 @@ public:
 	};
 	void AddTextureCopy(const TextureCopyData& textureCopyData) { textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData); }
 	
-	PipelineCache* GetPipelineCache(const uint8 thread) { return &pipelineCaches[thread]; }
+	const PipelineCache* GetPipelineCache() const;
 
 	GTSL::Ranger<const Texture> GetSwapchainTextures() const { return swapchainTextures; }
 

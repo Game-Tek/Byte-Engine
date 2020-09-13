@@ -30,7 +30,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	scratch_buffer.Destroy(&renderDevice);
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	AllocID allocationId;
 
@@ -38,7 +38,7 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 
 	for (auto& e : bufferMemoryBlocks)
 	{
-		if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, data, allocationId.BlockInfo))
+		if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo))
 		{
 			renderAllocation->Size = alignedSize;
 			renderAllocation->AllocationId = allocationId;
@@ -51,7 +51,7 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 
 	bufferMemoryBlocks.EmplaceBack();
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, data, allocationId.BlockInfo);
+	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo);
 
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocationId;

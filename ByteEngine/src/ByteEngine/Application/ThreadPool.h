@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GAL/Vulkan/VulkanPipelines.h>
+
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Object.h"
 
@@ -43,8 +45,8 @@ public:
 
 		for (uint8 i = 0; i < threadCount; ++i)
 		{
-			//Constructing threads with function and I parameter
-			threads.EmplaceBack(GetPersistentAllocator(), i, GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
+			//Constructing threads with function and I parameter. i + 1 is because we leave id 0 to the main thread
+			threads.EmplaceBack(GetPersistentAllocator(), i + 1, GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
 			threads[i].SetPriority(GTSL::Thread::Priority::HIGH);
 		}
 	}
@@ -82,6 +84,8 @@ public:
 
 		queues[currentIndex % threadCount].Push(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc), GTSL::MoveRef(semaphore)));
 	}
+
+	uint8 GetNumberOfThreads() { return threadCount; }
 
 private:
 	inline const static uint8 threadCount{ static_cast<uint8>(GTSL::Thread::ThreadCount() - 1) };

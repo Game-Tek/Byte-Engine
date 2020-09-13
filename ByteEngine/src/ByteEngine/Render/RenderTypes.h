@@ -16,14 +16,51 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
-static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
+/**
+ * \brief Defines the maximum number of frames that can be processed concurrently in the CPU and GPU.
+ * This might be used to define the number of resources to allocate for those resources that don't allow concurrent use.
+ * Most of the time the CPU will be working on frame N+1, while the GPU will be working on frame N and each respective unit
+ * will be modifying and/or reading the resources for the frame they are currently working on.
+ *
+ * This number was chosen since we consider that under normal conditions no more than two frames will ever be worked on concurrently.
+ */
+static constexpr uint8 MAX_CONCURRENT_FRAMES = 2;
 
+/**
+ * \brief Typedef for opaque GPU allocator ID. Refer to RenderAllocation::AllocationId for more details.
+ */
 using AllocationId = uint64;
 
+/**
+ * \brief Handle to a GPU allocation. This handle refers to a GPU local allocation.
+ */
 struct RenderAllocation
 {
-	uint32 Size = 0, Offset = 0;
+	/**
+	 * \brief Size of the allocation. In bytes.
+	 */
+	uint32 Size = 0;
+	/**
+	 * \brief Offset of the allocation in bytes to the start of a device memory allocation. One will not normally access this value,
+	 * it's just here for the allocator.
+	 */
+	uint32 Offset = 0;
+	
+	/**
+	 * \brief An opaque ID which MIGHT be used to keep track of some allocator internal data.
+	 */
 	AllocationId AllocationId = 0;
+};
+
+/**
+ * \brief Handle to a host visible/shared GPU allocation.
+ */
+struct HostRenderAllocation : RenderAllocation
+{
+	/**
+	 * \brief Pointer to a mapped memory section.
+	 */
+	void* Data = nullptr;
 };
 
 #if (_WIN64)

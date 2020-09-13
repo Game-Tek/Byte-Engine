@@ -19,7 +19,6 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	FontResourceManager::ImageFont& GetFont() { return *font; }
-	int32 GetAtlasTextureIndex() const { return 0; }
 
 	struct AddTextInfo
 	{
@@ -53,16 +52,6 @@ private:
 		RenderSystem* RenderSystem;
 		RenderAllocation Allocation;
 	};
-	
-	struct AtlasData
-	{
-		Texture Texture;
-		TextureView TextureView;
-		TextureSampler TextureSampler;
-
-		RenderAllocation Allocation;
-	};
-	GTSL::KeepVector<AtlasData, BE::PersistentAllocatorReference> textures;
 
 	FontResourceManager::ImageFont* font;
 	

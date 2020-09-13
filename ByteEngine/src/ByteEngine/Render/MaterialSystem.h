@@ -9,9 +9,17 @@
 #include "RenderTypes.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
+#include "ByteEngine/Resources/TextureResourceManager.h"
 
+class TextureResourceManager;
 struct TaskInfo;
 class RenderSystem;
+
+struct MaterialHandle
+{
+	Id MaterialType;
+	uint32 MaterialInstance = 0;
+};
 
 class MaterialSystem : public System
 {
@@ -48,11 +56,11 @@ public:
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 
 		Buffer Buffer;
-		void* Data;
-		RenderAllocation Allocation;
+		HostRenderAllocation Allocation;
 
 		uint32 DataSize = 0;
 		
+		GTSL::StaticMap<uint16, 16> DynamicParameters;
 		GTSL::StaticMap<uint16, 16> Parameters;
 		BindingType BindingType;
 
@@ -69,8 +77,7 @@ public:
 		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
 		
 		Buffer Buffer;
-		void* Data;
-		RenderAllocation Allocation;
+		HostRenderAllocation Allocation;
 		BindingType BindingType;
 
 		RenderGroupData() = default;
@@ -85,14 +92,21 @@ public:
 		GameInstance* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
 	};
-	ComponentReference CreateMaterial(const CreateMaterialInfo& info);
+	MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
 
-	void SetMaterialParameter(const ComponentReference material, GAL::ShaderDataType type, Id parameterName,
-	                          void* data);
+	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
+	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 
-	void AddTexture(TextureView* image, TextureSampler* sampler);
+	struct CreateTextureInfo
+	{
+		Id TextureName;
+		GameInstance* GameInstance = nullptr;
+		RenderSystem* RenderSystem = nullptr;
+		TextureResourceManager* TextureResourceManager = nullptr;
+	};
+	ComponentReference CreateTexture(const CreateTextureInfo& createTextureInfo);
 
-	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Data; }
+	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Allocation.Data; }
 	
 	struct UpdateRenderGroupDataInfo
 	{
@@ -107,7 +121,7 @@ public:
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 
-	bool IsMaterialReady(const uint64 material) { return isMaterialReady[material]; }
+	bool IsMaterialReady(const MaterialHandle material) { return isMaterialReady[material.MaterialInstance]; }
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -144,6 +158,28 @@ private:
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
 	GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference> materials;
+
+	struct TextureLoadInfo
+	{
+		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, HostRenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
+		{
+		}
+
+		uint32 Component;
+		Buffer Buffer;
+		RenderSystem* RenderSystem;
+		HostRenderAllocation RenderAllocation;
+	};
+	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
+	
+	struct TextureComponent
+	{
+		Texture Texture;
+		TextureView TextureView;
+		TextureSampler TextureSampler;
+		RenderAllocation Allocation;
+	};
+	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	
 	struct MaterialLoadInfo
 	{

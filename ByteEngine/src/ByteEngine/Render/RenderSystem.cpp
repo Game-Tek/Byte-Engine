@@ -4,8 +4,8 @@
 #include <Windows.h>
 
 #include "MaterialSystem.h"
-#include "StaticMeshRenderGroup.h"
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 
@@ -151,7 +151,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	bool pipelineCacheAvailable;
 	initializeRenderer.PipelineCacheResourceManager->DoesCacheExist(pipelineCacheAvailable);
 
-	pipelineCaches.Initialize(7/*TODO: should be dynamic by threads*/, GetPersistentAllocator());
+	pipelineCaches.Initialize(BE::Application::Get()->GetNumberOfThreads(), GetPersistentAllocator());
 	
 	if(pipelineCacheAvailable)
 	{
@@ -168,7 +168,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		pipelineCacheCreateInfo.ExternallySync = false;
 		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
 
-		for(uint8 i = 0; i < 7; ++i)
+		for(uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
 		{
 			if constexpr (_DEBUG)
 			{
@@ -187,7 +187,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
 		pipelineCacheCreateInfo.ExternallySync = false;
 		
-		for (uint8 i = 0; i < 7; ++i)
+		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
 		{
 			if constexpr (_DEBUG)
 			{
@@ -201,6 +201,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	
 	BE_LOG_MESSAGE("Initialized successfully");
 }
+
+const PipelineCache* RenderSystem::GetPipelineCache() const { return &pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
 void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 {
@@ -268,9 +270,9 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 	
 	RenderContext::GetTextureViewsInfo getTextureViewsInfo;
 	getTextureViewsInfo.RenderDevice = &renderDevice;
-	GTSL::Array<TextureView::CreateInfo, 3> textureViewCreateInfos(GetFrameCount());
+	GTSL::Array<TextureView::CreateInfo, MAX_CONCURRENT_FRAMES> textureViewCreateInfos(MAX_CONCURRENT_FRAMES);
 	{
-		for (uint8 i = 0; i < GetFrameCount(); ++i)
+		for (uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 		{
 			textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
 			if constexpr (_DEBUG)
@@ -302,7 +304,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	}
 
 	{
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE }/*, { "MaterialSystem", AccessType::READ_WRITE }*/ };
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderSetup>(this), actsOn, "RenderStart", "FrameEnd");
 	}
 

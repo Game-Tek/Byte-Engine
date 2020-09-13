@@ -37,6 +37,8 @@ namespace BE
 	{
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 2);
+
+		GTSL::Thread::SetThreadId(0);
 		
 		resourceManagers.Initialize(8, systemAllocatorReference);
 		
@@ -79,6 +81,8 @@ namespace BE
 		
 		logger->Shutdown();
 	}
+
+	uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
 	{

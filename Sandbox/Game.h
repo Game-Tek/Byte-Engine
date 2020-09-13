@@ -6,6 +6,7 @@
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Render/MaterialSystem.h"
 
 class Game final : public GameApplication
 {
@@ -18,9 +19,9 @@ class Game final : public GameApplication
 	float32 fov = 45.0f;
 	
 	uint32 camera;
-	System::ComponentReference material;
+	MaterialHandle material;
+	MaterialHandle textMaterial;
 	System::ComponentReference texture;
-	uint32 textMaterial;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

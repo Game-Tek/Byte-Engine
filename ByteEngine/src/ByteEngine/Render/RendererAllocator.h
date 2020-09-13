@@ -99,7 +99,7 @@ public:
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
-	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, RenderAllocation* renderAllocation, void** data, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
 	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
 		const auto alloc = AllocID(allocation.AllocationId);

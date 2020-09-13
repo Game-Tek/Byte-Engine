@@ -131,7 +131,6 @@
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
     <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
-    <ClInclude Include="src\ByteEngine\Render\TextureSystem.h" />
     <ClInclude Include="src\ByteEngine\Id.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
@@ -176,7 +175,6 @@
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Object.cpp" />
     <ClCompile Include="src\ByteEngine\Render\MaterialSystem.cpp" />
-    <ClCompile Include="src\ByteEngine\Render\TextureSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />

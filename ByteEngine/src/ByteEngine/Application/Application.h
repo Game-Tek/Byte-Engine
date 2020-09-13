@@ -47,6 +47,7 @@ namespace BE
 		virtual void Initialize() = 0;
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
+		uint8 GetNumberOfThreads();
 
 		enum class UpdateContext : uint8
 		{

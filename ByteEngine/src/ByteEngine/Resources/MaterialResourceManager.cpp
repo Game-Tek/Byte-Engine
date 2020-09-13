@@ -104,29 +104,15 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.DepthWrite = materialCreateInfo.DepthWrite;
 		materialInfo.CullMode = materialCreateInfo.CullMode;
 		materialInfo.StencilTest = materialCreateInfo.StencilTest;
+		materialInfo.BlendEnable = materialCreateInfo.BlendEnable;
 
 		materialInfo.Front = materialCreateInfo.Front;
 		materialInfo.Back = materialCreateInfo.Back;
-		
-		for(uint32 i = 0; i < materialCreateInfo.Bindings.ElementCount(); ++i)
-		{
-			materialInfo.BindingSets.EmplaceBack();
-			
-			for(uint32 j = 0; j < materialCreateInfo.Bindings[i].ElementCount(); ++j)
-			{
-				materialInfo.BindingSets[i].EmplaceBack(materialCreateInfo.Bindings[i][j]);
-			}
-		}
 
-		for(uint32 i = 0; i < materialCreateInfo.Uniforms.ElementCount(); ++i)
-		{
-			materialInfo.Uniforms.EmplaceBack();
-			
-			for(uint32 j = 0; j < materialCreateInfo.Uniforms[i].ElementCount(); ++j)
-			{
-				materialInfo.Uniforms[i].EmplaceBack(materialCreateInfo.Uniforms[i][j]);
-			}
-		}
+		materialInfo.MaterialParameters = materialCreateInfo.MaterialParameters;
+		materialInfo.PerInstanceParameters = materialCreateInfo.PerInstanceParameters;
+		
+		materialInfo.BindingSets = materialCreateInfo.Bindings;
 		
 		materialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
@@ -172,60 +158,36 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	
 	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
 	onMaterialLoadInfo.SubPass = materialInfo.SubPass;
+
+	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
+	onMaterialLoadInfo.PerInstanceParameters = materialInfo.PerInstanceParameters;
 	
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
 	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
 	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
 	onMaterialLoadInfo.StencilTest = materialInfo.StencilTest;
 	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
+	onMaterialLoadInfo.BlendEnable = materialInfo.BlendEnable;
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
 	
-	for (uint32 i = 0; i < materialInfo.BindingSets.GetLength(); ++i)
-	{
-		onMaterialLoadInfo.BindingSets.EmplaceBack();
-		
-		for (uint32 j = 0; j < materialInfo.BindingSets[i].GetLength(); ++j)
-		{
-			onMaterialLoadInfo.BindingSets[i].EmplaceBack(materialInfo.BindingSets[i][j]);
-		}
-	}
-
-	for (uint32 i = 0; i < materialInfo.Uniforms.GetLength(); ++i)
-	{
-		onMaterialLoadInfo.Uniforms.EmplaceBack();
-		
-		for (uint32 j = 0; j < materialInfo.Uniforms[i].GetLength(); ++j)
-		{
-			onMaterialLoadInfo.Uniforms[i].EmplaceBack(materialInfo.Uniforms[i][j]);
-		}
-	}
+	onMaterialLoadInfo.BindingSets = materialInfo.BindingSets;
 	
 	onMaterialLoadInfo.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
 	
 	loadInfo.GameInstance->AddDynamicTask("loadMaterial", loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
 }
 
-void Insert(const MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
+void Insert(const MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)
 {
 	Insert(materialInfo.Type, buffer);
 	Insert(materialInfo.Stage, buffer);
 }
 
-void Extract(MaterialResourceManager::MaterialInfo::Binding& materialInfo, GTSL::Buffer& buffer)
+void Extract(MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)
 {
 	Extract(materialInfo.Type, buffer);
 	Extract(materialInfo.Stage, buffer);
-}
-
-void Insert(const MaterialResourceManager::MaterialInfo::Uniform& materialInfo, GTSL::Buffer& buffer)
-{
-	Insert(materialInfo.Name, buffer); Insert(materialInfo.Type, buffer);
-}
-
-void Extract(MaterialResourceManager::MaterialInfo::Uniform& materialInfo, GTSL::Buffer& buffer)
-{
-	Extract(reinterpret_cast<uint64&>(materialInfo.Name), buffer); Extract(materialInfo.Type, buffer);
 }
 
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
@@ -238,7 +200,6 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
-	Insert(materialInfo.Uniforms, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
 	
 	Insert(materialInfo.DepthTest, buffer);
@@ -246,6 +207,10 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.StencilTest, buffer);
 	Insert(materialInfo.CullMode, buffer);
 	Insert(materialInfo.ColorBlendOperation, buffer);
+	Insert(materialInfo.BlendEnable, buffer);
+
+	Insert(materialInfo.MaterialParameters, buffer);
+	Insert(materialInfo.PerInstanceParameters, buffer);
 
 	Insert(materialInfo.Front, buffer);
 	Insert(materialInfo.Back, buffer);
@@ -254,14 +219,13 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
 	Extract(materialInfo.MaterialOffset, buffer);
-	Extract(reinterpret_cast<uint64&>(materialInfo.RenderGroup), buffer);
-	Extract(reinterpret_cast<uint64&>(materialInfo.RenderPass), buffer);
-	Extract(reinterpret_cast<uint64&>(materialInfo.SubPass), buffer);
+	Extract(materialInfo.RenderGroup, buffer);
+	Extract(materialInfo.RenderPass, buffer);
+	Extract(materialInfo.SubPass, buffer);
 	
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
 	Extract(materialInfo.BindingSets, buffer);
-	Extract(materialInfo.Uniforms, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);
 
 	Extract(materialInfo.DepthTest, buffer);
@@ -269,7 +233,11 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.StencilTest, buffer);
 	Extract(materialInfo.CullMode, buffer);
 	Extract(materialInfo.ColorBlendOperation, buffer);
+	Extract(materialInfo.BlendEnable, buffer);
 
+	Extract(materialInfo.MaterialParameters, buffer);
+	Extract(materialInfo.PerInstanceParameters, buffer);
+	
 	Extract(materialInfo.Front, buffer);
 	Extract(materialInfo.Back, buffer);
 }

@@ -65,8 +65,8 @@ public:
 		GAL::CullMode CullMode;
 		GTSL::Id64 RenderPass;
 
-
-		GTSL::Array<Binding, 8> MaterialParameters;
+		GTSL::Array<Uniform, 8> MaterialParameters;
+		GTSL::Array<GTSL::Id64, 8> Textures;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
 		
 		GTSL::Array<Binding, 6> BindingSets;
@@ -89,8 +89,10 @@ public:
 		GTSL::Id64 SubPass;
 		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
 
-		GTSL::Array<Binding, 8> MaterialParameters;
+		GTSL::Array<Uniform, 8> MaterialParameters;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
+
+		GTSL::Array<GTSL::Id64, 8> Textures;
 		
 		GTSL::Ranger<const Binding> Bindings;
 		GTSL::Ranger<const GAL::ShaderType> ShaderTypes;
@@ -112,11 +114,12 @@ public:
 	{
 		GTSL::Id64 RenderGroup;
 		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
-		GTSL::Array<Binding, 8> MaterialParameters;
+		GTSL::Array<Uniform, 8> MaterialParameters;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
 
 		GTSL::Array<Binding, 6> BindingSets;
 		GTSL::Array<Uniform, 6> Uniforms;
+		GTSL::Array<GTSL::Id64, 8> Textures;
 		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
 		GTSL::Array<uint32, 20> ShaderSizes;
 		bool DepthWrite;

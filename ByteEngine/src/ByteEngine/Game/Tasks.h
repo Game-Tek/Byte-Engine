@@ -144,6 +144,15 @@ struct Goal
 	}
 
 	bool DoesTaskExist(const Id id) const { return taskNames.Find(id) != taskNames.end(); }
+	
+	void Pop(const uint32 from, const uint32 range)
+	{
+		taskAccessedObjects.Pop(from, range);
+		taskAccessTypes.Pop(from, range);
+		taskGoalIndex.Pop(from, range);
+		taskNames.Pop(from, range);
+		tasks.Pop(from, range);
+	}
 
 private:
 	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;

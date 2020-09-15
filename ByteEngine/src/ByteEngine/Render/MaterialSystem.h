@@ -46,23 +46,36 @@ public:
 		uint16 TextureIndices[8];
 		uint8 Parameters[32];
 	};
+
+	struct BindingsSetData
+	{
+		BindingsSetLayout BindingsSetLayout;
+		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
+		uint32 DataSize = 0;
+	};
 	
 	struct MaterialInstance
 	{
-		BindingsSetLayout BindingsSetLayout;
-		RasterizationPipeline Pipeline;
-		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
-		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+		RasterizationPipeline Pipeline;
+		
+		BindingsPool BindingsPool;
+
+		BindingsSetData TextureParametersBindings;
 
 		Buffer Buffer;
 		HostRenderAllocation Allocation;
 
-		uint32 DataSize = 0;
 		
 		GTSL::StaticMap<uint16, 16> DynamicParameters;
 		GTSL::StaticMap<uint16, 16> Parameters;
 		BindingType BindingType;
+
+		
+		/**
+		 * \brief ABSOLUTE offset to texture index.
+		 */
+		GTSL::StaticMap<uint16, 16> Textures;
 
 		MaterialInstance() = default;
 	};
@@ -74,7 +87,7 @@ public:
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
 		PipelineLayout PipelineLayout;
-		GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> BindingsSets;
+		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
 		
 		Buffer Buffer;
 		HostRenderAllocation Allocation;
@@ -91,20 +104,12 @@ public:
 		MaterialResourceManager* MaterialResourceManager = nullptr;
 		GameInstance* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
+		TextureResourceManager* TextureResourceManager;
 	};
 	MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
 
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
-
-	struct CreateTextureInfo
-	{
-		Id TextureName;
-		GameInstance* GameInstance = nullptr;
-		RenderSystem* RenderSystem = nullptr;
-		TextureResourceManager* TextureResourceManager = nullptr;
-	};
-	ComponentReference CreateTexture(const CreateTextureInfo& createTextureInfo);
 
 	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Allocation.Data; }
 	
@@ -117,7 +122,7 @@ public:
 	void UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo);
 	
 	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
-	GTSL::Array<BindingsSet, MAX_CONCURRENT_FRAMES> globalBindingsSets;
+	BindingsSet globalBindingsSets[MAX_CONCURRENT_FRAMES];
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 
@@ -126,6 +131,16 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
+	struct CreateTextureInfo
+	{
+		Id TextureName;
+		GameInstance* GameInstance = nullptr;
+		RenderSystem* RenderSystem = nullptr;
+		TextureResourceManager* TextureResourceManager = nullptr;
+		MaterialHandle MaterialHandle;
+	};
+	ComponentReference createTexture(const CreateTextureInfo& createTextureInfo);
+	
 	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isRenderGroupReady;
 	GTSL::KeepVector<uint8, BE::PersistentAllocatorReference> isMaterialReady;
 
@@ -158,7 +173,7 @@ private:
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
 	GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference> materials;
-
+	
 	struct TextureLoadInfo
 	{
 		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, HostRenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
@@ -180,10 +195,11 @@ private:
 		RenderAllocation Allocation;
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
+	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
 	
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 index) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 index, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), TextureResourceManager(tRM)
 		{
 
 		}
@@ -191,6 +207,7 @@ private:
 		RenderSystem* RenderSystem = nullptr;
 		GTSL::Buffer Buffer;
 		uint32 Component;
+		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
 

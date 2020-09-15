@@ -110,6 +110,7 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.Back = materialCreateInfo.Back;
 
 		materialInfo.MaterialParameters = materialCreateInfo.MaterialParameters;
+		materialInfo.Textures = materialCreateInfo.Textures;
 		materialInfo.PerInstanceParameters = materialCreateInfo.PerInstanceParameters;
 		
 		materialInfo.BindingSets = materialCreateInfo.Bindings;
@@ -160,6 +161,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.SubPass = materialInfo.SubPass;
 
 	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
+	onMaterialLoadInfo.Textures = materialInfo.Textures;
 	onMaterialLoadInfo.PerInstanceParameters = materialInfo.PerInstanceParameters;
 	
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
@@ -190,6 +192,18 @@ void Extract(MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffe
 	Extract(materialInfo.Stage, buffer);
 }
 
+void Insert(const MaterialResourceManager::Uniform& materialInfo, GTSL::Buffer& buffer)
+{
+	Insert(materialInfo.Name, buffer);
+	Insert(materialInfo.Type, buffer);
+}
+
+void Extract(MaterialResourceManager::Uniform& materialInfo, GTSL::Buffer& buffer)
+{
+	Extract(materialInfo.Name, buffer);
+	Extract(materialInfo.Type, buffer);
+}
+
 void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& buffer)
 {
 	Insert(materialInfo.MaterialOffset, buffer);
@@ -201,6 +215,8 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.VertexElements, buffer);
 	Insert(materialInfo.BindingSets, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
+	
+	Insert(materialInfo.Textures, buffer);
 	
 	Insert(materialInfo.DepthTest, buffer);
 	Insert(materialInfo.DepthWrite, buffer);
@@ -228,6 +244,8 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.BindingSets, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);
 
+	Extract(materialInfo.Textures, buffer);
+	
 	Extract(materialInfo.DepthTest, buffer);
 	Extract(materialInfo.DepthWrite, buffer);
 	Extract(materialInfo.StencilTest, buffer);

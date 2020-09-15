@@ -11,7 +11,6 @@
 
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/TextSystem.h"
-#include "ByteEngine/Render/TextureSystem.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
@@ -105,8 +104,6 @@ void GameApplication::PostInitialize()
 	}
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
-
-	gameInstance->AddSystem<TextureSystem>("TextureSystem");
 
 	auto* textSystem = gameInstance->AddSystem<TextSystem>("TextSystem");
 	

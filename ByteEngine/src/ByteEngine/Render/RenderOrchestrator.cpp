@@ -68,10 +68,9 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 								auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
 								auto& materialInstance = materialInstances[i.Material.MaterialInstance];
 
-								if (materialInstance.BindingsSets.GetLength())
+								if (materialInstance.TextureParametersBindings.DataSize)
 								{
-									auto materialOffsets = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
-									renderInfo.BindingsManager->AddBinding(materialInstance.BindingsSets[renderInfo.CurrentFrame], materialOffsets, PipelineType::RASTER, materialInstance.PipelineLayout);
+									renderInfo.BindingsManager->AddBinding(materialInstance.TextureParametersBindings.BindingsSets[renderInfo.CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
 								}
 								
 								CommandBuffer::BindPipelineInfo bindPipelineInfo;
@@ -97,7 +96,7 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 								drawIndexedInfo.IndexCount = i.IndicesCount;
 								renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
 
-								if (materialInstance.BindingsSets.GetLength())
+								if (materialInstance.TextureParametersBindings.DataSize)
 								{
 									renderInfo.BindingsManager->PopBindings(); //material
 								}
@@ -186,7 +185,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 		
 		if (textSystem->GetTexts().ElementCount())
 		{
-			int32 atlasIndex = textSystem->GetAtlasTextureIndex();
+			int32 atlasIndex = 0;
 			
 			auto& text = textSystem->GetTexts()[0];
 			auto& imageFont = textSystem->GetFont();

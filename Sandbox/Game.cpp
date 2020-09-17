@@ -112,23 +112,23 @@ void Game::Initialize()
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	//}
 
-	//{
-	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.ShaderName = "BoxMat";
-	//	materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
-	//	materialCreateInfo.RenderPass = "MainRenderPass";
-	//	materialCreateInfo.SubPass = "Scene";
-	//	GTSL::Array<GAL::ShaderDataType, 8> format;
-	//	materialCreateInfo.VertexFormat = format;
-	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	//	materialCreateInfo.DepthWrite = false;
-	//	materialCreateInfo.DepthTest = false;
-	//	materialCreateInfo.StencilTest = false;
-	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
-	//	materialCreateInfo.BlendEnable = false;
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
-	//}
+	{
+		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.ShaderName = "BoxMat";
+		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		materialCreateInfo.RenderPass = "MainRenderPass";
+		materialCreateInfo.SubPass = "Scene";
+		GTSL::Array<GAL::ShaderDataType, 8> format; format.EmplaceBack(GAL::ShaderDataType::FLOAT3); format.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+		materialCreateInfo.DepthWrite = true;
+		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.StencilTest = false;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+		materialCreateInfo.BlendEnable = false;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	}
 	
 	//show loading screen
 	//load menu
@@ -145,17 +145,6 @@ void Game::PostInitialize()
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-
-	{
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "hydrant";
-		addStaticMeshInfo.Material = material;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	}
 
 	//{
 	//	TextureSystem::CreateTextureInfo createTextureInfo;
@@ -175,6 +164,38 @@ void Game::PostInitialize()
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
 		material = material_system->CreateMaterial(createMaterialInfo);
+	}
+
+	{
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "hydrant";
+		addStaticMeshInfo.Material = material;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+	}
+	
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "BoxMat";
+		boxMaterial = material_system->CreateMaterial(createMaterialInfo);
+	}
+
+	{
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "Box";
+		addStaticMeshInfo.Material = boxMaterial;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
 	
 	//{

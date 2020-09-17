@@ -177,7 +177,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	
 	onMaterialLoadInfo.VertexElements = GTSL::Ranger<GAL::ShaderDataType>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
 	
-	loadInfo.GameInstance->AddDynamicTask("loadMaterial", loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
+	loadInfo.GameInstance->AddAsyncTask(loadInfo.OnMaterialLoad, GTSL::MoveRef(onMaterialLoadInfo));
 }
 
 void Insert(const MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)

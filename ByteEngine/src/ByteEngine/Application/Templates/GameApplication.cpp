@@ -97,9 +97,9 @@ void GameApplication::PostInitialize()
 		addRenderGroupInfo.Bindings.EmplaceBack();
 		addRenderGroupInfo.Bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
 		addRenderGroupInfo.Range.EmplaceBack();
-		addRenderGroupInfo.Range[0].EmplaceBack(64);
+		addRenderGroupInfo.Range[0].EmplaceBack(64); //how much is read every draw call
 		addRenderGroupInfo.Size.EmplaceBack();
-		addRenderGroupInfo.Size.back().EmplaceBack(128);
+		addRenderGroupInfo.Size.back().EmplaceBack(256);
 		materialSystem->AddRenderGroup(gameInstance, addRenderGroupInfo);
 	}
 

@@ -16,7 +16,7 @@ void FrameManager::AddAttachment(RenderSystem* renderSystem, const Id name, Text
 	}
 	else
 	{
-		attachment.ClearValue = GTSL::RGBA(0, 0, 0, 0);
+		attachment.ClearValue = GTSL::RGBA(0.5, 0.5, 0.5, 0);
 	}
 	
 	attachments.Emplace(name, attachment);

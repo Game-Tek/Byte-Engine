@@ -13,7 +13,8 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
-	meshes.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator()),
+	meshes.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+	meshesRefTable.Initialize(32, GetPersistentAllocator());
 	renderAllocations.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
@@ -23,17 +24,13 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	RenderSystem* render_system = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	GTSL::ForEach(meshes, [&](GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference>& meshList)
+	GTSL::ForEach(meshes, [&](Mesh& mesh)
 	{
-		GTSL::ForEach(meshList, [&](Mesh& mesh)
-			{
-				mesh.Buffer.Destroy(render_system->GetRenderDevice());
-			}
-		);
+		mesh.Buffer.Destroy(render_system->GetRenderDevice());
 	}
 	);
 	
-	for (auto& e : renderAllocations) { render_system->DeallocateLocalBufferMemory(e); }
+	GTSL::ForEach(renderAllocations, [&](RenderAllocation& alloc) { render_system->DeallocateLocalBufferMemory(alloc); });
 }
 
 ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
@@ -60,6 +57,20 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	memoryAllocationInfo.Buffer = scratch_buffer;
 	memoryAllocationInfo.Allocation = &allocation;
 	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
+
+	uint32 index = positions.GetFirstFreeIndex().Get();
+	
+	if (meshesRefTable.Find(addStaticMeshInfo.Material.MaterialType))
+	{
+		auto& meshList = meshesRefTable.At(addStaticMeshInfo.Material.MaterialType);
+		meshList.EmplaceBack(index);
+	}
+	else
+	{
+		auto& meshList = meshesRefTable.Emplace(addStaticMeshInfo.Material.MaterialType);
+		meshList.Initialize(8, GetPersistentAllocator());
+		meshList.EmplaceBack(index);
+	}
 	
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index, addStaticMeshInfo.Material);
 
@@ -76,69 +87,66 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
-	positions.EmplaceBack();
+	positions.EmplaceAt(index);
+
+	++meshCount;
 	
-	return index++;
+	return index;
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
-	MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
-
-	RenderAllocation allocation;
-
-	Buffer::CreateInfo createInfo;
-	createInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-	if constexpr (_DEBUG)
+	auto loadStaticMesh = [](TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad, StaticMeshRenderGroup* staticMeshRenderGroup)
 	{
-		GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += onStaticMeshLoad.ResourceName;
-		createInfo.Name = name.begin();
-	}
-	
-	createInfo.Size = onStaticMeshLoad.DataBuffer.Bytes();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
-	Buffer deviceBuffer(createInfo);
+		MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
-	{
-		RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
-		memoryAllocationInfo.Allocation = &allocation;
-		memoryAllocationInfo.Buffer = deviceBuffer;
-		loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
-	}
-	
-	RenderSystem::BufferCopyData buffer_copy_data;
-	buffer_copy_data.SourceOffset = 0;
-	buffer_copy_data.DestinationOffset = 0;
-	buffer_copy_data.SourceBuffer = loadInfo->ScratchBuffer;
-	buffer_copy_data.DestinationBuffer = deviceBuffer;
-	buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
-	buffer_copy_data.Allocation = loadInfo->Allocation;
-	loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
+		RenderAllocation allocation;
 
-	{
-		Mesh mesh;
-		mesh.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
-		mesh.IndicesCount = onStaticMeshLoad.IndexCount;
-		mesh.IndicesOffset = onStaticMeshLoad.IndicesOffset;
-		mesh.Buffer = deviceBuffer;
-		mesh.Material = loadInfo->Material;
+		Buffer::CreateInfo createInfo;
+		createInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 
-		if (meshes.Find(loadInfo->Material.MaterialType))
+		if constexpr (_DEBUG)
 		{
-			auto& meshList = meshes.At(loadInfo->Material.MaterialType);
-			meshList.Initialize(6, GetPersistentAllocator());
-			meshList.EmplaceAt(loadInfo->InstanceId, mesh);
+			GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += onStaticMeshLoad.ResourceName;
+			createInfo.Name = name.begin();
 		}
-		else
-		{
-			auto& meshList = meshes.Emplace(loadInfo->Material.MaterialType);
-			meshList.Initialize(6, GetPersistentAllocator());
-			meshList.EmplaceAt(loadInfo->InstanceId, mesh);
-		}
-	}
-	
-	renderAllocations.Insert(loadInfo->InstanceId, loadInfo->Allocation);
 
-	GTSL::Delete(loadInfo, GetPersistentAllocator());
+		createInfo.Size = onStaticMeshLoad.DataBuffer.Bytes();
+		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
+		Buffer deviceBuffer(createInfo);
+
+		{
+			RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
+			memoryAllocationInfo.Allocation = &allocation;
+			memoryAllocationInfo.Buffer = deviceBuffer;
+			loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
+		}
+
+		RenderSystem::BufferCopyData buffer_copy_data;
+		buffer_copy_data.SourceOffset = 0;
+		buffer_copy_data.DestinationOffset = 0;
+		buffer_copy_data.SourceBuffer = loadInfo->ScratchBuffer;
+		buffer_copy_data.DestinationBuffer = deviceBuffer;
+		buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
+		buffer_copy_data.Allocation = loadInfo->Allocation;
+		loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
+
+		{
+			Mesh mesh;
+			mesh.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+			mesh.IndicesCount = onStaticMeshLoad.IndexCount;
+			mesh.IndicesOffset = onStaticMeshLoad.IndicesOffset;
+			mesh.Buffer = deviceBuffer;
+			mesh.Material = loadInfo->Material;
+
+			staticMeshRenderGroup->meshes.EmplaceAt(loadInfo->InstanceId, mesh);
+		}
+
+		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);
+
+		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
+	};
+
+	taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*)>::Create(loadStaticMesh),
+		GTSL::Array<TaskDependency, 2>{ {"StaticMeshRenderGroup", AccessType::READ_WRITE} }, GTSL::MoveRef(onStaticMeshLoad), this);
 }

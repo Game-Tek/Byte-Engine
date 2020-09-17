@@ -53,7 +53,6 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 	{
 		SetTextColorOnLogLevel(verbosityLevel);
 		printf(string.begin());
-		printf("\n");
 	}
 
 	logMutex.Lock();

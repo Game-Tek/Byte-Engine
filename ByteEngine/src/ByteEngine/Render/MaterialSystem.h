@@ -187,6 +187,8 @@ private:
 	};
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
 	
+	void onTextureProcessed(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
+	
 	struct TextureComponent
 	{
 		Texture Texture;

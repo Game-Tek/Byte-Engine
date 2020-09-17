@@ -14,7 +14,6 @@ class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
-	renderGroups.Initialize(16, GetPersistentAllocator());
 	apiAllocations.Initialize(16, GetPersistentAllocator());
 
 	{		
@@ -43,6 +42,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	swapchainPresentMode = PresentMode::FIFO;
 	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
 	swapchainFormat = TextureFormat::BGRA_I8;
+
+	processedBufferCopies.Resize(MAX_CONCURRENT_FRAMES);
+	processedTextureCopies.Resize(MAX_CONCURRENT_FRAMES);
 	
 	Surface::CreateInfo surfaceCreateInfo;
 	surfaceCreateInfo.RenderDevice = &renderDevice;
@@ -453,8 +455,8 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 			DeallocateScratchBufferMemory(textureCopyData[i].Allocation);
 		}
 		
-		bufferCopyData.ResizeDown(0);
-		textureCopyData.ResizeDown(0);
+		bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
+		textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
 
 		Fence::ResetFencesInfo reset_fences_info;
 		reset_fences_info.RenderDevice = &renderDevice;
@@ -472,17 +474,23 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	beginRecordingInfo.RenderDevice = &renderDevice;
 	beginRecordingInfo.PrimaryCommandBuffer = &transferCommandBuffers[currentFrameIndex];
 	transferCommandBuffers[currentFrameIndex].BeginRecording(beginRecordingInfo);
-	
-	for(auto& e : bufferCopyDatas[currentFrameIndex])
+
 	{
-		CommandBuffer::CopyBuffersInfo copy_buffers_info;
-		copy_buffers_info.RenderDevice = &renderDevice;
-		copy_buffers_info.Destination = &e.DestinationBuffer;
-		copy_buffers_info.DestinationOffset = e.DestinationOffset;
-		copy_buffers_info.Source = &e.SourceBuffer;
-		copy_buffers_info.SourceOffset = e.SourceOffset;
-		copy_buffers_info.Size = e.Size;
-		GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
+		auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
+		
+		for (auto& e : bufferCopyData)
+		{
+			CommandBuffer::CopyBuffersInfo copy_buffers_info;
+			copy_buffers_info.RenderDevice = &renderDevice;
+			copy_buffers_info.Destination = &e.DestinationBuffer;
+			copy_buffers_info.DestinationOffset = e.DestinationOffset;
+			copy_buffers_info.Source = &e.SourceBuffer;
+			copy_buffers_info.SourceOffset = e.SourceOffset;
+			copy_buffers_info.Size = e.Size;
+			GetTransferCommandBuffer()->CopyBuffers(copy_buffers_info);
+		}
+
+		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
 	}
 
 	{
@@ -503,7 +511,6 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
-		
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
 		{
 			sourceTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
@@ -543,6 +550,8 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
 		pipelineBarrierInfo.FinalStage = PipelineStage::FRAGMENT_SHADER;
 		GetTransferCommandBuffer()->AddPipelineBarrier(pipelineBarrierInfo);
+
+		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;

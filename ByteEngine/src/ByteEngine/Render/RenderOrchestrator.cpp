@@ -16,31 +16,6 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/CameraSystem.h"
 
-GTSL::Matrix4 PrepareOrthographicProjectionMatrix(float left_plane, float right_plane, float bottom_plane, float top_plane, float near_plane, float far_plane) {
-	GTSL::Matrix4 orthographic_projection_matrix = {
-	  2.0f / (right_plane - left_plane),
-	  0.0f,
-	  0.0f,
-	  0.0f,
-
-	  0.0f,
-	  2.0f / (bottom_plane - top_plane),
-	  0.0f,
-	  0.0f,
-
-	  0.0f,
-	  0.0f,
-	  1.0f / (near_plane - far_plane),
-	  0.0f,
-
-	  -(right_plane + left_plane) / (right_plane - left_plane),
-	  -(bottom_plane + top_plane) / (bottom_plane - top_plane),
-	  near_plane / (near_plane - far_plane),
-	  1.0f
-	};
-	return orthographic_projection_matrix;
-}
-
 struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
@@ -54,74 +29,88 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 			auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
 			auto& renderGroupInstance = renderGroups.At(renderGroupName);
 
-			{
-				auto offset = GTSL::Array<uint32, 1>{ 64u * renderInfo.CurrentFrame };
-				renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
-			}
+			auto meshes = renderGroup->GetMeshes();
 
-			GTSL::ForEach(renderGroup->GetMeshes(), [&](GTSL::KeepVector<StaticMeshRenderGroup::Mesh, BE::PersistentAllocatorReference>& e)
+			GTSL::ForEach(renderGroup->GetMeshesByMaterial(), [&](const GTSL::Vector<uint32, BE::PersistentAllocatorReference>& e)
 				{
-					GTSL::ForEach(e, [&](StaticMeshRenderGroup::Mesh& i)
+					for(auto m : e)
+					{
+						const auto& i = meshes[m];
+					
+						if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
 						{
-							if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
+							auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+							auto& materialInstance = materialInstances[i.Material.MaterialInstance];
+
 							{
-								auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-								auto& materialInstance = materialInstances[i.Material.MaterialInstance];
+								auto offset = GTSL::Array<uint32, 1>{ ((renderGroup->GetMeshCount() * 64) * renderInfo.CurrentFrame) + (m * 64) };
+								renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+							}
+							
+							if (materialInstance.TextureParametersBindings.DataSize)
+							{
+								renderInfo.BindingsManager->AddBinding(materialInstance.TextureParametersBindings.BindingsSets[renderInfo.CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
+							}
+							
+							CommandBuffer::BindPipelineInfo bindPipelineInfo;
+							bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+							bindPipelineInfo.PipelineType = PipelineType::RASTER;
+							bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+							renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
 
-								if (materialInstance.TextureParametersBindings.DataSize)
-								{
-									renderInfo.BindingsManager->AddBinding(materialInstance.TextureParametersBindings.BindingsSets[renderInfo.CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
-								}
-								
-								CommandBuffer::BindPipelineInfo bindPipelineInfo;
-								bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-								bindPipelineInfo.PipelineType = PipelineType::RASTER;
-								bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-								renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+							CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+							bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+							bindVertexInfo.Buffer = &i.Buffer;
+							bindVertexInfo.Offset = 0;
+							renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
+							CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+							bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+							bindIndexBuffer.Buffer = &i.Buffer;
+							bindIndexBuffer.Offset = i.IndicesOffset;
+							bindIndexBuffer.IndexType = i.IndexType;
+							renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
+							CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+							drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+							drawIndexedInfo.InstanceCount = 1;
+							drawIndexedInfo.IndexCount = i.IndicesCount;
+							renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
 
-								CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-								bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-								bindVertexInfo.Buffer = &i.Buffer;
-								bindVertexInfo.Offset = 0;
-								renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
-								CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-								bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-								bindIndexBuffer.Buffer = &i.Buffer;
-								bindIndexBuffer.Offset = i.IndicesOffset;
-								bindIndexBuffer.IndexType = i.IndexType;
-								renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
-								CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-								drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-								drawIndexedInfo.InstanceCount = 1;
-								drawIndexedInfo.IndexCount = i.IndicesCount;
-								renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
-
-								if (materialInstance.TextureParametersBindings.DataSize)
-								{
-									renderInfo.BindingsManager->PopBindings(); //material
-								}
+							if (materialInstance.TextureParametersBindings.DataSize)
+							{
+								renderInfo.BindingsManager->PopBindings(); //material
 							}
 
+							renderInfo.BindingsManager->PopBindings(); //render group
 						}
-					);
+
+					}
 				}
 			);
-			
-			renderInfo.BindingsManager->PopBindings(); //render group
 		}
 	}
 
 	void Setup(const SetupInfo& info) override
 	{
-		uint32 offset = GTSL::Math::PowerOf2RoundUp(sizeof(GTSL::Matrix4), static_cast<uint64>(info.RenderSystem->GetRenderDevice()->GetMinUniformBufferOffset())) * info.RenderSystem->GetCurrentFrame();
 
 		auto* data = info.MaterialSystem->GetRenderGroupDataPointer("StaticMeshRenderGroup");
 		
 		auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 		auto positions = renderGroup->GetPositions();
-		auto pos = GTSL::Math::Translation(positions[0]);
-		pos(2, 3) *= -1.f;
-		*reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(data) + offset) = info.ProjectionMatrix * info.ViewMatrix * pos;
+		
+		uint32 offset = renderGroup->GetMeshCount() * 64 * info.RenderSystem->GetCurrentFrame();
+
+		{
+			uint32 index = 0;
+			
+			for (auto& e : positions)
+			{
+				auto pos = GTSL::Math::Translation(e);
+				pos(2, 3) *= -1.f;
+				*(reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(data) + offset) + index) = info.ProjectionMatrix * info.ViewMatrix * pos;
+				
+				++index;
+			}
+		}
 		
 		MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 		updateInfo.RenderGroup = "StaticMeshRenderGroup";

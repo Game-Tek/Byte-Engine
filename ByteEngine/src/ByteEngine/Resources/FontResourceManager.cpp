@@ -450,7 +450,7 @@ void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
 	onFontLoadInfo.TextureFormat = GAL::TextureFormat::R_I8;
 	onFontLoadInfo.Extent = { font.Extent.Width, font.Extent.Height, 1 };
 	
-	fontLoadInfo.GameInstance->AddDynamicTask("loadFont", fontLoadInfo.OnFontLoadDelegate, fontLoadInfo.ActsOn, GTSL::MoveRef(onFontLoadInfo));
+	fontLoadInfo.GameInstance->AddAsyncTask(fontLoadInfo.OnFontLoadDelegate, GTSL::MoveRef(onFontLoadInfo));
 }
 
 #include <ft2build.h>

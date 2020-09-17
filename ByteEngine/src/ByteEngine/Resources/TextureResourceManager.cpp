@@ -118,7 +118,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	onTextureLoadInfo.LODPercentage = 1.0f;
 	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
 	
-	textureLoadInfo.GameInstance->AddDynamicTask("Texture load", textureLoadInfo.OnTextureLoadInfo, textureLoadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
+	textureLoadInfo.GameInstance->AddAsyncTask(textureLoadInfo.OnTextureLoadInfo, GTSL::MoveRef(onTextureLoadInfo));
 }
 
 void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
@@ -127,7 +127,6 @@ void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer
 	Insert(textureInfo.ImageSize, buffer);
 	Insert(textureInfo.Format, buffer);
 	Insert(textureInfo.Dimensions, buffer);
-	//Insert(static_cast<GTSL::UnderlyingType<GAL::Dimension>>(textureInfo.Dimensions), buffer);
 	Insert(textureInfo.Extent, buffer);
 }
 
@@ -137,6 +136,5 @@ void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buf
 	Extract(textureInfo.ImageSize, buffer);
 	Extract(textureInfo.Format, buffer);
 	Extract(textureInfo.Dimensions, buffer);
-	//Extract(reinterpret_cast<GTSL::UnderlyingType<GAL::Dimension>&>(textureInfo.Dimensions), buffer);
 	Extract(textureInfo.Extent, buffer);
 }

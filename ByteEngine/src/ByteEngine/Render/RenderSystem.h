@@ -152,11 +152,11 @@ private:
 	RenderContext renderContext;
 	
 	GTSL::Extent2D renderArea;
-	
-	GTSL::Vector<GTSL::Id64, BE::PersistentAllocatorReference> renderGroups;
 
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
+	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
+	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 
 	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;

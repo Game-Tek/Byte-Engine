@@ -26,7 +26,7 @@ public:
 	};
 	ComponentReference AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
-	[[nodiscard]] GTSL::Ranger<GTSL::Vector3> GetPositions() const { return positions; }
+	[[nodiscard]] auto GetPositions() const { return positions.GetRange(); }
 	[[nodiscard]] GTSL::Ranger<const GTSL::Id64> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component] = vector3; }
@@ -59,14 +59,19 @@ private:
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
-	uint32 index = 0;
-
-	GTSL::FlatHashMap<GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> meshes;
-	GTSL::Vector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
+	
+	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> meshesRefTable;
+	GTSL::KeepVector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
-	GTSL::Vector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+
+	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
+	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+
+	uint32 meshCount = 0;
 	
 public:
-	GTSL::FlatHashMap<GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>& GetMeshes() { return meshes; }
+	const GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>& GetMeshesByMaterial() { return meshesRefTable; }
+	[[nodiscard]] GTSL::KeepVectorIterator<Mesh> GetMeshes() const { return meshes.begin(); }
+	uint32 GetMeshCount() const { return meshCount; }
 };

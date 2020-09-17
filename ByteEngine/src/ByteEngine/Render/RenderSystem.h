@@ -79,7 +79,7 @@ public:
 		allocationInfo.Buffer.BindToMemory(bindMemoryInfo);
 	}
 	
-	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
+	void DeallocateScratchBufferMemory(const HostRenderAllocation allocation)
 	{
 		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation);
 	}

@@ -461,7 +461,7 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 
 		texturesRefTable.Emplace(info.TextureName, component);
 		
-		auto* loadInfo = GTSL::New<TextureLoadInfo>(GetPersistentAllocator(), component, scratchBuffer, info.RenderSystem, allocation);
+		auto* loadInfo = GTSL::New<TextureLoadInfo>(GetPersistentAllocator(), component, GTSL::MoveRef(scratchBuffer), info.RenderSystem, allocation);
 
 		textureLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(allocation.Data));
 

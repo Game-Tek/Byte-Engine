@@ -100,7 +100,7 @@ public:
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
-	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
+	void DeallocateBuffer(const RenderDevice& renderDevice, const HostRenderAllocation allocation)
 	{
 		const auto alloc = AllocID(allocation.AllocationId);
 		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);

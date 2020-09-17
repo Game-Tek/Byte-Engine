@@ -443,13 +443,13 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	
 	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
-		for(uint32 i = 0; i < bufferCopyData.GetLength(); ++i)
+		for(uint32 i = 0; i < processedBufferCopies[GetCurrentFrame()]; ++i)
 		{
 			bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
 			DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
 		}
 
-		for(uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+		for(uint32 i = 0; i < processedTextureCopies[GetCurrentFrame()]; ++i)
 		{
 			textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
 			DeallocateScratchBufferMemory(textureCopyData[i].Allocation);

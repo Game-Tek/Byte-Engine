@@ -14,8 +14,6 @@
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/TextSystem.h"
 
-#include <GTSL/GVector.hpp>
-
 class TestSystem;
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
@@ -203,38 +201,38 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
 
-	{
-		GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;
-		vec.Initialize(6, systemAllocatorReference);
-
-		vec.EmplaceAt(0, "Hello");
-		vec.EmplaceAt(1, " my name is");
-
-		for(uint32 i = 0; i < vec.GetGroupCount(); ++i)
-		{
-			BE_LOG_MESSAGE("Group ", i)
-			
-			for(uint32 j = 0; j < vec[i].ElementCount; ++j)
-			{
-				auto eg = vec[i].At(j);
-				BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
-			}
-		}
-
-		vec.Clear();
-		vec.EmplaceAt(3, " Sal.");
-		
-		for (uint32 i = 0; i < vec.GetGroupCount(); ++i)
-		{
-			BE_LOG_MESSAGE("Group ", i)
-
-			for (uint32 j = 0; j < vec[i].ElementCount; ++j)
-			{
-				auto eg = vec[i].At(j);
-				BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
-			}
-		}
-	}
+	//{
+	//	GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;
+	//	vec.Initialize(6, systemAllocatorReference);
+	//
+	//	vec.EmplaceAt(0, "Hello");
+	//	vec.EmplaceAt(1, " my name is");
+	//
+	//	for(uint32 i = 0; i < vec.GetGroupCount(); ++i)
+	//	{
+	//		BE_LOG_MESSAGE("Group ", i)
+	//		
+	//		for(uint32 j = 0; j < vec[i].ElementCount; ++j)
+	//		{
+	//			auto eg = vec[i].At(j);
+	//			BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
+	//		}
+	//	}
+	//
+	//	vec.Clear();
+	//	vec.EmplaceAt(3, " Sal.");
+	//	
+	//	for (uint32 i = 0; i < vec.GetGroupCount(); ++i)
+	//	{
+	//		BE_LOG_MESSAGE("Group ", i)
+	//
+	//		for (uint32 j = 0; j < vec[i].ElementCount; ++j)
+	//		{
+	//			auto eg = vec[i].At(j);
+	//			BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
+	//		}
+	//	}
+	//}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;

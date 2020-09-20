@@ -485,11 +485,11 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 	{
 		auto& bindingsUpdate = perFrameBindingsUpdateData[frame].Global;
 		
-		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount())
+		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetGroupCount() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount())
 		{
-			auto length = bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount();
+			auto length = bindingsUpdate.BufferBindingDescriptorsUpdates.GetGroupCount() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount();
 			
-			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(2/*bindings sets*/, GetTransientAllocator());
+			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(4/*bindings sets*/, GetTransientAllocator());
 			{
 				for (uint32 i = 0; i < bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount(); ++i)
 				{
@@ -497,8 +497,20 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 					bindingUpdateInfo.Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
 					bindingUpdateInfo.ArrayElement = bindingsUpdate.TextureBindingDescriptorsUpdates[i].First;
-					bindingUpdateInfo.Count = bindingsUpdate.TextureBindingDescriptorsUpdates[i].ElementCount; //TODO: NOOOO!
+					bindingUpdateInfo.Count = bindingsUpdate.TextureBindingDescriptorsUpdates[i].ElementCount;
 					bindingUpdateInfo.BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates[i].Elements;
+
+					bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
+				}
+
+				for (uint32 i = 0; i < bindingsUpdate.BufferBindingDescriptorsUpdates.GetGroupCount(); ++i)
+				{
+					BindingsSet::BindingUpdateInfo bindingUpdateInfo;
+
+					bindingUpdateInfo.Type = GAL::VulkanBindingType::UNIFORM_BUFFER_DYNAMIC;
+					bindingUpdateInfo.ArrayElement = bindingsUpdate.BufferBindingDescriptorsUpdates[i].First;
+					bindingUpdateInfo.Count = bindingsUpdate.BufferBindingDescriptorsUpdates[i].ElementCount;
+					bindingUpdateInfo.BindingsUpdates = bindingsUpdate.BufferBindingDescriptorsUpdates[i].Elements;
 
 					bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
 				}
@@ -515,7 +527,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 				});
 
 			//bindingsUpdate. += bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength();
-			bindingsUpdate.BufferBindingDescriptorsUpdates.ResizeDown(0);
+			bindingsUpdate.BufferBindingDescriptorsUpdates.Clear();
 			bindingsUpdate.TextureBindingDescriptorsUpdates.Clear();
 			bindingsUpdate.BufferBindingTypes.ResizeDown(0);
 		}

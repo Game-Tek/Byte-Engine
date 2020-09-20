@@ -3,7 +3,7 @@
 #include <GAL/RenderCore.h>
 #include <GTSL/Array.hpp>
 #include <GTSL/Buffer.h>
-#include <GTSL/GVector.hpp>
+#include <GTSL/SparseVector.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/StaticMap.hpp>
 
@@ -149,8 +149,8 @@ private:
 	{
 		struct GlobalUpdates
 		{			
-			GTSL::GVector<BindingsSet::TextureBindingsUpdateInfo, BE::PersistentAllocatorReference> TextureBindingDescriptorsUpdates;
-			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
+			GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PersistentAllocatorReference> TextureBindingDescriptorsUpdates;
+			GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PersistentAllocatorReference> BufferBindingDescriptorsUpdates;
 			Vector<BindingType> BufferBindingTypes;
 		};
 

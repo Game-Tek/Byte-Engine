@@ -162,6 +162,7 @@ private:
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
 	
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
+	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> transferDoneSemaphores;
 	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> graphicsFences;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;

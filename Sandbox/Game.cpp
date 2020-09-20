@@ -14,6 +14,8 @@
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/TextSystem.h"
 
+#include <GTSL/GVector.hpp>
+
 class TestSystem;
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
@@ -114,13 +116,16 @@ void Game::Initialize()
 
 	{
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "BoxMat";
+		materialCreateInfo.ShaderName = "TvMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "MainRenderPass";
 		materialCreateInfo.SubPass = "Scene";
-		GTSL::Array<GAL::ShaderDataType, 8> format; format.EmplaceBack(GAL::ShaderDataType::FLOAT3); format.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+
+		materialCreateInfo.Textures.EmplaceBack("TV_Albedo");
+		
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
 		materialCreateInfo.StencilTest = false;
@@ -183,19 +188,52 @@ void Game::PostInitialize()
 		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		createMaterialInfo.MaterialName = "BoxMat";
-		boxMaterial = material_system->CreateMaterial(createMaterialInfo);
+		createMaterialInfo.MaterialName = "TvMat";
+		tvMat = material_system->CreateMaterial(createMaterialInfo);
 	}
 
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "Box";
-		addStaticMeshInfo.Material = boxMaterial;
+		addStaticMeshInfo.MeshName = "TV";
+		addStaticMeshInfo.Material = tvMat;
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+	}
+
+	{
+		GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;
+		vec.Initialize(6, systemAllocatorReference);
+
+		vec.EmplaceAt(0, "Hello");
+		vec.EmplaceAt(1, " my name is");
+
+		for(uint32 i = 0; i < vec.GetGroupCount(); ++i)
+		{
+			BE_LOG_MESSAGE("Group ", i)
+			
+			for(uint32 j = 0; j < vec[i].ElementCount; ++j)
+			{
+				auto eg = vec[i].At(j);
+				BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
+			}
+		}
+
+		vec.Clear();
+		vec.EmplaceAt(3, " Sal.");
+		
+		for (uint32 i = 0; i < vec.GetGroupCount(); ++i)
+		{
+			BE_LOG_MESSAGE("Group ", i)
+
+			for (uint32 j = 0; j < vec[i].ElementCount; ++j)
+			{
+				auto eg = vec[i].At(j);
+				BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
+			}
+		}
 	}
 	
 	//{
@@ -218,7 +256,7 @@ void Game::PostInitialize()
 	//	auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	//}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

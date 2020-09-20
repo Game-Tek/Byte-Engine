@@ -36,7 +36,7 @@ namespace BE
 	void Application::Initialize()
 	{
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
-		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 2);
+		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 3);
 
 		GTSL::Thread::SetThreadId(0);
 		

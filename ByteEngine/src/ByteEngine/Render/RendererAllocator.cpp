@@ -375,7 +375,7 @@ void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, Dev
 {
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, textureMemoryAlignment);
 
 	for (auto& block : textureMemoryBlocks)
 	{

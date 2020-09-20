@@ -22,7 +22,7 @@ class Game final : public GameApplication
 	MaterialHandle material;
 	MaterialHandle textMaterial;
 	System::ComponentReference texture;
-	MaterialHandle boxMaterial;
+	MaterialHandle tvMat;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

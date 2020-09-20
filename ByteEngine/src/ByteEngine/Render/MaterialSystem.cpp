@@ -420,7 +420,7 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 
 	textureLoadInfo.ActsOn = loadTaskDependencies;
 
-	auto component = textures.GetFirstFreeIndex().Get();
+	auto component = textures.Emplace();
 
 	{
 		Buffer::CreateInfo scratchBufferCreateInfo;
@@ -485,20 +485,23 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 	{
 		auto& bindingsUpdate = perFrameBindingsUpdateData[frame].Global;
 		
-		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength())
+		if (bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount())
 		{
-			auto length = bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength();
+			auto length = bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength() + bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount();
 			
 			Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(2/*bindings sets*/, GetTransientAllocator());
 			{
-				BindingsSet::BindingUpdateInfo bindingUpdateInfo;
+				for (uint32 i = 0; i < bindingsUpdate.TextureBindingDescriptorsUpdates.GetGroupCount(); ++i)
+				{
+					BindingsSet::BindingUpdateInfo bindingUpdateInfo;
 
-				bindingUpdateInfo.Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
-				bindingUpdateInfo.ArrayElement = 0;
-				bindingUpdateInfo.Count = bindingsUpdate.TextureBindingDescriptorsUpdates.GetLength(); //TODO: NOOOO!
-				bindingUpdateInfo.BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates.GetData();
+					bindingUpdateInfo.Type = GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER;
+					bindingUpdateInfo.ArrayElement = bindingsUpdate.TextureBindingDescriptorsUpdates[i].First;
+					bindingUpdateInfo.Count = bindingsUpdate.TextureBindingDescriptorsUpdates[i].ElementCount; //TODO: NOOOO!
+					bindingUpdateInfo.BindingsUpdates = bindingsUpdate.TextureBindingDescriptorsUpdates[i].Elements;
 
-				bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
+					bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
+				}
 			}
 
 			bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
@@ -510,9 +513,10 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 					isMaterialReady[index] = true;
 				});
-			
+
+			//bindingsUpdate. += bindingsUpdate.BufferBindingDescriptorsUpdates.GetLength();
 			bindingsUpdate.BufferBindingDescriptorsUpdates.ResizeDown(0);
-			bindingsUpdate.TextureBindingDescriptorsUpdates.ResizeDown(0);
+			bindingsUpdate.TextureBindingDescriptorsUpdates.Clear();
 			bindingsUpdate.BufferBindingTypes.ResizeDown(0);
 		}
 	}
@@ -837,7 +841,11 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				}
 
 				auto* to = static_cast<byte*>(instance.Allocation.Data);
-				GTSL::MemCopy(4, &textureComp, to + offset);
+
+				for(uint32 frame = 0; frame < MAX_CONCURRENT_FRAMES; ++frame)
+				{
+					GTSL::MemCopy(4, &textureComp, (to + (materialSystem->minUniformBufferOffset * frame)) + offset);
+				}
 
 				offset += 4; //sizeof(uint32)
 			}
@@ -995,7 +1003,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
 	}
 
-	textures.EmplaceAt(loadInfo->Component, textureComponent);
+	textures[loadInfo->Component] = textureComponent;
 
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 
@@ -1007,7 +1015,11 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 	textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
 	for (auto& e : perFrameBindingsUpdateData)
 	{
-		e.Global.TextureBindingDescriptorsUpdates.EmplaceBack(textureBindingsUpdateInfo);
+		e.Global.TextureBindingDescriptorsUpdates.EmplaceAt(loadInfo->Component, textureBindingsUpdateInfo);
+		//if(e.Global.TexturesToUpdateFrom < loadInfo->Component)
+		//{
+		//	e.Global.TexturesToUpdateFrom = loadInfo->Component;
+		//}
 	}
 
 	GTSL::Delete(loadInfo, GetPersistentAllocator());

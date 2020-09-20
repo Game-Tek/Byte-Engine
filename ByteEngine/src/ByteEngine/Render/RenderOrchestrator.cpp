@@ -91,7 +91,6 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 
 	void Setup(const SetupInfo& info) override
 	{
-
 		auto* data = info.MaterialSystem->GetRenderGroupDataPointer("StaticMeshRenderGroup");
 		
 		auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");

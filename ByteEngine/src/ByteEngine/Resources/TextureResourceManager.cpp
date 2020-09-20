@@ -28,7 +28,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
-	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048 * 2, 32, GetTransientAllocator());
+	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
 
 	if (indexFile.ReadFile(file_buffer))
 	{

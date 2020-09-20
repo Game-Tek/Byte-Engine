@@ -3,6 +3,7 @@
 #include <GAL/RenderCore.h>
 #include <GTSL/Array.hpp>
 #include <GTSL/Buffer.h>
+#include <GTSL/GVector.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/StaticMap.hpp>
 
@@ -146,14 +147,22 @@ private:
 
 	struct BindingsUpdateData
 	{
-		struct Updates
+		struct GlobalUpdates
 		{			
-			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
+			GTSL::GVector<BindingsSet::TextureBindingsUpdateInfo, BE::PersistentAllocatorReference> TextureBindingDescriptorsUpdates;
 			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
 			Vector<BindingType> BufferBindingTypes;
 		};
 
-		Updates Global;
+		struct Updates
+		{
+			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
+			uint32 StartWrittenTextures = 0, EndWrittenTextures = 0, StartWrittenBuffers = 0, EndWrittenBuffers = 0;
+			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
+			Vector<BindingType> BufferBindingTypes;
+		};
+
+		GlobalUpdates Global;
 		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> RenderGroups;
 		GTSL::KeepVector<Updates, BE::PersistentAllocatorReference> Materials;
 

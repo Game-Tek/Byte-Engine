@@ -560,7 +560,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			
 		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::FRAGMENT_SHADER;
+		pipelineBarrierInfo.FinalStage = PipelineStage::ALL_COMMANDS;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();

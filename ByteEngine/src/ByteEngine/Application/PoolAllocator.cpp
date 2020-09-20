@@ -5,6 +5,7 @@
 #include <new>
 #include <GTSL/Memory.h>
 
+#include <GTSL/BitTracker.h>
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -23,21 +24,19 @@ PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) :
 	}
 }
 
-PoolAllocator::Pool::Pool(const uint32 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount), slotsCount(MAX_SLOTS_COUNT)
+PoolAllocator::Pool::Pool(const uint32 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference) : SLOTS_SIZE(slotsSize), MAX_SLOTS_COUNT(slotsCount)
 {
 	uint64 pool_allocated_size{ 0 };
 	
 	allocatorReference->Allocate(slotsDataAllocationSize(), slotsDataAllocationAlignment(), reinterpret_cast<void**>(&slotsData), &pool_allocated_size);
 	allocatedSize += pool_allocated_size;
-	allocatorReference->Allocate(freeSlotsStackSize(), freeSlotsStackAlignment(), reinterpret_cast<void**>(&freeSlotsStack), &pool_allocated_size);
+	
+	allocatorReference->Allocate(static_cast<uint64>(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT)), alignof(free_slots_type), reinterpret_cast<void**>(&freeSlotsBitTrack), &pool_allocated_size);
 	allocatedSize += pool_allocated_size;
 
-	BE_DEBUG_ONLY(GTSL::SetMemory(slotsDataAllocationSize(), slotsData));
+	//BE_DEBUG_ONLY(GTSL::SetMemory(slotsDataAllocationSize(), slotsData));
 	
-	for(uint32 i = 0; i < MAX_SLOTS_COUNT; ++i)
-	{
-		freeSlotsStack[i] = i;
-	}
+	GTSL::InitializeBits(freeSlotsBitTrack, MAX_SLOTS_COUNT);
 }
 
 // ALLOCATE //
@@ -56,9 +55,11 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize)
 {
-	BE_ASSERT(slotsCount != 0, "No more free slots remaining!")
-	const uint32 slot = freeSlotsStack[--slotsCount];
-	byte* const slot_address = getSlotAddress(slot);
+	auto slot = GTSL::OccupyFirstFreeSlot(freeSlotsBitTrack, MAX_SLOTS_COUNT);
+
+	BE_ASSERT(slot.State(), "No more free slots!")
+	
+	byte* const slot_address = getSlotAddress(slot.Get());
 	*data = GTSL::AlignPointer(alignment, slot_address);
 	*allocatedSize = (slot_address + SLOTS_SIZE) - static_cast<byte*>(*data);
 
@@ -81,9 +82,7 @@ void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* 
 	BE_ASSERT(memory >= slotsData && memory <= slotsData + slotsDataAllocationSize(), "Allocation does not belong to pool!")
 
 	const auto index = getSlotIndexFromPointer(memory);
-	freeSlotsStack[slotsCount++] = index;
-
-	BE_ASSERT(slotsCount <= MAX_SLOTS_COUNT, "More allocations have been freed than there are slots!")
+	GTSL::SetAsFree(freeSlotsBitTrack, MAX_SLOTS_COUNT, index);
 }
 
 // FREE //
@@ -98,8 +97,11 @@ void PoolAllocator::Free() const
 void PoolAllocator::Pool::Free(uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference) const
 {
 	allocatorReference->Deallocate(slotsDataAllocationSize(), slotsDataAllocationAlignment(), slotsData);
-	allocatorReference->Deallocate(freeSlotsStackSize(), freeSlotsStackAlignment(), freeSlotsStack);
+	allocatorReference->Deallocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), freeSlotsBitTrack);
 
-	freedBytes += slotsDataAllocationSize();
-	freedBytes += freeSlotsStackSize();
+	if constexpr (_DEBUG)
+	{
+		freedBytes += slotsDataAllocationSize();
+		freedBytes += GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT);
+	}
 }

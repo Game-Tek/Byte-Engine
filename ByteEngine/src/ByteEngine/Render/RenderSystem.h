@@ -28,6 +28,7 @@ public:
 	};
 	void AllocateLocalTextureMemory(const AllocateLocalTextureMemoryInfo& allocationInfo)
 	{
+		BE_ASSERT(testMutex.TryLock())
 		DeviceMemory deviceMemory;
 		
 		RenderDevice::MemoryRequirements memoryRequirements;
@@ -42,6 +43,11 @@ public:
 		bindMemoryInfo.Memory = &deviceMemory;
 		bindMemoryInfo.Offset = allocationInfo.Allocation->Offset;
 		allocationInfo.Texture.BindToMemory(bindMemoryInfo);
+		testMutex.Unlock();
+	}
+	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
+	{
+		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
 	struct InitializeRendererInfo
@@ -65,6 +71,7 @@ public:
 	
 	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
 	{
+		BE_ASSERT(testMutex.TryLock())
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetBufferMemoryRequirements(&allocationInfo.Buffer, memoryRequirements);
 		
@@ -77,6 +84,7 @@ public:
 		bindMemoryInfo.Memory = &deviceMemory;
 		bindMemoryInfo.Offset = allocationInfo.Allocation->Offset;
 		allocationInfo.Buffer.BindToMemory(bindMemoryInfo);
+		testMutex.Unlock();
 	}
 	
 	void DeallocateScratchBufferMemory(const HostRenderAllocation allocation)
@@ -86,6 +94,7 @@ public:
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
 	{
+		BE_ASSERT(testMutex.TryLock())
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetBufferMemoryRequirements(&memoryAllocationInfo.Buffer, memoryRequirements);
 
@@ -100,6 +109,7 @@ public:
 		bindMemoryInfo.Memory = &deviceMemory;
 		bindMemoryInfo.Offset = memoryAllocationInfo.Allocation->Offset;
 		memoryAllocationInfo.Buffer.BindToMemory(bindMemoryInfo);
+		testMutex.Unlock();
 	}
 
 	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)
@@ -134,7 +144,12 @@ public:
 		
 		TextureLayout Layout;
 	};
-	void AddTextureCopy(const TextureCopyData& textureCopyData) { textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData); }
+	void AddTextureCopy(const TextureCopyData& textureCopyData)
+	{
+		BE_ASSERT(testMutex.TryLock())
+		textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData);
+		testMutex.Unlock();
+	}
 	
 	const PipelineCache* GetPipelineCache() const;
 
@@ -147,6 +162,8 @@ public:
 	void OnResize(TaskInfo taskInfo, GTSL::Extent2D extent);
 	
 private:
+	GTSL::Mutex testMutex;
+	
 	RenderDevice renderDevice;
 	Surface surface;
 	RenderContext renderContext;

@@ -308,6 +308,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	renderGroups.EmplaceBack("StaticMeshRenderGroup"); renderGroups.EmplaceBack("TextSystem");
 
 	auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
+
+	CommandBuffer::AddLabelInfo addLabelInfo;
+	addLabelInfo.RenderDevice = renderSystem->GetRenderDevice();
+	addLabelInfo.Name = GTSL::StaticString<64>("Graphics");
+	commandBuffer.AddLabel(addLabelInfo);
 	
 	for (uint8 rp = 0; rp < frameManager->GetRenderPassCount(); ++rp)
 	{
@@ -355,7 +360,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
 		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
 		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
-		textureBarriers[0].CurrentLayout = TextureLayout::PRESENTATION;
+		textureBarriers[0].CurrentLayout = TextureLayout::UNDEFINED;
 		textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_DST;
 		textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
 		textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
@@ -386,8 +391,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.TextureBarriers = textureBarriers;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 	}
-
-	renderSystem->Wait();
 	
 	bindingsManager.PopBindings();
 }

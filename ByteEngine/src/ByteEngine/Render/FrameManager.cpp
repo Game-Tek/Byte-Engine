@@ -214,6 +214,15 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 	
 	auto resize = [&](Attachment& attachment) -> void
 	{
+		//TODO: MAYBE HAVE A SETUP FUNCTION SO WE CAN GUARANTEE THERE'S AN ALLOCATION AND CAN JUST DEALLOCATE ALWAYS
+		if (attachment.Allocation.Size)
+		{
+			renderSystem->DeallocateLocalTextureMemory(attachment.Allocation);
+			attachment.Texture.Destroy(renderSystem->GetRenderDevice());
+			attachment.TextureView.Destroy(renderSystem->GetRenderDevice());
+			attachment.TextureSampler.Destroy(renderSystem->GetRenderDevice());
+		}
+		
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { textureCreateInfo.Name = attachment.Name.GetString(); }
@@ -225,7 +234,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		attachment.Texture = Texture(textureCreateInfo);
-
+		
 		RenderSystem::AllocateLocalTextureMemoryInfo allocateLocalTextureMemoryInfo;
 		allocateLocalTextureMemoryInfo.Texture = attachment.Texture;
 		allocateLocalTextureMemoryInfo.Allocation = &attachment.Allocation;
@@ -254,6 +263,11 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 	
 	for(auto& renderPass : renderPasses)
 	{
+		if(renderPass.FrameBuffer.GetVkFramebuffer())
+		{
+			renderPass.FrameBuffer.Destroy(renderSystem->GetRenderDevice());
+		}
+		
 		FrameBuffer::CreateInfo framebufferCreateInfo;
 		framebufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { framebufferCreateInfo.Name = "FrameBuffer"; }

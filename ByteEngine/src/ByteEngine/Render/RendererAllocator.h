@@ -63,6 +63,11 @@ public:
 	}
 
 	void AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
+	void DeallocateTexture(const RenderDevice& renderDevice, const RenderAllocation allocation)
+	{
+		const auto alloc = AllocID(allocation.AllocationId);
+		textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+	}
 
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };

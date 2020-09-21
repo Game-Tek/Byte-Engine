@@ -26,6 +26,16 @@ public:
 	};
 	ComponentReference AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
+	struct AddRayTracedStaticMeshInfo
+	{
+		Id MeshName;
+		RenderSystem* RenderSystem = nullptr;
+		class GameInstance* GameInstance = nullptr;
+		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
+		MaterialHandle Material;
+	};
+	ComponentReference AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo);
+
 	[[nodiscard]] auto GetPositions() const { return positions.GetRange(); }
 	[[nodiscard]] GTSL::Ranger<const GTSL::Id64> GetResourceNames() const { return resourceNames; }
 
@@ -58,6 +68,7 @@ private:
 	};
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
+	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
 	
 	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> meshesRefTable;

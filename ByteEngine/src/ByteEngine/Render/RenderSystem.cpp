@@ -178,7 +178,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		PipelineCache::CreateInfo pipelineCacheCreateInfo;
 		pipelineCacheCreateInfo.RenderDevice = GetRenderDevice();
-		pipelineCacheCreateInfo.ExternallySync = false;
+		pipelineCacheCreateInfo.ExternallySync = true;
 		pipelineCacheCreateInfo.Data = pipelineCacheBuffer;
 
 		for(uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
@@ -251,35 +251,9 @@ void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
 	
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
-	{
-		RenderContext::GetTexturesInfo getTexturesInfo;
-		getTexturesInfo.RenderDevice = GetRenderDevice();
-		swapchainTextures = renderContext.GetTextures(getTexturesInfo);
-
-		textureBarriers.Resize(swapchainTextures.GetLength());
-		
-		for (uint8 i = oldLength; i < swapchainTextures.GetLength(); ++i)
-		{
-			textureBarriers[i].Initialize(32, GetPersistentAllocator());
-		}
-
-		if(textureBarriers[0].GetLength())
-		{
-			textureBarriers[0].ResizeDown(0);
-		}
-		
-		for(uint32 i = 0; i < swapchainTextures.GetLength(); ++i)
-		{
-			CommandBuffer::TextureBarrier textureBarrier;
-			textureBarrier.Texture = swapchainTextures[i];
-			textureBarrier.CurrentLayout = TextureLayout::UNDEFINED;
-			textureBarrier.TargetLayout = TextureLayout::PRESENTATION;
-			textureBarrier.SourceAccessFlags = AccessFlags::TRANSFER_READ;
-			textureBarrier.DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
-
-			textureBarriers[0].EmplaceBack(textureBarrier);
-		}
-	}
+	RenderContext::GetTexturesInfo getTexturesInfo;
+	getTexturesInfo.RenderDevice = GetRenderDevice();
+	swapchainTextures = renderContext.GetTextures(getTexturesInfo);
 	
 	RenderContext::GetTextureViewsInfo getTextureViewsInfo;
 	getTextureViewsInfo.RenderDevice = &renderDevice;
@@ -419,14 +393,14 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	auto imageIndex = renderContext.AcquireNextImage(acquireNextImageInfo);
 
 	//BE_ASSERT(imageIndex == currentFrameIndex, "Data mismatch");
-
+	
 	Queue::SubmitInfo submitInfo;
 	submitInfo.RenderDevice = &renderDevice;
 	submitInfo.Fence = &graphicsFences[currentFrameIndex];
 	submitInfo.WaitSemaphores = GTSL::Array<Semaphore, 2>{ imageAvailableSemaphore[currentFrameIndex], transferDoneSemaphores[GetCurrentFrame()] };
 	submitInfo.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[currentFrameIndex]);
 	submitInfo.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
-	GTSL::Array<uint32, 8> wps{ PipelineStage::COLOR_ATTACHMENT_OUTPUT, PipelineStage::TOP_OF_PIPE };
+	GTSL::Array<uint32, 8> wps{ PipelineStage::COLOR_ATTACHMENT_OUTPUT, PipelineStage::TRANSFER };
 	submitInfo.WaitPipelineStages = wps;
 	graphicsQueue.Submit(submitInfo);
 
@@ -505,17 +479,17 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
 	}
 
-	{
-		if (textureBarriers[currentFrameIndex].GetLength())
-		{
-			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-			pipelineBarrierInfo.RenderDevice = GetRenderDevice();
-			pipelineBarrierInfo.TextureBarriers = textureBarriers[currentFrameIndex];
-			pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
-		}
-	}
+	//{
+	//	if (textureBarriers[currentFrameIndex].GetLength())
+	//	{
+	//		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
+	//		pipelineBarrierInfo.RenderDevice = GetRenderDevice();
+	//		pipelineBarrierInfo.TextureBarriers = textureBarriers[currentFrameIndex];
+	//		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
+	//		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
+	//		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+	//	}
+	//}
 	
 	{
 		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
@@ -576,7 +550,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		submit_info.RenderDevice = &renderDevice;
 		submit_info.Fence = &transferFences[currentFrameIndex];
 		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
-		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{PipelineStage::TRANSFER };
+		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ PipelineStage::TRANSFER };
 		submit_info.SignalSemaphores = GTSL::Array<Semaphore, 1>{ transferDoneSemaphores[GetCurrentFrame()] };
 		transferQueue.Submit(submit_info);
 	//}
@@ -586,9 +560,9 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 {
 	switch (messageSeverity)
 	{
-	case RenderDevice::MessageSeverity::MESSAGE: /*BE_LOG_MESSAGE(message);*/ break;
-	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
-	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
+	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
+	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message) break;
 	default: break;
 	}
 }

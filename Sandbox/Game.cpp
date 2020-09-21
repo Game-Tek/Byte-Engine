@@ -254,7 +254,7 @@ void Game::PostInitialize()
 	//	auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	//}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

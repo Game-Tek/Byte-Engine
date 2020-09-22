@@ -127,7 +127,13 @@ public:
 	BindingsPool globalBindingsPool;
 	PipelineLayout globalPipelineLayout;
 
-	bool IsMaterialReady(const MaterialHandle material) { return isMaterialReady[material.MaterialInstance]; }
+	bool IsMaterialReady(const MaterialHandle material)
+	{
+		if (isMaterialReady.IsSlotOccupied(material.MaterialInstance))
+		{
+			return isMaterialReady[material.MaterialInstance];
+		}
+	}
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);

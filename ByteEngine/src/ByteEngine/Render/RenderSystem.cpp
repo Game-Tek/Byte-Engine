@@ -86,7 +86,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		fence_create_info.IsSignaled = true;
 		graphicsFences.EmplaceBack(fence_create_info);
 		fence_create_info.Name = "TransferFence";
-		fence_create_info.IsSignaled = false;
+		fence_create_info.IsSignaled = true;
 		transferFences.EmplaceBack(fence_create_info);
 
 		{
@@ -292,7 +292,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	{
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
-		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderSetup>(this), actsOn, "RenderStart", "FrameEnd");
+		initializeInfo.GameInstance->AddTask("renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, "RenderStart", "RenderStartSetup");
+		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, "RenderEndSetup", "RenderDo");
 	}
 
 	{
@@ -360,7 +361,7 @@ void RenderSystem::Wait()
 	transferQueue.Wait();
 }
 
-void RenderSystem::renderSetup(TaskInfo taskInfo)
+void RenderSystem::renderStart(TaskInfo taskInfo)
 {
 	Fence::WaitForFencesInfo waitForFencesInfo;
 	waitForFencesInfo.RenderDevice = &renderDevice;
@@ -368,14 +369,17 @@ void RenderSystem::renderSetup(TaskInfo taskInfo)
 	waitForFencesInfo.WaitForAll = true;
 	waitForFencesInfo.Fences = GTSL::Ranger<const Fence>(1, &graphicsFences[currentFrameIndex]);
 	Fence::WaitForFences(waitForFencesInfo);
-	
+
 	Fence::ResetFencesInfo resetFencesInfo;
 	resetFencesInfo.RenderDevice = &renderDevice;
 	resetFencesInfo.Fences = GTSL::Ranger<const Fence>(1, &graphicsFences[currentFrameIndex]);
 	Fence::ResetFences(resetFencesInfo);
 	
 	graphicsCommandPools[currentFrameIndex].ResetPool(&renderDevice);
+}
 
+void RenderSystem::renderBegin(TaskInfo taskInfo)
+{	
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	commandBuffer.BeginRecording({});
@@ -416,17 +420,17 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 
 void RenderSystem::frameStart(TaskInfo taskInfo)
 {
-	//Fence::WaitForFencesInfo wait_for_fences_info;
-	//wait_for_fences_info.RenderDevice = &renderDevice;
-	//wait_for_fences_info.Timeout = ~0ULL;
-	//wait_for_fences_info.WaitForAll = true;
-	//wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
-	//Fence::WaitForFences(wait_for_fences_info);//
+	Fence::WaitForFencesInfo wait_for_fences_info;
+	wait_for_fences_info.RenderDevice = &renderDevice;
+	wait_for_fences_info.Timeout = ~0ULL;
+	wait_for_fences_info.WaitForAll = true;
+	wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
+	Fence::WaitForFences(wait_for_fences_info);
 
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 	
-	if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
+	//if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
 		for(uint32 i = 0; i < processedBufferCopies[GetCurrentFrame()]; ++i)
 		{

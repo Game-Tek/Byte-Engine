@@ -200,7 +200,8 @@ private:
 	TextureFormat swapchainFormat;
 	ColorSpace swapchainColorSpace;
 	
-	void renderSetup(TaskInfo taskInfo);
+	void renderBegin(TaskInfo taskInfo);
+	void renderStart(TaskInfo taskInfo);
 	void renderFinish(TaskInfo taskInfo);
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);

@@ -67,12 +67,17 @@ void GameApplication::Initialize()
 void GameApplication::PostInitialize()
 {	
 	gameInstance->AddGoal("FrameStart");
+	
 	gameInstance->AddGoal("GameplayStart");
 	gameInstance->AddGoal("GameplayEnd");
+	
 	gameInstance->AddGoal("RenderStart");
-	gameInstance->AddGoal("RenderSetup");
+	gameInstance->AddGoal("RenderStartSetup");
+	gameInstance->AddGoal("RenderEndSetup");
+	gameInstance->AddGoal("RenderDo");
 	gameInstance->AddGoal("RenderFinished");
 	gameInstance->AddGoal("RenderEnd");
+	
 	gameInstance->AddGoal("FrameEnd");
 	
 	auto renderer = gameInstance->AddSystem<RenderSystem>("RenderSystem");

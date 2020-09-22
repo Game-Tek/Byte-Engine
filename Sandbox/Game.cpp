@@ -10,6 +10,7 @@
 #include <GTSL/Math/AxisAngle.h>
 
 #include "ByteEngine/Application/Clock.h"
+#include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/TextSystem.h"
@@ -168,7 +169,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialName = "HydrantMat";
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
-
+	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 		addStaticMeshInfo.MeshName = "hydrant";
@@ -252,6 +253,18 @@ void Game::PostInitialize()
 	//	addTextInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	addTextInfo.GameInstance = gameInstance;
 	//	auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
+	//}
+
+	//{
+	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;
+	//	info.Light.R() = 1.00f;
+	//	info.Light.G() = 0.98f;
+	//	info.Light.B() = 0.95f;
+	//	info.Rotation.X = -0.785398f;
+	//	info.Rotation.Y = 0;
+	//	info.Rotation.Z = 0;
+	//
+	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
 	//}
 	
 	//window.ShowMouse(false);//

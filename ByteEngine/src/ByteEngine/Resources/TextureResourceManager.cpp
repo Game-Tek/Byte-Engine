@@ -105,7 +105,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 {
 	auto& texture_info = textureInfos.At(textureLoadInfo.Name);
 
-	indexFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+	packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 	packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
 
 	OnTextureLoadInfo onTextureLoadInfo;

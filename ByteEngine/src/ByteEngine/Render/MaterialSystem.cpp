@@ -25,8 +25,9 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
-		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "FrameStart", "RenderStart");
-		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderStart", "RenderSetup");
+		//BUG this update seems to cause many more errors than the other one, but still every so often corruption happens
+		//initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "FrameStart", "RenderStart");
+		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderStartSetup", "RenderEndSetup");
 	}
 	
 	{
@@ -136,7 +137,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 			{
 				for (uint32 j = 0; j < MAX_CONCURRENT_FRAMES; ++j)
 				{
-					GTSL::StaticString<64> name("BindingsSet. Global state");
+					GTSL::StaticString<64> name("Bindings Set. Global state "); name += j;
 					bindingsSetsCreateInfo[j].RenderDevice = renderSystem->GetRenderDevice();
 					bindingsSetsCreateInfo[j].Name = name.begin();
 				}
@@ -154,7 +155,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Pipeline Layout. Material system global state");
+			GTSL::StaticString<128> name("Pipeline Layout. Global state");
 			pipelineLayout.Name = name.begin();
 		}
 
@@ -877,8 +878,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
 {
 	{
-		GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ } };
-
 		//auto checkConvertImage = [](TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo, MaterialSystem* materialSystem)
 		//{
 		//	auto* loadInfo = DYNAMIC_CAST(TextureLoadInfo, onTextureLoadInfo.UserData);

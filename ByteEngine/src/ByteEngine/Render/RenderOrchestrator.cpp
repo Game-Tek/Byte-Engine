@@ -249,7 +249,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	{
 		const GTSL::Array<TaskDependency, 4> dependencies{ { CLASS_NAME, AccessType::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
+		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
 	}
 
 	renderManagers.Initialize(16, GetPersistentAllocator());
@@ -399,7 +399,7 @@ void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGro
 {
 	systems.EmplaceBack(renderGroupName);
 	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
 	{
@@ -415,7 +415,7 @@ void RenderOrchestrator::AddRenderGroup(GameInstance* gameInstance, Id renderGro
 	dependencies.EmplaceBack("FrameManager", AccessType::READ);
 
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
+	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
 }
 
 void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id renderGroupName)
@@ -426,7 +426,7 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 	systems.Pop(element - systems.begin());
 	systemsAccesses.Pop(element - systems.begin());
 	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderSetup");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
 	{
@@ -442,5 +442,5 @@ void RenderOrchestrator::RemoveRenderGroup(GameInstance* gameInstance, const Id 
 	dependencies.EmplaceBack("FrameManager", AccessType::READ);
 	
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderSetup", "RenderFinished");
+	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
 }

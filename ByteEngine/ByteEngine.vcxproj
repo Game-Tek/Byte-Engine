@@ -193,6 +193,7 @@
   <ItemGroup>
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
     <ClInclude Include="src\ByteEngine\Render\FrameManager.h" />
+    <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Animation\Skeletal Mesh.h" />

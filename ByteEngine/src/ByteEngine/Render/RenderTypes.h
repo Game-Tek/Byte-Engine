@@ -5,14 +5,16 @@
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
 #include <GAL/Vulkan/VulkanBuffer.h>
+#include <GAL/Vulkan/VulkanBindings.h>
 #include <GAL/Vulkan/VulkanPipelines.h>
+#include <GAL/Vulkan/VulkanQueryPool.h>
 #include <GAL/Vulkan/VulkanRenderPass.h>
 #include <GAL/Vulkan/VulkanFramebuffer.h>
 #include <GAL/Vulkan/VulkanRenderDevice.h>
 #include <GAL/Vulkan/VulkanCommandBuffer.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
-#include <GAL/Vulkan/VulkanBindings.h>
+#include <GAL/Vulkan/VulkanAccelerationStructures.h>
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -74,6 +76,7 @@ using Texture = GAL::VulkanTexture;
 using Surface = GAL::VulkanSurface;
 using Pipeline = GAL::VulkanPipeline;
 using Semaphore = GAL::VulkanSemaphore;
+using QueryPool = GAL::VulkanQueryPool;
 using RenderPass = GAL::VulkanRenderPass;
 using TextureSampler = GAL::VulkanSampler;
 using TextureView = GAL::VulkanTextureView;
@@ -87,10 +90,14 @@ using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
 using PipelineLayout = GAL::VulkanPipelineLayout;
+using ComputePipeline = GAL::VulkanComputePipeline;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
+using RayTracingPipeline = GAL::VulkanRayTracingPipeline;
+using AccelerationStructure = GAL::VulkanAccelerationStructure;
 using RasterizationPipeline = GAL::VulkanRasterizationPipeline;
 
 using CullMode = GAL::CullMode;
+using QueryType = GAL::VulkanQueryType;
 using IndexType = GAL::VulkanIndexType;
 using Dimensions = GAL::VulkanDimensions;
 using ColorSpace = GAL::VulkanColorSpace;
@@ -104,13 +111,16 @@ using BindingType = GAL::VulkanBindingType;
 using AccessFlags = GAL::VulkanAccessFlags;
 using TextureType = GAL::VulkanTextureType;
 using PipelineType = GAL::VulkanPipelineType;
+using GeometryType = GAL::VulkanGeometryType;
 using BindingFlags = GAL::VulkanBindingFlags;
+using GeometryFlags = GAL::VulkanGeometryFlags;
 using PipelineStage = GAL::VulkanPipelineStage;
 using TextureFormat = GAL::VulkanTextureFormat;
 using TextureTiling = GAL::VulkanTextureTiling;
 using TextureLayout = GAL::VulkanTextureLayout;
 using ShaderDataType = GAL::VulkanShaderDataType;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
+using AccelerationStructureFlags = GAL::VulkanAccelerationStructureFlags;
 #endif
 
 inline TextureType::value_type ConvertTextureType(const GAL::TextureType type)

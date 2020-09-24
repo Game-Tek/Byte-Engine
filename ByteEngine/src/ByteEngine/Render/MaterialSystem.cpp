@@ -4,6 +4,9 @@
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 
+#include <GTSL/SIMD/SIMD.hpp>
+#include <GAL/Texture.h>
+
 const char* BindingTypeString(const BindingType binding)
 {
 	switch (binding)
@@ -25,7 +28,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
-		//BUG this update seems to cause many more errors than the other one, but still every so often corruption happens
 		//initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "FrameStart", "RenderStart");
 		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderStartSetup", "RenderEndSetup");
 	}
@@ -592,7 +594,7 @@ void MaterialSystem::updateCounter(TaskInfo taskInfo)
 
 void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo)
 {	
-	auto createMaterialInstance = [](TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo, MaterialSystem* materialSystem)
+	auto createMaterialInstance = [this](TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo, MaterialSystem* materialSystem)
 	{		
 		auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
 
@@ -796,23 +798,10 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			pipelineCreateInfo.SurfaceExtent = { 1280, 720 };
 
 			{
-				GTSL::Array<Shader, 10> shaders; uint32 offset = 0;
-				for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
-				{
-					Shader::CreateInfo create_info;
-					create_info.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-					create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
-					shaders.EmplaceBack(create_info);
-					offset += onMaterialLoadInfo.ShaderSizes[i];
-				}
-
-				GTSL::Array<Pipeline::ShaderInfo, 10> shader_infos;
-				for (uint32 i = 0; i < shaders.GetLength(); ++i)
-				{
-					shader_infos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &shaders[i] });
-				}
-
-				pipelineCreateInfo.Stages = shader_infos;
+				GTSL::Array<Shader, 10> shaders; GTSL::Array<Pipeline::ShaderInfo, 16> shaderInfos;
+				genShaderStages(loadInfo->RenderSystem->GetRenderDevice(), shaders, shaderInfos, onMaterialLoadInfo);
+				
+				pipelineCreateInfo.Stages = shaderInfos;
 
 				auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
 
@@ -875,6 +864,69 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		GTSL::Array<TaskDependency, 2>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } }, GTSL::MoveRef(onMaterialLoadInfo), this);
 }
 
+void MaterialSystem::test()
+{
+	MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo{};
+	MaterialLoadInfo* loadInfo = nullptr;
+
+	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+	
+	RayTracingPipeline::CreateInfo createInfo;
+	createInfo.RenderDevice;
+	if constexpr (_DEBUG) { createInfo.Name = "RayTracing Pipeline"; }
+	createInfo.IsInheritable = false;
+
+	//TODO: MOVE TO GLOBAL SETUP
+	{
+		PipelineLayout::CreateInfo pipelineLayoutCreateInfo;
+		pipelineLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+		pipelineLayoutCreateInfo.Name = "RayTracing Pipeline Layout";
+		
+		{
+			GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+
+			bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[0]);
+			
+			pipelineLayoutCreateInfo.BindingsSetLayouts = bindingsSetLayouts;
+
+			rayTracingPipelineLayout.Initialize(pipelineLayoutCreateInfo);
+		}
+	}
+	
+	createInfo.PipelineLayout = &rayTracingPipelineLayout;
+
+	{
+		bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[0]);
+		
+		createInfo.BindingsSetLayouts = bindingsSetLayouts;
+	}
+
+	GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups;
+	{
+		RayTracingPipeline::Group group;
+		group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+		group.GeneralShader = 0;
+		group.AnyHitShader = 0;
+		group.ClosestHitShader = 0;
+		group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
+
+		groups.EmplaceBack(group);
+	}
+	
+	createInfo.Groups = groups;
+	createInfo.MaxRecursionDepth = 2;
+
+	GTSL::Array<Shader, 10> shaders; GTSL::Array<Pipeline::ShaderInfo, 16> shaderInfos;
+	
+	{
+		genShaderStages(loadInfo->RenderSystem->GetRenderDevice(), shaders, shaderInfos, onMaterialLoadInfo);
+		createInfo.Stages = shaderInfos;
+	}
+
+
+	for (auto& e : shaders) { e.Destroy(loadInfo->RenderSystem->GetRenderDevice()); }
+}
+
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
 {
 	{
@@ -911,10 +963,7 @@ void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::On
 		findFormat.Candidates = candidates;
 		auto supportedFormat = loadInfo->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
 
-		if (candidates[0] != supportedFormat)
-		{
-			Texture::ConvertImageToFormat(onTextureLoadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, onTextureLoadInfo.Extent, GTSL::AlignedPointer<byte, 16>(onTextureLoadInfo.DataBuffer.begin()), 1);
-		}
+		GAL::Texture::ConvertTextureFormat(onTextureLoadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, onTextureLoadInfo.Extent, GTSL::AlignedPointer<byte, 16>(onTextureLoadInfo.DataBuffer.begin()), 1);
 
 		{
 			const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };

@@ -1,5 +1,7 @@
 #include "RenderOrchestrator.h"
 
+#undef MemoryBarrier
+
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Matrix4.h>
 
@@ -309,10 +311,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
 
-	CommandBuffer::AddLabelInfo addLabelInfo;
-	addLabelInfo.RenderDevice = renderSystem->GetRenderDevice();
-	addLabelInfo.Name = GTSL::StaticString<64>("Graphics");
-	commandBuffer.AddLabel(addLabelInfo);
+	{
+		CommandBuffer::BeginRegionInfo beginRegionInfo;
+		beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
+		beginRegionInfo.Name = GTSL::StaticString<64>("Graphics");
+		commandBuffer.BeginRegion(beginRegionInfo);
+	}
+
+	CommandBuffer::EndRegionInfo endRegionInfo;
+	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
 	
 	for (uint8 rp = 0; rp < frameManager->GetRenderPassCount(); ++rp)
 	{
@@ -353,6 +360,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.EndRenderPass(endRenderPass);
 	}
 
+	commandBuffer.EndRegion(endRegionInfo);
+
+	{
+		CommandBuffer::BeginRegionInfo beginRegionInfo;
+		beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
+		beginRegionInfo.Name = GTSL::StaticString<64>("Copy render target to Swapchain");
+		commandBuffer.BeginRegion(beginRegionInfo);
+	}
+	
 	{
 		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -391,6 +407,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.TextureBarriers = textureBarriers;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 	}
+
+	commandBuffer.EndRegion(endRegionInfo);
 	
 	bindingsManager.PopBindings();
 }

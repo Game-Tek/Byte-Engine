@@ -158,7 +158,6 @@ void Game::PostInitialize()
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
 	//}
-	//
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -181,26 +180,26 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 	
-	{
-		MaterialSystem::CreateMaterialInfo createMaterialInfo;
-		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		createMaterialInfo.MaterialName = "TvMat";
-		tvMat = material_system->CreateMaterial(createMaterialInfo);
-	}
-
-	{
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "TV";
-		addStaticMeshInfo.Material = tvMat;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
-	}
+	//{
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	createMaterialInfo.GameInstance = gameInstance;
+	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//	createMaterialInfo.MaterialName = "TvMat";
+	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
+	//}
+	//
+	//{
+	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+	//	addStaticMeshInfo.MeshName = "TV";
+	//	addStaticMeshInfo.Material = tvMat;
+	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.RenderSystem = renderSystem;
+	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//	const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	//	staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+	//}//
 
 	//{
 	//	GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;

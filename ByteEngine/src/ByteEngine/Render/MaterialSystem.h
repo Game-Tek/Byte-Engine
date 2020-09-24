@@ -228,6 +228,30 @@ private:
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
 
+	void test();
+
+	template<typename C, typename C2>
+	void genShaderStages(RenderDevice* renderDevice, C& container, C2& shaderInfos, const MaterialResourceManager::OnMaterialLoadInfo& onMaterialLoadInfo)
+	{
+		uint32 offset = 0;
+		
+		for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
+		{
+			Shader::CreateInfo create_info;
+			create_info.RenderDevice = renderDevice;
+			create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
+			container.EmplaceBack(create_info);
+			offset += onMaterialLoadInfo.ShaderSizes[i];
+		}
+
+		for (uint32 i = 0; i < container.GetLength(); ++i)
+		{
+			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &container[i] });
+		}
+	}
+
+	PipelineLayout rayTracingPipelineLayout;
+	
 	uint16 minUniformBufferOffset = 0;
 
 	uint8 frame;

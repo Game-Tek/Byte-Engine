@@ -22,6 +22,13 @@ public:
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	void Wait();
 
+	struct InitializeRendererInfo
+	{
+		GTSL::Window* Window{ 0 };
+		class PipelineCacheResourceManager* PipelineCacheResourceManager;
+	};
+	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
+	
 	struct AllocateLocalTextureMemoryInfo
 	{
 		Texture Texture; RenderAllocation* Allocation;
@@ -50,13 +57,30 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	struct InitializeRendererInfo
+	void AllocateScratchAccelerationStructureMemory(const AccelerationStructure accelerationStructure, HostRenderAllocation* renderAllocation)
 	{
-		GTSL::Window* Window{ 0 };
-		class PipelineCacheResourceManager* PipelineCacheResourceManager;
-	};
-	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
+		DeviceMemory deviceMemory;
 
+		RenderDevice::MemoryRequirements memoryRequirements;
+
+		{
+			RenderDevice::GetAccelerationStructureMemoryRequirementsInfo requirements;
+			requirements.AccelerationStructure = &accelerationStructure;
+			requirements.MemoryRequirements = &memoryRequirements;
+			requirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
+			requirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
+			renderDevice.GetAccelerationStructureMemoryRequirements(requirements);
+		}
+
+		scratchMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, memoryRequirements.Size, renderAllocation, GetPersistentAllocator());
+
+		AccelerationStructure::BindToMemoryInfo bindToMemoryInfo;
+		bindToMemoryInfo.RenderDevice = &renderDevice;
+		bindToMemoryInfo.Offset = renderAllocation->Offset;
+		bindToMemoryInfo.Memory = deviceMemory;
+		accelerationStructure.BindToMemory(bindToMemoryInfo);
+	}
+	
 	struct BufferScratchMemoryAllocationInfo
 	{
 		Buffer Buffer;

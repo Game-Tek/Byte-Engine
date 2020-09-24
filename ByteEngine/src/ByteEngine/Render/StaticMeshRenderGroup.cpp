@@ -238,18 +238,63 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
 
 		{
-			Mesh mesh;
+			RayTracingMesh mesh;
 			mesh.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
 			mesh.IndicesCount = onStaticMeshLoad.IndexCount;
 			mesh.IndicesOffset = onStaticMeshLoad.IndicesOffset;
 			mesh.Buffer = deviceBuffer;
 			mesh.Material = loadInfo->Material;
 
-			staticMeshRenderGroup->meshes.EmplaceAt(loadInfo->InstanceId, mesh);
+			AccelerationStructure::GeometryType geometryType;
+			geometryType.Type = GeometryType::TRIANGLES;
+			geometryType.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+			geometryType.VertexType = ShaderDataType::FLOAT3;
+			geometryType.MaxVertexCount = onStaticMeshLoad.VertexCount;
+			geometryType.MaxPrimitiveCount = mesh.IndicesCount / 3;
+			geometryType.AllowTransforms = false;
+
+			AccelerationStructure::GeometryTriangleData triangleData;
+			triangleData.VertexType = ShaderDataType::FLOAT3;
+			triangleData.VertexStride = sizeof(GTSL::Vector3);
+			triangleData.VertexBufferAddress = mesh.Buffer.GetAddress(loadInfo->RenderSystem->GetRenderDevice());
+			triangleData.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+			triangleData.IndexBufferAddress = triangleData.VertexBufferAddress + onStaticMeshLoad.IndicesOffset;
+			
+			AccelerationStructure::Geometry geometry;
+			geometry.GeometryType = GeometryType::TRIANGLES;
+			geometry.GeometryFlags = GeometryFlags::OPAQUE;
+			geometry.GeometryTriangleData = &triangleData;
+
+			AccelerationStructure::AccelerationStructureBuildOffsetInfo offset;
+			offset.FirstVertex = 0;
+			offset.PrimitiveCount = geometryType.MaxPrimitiveCount;
+			offset.PrimitiveOffset = 0;
+			offset.TransformOffset = 0;
+
+			AccelerationStructure::BottomLevelCreateInfo accelerationStructureCreateInfo;
+			accelerationStructureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
+			accelerationStructureCreateInfo.MaxGeometryCount = 1;
+			accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
+			accelerationStructureCreateInfo.GeometryInfos = GTSL::Ranger<AccelerationStructure::GeometryType>(1, &geometryType);
+
+			mesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
+
+			RenderDevice::MemoryRequirements memoryRequirements;
+			RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
+			accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
+			accelerationStructureMemoryRequirements.AccelerationStructure = &mesh.AccelerationStructure;
+			accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
+			accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
+			loadInfo->RenderSystem->GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
+
+			//USE MAX SIZE TO BUILD
+			memoryRequirements.Size;
+			
+			staticMeshRenderGroup->rayTracingMeshes.EmplaceAt(loadInfo->InstanceId, mesh);
 		}
 
 		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);
-
+		
 		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
 	};
 

@@ -61,6 +61,8 @@ private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
+
+	AccelerationStructure topLevelAccelerationStructure;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 64>, BE::PersistentAllocatorReference> systemsAccesses;

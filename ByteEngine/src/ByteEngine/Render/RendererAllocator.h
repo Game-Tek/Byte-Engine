@@ -1,6 +1,8 @@
 #pragma once
 #include <GTSL/DataSizes.h>
 #include <GTSL/Vector.hpp>
+#include <GTSL/Math/Math.hpp>
+
 
 #include "RenderTypes.h"
 #include "ByteEngine/Core.h"

@@ -23,4 +23,7 @@ private:
 		GTSL::Rotator Rotation;
 	};
 	GTSL::KeepVector<RayTracingDirectionalLight, BE::PersistentAllocatorReference> rayTracingDirectionalLights;
+
+public:
+	[[nodiscard]] auto GetRayTracingDirectLights() const { return rayTracingDirectionalLights.GetRange(); }
 };

@@ -39,7 +39,7 @@ public:
 	ComponentReference AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo);
 
 	[[nodiscard]] auto GetPositions() const { return positions.GetRange(); }
-	[[nodiscard]] GTSL::Ranger<const GTSL::Id64> GetResourceNames() const { return resourceNames; }
+	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component] = vector3; }
 

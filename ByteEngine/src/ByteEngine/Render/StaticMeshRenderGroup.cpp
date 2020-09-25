@@ -78,7 +78,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
-	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(bufferSize, static_cast<byte*>(allocation.Data));
+	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, static_cast<byte*>(allocation.Data));
 	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
 	load_static_meshInfo.IndicesAlignment = indexSize;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
@@ -127,7 +127,7 @@ System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const A
 
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onRayTracedStaticMeshLoaded>(this);
-	load_static_meshInfo.DataBuffer = GTSL::Ranger<byte>(bufferSize, static_cast<byte*>(allocation.Data));
+	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, static_cast<byte*>(allocation.Data));
 	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
 	load_static_meshInfo.IndicesAlignment = indexSize;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);
@@ -275,7 +275,7 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 			accelerationStructureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 			accelerationStructureCreateInfo.MaxGeometryCount = 1;
 			accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
-			accelerationStructureCreateInfo.GeometryInfos = GTSL::Ranger<AccelerationStructure::GeometryType>(1, &geometryType);
+			accelerationStructureCreateInfo.GeometryInfos = GTSL::Range<AccelerationStructure::GeometryType*>(1, &geometryType);
 
 			mesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
 

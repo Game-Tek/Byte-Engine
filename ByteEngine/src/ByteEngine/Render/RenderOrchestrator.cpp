@@ -115,7 +115,7 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 		
 		MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 		updateInfo.RenderGroup = "StaticMeshRenderGroup";
-		updateInfo.Data = GTSL::Ranger<const byte>(64, static_cast<const byte*>(data));
+		updateInfo.Data = GTSL::Range<const byte*>(64, static_cast<const byte*>(data));
 		updateInfo.Offset = 64;
 		info.MaterialSystem->UpdateRenderGroupData(updateInfo);
 	}
@@ -238,7 +238,7 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 		}
 		//MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 		//updateInfo.RenderGroup = "TextSystem";
-		//updateInfo.Data = GTSL::Ranger<const byte>(64, static_cast<const byte*>(nullptr));
+		//updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
 		//updateInfo.Offset = 0;
 		//info.MaterialSystem->UpdateRenderGroupData(updateInfo);
 	}

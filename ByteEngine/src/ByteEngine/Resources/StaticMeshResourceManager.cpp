@@ -99,25 +99,25 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 
 	staticMeshPackage.SetPointer(meshInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 
-	byte* vertices = loadStaticMeshInfo.DataBuffer;
+	byte* vertices = loadStaticMeshInfo.DataBuffer.begin();
 	byte* indices = GTSL::AlignPointer(loadStaticMeshInfo.IndicesAlignment, vertices + meshInfo.VerticesSize);
 	
-	[[maybe_unused]] auto bytes_read = staticMeshPackage.ReadFromFile(GTSL::Ranger<byte>(meshInfo.VerticesSize, vertices));
+	[[maybe_unused]] auto bytes_read = staticMeshPackage.ReadFromFile(GTSL::Range<byte*>(meshInfo.VerticesSize, vertices));
 	BE_ASSERT(bytes_read != 0, "Read 0 bytes!");
-	bytes_read = staticMeshPackage.ReadFromFile(GTSL::Ranger<byte>(meshInfo.IndicesSize, indices));
+	bytes_read = staticMeshPackage.ReadFromFile(GTSL::Range<byte*>(meshInfo.IndicesSize, indices));
 	BE_ASSERT(bytes_read != 0, "Read 0 bytes!");
 
 	const auto mesh_size = (indices + meshInfo.IndicesSize) - vertices;
 		
 	OnStaticMeshLoad on_static_mesh_load;
-	on_static_mesh_load.VertexSize = GAL::GraphicsPipeline::GetVertexSize(GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin())));
+	on_static_mesh_load.VertexSize = GAL::GraphicsPipeline::GetVertexSize(GTSL::Range<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin())));
 	on_static_mesh_load.IndexCount = meshInfo.IndicesSize / meshInfo.IndexSize;
 	on_static_mesh_load.VertexCount = meshInfo.VerticesSize / on_static_mesh_load.VertexSize;
 	on_static_mesh_load.IndicesOffset = indices - vertices;
-	on_static_mesh_load.VertexDescriptor = GTSL::Ranger<const GAL::ShaderDataType>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin()));
+	on_static_mesh_load.VertexDescriptor = GTSL::Range<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.GetLength(), reinterpret_cast<const GAL::ShaderDataType*>(meshInfo.VertexDescriptor.begin()));
 	on_static_mesh_load.IndexSize = meshInfo.IndexSize;
 	on_static_mesh_load.UserData = loadStaticMeshInfo.UserData;
-	on_static_mesh_load.DataBuffer = GTSL::Ranger<byte>(mesh_size, loadStaticMeshInfo.DataBuffer.begin());
+	on_static_mesh_load.DataBuffer = GTSL::Range<byte*>(mesh_size, loadStaticMeshInfo.DataBuffer.begin());
 	loadStaticMeshInfo.GameInstance->AddAsyncTask(loadStaticMeshInfo.OnStaticMeshLoad, GTSL::MoveRef(on_static_mesh_load));
 }
 

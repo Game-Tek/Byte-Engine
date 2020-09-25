@@ -61,7 +61,7 @@ namespace BE
 		mutable std::atomic<uint32> counter{ 0 };
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
-		void log(VerbosityLevel verbosityLevel, const GTSL::Ranger<const char>& text) const;
+		void log(VerbosityLevel verbosityLevel, const GTSL::Range<const char*> text) const;
 
 		friend class FunctionTimer;
 		void logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken);
@@ -71,7 +71,7 @@ namespace BE
 
 		struct LoggerCreateInfo
 		{
-			GTSL::Ranger<const UTF8> AbsolutePathToLogDirectory;
+			GTSL::Range<const UTF8*> AbsolutePathToLogDirectory;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 

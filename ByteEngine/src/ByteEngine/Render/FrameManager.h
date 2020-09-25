@@ -18,7 +18,7 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
 	void AddAttachment(RenderSystem* renderSystem, Id name, TextureFormat format, TextureUses::value_type uses, TextureType::value_type type);
-	GTSL::Ranger<const GTSL::RGBA> GetClearValues(const uint8 rp)
+	GTSL::Range<const GTSL::RGBA*> GetClearValues(const uint8 rp)
 	{
 		auto& renderPass = renderPasses[rp];
 		return renderPass.ClearValues;
@@ -45,7 +45,7 @@ public:
 		};
 		AttachmentUse DepthStencilAttachment;
 	};
-	void AddPass(RenderSystem* renderDevice, Id name, GTSL::Ranger<const AttachmentInfo> attachmentInfos, GTSL::Ranger<const SubPassData> subPassData);
+	void AddPass(RenderSystem* renderDevice, Id name, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const SubPassData*> subPassData);
 
 	void OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize);
 	

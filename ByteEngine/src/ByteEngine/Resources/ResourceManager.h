@@ -3,7 +3,6 @@
 #include "ByteEngine/Object.h"
 
 #include <GTSL/Id.h>
-#include <GTSL/StaticString.hpp>
 #include <GTSL/DynamicType.h>
 #include <GTSL/Array.hpp>
 
@@ -38,7 +37,7 @@ public:
 		/**
 		 * \brief Buffer to write the loaded data to.
 		 */
-		GTSL::Ranger<byte> DataBuffer;
+		GTSL::Range<byte*> DataBuffer;
 		
 		/**
 		 * \brief Instance of game instance to call to dispatch task when resource is loaded.
@@ -65,7 +64,7 @@ public:
 		/**
 		 * \brief Buffer where the loaded data was written to.
 		 */
-		GTSL::Ranger<byte> DataBuffer;
+		GTSL::Range<byte*> DataBuffer;
 
 		GTSL::Id64 ResourceName;
 	};

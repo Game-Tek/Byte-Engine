@@ -130,7 +130,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 			}
 		}
 		allocateBindingsSetsInfo.BindingsSetLayouts = bindingsSetLayouts;
-		allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 2 };
+		allocateBindingsSetsInfo.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 2, 2 };
 
 		{
 			GTSL::Array<GAL::VulkanCreateInfo, MAX_CONCURRENT_FRAMES> bindingsSetsCreateInfo(MAX_CONCURRENT_FRAMES);
@@ -245,7 +245,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 			}
 
 			allocateBindings.BindingsSetLayouts = bindingsSetLayouts;
-			allocateBindings.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 1 };
+			allocateBindings.BindingsSetDynamicBindingsCounts = GTSL::Array<uint32, 2>{ 1, 1 }; //TODO: FIX
 
 			{
 				GTSL::Array<GAL::VulkanCreateInfo, MAX_CONCURRENT_FRAMES> bindingsSetsCreateInfo(MAX_CONCURRENT_FRAMES);
@@ -377,7 +377,7 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	material_load_info.ActsOn = acts_on;
 	material_load_info.GameInstance = info.GameInstance;
 	material_load_info.Name = info.MaterialName;
-	material_load_info.DataBuffer = GTSL::Ranger<byte>(material_buffer.GetCapacity(), material_buffer.GetData());
+	material_load_info.DataBuffer = GTSL::Range<byte*>(material_buffer.GetCapacity(), material_buffer.GetData());
 	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), material, info.TextureResourceManager);
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, matLoadInfo);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
@@ -466,7 +466,7 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 		
 		auto* loadInfo = GTSL::New<TextureLoadInfo>(GetPersistentAllocator(), component, GTSL::MoveRef(scratchBuffer), info.RenderSystem, allocation);
 
-		textureLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(allocation.Data));
+		textureLoadInfo.DataBuffer = GTSL::Range<byte*>(allocation.Size, static_cast<byte*>(allocation.Data));
 
 		textureLoadInfo.UserData = DYNAMIC_TYPE(TextureLoadInfo, loadInfo);
 	}
@@ -613,7 +613,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		MaterialInstance instance;
 
 		GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
-		bindingsSetLayouts.PushBack(GTSL::Ranger<BindingsSetLayout>(materialSystem->globalBindingsSetLayout)); //global bindings
+		bindingsSetLayouts.PushBack(GTSL::Range<BindingsSetLayout*>(materialSystem->globalBindingsSetLayout)); //global bindings
 
 		{
 			auto& renderGroup = materialSystem->renderGroups.At(onMaterialLoadInfo.RenderGroup);

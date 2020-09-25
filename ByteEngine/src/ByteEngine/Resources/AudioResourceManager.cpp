@@ -32,7 +32,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 		auto file_path = resources_path;
 		file_path += queryResult.FileNameWithExtension;
 		auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
-		const auto hashed_name = GTSL::Id64(name.operator GTSL::Ranger<const char>());
+		const auto hashed_name = GTSL::Id64(name);
 
 		if (!audioResourceInfos.Find(hashed_name))
 		{
@@ -100,7 +100,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 			data.ByteOffset = (uint32)packageFile.GetFileSize();
 
-			packageFile.WriteToFile(GTSL::Ranger<byte>(data_size, file_buffer.GetData() + file_buffer.GetReadPosition()));
+			packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, file_buffer.GetData() + file_buffer.GetReadPosition()));
 
 			audioResourceInfos.Emplace(hashed_name, data);
 

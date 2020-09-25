@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_map>
 #include <GTSL/Pair.h>
 
 #include "ByteEngine/Game/System.h"
@@ -177,7 +178,7 @@ public:
 	
 	const PipelineCache* GetPipelineCache() const;
 
-	GTSL::Ranger<const Texture> GetSwapchainTextures() const { return swapchainTextures; }
+	GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -209,8 +210,6 @@ private:
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
-
-	GTSL::Array<Vector<CommandBuffer::TextureBarrier>, MAX_CONCURRENT_FRAMES> textureBarriers;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;
@@ -218,6 +217,17 @@ private:
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
 
+	struct RayTracingMesh
+	{
+		Buffer Buffer;
+		uint32 IndicesOffset;
+		uint32 IndicesCount;
+		IndexType IndexType;
+
+		AccelerationStructure AccelerationStructure;
+	};
+	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
+	
 	uint8 currentFrameIndex = 0;
 
 	PresentMode swapchainPresentMode;
@@ -235,7 +245,9 @@ private:
 	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
 	void deallocateApiMemory(void* data, void* allocation);
 
-	GTSL::FlatHashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
+	//GTSL::FlatHashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
+	std::unordered_map<uint64, GTSL::Pair<uint64, uint64>> apiAllocations;
+	GTSL::Mutex allocationsMutex;
 	
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;

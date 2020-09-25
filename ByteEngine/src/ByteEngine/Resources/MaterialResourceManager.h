@@ -87,15 +87,15 @@ public:
 		GTSL::StaticString<128> RenderGroup;
 		GTSL::Id64 RenderPass;
 		GTSL::Id64 SubPass;
-		GTSL::Ranger<const GAL::ShaderDataType> VertexFormat;
+		GTSL::Range<const GAL::ShaderDataType*> VertexFormat;
 
 		GTSL::Array<Uniform, 8> MaterialParameters;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
 
 		GTSL::Array<GTSL::Id64, 8> Textures;
 		
-		GTSL::Ranger<const Binding> Bindings;
-		GTSL::Ranger<const GAL::ShaderType> ShaderTypes;
+		GTSL::Range<const Binding*> Bindings;
+		GTSL::Range<const GAL::ShaderType*> ShaderTypes;
 		bool DepthWrite;
 		bool DepthTest;
 		GAL::CullMode CullMode;

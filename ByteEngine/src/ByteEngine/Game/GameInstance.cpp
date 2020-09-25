@@ -20,7 +20,7 @@ const char* AccessTypeToString(const AccessType access)
 	}
 }
 
-GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, const GTSL::Ranger<const AccessType> accesses, const GTSL::Ranger<const uint16> objects)
+GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
 {
 	GTSL::StaticString<1024> log;
 	

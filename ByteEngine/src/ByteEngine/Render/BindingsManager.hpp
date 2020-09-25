@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/Ranger.h>
+#include <GTSL/Range.h>
 
 #include "RenderSystem.h"
 #include "RenderTypes.h"
@@ -19,7 +19,7 @@ public:
 		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
 		bindBindingsSetInfo.FirstSet = boundSets;
 		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Ranger<BindingsSet>(1, &binding);
+		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &binding);
 		bindBindingsSetInfo.PipelineLayout = &pipelineLayout;
 		bindBindingsSetInfo.PipelineType = pipelineType;
 		commandBuffer->BindBindingsSets(bindBindingsSetInfo);
@@ -28,13 +28,13 @@ public:
 		boundBindingsPerSet.EmplaceBack(1);
 	}
 
-	void AddBinding(BindingsSet binding, const GTSL::Ranger<const uint32> offsets, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
+	void AddBinding(BindingsSet binding, const GTSL::Range<const uint32*> offsets, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
 	{
 		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
 		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
 		bindBindingsSetInfo.FirstSet = boundSets;
 		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Ranger<BindingsSet>(1, &binding);
+		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &binding);
 		bindBindingsSetInfo.PipelineLayout = &pipelineLayout;
 		bindBindingsSetInfo.PipelineType = pipelineType;
 		bindBindingsSetInfo.Offsets = offsets;
@@ -44,7 +44,7 @@ public:
 		boundBindingsPerSet.EmplaceBack(1);
 	}
 
-	void AddBindings(const GTSL::Ranger<BindingsSet> bindings, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
+	void AddBindings(const GTSL::Range<BindingsSet*> bindings, const PipelineType pipelineType, const PipelineLayout pipelineLayout)
 	{
 		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
 		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();

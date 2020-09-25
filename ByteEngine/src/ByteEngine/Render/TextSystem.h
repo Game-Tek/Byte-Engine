@@ -36,7 +36,7 @@ public:
 		GTSL::Vector2 Position;
 		GTSL::StaticString<64> String;
 	};
-	GTSL::Ranger<const Text> GetTexts() const { return components; }
+	GTSL::Range<const Text*> GetTexts() const { return components; }
 	
 private:
 	Vector<Text> components;

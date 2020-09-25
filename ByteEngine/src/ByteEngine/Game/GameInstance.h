@@ -10,7 +10,6 @@
 #include <GTSL/Array.hpp>
 #include <GTSL/Semaphore.h>
 
-
 #include "Tasks.h"
 #include "ByteEngine/Id.h"
 
@@ -53,7 +52,7 @@ public:
 	T* GetSystem(const Id systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
 
 	template<typename... ARGS>
-	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
+	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
 		if constexpr (_DEBUG) { if (assertTask(name, startOn, doneFor, dependencies)) { return; } }
 		
@@ -99,7 +98,7 @@ public:
 	void RemoveTask(Id name, Id startOn);
 
 	template<typename... ARGS>
-	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
 	{
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		
@@ -138,7 +137,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddFreeDynamicTask(const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Ranger<const TaskDependency> dependencies, ARGS&&... args)
+	void AddFreeDynamicTask(const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, ARGS&&... args)
 	{
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
@@ -262,18 +261,18 @@ private:
 	}
 	
 	template<uint32 N>
-	void decomposeTaskDescriptor(GTSL::Ranger<const TaskDependency> taskDependencies, GTSL::Array<uint16, N>& object, GTSL::Array<AccessType, N>& access)
+	void decomposeTaskDescriptor(GTSL::Range<const TaskDependency*> taskDependencies, GTSL::Array<uint16, N>& object, GTSL::Array<AccessType, N>& access)
 	{
 		object.Resize(taskDependencies.ElementCount()); access.Resize(taskDependencies.ElementCount());
 		
 		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
 		{
 			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject);
-			access[i] = (taskDependencies + i)->Access;
+			access[i] = (taskDependencies.begin() + i)->Access;
 		}
 	}
 
-	[[nodiscard]] bool assertTask(const Id name, const Id startGoal, const Id endGoal, const GTSL::Ranger<const TaskDependency> dependencies) const
+	[[nodiscard]] bool assertTask(const Id name, const Id startGoal, const Id endGoal, const GTSL::Range<const TaskDependency*> dependencies) const
 	{
 		{
 			GTSL::ReadLock lock(goalNamesMutex);

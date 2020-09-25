@@ -25,13 +25,13 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), log
 void Logger::Shutdown() const
 {
 	//logMutex.Lock();
-	//auto range = GTSL::Ranger<const byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data) + posInBuffer + buffersInBuffer * subBufferIndex);
+	//auto range = GTSL::Range<const byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data) + posInBuffer + buffersInBuffer * subBufferIndex);
 	//logFile.WriteToFile(range);
 	//logMutex.Unlock();
 	logFile.CloseFile();
 }
 
-void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const GTSL::UTF8>& text) const
+void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GTSL::UTF8*> text) const
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();
 
@@ -47,7 +47,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 
 	const uint32 text_chars_to_write = text.Bytes() + 2 > string.GetCapacity() - string.GetLength() ? string.GetLength() - 1 : text.Bytes();
 
-	string += GTSL::Ranger<const UTF8>(text_chars_to_write, text.begin()); string += '\n';
+	string += GTSL::Range<const UTF8*>(text_chars_to_write, text.begin()); string += '\n';
 	
 	if(verbosityLevel >= minLogLevel)
 	{
@@ -56,13 +56,13 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Ranger<const G
 	}
 
 	logMutex.Lock();
-	logFile.WriteToFile(GTSL::Ranger<const byte>(string.GetLength(), reinterpret_cast<const byte*>(string.begin())));
+	logFile.WriteToFile(GTSL::Range<const byte*>(string.GetLength(), reinterpret_cast<const byte*>(string.begin())));
 	logMutex.Unlock();
 }
 
 void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
 {
-	//log(VerbosityLevel::MESSAGE, GTSL::Ranger<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
+	//log(VerbosityLevel::MESSAGE, GTSL::Range<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const

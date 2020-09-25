@@ -73,7 +73,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			texture_info.Dimensions = GAL::Dimension::SQUARE;
 			texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 
-			packageFile.WriteToFile(GTSL::Ranger<byte>(size, data));
+			packageFile.WriteToFile(GTSL::Range<byte*>(size, data));
 
 			textureInfos.Emplace(hashed_name, texture_info);
 
@@ -106,7 +106,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	auto& texture_info = textureInfos.At(textureLoadInfo.Name);
 
 	packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-	packageFile.ReadFromFile(GTSL::Ranger<byte>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
+	packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
 
 	OnTextureLoadInfo onTextureLoadInfo;
 	onTextureLoadInfo.ResourceName = textureLoadInfo.Name;

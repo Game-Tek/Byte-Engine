@@ -98,7 +98,7 @@ public:
 		GTSL::Extent2D Extent;
 	};
 	
-	Font GetFont(const GTSL::Ranger<const UTF8> fontName);
+	Font GetFont(const GTSL::Range<const UTF8*> fontName);
 
 	struct OnFontLoadInfo : OnResourceLoad
 	{

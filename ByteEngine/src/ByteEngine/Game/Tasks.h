@@ -2,7 +2,6 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/Id.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
 #include <GTSL/KeepVector.h>
@@ -77,7 +76,7 @@ struct Goal
 		return *this;
 	}
 	
-	void AddTask(Id name, TASK task, GTSL::Ranger<const uint16> offsets, const GTSL::Ranger<const AccessType> accessTypes, uint16 goalIndex, const ALLOCATOR& allocator)
+	void AddTask(Id name, TASK task, GTSL::Range<const uint16*> offsets, const GTSL::Range<const AccessType*> accessTypes, uint16 goalIndex, const ALLOCATOR& allocator)
 	{
 		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
 		taskAccessTypes.EmplaceBack(16, allocator);
@@ -99,9 +98,9 @@ struct Goal
 			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocator);
 		}
 		
-		taskNames.PushBack(GTSL::Ranger<const Id>(taskE - taskS, other.taskNames.begin() + taskS));
-		taskGoalIndex.PushBack(GTSL::Ranger<const uint16>(taskE - taskS, other.taskGoalIndex.begin() + taskS));
-		tasks.PushBack(GTSL::Ranger<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
+		taskNames.PushBack(GTSL::Range<const Id>(taskE - taskS, other.taskNames.begin() + taskS));
+		taskGoalIndex.PushBack(GTSL::Range<const uint16>(taskE - taskS, other.taskGoalIndex.begin() + taskS));
+		tasks.PushBack(GTSL::Range<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
 	}
 
 	void RemoveTask(const Id name)
@@ -120,9 +119,9 @@ struct Goal
 
 	[[nodiscard]] TASK GetTask(const uint32 i) const { return tasks[i]; }
 
-	[[nodiscard]] GTSL::Ranger<const uint16> GetTaskAccessedObjects(uint16 task) const { return taskAccessedObjects[task]; }
+	[[nodiscard]] GTSL::Range<const uint16*> GetTaskAccessedObjects(uint16 task) const { return taskAccessedObjects[task]; }
 
-	[[nodiscard]] GTSL::Ranger<const AccessType> GetTaskAccessTypes(uint16 task) const { return taskAccessTypes[task]; }
+	[[nodiscard]] GTSL::Range<const AccessType*> GetTaskAccessTypes(uint16 task) const { return taskAccessTypes[task]; }
 
 	[[nodiscard]] Id GetTaskName(const uint16 task) const { return taskNames[task]; }
 
@@ -175,7 +174,7 @@ struct TaskSorter
 	{
 	}
 
-	GTSL::Result<uint32> CanRunTask(const GTSL::Ranger<const uint16> objects, const GTSL::Ranger<const AccessType> accesses)
+	GTSL::Result<uint32> CanRunTask(const GTSL::Range<const uint16*> objects, const GTSL::Range<const AccessType*> accesses)
 	{
 		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
 

@@ -117,7 +117,7 @@ public:
 	struct UpdateRenderGroupDataInfo
 	{
 		Id RenderGroup;
-		GTSL::Ranger<const byte> Data;
+		GTSL::Range<const byte*> Data;
 		uint32 Offset = 0;
 	};
 	void UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo);
@@ -239,7 +239,7 @@ private:
 		{
 			Shader::CreateInfo create_info;
 			create_info.RenderDevice = renderDevice;
-			create_info.ShaderData = GTSL::Ranger<const byte>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer + offset);
+			create_info.ShaderData = GTSL::Range<const byte*>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer.begin() + offset);
 			container.EmplaceBack(create_info);
 			offset += onMaterialLoadInfo.ShaderSizes[i];
 		}

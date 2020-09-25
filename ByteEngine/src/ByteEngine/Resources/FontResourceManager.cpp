@@ -416,7 +416,7 @@ int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, 
 	return (kern_data == font_data->KerningTable.end()) ? 0 : kern_data->second;
 }
 
-FontResourceManager::Font FontResourceManager::GetFont(const Ranger<const UTF8> fontName)
+FontResourceManager::Font FontResourceManager::GetFont(const Range<const UTF8*> fontName)
 {
 	StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
@@ -557,7 +557,7 @@ void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSiz
 
 }
 
-//void FontResourceManager::GetFontFromSDF(const GTSL::Ranger<const UTF8> fontName)
+//void FontResourceManager::GetFontFromSDF(const GTSL::Range<const UTF8> fontName)
 //{
 //	StaticString<255> basePath(BE::Application::Get()->GetPathToApplication()); basePath += "/resources/";
 //	StaticString<255> path(basePath); path += fontName; path += ".ttf";

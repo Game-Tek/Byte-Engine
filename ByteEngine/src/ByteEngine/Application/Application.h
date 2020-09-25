@@ -72,7 +72,7 @@ namespace BE
 			OK, ERROR
 		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason);
+		void Close(CloseMode closeMode, const GTSL::Range<const UTF8*> reason);
 
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
 		{

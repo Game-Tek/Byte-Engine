@@ -130,7 +130,7 @@ namespace BE
 		//CloseDelegate.Dispatch();
 	}
 
-	void Application::Close(const CloseMode closeMode, const GTSL::Ranger<const UTF8>& reason)
+	void Application::Close(const CloseMode closeMode, const GTSL::Range<const UTF8*> reason)
 	{
 		closeReason.Append(reason);
 		flaggedForClose = true;

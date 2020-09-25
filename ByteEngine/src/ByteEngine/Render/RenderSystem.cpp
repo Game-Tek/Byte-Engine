@@ -14,8 +14,11 @@ class RenderStaticMeshCollection;
 
 void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRenderer)
 {
-	apiAllocations.Initialize(16, GetPersistentAllocator());
+	//apiAllocations.Initialize(128, GetPersistentAllocator());
+	apiAllocations.reserve(16);
 
+	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
+	
 	{		
 		RenderDevice::CreateInfo createInfo;
 		createInfo.ApplicationName = GTSL::StaticString<128>("Test");
@@ -26,7 +29,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		queue_create_infos[1].Capabilities = static_cast<uint8>(QueueCapabilities::TRANSFER);
 		queue_create_infos[1].QueuePriority = 1.0f;
 		createInfo.QueueCreateInfos = queue_create_infos;
-		auto queues = GTSL::Array<Queue, 5>{ graphicsQueue, transferQueue };
+		auto queues = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
 		createInfo.Queues = queues;
 		createInfo.Extensions = GTSL::Array<RenderDevice::Extension, 16>{ RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
@@ -35,16 +38,19 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 		::new(&renderDevice) RenderDevice(createInfo);
-
-		graphicsQueue = queues[0]; transferQueue = queues[1];
 	}
 	
 	swapchainPresentMode = PresentMode::FIFO;
 	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
 	swapchainFormat = TextureFormat::BGRA_I8;
 
-	processedBufferCopies.Resize(MAX_CONCURRENT_FRAMES);
-	processedTextureCopies.Resize(MAX_CONCURRENT_FRAMES);
+
+	for(uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
+	{
+		processedTextureCopies.EmplaceBack(0);
+		processedBufferCopies.EmplaceBack(0);
+	}
+	
 
 	{
 		Semaphore::CreateInfo semaphoreCreateInfo;
@@ -119,7 +125,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			GTSL::Array<CommandBuffer::CreateInfo, 5> createInfos; createInfos.EmplaceBack(commandBufferCreateInfo);
 			allocateCommandBuffersInfo.CommandBufferCreateInfos = createInfos;
 			graphicsCommandBuffers.Resize(graphicsCommandBuffers.GetLength() + 1);
-			allocateCommandBuffersInfo.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, graphicsCommandBuffers.begin() + i);
+			allocateCommandBuffersInfo.CommandBuffers = GTSL::Range<CommandBuffer*>(1, graphicsCommandBuffers.begin() + i);
 			graphicsCommandPools[i].AllocateCommandBuffer(allocateCommandBuffersInfo);
 		}
 
@@ -153,7 +159,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			GTSL::Array<CommandBuffer::CreateInfo, 5> createInfos; createInfos.EmplaceBack(commandBufferCreateInfo);
 			allocate_command_buffers_info.CommandBufferCreateInfos = createInfos;
 			transferCommandBuffers.Resize(transferCommandBuffers.GetLength() + 1);
-			allocate_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, transferCommandBuffers.begin() + i);
+			allocate_command_buffers_info.CommandBuffers = GTSL::Range<CommandBuffer*>(1, transferCommandBuffers.begin() + i);
 			transferCommandPools[i].AllocateCommandBuffer(allocate_command_buffers_info);
 		}
 
@@ -309,10 +315,10 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 		CommandPool::FreeCommandBuffersInfo free_command_buffers_info;
 		free_command_buffers_info.RenderDevice = &renderDevice;
 
-		free_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &graphicsCommandBuffers[i]);
+		free_command_buffers_info.CommandBuffers = GTSL::Range<CommandBuffer*>(1, &graphicsCommandBuffers[i]);
 		graphicsCommandPools[i].FreeCommandBuffers(free_command_buffers_info);
 
-		free_command_buffers_info.CommandBuffers = GTSL::Ranger<CommandBuffer>(1, &transferCommandBuffers[i]);
+		free_command_buffers_info.CommandBuffers = GTSL::Range<CommandBuffer*>(1, &transferCommandBuffers[i]);
 		transferCommandPools[i].FreeCommandBuffers(free_command_buffers_info);
 
 		graphicsCommandPools[i].Destroy(&renderDevice);
@@ -367,12 +373,12 @@ void RenderSystem::renderStart(TaskInfo taskInfo)
 	waitForFencesInfo.RenderDevice = &renderDevice;
 	waitForFencesInfo.Timeout = ~0ULL;
 	waitForFencesInfo.WaitForAll = true;
-	waitForFencesInfo.Fences = GTSL::Ranger<const Fence>(1, &graphicsFences[currentFrameIndex]);
+	waitForFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
 	Fence::WaitForFences(waitForFencesInfo);
 
 	Fence::ResetFencesInfo resetFencesInfo;
 	resetFencesInfo.RenderDevice = &renderDevice;
-	resetFencesInfo.Fences = GTSL::Ranger<const Fence>(1, &graphicsFences[currentFrameIndex]);
+	resetFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
 	Fence::ResetFences(resetFencesInfo);
 	
 	graphicsCommandPools[currentFrameIndex].ResetPool(&renderDevice);
@@ -402,8 +408,8 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	submitInfo.RenderDevice = &renderDevice;
 	submitInfo.Fence = &graphicsFences[currentFrameIndex];
 	submitInfo.WaitSemaphores = GTSL::Array<Semaphore, 2>{ imageAvailableSemaphore[currentFrameIndex], transferDoneSemaphores[GetCurrentFrame()] };
-	submitInfo.SignalSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[currentFrameIndex]);
-	submitInfo.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
+	submitInfo.SignalSemaphores = GTSL::Range<const Semaphore*>(1, &renderFinishedSemaphore[currentFrameIndex]);
+	submitInfo.CommandBuffers = GTSL::Range<const CommandBuffer*>(1, &commandBuffer);
 	GTSL::Array<uint32, 8> wps{ PipelineStage::COLOR_ATTACHMENT_OUTPUT, PipelineStage::TRANSFER };
 	submitInfo.WaitPipelineStages = wps;
 	graphicsQueue.Submit(submitInfo);
@@ -411,7 +417,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	RenderContext::PresentInfo presentInfo;
 	presentInfo.RenderDevice = &renderDevice;
 	presentInfo.Queue = &graphicsQueue;
-	presentInfo.WaitSemaphores = GTSL::Ranger<const Semaphore>(1, &renderFinishedSemaphore[currentFrameIndex]);
+	presentInfo.WaitSemaphores = GTSL::Range<const Semaphore*>(1, &renderFinishedSemaphore[currentFrameIndex]);
 	presentInfo.ImageIndex = imageIndex;
 	renderContext.Present(presentInfo);
 
@@ -424,7 +430,7 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	wait_for_fences_info.RenderDevice = &renderDevice;
 	wait_for_fences_info.Timeout = ~0ULL;
 	wait_for_fences_info.WaitForAll = true;
-	wait_for_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
+	wait_for_fences_info.Fences = GTSL::Range<const Fence*>(1, &transferFences[currentFrameIndex]);
 	Fence::WaitForFences(wait_for_fences_info);
 
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
@@ -449,7 +455,7 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 
 		Fence::ResetFencesInfo reset_fences_info;
 		reset_fences_info.RenderDevice = &renderDevice;
-		reset_fences_info.Fences = GTSL::Ranger<const Fence>(1, &transferFences[currentFrameIndex]);
+		reset_fences_info.Fences = GTSL::Range<const Fence*>(1, &transferFences[currentFrameIndex]);
 		Fence::ResetFences(reset_fences_info);
 	}
 	
@@ -553,7 +559,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		Queue::SubmitInfo submit_info;
 		submit_info.RenderDevice = &renderDevice;
 		submit_info.Fence = &transferFences[currentFrameIndex];
-		submit_info.CommandBuffers = GTSL::Ranger<const CommandBuffer>(1, &commandBuffer);
+		submit_info.CommandBuffers = GTSL::Range<const CommandBuffer*>(1, &commandBuffer);
 		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ PipelineStage::TRANSFER };
 		submit_info.SignalSemaphores = GTSL::Array<Semaphore, 1>{ transferDoneSemaphores[GetCurrentFrame()] };
 		transferQueue.Submit(submit_info);
@@ -575,29 +581,59 @@ void* RenderSystem::allocateApiMemory(void* data, const uint64 size, const uint6
 {
 	void* allocation; uint64 allocated_size;
 	GetPersistentAllocator().Allocate(size, alignment, &allocation, &allocated_size);
-	apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	//apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	{
+		GTSL::Lock lock(allocationsMutex);
+
+		BE_ASSERT(!apiAllocations.contains(reinterpret_cast<uint64>(allocation)), "")
+		apiAllocations.emplace(reinterpret_cast<uint64>(allocation), GTSL::Pair<uint64, uint64>(size, alignment));
+	}
 	return allocation;
 }
 
 void* RenderSystem::reallocateApiMemory(void* data, void* oldAllocation, uint64 size, uint64 alignment)
 {
 	void* allocation; uint64 allocated_size;
+
+	GTSL::Pair<uint64, uint64> old_alloc;
 	
-	const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
+	{
+		GTSL::Lock lock(allocationsMutex);
+		//const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(oldAllocation));
+		old_alloc = apiAllocations.at(reinterpret_cast<uint64>(oldAllocation));
+	}
 	
 	GetPersistentAllocator().Allocate(size, old_alloc.Second, &allocation, &allocated_size);
-	apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	//apiAllocations.Emplace(reinterpret_cast<uint64>(allocation), size, alignment);
+	apiAllocations.emplace(reinterpret_cast<uint64>(allocation), GTSL::Pair<uint64, uint64>(size, alignment));
 	
 	GTSL::MemCopy(old_alloc.First, oldAllocation, allocation);
 	
 	GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, oldAllocation);
-	apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
+	//apiAllocations.Remove(reinterpret_cast<uint64>(oldAllocation));
+	{
+		GTSL::Lock lock(allocationsMutex);
+		apiAllocations.erase(reinterpret_cast<uint64>(oldAllocation));
+	}
+	
 	return allocation;
 }
 
 void RenderSystem::deallocateApiMemory(void* data, void* allocation)
 {
-	const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(allocation));
+	GTSL::Pair<uint64, uint64> old_alloc;
+	
+	{
+		GTSL::Lock lock(allocationsMutex);
+		old_alloc = apiAllocations.at(reinterpret_cast<uint64>(allocation));
+		//const auto old_alloc = apiAllocations.At(reinterpret_cast<uint64>(allocation));
+	}
+	
 	GetPersistentAllocator().Deallocate(old_alloc.First, old_alloc.Second, allocation);
-	apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
+	
+	{
+		GTSL::Lock lock(allocationsMutex);
+		apiAllocations.erase(reinterpret_cast<uint64>(allocation));
+		//apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
+	}
 }

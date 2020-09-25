@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ByteEngine/Core.h"
+#include "ByteEngine/Game/System.h"
+
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Vector.hpp>
@@ -64,9 +67,9 @@ public:
 		rotationMatrices[reference] = matrix * rotationMatrices[reference];
 	}
 	
-	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetPositionMatrices() const { return positionMatrices; }
-	[[nodiscard]] GTSL::Ranger<const GTSL::Matrix4> GetRotationMatrices() const { return rotationMatrices; }
-	[[nodiscard]] GTSL::Ranger<const float32> GetFieldOfViews() const { return fovs; }
+	[[nodiscard]] GTSL::Range<const GTSL::Matrix4*> GetPositionMatrices() const { return positionMatrices; }
+	[[nodiscard]] GTSL::Range<const GTSL::Matrix4*> GetRotationMatrices() const { return rotationMatrices; }
+	[[nodiscard]] GTSL::Range<const float32*> GetFieldOfViews() const { return fovs; }
 	void SetFieldOfView(const ComponentReference componentReference, const float32 fov) { fovs[componentReference] = fov; }
 
 private:

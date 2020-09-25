@@ -5,7 +5,7 @@
 #include <GTSL/Allocator.h>
 #include <GTSL/Atomic.hpp>
 #include <GTSL/Mutex.h>
-#include <GTSL/Ranger.h>
+#include <GTSL/Range.h>
 
 #include "ByteEngine/Game/System.h"
 
@@ -59,5 +59,5 @@ private:
 
 	mutable GTSL::Mutex globalLock;
 
-	[[nodiscard]] GTSL::Ranger<Pool> pools() const { return GTSL::Ranger<Pool>(POOL_COUNT, poolsData); }
+	[[nodiscard]] GTSL::Range<Pool*> pools() const { return GTSL::Range<Pool*>(POOL_COUNT, poolsData); }
 };

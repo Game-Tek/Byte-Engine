@@ -90,7 +90,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 
 		auto* loadInfo = GTSL::New<LoadInfo>(GetPersistentAllocator(), component, info.Material, scratchBuffer, info.RenderSystem, allocation);
 
-		//fontLoadInfo.DataBuffer = GTSL::Ranger<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
+		//fontLoadInfo.DataBuffer = GTSL::Range<byte>(allocation.Size, static_cast<byte*>(scratchBufferData));
 
 		fontLoadInfo.UserData = DYNAMIC_TYPE(LoadInfo, loadInfo);
 	}

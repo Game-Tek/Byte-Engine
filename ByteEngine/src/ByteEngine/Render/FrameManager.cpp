@@ -22,7 +22,7 @@ void FrameManager::AddAttachment(RenderSystem* renderSystem, const Id name, Text
 	attachments.Emplace(name, attachment);
 }
 
-void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL::Ranger<const AttachmentInfo> attachmentInfos, const GTSL::Ranger<const SubPassData> subPassData)
+void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL::Range<const AttachmentInfo*> attachmentInfos, const GTSL::Range<const SubPassData*> subPassData)
 {
 	renderPassesMap.Emplace(name, renderPasses.GetLength());
 	auto& renderPassData = renderPasses[renderPasses.EmplaceBack()];

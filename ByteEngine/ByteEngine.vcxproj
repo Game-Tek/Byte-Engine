@@ -236,6 +236,7 @@
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
     <ClInclude Include="src\ByteEngine\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\trueType.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />

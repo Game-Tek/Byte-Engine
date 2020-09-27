@@ -36,13 +36,11 @@ public:
 	
 	struct Curve
 	{
-		GTSL::Vector2 p0;
-		GTSL::Vector2 p1;//Bezier control point or random off glyph point
-		GTSL::Vector2 p2;
+		GTSL::Vector2 Points[3];
 		uint32 IsCurve = false;
 
 	private:
-		uint32 d;
+		uint32 d = 0;
 	};
 
 	struct FontMetaData
@@ -63,7 +61,7 @@ public:
 		uint32 Character;
 		int16 GlyphIndex;
 		int16 NumContours;
-		GTSL::Vector<Path, BE::PersistentAllocatorReference> PathList;
+		GTSL::Vector<Path, BE::PersistentAllocatorReference> Paths;
 		uint16 AdvanceWidth;
 		int16 LeftSideBearing;
 		int16 BoundingBox[4];
@@ -125,8 +123,11 @@ public:
 
 	void GetFontAtlasSizeFormatExtent(Id id, uint32* textureSize, GAL::TextureFormat* textureFormat, GTSL::Extent3D* extent3D);
 	
+	void doThing();
+	
 private:
 	int8 parseData(const char* data, Font* fontData);
 
+	
 	GTSL::FlatHashMap<ImageFont, BE::PersistentAllocatorReference> fonts;
 };

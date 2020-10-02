@@ -23,6 +23,9 @@ namespace BE {
 	class Application;
 }
 
+template<typename... ARGS>
+using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
+
 class GameInstance : public Object
 {
 	using FunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>;

@@ -1,13 +1,15 @@
 #include "RenderSystem.h"
 
 #include <GTSL/Window.h>
-#include <Windows.h>
+
 
 #include "MaterialSystem.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
+
+#undef MemoryBarrier
 
 class CameraSystem;
 class RenderStaticMeshCollection;
@@ -18,6 +20,10 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	apiAllocations.reserve(16);
 
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
+	buildAccelerationStructureInfos.Initialize(32, GetPersistentAllocator());
+	buildOffsets.Initialize(32, GetPersistentAllocator());
+
+	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 	
 	{		
 		RenderDevice::CreateInfo createInfo;
@@ -31,13 +37,99 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.QueueCreateInfos = queue_create_infos;
 		auto queues = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
 		createInfo.Queues = queues;
-		createInfo.Extensions = GTSL::Array<RenderDevice::Extension, 16>{ RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
+		createInfo.Extensions = GTSL::Array<RenderDevice::Extension, 8>{ RenderDevice::Extension::RAY_TRACING, RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
+		createInfo.ExtensionCapabilities = GTSL::Array<void*, 8>{ &rayTracingCapabilities };
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
 		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 		::new(&renderDevice) RenderDevice(createInfo);
+
+		scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
+		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
+		
+		if (createInfo.Extensions[0] == RenderDevice::Extension::RAY_TRACING)
+		{
+			AccelerationStructure::GeometryDescriptor descriptor;
+			descriptor.Type = GeometryType::INSTANCES;
+			descriptor.MaxPrimitiveCount = 1;
+			descriptor.AllowTransforms = false;
+			descriptor.VertexType = static_cast<ShaderDataType>(0);
+			descriptor.IndexType = static_cast<IndexType>(0);
+			
+			AccelerationStructure::TopLevelCreateInfo accelerationStructureCreateInfo;
+			accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
+			accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
+			accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &descriptor);
+
+			topLevelAccelerationStructure.Initialize(accelerationStructureCreateInfo);
+
+			{
+				RenderDevice::MemoryRequirements memoryRequirements;
+				RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
+				accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
+				accelerationStructureMemoryRequirements.AccelerationStructure = &topLevelAccelerationStructure;
+				accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::OBJECT;
+				accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
+				GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
+
+				{
+					RenderAllocation allocation;
+
+					allocation.Size = memoryRequirements.Size;
+					
+					AccelerationStructure::BindToMemoryInfo bindInfo;
+					bindInfo.RenderDevice = GetRenderDevice();
+
+					localMemoryAllocator.AllocateBuffer(*GetRenderDevice(), &bindInfo.Memory, &allocation, GetPersistentAllocator());
+
+					bindInfo.Offset = allocation.Offset;
+
+					topLevelAccelerationStructure.BindToMemory(bindInfo);
+
+					topLevelAccelerationStructureAddress= topLevelAccelerationStructure.GetAddress(GetRenderDevice());
+				}
+			}
+
+			{
+				Buffer::CreateInfo buffer;
+				buffer.RenderDevice = GetRenderDevice();
+				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
+				buffer.BufferType = BufferType::ADDRESS;
+				instancesBuffer.Initialize(buffer);
+				
+				BufferScratchMemoryAllocationInfo allocationInfo;
+				allocationInfo.Allocation = &instancesAllocation;
+				allocationInfo.Buffer = instancesBuffer;
+				AllocateScratchBufferMemory(allocationInfo);
+
+				instancesBufferAddress = instancesBuffer.GetAddress(GetRenderDevice());
+			}
+
+			{				
+				Buffer::CreateInfo buffer;
+				buffer.RenderDevice = GetRenderDevice();
+				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
+				buffer.BufferType = BufferType::ADDRESS | BufferType::RAY_TRACING;
+				accelerationStructureScratchBuffer.Initialize(buffer);
+
+				BufferLocalMemoryAllocationInfo allocationInfo;
+				allocationInfo.Allocation = &scratchBufferAllocation;
+				allocationInfo.Buffer = accelerationStructureScratchBuffer;
+				AllocateLocalBufferMemory(allocationInfo);
+
+				scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
+			}
+		}
+	}
+
+	if (rayTracingCapabilities.CanBuildOnHost)
+	{
+	}
+	else
+	{
+		buildAccelerationStructures = decltype(buildAccelerationStructures)::Create<RenderSystem, &RenderSystem::buildAccelerationStructuresOnDevice>();
 	}
 	
 	swapchainPresentMode = PresentMode::FIFO;
@@ -50,7 +142,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		processedTextureCopies.EmplaceBack(0);
 		processedBufferCopies.EmplaceBack(0);
 	}
-	
 
 	{
 		Semaphore::CreateInfo semaphoreCreateInfo;
@@ -73,9 +164,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	windowsWindowData.WindowHandle = handles.HWND;
 	surfaceCreateInfo.SystemData = &windowsWindowData;
 	new(&surface) Surface(surfaceCreateInfo);
-
-	scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
-	localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 	
 	for (uint32 i = 0; i < 2; ++i)
 	{
@@ -223,7 +311,78 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 const PipelineCache* RenderSystem::GetPipelineCache() const { return &pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
-void RenderSystem::OnResize(TaskInfo taskInfo, const GTSL::Extent2D extent)
+ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshInfo& info)
+{
+	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
+
+	RayTracingMesh rayTracingMesh;
+	rayTracingMesh.Buffer = info.Buffer;
+	rayTracingMesh.IndexType = info.IndexType;
+	rayTracingMesh.IndicesCount = info.IndexCount;
+	rayTracingMesh.IndicesOffset = info.IndicesOffset;
+	
+	GAL::BuildOffset offset;
+	offset.FirstVertex = 0;
+	offset.PrimitiveCount = rayTracingMesh.IndicesCount / 3;
+	offset.PrimitiveOffset = 0;
+	offset.TransformOffset = 0;
+	buildOffsets.EmplaceBack(offset);
+
+	AccelerationStructure::GeometryDescriptor geometryDescriptor;
+	geometryDescriptor.Type = GeometryType::TRIANGLES;
+	geometryDescriptor.IndexType = rayTracingMesh.IndexType;
+	geometryDescriptor.VertexType = ShaderDataType::FLOAT3;
+	geometryDescriptor.MaxVertexCount = info.Vertices;
+	geometryDescriptor.MaxPrimitiveCount = info.IndexCount / 3;
+	geometryDescriptor.AllowTransforms = false;
+	
+	AccelerationStructure::BottomLevelCreateInfo accelerationStructureCreateInfo;
+	accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
+	accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
+	accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
+
+	rayTracingMesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
+
+	RenderDevice::MemoryRequirements memoryRequirements;
+	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
+	accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
+	accelerationStructureMemoryRequirements.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
+	accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::OBJECT;
+	accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
+	GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
+
+	{
+		RenderAllocation allocation;
+		
+		AccelerationStructure::BindToMemoryInfo bindInfo;
+		bindInfo.RenderDevice = GetRenderDevice();
+		
+		localMemoryAllocator.AllocateBuffer(*GetRenderDevice(), &bindInfo.Memory, &allocation, GetPersistentAllocator());
+
+		bindInfo.Offset = allocation.Offset;
+		
+		rayTracingMesh.AccelerationStructure.BindToMemory(bindInfo);
+
+		rayTracingMesh.Address = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
+	}
+
+	{
+		AccelerationStructure::GeometryTriangleData triangleData;
+		triangleData.VertexType = ShaderDataType::FLOAT3;
+		triangleData.VertexStride = sizeof(GTSL::Vector3);
+		triangleData.VertexBufferAddress = info.Buffer.GetAddress(GetRenderDevice());
+		triangleData.IndexType = rayTracingMesh.IndexType;
+		triangleData.IndexBufferAddress = triangleData.VertexBufferAddress + info.IndicesOffset;
+
+		triangleDatas.emplace_back(triangleData);
+	}
+
+	rayTracingMeshes.Emplace(rayTracingMesh);
+	
+	return component;
+}
+
+void RenderSystem::OnResize(const GTSL::Extent2D extent)
 {
 	graphicsQueue.Wait();
 
@@ -384,6 +543,31 @@ void RenderSystem::renderStart(TaskInfo taskInfo)
 	graphicsCommandPools[currentFrameIndex].ResetPool(&renderDevice);
 }
 
+void RenderSystem::buildAccelerationStructuresOnDevice()
+{
+	auto& commandBuffer = transferCommandBuffers[GetCurrentFrame()];
+	
+	GTSL::Array<GAL::BuildOffset*, 10> bO; bO.EmplaceBack(buildOffsets.GetData());
+
+	GAL::BuildAccelerationStructuresInfo build;
+	build.RenderDevice = GetRenderDevice();
+	build.BuildAccelerationStructureInfos = buildAccelerationStructureInfos;
+	build.BuildOffsets = bO.begin();
+
+	commandBuffer.BuildAccelerationStructure(build);
+
+	CommandBuffer::AddPipelineBarrierInfo addPipelineBarrierInfo;
+	addPipelineBarrierInfo.InitialStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
+	addPipelineBarrierInfo.FinalStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
+
+	GTSL::Array<CommandBuffer::MemoryBarrier, 1> memoryBarriers(1);
+	memoryBarriers[0].SourceAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_WRITE;
+	memoryBarriers[0].DestinationAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_READ;
+
+	addPipelineBarrierInfo.MemoryBarriers = memoryBarriers;
+	commandBuffer.AddPipelineBarrier(addPipelineBarrierInfo);
+}
+
 void RenderSystem::renderBegin(TaskInfo taskInfo)
 {	
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
@@ -452,6 +636,10 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		
 		bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
 		textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
+		buildAccelerationStructureInfos.ResizeDown(0);
+		buildOffsets.ResizeDown(0);
+		geometries.clear();
+		triangleDatas.clear();
 
 		Fence::ResetFencesInfo reset_fences_info;
 		reset_fences_info.RenderDevice = &renderDevice;
@@ -488,18 +676,6 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 
 		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
 	}
-
-	//{
-	//	if (textureBarriers[currentFrameIndex].GetLength())
-	//	{
-	//		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-	//		pipelineBarrierInfo.RenderDevice = GetRenderDevice();
-	//		pipelineBarrierInfo.TextureBarriers = textureBarriers[currentFrameIndex];
-	//		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-	//		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-	//		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
-	//	}
-	//}
 	
 	{
 		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
@@ -549,6 +725,8 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
+
+	buildAccelerationStructures(this);
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;
 	endRecordingInfo.RenderDevice = &renderDevice;

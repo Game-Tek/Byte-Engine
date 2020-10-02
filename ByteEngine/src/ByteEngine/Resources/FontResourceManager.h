@@ -29,18 +29,30 @@ namespace GTSL {
 	class Buffer;
 }
 
+struct ShortVector
+{
+	int16 X, Y;
+};
+
 class FontResourceManager : public ResourceManager
 {
 public:
 	FontResourceManager() : ResourceManager("FontResourceManager"), fonts(4, GetPersistentAllocator()) {}
 	
-	struct Curve
+	struct Segment
 	{
+		//0 is on curve
+		//1 is control point or nan
+		//2 is on curve
 		GTSL::Vector2 Points[3];
-		uint32 IsCurve = false;
 
+		bool IsCurve = false;
+		
+		bool IsBezierCurve() const { return IsCurve; }
+		
 	private:
-		uint32 d = 0;
+		bool b = false, c = false, d = false;
+		uint32 e = 0;
 	};
 
 	struct FontMetaData
@@ -50,10 +62,10 @@ public:
 		int16 Descender;
 		int16 LineGap;
 	};
-
+	
 	struct Path
 	{
-		GTSL::Vector<Curve, BE::PersistentAllocatorReference> Curves;
+		GTSL::Vector<Segment, BE::PersistentAllocatorReference> Segments;
 	};
 
 	struct Glyph
@@ -62,10 +74,11 @@ public:
 		int16 GlyphIndex;
 		int16 NumContours;
 		GTSL::Vector<Path, BE::PersistentAllocatorReference> Paths;
+		GTSL::Vector<GTSL::Vector<ShortVector, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> RawPaths;
 		uint16 AdvanceWidth;
 		int16 LeftSideBearing;
 		int16 BoundingBox[4];
-		uint32 NumTriangles;
+		GTSL::Vector2 Center;
 	};
 
 	//MAIN STRUCT

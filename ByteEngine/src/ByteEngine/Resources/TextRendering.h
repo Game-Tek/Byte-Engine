@@ -4,7 +4,7 @@
 
 #include "ByteEngine/Application/AllocatorReferences.h"
 
-#include <freetype/freetype.h>
+#include "ByteEngine/Resources/FontResourceManager.h"
 #include <GTSL\Bitman.h>
 #include <GTSL/Math/Vector2.h>
 #include <GTSL/Math/Line.h>
@@ -121,7 +121,7 @@ struct Cubic
 
 bool isControlPoint(uint32 flags) { return !GTSL::CheckBit(0, flags); }
 
-FontPoint makePoint(const FT_Vector vector) { return FontPoint(vector.x, vector.y); }
+FontPoint makePoint(const GTSL::Vector2 vector) { return FontPoint(vector.X, vector.Y); }
 
 void t()
 {
@@ -162,35 +162,35 @@ struct FaceTree
 	FaceTree(const BE::PersistentAllocatorReference allocator) : cubicBeziers(64, allocator), linearBeziers(64, allocator), blankOrFilledQuads(32, allocator)
 	{}
 
-	void MakeFromPaths(const FT_Outline& outline, const BE::TAR& allocator)
-	{		
-		for(uint16 i = 0; i < outline.n_contours; ++i)
+	void MakeFromPaths(const FontResourceManager::Glyph& outline, const BE::TAR& allocator)
+	{
+		auto& curves = outline.Paths[0].Segments;
+		
+		for(uint16 i = 0; i < curves.GetLength(); ++i)
 		{
 			FontPoint points[3/*max cuadratic bezier*/];
 
-			uint16 pointInContour = outline.contours[i];
+			uint16 pointInContour = 0;
 			
-			points[0] = makePoint(outline.points[pointInContour]);
-			BE_ASSERT(!isControlPoint(outline.tags[pointInContour]));
+			points[0] = makePoint(curves[i].Points[pointInContour]);
 
 			++pointInContour;
 			
-			if(isControlPoint(outline.tags[outline.contours[i] + 1]))
+			if(curves[pointInContour].IsBezierCurve())
 			{
-				points[1] = makePoint(outline.points[pointInContour]);
+				points[1] = makePoint(curves[i].Points[pointInContour]);
 				++pointInContour;
 				
-				points[2] = makePoint(outline.points[pointInContour]);
-				BE_ASSERT(!isControlPoint(outline.tags[pointInContour]));
+				points[2] = makePoint(curves[i].Points[pointInContour]);
 				//++pointInContour;
 
 				cubicBeziers.EmplaceBack(points[0], points[1], points[2]);
 			}
 			else
 			{
-				points[1] = makePoint(outline.points[pointInContour]);
+				points[2] = makePoint(curves[i].Points[pointInContour]);
 				
-				linearBeziers.EmplaceBack(points[0], points[1]);
+				linearBeziers.EmplaceBack(points[0], points[2]);
 			}
 		}
 

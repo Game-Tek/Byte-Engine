@@ -17,41 +17,6 @@ inline void queries()
 	QueryPool queryPool(createInfo);
 }
 
-inline void build()
-{
-	AccelerationStructure accelerationStructure;
-
-	GAL::BuildAccelerationStructureInfo buildAccelerationStructureInfo;
-	buildAccelerationStructureInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
-	buildAccelerationStructureInfo.Update = false;
-	buildAccelerationStructureInfo.Count = 1;/*number of acc. structures to build*/
-	buildAccelerationStructureInfo.SourceAccelerationStructure = accelerationStructure;
-	buildAccelerationStructureInfo.DestinationAccelerationStructure = accelerationStructure;
-	buildAccelerationStructureInfo.IsTopLevelFalse = false;
-	buildAccelerationStructureInfo.ScratchBufferAddress = 0;
-	buildAccelerationStructureInfo.Geometries = nullptr;
-
-	//AccelerationStructure::TopLevelCreateInfo topLevelCreateInfo;
-	//topLevelCreateInfo.RenderDevice;
-	//if constexpr (_DEBUG) { topLevelCreateInfo.Name = "Top Level Acc. Structure"; }
-	//topLevelCreateInfo.Flags = GAL::VulkanAccelerationStructureFlags::PREFER_FAST_TRACE;
-	//topLevelCreateInfo.CompactedSize = 0;
-	//topLevelCreateInfo.MaxGeometryCount = 0;
-	//topLevelAccelerationStructure.Initialize(topLevelCreateInfo);
-	
-	{
-		CommandBuffer::AddPipelineBarrierInfo addPipelineBarrierInfo;
-		addPipelineBarrierInfo.InitialStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
-		addPipelineBarrierInfo.FinalStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
-	
-		GTSL::Array<CommandBuffer::MemoryBarrier, 1> memoryBarriers(1);
-		memoryBarriers[0].SourceAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_WRITE;
-		memoryBarriers[0].DestinationAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_READ;
-		
-		addPipelineBarrierInfo.MemoryBarriers = memoryBarriers;		
-	}
-}
-
 inline void trace()
 {
 	CommandBuffer commandBuffer;

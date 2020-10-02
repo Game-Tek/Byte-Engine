@@ -494,7 +494,7 @@ void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 		auto* frameManager = info.GameInstance->GetSystem<FrameManager>("FrameManager");
 
-		renderSystem->OnResize(info, newSize);
+		renderSystem->OnResize(newSize);
 		frameManager->OnResize(info, newSize);
 	};
 	

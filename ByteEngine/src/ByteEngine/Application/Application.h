@@ -109,6 +109,8 @@ namespace BE
 		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;
 
 		GTSL::FlatHashMap<GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
+
+		GTSL::FlatHashMap<uint32, PersistentAllocatorReference> settings;
 		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };

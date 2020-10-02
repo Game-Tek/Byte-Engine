@@ -257,7 +257,7 @@ void Game::PostInitialize()
 	GetResourceManager<FontResourceManager>("FontResourceManager")->GetFont(GTSL::StaticString<64>("FTLTLT"));
 	
 	//{
-	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;/
+	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;
 	//	info.Light.R() = 1.00f;
 	//	info.Light.G() = 0.98f;
 	//	info.Light.B() = 0.95f;
@@ -268,7 +268,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);//
 	//}
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

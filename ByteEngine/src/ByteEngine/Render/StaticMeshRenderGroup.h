@@ -84,7 +84,6 @@ private:
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 
 	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
-	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
 
 	uint32 meshCount = 0;

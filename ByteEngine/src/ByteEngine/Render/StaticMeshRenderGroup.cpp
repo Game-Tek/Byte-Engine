@@ -77,7 +77,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
-	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
+	load_static_meshInfo.OnStaticMeshLoad = Task<StaticMeshResourceManager::OnStaticMeshLoad>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, static_cast<byte*>(allocation.Data));
 	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
 	load_static_meshInfo.IndicesAlignment = indexSize;
@@ -196,7 +196,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
 	};
 
-	taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*)>::Create(loadStaticMesh),
+	taskInfo.GameInstance->AddFreeDynamicTask(Task<StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*>::Create(loadStaticMesh),
 		GTSL::Array<TaskDependency, 2>{ {"StaticMeshRenderGroup", AccessType::READ_WRITE} }, GTSL::MoveRef(onStaticMeshLoad), this);
 }
 
@@ -237,67 +237,19 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		buffer_copy_data.Allocation = loadInfo->Allocation;
 		loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
 
-		{
-			RayTracingMesh mesh;
-			mesh.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
-			mesh.IndicesCount = onStaticMeshLoad.IndexCount;
-			mesh.IndicesOffset = onStaticMeshLoad.IndicesOffset;
-			mesh.Buffer = deviceBuffer;
-			mesh.Material = loadInfo->Material;
-
-			AccelerationStructure::GeometryType geometryType;
-			geometryType.Type = GeometryType::TRIANGLES;
-			geometryType.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
-			geometryType.VertexType = ShaderDataType::FLOAT3;
-			geometryType.MaxVertexCount = onStaticMeshLoad.VertexCount;
-			geometryType.MaxPrimitiveCount = mesh.IndicesCount / 3;
-			geometryType.AllowTransforms = false;
-
-			AccelerationStructure::GeometryTriangleData triangleData;
-			triangleData.VertexType = ShaderDataType::FLOAT3;
-			triangleData.VertexStride = sizeof(GTSL::Vector3);
-			triangleData.VertexBufferAddress = mesh.Buffer.GetAddress(loadInfo->RenderSystem->GetRenderDevice());
-			triangleData.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
-			triangleData.IndexBufferAddress = triangleData.VertexBufferAddress + onStaticMeshLoad.IndicesOffset;
-			
-			AccelerationStructure::Geometry geometry;
-			geometry.GeometryType = GeometryType::TRIANGLES;
-			geometry.GeometryFlags = GeometryFlags::OPAQUE;
-			geometry.GeometryTriangleData = &triangleData;
-
-			AccelerationStructure::AccelerationStructureBuildOffsetInfo offset;
-			offset.FirstVertex = 0;
-			offset.PrimitiveCount = geometryType.MaxPrimitiveCount;
-			offset.PrimitiveOffset = 0;
-			offset.TransformOffset = 0;
-
-			AccelerationStructure::BottomLevelCreateInfo accelerationStructureCreateInfo;
-			accelerationStructureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-			accelerationStructureCreateInfo.MaxGeometryCount = 1;
-			accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
-			accelerationStructureCreateInfo.GeometryInfos = GTSL::Range<AccelerationStructure::GeometryType*>(1, &geometryType);
-
-			mesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
-
-			RenderDevice::MemoryRequirements memoryRequirements;
-			RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
-			accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
-			accelerationStructureMemoryRequirements.AccelerationStructure = &mesh.AccelerationStructure;
-			accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
-			accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-			loadInfo->RenderSystem->GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
-
-			//USE MAX SIZE TO BUILD
-			memoryRequirements.Size;
-			
-			staticMeshRenderGroup->rayTracingMeshes.EmplaceAt(loadInfo->InstanceId, mesh);
-		}
-
+		RenderSystem::CreateRayTracingMeshInfo meshInfo;
+		meshInfo.Buffer = deviceBuffer;
+		meshInfo.Vertices = onStaticMeshLoad.VertexCount;
+		meshInfo.IndexCount = onStaticMeshLoad.IndexCount;
+		meshInfo.IndicesOffset = onStaticMeshLoad.IndicesOffset;
+		meshInfo.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+		loadInfo->RenderSystem->CreateRayTracedMesh(meshInfo);
+		
 		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);
 		
 		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
 	};
 
-	taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*)>::Create(loadStaticMesh),
+	taskInfo.GameInstance->AddFreeDynamicTask(Task<StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*>::Create(loadStaticMesh),
 		GTSL::Array<TaskDependency, 2>{ {"StaticMeshRenderGroup", AccessType::READ_WRITE} }, GTSL::MoveRef(onStaticMeshLoad), this);
 }

@@ -1,5 +1,7 @@
 #include "ByteEngine/Application/Application.h"
 
+
+#include <GTSL/Buffer.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
 
@@ -53,8 +55,83 @@ namespace BE
 		clockInstance = new Clock();
 		inputManagerInstance = new InputManager();
 		threadPool = new ThreadPool();
+
+		settings.Initialize(64, GetPersistentAllocator());
 		
 		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
+
+		{
+			GTSL::File settingsFile;
+			
+			settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
+
+			GTSL::Buffer fileBuffer; fileBuffer.Allocate(1024, 8, GetPersistentAllocator());
+
+			settingsFile.ReadFile(fileBuffer);
+
+			uint32 i = 0;
+			
+			while(static_cast<UTF8>(fileBuffer.GetData()[i]) != static_cast<UTF8>(-1) && i < fileBuffer.GetLength())
+			{
+				if(fileBuffer.GetData()[i] == '[')
+				{
+					while (fileBuffer.GetData()[i] != ']') { ++i; }
+					i += 3;
+				}
+
+				GTSL::StaticString<128> key;
+				
+				while(fileBuffer.GetData()[i] != '=')
+				{
+					key += fileBuffer.GetData()[i];
+					++i;
+				}
+
+				++i;
+				
+				GTSL::StaticString<128> valueString;
+
+				while (fileBuffer.GetData()[i] != '\r' && static_cast<char>(fileBuffer.GetData()[i]) != static_cast<char>(-1) && i < fileBuffer.GetLength())
+				{
+					valueString += fileBuffer.GetData()[i];
+					++i;
+				}
+
+				uint32 value = 0; uint32 mult = 1;
+				
+				for (uint32 j = 0, c = valueString.GetLength() - 2; j < valueString.GetLength() - 1; ++j, --c)
+				{
+					uint8 num;
+
+					switch (valueString[c])
+					{
+					case '0': num = 0; break;
+					case '1': num = 1; break;
+					case '2': num = 2; break;
+					case '3': num = 3; break;
+					case '4': num = 4; break;
+					case '5': num = 5; break;
+					case '6': num = 6; break;
+					case '7': num = 7; break;
+					case '8': num = 8; break;
+					case '9': num = 9; break;
+					default: num = 0;
+					}
+					
+					value += num * mult;
+
+					mult *= 10;
+				}
+				
+				//parse value
+
+				settings.Emplace(Id(key.begin()), value);
+			}
+			
+			fileBuffer.Free(8, GetPersistentAllocator());
+			
+			settingsFile.CloseFile();
+		}
 	}
 
 	void Application::Shutdown()

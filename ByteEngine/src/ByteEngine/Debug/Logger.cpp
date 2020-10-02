@@ -56,7 +56,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GT
 	}
 
 	logMutex.Lock();
-	logFile.WriteToFile(GTSL::Range<const byte*>(string.GetLength(), reinterpret_cast<const byte*>(string.begin())));
+	logFile.WriteToFile(GTSL::Range<const byte*>(string.GetLength() - 1, reinterpret_cast<const byte*>(string.begin())));
 	logMutex.Unlock();
 }
 

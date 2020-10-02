@@ -2,6 +2,7 @@
 
 #include <unordered_map>
 #include <GTSL/Pair.h>
+#include <GTSL/FunctionPointer.hpp>
 
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -58,7 +59,7 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	void AllocateScratchAccelerationStructureMemory(const AccelerationStructure accelerationStructure, HostRenderAllocation* renderAllocation)
+	void AllocateScratchAccelerationStructureMemory(const AccelerationStructure accelerationStructure, RenderAllocation* renderAllocation)
 	{
 		DeviceMemory deviceMemory;
 
@@ -73,7 +74,7 @@ public:
 			renderDevice.GetAccelerationStructureMemoryRequirements(requirements);
 		}
 
-		scratchMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, memoryRequirements.Size, renderAllocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, renderAllocation, GetPersistentAllocator());
 
 		AccelerationStructure::BindToMemoryInfo bindToMemoryInfo;
 		bindToMemoryInfo.RenderDevice = &renderDevice;
@@ -180,11 +181,21 @@ public:
 
 	GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 
+	struct CreateRayTracingMeshInfo
+	{
+		Buffer Buffer;
+		uint32 Vertices;
+		uint32 IndexCount;
+		IndexType IndexType;
+		uint32 IndicesOffset;
+	};
+	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
+	
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
-	void OnResize(TaskInfo taskInfo, GTSL::Extent2D extent);
+	void OnResize(GTSL::Extent2D extent);
 	
 private:
 	GTSL::Mutex testMutex;
@@ -215,7 +226,7 @@ private:
 	Queue transferQueue;
 	
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
-	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
+	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;;
 
 	struct RayTracingMesh
 	{
@@ -225,8 +236,36 @@ private:
 		IndexType IndexType;
 
 		AccelerationStructure AccelerationStructure;
+		uint64 Address;
 	};
+	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
+
+	GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
+	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;
+	std::list<AccelerationStructure::Geometry> geometries;
+	std::list<AccelerationStructure::GeometryTriangleData> triangleDatas;
+
+	RenderAllocation scratchBufferAllocation;
+	Buffer accelerationStructureScratchBuffer;
+	uint64 scratchBufferAddress;
+
+	AccelerationStructure topLevelAccelerationStructure;
+	uint64 topLevelAccelerationStructureAddress;
+
+	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
+	HostRenderAllocation instancesAllocation;
+	uint64 instancesBufferAddress;
+	Buffer instancesBuffer;
+	
+	/**
+	 * \brief Pointer to the implementation for acceleration structures build.
+	 * Since acc. structures can be built on the host or on the device depending on device capabilities
+	 * we determine which one we are able to do and cache it.
+	 */
+	GTSL::FunctionPointer<void()> buildAccelerationStructures;
+
+	void buildAccelerationStructuresOnDevice();
 	
 	uint8 currentFrameIndex = 0;
 

@@ -340,6 +340,8 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
 	accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
 	accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
+	accelerationStructureCreateInfo.DeviceAddress = 0;
+	accelerationStructureCreateInfo.CompactedSize = 0;
 
 	rayTracingMesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
 
@@ -378,13 +380,29 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	}
 
 	rayTracingMeshes.Emplace(rayTracingMesh);
+
+
+	{
+		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + instanceCount);
+		
+		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE;
+		instance.AccelerationStructureReference = reinterpret_cast<uint64>(rayTracingMesh.AccelerationStructure.GetVkAccelerationStructure());
+		instance.Mask = 0xFF;
+		instance.InstanceCustomIndex = 0;
+		instance.InstanceShaderBindingTableRecordOffset = 0;
+		instance.Transform = *info.Matrix;
+
+		BE_ASSERT(instanceCount < MAX_INSTANCES_COUNT);
+		
+		++instanceCount;
+	}
 	
 	return component;
 }
 
 void RenderSystem::OnResize(const GTSL::Extent2D extent)
 {
-	graphicsQueue.Wait();
+	graphicsQueue.Wait(GetRenderDevice());
 
 	BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
 
@@ -410,9 +428,8 @@ void RenderSystem::OnResize(const GTSL::Extent2D extent)
 	recreate.PresentMode = swapchainPresentMode;
 	recreate.Surface = &surface;
 	recreate.TextureUses = TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_DESTINATION;
+	recreate.Queue = &graphicsQueue;
 	renderContext.Recreate(recreate);
-
-	auto oldLength = swapchainTextures.GetLength();
 	
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
@@ -469,6 +486,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
+	Wait();
+	
 	for (uint32 i = 0; i < swapchainTextures.GetLength(); ++i)
 	{
 		CommandPool::FreeCommandBuffersInfo free_command_buffers_info;
@@ -522,23 +541,27 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderSystem::Wait()
 {
-	graphicsQueue.Wait();
-	transferQueue.Wait();
+	graphicsQueue.Wait(GetRenderDevice());
+	transferQueue.Wait(GetRenderDevice());
 }
 
 void RenderSystem::renderStart(TaskInfo taskInfo)
 {
-	Fence::WaitForFencesInfo waitForFencesInfo;
-	waitForFencesInfo.RenderDevice = &renderDevice;
-	waitForFencesInfo.Timeout = ~0ULL;
-	waitForFencesInfo.WaitForAll = true;
-	waitForFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
-	Fence::WaitForFences(waitForFencesInfo);
+	//Fence::WaitForFencesInfo waitForFencesInfo;
+	//waitForFencesInfo.RenderDevice = &renderDevice;
+	//waitForFencesInfo.Timeout = ~0ULL;
+	//waitForFencesInfo.WaitForAll = true;
+	//waitForFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
+	//Fence::WaitForFences(waitForFencesInfo);
 
-	Fence::ResetFencesInfo resetFencesInfo;
-	resetFencesInfo.RenderDevice = &renderDevice;
-	resetFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
-	Fence::ResetFences(resetFencesInfo);
+	graphicsFences[currentFrameIndex].Wait(GetRenderDevice());
+
+	//Fence::ResetFencesInfo resetFencesInfo;
+	//resetFencesInfo.RenderDevice = &renderDevice;
+	//resetFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
+	//Fence::ResetFences(resetFencesInfo);
+	
+	graphicsFences[currentFrameIndex].Reset(GetRenderDevice());
 	
 	graphicsCommandPools[currentFrameIndex].ResetPool(&renderDevice);
 }

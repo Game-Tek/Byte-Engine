@@ -176,10 +176,10 @@ public:
 		textureCopyDatas[GetCurrentFrame()].EmplaceBack(textureCopyData);
 		testMutex.Unlock();
 	}
-	
-	const PipelineCache* GetPipelineCache() const;
 
-	GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
+	[[nodiscard]] const PipelineCache* GetPipelineCache() const;
+
+	[[nodiscard]] GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 
 	struct CreateRayTracingMeshInfo
 	{
@@ -188,6 +188,7 @@ public:
 		uint32 IndexCount;
 		IndexType IndexType;
 		uint32 IndicesOffset;
+		GTSL::Matrix3x4* Matrix;
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
@@ -257,6 +258,8 @@ private:
 	HostRenderAllocation instancesAllocation;
 	uint64 instancesBufferAddress;
 	Buffer instancesBuffer;
+
+	uint32 instanceCount = 0;
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.

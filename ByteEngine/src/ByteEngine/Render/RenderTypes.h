@@ -2,6 +2,8 @@
 
 #include "ByteEngine/Core.h"
 
+#include "ByteEngine/Debug/Assert.h"
+
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
 #include <GAL/Vulkan/VulkanBuffer.h>
@@ -15,8 +17,6 @@
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
 #include <GAL/Vulkan/VulkanAccelerationStructures.h>
-
-#include "ByteEngine/Debug/Assert.h"
 
 /**
  * \brief Defines the maximum number of frames that can be processed concurrently in the CPU and GPU.
@@ -67,7 +67,6 @@ struct HostRenderAllocation : RenderAllocation
 
 #if (_WIN64)
 #undef OPAQUE
-constexpr GAL::RenderAPI API = GAL::RenderAPI::VULKAN;
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
 using Shader = GAL::VulkanShader;
@@ -119,9 +118,13 @@ using TextureFormat = GAL::VulkanTextureFormat;
 using TextureTiling = GAL::VulkanTextureTiling;
 using TextureLayout = GAL::VulkanTextureLayout;
 using ShaderDataType = GAL::VulkanShaderDataType;
+using AllocationFlags = GAL::VulkanAllocateFlags;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
+using GeometryInstanceFlags = GAL::VulkanGeometryInstanceFlags;
 using AccelerationStructureFlags = GAL::VulkanAccelerationStructureFlags;
 #endif
+
+constexpr GAL::RenderAPI API = GAL::RenderAPI::VULKAN;
 
 inline TextureType::value_type ConvertTextureType(const GAL::TextureType type)
 {

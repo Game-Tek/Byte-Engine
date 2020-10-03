@@ -86,7 +86,8 @@ void ScratchMemoryBlock::Initialize(const RenderDevice& renderDevice, const uint
 	memory_create_info.Name = "Buffer Shared Memory Block";
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, MemoryType::SHARED | MemoryType::COHERENT);
-	::new(&deviceMemory) DeviceMemory(memory_create_info);
+	memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
+	deviceMemory.Initialize(memory_create_info);
 
 	DeviceMemory::MapInfo map_info;
 	map_info.RenderDevice = &renderDevice;
@@ -211,7 +212,8 @@ void LocalMemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size,
 	memory_create_info.Name = "GPU Memory Block";
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, static_cast<uint32>(MemoryType::GPU));
-	::new(&deviceMemory) DeviceMemory(memory_create_info);
+	memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
+	deviceMemory.Initialize(memory_create_info);
 
 	freeSpaces.EmplaceBack(size, 0);
 }
@@ -321,7 +323,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS;
 	Buffer dummyBuffer(buffer_create_info);
 
 	Texture::CreateInfo create_info;

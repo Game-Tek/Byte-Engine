@@ -138,8 +138,6 @@ System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const A
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
 	positions.EmplaceAt(index);
 
-	++meshCount;
-
 	return index;
 }
 
@@ -243,6 +241,9 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		meshInfo.IndexCount = onStaticMeshLoad.IndexCount;
 		meshInfo.IndicesOffset = onStaticMeshLoad.IndicesOffset;
 		meshInfo.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+
+		GTSL::Matrix3x4 matrix;
+		meshInfo.Matrix = &matrix;
 		loadInfo->RenderSystem->CreateRayTracedMesh(meshInfo);
 		
 		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);

@@ -179,6 +179,17 @@ void Game::PostInitialize()
 		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
+
+	{
+		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "hydrant";
+		addStaticMeshInfo.Material = material;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
+		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
+	}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -265,7 +276,7 @@ void Game::PostInitialize()
 	//	info.Rotation.Y = 0;
 	//	info.Rotation.Z = 0;
 	//
-	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);//
+	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
 	//}
 	
 	//window.ShowMouse(false);

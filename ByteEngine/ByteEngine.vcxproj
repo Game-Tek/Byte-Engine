@@ -238,7 +238,6 @@
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Resources\trueType.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
     <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
@@ -281,7 +280,6 @@
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\trueType.cpp" />
     <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />

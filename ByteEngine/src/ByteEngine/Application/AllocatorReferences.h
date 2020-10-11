@@ -80,4 +80,5 @@ namespace BE
 	};
 
 	using TAR = TransientAllocatorReference;
+	using PAR = PersistentAllocatorReference;
 }

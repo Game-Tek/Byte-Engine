@@ -140,6 +140,7 @@
     <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\rayTracing.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
+    <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -181,5 +182,6 @@
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Render\FrameManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
   </ItemGroup>
 </Project>

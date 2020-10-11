@@ -14,7 +14,9 @@
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/TextSystem.h"
+#include "ByteEngine/Render/UIManager.h"
 
+class UIManager;
 class TestSystem;
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
@@ -188,7 +190,43 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
+		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+	}
+
+	{
+		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+		auto& canvasRef = canvasSystem->GetCanvas(canvas);
+		canvasRef.SetExtent({ 1280, 720 });
+	
+		auto organizerComp = canvasRef.AddOrganizer("TopBar");
+		//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
+	
+		canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
+	
+		auto closeButtonComp = canvasRef.AddSquare(organizerComp);
+		canvasRef.SetSquareAspectRatio(organizerComp, closeButtonComp, { 0.05f, 0.02f });
+		canvasRef.SetSquareColor(organizerComp, closeButtonComp, { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+		canvasRef.SetSquareAlignment(organizerComp, closeButtonComp, Alignment::RIGHT);
+		
+		auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
+		canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });
+		canvasRef.SetSquareColor(organizerComp, toggleButtonComp, { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+		canvasRef.SetSquareAlignment(organizerComp, toggleButtonComp, Alignment::RIGHT);
+		
+		auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
+		canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
+		canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, { 0.5882f, 0.9607f, 0.2588f, 1.0f });
+		canvasRef.SetSquareAlignment(organizerComp, minimizeButtonComp, Alignment::RIGHT);
+	
+		//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
+		//closeButtonRef.SetMaterial(closeButtonMaterial);
+		//
+		//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
+		//toggleButtonRef.SetMaterial(toggleButtonMaterial);
+		//
+		//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
+		//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
 	}
 	
 	//{
@@ -276,7 +314,7 @@ void Game::PostInitialize()
 	//	info.Rotation.Y = 0;
 	//	info.Rotation.Z = 0;
 	//
-	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
+	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);//
 	//}
 	
 	//window.ShowMouse(false);

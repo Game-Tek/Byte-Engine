@@ -142,6 +142,8 @@ namespace BE
 		}
 
 		delete threadPool;
+
+		settings.Free();
 		
 		delete clockInstance;
 		delete inputManagerInstance;

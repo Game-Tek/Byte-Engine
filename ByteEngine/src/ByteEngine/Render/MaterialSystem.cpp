@@ -90,7 +90,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<128> name("Bindings set layout. Material system global state");
-			bindingsSetLayoutCreateInfo.Name = name.begin();
+			bindingsSetLayoutCreateInfo.Name = name;
 		}
 		
 		bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
@@ -103,7 +103,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 	if constexpr (_DEBUG)
 	{
 		GTSL::StaticString<64> name("Bindings pool. Global state");
-		bindingsPoolCreateInfo.Name = name.begin();
+		bindingsPoolCreateInfo.Name = name;
 	}
 	
 	GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptor_pool_sizes;
@@ -141,7 +141,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 				{
 					GTSL::StaticString<64> name("Bindings Set. Global state "); name += j;
 					bindingsSetsCreateInfo[j].RenderDevice = renderSystem->GetRenderDevice();
-					bindingsSetsCreateInfo[j].Name = name.begin();
+					bindingsSetsCreateInfo[j].Name = name;
 				}
 			}
 			
@@ -158,7 +158,7 @@ void MaterialSystem::SetGlobalState(GameInstance* gameInstance, const GTSL::Arra
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<128> name("Pipeline Layout. Global state");
-			pipelineLayout.Name = name.begin();
+			pipelineLayout.Name = name;
 		}
 
 		pipelineLayout.BindingsSetLayouts = globalBindingsSetLayout;
@@ -191,7 +191,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Bindings set layout. Render group: "); name += addRenderGroupInfo.Name;
-			setLayout.Name = name.begin();
+			setLayout.Name = name;
 		}
 
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
@@ -213,7 +213,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Bindings pool. Render group: "); name += addRenderGroupInfo.Name;
-			bindingsPoolCreateInfo.Name = name.begin();
+			bindingsPoolCreateInfo.Name = name;
 		}
 
 		GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptorPoolSizes;
@@ -256,7 +256,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 					{
 						GTSL::StaticString<64> name("BindingsSet. Render Group: "); name += addRenderGroupInfo.Name;
 						bindingsSetsCreateInfo[j].RenderDevice = renderSystem->GetRenderDevice();
-						bindingsSetsCreateInfo[j].Name = name.begin();
+						bindingsSetsCreateInfo[j].Name = name;
 					}
 				}
 
@@ -278,7 +278,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<128> name("Pipeline layout. Render group: "); name += addRenderGroupInfo.Name;
-			pipelineLayout.Name = name.begin();
+			pipelineLayout.Name = name;
 		}
 
 		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
@@ -300,7 +300,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 				if constexpr (_DEBUG)
 				{
 					GTSL::StaticString<64> name("Uniform Buffer. Render group: "); name += addRenderGroupInfo.Name;
-					bufferInfo.Name = name.begin();
+					bufferInfo.Name = name;
 				}
 
 				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
@@ -334,7 +334,7 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 				if constexpr (_DEBUG)
 				{
 					GTSL::StaticString<64> name("Storage buffer. Render group: "); name += addRenderGroupInfo.Name;
-					bufferInfo.Name = name.begin();
+					bufferInfo.Name = name;
 				}
 
 				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
@@ -432,7 +432,7 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName.GetHash();
-			scratchBufferCreateInfo.Name = name.begin();
+			scratchBufferCreateInfo.Name = name;
 		}
 
 		{
@@ -636,7 +636,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 				if constexpr (_DEBUG) {
 					GTSL::StaticString<128> name("Bindings set layout. Material: "); name += onMaterialLoadInfo.ResourceName;
-					bindingsSetLayoutCreateInfo.Name = name.begin();
+					bindingsSetLayoutCreateInfo.Name = name;
 				}
 
 				bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
@@ -649,7 +649,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				bufferInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 				if constexpr (_DEBUG) {
 					GTSL::StaticString<64> name("Uniform Buffer. Material: "); name += onMaterialLoadInfo.ResourceName;
-					bufferInfo.Name = name.begin();
+					bufferInfo.Name = name;
 				}
 
 				for (uint8 i = 0; i < onMaterialLoadInfo.Textures.GetLength(); ++i)
@@ -689,7 +689,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				bindingsPoolCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 				if constexpr (_DEBUG) {
 					GTSL::StaticString<64> name("Bindings pool. Material: "); name += onMaterialLoadInfo.ResourceName;
-					bindingsPoolCreateInfo.Name = name.begin();
+					bindingsPoolCreateInfo.Name = name;
 				}
 
 				BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
@@ -720,7 +720,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 							GAL::VulkanCreateInfo createInfo;
 							createInfo.RenderDevice = renderSystem->GetRenderDevice();
-							createInfo.Name = name.begin();
+							createInfo.Name = name;
 
 							bindingsSetsCreateInfo.EmplaceBack(createInfo);
 						}
@@ -742,7 +742,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			pipelineCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
 			if constexpr (_DEBUG) {
 				GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName;
-				pipelineCreateInfo.Name = name.begin();
+				pipelineCreateInfo.Name = name;
 			}
 
 			{
@@ -764,7 +764,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 				if constexpr (_DEBUG) {
 					GTSL::StaticString<128> name("Pipeline Layout. Material: "); name += onMaterialLoadInfo.ResourceName;
-					pipelineLayout.Name = name.begin();
+					pipelineLayout.Name = name;
 				}
 
 				pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
@@ -873,14 +873,14 @@ void MaterialSystem::test()
 	
 	RayTracingPipeline::CreateInfo createInfo;
 	createInfo.RenderDevice;
-	if constexpr (_DEBUG) { createInfo.Name = "RayTracing Pipeline"; }
+	if constexpr (_DEBUG) { createInfo.Name = GTSL::StaticString<32>("RayTracing Pipeline"); }
 	createInfo.IsInheritable = false;
 
 	//TODO: MOVE TO GLOBAL SETUP
 	{
 		PipelineLayout::CreateInfo pipelineLayoutCreateInfo;
 		pipelineLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-		pipelineLayoutCreateInfo.Name = "RayTracing Pipeline Layout";
+		pipelineLayoutCreateInfo.Name = GTSL::StaticString<32>("RayTracing Pipeline Layout");
 		
 		{
 			GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
@@ -930,30 +930,6 @@ void MaterialSystem::test()
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
 {
 	{
-		//auto checkConvertImage = [](TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo, MaterialSystem* materialSystem)
-		//{
-		//	auto* loadInfo = DYNAMIC_CAST(TextureLoadInfo, onTextureLoadInfo.UserData);
-		//
-		//	RenderDevice::FindSupportedImageFormat findFormat;
-		//	findFormat.TextureTiling = TextureTiling::OPTIMAL;
-		//	findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-		//	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(onTextureLoadInfo.TextureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-		//	findFormat.Candidates = candidates;
-		//	auto supportedFormat = loadInfo->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
-		//
-		//	if (candidates[0] != supportedFormat)
-		//	{
-		//		Texture::ConvertImageToFormat(onTextureLoadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, onTextureLoadInfo.Extent, GTSL::AlignedPointer<byte, 16>(onTextureLoadInfo.DataBuffer.begin()), 1);
-		//	}
-		//
-		//	{
-		//		const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-		//
-		//		taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onTextureProcessed>(materialSystem),
-		//			loadTaskDependencies, GTSL::MoveRef(onTextureLoadInfo));
-		//	}
-		//};
-
 		auto* loadInfo = DYNAMIC_CAST(TextureLoadInfo, onTextureLoadInfo.UserData);
 
 		RenderDevice::FindSupportedImageFormat findFormat;
@@ -971,8 +947,6 @@ void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::On
 			taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onTextureProcessed>(this),
 				loadTaskDependencies, GTSL::MoveRef(onTextureLoadInfo));
 		}
-
-		//taskInfo.GameInstance->AddFreeDynamicTask(GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo, MaterialSystem*)>::Create(checkConvertImage), loadTaskDependencies, GTSL::MoveRef(onTextureLoadInfo), this);
 	}
 }
 
@@ -996,7 +970,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Texture. Texture: "); name += onTextureLoadInfo.ResourceName;
-			textureCreateInfo.Name = name.begin();
+			textureCreateInfo.Name = name;
 		}
 
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
@@ -1025,7 +999,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Texture view. Texture: "); name += onTextureLoadInfo.ResourceName;
-			textureViewCreateInfo.Name = name.begin();
+			textureViewCreateInfo.Name = name;
 		}
 
 		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
@@ -1055,7 +1029,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Texture sampler. Texture: "); name += onTextureLoadInfo.ResourceName;
-			textureSamplerCreateInfo.Name = name.begin();
+			textureSamplerCreateInfo.Name = name;
 		}
 
 		textureSamplerCreateInfo.Anisotropy = 0;

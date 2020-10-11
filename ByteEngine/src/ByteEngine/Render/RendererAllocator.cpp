@@ -30,11 +30,13 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	scratch_buffer.Destroy(&renderDevice);
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, uint32 size, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	BE_ASSERT(renderAllocation->Size > 0 && renderAllocation->Size <= ALLOCATION_SIZE, "Invalid size!")
+	
 	AllocID allocationId;
 	
-	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
 	
 	for (auto& e : bufferMemoryBlocks)
 	{
@@ -53,21 +55,6 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo);
 
-	//{
-	//	DeviceMemory::CreateInfo memory_create_info;
-	//	memory_create_info.RenderDevice = &renderDevice;
-	//	memory_create_info.Name = "Buffer Shared Memory Block";
-	//	memory_create_info.Size = size;
-	//	memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT);
-	//	*deviceMemory = DeviceMemory(memory_create_info);
-	//
-	//	DeviceMemory::MapInfo map_info;
-	//	map_info.RenderDevice = &renderDevice;
-	//	map_info.Size = memory_create_info.Size;
-	//	map_info.Offset = 0;
-	//	renderAllocation->Data = deviceMemory->Map(map_info);
-	//}
-
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocationId;
 }
@@ -83,7 +70,7 @@ void ScratchMemoryBlock::Initialize(const RenderDevice& renderDevice, const uint
 	
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Name = "Buffer Shared Memory Block";
+	memory_create_info.Name = GTSL::StaticString<32>("Buffer Shared Memory Block");
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, MemoryType::SHARED | MemoryType::COHERENT);
 	memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
@@ -209,7 +196,7 @@ void LocalMemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size,
 
 	DeviceMemory::CreateInfo memory_create_info;
 	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Name = "GPU Memory Block";
+	memory_create_info.Name = GTSL::StaticString<32>("GPU Memory Block");
 	memory_create_info.Size = size;
 	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, static_cast<uint32>(MemoryType::GPU));
 	memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
@@ -363,6 +350,8 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 
 void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
 {
+	BE_ASSERT(renderAllocation->Size > 0 && renderAllocation->Size <= ALLOCATION_SIZE, "Invalid size!")
+	
 	AllocID allocId;
 
 	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);

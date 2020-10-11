@@ -58,7 +58,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Scratch Buffer. Font class: "); name += info.Text.begin();
-			scratchBufferCreateInfo.Name = name.begin();
+			scratchBufferCreateInfo.Name = name;
 		}
 
 		{

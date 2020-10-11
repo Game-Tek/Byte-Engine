@@ -9,6 +9,7 @@
 
 #include "RendererAllocator.h"
 #include "RenderTypes.h"
+#include "StaticMeshRenderGroup.h"
 
 namespace GTSL {
 	class Window;
@@ -97,13 +98,15 @@ public:
 	
 	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
 	{
-		BE_ASSERT(testMutex.TryLock())
+		testMutex.Lock();
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetBufferMemoryRequirements(&allocationInfo.Buffer, memoryRequirements);
 		
 		DeviceMemory deviceMemory;
+
+		allocationInfo.Allocation->Size = memoryRequirements.Size;
 		
-		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, memoryRequirements.Size, allocationInfo.Allocation, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
 
 		Buffer::BindMemoryInfo bindMemoryInfo;
 		bindMemoryInfo.RenderDevice = GetRenderDevice();
@@ -120,7 +123,7 @@ public:
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
 	{
-		BE_ASSERT(testMutex.TryLock())
+		testMutex.Lock();
 		RenderDevice::MemoryRequirements memoryRequirements;
 		renderDevice.GetBufferMemoryRequirements(&memoryAllocationInfo.Buffer, memoryRequirements);
 
@@ -183,14 +186,17 @@ public:
 
 	struct CreateRayTracingMeshInfo
 	{
-		Buffer Buffer;
 		uint32 Vertices;
 		uint32 IndexCount;
 		IndexType IndexType;
 		uint32 IndicesOffset;
 		GTSL::Matrix3x4* Matrix;
+		Buffer SourceBuffer;
+		HostRenderAllocation SourceAllocation;
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
+
+	void RenderMesh(const ComponentReference component);
 	
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -212,6 +218,8 @@ private:
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 
+	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedAccelerationStructureBuilds;
+	
 	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
 	
@@ -227,12 +235,11 @@ private:
 	Queue transferQueue;
 	
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
-	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;;
+	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
 
 	struct RayTracingMesh
 	{
 		Buffer Buffer;
-		uint32 IndicesOffset;
 		uint32 IndicesCount;
 		IndexType IndexType;
 
@@ -242,10 +249,10 @@ private:
 	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
+	GTSL::Array<GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> buildAccelerationStructureInfos;
 	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;
-	std::list<AccelerationStructure::Geometry> geometries;
-	std::list<AccelerationStructure::GeometryTriangleData> triangleDatas;
+	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
+	//GTSL::Vector<AccelerationStructure::GeometryTriangleData, BE::PersistentAllocatorReference> triangleDatas;
 
 	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;

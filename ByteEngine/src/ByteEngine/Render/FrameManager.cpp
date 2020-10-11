@@ -29,7 +29,7 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 	
 	RenderPass::CreateInfo renderPassCreateInfo;
 	renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) { renderPassCreateInfo.Name = "RenderPass"; }
+	if constexpr (_DEBUG) { renderPassCreateInfo.Name = GTSL::StaticString<32>("RenderPass"); }
 	
 	{
 		GTSL::Array<RenderPass::AttachmentDescriptor, 16> attachmentDescriptors;
@@ -225,7 +225,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		
 		Texture::CreateInfo textureCreateInfo;
 		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) { textureCreateInfo.Name = attachment.Name.GetString(); }
+		if constexpr (_DEBUG) { textureCreateInfo.Name = GTSL::StaticString<32>(attachment.Name.GetString()); }
 		textureCreateInfo.Extent = { newSize.Width, newSize.Height, 1 };
 		textureCreateInfo.Dimensions = Dimensions::SQUARE;
 		textureCreateInfo.Format = attachment.Format;
@@ -242,7 +242,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 
 		TextureView::CreateInfo textureViewCreateInfo;
 		textureViewCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) { textureViewCreateInfo.Name = attachment.Name.GetString(); }
+		if constexpr (_DEBUG) { textureViewCreateInfo.Name = GTSL::StaticString<32>(attachment.Name.GetString()); }
 		textureViewCreateInfo.Dimensions = Dimensions::SQUARE;
 		textureViewCreateInfo.Format = attachment.Format;
 		textureViewCreateInfo.MipLevels = 1;
@@ -253,7 +253,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		TextureSampler::CreateInfo textureSamplerCreateInfo;
 		textureSamplerCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		textureSamplerCreateInfo.Anisotropy = 0;
-		if constexpr (_DEBUG) { textureSamplerCreateInfo.Name = attachment.Name.GetString(); }
+		if constexpr (_DEBUG) { textureSamplerCreateInfo.Name = GTSL::StaticString<32>(attachment.Name.GetString()); }
 		attachment.TextureSampler = TextureSampler(textureSamplerCreateInfo);
 	};
 
@@ -270,7 +270,7 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		
 		FrameBuffer::CreateInfo framebufferCreateInfo;
 		framebufferCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) { framebufferCreateInfo.Name = "FrameBuffer"; }
+		if constexpr (_DEBUG) { framebufferCreateInfo.Name = GTSL::StaticString<32>("FrameBuffer"); }
 
 		GTSL::Array<TextureView, 8> textureViews;
 

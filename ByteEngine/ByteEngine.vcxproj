@@ -229,6 +229,7 @@
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
+    <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
@@ -274,6 +275,7 @@
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
+    <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />

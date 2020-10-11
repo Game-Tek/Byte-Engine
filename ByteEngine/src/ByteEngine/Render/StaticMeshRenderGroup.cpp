@@ -44,7 +44,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	if constexpr (_DEBUG)
 	{
 		GTSL::StaticString<64> name("Buffer. StaticMesh: "); name += addStaticMeshInfo.MeshName.GetHash();
-		bufferCreateInfo.Name = name.begin();
+		bufferCreateInfo.Name = name;
 	}
 	
 	bufferCreateInfo.Size = bufferSize;
@@ -105,7 +105,7 @@ System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const A
 	if constexpr (_DEBUG)
 	{
 		GTSL::StaticString<64> name("Buffer. StaticMesh: "); name += addStaticMeshInfo.MeshName.GetHash();
-		bufferCreateInfo.Name = name.begin();
+		bufferCreateInfo.Name = name;
 	}
 
 	bufferCreateInfo.Size = bufferSize;
@@ -155,7 +155,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 		if constexpr (_DEBUG)
 		{
 			GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += onStaticMeshLoad.ResourceName;
-			createInfo.Name = name.begin();
+			createInfo.Name = name;
 		}
 
 		createInfo.Size = onStaticMeshLoad.DataBuffer.Bytes();
@@ -204,39 +204,9 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 	{
 		MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
-		RenderAllocation allocation;
-
-		Buffer::CreateInfo createInfo;
-		createInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Device buffer. StaticMeshRenderGroup: "); name += onStaticMeshLoad.ResourceName;
-			createInfo.Name = name.begin();
-		}
-
-		createInfo.Size = onStaticMeshLoad.DataBuffer.Bytes();
-		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION | BufferType::ADDRESS;
-		Buffer deviceBuffer(createInfo);
-
-		{
-			RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
-			memoryAllocationInfo.Allocation = &allocation;
-			memoryAllocationInfo.Buffer = deviceBuffer;
-			loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
-		}
-
-		RenderSystem::BufferCopyData buffer_copy_data;
-		buffer_copy_data.SourceOffset = 0;
-		buffer_copy_data.DestinationOffset = 0;
-		buffer_copy_data.SourceBuffer = loadInfo->ScratchBuffer;
-		buffer_copy_data.DestinationBuffer = deviceBuffer;
-		buffer_copy_data.Size = onStaticMeshLoad.DataBuffer.Bytes();
-		buffer_copy_data.Allocation = loadInfo->Allocation;
-		loadInfo->RenderSystem->AddBufferCopy(buffer_copy_data);
-
 		RenderSystem::CreateRayTracingMeshInfo meshInfo;
-		meshInfo.Buffer = deviceBuffer;
+		meshInfo.SourceBuffer = loadInfo->ScratchBuffer;
+		meshInfo.SourceAllocation = loadInfo->Allocation;
 		meshInfo.Vertices = onStaticMeshLoad.VertexCount;
 		meshInfo.IndexCount = onStaticMeshLoad.IndexCount;
 		meshInfo.IndicesOffset = onStaticMeshLoad.IndicesOffset;
@@ -245,8 +215,6 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		GTSL::Matrix3x4 matrix;
 		meshInfo.Matrix = &matrix;
 		loadInfo->RenderSystem->CreateRayTracedMesh(meshInfo);
-		
-		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);
 		
 		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
 	};

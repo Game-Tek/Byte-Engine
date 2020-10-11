@@ -18,10 +18,10 @@ class Game final : public GameApplication
 	GTSL::Vector3 moveDir;
 	float32 fov = 45.0f;
 	
-	uint32 camera;
+	ComponentReference camera;
 	MaterialHandle material;
 	MaterialHandle textMaterial;
-	System::ComponentReference texture;
+	ComponentReference texture;
 	MaterialHandle tvMat;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);

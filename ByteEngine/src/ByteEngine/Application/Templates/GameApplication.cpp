@@ -11,6 +11,7 @@
 
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/TextSystem.h"
+#include "ByteEngine/Render/UIManager.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
@@ -149,8 +150,12 @@ void GameApplication::PostInitialize()
 	}
 
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+	
+	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
+	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
+	
 	renderOrchestrator->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", staticMeshRenderGroup);
-	renderOrchestrator->AddRenderGroup(gameInstance, "TextSystem", reinterpret_cast<RenderGroup*>(textSystem));
+	renderOrchestrator->AddRenderGroup(gameInstance, "UI", uiManager);
 	
 	window.ShowWindow();
 }

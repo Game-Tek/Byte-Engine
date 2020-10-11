@@ -254,7 +254,7 @@ private:
 	uint32 scalingFactor = 16;
 	
 	void initWorld(uint8 worldId);
-	void initSystem(System* system, GTSL::Id64 name);
+	void initSystem(System* system, GTSL::Id64 name, const uint16 id);
 
 	uint16 getGoalIndex(const Id name) const
 	{
@@ -325,15 +325,17 @@ public:
 	{
 		System* system;
 
+		uint32 l;
+		
 		{
 			GTSL::WriteLock lock(systemsMutex);
-			auto l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
+			l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
 			systemsMap.Emplace(systemName, systems[l]);
 			systemsIndirectionTable.Emplace(systemName, l);
 			system = systems[l];
 		}
 
-		initSystem(system, systemName);
+		initSystem(system, systemName, static_cast<uint16>(l));
 
 		taskSorter.AddSystem();
 		

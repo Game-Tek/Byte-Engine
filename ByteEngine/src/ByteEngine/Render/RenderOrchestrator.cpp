@@ -15,8 +15,11 @@
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
 #include "TextSystem.h"
+#include "UIManager.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/CameraSystem.h"
+
+class UIManager;
 
 struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 {
@@ -121,13 +124,13 @@ struct StaticMeshRenderManager : RenderOrchestrator::RenderManager
 	}
 };
 
-struct TextRenderManager : RenderOrchestrator::RenderManager
+struct UIRenderManager : RenderOrchestrator::RenderManager
 {
 	void Render(const RenderInfo& renderInfo) override
 	{
 		if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 1)
 		{
-			auto* textSystem = renderInfo.GameInstance->GetSystem<TextSystem>("TextSystem");
+			auto* uiManager = renderInfo.GameInstance->GetSystem<UIManager>("UIManager");
 			
 			if (textSystem->GetTexts().ElementCount())
 			{
@@ -169,79 +172,111 @@ struct TextRenderManager : RenderOrchestrator::RenderManager
 
 	void Setup(const SetupInfo& info) override
 	{
-		auto textSystem = info.GameInstance->GetSystem<TextSystem>("TextSystem");
+		auto* uiSystem = info.GameInstance->GetSystem<UIManager>("UIManager");
+		auto* canvasSystem = info.GameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 		
 		float32 scale = 1.0f;
-		
-		if (textSystem->GetTexts().ElementCount())
-		{
-			int32 atlasIndex = 0;
-			
-			auto& text = textSystem->GetTexts()[0];
-			auto& imageFont = textSystem->GetFont();
-		
-			auto x = text.Position.X;
-			auto y = text.Position.Y;
-			
-			byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
-		
-			uint32 offset = 0;
-			
-			GTSL::Matrix4 ortho;
-			auto renderExtent = info.RenderSystem->GetRenderExtent();
-			GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(renderExtent.Width) * 0.5f, static_cast<float32>(renderExtent.Width) * -0.5f, static_cast<float32>(renderExtent.Height) * 0.5f, static_cast<float32>(renderExtent.Height) * -0.5f, 1, 100);
-			GTSL::MemCopy(sizeof(ortho), &ortho, data + offset); offset += sizeof(ortho);
-			GTSL::MemCopy(sizeof(uint32), &atlasIndex, data + offset); offset += sizeof(uint32); offset += sizeof(uint32) * 3;
-			
-			for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
-			{
-				auto& ch = imageFont.Characters.at(*c);
-		
-				float xpos = x + ch.Bearing.X * scale;
-				float ypos = y - (ch.Size.Height - ch.Bearing.Y) * scale;
-		
-				float w = ch.Size.Width * scale;
-				float h = ch.Size.Height * scale;
-				
-				// update VBO for each character
-				float vertices[6][4] = {
-					{ xpos,     -(ypos + h),   0.0f, 0.0f },
-					{ xpos,     -(ypos),       0.0f, 1.0f },
-					{ xpos + w, -(ypos),       1.0f, 1.0f },
-		
-					{ xpos,     -(ypos + h),   0.0f, 0.0f },
-					{ xpos + w, -(ypos),       1.0f, 1.0f },
-					{ xpos + w, -(ypos + h),   1.0f, 0.0f }
-				};
-				
-				// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
-				x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
-		
-				uint32 val = ch.Position.Width;
-				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-				val = ch.Position.Height;
-				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
 
-				val = ch.Size.Width;
-				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-				val = ch.Size.Height;
-				GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-				
-				for (uint32 v = 0; v < 6; ++v)
+		auto canvases = uiSystem->GetCanvases();
+
+		for(auto& ref : canvases)
+		{
+			auto& canvas = canvasSystem->GetCanvas(ref);
+			auto canvasSize = canvas.GetExtent();
+
+			GTSL::Matrix4 ortho;
+			GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(canvasSize.Width) * 0.5f, static_cast<float32>(canvasSize.Width) * -0.5f, static_cast<float32>(canvasSize.Height) * 0.5f, static_cast<float32>(canvasSize.Height) * -0.5f, 1, 100);
+
+			auto organizers = canvas.GetOrganizers();
+			auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
+			auto organizersSquares = canvas.GetOrganizersSquares();
+			
+			for(auto aspectRatio : organizersAspectRatio)
+			{
+				GTSL::Matrix4 organizerMatrix = ortho;
+				GTSL::Math::Scale(organizerMatrix, { aspectRatio.X, aspectRatio.Y, 1.0f });
+				//handle pos
+
+				//TODO: HANDLE DEPTH
+
+				for (auto square : organizersSquares)
 				{
-					GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][0], data + offset); offset += sizeof(GTSL::Vector2); //vertices
-					GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][2], data + offset); offset += sizeof(GTSL::Vector2); //uv
 				}
-				
 			}
-		
 		}
-		//MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
-		//updateInfo.RenderGroup = "TextSystem";
-		//updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
-		//updateInfo.Offset = 0;
-		//info.MaterialSystem->UpdateRenderGroupData(updateInfo);
+		
+		//if (textSystem->GetTexts().ElementCount())
+		//{
+		//	int32 atlasIndex = 0;
+		//	
+		//	auto& text = textSystem->GetTexts()[0];
+		//	auto& imageFont = textSystem->GetFont();
+		//
+		//	auto x = text.Position.X;
+		//	auto y = text.Position.Y;
+		//	
+		//	byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
+		//
+		//	uint32 offset = 0;
+		//	
+		//	GTSL::Matrix4 ortho;
+		//	auto renderExtent = info.RenderSystem->GetRenderExtent();
+		//	GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(renderExtent.Width) * 0.5f, static_cast<float32>(renderExtent.Width) * -0.5f, static_cast<float32>(renderExtent.Height) * 0.5f, static_cast<float32>(renderExtent.Height) * -0.5f, 1, 100);
+		//	GTSL::MemCopy(sizeof(ortho), &ortho, data + offset); offset += sizeof(ortho);
+		//	GTSL::MemCopy(sizeof(uint32), &atlasIndex, data + offset); offset += sizeof(uint32); offset += sizeof(uint32) * 3;
+		//	
+		//	for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
+		//	{
+		//		auto& ch = imageFont.Characters.at(*c);
+		//
+		//		float xpos = x + ch.Bearing.X * scale;
+		//		float ypos = y - (ch.Size.Height - ch.Bearing.Y) * scale;
+		//
+		//		float w = ch.Size.Width * scale;
+		//		float h = ch.Size.Height * scale;
+		//		
+		//		// update VBO for each character
+		//		float vertices[6][4] = {
+		//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
+		//			{ xpos,     -(ypos),       0.0f, 1.0f },
+		//			{ xpos + w, -(ypos),       1.0f, 1.0f },
+		//
+		//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
+		//			{ xpos + w, -(ypos),       1.0f, 1.0f },
+		//			{ xpos + w, -(ypos + h),   1.0f, 0.0f }
+		//		};
+		//		
+		//		// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+		//		x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
+		//
+		//		uint32 val = ch.Position.Width;
+		//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+		//		val = ch.Position.Height;
+		//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+		//
+		//		val = ch.Size.Width;
+		//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+		//		val = ch.Size.Height;
+		//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+		//		
+		//		for (uint32 v = 0; v < 6; ++v)
+		//		{
+		//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][0], data + offset); offset += sizeof(GTSL::Vector2); //vertices
+		//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][2], data + offset); offset += sizeof(GTSL::Vector2); //uv
+		//		}
+		//		
+		//	}
+		//
+		//}
+		////MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
+		////updateInfo.RenderGroup = "TextSystem";
+		////updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
+		////updateInfo.Offset = 0;
+		////info.MaterialSystem->UpdateRenderGroupData(updateInfo);
 	}
+
+private:
+	Buffer vertexData;
 };
 
 void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
@@ -257,7 +292,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderManagers.Initialize(16, GetPersistentAllocator());
 
 	renderManagers.Emplace(Id("StaticMeshRenderGroup"), new StaticMeshRenderManager());
-	renderManagers.Emplace(Id("TextSystem"), new TextRenderManager());
+	renderManagers.Emplace(Id("UISystem"), new UIRenderManager());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)

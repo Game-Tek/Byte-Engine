@@ -16,16 +16,18 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
 	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX;
-	Buffer scratch_buffer(buffer_create_info);
+	Buffer scratch_buffer;
 
-	RenderDevice::MemoryRequirements memory_requirements;
-	renderDevice.GetBufferMemoryRequirements(&scratch_buffer, memory_requirements);
+	Buffer::GetMemoryRequirementsInfo memory_requirements;
+	memory_requirements.CreateInfo = &buffer_create_info;
+	memory_requirements.RenderDevice = &renderDevice;
+	scratch_buffer.GetMemoryRequirements(&memory_requirements);
 
-	bufferMemoryType = memory_requirements.MemoryTypes;
+	bufferMemoryType = memory_requirements.MemoryRequirements.MemoryTypes;
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 
-	bufferMemoryAlignment = memory_requirements.Alignment;
+	bufferMemoryAlignment = memory_requirements.MemoryRequirements.Alignment;
 	
 	scratch_buffer.Destroy(&renderDevice);
 }
@@ -311,7 +313,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
 	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS;
-	Buffer dummyBuffer(buffer_create_info);
+	Buffer dummyBuffer;
 
 	Texture::CreateInfo create_info;
 	create_info.RenderDevice = &renderDevice;
@@ -321,16 +323,20 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.InitialLayout = TextureLayout::UNDEFINED;
 	create_info.Format = TextureFormat::RGBA_I8;
 	create_info.Tiling = TextureTiling::OPTIMAL;
-	Texture dummyTexture(create_info);
+	Texture dummyTexture;
 
-	RenderDevice::MemoryRequirements imageMemoryRequirements;
-	renderDevice.GetImageMemoryRequirements(&dummyTexture, imageMemoryRequirements);
+	Texture::GetMemoryRequirementsInfo imageMemoryRequirements;
+	imageMemoryRequirements.RenderDevice = &renderDevice;
+	imageMemoryRequirements.CreateInfo = &create_info;
+	dummyTexture.GetMemoryRequirements(&imageMemoryRequirements);
 
-	RenderDevice::MemoryRequirements bufferMemoryRequirements;
-	renderDevice.GetBufferMemoryRequirements(&dummyBuffer, bufferMemoryRequirements);
+	Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
+	bufferMemoryRequirements.CreateInfo = &buffer_create_info;
+	bufferMemoryRequirements.RenderDevice = &renderDevice;
+	dummyBuffer.GetMemoryRequirements(&bufferMemoryRequirements);
 
-	bufferMemoryType = bufferMemoryRequirements.MemoryTypes;
-	textureMemoryType = imageMemoryRequirements.MemoryTypes;
+	bufferMemoryType = bufferMemoryRequirements.MemoryRequirements.MemoryTypes;
+	textureMemoryType = imageMemoryRequirements.MemoryRequirements.MemoryTypes;
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
 	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, allocatorReference);
@@ -338,8 +344,8 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	dummyBuffer.Destroy(&renderDevice);
 	dummyTexture.Destroy(&renderDevice);
 
-	bufferMemoryAlignment = bufferMemoryRequirements.Alignment;
-	textureMemoryAlignment = imageMemoryRequirements.Alignment;
+	bufferMemoryAlignment = bufferMemoryRequirements.MemoryRequirements.Alignment;
+	textureMemoryAlignment = imageMemoryRequirements.MemoryRequirements.Alignment;
 }
 
 void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)

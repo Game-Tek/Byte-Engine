@@ -32,7 +32,7 @@ void TextSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 }
 
-System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
+ComponentReference TextSystem::AddText(const AddTextInfo& info)
 {
 	Text text;
 	text.Position = info.Position;
@@ -77,13 +77,14 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
 
-		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
+		Buffer scratchBuffer;
 
 		HostRenderAllocation allocation;
 
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
-			scratchMemoryAllocation.Buffer = scratchBuffer;
+			scratchMemoryAllocation.Buffer = &scratchBuffer;
+			scratchMemoryAllocation.CreateInfo = &scratchBufferCreateInfo;
 			scratchMemoryAllocation.Allocation = &allocation;
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
@@ -97,7 +98,7 @@ System::ComponentReference TextSystem::AddText(const AddTextInfo& info)
 
 	info.FontResourceManager->LoadImageFont(fontLoadInfo);
 	
-	return component;
+	return ComponentReference(GetSystemId(), component);
 }
 
 void TextSystem::onFontLoad(TaskInfo taskInfo, FontResourceManager::OnFontLoadInfo loadInfo)

@@ -49,14 +49,14 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	
 	bufferCreateInfo.Size = bufferSize;
 	bufferCreateInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_SOURCE;
-	Buffer scratch_buffer(bufferCreateInfo);
+	Buffer scratch_buffer;
 	
 	HostRenderAllocation allocation;
 	
-	RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
-	memoryAllocationInfo.Buffer = scratch_buffer;
-	memoryAllocationInfo.Allocation = &allocation;
-	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
+	Buffer::GetMemoryRequirementsInfo memoryAllocationInfo;
+	memoryAllocationInfo.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
+	memoryAllocationInfo.CreateInfo = &bufferCreateInfo;
+	scratch_buffer.GetMemoryRequirements(&memoryAllocationInfo);
 
 	uint32 index = positions.GetFirstFreeIndex().Get();
 	
@@ -91,10 +91,10 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 	++meshCount;
 	
-	return index;
+	return ComponentReference(GetSystemId(), index);
 }
 
-System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
+ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 bufferSize = 0, indicesOffset = 0; uint16 indexSize = 0;
 	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &indexSize, &indexSize, &bufferSize, &indicesOffset);
@@ -110,14 +110,14 @@ System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const A
 
 	bufferCreateInfo.Size = bufferSize;
 	bufferCreateInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_SOURCE;
-	Buffer scratch_buffer(bufferCreateInfo);
+	Buffer scratch_buffer;
 
 	HostRenderAllocation allocation;
 
-	RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
-	memoryAllocationInfo.Buffer = scratch_buffer;
-	memoryAllocationInfo.Allocation = &allocation;
-	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
+	Buffer::GetMemoryRequirementsInfo memoryAllocationInfo;
+	memoryAllocationInfo.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
+	memoryAllocationInfo.CreateInfo = &bufferCreateInfo;
+	scratch_buffer.GetMemoryRequirements(&memoryAllocationInfo);
 
 	uint32 index = positions.GetFirstFreeIndex().Get();
 
@@ -138,7 +138,7 @@ System::ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const A
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
 	positions.EmplaceAt(index);
 
-	return index;
+	return ComponentReference(GetSystemId(), index);
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
@@ -160,12 +160,12 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 
 		createInfo.Size = onStaticMeshLoad.DataBuffer.Bytes();
 		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION;
-		Buffer deviceBuffer(createInfo);
+		Buffer deviceBuffer;
 
 		{
 			RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
-			memoryAllocationInfo.Allocation = &allocation;
-			memoryAllocationInfo.Buffer = deviceBuffer;
+			memoryAllocationInfo.CreateInfo = &createInfo;
+			memoryAllocationInfo.Buffer = &deviceBuffer;
 			loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
 		}
 

@@ -8,7 +8,7 @@
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vector2.h>
-
+#include <GTSl/Tree.hpp>
 
 #include "RenderGroup.h"
 #include "ByteEngine/Id.h"
@@ -16,6 +16,11 @@
 enum class Alignment : uint8
 {
 	LEFT, CENTER, RIGHT
+};
+
+enum class SizingPolicy : uint8
+{
+	FROM_WINDOW, FROM_OTHER_CONTAINER
 };
 
 class Button : public Object
@@ -28,33 +33,36 @@ private:
 	ComponentReference material;
 };
 
-class Square
+struct PrimitiveData
+{
+	GTSL::Vector2 RelativeLocation;
+	GTSL::Vector2 AspectRatio;
+	Alignment Alignment;
+	SizingPolicy SizingPolicy;
+};
+
+struct Primitive
+{
+	uint32 PrimitiveIndex;
+};
+
+class Square : public Primitive
 {
 public:
 	Square() = default;
-
-	void SetAspectRatio(const GTSL::Vector2 newAspectRatio) { aspectRatio = newAspectRatio; }
-	[[nodiscard]] GTSL::Vector2 GetAspectRatio() const { return aspectRatio; }
 	
-	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
-	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
-	void SetAlignment(const Alignment newAlignment) { alignment = newAlignment; }
-	Alignment GetAlignment() const { return alignment; }
-
+	void SetColor(const Id newColor) { color = newColor; }
+	[[nodiscard]] Id GetColor() const { return color; }
+	
 private:
-	GTSL::RGBA color;
-	GTSL::Vector2 aspectRatio;
-	float32 rotation;
-	Alignment alignment;
+	Id color;
+	float32 rotation = 0.0f;
 };
 
-class TexturePrimitive
+class TexturePrimitive : public Primitive
 {
 public:
 	TexturePrimitive() = default;
-
-	void SetSize(const GTSL::Vector2 newSize) { size = newSize; }
-	[[nodiscard]] GTSL::Vector2 GetSize() const { return size; }
 
 	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
 	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
@@ -63,30 +71,23 @@ public:
 	
 private:
 	GTSL::RGBA color;
-	GTSL::Vector2 size;
-	float32 rotation;
 
 	ComponentReference textureHandle;
 };
 
-class TextPrimitive
+class TextPrimitive : public Primitive
 {
 public:
 	TextPrimitive() = default;
 
-	void SetSize(const GTSL::Vector2 newSize) { size = newSize; }
-	[[nodiscard]] GTSL::Vector2 GetSize() const { return size; }
-
 	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
 	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
 	
-	void SetString(const GTSL::Range<UTF8*> newText) { rawString = newText; }
+	void SetString(const GTSL::Range<const UTF8*> newText) { rawString = newText; }
 	
-private:
+private:	
 	GTSL::RGBA color;
-	GTSL::Vector2 size;
-	float32 rotation;
-
+	
 	GTSL::String<BE::PAR> rawString;
 };
 
@@ -98,6 +99,7 @@ public:
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
 
 	uint16 AddOrganizer(const Id name);
+	uint16 AddOrganizer(const Id name, const uint16 parentOrganizer);
 
 	uint16 AddSquare(const uint16 organizer)
 	{
@@ -106,40 +108,52 @@ public:
 
 	void SetSquareAspectRatio(const uint16 organizer, const uint16 square, const GTSL::Vector2 aspectRatio)
 	{
-		squaresPerOrganizer[organizer][square].SetAspectRatio(aspectRatio);
+		primitivesPerOrganizer[organizer][squaresPerOrganizer[organizer][square].PrimitiveIndex].AspectRatio = aspectRatio;
 	}
 
-	void SetSquareColor(const uint16 organizer, const uint16 square, const GTSL::RGBA color)
+	void SetSquareColor(const uint16 organizer, const uint16 square, const Id color)
 	{
 		squaresPerOrganizer[organizer][square].SetColor(color);
 	}
 
-	void SetSquareAlignment(const uint16 organizer, const uint16 square, const Alignment newAlignment)
-	{
-		squaresPerOrganizer[organizer][square].SetAlignment(newAlignment);
-	}
-
-	uint16 AddButton(const ComponentReference organizer, const Id name, const Alignment alignment = Alignment::CENTER);
+	uint16 AddButton(const ComponentReference organizer, const Id name);
+	
 	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio)
 	{
 		organizerAspectRatios[organizer] = aspectRatio;
 	}
 
-	GTSL::Extent2D GetExtent() const { return realExtent; }
-	
-	auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
-	auto GetOrganizersSquares() const { return squaresPerOrganizer.GetRange(); }
+	void SetOrganizerAlignment(const uint16 organizer, Alignment alignment)
+	{
+		organizerAlignments[organizer] = alignment;
+	}
 
-	auto GetOrganizers() const { return organizers.begin(); }
+	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
+
+	[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
+	[[nodiscard]] auto GetOrganizersSquares() const { return squaresPerOrganizer.GetRange(); }
+
+	[[nodiscard]] auto GetOrganizers() const { return organizers.GetRange(); }
+	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
+
+	auto GetPrimitivesPerOrganizer() const
+	{
+		return primitivesPerOrganizer.begin();
+	}
 	
 	//Button& GetButton(const ComponentReference button) { return buttons[button.Component]; }
 	
 private:
-	GTSL::KeepVector<GTSL::KeepVector<uint32, BE::PAR>, BE::PAR> organizersPerOrganizer;
+	GTSL::KeepVector<GTSL::KeepVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
 	GTSL::KeepVector<GTSL::KeepVector<Square, BE::PAR>, BE::PAR> squaresPerOrganizer;
 	GTSL::KeepVector<uint32, BE::PAR> organizerDepth;
 	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
-	GTSL::Vector<uint32, BE::PAR> organizers;
+	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;
+	GTSL::KeepVector<SizingPolicy, BE::PAR> organizerSizingPolicies;	
+	
+	GTSL::Tree<uint32, BE::PAR> organizerTree;
+	
+	GTSL::KeepVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
 	
 	GTSL::Extent2D realExtent;
 };
@@ -178,6 +192,10 @@ public:
 	}
 
 	auto GetCanvases() { return canvases.GetRange(); }
+
+	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
+	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 private:
 	GTSL::KeepVector<ComponentReference, BE::PersistentAllocatorReference> canvases;
+	GTSL::FlatHashMap<GTSL::RGBA, BE::PAR> colors;
 };

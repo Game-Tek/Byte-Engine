@@ -233,10 +233,10 @@ void FrameManager::OnResize(TaskInfo taskInfo, const GTSL::Extent2D newSize)
 		textureCreateInfo.Uses = attachment.Uses;
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
-		attachment.Texture = Texture(textureCreateInfo);
 		
 		RenderSystem::AllocateLocalTextureMemoryInfo allocateLocalTextureMemoryInfo;
-		allocateLocalTextureMemoryInfo.Texture = attachment.Texture;
+		allocateLocalTextureMemoryInfo.Texture = &attachment.Texture;
+		allocateLocalTextureMemoryInfo.CreateInfo = &textureCreateInfo;
 		allocateLocalTextureMemoryInfo.Allocation = &attachment.Allocation;
 		renderSystem->AllocateLocalTextureMemory(allocateLocalTextureMemoryInfo);
 

@@ -184,7 +184,7 @@ private:
 	};
 	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
 	
-	ComponentReference material = 0;
+	ComponentReference material;
 
 	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
 	GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference> materials;

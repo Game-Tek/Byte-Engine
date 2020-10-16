@@ -8,6 +8,7 @@
 #include <GTSL/Algorithm.h>
 #include <GTSL/Allocator.h>
 #include <GTSL/Array.hpp>
+#include <GTSL/Pair.h>
 #include <GTSL/Semaphore.h>
 
 #include "Tasks.h"
@@ -52,7 +53,24 @@ public:
 	void UnloadWorld(WorldReference worldId);
 	
 	template<class T>
-	T* GetSystem(const Id systemName) { return static_cast<T*>(systemsMap.At(systemName)); }
+	T* GetSystem(const Id systemName)
+	{
+		GTSL::ReadLock lock(systemsMutex);
+		return static_cast<T*>(systemsMap.At(systemName));
+	}
+	
+	template<class T>
+	T* GetSystem(const uint16 systemReference)
+	{
+		GTSL::ReadLock lock(systemsMutex);
+		return static_cast<T*>(systems[systemReference].GetData());
+	}
+	
+	uint16 GetSystemReference(const Id systemName)
+	{
+		GTSL::ReadLock lock(systemsMutex);
+		return static_cast<uint16>(systemsIndirectionTable.At(systemName));
+	}
 
 	template<typename... ARGS>
 	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
@@ -203,7 +221,7 @@ public:
 	}
 
 	void AddGoal(Id name);
-	
+
 private:
 	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
@@ -251,6 +269,9 @@ private:
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 
+	mutable GTSL::ReadWriteMutex functionDependenciesMutex;
+	GTSL::KeepVector<GTSL::Pair<GTSL::Array<uint16, 32>, GTSL::Array<AccessType, 32>>, BE::PAR> functionDependencies;
+	
 	uint32 scalingFactor = 16;
 	
 	void initWorld(uint8 worldId);

@@ -193,41 +193,45 @@ void Game::PostInitialize()
 		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	{
-		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
-		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
-		auto& canvasRef = canvasSystem->GetCanvas(canvas);
-		canvasRef.SetExtent({ 1280, 720 });
-	
-		auto organizerComp = canvasRef.AddOrganizer("TopBar");
-		//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
-	
-		canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
-	
-		auto closeButtonComp = canvasRef.AddSquare(organizerComp);
-		canvasRef.SetSquareAspectRatio(organizerComp, closeButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquareColor(organizerComp, closeButtonComp, { 0.9607f, 0.2588f, 0.2588f, 1.0f });
-		canvasRef.SetSquareAlignment(organizerComp, closeButtonComp, Alignment::RIGHT);
-		
-		auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
-		canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquareColor(organizerComp, toggleButtonComp, { 0.9607f, 0.7843f, 0.2588f, 1.0f });
-		canvasRef.SetSquareAlignment(organizerComp, toggleButtonComp, Alignment::RIGHT);
-		
-		auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
-		canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, { 0.5882f, 0.9607f, 0.2588f, 1.0f });
-		canvasRef.SetSquareAlignment(organizerComp, minimizeButtonComp, Alignment::RIGHT);
-	
-		//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
-		//closeButtonRef.SetMaterial(closeButtonMaterial);
-		//
-		//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
-		//toggleButtonRef.SetMaterial(toggleButtonMaterial);
-		//
-		//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
-		//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
-	}
+	//{
+	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
+	//
+	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxGreen", { 0.5882f, 0.9607f, 0.2588f, 1.0f });
+	//	
+	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
+	//	canvasRef.SetExtent({ 1280, 720 });
+	//
+	//	auto organizerComp = canvasRef.AddOrganizer("TopBar");
+	//	//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
+	//
+	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
+	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+	//
+	//	auto closeButtonComp = canvasRef.AddSquare(organizerComp);
+	//	canvasRef.SetSquareAspectRatio(organizerComp, closeButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquareColor(organizerComp, closeButtonComp, "sandboxRed");
+	//	
+	//	auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
+	//	canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
+	//	
+	//	auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
+	//	canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, "sandboxGreen");
+	//
+	//	//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
+	//	//closeButtonRef.SetMaterial(closeButtonMaterial);
+	//	//
+	//	//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
+	//	//toggleButtonRef.SetMaterial(toggleButtonMaterial);
+	//	//
+	//	//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
+	//	//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
+	//}//
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;

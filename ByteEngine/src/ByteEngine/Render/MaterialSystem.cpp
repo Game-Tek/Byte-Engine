@@ -305,10 +305,10 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 
 				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
 				bufferInfo.BufferType = BufferType::UNIFORM;
-				renderGroupData.Buffer = Buffer(bufferInfo);
 
 				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
-				memoryAllocationInfo.Buffer = renderGroupData.Buffer;
+				memoryAllocationInfo.Buffer = &renderGroupData.Buffer;
+				memoryAllocationInfo.CreateInfo = &bufferInfo;
 				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
@@ -339,10 +339,10 @@ void MaterialSystem::AddRenderGroup(GameInstance* gameInstance, const AddRenderG
 
 				bufferInfo.Size = addRenderGroupInfo.Size[i][j];
 				bufferInfo.BufferType = BufferType::STORAGE;
-				renderGroupData.Buffer = Buffer(bufferInfo);
 
 				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
-				memoryAllocationInfo.Buffer = renderGroupData.Buffer;
+				memoryAllocationInfo.Buffer = &renderGroupData.Buffer;
+				memoryAllocationInfo.CreateInfo = &bufferInfo;
 				memoryAllocationInfo.Allocation = &renderGroupData.Allocation;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
@@ -378,12 +378,12 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	material_load_info.GameInstance = info.GameInstance;
 	material_load_info.Name = info.MaterialName;
 	material_load_info.DataBuffer = GTSL::Range<byte*>(material_buffer.GetCapacity(), material_buffer.GetData());
-	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), material, info.TextureResourceManager);
+	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), material.Component, info.TextureResourceManager);
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, matLoadInfo);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
 	info.MaterialResourceManager->LoadMaterial(material_load_info);
 
-	return MaterialHandle{ info.MaterialName, material++ };
+	return MaterialHandle{ info.MaterialName, material.Component++ };
 }
 
 void MaterialSystem::SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
@@ -411,7 +411,7 @@ void MaterialSystem::SetMaterialParameter(const MaterialHandle material, GAL::Sh
 	GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
 }
 
-System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
+ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 {
 	TextureResourceManager::TextureLoadInfo textureLoadInfo;
 	textureLoadInfo.GameInstance = info.GameInstance;
@@ -451,13 +451,14 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 
 		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
 
-		auto scratchBuffer = Buffer(scratchBufferCreateInfo);
+		Buffer scratchBuffer;
 
 		HostRenderAllocation allocation;
 
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
-			scratchMemoryAllocation.Buffer = scratchBuffer;
+			scratchMemoryAllocation.Buffer = &scratchBuffer;
+			scratchMemoryAllocation.CreateInfo = &scratchBufferCreateInfo;
 			scratchMemoryAllocation.Allocation = &allocation;
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
@@ -473,7 +474,7 @@ System::ComponentReference MaterialSystem::createTexture(const CreateTextureInfo
 
 	info.TextureResourceManager->LoadTexture(textureLoadInfo);
 
-	return component;
+	return ComponentReference(GetSystemId(), component);
 }
 
 void MaterialSystem::UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo)
@@ -661,10 +662,10 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				bufferInfo.Size += GTSL::Math::PowerOf2RoundUp(instance.TextureParametersBindings.DataSize, static_cast<uint32>(materialSystem->minUniformBufferOffset)) * 2;
 
 				bufferInfo.BufferType = BufferType::UNIFORM;
-				instance.Buffer = Buffer(bufferInfo);
 
 				RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
-				memoryAllocationInfo.Buffer = instance.Buffer;
+				memoryAllocationInfo.Buffer = &instance.Buffer;
+				memoryAllocationInfo.CreateInfo = &bufferInfo;
 				memoryAllocationInfo.Allocation = &instance.Allocation;
 				renderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
@@ -835,7 +836,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					createTextureInfo.TextureResourceManager = loadInfo->TextureResourceManager;
 					createTextureInfo.TextureName = e;
 					createTextureInfo.MaterialHandle = MaterialHandle{ onMaterialLoadInfo.ResourceName, loadInfo->Component };
-					textureComp = materialSystem->createTexture(createTextureInfo);
+					textureComp = materialSystem->createTexture(createTextureInfo).Component;
 				}
 				else
 				{
@@ -980,14 +981,11 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		textureCreateInfo.MipLevels = 1;
-
-		textureComponent.Texture = Texture(textureCreateInfo);
-	}
-
-	{
+		
 		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
 		allocationInfo.Allocation = &textureComponent.Allocation;
-		allocationInfo.Texture = textureComponent.Texture;
+		allocationInfo.CreateInfo = &textureCreateInfo;
+		allocationInfo.Texture = &textureComponent.Texture;
 
 		loadInfo->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
 	}

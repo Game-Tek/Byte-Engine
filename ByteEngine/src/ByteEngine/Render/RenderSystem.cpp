@@ -67,7 +67,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			topLevelAccelerationStructure.Initialize(accelerationStructureCreateInfo);
 
 			{
-				RenderDevice::MemoryRequirements memoryRequirements;
+				GAL::MemoryRequirements memoryRequirements;
 				RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
 				accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
 				accelerationStructureMemoryRequirements.AccelerationStructure = &topLevelAccelerationStructure;
@@ -98,11 +98,10 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
 				buffer.BufferType = BufferType::ADDRESS;
-				instancesBuffer.Initialize(buffer);
 				
 				BufferScratchMemoryAllocationInfo allocationInfo;
 				allocationInfo.Allocation = &instancesAllocation;
-				allocationInfo.Buffer = instancesBuffer;
+				allocationInfo.Buffer = &instancesBuffer;
 				AllocateScratchBufferMemory(allocationInfo);
 
 				instancesBufferAddress = instancesBuffer.GetAddress(GetRenderDevice());
@@ -113,11 +112,11 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = GTSL::Byte(GTSL::MegaByte(1));
 				buffer.BufferType = BufferType::ADDRESS | BufferType::RAY_TRACING;
-				accelerationStructureScratchBuffer.Initialize(buffer);
 
 				BufferLocalMemoryAllocationInfo allocationInfo;
 				allocationInfo.Allocation = &scratchBufferAllocation;
-				allocationInfo.Buffer = accelerationStructureScratchBuffer;
+				allocationInfo.CreateInfo = &buffer;
+				allocationInfo.Buffer = &accelerationStructureScratchBuffer;
 				AllocateLocalBufferMemory(allocationInfo);
 
 				scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
@@ -336,8 +335,9 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		RenderAllocation allocation;
 
 		BufferLocalMemoryAllocationInfo bufferLocal;
-		bufferLocal.Buffer = rayTracingMesh.Buffer;
+		bufferLocal.Buffer = &rayTracingMesh.Buffer;
 		bufferLocal.Allocation = &allocation;
+		bufferLocal.CreateInfo = &createInfo;
 		AllocateLocalBufferMemory(bufferLocal);
 	}
 	
@@ -371,7 +371,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		rayTracingMesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
 	}
 		
-	RenderDevice::MemoryRequirements memoryRequirements;
+	GAL::MemoryRequirements memoryRequirements;
 	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
 	accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
 	accelerationStructureMemoryRequirements.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
@@ -382,7 +382,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	{
 		//Query size of scratch buffer for acc struct build, right now for debugging purposes
 		
-		RenderDevice::MemoryRequirements memReqs;
+		GAL::MemoryRequirements memReqs;
 		RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accStructMemReqs;
 		accStructMemReqs.MemoryRequirements = &memReqs;
 		accStructMemReqs.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
@@ -485,7 +485,7 @@ void RenderSystem::RenderMesh(const ComponentReference component)
 	{
 		CommandBuffer::BindVertexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &rayTracingMeshes[component].Buffer;
+		bindInfo.Buffer = &rayTracingMeshes[component.Component].Buffer;
 		bindInfo.Offset = 0;
 		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
 	}
@@ -493,9 +493,9 @@ void RenderSystem::RenderMesh(const ComponentReference component)
 	{
 		CommandBuffer::BindIndexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &rayTracingMeshes[component].Buffer;
-		bindInfo.Offset = rayTracingMeshes[component].IndicesCount * 2;
-		bindInfo.IndexType = rayTracingMeshes[component].IndexType;
+		bindInfo.Buffer = &rayTracingMeshes[component.Component].Buffer;
+		bindInfo.Offset = rayTracingMeshes[component.Component].IndicesCount * 2;
+		bindInfo.IndexType = rayTracingMeshes[component.Component].IndexType;
 		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
 	}
 
@@ -503,7 +503,7 @@ void RenderSystem::RenderMesh(const ComponentReference component)
 		CommandBuffer::DrawIndexedInfo drawIndexedInfo;
 		drawIndexedInfo.RenderDevice = GetRenderDevice();
 		drawIndexedInfo.InstanceCount = 1;
-		drawIndexedInfo.IndexCount = rayTracingMeshes[component].IndicesCount;
+		drawIndexedInfo.IndexCount = rayTracingMeshes[component.Component].IndicesCount;
 		graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
 	}
 }

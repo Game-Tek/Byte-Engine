@@ -153,9 +153,12 @@ void GameApplication::PostInitialize()
 	
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
+
+	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
+	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
 	
-	renderOrchestrator->AddRenderGroup(gameInstance, "StaticMeshRenderGroup", staticMeshRenderGroup);
-	renderOrchestrator->AddRenderGroup(gameInstance, "UI", uiManager);
+	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
+	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));
 	
 	window.ShowWindow();
 }

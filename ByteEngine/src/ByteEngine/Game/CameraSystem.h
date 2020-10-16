@@ -27,7 +27,7 @@ public:
 	{
 		rotationMatrices.EmplaceBack(1);
 		fovs.EmplaceBack(45.0f);
-		return positionMatrices.EmplaceBack(GTSL::Math::Translation(pos));
+		return ComponentReference(GetSystemId(), positionMatrices.EmplaceBack(GTSL::Math::Translation(pos)));
 	}
 	
 	//ComponentReference AddCamera(const GTSL::Matrix4& matrix)
@@ -37,40 +37,40 @@ public:
 
 	void RemoveCamera(const ComponentReference reference)
 	{
-		positionMatrices.Pop(reference);
-		rotationMatrices.Pop(reference);
-		fovs.Pop(reference);
+		positionMatrices.Pop(reference.Component);
+		rotationMatrices.Pop(reference.Component);
+		fovs.Pop(reference.Component);
 	}
 
 	void SetCameraRotation(const ComponentReference reference, const GTSL::Matrix4 matrix4)
 	{
-		rotationMatrices[reference] = matrix4;
+		rotationMatrices[reference.Component] = matrix4;
 	}
 	
 	void SetCameraPosition(const ComponentReference reference, const GTSL::Vector3 pos)
 	{
-		positionMatrices[reference] = GTSL::Math::Translation(pos);
+		positionMatrices[reference.Component] = GTSL::Math::Translation(pos);
 	}
 
 	void AddCameraPosition(const ComponentReference reference, GTSL::Vector3 pos)
 	{
-		GTSL::Math::Translate(positionMatrices[reference], pos);
+		GTSL::Math::Translate(positionMatrices[reference.Component], pos);
 	}
 
 	void AddCameraRotation(const ComponentReference reference, const GTSL::Quaternion quaternion)
 	{
-		GTSL::Math::Rotate(rotationMatrices[reference], quaternion);
+		GTSL::Math::Rotate(rotationMatrices[reference.Component], quaternion);
 	}
 
 	void AddCameraRotation(const ComponentReference reference, const GTSL::Matrix4 matrix)
 	{
-		rotationMatrices[reference] = matrix * rotationMatrices[reference];
+		rotationMatrices[reference.Component] = matrix * rotationMatrices[reference.Component];
 	}
 	
 	[[nodiscard]] GTSL::Range<const GTSL::Matrix4*> GetPositionMatrices() const { return positionMatrices; }
 	[[nodiscard]] GTSL::Range<const GTSL::Matrix4*> GetRotationMatrices() const { return rotationMatrices; }
 	[[nodiscard]] GTSL::Range<const float32*> GetFieldOfViews() const { return fovs; }
-	void SetFieldOfView(const ComponentReference componentReference, const float32 fov) { fovs[componentReference] = fov; }
+	void SetFieldOfView(const ComponentReference componentReference, const float32 fov) { fovs[componentReference.Component] = fov; }
 
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;

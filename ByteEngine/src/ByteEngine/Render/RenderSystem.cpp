@@ -59,38 +59,17 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			descriptor.VertexType = static_cast<ShaderDataType>(0);
 			descriptor.IndexType = static_cast<IndexType>(0);
 			
-			AccelerationStructure::TopLevelCreateInfo accelerationStructureCreateInfo;
+			AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
+			accelerationStructureCreateInfo.IsTopLevel = true;
 			accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
 			accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
 			accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &descriptor);
 
-			topLevelAccelerationStructure.Initialize(accelerationStructureCreateInfo);
+			RenderAllocation allocation;
+			AllocateAccelerationStructureMemory(&topLevelAccelerationStructure, &accelerationStructureCreateInfo, &allocation, BuildType::GPU_LOCAL, MemoryRequirementsType::OBJECT);
 
 			{
-				GAL::MemoryRequirements memoryRequirements;
-				RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
-				accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
-				accelerationStructureMemoryRequirements.AccelerationStructure = &topLevelAccelerationStructure;
-				accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::OBJECT;
-				accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-				GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
-
-				{
-					RenderAllocation allocation;
-
-					allocation.Size = memoryRequirements.Size;
-					
-					AccelerationStructure::BindToMemoryInfo bindInfo;
-					bindInfo.RenderDevice = GetRenderDevice();
-
-					localMemoryAllocator.AllocateBuffer(*GetRenderDevice(), &bindInfo.Memory, &allocation, GetPersistentAllocator());
-
-					bindInfo.Offset = allocation.Offset;
-
-					topLevelAccelerationStructure.BindToMemory(bindInfo);
-
-					topLevelAccelerationStructureAddress= topLevelAccelerationStructure.GetAddress(GetRenderDevice());
-				}
+				topLevelAccelerationStructureAddress = topLevelAccelerationStructure.GetAddress(GetRenderDevice());
 			}
 
 			{
@@ -102,6 +81,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				BufferScratchMemoryAllocationInfo allocationInfo;
 				allocationInfo.Allocation = &instancesAllocation;
 				allocationInfo.Buffer = &instancesBuffer;
+				allocationInfo.CreateInfo = &buffer;
 				AllocateScratchBufferMemory(allocationInfo);
 
 				instancesBufferAddress = instancesBuffer.GetAddress(GetRenderDevice());
@@ -360,69 +340,32 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryDescriptor.MaxPrimitiveCount = info.IndexCount / 3;
 		geometryDescriptor.AllowTransforms = false;
 
-		AccelerationStructure::BottomLevelCreateInfo accelerationStructureCreateInfo;
+		AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
 		accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
+		accelerationStructureCreateInfo.IsTopLevel = false;
 		if constexpr (_DEBUG) { accelerationStructureCreateInfo.Name = GTSL::StaticString<64>("Render Device. Bottom Acceleration Structure"); }
 		accelerationStructureCreateInfo.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
 		accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
 		accelerationStructureCreateInfo.DeviceAddress = 0;
 		accelerationStructureCreateInfo.CompactedSize = 0;
 
-		rayTracingMesh.AccelerationStructure.Initialize(accelerationStructureCreateInfo);
-	}
-		
-	GAL::MemoryRequirements memoryRequirements;
-	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accelerationStructureMemoryRequirements;
-	accelerationStructureMemoryRequirements.MemoryRequirements = &memoryRequirements;
-	accelerationStructureMemoryRequirements.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
-	accelerationStructureMemoryRequirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::OBJECT;
-	accelerationStructureMemoryRequirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-	GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accelerationStructureMemoryRequirements);
-
-	{
-		//Query size of scratch buffer for acc struct build, right now for debugging purposes
-		
-		GAL::MemoryRequirements memReqs;
-		RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accStructMemReqs;
-		accStructMemReqs.MemoryRequirements = &memReqs;
-		accStructMemReqs.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
-		accStructMemReqs.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
-		accStructMemReqs.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-		GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accStructMemReqs);
-
-		BE_ASSERT(memReqs.Size < scratchBufferAllocation.Size, "Scratch buffer not sufficient")
-	}
-	
-	{
 		RenderAllocation allocation;
-		
-		AccelerationStructure::BindToMemoryInfo bindInfo;
-		bindInfo.RenderDevice = GetRenderDevice();
-
-		allocation.Size = memoryRequirements.Size;
-
-		{
-			testMutex.Lock();
-			localMemoryAllocator.AllocateBuffer(*GetRenderDevice(), &bindInfo.Memory, &allocation, GetPersistentAllocator());
-			testMutex.Unlock();
-		}
-
-		bindInfo.Offset = allocation.Offset;
-		
-		rayTracingMesh.AccelerationStructure.BindToMemory(bindInfo);
-
+		AllocateAccelerationStructureMemory(&rayTracingMesh.AccelerationStructure, &accelerationStructureCreateInfo, &allocation, BuildType::GPU_LOCAL, MemoryRequirementsType::OBJECT);
 		rayTracingMesh.Address = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 	}
 
 	//{
-	//	AccelerationStructure::GeometryTriangleData triangleData;
-	//	triangleData.VertexType = ShaderDataType::FLOAT3;
-	//	triangleData.VertexStride = sizeof(GTSL::Vector3);
-	//	triangleData.VertexBufferAddress = rayTracingMesh.Buffer.GetAddress(GetRenderDevice());
-	//	triangleData.IndexType = rayTracingMesh.IndexType;
-	//	triangleData.IndexBufferAddress = rayTracingMesh.VertexBuffer.GetAddress(GetRenderDevice()) + 64;
+	//	//Query size of scratch buffer for acc struct build, right now for debugging purposes
+	//	
+	//	GAL::MemoryRequirements memReqs;
+	//	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accStructMemReqs;
+	//	accStructMemReqs.MemoryRequirements = &memReqs;
+	//	accStructMemReqs.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
+	//	accStructMemReqs.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
+	//	accStructMemReqs.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
+	//	GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accStructMemReqs);
 	//
-	//	triangleDatas.EmplaceBack(triangleData);
+	//	BE_ASSERT(memReqs.Size < scratchBufferAllocation.Size, "Scratch buffer not sufficient")
 	//}
 
 	rayTracingMeshes.Emplace(rayTracingMesh);

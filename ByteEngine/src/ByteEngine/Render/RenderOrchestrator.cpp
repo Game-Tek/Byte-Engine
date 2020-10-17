@@ -325,6 +325,8 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	}
 
 	renderManagers.Initialize(16, GetPersistentAllocator());
+	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
+	renderSystemsAccesses.Initialize(16, GetPersistentAllocator());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)

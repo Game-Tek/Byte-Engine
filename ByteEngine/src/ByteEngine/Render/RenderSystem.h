@@ -60,28 +60,25 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	void AllocateScratchAccelerationStructureMemory(const AccelerationStructure accelerationStructure, RenderAllocation* renderAllocation)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, MemoryRequirementsType type)
 	{
-		//DeviceMemory deviceMemory;
-		//
-		//RenderDevice::MemoryRequirements memoryRequirements;
-		//
-		//{
-		//	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo requirements;
-		//	requirements.AccelerationStructure = &accelerationStructure;
-		//	requirements.MemoryRequirements = &memoryRequirements;
-		//	requirements.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-		//	requirements.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
-		//	renderDevice.GetAccelerationStructureMemoryRequirements(requirements);
-		//}
-		//
-		//localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, renderAllocation, GetPersistentAllocator());
-		//
-		//AccelerationStructure::BindToMemoryInfo bindToMemoryInfo;
-		//bindToMemoryInfo.RenderDevice = &renderDevice;
-		//bindToMemoryInfo.Offset = renderAllocation->Offset;
-		//bindToMemoryInfo.Memory = deviceMemory;
-		//accelerationStructure.BindToMemory(bindToMemoryInfo);
+		AccelerationStructure::GetMemoryRequirementsInfo memoryRequirements;
+		memoryRequirements.RenderDevice = GetRenderDevice();
+		memoryRequirements.CreateInfo = createInfo;
+		memoryRequirements.BuildType = build;
+		memoryRequirements.MemoryRequirementsType = type;
+		accelerationStructure->GetMemoryRequirements(&memoryRequirements);
+
+		DeviceMemory deviceMemory;
+		renderAllocation->Size = memoryRequirements.MemoryRequirements.Size;
+		
+		testMutex.Lock();
+		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, renderAllocation, GetPersistentAllocator());
+		testMutex.Unlock();
+
+		createInfo->Memory = deviceMemory;
+		createInfo->Offset = renderAllocation->Offset;
+		accelerationStructure->Initialize(*createInfo);
 	}
 	
 	struct BufferScratchMemoryAllocationInfo

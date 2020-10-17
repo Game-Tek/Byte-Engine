@@ -71,6 +71,8 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 		meshList.Initialize(8, GetPersistentAllocator());
 		meshList.EmplaceBack(index);
 	}
+
+	//TODO: DO ALLOCATION
 	
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index, addStaticMeshInfo.Material);
 

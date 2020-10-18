@@ -22,9 +22,10 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
 	buildOffsets.Initialize(32, GetPersistentAllocator());
 	geometries.Initialize(32, GetPersistentAllocator());
-	//triangleDatas.Initialize(32, GetPersistentAllocator());
-
+	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
+
+	bool rayTracing = BE::Application::Get()->GetOption("rayTracing");
 	
 	{		
 		RenderDevice::CreateInfo createInfo;
@@ -38,7 +39,11 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.QueueCreateInfos = queue_create_infos;
 		auto queues = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
 		createInfo.Queues = queues;
-		createInfo.Extensions = GTSL::Array<RenderDevice::Extension, 8>{ RenderDevice::Extension::RAY_TRACING, RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
+
+		GTSL::Array<RenderDevice::Extension, 8> extensions{ RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
+		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING); }
+		
+		createInfo.Extensions = extensions;
 		createInfo.ExtensionCapabilities = GTSL::Array<void*, 8>{ &rayTracingCapabilities };
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
@@ -50,7 +55,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		
-		if (createInfo.Extensions[0] == RenderDevice::Extension::RAY_TRACING)
+		if (rayTracing)
 		{
 			AccelerationStructure::GeometryDescriptor descriptor;
 			descriptor.Type = GeometryType::INSTANCES;
@@ -102,6 +107,10 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
 			}
 		}
+		else
+		{
+			rayTracingCapabilities.CanBuildOnHost = false;
+		}
 	}
 
 	if (rayTracingCapabilities.CanBuildOnHost)
@@ -115,7 +124,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	swapchainPresentMode = PresentMode::FIFO;
 	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
 	swapchainFormat = TextureFormat::BGRA_I8;
-
 
 	for(uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 	{
@@ -310,7 +318,6 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 
 		createInfo.Size = info.IndicesOffset + info.IndexCount * 2;
 		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION | BufferType::ADDRESS;
-		rayTracingMesh.Buffer.Initialize(createInfo);
 
 		RenderAllocation allocation;
 

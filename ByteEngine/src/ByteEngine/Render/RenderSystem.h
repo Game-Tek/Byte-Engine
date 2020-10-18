@@ -52,6 +52,9 @@ public:
 		testMutex.Lock();
 		localMemoryAllocator.AllocateTexture(renderDevice, &deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
+
+		allocationInfo.CreateInfo->Memory = deviceMemory;
+		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
 		
 		allocationInfo.Texture->Initialize(*allocationInfo.CreateInfo);
 	}

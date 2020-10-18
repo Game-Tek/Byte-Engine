@@ -182,16 +182,16 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	{
-		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "hydrant";
-		addStaticMeshInfo.Material = material;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	}
+	//{
+	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
+	//	addStaticMeshInfo.MeshName = "hydrant";
+	//	addStaticMeshInfo.Material = material;
+	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.RenderSystem = renderSystem;
+	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
+	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+	//}//
 
 	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
@@ -231,7 +231,7 @@ void Game::PostInitialize()
 	//	//
 	//	//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
 	//	//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
-	//}//
+	//}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -321,7 +321,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);//
 	//}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

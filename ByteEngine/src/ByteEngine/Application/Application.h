@@ -10,6 +10,7 @@
 #include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
+#include "ByteEngine/Id.h"
 
 class ResourceManager;
 class GameInstance;
@@ -104,6 +105,10 @@ namespace BE
 		[[nodiscard]] PoolAllocator* GetNormalAllocator() { return &poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
+		uint32 GetOption(const Id name) const
+		{
+			return settings.At(name);
+		}
 	protected:
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;

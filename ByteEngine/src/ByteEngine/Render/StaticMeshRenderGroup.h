@@ -90,6 +90,6 @@ private:
 	
 public:
 	const GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>& GetMeshesByMaterial() { return meshesRefTable; }
-	[[nodiscard]] GTSL::KeepVectorIterator<Mesh> GetMeshes() const { return meshes.begin(); }
-	uint32 GetMeshCount() const { return meshCount; }
+	[[nodiscard]] auto GetMeshes() const { return meshes.begin(); }
+	[[nodiscard]] uint32 GetMeshCount() const { return meshCount; }
 };

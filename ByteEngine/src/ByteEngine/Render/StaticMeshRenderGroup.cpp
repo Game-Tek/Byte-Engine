@@ -53,10 +53,11 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	
 	HostRenderAllocation allocation;
 	
-	Buffer::GetMemoryRequirementsInfo memoryAllocationInfo;
-	memoryAllocationInfo.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
+	RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
 	memoryAllocationInfo.CreateInfo = &bufferCreateInfo;
-	scratch_buffer.GetMemoryRequirements(&memoryAllocationInfo);
+	memoryAllocationInfo.Allocation = &allocation;
+	memoryAllocationInfo.Buffer = &scratch_buffer;
+	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
 	uint32 index = positions.GetFirstFreeIndex().Get();
 	
@@ -71,8 +72,6 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 		meshList.Initialize(8, GetPersistentAllocator());
 		meshList.EmplaceBack(index);
 	}
-
-	//TODO: DO ALLOCATION
 	
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, scratch_buffer, allocation, index, addStaticMeshInfo.Material);
 
@@ -116,10 +115,11 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 
 	HostRenderAllocation allocation;
 
-	Buffer::GetMemoryRequirementsInfo memoryAllocationInfo;
-	memoryAllocationInfo.RenderDevice = addStaticMeshInfo.RenderSystem->GetRenderDevice();
+	RenderSystem::BufferScratchMemoryAllocationInfo memoryAllocationInfo;
 	memoryAllocationInfo.CreateInfo = &bufferCreateInfo;
-	scratch_buffer.GetMemoryRequirements(&memoryAllocationInfo);
+	memoryAllocationInfo.Allocation = &allocation;
+	memoryAllocationInfo.Buffer = &scratch_buffer;
+	addStaticMeshInfo.RenderSystem->AllocateScratchBufferMemory(memoryAllocationInfo);
 
 	uint32 index = positions.GetFirstFreeIndex().Get();
 
@@ -168,6 +168,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 			RenderSystem::BufferLocalMemoryAllocationInfo memoryAllocationInfo;
 			memoryAllocationInfo.CreateInfo = &createInfo;
 			memoryAllocationInfo.Buffer = &deviceBuffer;
+			memoryAllocationInfo.Allocation = &allocation;
 			loadInfo->RenderSystem->AllocateLocalBufferMemory(memoryAllocationInfo);
 		}
 

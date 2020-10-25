@@ -89,25 +89,8 @@ void GameApplication::PostInitialize()
 	renderer->InitializeRenderer(initialize_renderer_info);
 
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
-	{
-		GTSL::Array<GTSL::Array<BindingType, 6>, 6> bindings(1);
-		bindings[0].EmplaceBack(BindingType::COMBINED_IMAGE_SAMPLER);
-		materialSystem->SetGlobalState(gameInstance, bindings);
-	}
 
 	auto* staticMeshRenderGroup = gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	
-	{
-		MaterialSystem::AddRenderGroupInfo addRenderGroupInfo;
-		addRenderGroupInfo.Name = "StaticMeshRenderGroup";
-		addRenderGroupInfo.Bindings.EmplaceBack();
-		addRenderGroupInfo.Bindings[0].EmplaceBack(BindingType::UNIFORM_BUFFER_DYNAMIC);
-		addRenderGroupInfo.Range.EmplaceBack();
-		addRenderGroupInfo.Range[0].EmplaceBack(64); //how much is read every draw call
-		addRenderGroupInfo.Size.EmplaceBack();
-		addRenderGroupInfo.Size.back().EmplaceBack(256);
-		materialSystem->AddRenderGroup(gameInstance, addRenderGroupInfo);
-	}
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 
@@ -139,12 +122,12 @@ void GameApplication::PostInitialize()
 		geoRenderPass.WriteAttachments.EmplaceBack("Color");
 		geoRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
 
-		FrameManager::SubPassData textRenderPass;
-		textRenderPass.Name = "Text";
-		textRenderPass.WriteAttachments.EmplaceBack("Color");
-		textRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		FrameManager::SubPassData uiRenderPass;
+		uiRenderPass.Name = "UI";
+		uiRenderPass.WriteAttachments.EmplaceBack("Color");
+		uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
 
-		subPasses.EmplaceBack(geoRenderPass); subPasses.EmplaceBack(textRenderPass);
+		subPasses.EmplaceBack(geoRenderPass); subPasses.EmplaceBack(uiRenderPass);
 		
 		frameManager->AddPass(renderer, "MainRenderPass", attachments, subPasses);
 	}

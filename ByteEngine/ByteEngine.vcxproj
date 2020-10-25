@@ -191,6 +191,7 @@
     </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\ByteEngine\Handle.hpp" />
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
     <ClInclude Include="src\ByteEngine\Render\FrameManager.h" />
     <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
@@ -230,6 +231,7 @@
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\AnimationResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />

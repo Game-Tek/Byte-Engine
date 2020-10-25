@@ -22,6 +22,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
 	buildOffsets.Initialize(32, GetPersistentAllocator());
 	geometries.Initialize(32, GetPersistentAllocator());
+	meshes.Initialize(32, GetPersistentAllocator());
 	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
@@ -430,12 +431,56 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	return ComponentReference(GetSystemId(), component);
 }
 
-void RenderSystem::RenderMesh(const ComponentReference component)
+ComponentReference RenderSystem::CreateMesh(void* vertexData, void* indexData, const uint32 vertexSize, const uint32 indexCount, const uint8 indexSize)
+{
+	Mesh mesh;
+
+	Buffer::CreateInfo createInfo;
+	createInfo.RenderDevice = GetRenderDevice();
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX;
+	createInfo.Size = vertexSize + indexCount * indexSize;
+	
+	mesh.IndexType = SelectIndexType(indexSize);
+	mesh.IndicesCount = indexCount;
+	
+	auto compRef = meshes.GetFirstFreeIndex();
+
+	Buffer scratchBuffer;
+	BufferCopyData bufferCopyData;
+	
+	BufferScratchMemoryAllocationInfo bufferScratch;
+	bufferScratch.CreateInfo = &createInfo;
+	bufferScratch.Allocation = &bufferCopyData.Allocation;
+	bufferScratch.Buffer = &scratchBuffer;
+	AllocateScratchBufferMemory(bufferScratch);
+
+	GTSL::MemCopy(vertexSize, vertexData, bufferCopyData.Allocation.Data);
+	GTSL::MemCopy(indexCount * indexSize, indexData, static_cast<byte*>(bufferCopyData.Allocation.Data) + GTSL::Math::PowerOf2RoundUp(vertexSize, indexSize));
+	
+	BufferLocalMemoryAllocationInfo bufferLocal;
+	bufferLocal.CreateInfo = &createInfo;
+	bufferLocal.Allocation = &mesh.Allocation;
+	bufferLocal.Buffer = &mesh.Buffer;
+	AllocateLocalBufferMemory(bufferLocal);
+
+	bufferCopyData.Size = vertexSize + indexCount * indexSize;
+	bufferCopyData.DestinationBuffer = mesh.Buffer;
+	bufferCopyData.DestinationOffset = 0;
+	bufferCopyData.SourceBuffer = scratchBuffer;
+	bufferCopyData.SourceOffset = 0;
+	AddBufferCopy(bufferCopyData);
+
+	meshes.EmplaceAt(compRef.Get(), mesh);
+	
+	return ComponentReference(GetSystemId(), compRef.Get());
+}
+
+void RenderSystem::RenderMesh(const ComponentReference component, const uint32 instances)
 {
 	{
 		CommandBuffer::BindVertexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &rayTracingMeshes[component.Component].Buffer;
+		bindInfo.Buffer = &meshes[component.Component].Buffer;
 		bindInfo.Offset = 0;
 		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
 	}
@@ -443,17 +488,17 @@ void RenderSystem::RenderMesh(const ComponentReference component)
 	{
 		CommandBuffer::BindIndexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &rayTracingMeshes[component.Component].Buffer;
-		bindInfo.Offset = rayTracingMeshes[component.Component].IndicesCount * 2;
-		bindInfo.IndexType = rayTracingMeshes[component.Component].IndexType;
+		bindInfo.Buffer = &meshes[component.Component].Buffer;
+		bindInfo.Offset = meshes[component.Component].IndicesCount * 2;
+		bindInfo.IndexType = meshes[component.Component].IndexType;
 		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
 	}
 
 	{
 		CommandBuffer::DrawIndexedInfo drawIndexedInfo;
 		drawIndexedInfo.RenderDevice = GetRenderDevice();
-		drawIndexedInfo.InstanceCount = 1;
-		drawIndexedInfo.IndexCount = rayTracingMeshes[component.Component].IndicesCount;
+		drawIndexedInfo.InstanceCount = instances;
+		drawIndexedInfo.IndexCount = meshes[component.Component].IndicesCount;
 		graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
 	}
 }
@@ -540,6 +585,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
 	}
+
+	meshesByMaterial.Initialize(32, GetPersistentAllocator());
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)

@@ -6,11 +6,14 @@
 #include <GTSL/SparseVector.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/StaticMap.hpp>
+#include <GTSL/Tree.hpp>
 
 #include "RenderTypes.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
+
+#include "ByteEngine/Handle.hpp"
 
 class TextureResourceManager;
 struct TaskInfo;
@@ -22,26 +25,54 @@ struct MaterialHandle
 	uint32 MaterialInstance = 0;
 };
 
+MAKE_HANDLE(Id, Set)
+
 class MaterialSystem : public System
 {
 public:
 	MaterialSystem() : System("MaterialSystem")
 	{}
-
+	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-
-	void SetGlobalState(GameInstance* gameInstance, const GTSL::Array<GTSL::Array<BindingType, 6>, 6>& globalState);
-
-	struct AddRenderGroupInfo
+	
+	byte* GetMemberPointer(uint64 member, uint32 index)
 	{
-		Id Name;
-		GTSL::Array<GTSL::Array<BindingType, 6>, 6> Bindings;
-		GTSL::Array<GTSL::Array<uint32, 6>, 6> Size;
-		GTSL::Array<GTSL::Array<uint32, 6>, 6> Range;
-	};
-	void AddRenderGroup(GameInstance* gameInstance, const AddRenderGroupInfo& addRenderGroupInfo);
+		byte* data = reinterpret_cast<byte*>(&member);
 
+		auto& setBufferData = setsBufferData[data[0]];
+		auto memberSize = setBufferData.MemberSize;
+		return static_cast<byte*>(setBufferData.Allocation[frame].Data) + (index * memberSize) + data[1];
+	}
+
+	struct Member
+	{
+		enum class DataType : uint8
+		{
+			FLOAT32, INT32, MATRIX4, FVEC4
+		};
+
+		DataType Type;
+		uint64* Handle;
+	};
+
+	struct Struct
+	{
+		enum class Frequency : uint8
+		{
+			PER_INSTANCE
+		} Frequency;
+		GTSL::Range<Member*> Members;
+	};
+	
+	struct SetInfo
+	{
+		GTSL::Range<Struct*> Structs;
+	};
+	SetHandle AddSet(Id setName, Id parent, const SetInfo& setInfo);
+
+	void AddObject(Id renderGroup, ComponentReference mesh, MaterialHandle material);
+	
 	struct MaterialData
 	{
 		uint16 TextureIndices[8];
@@ -55,50 +86,6 @@ public:
 		uint32 DataSize = 0;
 	};
 	
-	struct MaterialInstance
-	{
-		PipelineLayout PipelineLayout;
-		RasterizationPipeline Pipeline;
-		
-		BindingsPool BindingsPool;
-
-		BindingsSetData TextureParametersBindings;
-
-		Buffer Buffer;
-		HostRenderAllocation Allocation;
-
-		
-		GTSL::StaticMap<uint16, 16> DynamicParameters;
-		GTSL::StaticMap<uint16, 16> Parameters;
-		BindingType BindingType;
-
-		
-		/**
-		 * \brief ABSOLUTE offset to texture index.
-		 */
-		GTSL::StaticMap<uint16, 16> Textures;
-
-		MaterialInstance() = default;
-	};
-
-	[[nodiscard]] const GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference>& GetMaterialInstances() const { return materials; }
-
-	struct RenderGroupData
-	{
-		BindingsSetLayout BindingsSetLayout;
-		BindingsPool BindingsPool;
-		PipelineLayout PipelineLayout;
-		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
-		
-		Buffer Buffer;
-		HostRenderAllocation Allocation;
-		BindingType BindingType;
-
-		RenderGroupData() = default;
-	};
-
-	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference>& GetRenderGroups() { return renderGroups; }
-	
 	struct CreateMaterialInfo
 	{
 		Id MaterialName;
@@ -111,29 +98,7 @@ public:
 
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
-
-	void* GetRenderGroupDataPointer(const Id name) { return renderGroups.At(name).Allocation.Data; }
 	
-	struct UpdateRenderGroupDataInfo
-	{
-		Id RenderGroup;
-		GTSL::Range<const byte*> Data;
-		uint32 Offset = 0;
-	};
-	void UpdateRenderGroupData(const UpdateRenderGroupDataInfo& updateRenderGroupDataInfo);
-	
-	GTSL::Array<BindingsSetLayout, 6> globalBindingsSetLayout;
-	BindingsSet globalBindingsSets[MAX_CONCURRENT_FRAMES];
-	BindingsPool globalBindingsPool;
-	PipelineLayout globalPipelineLayout;
-
-	bool IsMaterialReady(const MaterialHandle material)
-	{
-		if (isMaterialReady.IsSlotOccupied(material.MaterialInstance))
-		{
-			return isMaterialReady[material.MaterialInstance];
-		}
-	}
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -147,9 +112,6 @@ private:
 		MaterialHandle MaterialHandle;
 	};
 	ComponentReference createTexture(const CreateTextureInfo& createTextureInfo);
-	
-	GTSL::FlatHashMap<uint8, BE::PersistentAllocatorReference> isRenderGroupReady;
-	GTSL::KeepVector<uint8, BE::PersistentAllocatorReference> isMaterialReady;
 
 	struct BindingsUpdateData
 	{
@@ -183,11 +145,34 @@ private:
 		}
 	};
 	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
-	
-	ComponentReference material;
 
-	GTSL::FlatHashMap<RenderGroupData, BE::PersistentAllocatorReference> renderGroups;
-	GTSL::KeepVector<MaterialInstance, BE::PersistentAllocatorReference> materials;
+	struct RenderGroupData
+	{
+		
+	};
+	GTSL::FlatHashMap<RenderGroupData, BE::PAR> renderGroupsData;
+	
+	struct SetData
+	{
+		Id Name;
+		void* Parent;
+		PipelineLayout PipelineLayout;
+		BindingsSetLayout BindingsSetLayout;
+		BindingsPool BindingsPool;
+		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
+		GTSL::Array<::BindingsSetLayout, 16> BindingsSetLayouts;
+	};
+	
+	GTSL::Tree<SetData, BE::PAR> setsTree;
+	GTSL::FlatHashMap<decltype(setsTree)::Node*, BE::PAR> setNodes;
+
+	struct SetBufferData
+	{
+		uint32 MemberSize = 0;
+		HostRenderAllocation Allocation[MAX_CONCURRENT_FRAMES];
+		Buffer Buffers[MAX_CONCURRENT_FRAMES];
+	};
+	GTSL::KeepVector<SetBufferData, BE::PAR> setsBufferData;
 	
 	struct TextureLoadInfo
 	{
@@ -230,6 +215,8 @@ private:
 
 	void test();
 
+	uint16 component = 0;
+	
 	template<typename C, typename C2>
 	void genShaderStages(RenderDevice* renderDevice, C& container, C2& shaderInfos, const MaterialResourceManager::OnMaterialLoadInfo& onMaterialLoadInfo)
 	{
@@ -253,6 +240,6 @@ private:
 	PipelineLayout rayTracingPipelineLayout;
 	
 	uint16 minUniformBufferOffset = 0;
-
+	
 	uint8 frame;
 };

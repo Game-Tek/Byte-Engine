@@ -189,10 +189,9 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 			mesh.Buffer = deviceBuffer;
 			mesh.Material = loadInfo->Material;
 
-			staticMeshRenderGroup->meshes.EmplaceAt(loadInfo->InstanceId, mesh);
+			auto meshRef = loadInfo->RenderSystem->CreateMesh();
+			loadInfo->RenderSystem->AddMeshToId(meshRef, loadInfo->Material.MaterialType);
 		}
-
-		staticMeshRenderGroup->renderAllocations.EmplaceAt(loadInfo->InstanceId, loadInfo->Allocation);
 
 		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
 	};

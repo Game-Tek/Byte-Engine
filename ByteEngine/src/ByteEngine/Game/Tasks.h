@@ -25,6 +25,7 @@ struct AccessType : GTSL::Flags<uint8>
 struct TaskInfo
 {
 	class GameInstance* GameInstance = nullptr;
+	uint8 InvocationID = 0;
 };
 
 struct TaskDependency

@@ -22,19 +22,6 @@ class RenderManager : public System
 {
 public:
 	virtual void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) = 0;
-	virtual void GetRenderAccesses(GTSL::Array<TaskDependency, 16>& dependencies) = 0;
-	
-	struct RenderInfo
-	{
-		GameInstance* GameInstance;
-		CommandBuffer* CommandBuffer;
-		uint8 CurrentFrame;
-		RenderSystem* RenderSystem;
-		MaterialSystem* MaterialSystem;
-		BindingsManager<BE::TAR>* BindingsManager;
-		uint8 RenderPass, SubPass;
-	};
-	virtual void Render(const RenderInfo& renderInfo) = 0;
 
 	struct SetupInfo
 	{
@@ -48,31 +35,28 @@ public:
 
 class StaticMeshRenderManager : public RenderManager
 {
-	void Initialize(const InitializeInfo& initializeInfo) override {}
+	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
 	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
-	void GetRenderAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
-	
-	void Render(const RenderInfo& renderInfo) override;
-
-	void Setup(const SetupInfo& info) override;
-};
-
-class UIRenderManager : public RenderManager
-{
-	void Initialize(const InitializeInfo& initializeInfo) override {}
-	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
-	
-	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
-	void GetRenderAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
-	
-	void Render(const RenderInfo& renderInfo) override;
 
 	void Setup(const SetupInfo& info) override;
 
 private:
-	Buffer vertexData;
+	uint64 matrixUniformBufferMemberHandle;
+};
+
+class UIRenderManager : public RenderManager
+{
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
+	
+	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
+
+	void Setup(const SetupInfo& info) override;
+
+private:
+	ComponentReference square;
 };
 
 class RenderOrchestrator : public System

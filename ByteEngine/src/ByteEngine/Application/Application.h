@@ -109,6 +109,7 @@ namespace BE
 		{
 			return settings.At(name);
 		}
+		
 	protected:
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;
@@ -135,9 +136,10 @@ namespace BE
 		BE_DEBUG_ONLY(GTSL::String<SystemAllocatorReference> closeReason);
 
 		uint64 applicationTicks{ 0 };
+
+		bool parseConfig();
 	private:
 		inline static Application* applicationInstance{ nullptr };
-
 	};
 
 	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);

@@ -26,6 +26,8 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 {
 	renderPassesMap.Emplace(name, renderPasses.GetLength());
 	auto& renderPassData = renderPasses[renderPasses.EmplaceBack()];
+
+	renderPassData.Name = name;
 	
 	RenderPass::CreateInfo renderPassCreateInfo;
 	renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -63,7 +65,7 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 	GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(subPassData.ElementCount());
 	GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(subPassData.ElementCount());
 
-	subPasseses.EmplaceBack();
+	subPasses.EmplaceBack();
 	subPassMap.EmplaceBack();
 	
 	for (uint32 s = 0; s < subPassData.ElementCount(); ++s)
@@ -149,7 +151,9 @@ void FrameManager::AddPass(RenderSystem* renderSystem, const Id name, const GTSL
 			
 		subPassDescriptors.EmplaceBack(subPassDescriptor);
 		
-		subPasseses.back().EmplaceBack();
+		subPasses.back().EmplaceBack();
+		auto& newSubPass = subPasses.back().back();
+		newSubPass.Name = subPassData[s].Name;
 		subPassMap.back().Emplace(subPassData[s].Name, s);
 	}
 

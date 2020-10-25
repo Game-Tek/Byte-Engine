@@ -223,11 +223,11 @@ public:
 	void AddGoal(Id name);
 
 private:
-	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
+	
+	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::KeepVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
-
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	template<typename... ARGS>
@@ -273,9 +273,6 @@ private:
 	GTSL::KeepVector<GTSL::Pair<GTSL::Array<uint16, 32>, GTSL::Array<AccessType, 32>>, BE::PAR> functionDependencies;
 	
 	uint32 scalingFactor = 16;
-	
-	void initWorld(uint8 worldId);
-	void initSystem(System* system, GTSL::Id64 name, const uint16 id);
 
 	uint16 getGoalIndex(const Id name) const
 	{
@@ -340,6 +337,9 @@ private:
 		return false;
 	}
 
+	void initWorld(uint8 worldId);
+	void initSystem(System* system, GTSL::Id64 name, const uint16 id);
+	
 public:
 	template<typename T>
 	T* AddSystem(const Id systemName)

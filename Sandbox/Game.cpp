@@ -113,19 +113,17 @@ void Game::Initialize()
 	//	materialCreateInfo.BlendEnable = true;
 	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
-	//}//
+	//}
 	
 	{
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "TvMat";
-		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		materialCreateInfo.ShaderName = "UIMat";
+		materialCreateInfo.RenderGroup = "UIRenderGroup";
 		materialCreateInfo.RenderPass = "MainRenderPass";
-		materialCreateInfo.SubPass = "Scene";
-		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
+		materialCreateInfo.SubPass = "UI";
+		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-
-		materialCreateInfo.Textures.EmplaceBack("TV_Albedo");
 		
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
@@ -170,6 +168,16 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialName = "HydrantMat";
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
+
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "UIMat";
+		buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
+	}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -191,10 +199,10 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	//}//
+	//}/
 
 	//{
-	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
+	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");//
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
 	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
@@ -203,25 +211,29 @@ void Game::PostInitialize()
 	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
 	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
-	//	canvasRef.SetExtent({ 1280, 720 });
+	//	canvasRef.SetExtent({ 1269, 718 });
 	//
-	//	auto organizerComp = canvasRef.AddOrganizer("TopBar");
+	//	uiManager->AddCanvas(canvas);//
+	//
+	//	//auto organizerComp = canvasRef.AddOrganizer("TopBar");
 	//	//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
 	//
-	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
-	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+	//	//canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
+	//	//canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
 	//
-	//	auto closeButtonComp = canvasRef.AddSquare(organizerComp);
-	//	canvasRef.SetSquareAspectRatio(organizerComp, closeButtonComp, { 0.05f, 0.02f });
-	//	canvasRef.SetSquareColor(organizerComp, closeButtonComp, "sandboxRed");
+	//	auto closeButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareAspectRatio(closeButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
+	//	canvasRef.SetSquarePosition(closeButtonComp, { 0.f, 0.f });
+	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
 	//	
-	//	auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
-	//	canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });
-	//	canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
-	//	
-	//	auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
-	//	canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
-	//	canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, "sandboxGreen");
+	//	//auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
+	//	//canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });//
+	//	//canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
+	//	//
+	//	//auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
+	//	//canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
+	//	//canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, "sandboxGreen");
 	//
 	//	//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
 	//	//closeButtonRef.SetMaterial(closeButtonMaterial);
@@ -321,7 +333,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);//
 	//}
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

@@ -2,6 +2,7 @@
 
 
 #include <GTSL/Buffer.h>
+#include <GTSL/DataSizes.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
 
@@ -57,81 +58,10 @@ namespace BE
 		threadPool = new ThreadPool();
 
 		settings.Initialize(64, GetPersistentAllocator());
+
+		if (!parseConfig()) { Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file")); }
 		
 		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
-
-		{
-			GTSL::File settingsFile;
-			
-			settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
-
-			GTSL::Buffer fileBuffer; fileBuffer.Allocate(1024, 8, GetPersistentAllocator());
-
-			settingsFile.ReadFile(fileBuffer);
-
-			uint32 i = 0;
-			
-			while(static_cast<UTF8>(fileBuffer.GetData()[i]) != static_cast<UTF8>(-1) && i < fileBuffer.GetLength())
-			{
-				if(fileBuffer.GetData()[i] == '[')
-				{
-					while (fileBuffer.GetData()[i] != ']') { ++i; }
-					i += 3;
-				}
-
-				GTSL::StaticString<128> key;
-				
-				while(fileBuffer.GetData()[i] != '=')
-				{
-					key += fileBuffer.GetData()[i];
-					++i;
-				}
-
-				++i;
-				
-				GTSL::StaticString<128> valueString;
-
-				while (fileBuffer.GetData()[i] != '\r' && static_cast<char>(fileBuffer.GetData()[i]) != static_cast<char>(-1) && i < fileBuffer.GetLength())
-				{
-					valueString += fileBuffer.GetData()[i];
-					++i;
-				}
-
-				uint32 value = 0; uint32 mult = 1;
-				
-				for (uint32 j = 0, c = valueString.GetLength() - 2; j < valueString.GetLength() - 1; ++j, --c)
-				{
-					uint8 num;
-
-					switch (valueString[c])
-					{
-					case '0': num = 0; break;
-					case '1': num = 1; break;
-					case '2': num = 2; break;
-					case '3': num = 3; break;
-					case '4': num = 4; break;
-					case '5': num = 5; break;
-					case '6': num = 6; break;
-					case '7': num = 7; break;
-					case '8': num = 8; break;
-					case '9': num = 9; break;
-					default: num = 0;
-					}
-					
-					value += num * mult;
-
-					mult *= 10;
-				}
-				
-				//parse value
-
-				settings.Emplace(Id(key.begin()), value);
-			}
-			
-			fileBuffer.Free(8, GetPersistentAllocator());
-			
-			settingsFile.CloseFile();
-		}
 	}
 
 	void Application::Shutdown()
@@ -214,5 +144,205 @@ namespace BE
 		closeReason.Append(reason);
 		flaggedForClose = true;
 		this->closeMode = closeMode;
+	}
+
+	bool Application::parseConfig()
+	{
+		GTSL::File settingsFile;
+
+		settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
+
+		//don't try parsing if file is empty or it's impractically large
+		if(settingsFile.GetFileSize() == 0 || settingsFile.GetFileSize() > GTSL::Byte(GTSL::KiloByte(512))) { return false; }
+		
+		GTSL::SmartBuffer<PAR> fileBuffer(1024, 8, GetPersistentAllocator());
+
+		settingsFile.ReadFile(fileBuffer);
+		
+		uint32 i = 0;
+
+		enum class Token
+		{
+			NONE, SECTION, KEY, VALUE
+		} lastParsedToken = Token::NONE, currentToken = Token::NONE;
+
+		GTSL::StaticString<128> text;
+		bool parseEnded = false;
+		Id key;
+
+		auto processNumber = [&]() -> uint32
+		{
+			uint32 value = 0, mult = 1;
+
+			for (uint32 j = 0, c = text.GetLength() - 2/*one for null terminator, another for index vs length*/; j < text.GetLength() - 1; ++j, --c)
+			{
+				uint8 num;
+
+				switch (text[c])
+				{
+				case '0': num = 0; break;
+				case '1': num = 1; break;
+				case '2': num = 2; break;
+				case '3': num = 3; break;
+				case '4': num = 4; break;
+				case '5': num = 5; break;
+				case '6': num = 6; break;
+				case '7': num = 7; break;
+				case '8': num = 8; break;
+				case '9': num = 9; break;
+				default: num = 0;
+				}
+
+				value += num * mult;
+
+				mult *= 10;
+			}
+
+			return value;
+		};
+		
+		while (i < fileBuffer->GetLength())
+		{			
+			switch (static_cast<UTF8>(fileBuffer->GetData()[i]))
+			{
+			case '[':
+				{
+					if (lastParsedToken == Token::KEY) { return false; }
+					currentToken = Token::SECTION;
+					parseEnded = false;
+					break;
+				}
+
+			case ']':
+				{
+					if (currentToken != Token::SECTION || lastParsedToken == Token::KEY) { return false; }
+					parseEnded = !text.IsEmpty() && !parseEnded;
+					if (!parseEnded) { return false; }
+
+					key = text.begin();
+
+					text.Resize(0);
+
+					lastParsedToken = Token::SECTION;
+					currentToken = Token::NONE;
+					
+					break;
+				}
+
+			case ' ':
+				{
+					return false;
+				}
+
+			case '=':
+				{
+					switch (lastParsedToken)
+					{
+					case Token::VALUE:
+					case Token::SECTION:
+					{
+						if(currentToken != Token::NONE) { return false; }
+						if (text.IsEmpty()) { return false; }
+						key = text.begin();
+						parseEnded = true;
+						lastParsedToken = Token::KEY;
+						currentToken = Token::VALUE;
+						break;
+					}
+					case Token::KEY:
+					case Token::NONE:
+					{
+						return false;
+					}
+					default: break;
+					}
+
+					text.Resize(0);
+					break;
+				}
+
+			case '\0':
+			case '\n':
+			case '\r':
+				{
+					switch (lastParsedToken)
+					{
+					case Token::SECTION:
+					{
+						break;
+					}
+						
+					case Token::KEY:
+					{
+						if(currentToken != Token::VALUE) { return false; }
+						if (text.IsEmpty()) { return false; }
+						auto value = processNumber();
+						settings.Emplace(key, value);
+						lastParsedToken = Token::VALUE;
+						currentToken = Token::NONE;
+						parseEnded = true;
+						break;
+					}
+						
+					case Token::VALUE:
+					{
+						break;
+					}
+					case Token::NONE:
+					{
+						return false;
+					}
+						
+					default: break;
+					}
+
+					text.Resize(0);
+					break;
+				}
+				
+			default:
+				{
+					if (text.GetLength() == 128) { return false; }
+					text += static_cast<UTF8>(fileBuffer->GetData()[i]);
+				}
+			}
+
+			++i;
+		}
+
+		switch (lastParsedToken)
+		{
+		case Token::NONE:
+			{
+				parseEnded = false;
+				break;
+			}
+			
+		case Token::SECTION:
+			{
+				parseEnded = true;
+				break;
+			}
+			
+		case Token::KEY:
+			{
+				if(text.IsEmpty())
+				{
+					auto value = processNumber();
+					settings.Emplace(key, value);
+					parseEnded = true;
+					break;
+				}
+
+				parseEnded = false;
+				break;
+			}
+			
+		case Token::VALUE: break;
+		}
+
+		settingsFile.CloseFile();
+
+		return parseEnded;
 	}
 }

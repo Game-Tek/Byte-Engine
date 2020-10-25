@@ -10,6 +10,8 @@
 #include <GTSL/Math/Vector2.h>
 #include <GTSl/Tree.hpp>
 
+
+#include "MaterialSystem.h"
 #include "RenderGroup.h"
 #include "ByteEngine/Id.h"
 
@@ -26,11 +28,8 @@ enum class SizingPolicy : uint8
 class Button : public Object
 {
 public:
-
-	void SetMaterial(const ComponentReference newMat) { material = newMat; }
 	
 private:
-	ComponentReference material;
 };
 
 struct PrimitiveData
@@ -39,6 +38,7 @@ struct PrimitiveData
 	GTSL::Vector2 AspectRatio;
 	Alignment Alignment;
 	SizingPolicy SizingPolicy;
+	MaterialHandle Material;
 };
 
 struct Primitive
@@ -101,22 +101,28 @@ public:
 	uint16 AddOrganizer(const Id name);
 	uint16 AddOrganizer(const Id name, const uint16 parentOrganizer);
 
-	uint16 AddSquare(const uint16 organizer)
+	uint16 AddSquare()
 	{
-		return squaresPerOrganizer[organizer].Emplace();
+		const auto primitiveIndex = primitives.Emplace();
+		const auto place = squares.Emplace();
+		squares[place].PrimitiveIndex = primitiveIndex;
+		return static_cast<uint16>(place);
 	}
 
-	void SetSquareAspectRatio(const uint16 organizer, const uint16 square, const GTSL::Vector2 aspectRatio)
+	void SetSquareAspectRatio(const uint16 square, const GTSL::Vector2 aspectRatio)
 	{
-		primitivesPerOrganizer[organizer][squaresPerOrganizer[organizer][square].PrimitiveIndex].AspectRatio = aspectRatio;
+		primitives[squares[square].PrimitiveIndex].AspectRatio = aspectRatio;
 	}
 
-	void SetSquareColor(const uint16 organizer, const uint16 square, const Id color)
+	void SetSquareColor(const uint16 square, const Id color)
 	{
-		squaresPerOrganizer[organizer][square].SetColor(color);
+		squares[square].SetColor(color);
 	}
 
-	uint16 AddButton(const ComponentReference organizer, const Id name);
+	void SetSquareMaterial(const uint16 square, const MaterialHandle material)
+	{
+		primitives[squares[square].PrimitiveIndex].Material = material;
+	}
 	
 	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio)
 	{
@@ -131,21 +137,29 @@ public:
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
 
 	[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
-	[[nodiscard]] auto GetOrganizersSquares() const { return squaresPerOrganizer.GetRange(); }
 
 	[[nodiscard]] auto GetOrganizers() const { return organizers.GetRange(); }
 	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
-
-	auto GetPrimitivesPerOrganizer() const
+	void SetSquarePosition(uint16 square, GTSL::Vector2 pos)
 	{
-		return primitivesPerOrganizer.begin();
+		BE_ASSERT(pos.X >= -1.f && pos.X <= 1.0f && pos.Y >= -1.0f && pos.Y <= 1.0f);
+		primitives[squares[square].PrimitiveIndex].RelativeLocation = pos;
 	}
+
+	auto GetSquares() const { return squares.GetRange(); }
+	auto GetPrimitives() const { return primitives.GetRange(); };
+
+	//auto GetPrimitivesPerOrganizer() const
+	//{
+	//	return primitivesPerOrganizer.begin();
+	//}
 	
 	//Button& GetButton(const ComponentReference button) { return buttons[button.Component]; }
 	
 private:
-	GTSL::KeepVector<GTSL::KeepVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
-	GTSL::KeepVector<GTSL::KeepVector<Square, BE::PAR>, BE::PAR> squaresPerOrganizer;
+	//GTSL::KeepVector<GTSL::KeepVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
+	GTSL::KeepVector<PrimitiveData, BE::PAR> primitives;
+	GTSL::KeepVector<Square, BE::PAR> squares;
 	GTSL::KeepVector<uint32, BE::PAR> organizerDepth;
 	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
 	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;

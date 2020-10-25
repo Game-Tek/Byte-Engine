@@ -11,6 +11,8 @@
 #include <GTSL/Math/Vector2.h>
 #include <GTSL/Math/Vector3.h>
 
+#include "ByteEngine/Id.h"
+
 
 namespace GTSL {
 	class Window;
@@ -93,6 +95,8 @@ protected:
 	using QuaternionInputSourceData = InputSourceData<QuaternionInputEvent>;
 	GTSL::FlatHashMap<QuaternionInputSourceData, BE::PersistentAllocatorReference> quaternionInputSourcesToQuaternionInputEvents;
 
+	Id lastInputDevice;
+	
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.
 	* This can be a boolean value(on, off) triggered by a keyboard key, mouse click, etc;

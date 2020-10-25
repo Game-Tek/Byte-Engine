@@ -51,12 +51,15 @@ public:
 	
 	[[nodiscard]] RenderPass GetRenderPass(const uint8 rp) const { return renderPasses[rp].RenderPass; }
 
-	unsigned char GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name); }
+	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name); }
 	[[nodiscard]] uint8 GetSubPassIndex(const uint8 renderPass, const Id subPassName) const { return subPassMap[renderPass].At(subPassName); }
 	
 	[[nodiscard]] FrameBuffer GetFrameBuffer(const uint8 rp) const { return renderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 GetRenderPassCount() const { return renderPasses.GetLength(); }
-	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasseses[renderPass].GetLength(); }
+	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasses[renderPass].GetLength(); }
+
+	Id GetRenderPassName(const uint8 rp) { return renderPasses[rp].Name; }
+	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
 	
 private:
 	struct RenderPassAttachment
@@ -67,6 +70,7 @@ private:
 	
 	struct RenderPassData
 	{
+		Id Name;
 		RenderPass RenderPass;
 		GTSL::StaticMap<RenderPassAttachment, 8> Attachments;
 		GTSL::Array<GTSL::RGBA, 8> ClearValues;
@@ -80,9 +84,10 @@ private:
 	
 	struct SubPass
 	{
+		Id Name;
 		uint8 DepthAttachment;
 	};
-	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasseses;
+	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasses;
 
 	GTSL::Array<GTSL::StaticMap<uint8, 16>, 8> subPassMap;
 

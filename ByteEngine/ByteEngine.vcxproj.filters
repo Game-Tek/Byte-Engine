@@ -141,6 +141,8 @@
     <ClInclude Include="src\ByteEngine\Render\rayTracing.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
     <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
+    <ClInclude Include="src\ByteEngine\Handle.hpp" />
+    <ClInclude Include="src\ByteEngine\Resources\AnimationResourceManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

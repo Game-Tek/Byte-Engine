@@ -200,7 +200,14 @@ public:
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 
-	void RenderMesh(const ComponentReference component);
+	ComponentReference CreateMesh(void* vertexData, void* indexData, uint32 vertexSize, const uint32 indexCount, const uint8 indexSize);
+	
+	void RenderMesh(const ComponentReference component, const uint32 instances);
+
+	void AddMeshToId(ComponentReference mesh, Id material)
+	{
+		meshesByMaterial.Emplace(material, mesh);
+	}
 	
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -241,6 +248,14 @@ private:
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
 
+	struct Mesh
+	{
+		Buffer Buffer;
+		uint32 IndicesCount;
+		IndexType IndexType;
+		RenderAllocation Allocation;
+	};
+	
 	struct RayTracingMesh
 	{
 		Buffer Buffer;
@@ -252,11 +267,11 @@ private:
 	};
 	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
+	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 
 	GTSL::Array<GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> buildAccelerationStructureInfos;
 	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;
 	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
-	//GTSL::Vector<AccelerationStructure::GeometryTriangleData, BE::PersistentAllocatorReference> triangleDatas;
 
 	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
@@ -306,4 +321,6 @@ private:
 	LocalMemoryAllocator localMemoryAllocator;
 
 	Vector<PipelineCache> pipelineCaches;
+
+	GTSL::FlatHashMap<uint32, BE::PAR> meshesByMaterial;
 };

@@ -77,19 +77,7 @@ private:
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
-	
-	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> meshesRefTable;
-	GTSL::KeepVector<RenderAllocation, BE::PersistentAllocatorReference> renderAllocations;
-
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 
-	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
-
-	uint32 meshCount = 0;
-	
-public:
-	const GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>& GetMeshesByMaterial() { return meshesRefTable; }
-	[[nodiscard]] auto GetMeshes() const { return meshes.begin(); }
-	[[nodiscard]] uint32 GetMeshCount() const { return meshCount; }
 };

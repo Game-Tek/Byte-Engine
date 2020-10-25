@@ -22,101 +22,96 @@
 static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -1.f, 1.f }, { 1.f, 1.f }, { 1.f, -1.f }, { -1.f, -1.f } };
 static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 
+void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
+{
+	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+
+	MaterialSystem::SetInfo setInfo;
+
+	GTSL::Array<MaterialSystem::Member, 8> members(1);
+	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
+	members[0].Handle = &matrixUniformBufferMemberHandle;
+
+	GTSL::Array<MaterialSystem::Struct, 4> structs(1);
+	structs[0].Frequency = MaterialSystem::Struct::Frequency::PER_INSTANCE;
+	structs[0].Members = members;
+
+	setInfo.Structs = structs;
+	
+	materialSystem->AddSet("StaticMeshSet", "where", setInfo);
+}
+
 void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
 {
 	dependencies.EmplaceBack(TaskDependency{ "StaticMeshRenderGroup", AccessType::READ });
 }
 
-void StaticMeshRenderManager::GetRenderAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
-{
-	dependencies.EmplaceBack(TaskDependency{ "StaticMeshRenderGroup", AccessType::READ });
-}
-
-void StaticMeshRenderManager::Render(const RenderInfo& renderInfo)
-{
-	if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 0)
-	{
-		auto* const renderGroup = renderInfo.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-
-		auto renderGroupName = Id("StaticMeshRenderGroup");
-
-		auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
-		auto& renderGroupInstance = renderGroups.At(renderGroupName);
-
-		auto meshes = renderGroup->GetMeshes();
-
-		GTSL::ForEach(renderGroup->GetMeshesByMaterial(),
-		              [&](const GTSL::Vector<uint32, BE::PersistentAllocatorReference>& e)
-		              {
-			              for (auto m : e)
-			              {
-				              const auto& i = meshes[m];
-
-				              if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
-				              {
-					              auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-					              auto& materialInstance = materialInstances[i.Material.MaterialInstance];
-
-					              {
-						              auto offset = GTSL::Array<uint32, 1>{
-							              ((renderGroup->GetMeshCount() * 64) * renderInfo.CurrentFrame) + (m * 64)
-						              };
-						              renderInfo.BindingsManager->AddBinding(
-							              renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset,
-							              PipelineType::RASTER, renderGroupInstance.PipelineLayout);
-					              }
-
-					              if (materialInstance.TextureParametersBindings.DataSize)
-					              {
-						              renderInfo.BindingsManager->AddBinding(
-							              materialInstance.TextureParametersBindings.BindingsSets[renderInfo.
-								              CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
-					              }
-
-					              CommandBuffer::BindPipelineInfo bindPipelineInfo;
-					              bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					              bindPipelineInfo.PipelineType = PipelineType::RASTER;
-					              bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-					              renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-
-					              CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-					              bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					              bindVertexInfo.Buffer = &i.Buffer;
-					              bindVertexInfo.Offset = 0;
-					              renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
-					              CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-					              bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					              bindIndexBuffer.Buffer = &i.Buffer;
-					              bindIndexBuffer.Offset = i.IndicesOffset;
-					              bindIndexBuffer.IndexType = i.IndexType;
-					              renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
-					              CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-					              drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-					              drawIndexedInfo.InstanceCount = 1;
-					              drawIndexedInfo.IndexCount = i.IndicesCount;
-					              renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
-
-					              if (materialInstance.TextureParametersBindings.DataSize)
-					              {
-						              renderInfo.BindingsManager->PopBindings(); //material
-					              }
-
-					              renderInfo.BindingsManager->PopBindings(); //render group
-				              }
-			              }
-		              }
-		);
-	}
-}
+//GTSL::ForEach(renderGroup->GetMeshesByMaterial(),
+//              [&](const GTSL::Vector<uint32, BE::PersistentAllocatorReference>& e)
+//              {
+//	              for (auto m : e)
+//	              {
+//		              const auto& i = meshes[m];
+//
+//		              if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
+//		              {
+//			              auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
+//			              auto& materialInstance = materialInstances[i.Material.MaterialInstance];
+//
+//			              {
+//				              auto offset = GTSL::Array<uint32, 1>{
+//					              ((renderGroup->GetMeshCount() * 64) * renderInfo.CurrentFrame) + (m * 64)
+//				              };
+//				              renderInfo.BindingsManager->AddBinding(
+//					              renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset,
+//					              PipelineType::RASTER, renderGroupInstance.PipelineLayout);
+//			              }
+//
+//			              if (materialInstance.TextureParametersBindings.DataSize)
+//			              {
+//				              renderInfo.BindingsManager->AddBinding(
+//					              materialInstance.TextureParametersBindings.BindingsSets[renderInfo.
+//						              CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
+//			              }
+//
+//			              CommandBuffer::BindPipelineInfo bindPipelineInfo;
+//			              bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+//			              bindPipelineInfo.PipelineType = PipelineType::RASTER;
+//			              bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
+//			              renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
+//
+//			              CommandBuffer::BindVertexBufferInfo bindVertexInfo;
+//			              bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+//			              bindVertexInfo.Buffer = &i.Buffer;
+//			              bindVertexInfo.Offset = 0;
+//			              renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
+//			              CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
+//			              bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+//			              bindIndexBuffer.Buffer = &i.Buffer;
+//			              bindIndexBuffer.Offset = i.IndicesOffset;
+//			              bindIndexBuffer.IndexType = i.IndexType;
+//			              renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
+//			              CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+//			              drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
+//			              drawIndexedInfo.InstanceCount = 1;
+//			              drawIndexedInfo.IndexCount = i.IndicesCount;
+//			              renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
+//
+//			              if (materialInstance.TextureParametersBindings.DataSize)
+//			              {
+//				              renderInfo.BindingsManager->PopBindings(); //material
+//			              }
+//
+//			              renderInfo.BindingsManager->PopBindings(); //render group
+//		              }
+//	              }
+//              }
+//);
 
 void StaticMeshRenderManager::Setup(const SetupInfo& info)
 {
-	auto* data = info.MaterialSystem->GetRenderGroupDataPointer("StaticMeshRenderGroup");
-
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
-
-	uint32 offset = renderGroup->GetMeshCount() * 64 * info.RenderSystem->GetCurrentFrame();
 
 	{
 		uint32 index = 0;
@@ -125,18 +120,18 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 		{
 			auto pos = GTSL::Math::Translation(e);
 			pos(2, 3) *= -1.f;
-			*(reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(data) + offset) + index) = info.ProjectionMatrix *
-				info.ViewMatrix * pos;
+			
+			*reinterpret_cast<GTSL::Matrix4*>(info.MaterialSystem->GetMemberPointer(matrixUniformBufferMemberHandle, index)) = info.ProjectionMatrix * info.ViewMatrix * pos;
 
 			++index;
 		}
 	}
+}
 
-	MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
-	updateInfo.RenderGroup = "StaticMeshRenderGroup";
-	updateInfo.Data = GTSL::Range<const byte*>(64, static_cast<const byte*>(data));
-	updateInfo.Offset = 64;
-	info.MaterialSystem->UpdateRenderGroupData(updateInfo);
+void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
+{
+	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	square = renderSystem->CreateMesh((void*)&SQUARE_VERTICES, (void*)&SQUARE_INDICES, 4 * 2 * 4, 6, 2);
 }
 
 void UIRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
@@ -145,67 +140,17 @@ void UIRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependen
 	dependencies.EmplaceBack(TaskDependency{ "CanvasSystem", AccessType::READ });
 }
 
-void UIRenderManager::GetRenderAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
-{
-	dependencies.EmplaceBack(TaskDependency{ "UIManager", AccessType::READ });
-	dependencies.EmplaceBack(TaskDependency{ "CanvasSystem", AccessType::READ });
-}
-
-void UIRenderManager::Render(const RenderInfo& renderInfo)
-{
-	if (renderInfo.RenderPass == 0 && renderInfo.SubPass == 1)
-	{
-		auto* uiManager = renderInfo.GameInstance->GetSystem<UIManager>("UIManager");
-
-		//if (textSystem->GetTexts().ElementCount())
-		//{
-		//	Id renderGroupName = "TextSystem";
-		//
-		//	auto& renderGroups = renderInfo.MaterialSystem->GetRenderGroups();
-		//	auto& renderGroupInstance = renderGroups.At(renderGroupName);
-		//
-		//	{
-		//		auto offset = GTSL::Array<uint32, 1>{ 0 };
-		//		renderInfo.BindingsManager->AddBinding(renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset, PipelineType::RASTER, renderGroupInstance.PipelineLayout);
-		//	}
-		//
-		//	auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-		//	auto& materialInstance = materialInstances[1];
-		//
-		//	if (renderInfo.MaterialSystem->IsMaterialReady(MaterialHandle{}))
-		//	{
-		//		CommandBuffer::BindPipelineInfo bindPipelineInfo;
-		//		bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-		//		bindPipelineInfo.PipelineType = PipelineType::RASTER;
-		//		bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-		//		renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-		//
-		//		//auto& text = textSystem->GetTexts()[0];
-		//		//
-		//		//CommandBuffer::DrawInfo drawInfo;
-		//		//drawInfo.FirstInstance = 0;
-		//		//drawInfo.FirstVertex = 0;
-		//		//drawInfo.InstanceCount = (text.String.GetLength() - 1);
-		//		//drawInfo.VertexCount = 6;
-		//		//renderInfo.CommandBuffer->Draw(drawInfo);
-		//	}
-		//
-		//	renderInfo.BindingsManager->PopBindings();
-		//}
-	}
-}
-
 void UIRenderManager::Setup(const SetupInfo& info)
 {
 	auto* uiSystem = info.GameInstance->GetSystem<UIManager>("UIManager");
 	auto* canvasSystem = info.GameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 
-	GTSL::RGBA* colorsData;
-
 	float32 scale = 1.0f;
 
 	auto canvases = uiSystem->GetCanvases();
 
+	//auto* data = info.MaterialSystem->GetRenderGroupDataPointer("UIRenderGroup");
+	
 	for (auto& ref : canvases)
 	{
 		auto& canvas = canvasSystem->GetCanvas(ref);
@@ -219,29 +164,48 @@ void UIRenderManager::Setup(const SetupInfo& info)
 
 		auto& organizers = canvas.GetOrganizersTree();
 		auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
-		auto organizersSquares = canvas.GetOrganizersSquares();
-		auto primitivesPerOrganizer = canvas.GetPrimitivesPerOrganizer();
+		//auto organizersSquares = canvas.GetOrganizersSquares();
+		//auto primitivesPerOrganizer = canvas.GetPrimitivesPerOrganizer();
 
+		auto primitives = canvas.GetPrimitives();
+		auto squares = canvas.GetSquares();
+
+		uint32 offset = 0;
+		
 		auto* parentOrganizer = organizers.GetRootNode();
 
-		auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
+		for(auto& e : squares)
 		{
-			GTSL::Matrix4 transform;
+			GTSL::Matrix4 trans;
 
-			for (uint32 i = 0; i < node->Nodes.GetLength(); ++i) { self(node->Nodes[i], depth + 1, transform, self); }
+			auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
+			auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
+			
+			trans = GTSL::Math::Translation(GTSL::Vector3(location.X, location.Y, 0)) * ortho;
+			trans *= GTSL::Math::Scaling(GTSL::Vector3(scale.X, scale.Y, 1));
 
-			const auto aspectRatio = organizersAspectRatio.begin()[parentOrganizer->Data];
-			GTSL::Matrix4 organizerMatrix = ortho;
-			GTSL::Math::Scale(organizerMatrix, {aspectRatio.X, aspectRatio.Y, 1.0f});
-
-			for (auto square : organizersSquares.begin()[node->Data])
-			{
-				primitivesPerOrganizer->begin()[square.PrimitiveIndex].AspectRatio;
-				colorsData[depth] = uiSystem->GetColor(square.GetColor());
-			}
-		};
-
-		processNode(parentOrganizer, 0, ortho, processNode);
+			//*static_cast<GTSL::Matrix4*>(data) = trans;
+			
+			offset += 16 * 4;
+		}
+		
+		//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
+		//{
+		//	GTSL::Matrix4 transform;
+		//
+		//	for (uint32 i = 0; i < node->Nodes.GetLength(); ++i) { self(node->Nodes[i], depth + 1, transform, self); }
+		//
+		//	const auto aspectRatio = organizersAspectRatio.begin()[parentOrganizer->Data];
+		//	GTSL::Matrix4 organizerMatrix = ortho;
+		//	GTSL::Math::Scale(organizerMatrix, { aspectRatio.X, aspectRatio.Y, 1.0f });
+		//
+		//	for (auto square : organizersSquares.begin()[node->Data])
+		//	{
+		//		primitivesPerOrganizer->begin()[square.PrimitiveIndex].AspectRatio;
+		//	}
+		//};
+		//
+		//processNode(parentOrganizer, 0, ortho, processNode);
 	}
 
 	//if (textSystem->GetTexts().ElementCount())
@@ -367,8 +331,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	
 	BindingsManager<BE::TAR> bindingsManager(GetTransientAllocator(), renderSystem, renderSystem->GetCurrentCommandBuffer());
-	
-	bindingsManager.AddBinding(materialSystem->globalBindingsSets[currentFrame], PipelineType::RASTER, materialSystem->globalPipelineLayout);
+
+	//TODO: AUTO ADD BINDINGS BY SCOPE
 
 	auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
 
@@ -394,26 +358,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		beginRenderPass.RenderArea = renderSystem->GetRenderExtent();
 		beginRenderPass.ClearValues = frameManager->GetClearValues(rp);
 		commandBuffer.BeginRenderPass(beginRenderPass);
+
+		auto renderPassName = frameManager->GetRenderPassName(rp);
 		
 		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp)
 		{
-			for (auto e : systems)
-			{
-				RenderManager::RenderInfo renderInfo;
-				renderInfo.RenderSystem = renderSystem;
-				renderInfo.GameInstance = taskInfo.GameInstance;
-				renderInfo.CommandBuffer = &commandBuffer;
-				renderInfo.MaterialSystem = materialSystem;
-				renderInfo.CurrentFrame = renderSystem->GetCurrentFrame();
-				renderInfo.BindingsManager = &bindingsManager;
-				renderInfo.RenderPass = rp; renderInfo.SubPass = sp;
-				taskInfo.GameInstance->GetSystem<RenderManager>(e)->Render(renderInfo);
-			}
-
-			if (sp < frameManager->GetSubPassCount(rp) - 1)
-			{
-				commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
-			}
+			auto subPassName = frameManager->GetSubPassName(rp, sp);
+			
+			if (sp < frameManager->GetSubPassCount(rp) - 1) { commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{}); }
 		}
 
 		CommandBuffer::EndRenderPassInfo endRenderPass;
@@ -506,20 +458,6 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 		managerDependencies.PushBack(managerSetupDependencies);
 		
 		setupSystemsAccesses.PushBack(managerDependencies);
-	}
-
-	{
-		GTSL::Array<TaskDependency, 32> managerDependencies;
-
-		managerDependencies.PushBack(dependencies);
-
-		GTSL::Array<TaskDependency, 16> managerRenderDependencies;
-
-		gameInstance->GetSystem<RenderManager>(systemReference)->GetRenderAccesses(managerRenderDependencies);
-
-		managerDependencies.PushBack(managerRenderDependencies);
-		
-		renderSystemsAccesses.PushBack(managerDependencies);
 	}
 	
 

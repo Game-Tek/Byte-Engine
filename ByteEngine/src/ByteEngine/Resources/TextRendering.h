@@ -12,24 +12,6 @@
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Utility/Shapes/Box.h"
 
-enum class ContentType
-{
-	BLANK,
-	FILL,
-	HOR_LINE,
-	VER_LINE,
-	LINEAR_BEZIER,
-	CUADRATIC_BEZIER,
-	HOR_AND_VER,
-	HOR_AND_LINEAR,
-	VER_AND_LINEAR,
-	LINEAR_AND_LINEAR,
-	HOR_AND_CUADRTIC,
-	VER_AND_CUADRATIC,
-	LINEAR_AND_CUADRATIC,
-	CUADRATIC_AND_CUADRATIC
-};
-
 struct FontPoint
 {
 	FontPoint() = default;
@@ -43,34 +25,6 @@ struct LinearBezier
 	LinearBezier(FontPoint a, FontPoint b) : Points{ a, b } {}
 	FontPoint Points[2];
 
-	[[nodiscard]] float32 EvaluateAsFunction(const float32 x) const
-	{
-		BE_ASSERT((Points[1].X - Points[0].X) != 0)
-
-			auto tanX = ((Points[1].Y - Points[0].Y) / (Points[1].X - Points[0].X)) * x;
-
-		auto b = Points[0].Y + (-tanX);
-
-		return tanX + b;
-	}
-
-	[[nodiscard]] float32 EvaluateAsRoot(float32 y) const
-	{
-		BE_ASSERT((Points[1].X - Points[0].X) != 0)
-
-			//auto tanX = ((Points[1].Y - Points[0].Y) / (Points[1].X - Points[0].X)) * 0;
-
-			auto x = 0.0f;
-
-		auto b = Points[0].Y;
-
-		x = y -= b;
-
-		y /= ((Points[1].Y - Points[0].Y) / (Points[1].X - Points[0].X));
-
-		return x;
-	}
-
 	[[nodiscard]] bool IsPerfectlyVertical() const { return Points[0].X == Points[1].X; }
 	[[nodiscard]] bool IsPerfectlyHorizontal() const { return Points[0].Y == Points[1].Y; }
 };
@@ -81,85 +35,60 @@ struct CubicBezier
 	FontPoint Points[3];
 };
 
-struct HorizontalLine
-{
-	//if line pointing right fill right side (of shape) or bottom of global
-	HorizontalLine(const LinearBezier line) : FillBottomSide(line.Points[0].X < line.Points[1].X) {}
-	
-	int16 Y;
-	uint16 FillBottomSide;
-};
+FontPoint makePoint(const GTSL::Vector2 vector) { return FontPoint(vector.X, vector.Y); }
 
-struct VerticalLine
-{
-	//if line pointing downward fill right side (of shape) or left of global
-	VerticalLine(const LinearBezier line) : FillLeftSide(line.Points[0].Y > line.Points[1].Y) {}
-	
-	int16 X;
-	uint16 FillLeftSide;
+struct Quad
+{	
+	GTSL::Vector<uint16, BE::PAR> curves;
+	GTSL::Vector<uint16, BE::PAR> lines;
 };
 
 struct Line
 {
-	Line(const LinearBezier line) : L(line), PaintRightIf(line.Points[0].X < line.Points[1].X && line.Points[0].Y > line.Points[1].Y)
-	{
-	}
-	
-	LinearBezier L;
-	uint16 PaintRightIf;
+	GTSL::Vector2 Start, End;
 };
 
-struct Cubic
+inline bool LinevLine(const Line l1, const Line l2, GTSL::Vector2* i)
 {
-	Cubic(const CubicBezier line) : L(line), PaintRightIf(line.Points[0].X < line.Points[1].X)
+	GTSL::Vector2 s1, s2;
+	s1.X = l1.End.X - l1.Start.X; s1.Y = l1.End.Y - l1.Start.Y;
+	s2.X = l2.End.X - l2.Start.X; s2.Y = l2.End.Y - l2.Start.Y;
+
+	const float32 div = -s2.X * s1.Y + s1.X * s2.Y;
+	if (div == 0.0f) { BE_ASSERT(false, "") }
+	const float s = (-s1.Y * (l1.Start.X - l2.Start.X) + s1.X * (l1.Start.Y - l2.Start.Y)) / div;
+	const float t = (s2.X * (l1.Start.Y - l2.Start.Y) - s2.Y * (l1.Start.X - l2.Start.X)) / div;
+
+	if (s >= 0 && s <= 1 && t >= 0 && t <= 1)
 	{
-	}
-	
-	CubicBezier L;
-	uint16 PaintRightIf;
-};
-
-bool isControlPoint(uint32 flags) { return !GTSL::CheckBit(0, flags); }
-
-FontPoint makePoint(const GTSL::Vector2 vector) { return FontPoint(vector.X, vector.Y); }
-
-void t()
-{
-	FT_Outline outline;
-}
-
-struct Quad
-{
-	uint32 IntersectionCount() const { return 5; }
-private:
-};
-
-bool intersectBoxLine(const Box box, const LinearBezier linearBezier)
-{
-	float32 boxRightWallX = 0.0f;
-	float32 boxLeftWallX = 0.0f;
-	float32 boxBottomWallY = 0.0f;
-	float32 boxTopWallY = 0.0f;
-
-	auto lineLeftWallYIntersectionAtX = linearBezier.EvaluateAsFunction(boxLeftWallX);
-	auto lineRightWallYIntersectionAtX = linearBezier.EvaluateAsFunction(boxRightWallX);
-	
-	if(lineLeftWallYIntersectionAtX > boxBottomWallY && lineLeftWallYIntersectionAtX < boxTopWallY)
-	{
-		if (lineRightWallYIntersectionAtX > boxBottomWallY && lineRightWallYIntersectionAtX < boxTopWallY)
+		// Collision detected
+		if (i)
 		{
-			return true;
+			i->X = l1.Start.X + (t * s1.X);
+			i->Y = l1.Start.Y + (t * s1.Y);
 		}
+		
+		return true;
 	}
 
-	return false;
+	return false; // No collision
 }
+
+//inline bool Box_V_Line(const Box box, const LinearBezier linearBezier)
+//{
+//	auto a = LinevLine(box.GetTopLine(), linearBezier, nullptr);
+//	auto b = LinevLine(box.GetRightLine(), linearBezier, nullptr);
+//	auto c = LinevLine(box.GetBottomLine(), linearBezier, nullptr);
+//	auto d = LinevLine(box.GetLeftLine(), linearBezier, nullptr);
+//
+//	return a || b || c || d;
+//}
 
 struct FaceTree
 {
 	FaceTree() = default;
 
-	FaceTree(const BE::PersistentAllocatorReference allocator) : cubicBeziers(64, allocator), linearBeziers(64, allocator), blankOrFilledQuads(32, allocator)
+	FaceTree(const BE::PersistentAllocatorReference allocator) : cubicBeziers(64, allocator), linearBeziers(64, allocator)
 	{}
 
 	void MakeFromPaths(const FontResourceManager::Glyph& outline, const BE::TAR& allocator)
@@ -168,29 +97,13 @@ struct FaceTree
 		
 		for(uint16 i = 0; i < curves.GetLength(); ++i)
 		{
-			FontPoint points[3/*max cuadratic bezier*/];
-
-			uint16 pointInContour = 0;
-			
-			points[0] = makePoint(curves[i].Points[pointInContour]);
-
-			++pointInContour;
-			
-			if(curves[pointInContour].IsBezierCurve())
+			if(curves[i].IsBezierCurve())
 			{
-				points[1] = makePoint(curves[i].Points[pointInContour]);
-				++pointInContour;
-				
-				points[2] = makePoint(curves[i].Points[pointInContour]);
-				//++pointInContour;
-
-				cubicBeziers.EmplaceBack(points[0], points[1], points[2]);
+				cubicBeziers.EmplaceBack(makePoint(curves[i].Points[0]), makePoint(curves[i].Points[1]), makePoint(curves[i].Points[2]));
 			}
 			else
 			{
-				points[2] = makePoint(curves[i].Points[pointInContour]);
-				
-				linearBeziers.EmplaceBack(points[0], points[2]);
+				linearBeziers.EmplaceBack(makePoint(curves[i].Points[0]), makePoint(curves[i].Points[2]));
 			}
 		}
 
@@ -219,8 +132,6 @@ struct FaceTree
 
 	GTSL::Vector<CubicBezier, BE::PersistentAllocatorReference> cubicBeziers;
 	GTSL::Vector<LinearBezier, BE::PersistentAllocatorReference> linearBeziers;
-
-	GTSL::Vector<uint32, BE::PersistentAllocatorReference> blankOrFilledQuads;
 
 	Quad firstQuad;
 };

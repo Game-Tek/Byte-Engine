@@ -39,9 +39,7 @@ public:
 		RenderAllocation* Allocation;
 	};
 	void AllocateLocalTextureMemory(AllocateLocalTextureMemoryInfo& allocationInfo)
-	{
-		DeviceMemory deviceMemory;
-		
+	{		
 		Texture::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
 		memoryRequirements.CreateInfo = allocationInfo.CreateInfo;
@@ -50,10 +48,9 @@ public:
 		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		localMemoryAllocator.AllocateTexture(renderDevice, &deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateTexture(renderDevice, &allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
-		allocationInfo.CreateInfo->Memory = deviceMemory;
 		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
 		
 		allocationInfo.Texture->Initialize(*allocationInfo.CreateInfo);
@@ -71,15 +68,13 @@ public:
 		memoryRequirements.BuildType = build;
 		memoryRequirements.MemoryRequirementsType = type;
 		accelerationStructure->GetMemoryRequirements(&memoryRequirements);
-
-		DeviceMemory deviceMemory;
+		
 		renderAllocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, renderAllocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateBuffer(renderDevice, &createInfo->Memory, renderAllocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
-		createInfo->Memory = deviceMemory;
 		createInfo->Offset = renderAllocation->Offset;
 		accelerationStructure->Initialize(*createInfo);
 	}
@@ -105,16 +100,13 @@ public:
 		memoryRequirements.CreateInfo = allocationInfo.CreateInfo;
 		allocationInfo.Buffer->GetMemoryRequirements(&memoryRequirements);
 		
-		DeviceMemory deviceMemory;
-		
 		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&deviceMemory, allocationInfo.Allocation, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
-		allocationInfo.CreateInfo->Memory = deviceMemory;
 		
 		allocationInfo.Buffer->Initialize(*allocationInfo.CreateInfo);
 	}
@@ -131,16 +123,13 @@ public:
 		memoryRequirements.CreateInfo = memoryAllocationInfo.CreateInfo;
 		memoryAllocationInfo.Buffer->GetMemoryRequirements(&memoryRequirements);
 
-		DeviceMemory deviceMemory;
-
 		memoryAllocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 
 		testMutex.Lock();
-		localMemoryAllocator.AllocateBuffer(renderDevice, &deviceMemory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateBuffer(renderDevice, &memoryAllocationInfo.CreateInfo->Memory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		memoryAllocationInfo.CreateInfo->Offset = memoryAllocationInfo.Allocation->Offset;
-		memoryAllocationInfo.CreateInfo->Memory = deviceMemory;
 		
 		memoryAllocationInfo.Buffer->Initialize(*memoryAllocationInfo.CreateInfo);
 	}
@@ -200,13 +189,20 @@ public:
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 
-	ComponentReference CreateMesh(void* vertexData, void* indexData, uint32 vertexSize, const uint32 indexCount, const uint8 indexSize);
+	ComponentReference CreateMesh(Id name, Buffer scratchBuffer, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
 	
-	void RenderMesh(const ComponentReference component, const uint32 instances);
+	void RenderAllMeshesForMaterial(Id material);
 
 	void AddMeshToId(ComponentReference mesh, Id material)
 	{
-		meshesByMaterial.Emplace(material, mesh);
+		if(meshesByMaterial.Find(material)) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
+		{
+			meshesByMaterial.At(material).EmplaceBack(mesh.Component);
+		}
+		else
+		{
+			meshesByMaterial.Emplace(material).EmplaceBack(mesh.Component);
+		}
 	}
 	
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -215,7 +211,7 @@ public:
 
 	void OnResize(GTSL::Extent2D extent);
 	
-private:
+private:	
 	GTSL::Mutex testMutex;
 	
 	RenderDevice renderDevice;
@@ -254,6 +250,7 @@ private:
 		uint32 IndicesCount;
 		IndexType IndexType;
 		RenderAllocation Allocation;
+		uint32 OffsetToIndices;
 	};
 	
 	struct RayTracingMesh
@@ -322,5 +319,5 @@ private:
 
 	Vector<PipelineCache> pipelineCaches;
 
-	GTSL::FlatHashMap<uint32, BE::PAR> meshesByMaterial;
+	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PAR> meshesByMaterial;
 };

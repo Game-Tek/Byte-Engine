@@ -66,19 +66,29 @@ void GameApplication::Initialize()
 }
 
 void GameApplication::PostInitialize()
-{	
+{
+	//FRAME START
 	gameInstance->AddGoal("FrameStart");
-	
+
+	//GAMEPLAY CODE BEGINS
 	gameInstance->AddGoal("GameplayStart");
+	//GAMEPLAY CODE ENDS
 	gameInstance->AddGoal("GameplayEnd");
 	
+	//RENDER CODE BEGINS
 	gameInstance->AddGoal("RenderStart");
+	//RENDER SETUP BEGINS
 	gameInstance->AddGoal("RenderStartSetup");
+	//RENDER SETUP ENDS
 	gameInstance->AddGoal("RenderEndSetup");
+	//RENDER IS DISPATCHED
 	gameInstance->AddGoal("RenderDo");
+	//RENDER DISPATCH IS DONE
 	gameInstance->AddGoal("RenderFinished");
+	//RENDER CODE ENDS
 	gameInstance->AddGoal("RenderEnd");
 	
+	//FRAME ENDS
 	gameInstance->AddGoal("FrameEnd");
 	
 	auto renderer = gameInstance->AddSystem<RenderSystem>("RenderSystem");
@@ -133,6 +143,8 @@ void GameApplication::PostInitialize()
 	}
 
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+
+	renderOrchestrator->AddRenderPass("Scene");
 	
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");

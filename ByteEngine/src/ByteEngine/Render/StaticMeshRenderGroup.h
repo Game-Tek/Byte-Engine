@@ -43,21 +43,12 @@ public:
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
 
-
-	struct Mesh
+	GTSL::Pair<uint32, uint32> GetAddedObjectsRangeAndReset()
 	{
-		Buffer Buffer;
-		uint32 IndicesOffset;
-		uint32 IndicesCount;
-		IndexType IndexType;
-
-		MaterialHandle Material;
-	};
-
-	struct RayTracingMesh : Mesh
-	{
-		AccelerationStructure AccelerationStructure;
-	};
+		auto ret = addedMeshes;
+		addedMeshes.First = addedMeshes.Second;
+		return ret;
+	}
 	
 private:
 	struct MeshLoadInfo
@@ -80,4 +71,6 @@ private:
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+
+	GTSL::Pair<uint32, uint32> addedMeshes;
 };

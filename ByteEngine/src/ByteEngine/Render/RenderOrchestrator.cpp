@@ -25,20 +25,24 @@ static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
 	MaterialSystem::SetInfo setInfo;
 
-	GTSL::Array<MaterialSystem::Member, 8> members(1);
+	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
 
-	GTSL::Array<MaterialSystem::Struct, 4> structs(1);
-	structs[0].Frequency = MaterialSystem::Struct::Frequency::PER_INSTANCE;
+	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
+	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
+	structs[0].Handle = &staticMeshDataStructHandle;
 	structs[0].Members = members;
 
 	setInfo.Structs = structs;
 	
 	materialSystem->AddSet("StaticMeshSet", "where", setInfo);
+
+	renderOrchestrator->AddToRenderPass("Scene", "StaticMeshRenderGroup");
 }
 
 void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
@@ -46,73 +50,15 @@ void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& 
 	dependencies.EmplaceBack(TaskDependency{ "StaticMeshRenderGroup", AccessType::READ });
 }
 
-//GTSL::ForEach(renderGroup->GetMeshesByMaterial(),
-//              [&](const GTSL::Vector<uint32, BE::PersistentAllocatorReference>& e)
-//              {
-//	              for (auto m : e)
-//	              {
-//		              const auto& i = meshes[m];
-//
-//		              if (renderInfo.MaterialSystem->IsMaterialReady(i.Material))
-//		              {
-//			              auto& materialInstances = renderInfo.MaterialSystem->GetMaterialInstances();
-//			              auto& materialInstance = materialInstances[i.Material.MaterialInstance];
-//
-//			              {
-//				              auto offset = GTSL::Array<uint32, 1>{
-//					              ((renderGroup->GetMeshCount() * 64) * renderInfo.CurrentFrame) + (m * 64)
-//				              };
-//				              renderInfo.BindingsManager->AddBinding(
-//					              renderGroupInstance.BindingsSets[renderInfo.CurrentFrame], offset,
-//					              PipelineType::RASTER, renderGroupInstance.PipelineLayout);
-//			              }
-//
-//			              if (materialInstance.TextureParametersBindings.DataSize)
-//			              {
-//				              renderInfo.BindingsManager->AddBinding(
-//					              materialInstance.TextureParametersBindings.BindingsSets[renderInfo.
-//						              CurrentFrame], PipelineType::RASTER, materialInstance.PipelineLayout);
-//			              }
-//
-//			              CommandBuffer::BindPipelineInfo bindPipelineInfo;
-//			              bindPipelineInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-//			              bindPipelineInfo.PipelineType = PipelineType::RASTER;
-//			              bindPipelineInfo.Pipeline = &materialInstance.Pipeline;
-//			              renderInfo.CommandBuffer->BindPipeline(bindPipelineInfo);
-//
-//			              CommandBuffer::BindVertexBufferInfo bindVertexInfo;
-//			              bindVertexInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-//			              bindVertexInfo.Buffer = &i.Buffer;
-//			              bindVertexInfo.Offset = 0;
-//			              renderInfo.CommandBuffer->BindVertexBuffer(bindVertexInfo);
-//			              CommandBuffer::BindIndexBufferInfo bindIndexBuffer;
-//			              bindIndexBuffer.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-//			              bindIndexBuffer.Buffer = &i.Buffer;
-//			              bindIndexBuffer.Offset = i.IndicesOffset;
-//			              bindIndexBuffer.IndexType = i.IndexType;
-//			              renderInfo.CommandBuffer->BindIndexBuffer(bindIndexBuffer);
-//			              CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-//			              drawIndexedInfo.RenderDevice = renderInfo.RenderSystem->GetRenderDevice();
-//			              drawIndexedInfo.InstanceCount = 1;
-//			              drawIndexedInfo.IndexCount = i.IndicesCount;
-//			              renderInfo.CommandBuffer->DrawIndexed(drawIndexedInfo);
-//
-//			              if (materialInstance.TextureParametersBindings.DataSize)
-//			              {
-//				              renderInfo.BindingsManager->PopBindings(); //material
-//			              }
-//
-//			              renderInfo.BindingsManager->PopBindings(); //render group
-//		              }
-//	              }
-//              }
-//);
-
 void StaticMeshRenderManager::Setup(const SetupInfo& info)
 {
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
 
+	auto range = renderGroup->GetAddedObjectsRangeAndReset();
+	
+	info.MaterialSystem->AddObjects(info.RenderSystem, "StaticMeshRenderGroup", range.Second - range.First);
+	
 	{
 		uint32 index = 0;
 
@@ -290,7 +236,6 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
-	renderSystemsAccesses.Initialize(16, GetPersistentAllocator());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -364,6 +309,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp)
 		{
 			auto subPassName = frameManager->GetSubPassName(rp, sp);
+
+			for(auto e : renderPasses.At(subPassName).RenderGroups)
+			{
+				renderSystem->RenderAllMeshesForMaterial(Id());
+			}
 			
 			if (sp < frameManager->GetSubPassCount(rp) - 1) { commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{}); }
 		}
@@ -474,7 +424,6 @@ void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const I
 	systems.Pop(element - systems.begin());
 	
 	setupSystemsAccesses.Pop(element - systems.begin());
-	renderSystemsAccesses.Pop(element - systems.begin());
 	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
 	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 

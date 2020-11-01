@@ -431,75 +431,74 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	return ComponentReference(GetSystemId(), component);
 }
 
-ComponentReference RenderSystem::CreateMesh(void* vertexData, void* indexData, const uint32 vertexSize, const uint32 indexCount, const uint8 indexSize)
+ComponentReference RenderSystem::CreateMesh(Id name, Buffer scratchBuffer, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize)
 {
 	Mesh mesh;
 
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX;
-	createInfo.Size = vertexSize + indexCount * indexSize;
-	
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION;
+	createInfo.Size = verticesSize + indexCount * indexSize;
+
 	mesh.IndexType = SelectIndexType(indexSize);
 	mesh.IndicesCount = indexCount;
-	
+
 	auto compRef = meshes.GetFirstFreeIndex();
 
-	Buffer scratchBuffer;
 	BufferCopyData bufferCopyData;
-	
-	BufferScratchMemoryAllocationInfo bufferScratch;
-	bufferScratch.CreateInfo = &createInfo;
-	bufferScratch.Allocation = &bufferCopyData.Allocation;
-	bufferScratch.Buffer = &scratchBuffer;
-	AllocateScratchBufferMemory(bufferScratch);
 
-	GTSL::MemCopy(vertexSize, vertexData, bufferCopyData.Allocation.Data);
-	GTSL::MemCopy(indexCount * indexSize, indexData, static_cast<byte*>(bufferCopyData.Allocation.Data) + GTSL::Math::PowerOf2RoundUp(vertexSize, indexSize));
-	
 	BufferLocalMemoryAllocationInfo bufferLocal;
 	bufferLocal.CreateInfo = &createInfo;
 	bufferLocal.Allocation = &mesh.Allocation;
 	bufferLocal.Buffer = &mesh.Buffer;
 	AllocateLocalBufferMemory(bufferLocal);
 
-	bufferCopyData.Size = vertexSize + indexCount * indexSize;
+	bufferCopyData.Size = verticesSize + indexCount * indexSize;
 	bufferCopyData.DestinationBuffer = mesh.Buffer;
 	bufferCopyData.DestinationOffset = 0;
 	bufferCopyData.SourceBuffer = scratchBuffer;
 	bufferCopyData.SourceOffset = 0;
 	AddBufferCopy(bufferCopyData);
 
-	meshes.EmplaceAt(compRef.Get(), mesh);
+	mesh.OffsetToIndices = verticesSize; //TODO: MAYBE ROUND TO INDEX SIZE?
 	
-	return ComponentReference(GetSystemId(), compRef.Get());
+	meshes.EmplaceAt(compRef.Get(), mesh);
+
+	//return ComponentReference(GetSystemId(), compRef.Get()); //BUG: FIX VERTEX SIZE
 }
 
-void RenderSystem::RenderMesh(const ComponentReference component, const uint32 instances)
+void RenderSystem::RenderAllMeshesForMaterial(Id material)
 {
-	{
-		CommandBuffer::BindVertexBufferInfo bindInfo;
-		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &meshes[component.Component].Buffer;
-		bindInfo.Offset = 0;
-		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
-	}
+	auto range = meshesByMaterial.At(material).GetRange();
 
+	for(auto& e : range)
 	{
-		CommandBuffer::BindIndexBufferInfo bindInfo;
-		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &meshes[component.Component].Buffer;
-		bindInfo.Offset = meshes[component.Component].IndicesCount * 2;
-		bindInfo.IndexType = meshes[component.Component].IndexType;
-		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
-	}
+		auto& mesh = meshes[e];
 
-	{
-		CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-		drawIndexedInfo.RenderDevice = GetRenderDevice();
-		drawIndexedInfo.InstanceCount = instances;
-		drawIndexedInfo.IndexCount = meshes[component.Component].IndicesCount;
-		graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
+		{
+			CommandBuffer::BindVertexBufferInfo bindInfo;
+			bindInfo.RenderDevice = GetRenderDevice();
+			bindInfo.Buffer = &mesh.Buffer;
+			bindInfo.Offset = 0;
+			graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
+		}
+
+		{
+			CommandBuffer::BindIndexBufferInfo bindInfo;
+			bindInfo.RenderDevice = GetRenderDevice();
+			bindInfo.Buffer = &mesh.Buffer;
+			bindInfo.Offset = mesh.OffsetToIndices;
+			bindInfo.IndexType = mesh.IndexType;
+			graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
+		}
+
+		{
+			CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+			drawIndexedInfo.RenderDevice = GetRenderDevice();
+			drawIndexedInfo.InstanceCount = 1;
+			drawIndexedInfo.IndexCount = mesh.IndicesCount;
+			graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
+		}
 	}
 }
 

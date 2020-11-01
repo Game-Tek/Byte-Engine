@@ -31,6 +31,11 @@ public:
 		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
 	};
 	virtual void Setup(const SetupInfo& info) = 0;
+
+
+	
+protected:
+	GTSL::Vector<MaterialHandle, BE::PAR> materials;
 };
 
 class StaticMeshRenderManager : public RenderManager
@@ -44,6 +49,7 @@ class StaticMeshRenderManager : public RenderManager
 
 private:
 	uint64 matrixUniformBufferMemberHandle;
+	uint64 staticMeshDataStructHandle;
 };
 
 class UIRenderManager : public RenderManager
@@ -70,6 +76,9 @@ public:
 
 	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
+
+	void AddRenderPass(Id renderPass) { renderPasses.Emplace(renderPass); }
+	void AddToRenderPass(Id renderPass, Id renderGroup) { renderPasses.At(renderPass).RenderGroups.EmplaceBack(renderGroup); }
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
@@ -77,7 +86,13 @@ private:
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
-	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> renderSystemsAccesses;
 	
 	GTSL::FlatHashMap<uint16, BE::PersistentAllocatorReference> renderManagers;
+
+
+	struct RenderPassData
+	{
+		GTSL::Array<Id, 8> RenderGroups;
+	};
+	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPasses;
 };

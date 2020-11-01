@@ -6,6 +6,7 @@
 #include <GTSL/SparseVector.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/StaticMap.hpp>
+#include <GTSL/PagedVector.h>
 #include <GTSL/Tree.hpp>
 
 #include "RenderTypes.h"
@@ -42,7 +43,7 @@ public:
 
 		auto& setBufferData = setsBufferData[data[0]];
 		auto memberSize = setBufferData.MemberSize;
-		return static_cast<byte*>(setBufferData.Allocation[frame].Data) + (index * memberSize) + data[1];
+		return static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1];
 	}
 
 	struct Member
@@ -53,31 +54,33 @@ public:
 		};
 
 		DataType Type;
+	};
+
+	struct MemberInfo : Member
+	{
 		uint64* Handle;
 	};
 
-	struct Struct
+	enum class Frequency : uint8
 	{
-		enum class Frequency : uint8
-		{
-			PER_INSTANCE
-		} Frequency;
-		GTSL::Range<Member*> Members;
+		PER_INSTANCE
+	};
+	
+	struct StructInfo
+	{
+		Frequency Frequency;
+		GTSL::Range<MemberInfo*> Members;
+		uint64* Handle;
 	};
 	
 	struct SetInfo
 	{
-		GTSL::Range<Struct*> Structs;
+		GTSL::Range<StructInfo*> Structs;
 	};
 	SetHandle AddSet(Id setName, Id parent, const SetInfo& setInfo);
 
-	void AddObject(Id renderGroup, ComponentReference mesh, MaterialHandle material);
-	
-	struct MaterialData
-	{
-		uint16 TextureIndices[8];
-		uint8 Parameters[32];
-	};
+	void AddObjects(RenderSystem* renderSystem, Id renderGroup, uint32 count);
+
 
 	struct BindingsSetData
 	{
@@ -103,6 +106,21 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
+	struct MaterialData
+	{
+		struct MaterialInstanceData
+		{
+			
+		};
+		
+		GTSL::KeepVector<MaterialInstanceData, BE::PAR> MaterialInstances;
+
+		PipelineLayout PipelineLayout;
+		RasterizationPipeline Pipeline;
+	};
+	GTSL::KeepVector<MaterialData, BE::PAR> materials;
+	GTSL::FlatHashMap<uint32, BE::PAR> materialsMap;
+	
 	struct CreateTextureInfo
 	{
 		Id TextureName;
@@ -113,42 +131,40 @@ private:
 	};
 	ComponentReference createTexture(const CreateTextureInfo& createTextureInfo);
 
-	struct BindingsUpdateData
+	struct DescriptorsUpdate
 	{
-		struct GlobalUpdates
-		{			
-			GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PersistentAllocatorReference> TextureBindingDescriptorsUpdates;
-			GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PersistentAllocatorReference> BufferBindingDescriptorsUpdates;
-			Vector<BindingType> BufferBindingTypes;
-		};
+		DescriptorsUpdate();
 
-		struct Updates
+		void Initialize(const BE::PAR& allocator)
 		{
-			Vector<BindingsSet::TextureBindingsUpdateInfo> TextureBindingDescriptorsUpdates;
-			uint32 StartWrittenTextures = 0, EndWrittenTextures = 0, StartWrittenBuffers = 0, EndWrittenBuffers = 0;
-			Vector<BindingsSet::BufferBindingsUpdateInfo> BufferBindingDescriptorsUpdates;
-			Vector<BindingType> BufferBindingTypes;
-		};
-
-		GlobalUpdates Global;
-		GTSL::FlatHashMap<Updates, BE::PersistentAllocatorReference> RenderGroups;
-		GTSL::KeepVector<Updates, BE::PersistentAllocatorReference> Materials;
-
-		BindingsUpdateData() = default;
-		void Initialize(const uint32 num, const BE::PersistentAllocatorReference& allocator)
-		{
-			Global.BufferBindingDescriptorsUpdates.Initialize(8, allocator);
-			Global.TextureBindingDescriptorsUpdates.Initialize(8, allocator);
-			Global.BufferBindingTypes.Initialize(8, allocator);
-			RenderGroups.Initialize(8, allocator);
-			Materials.Initialize(32, allocator);
+			setsToUpdate.Initialize(4, allocator);
+			PerSetBufferBindingsUpdate.Initialize(4, allocator);
+			PerSetTextureBindingsUpdate.Initialize(4, allocator);
 		}
-	};
-	GTSL::Array<BindingsUpdateData, MAX_CONCURRENT_FRAMES> perFrameBindingsUpdateData;
 
+		void AddSetToUpdate(const BE::PAR& allocator)
+		{
+			PerSetBufferBindingsUpdate.EmplaceBack(4, allocator);
+			PerSetTextureBindingsUpdate.EmplaceBack(4, allocator);
+		}
+
+		void Reset()
+		{
+			setsToUpdate.ResizeDown(0);
+			PerSetBufferBindingsUpdate.ResizeDown(0);
+			PerSetTextureBindingsUpdate.ResizeDown(0);
+		}
+		
+		GTSL::Vector<uint32, BE::PAR> setsToUpdate;
+
+		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetBufferBindingsUpdate;
+		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetTextureBindingsUpdate;
+	};
+	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
+	
 	struct RenderGroupData
 	{
-		
+		uint32 SetReference;
 	};
 	GTSL::FlatHashMap<RenderGroupData, BE::PAR> renderGroupsData;
 	
@@ -166,13 +182,36 @@ private:
 	GTSL::Tree<SetData, BE::PAR> setsTree;
 	GTSL::FlatHashMap<decltype(setsTree)::Node*, BE::PAR> setNodes;
 
+	struct Struct
+	{
+		enum class Frequency : uint8
+		{
+			PER_INSTANCE
+		} Frequency;
+		
+		GTSL::Array<Member, 8> Members;
+	};
+	
 	struct SetBufferData
 	{
+		/**
+		 * \brief Size (in bytes) of the structure this set has. Right now is only one "Member" but could be several.
+		 */
 		uint32 MemberSize = 0;
-		HostRenderAllocation Allocation[MAX_CONCURRENT_FRAMES];
+		HostRenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
 		Buffer Buffers[MAX_CONCURRENT_FRAMES];
+
+		uint32 UsedInstances = 0, AllocatedInstances = 0;
+		
+		GTSL::Array<uint32, 8> AllocatedStructsPerInstance;
+		GTSL::Array<uint16, 8> StructsSizes;
+		GTSL::Array<Struct, 8> Structs;
+
+		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
 	};
 	GTSL::KeepVector<SetBufferData, BE::PAR> setsBufferData;
+
+	GTSL::PagedVector<uint32, BE::PAR> queuedBufferUpdates;
 	
 	struct TextureLoadInfo
 	{
@@ -213,8 +252,6 @@ private:
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
 
-	void test();
-
 	uint16 component = 0;
 	
 	template<typename C, typename C2>
@@ -242,4 +279,6 @@ private:
 	uint16 minUniformBufferOffset = 0;
 	
 	uint8 frame;
+
+	void resizeSet(RenderSystem* renderSystem, uint32 set);
 };

@@ -39,6 +39,12 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	queuedBufferUpdates.Initialize(1, 2, GetPersistentAllocator());
 
+	textureUpdates.Initialize(8, GetPersistentAllocator());
+	materialsPerTexture.Initialize(16, GetPersistentAllocator());
+
+	readyMaterialsMap.Initialize(32, GetPersistentAllocator());
+	readyMaterialHandles.Initialize(16, GetPersistentAllocator());
+	
 	for(uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 	{
 		descriptorsUpdates.EmplaceBack();
@@ -51,6 +57,11 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 void MaterialSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	RenderSystem* renderSystem = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+}
+
+Pipeline MaterialSystem::GET_PIPELINE(MaterialHandle materialHandle)
+{
+	return materials[materialHandle.Element].Pipeline;
 }
 
 uint32 DataTypeSize(MaterialSystem::Member::DataType data)
@@ -249,6 +260,8 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	info.MaterialResourceManager->GetMaterialSize(info.MaterialName, material_size);
 
 	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
+
+	auto comp = materials.GetFirstFreeIndex().Get();
 	
 	const auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE }, { "FrameManager", AccessType::READ } };
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
@@ -256,12 +269,12 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	material_load_info.GameInstance = info.GameInstance;
 	material_load_info.Name = info.MaterialName;
 	material_load_info.DataBuffer = GTSL::Range<byte*>(material_buffer.GetCapacity(), material_buffer.GetData());
-	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), component, info.TextureResourceManager);
+	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), comp, info.TextureResourceManager);
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, matLoadInfo);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
 	info.MaterialResourceManager->LoadMaterial(material_load_info);
 
-	return MaterialHandle{ info.MaterialName, component++ };
+	return MaterialHandle{ info.MaterialName, 0/*materials[comp].MaterialInstances*//*TODO: WHAT*/, comp  };
 }
 
 void MaterialSystem::SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
@@ -350,6 +363,16 @@ ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 		textureLoadInfo.UserData = DYNAMIC_TYPE(TextureLoadInfo, loadInfo);
 	}
 
+	materialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
+	materialsPerTexture[component].Initialize(4, GetPersistentAllocator());
+
+	for (auto e : materialsPerTexture[component])
+	{
+		TextureUpdateData textureUpdateData;
+		textureUpdateData.Material = e;
+		textureUpdates.EmplaceBack(textureUpdateData);
+	}
+	
 	info.TextureResourceManager->LoadTexture(textureLoadInfo);
 
 	return ComponentReference(GetSystemId(), component);
@@ -368,6 +391,17 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 	}
 
 	queuedBufferUpdates.Clear();
+
+	for(auto e : textureUpdates)
+	{
+		if(++pendingMaterials[e.Material.Element].Counter == pendingMaterials[e.Material.Element].Target)
+		{
+			materials.EmplaceAt(e.Material.Element, pendingMaterials[e.Material.Element]);
+			readyMaterialHandles.EmplaceBack(e.Material);
+		}
+	}
+
+	textureUpdates.ResizeDown(0);
 	
 	BindingsSet::BindingsSetUpdateInfo bindingsUpdateInfo;
 	bindingsUpdateInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -432,12 +466,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	{		
 		auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
 
-		materialSystem->materials.EmplaceAt(loadInfo->Component);
-		auto& material = materialSystem->materials[loadInfo->Component];
-
-		materialSystem->materialsMap.Emplace(onMaterialLoadInfo.ResourceName, loadInfo->Component);
-		
-		//TODO: FLAG READY MATERIALS
+		MaterialData material;
 		
 		auto* renderSystem = loadInfo->RenderSystem;
 
@@ -526,15 +555,18 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			}
 		}
 
+		bool materialReady = true;
+		auto matHandle = MaterialHandle{ onMaterialLoadInfo.ResourceName, 0/*TODO*/, loadInfo->Component };
+		
 		{
-			uint32 offset = 0;
-
+			uint32 targetValue = 0;
+			
 			for (auto& e : onMaterialLoadInfo.Textures)
 			{
 				uint32 textureComp;
 
 				uint32* textureComponent;
-
+				
 				if (!materialSystem->texturesRefTable.Find(e, textureComponent))
 				{
 					CreateTextureInfo createTextureInfo;
@@ -542,7 +574,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					createTextureInfo.GameInstance = taskInfo.GameInstance;
 					createTextureInfo.TextureResourceManager = loadInfo->TextureResourceManager;
 					createTextureInfo.TextureName = e;
-					createTextureInfo.MaterialHandle = MaterialHandle{ onMaterialLoadInfo.ResourceName, loadInfo->Component };
+					createTextureInfo.MaterialHandle = matHandle;
 					textureComp = materialSystem->createTexture(createTextureInfo).Component;
 				}
 				else
@@ -550,14 +582,23 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					textureComp = *textureComponent;
 				}
 
-				auto* to = static_cast<byte*>(instance.Allocation.Data);
+				materialSystem->addMaterialToTexture(textureComp, matHandle);
 
-				for(uint32 frame = 0; frame < MAX_CONCURRENT_FRAMES; ++frame)
-				{
-					GTSL::MemCopy(4, &textureComp, (to + (materialSystem->minUniformBufferOffset * frame)) + offset);
-				}
+				++targetValue;
+				
+				materialReady = false;
+			}
 
-				offset += 4; //sizeof(uint32)
+			materialSystem->readyMaterialsMap.Emplace(onMaterialLoadInfo.ResourceName, loadInfo->Component);
+			
+			if (materialReady)
+			{
+				materialSystem->materials.EmplaceAt(loadInfo->Component, material);
+				materialSystem->readyMaterialHandles.EmplaceBack(matHandle);
+			}
+			else
+			{
+				materialSystem->pendingMaterials.EmplaceAt(loadInfo->Component, targetValue, material);
 			}
 		}
 
@@ -789,17 +830,11 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 
-
 	BindingsSet::TextureBindingsUpdateInfo textureBindingsUpdateInfo;
 
 	textureBindingsUpdateInfo.TextureView = textureComponent.TextureView;
 	textureBindingsUpdateInfo.Sampler = textureComponent.TextureSampler;
 	textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
 	
-	for (auto& e : perFrameBindingsUpdateData)
-	{
-		e.Global.TextureBindingDescriptorsUpdates.EmplaceAt(loadInfo->Component, textureBindingsUpdateInfo);
-	}
-
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }

@@ -24,6 +24,7 @@ struct MaterialHandle
 {
 	Id MaterialType;
 	uint32 MaterialInstance = 0;
+	uint32 Element = 0;
 };
 
 MAKE_HANDLE(Id, Set)
@@ -36,15 +37,24 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	
-	byte* GetMemberPointer(uint64 member, uint32 index)
+
+	template<typename T>
+	T* GetMemberPointer(uint64 member, uint32 index);
+
+
+	template<>
+	GTSL::Matrix4* GetMemberPointer(uint64 member, uint32 index)
 	{
 		byte* data = reinterpret_cast<byte*>(&member);
 
+		//TODO: ASSERT SIZE
+		
 		auto& setBufferData = setsBufferData[data[0]];
 		auto memberSize = setBufferData.MemberSize;
-		return static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1];
+		return reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1]);
 	}
+
+	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
 
 	struct Member
 	{
@@ -101,6 +111,8 @@ public:
 
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
+
+	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
 	
 private:
 	void updateDescriptors(TaskInfo taskInfo);
@@ -119,7 +131,16 @@ private:
 		RasterizationPipeline Pipeline;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
-	GTSL::FlatHashMap<uint32, BE::PAR> materialsMap;
+
+	struct PendingMaterialData : MaterialData
+	{
+		PendingMaterialData(uint32 targetValue, MaterialData&& materialData) : MaterialData(materialData), Target(targetValue) {}
+		
+		uint32 Counter = 0, Target = 0;
+	};
+	GTSL::SparseVector<PendingMaterialData, BE::PAR> pendingMaterials;
+	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
+	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
 	
 	struct CreateTextureInfo
 	{
@@ -133,7 +154,7 @@ private:
 
 	struct DescriptorsUpdate
 	{
-		DescriptorsUpdate();
+		DescriptorsUpdate() = default;
 
 		void Initialize(const BE::PAR& allocator)
 		{
@@ -237,6 +258,21 @@ private:
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
+
+	/**
+	 * \brief Holds data to determine which material to update.
+	 */
+	struct TextureUpdateData
+	{
+		MaterialHandle Material;
+	};
+	GTSL::Vector<TextureUpdateData, BE::PAR> textureUpdates;
+	GTSL::KeepVector<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> materialsPerTexture;
+
+	void addMaterialToTexture(uint32 texture, MaterialHandle material)
+	{
+		materialsPerTexture[texture].EmplaceBack(material);
+	}
 	
 	struct MaterialLoadInfo
 	{
@@ -251,8 +287,6 @@ private:
 		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
-
-	uint16 component = 0;
 	
 	template<typename C, typename C2>
 	void genShaderStages(RenderDevice* renderDevice, C& container, C2& shaderInfos, const MaterialResourceManager::OnMaterialLoadInfo& onMaterialLoadInfo)
@@ -273,8 +307,6 @@ private:
 			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &container[i] });
 		}
 	}
-
-	PipelineLayout rayTracingPipelineLayout;
 	
 	uint16 minUniformBufferOffset = 0;
 	

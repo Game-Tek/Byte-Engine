@@ -464,13 +464,13 @@ ComponentReference RenderSystem::CreateMesh(Id name, Buffer scratchBuffer, uint3
 	
 	meshes.EmplaceAt(compRef.Get(), mesh);
 
-	//return ComponentReference(GetSystemId(), compRef.Get()); //BUG: FIX VERTEX SIZE
+	return ComponentReference(GetSystemId(), compRef.Get());
 }
 
 void RenderSystem::RenderAllMeshesForMaterial(Id material)
 {
 	auto range = meshesByMaterial.At(material).GetRange();
-
+	
 	for(auto& e : range)
 	{
 		auto& mesh = meshes[e];

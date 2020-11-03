@@ -40,7 +40,8 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	setInfo.Structs = structs;
 	
-	materialSystem->AddSet("StaticMeshSet", "where", setInfo);
+	materialSystem->AddSet("StaticMeshSet", /*"SceneRenderPass"*/, setInfo);
+	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
 	renderOrchestrator->AddToRenderPass("Scene", "StaticMeshRenderGroup");
 }
@@ -67,7 +68,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			auto pos = GTSL::Math::Translation(e);
 			pos(2, 3) *= -1.f;
 			
-			*reinterpret_cast<GTSL::Matrix4*>(info.MaterialSystem->GetMemberPointer(matrixUniformBufferMemberHandle, index)) = info.ProjectionMatrix * info.ViewMatrix * pos;
+			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, index) = info.ProjectionMatrix * info.ViewMatrix * pos;
 
 			++index;
 		}
@@ -77,7 +78,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	square = renderSystem->CreateMesh((void*)&SQUARE_VERTICES, (void*)&SQUARE_INDICES, 4 * 2 * 4, 6, 2);
+	//square = renderSystem->CreateMesh((void*)&SQUARE_VERTICES, (void*)&SQUARE_INDICES, 4 * 2 * 4, 6, 2);
 }
 
 void UIRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
@@ -312,7 +313,20 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 			for(auto e : renderPasses.At(subPassName).RenderGroups)
 			{
-				renderSystem->RenderAllMeshesForMaterial(Id());
+				auto mats = materialSystem->GetMaterialHandles();
+
+				for(auto m : mats)
+				{
+					auto pipeline = materialSystem->GET_PIPELINE(m);
+
+					CommandBuffer::BindPipelineInfo bindPipelineInfo;
+					bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+					bindPipelineInfo.PipelineType = PipelineType::RASTER;
+					bindPipelineInfo.Pipeline = &pipeline;
+					commandBuffer.BindPipeline(bindPipelineInfo);
+					
+					renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+				}
 			}
 			
 			if (sp < frameManager->GetSubPassCount(rp) - 1) { commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{}); }
@@ -337,7 +351,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
 		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
+		GTSL::Array<CommandBuffer::TextureBarrier, 1> textureBarriers(1);
 		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
 		textureBarriers[0].CurrentLayout = TextureLayout::UNDEFINED;
 		textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_DST;
@@ -361,7 +375,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
 		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
+		GTSL::Array<CommandBuffer::TextureBarrier, 1> textureBarriers(1);
 		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
 		textureBarriers[0].CurrentLayout = TextureLayout::TRANSFER_DST;
 		textureBarriers[0].TargetLayout = TextureLayout::PRESENTATION;

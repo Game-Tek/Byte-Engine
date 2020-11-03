@@ -41,7 +41,6 @@ public:
 	template<typename T>
 	T* GetMemberPointer(uint64 member, uint32 index);
 
-
 	template<>
 	GTSL::Matrix4* GetMemberPointer(uint64 member, uint32 index)
 	{
@@ -87,10 +86,9 @@ public:
 	{
 		GTSL::Range<StructInfo*> Structs;
 	};
-	SetHandle AddSet(Id setName, Id parent, const SetInfo& setInfo);
+	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
 
 	void AddObjects(RenderSystem* renderSystem, Id renderGroup, uint32 count);
-
 
 	struct BindingsSetData
 	{
@@ -193,6 +191,7 @@ private:
 	{
 		Id Name;
 		void* Parent;
+		uint32 Level = 0;
 		PipelineLayout PipelineLayout;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
@@ -311,6 +310,7 @@ private:
 	uint16 minUniformBufferOffset = 0;
 	
 	uint8 frame;
-
+	const uint8 queuedFrames = 2;
+	
 	void resizeSet(RenderSystem* renderSystem, uint32 set);
 };

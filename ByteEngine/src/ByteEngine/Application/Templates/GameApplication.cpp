@@ -126,7 +126,7 @@ void GameApplication::PostInitialize()
 
 		GTSL::Array<FrameManager::SubPassData, 6> subPasses;
 		FrameManager::SubPassData geoRenderPass;
-		geoRenderPass.Name = "Scene";
+		geoRenderPass.Name = "SceneRenderPass";
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
 		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_ATTACHMENT;
 		geoRenderPass.WriteAttachments.EmplaceBack("Color");
@@ -139,18 +139,18 @@ void GameApplication::PostInitialize()
 
 		subPasses.EmplaceBack(geoRenderPass); subPasses.EmplaceBack(uiRenderPass);
 		
-		frameManager->AddPass(renderer, "MainRenderPass", attachments, subPasses);
+		frameManager->AddPass(renderer, "SceneRenderPass", attachments, subPasses);
 	}
 
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
-
-	renderOrchestrator->AddRenderPass("Scene");
 	
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
 
 	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
 	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
+
+	renderOrchestrator->AddRenderPass("SceneRenderPass");
 	
 	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
 	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));

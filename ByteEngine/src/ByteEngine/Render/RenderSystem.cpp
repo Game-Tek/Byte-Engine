@@ -31,6 +31,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	{		
 		RenderDevice::CreateInfo createInfo;
 		createInfo.ApplicationName = GTSL::StaticString<128>("Test");
+		createInfo.ApplicationVersion[0] = 0;
+		createInfo.ApplicationVersion[1] = 0;
+		createInfo.ApplicationVersion[2] = 0;
 		
 		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
 		queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);

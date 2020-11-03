@@ -190,7 +190,7 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{
+	//{//
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;
@@ -199,7 +199,7 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	//}/
+	//}
 
 	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");//

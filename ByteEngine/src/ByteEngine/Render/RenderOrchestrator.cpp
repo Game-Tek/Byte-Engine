@@ -24,6 +24,7 @@ static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 
 void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 {
+	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
@@ -40,7 +41,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	setInfo.Structs = structs;
 	
-	materialSystem->AddSet("StaticMeshSet", /*"SceneRenderPass"*/, setInfo);
+	materialSystem->AddSet(renderSystem, "StaticMeshSet", "GlobalData", setInfo);
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
 	renderOrchestrator->AddToRenderPass("Scene", "StaticMeshRenderGroup");
@@ -345,7 +346,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		beginRegionInfo.Name = GTSL::StaticString<64>("Copy render target to Swapchain");
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
-	
+
 	{
 		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -353,30 +354,23 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
 		GTSL::Array<CommandBuffer::TextureBarrier, 1> textureBarriers(1);
 		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
+		
 		textureBarriers[0].CurrentLayout = TextureLayout::UNDEFINED;
 		textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_DST;
 		textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
 		textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
 		pipelineBarrierInfo.TextureBarriers = textureBarriers;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
-	}
 
-	CommandBuffer::CopyTextureToTextureInfo copyTexture;
-	copyTexture.RenderDevice = renderSystem->GetRenderDevice();
-	copyTexture.SourceTexture = frameManager->GetAttachmentTexture("Color");
-	copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
-	copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
-	copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
-	copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
-	commandBuffer.CopyTextureToTexture(copyTexture);
+		CommandBuffer::CopyTextureToTextureInfo copyTexture;
+		copyTexture.RenderDevice = renderSystem->GetRenderDevice();
+		copyTexture.SourceTexture = frameManager->GetAttachmentTexture("Color");
+		copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
+		copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
+		copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
+		copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
+		commandBuffer.CopyTextureToTexture(copyTexture);
 
-	{
-		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-		GTSL::Array<CommandBuffer::TextureBarrier, 1> textureBarriers(1);
-		textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
 		textureBarriers[0].CurrentLayout = TextureLayout::TRANSFER_DST;
 		textureBarriers[0].TargetLayout = TextureLayout::PRESENTATION;
 		textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;

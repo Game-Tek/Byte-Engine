@@ -201,7 +201,9 @@ public:
 		}
 		else
 		{
-			meshesByMaterial.Emplace(material).EmplaceBack(mesh.Component);
+			auto& e = meshesByMaterial.Emplace(material);
+			e.Initialize(8, GetPersistentAllocator());
+			e.EmplaceBack(mesh.Component);
 		}
 	}
 	

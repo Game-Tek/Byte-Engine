@@ -326,7 +326,7 @@ namespace BE
 			
 		case Token::KEY:
 			{
-				if(text.IsEmpty())
+				if(!text.IsEmpty())
 				{
 					auto value = processNumber();
 					settings.Emplace(key, value);

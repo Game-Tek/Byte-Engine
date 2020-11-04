@@ -76,8 +76,8 @@ void Game::Initialize()
 		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.ShaderName = "HydrantMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
-		materialCreateInfo.RenderPass = "MainRenderPass";
-		materialCreateInfo.SubPass = "Scene";
+		materialCreateInfo.RenderPass = "SceneRenderPass";
+		materialCreateInfo.SubPass = "SceneRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
 		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
@@ -150,7 +150,7 @@ void Game::PostInitialize()
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	//{
+	//{//
 	//	TextureSystem::CreateTextureInfo createTextureInfo;
 	//	createTextureInfo.RenderSystem = renderSystem;
 	//	createTextureInfo.GameInstance = gameInstance;
@@ -169,15 +169,15 @@ void Game::PostInitialize()
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
-	{
-		MaterialSystem::CreateMaterialInfo createMaterialInfo;
-		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		createMaterialInfo.MaterialName = "UIMat";
-		buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
-	}
+	//{
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	createMaterialInfo.GameInstance = gameInstance;
+	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//	createMaterialInfo.MaterialName = "UIMat";
+	//	buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
+	//}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -190,7 +190,7 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{//
+	//{
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;

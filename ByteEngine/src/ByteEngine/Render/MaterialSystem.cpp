@@ -42,10 +42,17 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	textureUpdates.Initialize(8, GetPersistentAllocator());
 	materialsPerTexture.Initialize(16, GetPersistentAllocator());
 
+	materials.Initialize(16, GetPersistentAllocator());
+	pendingMaterials.Initialize(16, GetPersistentAllocator());
 	readyMaterialsMap.Initialize(32, GetPersistentAllocator());
 	readyMaterialHandles.Initialize(16, GetPersistentAllocator());
 
 	setNodes.Initialize(16, GetPersistentAllocator());
+	setsTree.Initialize(GetPersistentAllocator());
+
+	renderGroupsData.Initialize(4, GetPersistentAllocator());
+	
+	setsBufferData.Initialize(4, GetPersistentAllocator());
 	
 	for(uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 	{
@@ -186,32 +193,32 @@ uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 
 SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo)
 {
-	decltype(setsTree)::Node* parentNode;
+	decltype(setsTree)::Node* parentNode, * set;
 	uint32 level;
 	
 	if(parent.GetHash())
 	{
 		parentNode = static_cast<decltype(setsTree)::Node*>(setNodes.At(parent));
-		level = 1;
+		level = parentNode->Data.Level + 1;
+		set = setsTree.AddChild(parentNode);
 	}
 	else
 	{
-		parentNode = setsTree.GetRootNode();
+		parentNode = nullptr;
+		set = setsTree.GetRootNode();
 		level = 0;
 	}
 
-	auto* set = setsTree.AddChild(parentNode);
 	setNodes.Emplace(setName, set);
 
 	set->Data.Name = setName;
 	set->Data.Parent = parentNode;
 	set->Data.Level = level;
 
-	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts(level);
-	//traverse tree to find parent's pipeline layouts
+	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts(level); //"Pre-Allocate" _level_ elements as to be able to place them in order while traversing tree upwards
 
+	// Traverse tree to find parent's pipeline layouts
 	{
-		//auto* iterParentNode = static_cast<decltype(setsTree)::Node*>(set->Data.Parent);
 		auto* iterParentNode = set;
 
 		uint32 loopLevel = level;
@@ -219,12 +226,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 		while (iterParentNode->Data.Parent)
 		{
 			iterParentNode = static_cast<decltype(setsTree)::Node*>(iterParentNode->Data.Parent);
-			--loopLevel;
-			
-			//should be insert at begin
-			bindingsSetLayouts[loopLevel] = iterParentNode->Data.BindingsSetLayout;
-
-			++set->Data.Level;
+			bindingsSetLayouts[--loopLevel] = iterParentNode->Data.BindingsSetLayout;
 		}
 	}
 	
@@ -325,8 +327,6 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 	//TODO: BUILD BUFFERS
 
-	set->Data.BindingsSetLayouts = bindingsSetLayouts;
-
 	auto place = setsBufferData.Emplace();
 
 	{
@@ -352,21 +352,22 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 	return SetHandle(setName);
 }
 
-void MaterialSystem::AddObjects(RenderSystem* renderSystem, Id renderGroup, uint32 count)
+void MaterialSystem::AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count)
 {
 	//GRAB ALL PER INSTANCE DATA
 	//CALCULATE IF EXCEEDS CURRENT SIZE, IF IT DOES RESIZE
 
-	auto& renderGroupData = renderGroupsData.At(renderGroup);
-	auto& setBufferData = setsBufferData[renderGroupData.SetReference];
+	//auto& renderGroupData = renderGroupsData.At(renderGroup);
+	auto setBufferDataHandle = setNodes.At(static_cast<Id>(set))->Data.SetBufferData;
+	auto& setBufferData = setsBufferData[setBufferDataHandle];
 
 	const uint32 addedInstances = 1;
 	
 	if(setBufferData.UsedInstances + addedInstances > setBufferData.AllocatedInstances)
 	{
-		resizeSet(renderSystem, renderGroupData.SetReference);
+		resizeSet(renderSystem, setBufferDataHandle); // Resize now
 		
-		queuedBufferUpdates.EmplaceBack(renderGroupData.SetReference);
+		queuedBufferUpdates.EmplaceBack(setBufferDataHandle); //Defer resizing
 	}
 
 	setBufferData.UsedInstances += addedInstances;
@@ -616,21 +617,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			}
 
 			//pipelineCreateInfo.IsInheritable = true;
-			auto& renderGroup = materialSystem->setNodes.At(onMaterialLoadInfo.RenderGroup)->Data;
-
-			{
-				PipelineLayout::CreateInfo pipelineLayout;
-				pipelineLayout.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-				if constexpr (_DEBUG) {
-					GTSL::StaticString<128> name("Pipeline Layout. Material: "); name += onMaterialLoadInfo.ResourceName;
-					pipelineLayout.Name = name;
-				}
-
-				pipelineLayout.BindingsSetLayouts = renderGroup.BindingsSetLayouts;
-				material.PipelineLayout.Initialize(pipelineLayout);
-			}
-
+			material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "SceneRenderPass", SetInfo());
 			
 			pipelineCreateInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable;
 			pipelineCreateInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
@@ -671,7 +658,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				auto renderPass = frameManager->GetRenderPass(renderPassIndex);
 				pipelineCreateInfo.SubPass = frameManager->GetSubPassIndex(renderPassIndex, onMaterialLoadInfo.SubPass);
 				pipelineCreateInfo.RenderPass = &renderPass;
-				pipelineCreateInfo.PipelineLayout = &material.PipelineLayout;
+				pipelineCreateInfo.PipelineLayout = &materialSystem->setNodes.At(static_cast<Id>(material.Set))->Data.PipelineLayout;
 				pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache();
 				material.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 			}

@@ -44,7 +44,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	materialSystem->AddSet(renderSystem, "StaticMeshSet", "GlobalData", setInfo);
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
-	renderOrchestrator->AddToRenderPass("Scene", "StaticMeshRenderGroup");
+	renderOrchestrator->AddToRenderPass("SceneRenderPass", "StaticMeshRenderGroup");
 }
 
 void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
@@ -236,6 +236,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
 	}
 
+	renderPasses.Initialize(8, GetPersistentAllocator());
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 }

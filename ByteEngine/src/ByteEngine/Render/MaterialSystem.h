@@ -88,7 +88,8 @@ public:
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
 
-	void AddObjects(RenderSystem* renderSystem, Id renderGroup, uint32 count);
+	
+	void AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count);
 
 	struct BindingsSetData
 	{
@@ -125,7 +126,7 @@ private:
 		
 		GTSL::KeepVector<MaterialInstanceData, BE::PAR> MaterialInstances;
 
-		PipelineLayout PipelineLayout;
+		SetHandle Set;
 		RasterizationPipeline Pipeline;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
@@ -196,7 +197,7 @@ private:
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
 		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
-		GTSL::Array<::BindingsSetLayout, 16> BindingsSetLayouts;
+		uint32 SetBufferData = 0;
 	};
 	
 	GTSL::Tree<SetData, BE::PAR> setsTree;

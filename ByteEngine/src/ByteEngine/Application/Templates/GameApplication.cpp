@@ -91,12 +91,12 @@ void GameApplication::PostInitialize()
 	//FRAME ENDS
 	gameInstance->AddGoal("FrameEnd");
 	
-	auto renderer = gameInstance->AddSystem<RenderSystem>("RenderSystem");
+	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
 
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
 	initialize_renderer_info.PipelineCacheResourceManager = GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
-	renderer->InitializeRenderer(initialize_renderer_info);
+	renderSystem->InitializeRenderer(initialize_renderer_info);
 
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 
@@ -108,8 +108,8 @@ void GameApplication::PostInitialize()
 	
 	{
 		auto* frameManager = gameInstance->AddSystem<FrameManager>("FrameManager");
-		frameManager->AddAttachment(renderer, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
-		frameManager->AddAttachment(renderer, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
+		frameManager->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
+		frameManager->AddAttachment(renderSystem, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
 
 		GTSL::Array<FrameManager::AttachmentInfo, 6> attachments(2);
 		attachments[0].Name = "Color";
@@ -139,7 +139,7 @@ void GameApplication::PostInitialize()
 
 		subPasses.EmplaceBack(geoRenderPass); subPasses.EmplaceBack(uiRenderPass);
 		
-		frameManager->AddPass(renderer, "SceneRenderPass", attachments, subPasses);
+		frameManager->AddPass(renderSystem, "SceneRenderPass", attachments, subPasses);
 	}
 
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
@@ -147,10 +147,12 @@ void GameApplication::PostInitialize()
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
 
+	renderOrchestrator->AddRenderPass("SceneRenderPass");
+
+	materialSystem->AddSet(renderSystem, "SceneRenderPass", "GlobalData", MaterialSystem::SetInfo());
+	
 	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
 	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
-
-	renderOrchestrator->AddRenderPass("SceneRenderPass");
 	
 	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
 	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));

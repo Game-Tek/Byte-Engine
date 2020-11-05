@@ -41,7 +41,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	setInfo.Structs = structs;
 	
-	materialSystem->AddSet(renderSystem, "StaticMeshSet", "GlobalData", setInfo);
+	dataSet = materialSystem->AddSet(renderSystem, "StaticMeshSet", "GlobalData", setInfo);
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
 	renderOrchestrator->AddToRenderPass("SceneRenderPass", "StaticMeshRenderGroup");
@@ -59,7 +59,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 
 	auto range = renderGroup->GetAddedObjectsRangeAndReset();
 	
-	info.MaterialSystem->AddObjects(info.RenderSystem, "StaticMeshRenderGroup", range.Second - range.First);
+	info.MaterialSystem->AddObjects(info.RenderSystem, dataSet, range.Second - range.First);
 	
 	{
 		uint32 index = 0;
@@ -309,7 +309,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 		auto renderPassName = frameManager->GetRenderPassName(rp);
 		
-		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp)
+		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp) //TODO: REPLACE WITH RENDER ORCH PASSES
 		{
 			auto subPassName = frameManager->GetSubPassName(rp, sp);
 

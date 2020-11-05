@@ -50,6 +50,8 @@ class StaticMeshRenderManager : public RenderManager
 private:
 	uint64 matrixUniformBufferMemberHandle;
 	uint64 staticMeshDataStructHandle;
+
+	SetHandle dataSet;
 };
 
 class UIRenderManager : public RenderManager

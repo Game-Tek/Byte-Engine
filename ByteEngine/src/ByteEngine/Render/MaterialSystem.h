@@ -158,27 +158,39 @@ private:
 		void Initialize(const BE::PAR& allocator)
 		{
 			setsToUpdate.Initialize(4, allocator);
-			PerSetBufferBindingsUpdate.Initialize(4, allocator);
-			PerSetTextureBindingsUpdate.Initialize(4, allocator);
+			PerSetToUpdateBufferBindingsUpdate.Initialize(4, allocator);
+			PerSetToUpdateTextureBindingsUpdate.Initialize(4, allocator);
 		}
 
-		void AddSetToUpdate(const BE::PAR& allocator)
+		[[nodiscard]] uint32 AddSetToUpdate(uint32 set, const BE::PAR& allocator)
 		{
-			PerSetBufferBindingsUpdate.EmplaceBack(4, allocator);
-			PerSetTextureBindingsUpdate.EmplaceBack(4, allocator);
+			const auto handle = setsToUpdate.EmplaceBack(set);
+			PerSetToUpdateBufferBindingsUpdate.EmplaceBack(4, allocator);
+			PerSetToUpdateTextureBindingsUpdate.EmplaceBack(4, allocator);
+			return handle;
 		}
 
+		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, BindingsSet::BufferBindingsUpdateInfo update)
+		{
+			PerSetToUpdateBufferBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
+		}
+
+		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, BindingsSet::TextureBindingsUpdateInfo update)
+		{
+			PerSetToUpdateTextureBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
+		}
+		
 		void Reset()
 		{
 			setsToUpdate.ResizeDown(0);
-			PerSetBufferBindingsUpdate.ResizeDown(0);
-			PerSetTextureBindingsUpdate.ResizeDown(0);
+			PerSetToUpdateBufferBindingsUpdate.ResizeDown(0);
+			PerSetToUpdateTextureBindingsUpdate.ResizeDown(0);
 		}
 		
 		GTSL::Vector<uint32, BE::PAR> setsToUpdate;
 
-		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetBufferBindingsUpdate;
-		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetTextureBindingsUpdate;
+		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBufferBindingsUpdate;
+		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateTextureBindingsUpdate;
 	};
 	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
 	
@@ -196,7 +208,6 @@ private:
 		PipelineLayout PipelineLayout;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
-		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
 		uint32 SetBufferData = 0;
 	};
 	
@@ -307,11 +318,15 @@ private:
 			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &container[i] });
 		}
 	}
-	
+
+	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
+
 	uint16 minUniformBufferOffset = 0;
 	
 	uint8 frame;
 	const uint8 queuedFrames = 2;
+
+	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, uint32 set);
 };

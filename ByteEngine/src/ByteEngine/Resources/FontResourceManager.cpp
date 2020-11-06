@@ -25,17 +25,10 @@
 #include <fstream>
 
 #include "ByteEngine/Core.h"
-#ifdef _DEBUG
-#include <stdio.h>
-#define TTFDEBUG_PRINT(...) printf(__VA_ARGS__)
-#else
-#define TTFDEBUG_PRINT(...) {}
-#endif
 
 #include <GTSL/Buffer.h>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Math/Vector2.h>
-
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
@@ -461,112 +454,6 @@ void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
 	fontLoadInfo.GameInstance->AddAsyncTask(fontLoadInfo.OnFontLoadDelegate, GTSL::MoveRef(onFontLoadInfo));
 }
 
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include "freetype/ftoutln.h"
-#include <ByteEngine\Resources\TextRendering.h>
-
-void FontResourceManager::GetFontAtlasSizeFormatExtent(Id id, uint32* textureSize, GAL::TextureFormat* textureFormat, GTSL::Extent3D* extent3D)
-{
-	GTSL::StaticString<255> queryPath(BE::Application::Get()->GetPathToApplication()); queryPath += "/resources/"; queryPath += "*.ttf";
-	GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/";
-
-	GTSL::FileQuery query(queryPath);
-
-	auto queryFunc = [&](GTSL::FileQuery::QueryResult& queryResult)
-	{
-		auto nameOnly = queryResult.FileNameWithExtension;
-		nameOnly.Drop(nameOnly.FindLast('.'));
-
-		if (Id(nameOnly.begin()) == id)
-		{
-			path += queryResult.FileNameWithExtension;
-		}
-	};
-
-	GTSL::ForEach(query, queryFunc);
-
-	FT_Library ft;
-	if (FT_Init_FreeType(&ft)) { BE_ASSERT(false); }
-
-	GTSL::Vector<FT_Face, BE::TransientAllocatorReference> faces(255, GetTransientAllocator());
-
-	ImageFont imageFont;
-
-	imageFont.ImageData.Allocate(1024 * 1024 * 3, 8, GetPersistentAllocator());
-
-	constexpr uint8 MAX_HEIGHT = 64;
-	
-	imageFont.Extent.Height = MAX_HEIGHT;
-	
-	for (unsigned char c = 0; c < 128; c++)
-	{
-		FT_Face face;
-		if (FT_New_Face(ft, path.begin(), 0, &face)) { BE_ASSERT(false); }
-
-		
-		FT_Set_Pixel_Sizes(face, 0, 48);
-		
-		// load character glyph 
-		if (FT_Load_Char(face, c, FT_LOAD_RENDER))
-		{
-			BE_ASSERT(false);
-			continue;
-		}
-		
-		faces.EmplaceBack(face);
-
-		BE_ASSERT(face->glyph->bitmap.rows <= imageFont.Extent.Height);
-		
-		Character character = {
-			GTSL::Extent2D(face->glyph->bitmap.width, face->glyph->bitmap.rows),
-			IVector2D(face->glyph->bitmap_left, face->glyph->bitmap_top),
-						//x pos in texture	//y size so as to consider y pos from top
-			GTSL::Extent2D(imageFont.Extent.Width, face->glyph->bitmap.rows),
-			face->glyph->advance.x
-		};
-		
-		imageFont.Extent.Width += face->glyph->bitmap.width;
-		
-		imageFont.Characters.insert(std::pair<char, Character>(c, character));
-	}
-
-	for (uint32 r = 0; r < MAX_HEIGHT; ++r)
-	{
-		for (auto& face : faces)
-		{
-			if (r < face->glyph->bitmap.rows)
-			{
-				imageFont.ImageData.WriteBytes(face->glyph->bitmap.width, face->glyph->bitmap.buffer + face->glyph->bitmap.width * r);
-			}
-			else
-			{
-				const auto bytesToFill = face->glyph->bitmap.width;
-
-				for (uint32 i = 0; i < bytesToFill; ++i)
-				{
-					uint8 black = 0;
-					imageFont.ImageData.WriteBytes(1, &black);
-				}
-			}
-		}
-	}
-	
-	*textureSize = imageFont.ImageData.GetLength();
-	*textureFormat = GAL::TextureFormat::R_I8;
-	*extent3D = { imageFont.Extent.Width, imageFont.Extent.Height, 1 };
-	
-	fonts.Emplace(id, GTSL::MoveRef(imageFont));
-
-	for(auto& e : faces)
-	{
-		FT_Done_Face(e);
-	}
-	
-	FT_Done_FreeType(ft);
-
-}
-
 //void FontResourceManager::GetFontFromSDF(const GTSL::Range<const UTF8> fontName)
 //{
 //	StaticString<255> basePath(BE::Application::Get()->GetPathToApplication()); basePath += "/resources/";
@@ -729,7 +616,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		valid_cmap_table = true;
 		break;
 	}
-	if (!valid_cmap_table) { TTFDEBUG_PRINT("ttf-parser: No valid cmap table found\n"); }
+	if (!valid_cmap_table) { BE_ASSERT(false); }
 
 	HHEATable hheaTable;
 	auto hhea_table_entry = tables.find("hhea");
@@ -836,7 +723,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			get2b(&num_instructions, data + currentOffset); currentOffset += sizeof(uint16);
 			currentOffset += sizeof(uint8_t) * num_instructions;
 
-			uint16 numPoints = contourEnd[static_cast<int32>(currentGlyph.NumContours) - 1] + 1;
+			uint16 numPoints = contourEnd[static_cast<int64>(currentGlyph.NumContours) - 1] + 1;
 			std::vector<uint8_t> flags(numPoints);
 			std::vector<Flags> flagsEnum(numPoints);
 			std::vector<uint16> contour_index(numPoints);
@@ -1016,8 +903,8 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					get2b(&glyfFlags, data + currentOffset); currentOffset += sizeof(uint16);
 					get2b(&glyphIndex, data + currentOffset); currentOffset += sizeof(uint16);
 
-					int16 glyfArgs1, glyfArgs2;
-					int8_t glyfArgs1U8, glyfArgs2U8;
+					int16 glyfArgs1 = 0, glyfArgs2 = 0;
+					int8_t glyfArgs1U8 = 0, glyfArgs2U8 = 0;
 					bool is_word = false;
 					if (glyfFlags & ARG_1_AND_2_ARE_WORDS)
 					{
@@ -1035,7 +922,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 					if (glyfFlags & WE_HAVE_A_SCALE)
 					{
-						int16 xy_value;
+						int16 xy_value = 0;
 						get2b(&xy_value, data + currentOffset); currentOffset += sizeof(int16);
 						compositeGlyphElementTransformation[0] = to_2_14_float(xy_value);
 						compositeGlyphElementTransformation[3] = to_2_14_float(xy_value);
@@ -1088,7 +975,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					if (glyphLoaded[glyphIndex] == false)
 					{
 						if (self(glyphIndex, self) < 0) {
-							TTFDEBUG_PRINT("ttf-parser: bad glyph index %d in composite glyph\n", glyphIndex);
+							BE_LOG_WARNING("ttf-parser: bad glyph index ", glyphIndex, " in composite glyph");
 							continue;
 						}
 					}
@@ -1126,7 +1013,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 						}
 						else
 						{
-							TTFDEBUG_PRINT("ttf-parser: unsupported matched points in ttf composite glyph\n");
+							BE_LOG_WARNING("ttf-parser: unsupported matched points in ttf composite glyph");
 							continue;
 						}
 

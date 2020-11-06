@@ -39,10 +39,10 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	template<typename T>
-	T* GetMemberPointer(uint64 member, uint32 index);
+	T* GetMemberPointer(uint64 member, uint64 index);
 
 	template<>
-	GTSL::Matrix4* GetMemberPointer(uint64 member, uint32 index)
+	GTSL::Matrix4* GetMemberPointer(uint64 member, uint64 index)
 	{
 		byte* data = reinterpret_cast<byte*>(&member);
 
@@ -51,6 +51,18 @@ public:
 		auto& setBufferData = setsBufferData[data[0]];
 		auto memberSize = setBufferData.MemberSize;
 		return reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1]);
+	}
+
+	template<>
+	uint32* GetMemberPointer(uint64 member, uint64 index)
+	{
+		byte* data = reinterpret_cast<byte*>(&member);
+
+		//TODO: ASSERT SIZE
+		
+		auto& setBufferData = setsBufferData[data[0]];
+		auto memberSize = setBufferData.MemberSize;
+		return reinterpret_cast<uint32*>(static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1]);
 	}
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
@@ -130,6 +142,8 @@ private:
 
 		SetHandle Set;
 		RasterizationPipeline Pipeline;
+		uint64 TextureRefHandle[8];
+		uint64 TextureRefsTableHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 	uint32 boundSets = 0;

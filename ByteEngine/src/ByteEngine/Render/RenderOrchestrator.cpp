@@ -323,7 +323,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				{
 					auto pipeline = materialSystem->GET_PIPELINE(m);
 
-					//TODO: BIND PER MATERIAL DESCRIPTORS
+					materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType));
 
 					CommandBuffer::BindPipelineInfo bindPipelineInfo;
 					bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -332,6 +332,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					commandBuffer.BindPipeline(bindPipelineInfo);
 					
 					renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+					
+					materialSystem->RELEASE_SET();
 				}
 
 				materialSystem->RELEASE_SET();

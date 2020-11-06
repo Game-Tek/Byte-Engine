@@ -466,9 +466,37 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 			}
 
-			//pipelineCreateInfo.IsInheritable = true;
-			material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, SetInfo());
+			uint64 textureHandle = 0xFFFFFFFFFFFFFFFF, textureTableStructRef = ~(0ULL);
 			
+			{
+				SetInfo setInfo;
+
+				GTSL::Array<MemberInfo, 8> members;
+				GTSL::Array<StructInfo, 8> structsInfos(1);
+				
+				for (auto& e : onMaterialLoadInfo.Textures)
+				{
+					MemberInfo textureHandles;
+					textureHandles.Type = Member::DataType::INT32;
+					textureHandles.Handle = &textureHandle;
+					members.EmplaceBack(textureHandles);
+				}
+
+				structsInfos[0].Members = members;
+				structsInfos[0].Frequency = Frequency::PER_INSTANCE;
+				structsInfos[0].Handle = &textureTableStructRef;
+				
+				setInfo.Structs = structsInfos;
+				
+				material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo);
+			}
+
+			materialSystem->AddObjects(renderSystem, material.Set, 1);
+			
+			material.TextureRefHandle[0] = textureHandle;
+			material.TextureRefsTableHandle = textureTableStructRef;
+			
+			//pipelineCreateInfo.IsInheritable = true;
 			pipelineCreateInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable;
 			pipelineCreateInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
 			pipelineCreateInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest;
@@ -546,7 +574,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					}
 
 					materialSystem->addPendingMaterialToTexture(textureComp, PendingMaterialHandle(place));
-
+					*materialSystem->GetMemberPointer<uint32>(material.TextureRefHandle[0], 0) = textureComp;
 					++materialSystem->pendingMaterials[place].Target;
 				}
 				
@@ -929,6 +957,12 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 	textureBindingsUpdateInfo.Sampler = textureComponent.TextureSampler;
 	textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
 
+	for (uint8 f = 0; f < queuedFrames; ++f)
+	{
+		auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setNodes.At(Id("GlobalData"))->Data.SetBufferData, GetPersistentAllocator());
+		descriptorsUpdates[f].AddTextureUpdate(updateHandle, loadInfo->Component, textureBindingsUpdateInfo);
+	}
+	
 	latestLoadedTextures.EmplaceBack(loadInfo->Component);
 	
 	GTSL::Delete(loadInfo, GetPersistentAllocator());

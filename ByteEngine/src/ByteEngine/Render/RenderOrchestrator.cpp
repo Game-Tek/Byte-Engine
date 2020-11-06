@@ -41,7 +41,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	setInfo.Structs = structs;
 	
-	dataSet = materialSystem->AddSet(renderSystem, "StaticMeshSet", "GlobalData", setInfo);
+	dataSet = materialSystem->AddSet(renderSystem, "StaticMeshRenderGroup", "SceneRenderPass", setInfo);
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
 	renderOrchestrator->AddToRenderPass("SceneRenderPass", "StaticMeshRenderGroup");
@@ -236,7 +236,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
 	}
 
-	renderPasses.Initialize(8, GetPersistentAllocator());
+	renderPassesMap.Initialize(8, GetPersistentAllocator());
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 }
@@ -277,10 +277,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
 	uint8 currentFrame = renderSystem->GetCurrentFrame();
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
-	
-	BindingsManager<BE::TAR> bindingsManager(GetTransientAllocator(), renderSystem, renderSystem->GetCurrentCommandBuffer());
-
-	//TODO: AUTO ADD BINDINGS BY SCOPE
 
 	auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
 
@@ -291,6 +287,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
 
+	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"));
+	
 	CommandBuffer::EndRegionInfo endRegionInfo;
 	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
 	
@@ -309,17 +307,23 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 		auto renderPassName = frameManager->GetRenderPassName(rp);
 		
-		for (uint8 sp = 0; sp < frameManager->GetSubPassCount(rp); ++sp) //TODO: REPLACE WITH RENDER ORCH PASSES
+		
+		for (uint8 sp = 0; sp < renderPasses.GetLength(); ++sp)
 		{
 			auto subPassName = frameManager->GetSubPassName(rp, sp);
+			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(renderPasses[sp]));
 
-			for(auto e : renderPasses.At(subPassName).RenderGroups)
+			for(auto e : renderPassesMap.At(subPassName).RenderGroups)
 			{
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e));
+				
 				auto mats = materialSystem->GetMaterialHandles();
 
 				for(auto m : mats)
 				{
 					auto pipeline = materialSystem->GET_PIPELINE(m);
+
+					//TODO: BIND PER MATERIAL DESCRIPTORS
 
 					CommandBuffer::BindPipelineInfo bindPipelineInfo;
 					bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -329,7 +333,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					
 					renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
 				}
+
+				materialSystem->RELEASE_SET();
 			}
+
+			materialSystem->RELEASE_SET();
 			
 			if (sp < frameManager->GetSubPassCount(rp) - 1) { commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{}); }
 		}
@@ -341,6 +349,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	commandBuffer.EndRegion(endRegionInfo);
 
+	materialSystem->RELEASE_SET();
+	
 	{
 		CommandBuffer::BeginRegionInfo beginRegionInfo;
 		beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -381,8 +391,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	}
 
 	commandBuffer.EndRegion(endRegionInfo);
-	
-	bindingsManager.PopBindings();
 }
 
 void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference)

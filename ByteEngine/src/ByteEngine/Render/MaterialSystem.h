@@ -54,6 +54,8 @@ public:
 	}
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set);
+	void RELEASE_SET() { --boundSets; }
 
 	struct Member
 	{
@@ -130,14 +132,16 @@ private:
 		RasterizationPipeline Pipeline;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
+	uint32 boundSets = 0;
 
 	struct PendingMaterialData : MaterialData
 	{
 		PendingMaterialData(uint32 targetValue, MaterialData&& materialData) : MaterialData(materialData), Target(targetValue) {}
 		
 		uint32 Counter = 0, Target = 0;
+		MaterialHandle Material;
 	};
-	GTSL::SparseVector<PendingMaterialData, BE::PAR> pendingMaterials;
+	GTSL::KeepVector<PendingMaterialData, BE::PAR> pendingMaterials;
 	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
 	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
 	
@@ -208,7 +212,7 @@ private:
 		PipelineLayout PipelineLayout;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
-		uint32 SetBufferData = 0;
+		uint32 SetBufferData = 0xFFFFFFFF;
 	};
 	
 	GTSL::Tree<SetData, BE::PAR> setsTree;
@@ -270,19 +274,14 @@ private:
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
 
-	/**
-	 * \brief Holds data to determine which material to update.
-	 */
-	struct TextureUpdateData
+	MAKE_HANDLE(uint32, PendingMaterial)
+	
+	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
+	GTSL::KeepVector<GTSL::Vector<PendingMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
+	
+	void addPendingMaterialToTexture(uint32 texture, PendingMaterialHandle material)
 	{
-		MaterialHandle Material;
-	};
-	GTSL::Vector<TextureUpdateData, BE::PAR> textureUpdates;
-	GTSL::KeepVector<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> materialsPerTexture;
-
-	void addMaterialToTexture(uint32 texture, MaterialHandle material)
-	{
-		materialsPerTexture[texture].EmplaceBack(material);
+		pendingMaterialsPerTexture[texture].EmplaceBack(material);
 	}
 	
 	struct MaterialLoadInfo

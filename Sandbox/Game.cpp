@@ -169,7 +169,7 @@ void Game::PostInitialize()
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
-	//{
+	//{//
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");

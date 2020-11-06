@@ -79,8 +79,16 @@ public:
 	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 
-	void AddRenderPass(Id renderPass) { renderPasses.Emplace(renderPass); }
-	void AddToRenderPass(Id renderPass, Id renderGroup) { renderPasses.At(renderPass).RenderGroups.EmplaceBack(renderGroup); }
+	void AddRenderPass(Id renderPass)
+	{
+		renderPassesMap.Emplace(renderPass);
+		renderPasses.EmplaceBack(renderPass);
+	}
+	
+	void AddToRenderPass(Id renderPass, Id renderGroup)
+	{
+		renderPassesMap.At(renderPass).RenderGroups.EmplaceBack(renderGroup);
+	}
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
@@ -96,5 +104,6 @@ private:
 	{
 		GTSL::Array<Id, 8> RenderGroups;
 	};
-	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPasses;
+	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
+	GTSL::Array<Id, 8> renderPasses;
 };

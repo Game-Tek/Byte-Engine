@@ -287,7 +287,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
 
-	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"));
+	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"), 0);
+	PipelineLayout pipelineLayout = materialSystem->GET_PIPELINE_LAYOUT(SetHandle("GlobalData"));
 	
 	CommandBuffer::EndRegionInfo endRegionInfo;
 	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -311,20 +312,36 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		for (uint8 sp = 0; sp < renderPasses.GetLength(); ++sp)
 		{
 			auto subPassName = frameManager->GetSubPassName(rp, sp);
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(renderPasses[sp]));
+			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(renderPasses[sp]), 0);
 
+			uint32 pushConstant[] = { 0, 0, 0, 0 };
+
+			uint32 rg = 0;
+			
 			for(auto e : renderPassesMap.At(subPassName).RenderGroups)
 			{
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e));
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), rg);
 				
 				auto mats = materialSystem->GetMaterialHandles();
 
+				uint32 obj = 0;
+				
 				for(auto m : mats)
 				{
 					auto pipeline = materialSystem->GET_PIPELINE(m);
+					materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType), 0);
 
-					materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType));
-
+					materialSystem->UPDATE_SET_OFFSET(renderSystem, commandBuffer, SetHandle(e), obj);
+					
+					CommandBuffer::UpdatePushConstantsInfo updatePush;
+					updatePush.RenderDevice = renderSystem->GetRenderDevice();
+					updatePush.Size = 16;
+					updatePush.Offset = 0;
+					updatePush.Data = reinterpret_cast<byte*>(&pushConstant);
+					updatePush.PipelineLayout = &pipelineLayout;
+					updatePush.ShaderStages = VK_SHADER_STAGE_VERTEX_BIT;
+					//commandBuffer.UpdatePushConstant(updatePush);
+					
 					CommandBuffer::BindPipelineInfo bindPipelineInfo;
 					bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
 					bindPipelineInfo.PipelineType = PipelineType::RASTER;
@@ -332,11 +349,17 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					commandBuffer.BindPipeline(bindPipelineInfo);
 					
 					renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+
+					++pushConstant[3];
 					
 					materialSystem->RELEASE_SET();
+
+					++obj;
 				}
 
 				materialSystem->RELEASE_SET();
+
+				++rg;
 			}
 
 			materialSystem->RELEASE_SET();

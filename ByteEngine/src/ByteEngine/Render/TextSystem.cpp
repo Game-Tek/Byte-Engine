@@ -43,8 +43,8 @@ ComponentReference TextSystem::AddText(const AddTextInfo& info)
 		}
 
 		{
-			uint32 textureSize; GAL::TextureFormat textureFormat; GTSL::Extent3D textureExtent;
-			info.FontResourceManager->GetFontAtlasSizeFormatExtent(fontName, &textureSize, &textureFormat, &textureExtent);
+			uint32 textureSize = 0; GAL::TextureFormat textureFormat = GAL::TextureFormat::R_I8; GTSL::Extent3D textureExtent{ 0, 0, 0, };
+			//info.FontResourceManager->GetFontAtlasSizeFormatExtent(fontName, &textureSize, &textureFormat, &textureExtent);
 
 			RenderDevice::FindSupportedImageFormat findFormatInfo;
 			findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;

@@ -133,10 +133,6 @@ public:
 		
 		GTSL::ForEach(fonts, deallocate);
 	}
-
-	void GetFontAtlasSizeFormatExtent(Id id, uint32* textureSize, GAL::TextureFormat* textureFormat, GTSL::Extent3D* extent3D);
-	
-	void doThing();
 	
 private:
 	int8 parseData(const char* data, Font* fontData);

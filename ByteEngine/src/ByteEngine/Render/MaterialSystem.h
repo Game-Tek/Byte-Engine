@@ -44,30 +44,21 @@ public:
 	template<>
 	GTSL::Matrix4* GetMemberPointer(uint64 member, uint64 index)
 	{
-		byte* data = reinterpret_cast<byte*>(&member);
-
-		//TODO: ASSERT SIZE
-		
-		auto& setBufferData = setsBufferData[data[0]];
-		auto memberSize = setBufferData.MemberSize;
-		return reinterpret_cast<GTSL::Matrix4*>(static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1]);
+		return reinterpret_cast<GTSL::Matrix4*>(getSetMemberPointer(member, index, frame));
 	}
 
 	template<>
 	uint32* GetMemberPointer(uint64 member, uint64 index)
 	{
-		byte* data = reinterpret_cast<byte*>(&member);
-
-		//TODO: ASSERT SIZE
-		
-		auto& setBufferData = setsBufferData[data[0]];
-		auto memberSize = setBufferData.MemberSize;
-		return reinterpret_cast<uint32*>(static_cast<byte*>(setBufferData.Allocations[frame].Data) + (index * memberSize) + data[1]);
+		return reinterpret_cast<uint32*>(getSetMemberPointer(member, index, frame));
 	}
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
+	void UPDATE_SET_OFFSET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle set);
 	void RELEASE_SET() { --boundSets; }
+	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct Member
 	{
@@ -101,6 +92,7 @@ public:
 		GTSL::Range<StructInfo*> Structs;
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
+	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo, PipelineLayout::PushConstant* pushConstant);
 
 	
 	void AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count);
@@ -131,6 +123,19 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
+	byte* getSetMemberPointer(uint64 member, uint64 index, uint8 frameToUpdate)
+	{
+		byte* data = reinterpret_cast<byte*>(&member);
+
+		//TODO: ASSERT SIZE
+		
+		auto& setBufferData = setsBufferData[data[0]];
+		auto memberSize = setBufferData.MemberSize;
+		return static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * memberSize) + data[1];
+	}
+	
+	uint32 matNum = 0;
+	
 	struct MaterialData
 	{
 		struct MaterialInstanceData
@@ -339,7 +344,7 @@ private:
 	uint8 frame;
 	const uint8 queuedFrames = 2;
 
-	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
+	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors, PipelineLayout::PushConstant* pushConstant);
 	
 	void resizeSet(RenderSystem* renderSystem, uint32 set);
 };

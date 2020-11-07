@@ -97,6 +97,31 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 
+	{
+		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.ShaderName = "TvMat";
+		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		materialCreateInfo.RenderPass = "SceneRenderPass";
+		materialCreateInfo.SubPass = "SceneRenderPass";
+		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
+		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
+		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+
+		materialCreateInfo.Textures.EmplaceBack("TV_Albedo");
+		//materialCreateInfo.PerInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
+
+		materialCreateInfo.Bindings = binding_sets;
+		materialCreateInfo.DepthWrite = true;
+		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.StencilTest = false;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+		materialCreateInfo.BlendEnable = false;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	}
+	
 	//{
 	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
 	//	materialCreateInfo.ShaderName = "TextMaterial";
@@ -115,24 +140,24 @@ void Game::Initialize()
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	//}
 	
-	{
-		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "UIMat";
-		materialCreateInfo.RenderGroup = "UIRenderGroup";
-		materialCreateInfo.RenderPass = "MainRenderPass";
-		materialCreateInfo.SubPass = "UI";
-		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-		materialCreateInfo.VertexFormat = format;
-		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-		
-		materialCreateInfo.DepthWrite = true;
-		materialCreateInfo.DepthTest = true;
-		materialCreateInfo.StencilTest = false;
-		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
-		materialCreateInfo.BlendEnable = false;
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
-	}
+	//{
+	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+	//	materialCreateInfo.ShaderName = "UIMat";
+	//	materialCreateInfo.RenderGroup = "UIRenderGroup";
+	//	materialCreateInfo.RenderPass = "MainRenderPass";
+	//	materialCreateInfo.SubPass = "UI";
+	//	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
+	//	materialCreateInfo.VertexFormat = format;
+	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+	//	
+	//	materialCreateInfo.DepthWrite = true;
+	//	materialCreateInfo.DepthTest = true;
+	//	materialCreateInfo.StencilTest = false;
+	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
+	//	materialCreateInfo.BlendEnable = false;
+	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	//}
 	
 	//show loading screen
 	//load menu
@@ -169,7 +194,7 @@ void Game::PostInitialize()
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
-	//{//
+	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -190,7 +215,7 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{
+	//{/
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;
@@ -245,26 +270,26 @@ void Game::PostInitialize()
 	//	//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
 	//}
 	
-	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
-	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	createMaterialInfo.MaterialName = "TvMat";
-	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}
-	//
-	//{
-	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "TV";
-	//	addStaticMeshInfo.Material = tvMat;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	//	staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
-	//}//
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "TvMat";
+		tvMat = material_system->CreateMaterial(createMaterialInfo);
+	}
+	
+	{
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "TV";
+		addStaticMeshInfo.Material = tvMat;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+	}
 
 	//{
 	//	GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;

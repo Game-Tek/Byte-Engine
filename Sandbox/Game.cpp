@@ -175,7 +175,7 @@ void Game::PostInitialize()
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-	//{//
+	//{
 	//	TextureSystem::CreateTextureInfo createTextureInfo;
 	//	createTextureInfo.RenderSystem = renderSystem;
 	//	createTextureInfo.GameInstance = gameInstance;
@@ -194,7 +194,7 @@ void Game::PostInitialize()
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
-	//{
+	//{//
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -215,7 +215,7 @@ void Game::PostInitialize()
 		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{/
+	//{
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;

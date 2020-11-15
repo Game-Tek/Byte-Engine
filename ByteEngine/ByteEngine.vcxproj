@@ -193,7 +193,6 @@
   <ItemGroup>
     <ClInclude Include="src\ByteEngine\Handle.hpp" />
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
-    <ClInclude Include="src\ByteEngine\Render\FrameManager.h" />
     <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\rayTracing.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
@@ -260,7 +259,6 @@
     <ClInclude Include="src\ByteEngine.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\ByteEngine\Render\FrameManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />

@@ -1,11 +1,12 @@
 #include "MaterialSystem.h"
 
-#include "FrameManager.h"
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 
 #include <GTSL/SIMD/SIMD.hpp>
 #include <GAL/Texture.h>
+
+#include "RenderOrchestrator.h"
 
 const char* BindingTypeString(const BindingType binding)
 {
@@ -21,7 +22,7 @@ const char* BindingTypeString(const BindingType binding)
 void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	minUniformBufferOffset = renderSystem->GetRenderDevice()->GetMinUniformBufferOffset(); //TODO: FIX!!!
+	minUniformBufferOffset = renderSystem->GetRenderDevice()->GetMinUniformBufferOffset();
 	
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
@@ -67,7 +68,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 5/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 
 		PipelineLayout::PushConstant pushConstant;
-		pushConstant.ShaderStages = VK_SHADER_STAGE_VERTEX_BIT;
+		pushConstant.ShaderStages = ShaderStage::VERTEX;
 		pushConstant.Offset = 0;
 		pushConstant.Size = 16;
 		
@@ -94,33 +95,6 @@ void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandB
 		auto& setBufferData = setsBufferData[set.SetBufferData];
 
 		GTSL::Array<uint32, 2> offsets;
-		
-		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * index); }
-
-		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
-		bindBindingsSetInfo.FirstSet = boundSets;
-		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &setBufferData.BindingsSet[frame]);
-		bindBindingsSetInfo.PipelineLayout = &set.PipelineLayout;
-		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
-		bindBindingsSetInfo.Offsets = offsets;
-		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
-
-	}
-	
-	boundSets += 1;
-}
-
-void MaterialSystem::UPDATE_SET_OFFSET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle setHandle, uint32 index)
-{
-	auto& set = setNodes.At(static_cast<Id>(setHandle))->Data;
-
-	if (set.SetBufferData != 0xFFFFFFFF)
-	{
-		auto& setBufferData = setsBufferData[set.SetBufferData];
-
-		GTSL::Array<uint32, 2> offsets;
 
 		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * index); }
 
@@ -133,38 +107,37 @@ void MaterialSystem::UPDATE_SET_OFFSET(RenderSystem* renderSystem, CommandBuffer
 		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
 		bindBindingsSetInfo.Offsets = offsets;
 		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
-
 	}
 }
 
-void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle setHandle)
-{
-	auto& set = setNodes.At(static_cast<Id>(setHandle))->Data;
-
-	if (set.SetBufferData != 0xFFFFFFFF)
-	{
-		auto& setBufferData = setsBufferData[set.SetBufferData];
-
-		GTSL::Array<uint32, 2> offsets;
-
-		byte* data = reinterpret_cast<byte*>(&structHandle);
-		
-		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * index); }
-
-		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
-		bindBindingsSetInfo.FirstSet = boundSets;
-		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &setBufferData.BindingsSet[frame]);
-		bindBindingsSetInfo.PipelineLayout = &set.PipelineLayout;
-		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
-		bindBindingsSetInfo.Offsets = offsets;
-		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
-
-	}
-	
-	boundSets += 1;
-}
+//void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle setHandle)
+//{
+//	auto& set = setNodes.At(static_cast<Id>(setHandle))->Data;
+//
+//	if (set.SetBufferData != 0xFFFFFFFF)
+//	{
+//		auto& setBufferData = setsBufferData[set.SetBufferData];
+//
+//		GTSL::Array<uint32, 2> offsets;
+//
+//		byte* data = reinterpret_cast<byte*>(&structHandle);
+//		
+//		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * index); }
+//
+//		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
+//		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
+//		bindBindingsSetInfo.FirstSet = boundSets;
+//		bindBindingsSetInfo.BoundSets = 1;
+//		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &setBufferData.BindingsSet[frame]);
+//		bindBindingsSetInfo.PipelineLayout = &set.PipelineLayout;
+//		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
+//		bindBindingsSetInfo.Offsets = offsets;
+//		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
+//
+//	}
+//	
+//	boundSets += 1;
+//}
 
 uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 {
@@ -592,12 +565,12 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				
 				pipelineCreateInfo.Stages = shaderInfos;
 
-				auto* frameManager = taskInfo.GameInstance->GetSystem<FrameManager>("FrameManager");
+				auto* renderOrchestrator = taskInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
-				auto renderPassIndex = frameManager->GetRenderPassIndex(onMaterialLoadInfo.RenderPass);
+				auto renderPassIndex = renderOrchestrator->GetRenderPassIndex(onMaterialLoadInfo.RenderPass);
 
-				auto renderPass = frameManager->GetRenderPass(renderPassIndex);
-				pipelineCreateInfo.SubPass = frameManager->GetSubPassIndex(renderPassIndex, onMaterialLoadInfo.SubPass);
+				auto renderPass = renderOrchestrator->getAPIRenderPass(renderPassIndex);
+				pipelineCreateInfo.SubPass = renderOrchestrator->GetSubPassIndex(renderPassIndex, onMaterialLoadInfo.SubPass);
 				pipelineCreateInfo.RenderPass = &renderPass;
 				pipelineCreateInfo.PipelineLayout = &materialSystem->setNodes.At(static_cast<Id>(material.Set))->Data.PipelineLayout;
 				pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache();

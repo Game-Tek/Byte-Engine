@@ -4,11 +4,8 @@
 
 #include "MaterialSystem.h"
 #include "RenderGroup.h"
+#include "RenderSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
-
-#include "RenderTypes.h"
-
-class RenderSystem;
 
 class StaticMeshRenderGroup final : public RenderGroup
 {
@@ -53,14 +50,13 @@ public:
 private:
 	struct MeshLoadInfo
 	{
-		MeshLoadInfo(RenderSystem* renderDevice, const Buffer& buffer, HostRenderAllocation renderAllocation, uint32 instance, MaterialHandle material) : RenderSystem(renderDevice), ScratchBuffer(buffer),
-		Allocation(renderAllocation), InstanceId(instance), Material(material)
+		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::SharedMeshHandle meshHandle, uint32 instance, MaterialHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
+		InstanceId(instance), Material(material)
 		{
 		}
 		
 		RenderSystem* RenderSystem = nullptr;
-		Buffer ScratchBuffer;
-		HostRenderAllocation Allocation;
+		RenderSystem::SharedMeshHandle MeshHandle;
 		uint32 InstanceId;
 		MaterialHandle Material;
 	};

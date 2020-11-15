@@ -328,7 +328,7 @@ private:
 			for(auto e : dependencies)
 			{
 				if (!systemsMap.Find(e.AccessedObject)) {
-					BE_LOG_WARNING("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
 			}

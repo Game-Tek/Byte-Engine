@@ -22,7 +22,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
 	buildOffsets.Initialize(32, GetPersistentAllocator());
 	geometries.Initialize(32, GetPersistentAllocator());
-	meshes.Initialize(32, GetPersistentAllocator());
+	sharedMeshes.Initialize(32, GetPersistentAllocator());
+	gpuMeshes.Initialize(32, GetPersistentAllocator());
 	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
@@ -34,6 +35,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.ApplicationVersion[0] = 0;
 		createInfo.ApplicationVersion[1] = 0;
 		createInfo.ApplicationVersion[2] = 0;
+
+		createInfo.Debug = BE::Application::Get()->GetOption("debug");
 		
 		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
 		queue_create_infos[0].Capabilities = static_cast<uint8>(QueueCapabilities::GRAPHICS);
@@ -434,40 +437,62 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	return ComponentReference(GetSystemId(), component);
 }
 
-ComponentReference RenderSystem::CreateMesh(Id name, Buffer scratchBuffer, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize)
+RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize)
 {
-	Mesh mesh;
+	SharedMesh mesh;
 
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION;
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE;
 	createInfo.Size = verticesSize + indexCount * indexSize;
+	mesh.Size = createInfo.Size;
 
 	mesh.IndexType = SelectIndexType(indexSize);
 	mesh.IndicesCount = indexCount;
 
-	auto compRef = meshes.GetFirstFreeIndex();
+	BufferScratchMemoryAllocationInfo bufferLocal;
+	bufferLocal.CreateInfo = &createInfo;
+	bufferLocal.Allocation = &mesh.Allocation;
+	bufferLocal.Buffer = &mesh.Buffer;
+	AllocateScratchBufferMemory(bufferLocal);
 
-	BufferCopyData bufferCopyData;
+	mesh.OffsetToIndices = verticesSize; //TODO: MAYBE ROUND TO INDEX SIZE?
+	
+	auto place = sharedMeshes.Emplace(mesh);
 
+	return SharedMeshHandle(place);
+}
+
+RenderSystem::GPUMeshHandle RenderSystem::CreateGPUMesh(SharedMeshHandle sharedMeshHandle)
+{
+	auto& sharedMesh = sharedMeshes[sharedMeshHandle()];
+
+	GPUMesh mesh;
+	
+	Buffer::CreateInfo createInfo;
+	createInfo.RenderDevice = GetRenderDevice();
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION;
+	createInfo.Size = sharedMesh.Size;
+
+	mesh.IndexType = sharedMesh.IndexType;
+	mesh.IndicesCount = sharedMesh.IndicesCount;
+	mesh.OffsetToIndices = sharedMesh.OffsetToIndices;
+	
 	BufferLocalMemoryAllocationInfo bufferLocal;
 	bufferLocal.CreateInfo = &createInfo;
 	bufferLocal.Allocation = &mesh.Allocation;
 	bufferLocal.Buffer = &mesh.Buffer;
 	AllocateLocalBufferMemory(bufferLocal);
 
-	bufferCopyData.Size = verticesSize + indexCount * indexSize;
+	BufferCopyData bufferCopyData;
+	bufferCopyData.Size = sharedMesh.Size;
 	bufferCopyData.DestinationBuffer = mesh.Buffer;
 	bufferCopyData.DestinationOffset = 0;
-	bufferCopyData.SourceBuffer = scratchBuffer;
+	bufferCopyData.SourceBuffer = sharedMesh.Buffer;
 	bufferCopyData.SourceOffset = 0;
 	AddBufferCopy(bufferCopyData);
 
-	mesh.OffsetToIndices = verticesSize; //TODO: MAYBE ROUND TO INDEX SIZE?
-	
-	meshes.EmplaceAt(compRef.Get(), mesh);
-
-	return ComponentReference(GetSystemId(), compRef.Get());
+	return GPUMeshHandle(gpuMeshes.Emplace(mesh));
 }
 
 void RenderSystem::RenderAllMeshesForMaterial(Id material)
@@ -476,7 +501,7 @@ void RenderSystem::RenderAllMeshesForMaterial(Id material)
 	
 	for(auto& e : range)
 	{
-		auto& mesh = meshes[e];
+		auto& mesh = gpuMeshes[e];
 
 		{
 			CommandBuffer::BindVertexBufferInfo bindInfo;
@@ -852,7 +877,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			
 		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::ALL_COMMANDS;
+		pipelineBarrierInfo.FinalStage = PipelineStage::TOP_OF_PIPE;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();

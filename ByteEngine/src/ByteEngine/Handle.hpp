@@ -11,6 +11,8 @@ public:
 	
 	explicit operator C() const { return handle; }
 
+	C operator()() const { return handle; }
+	
 	bool operator==(const Handle& other) const { return handle == other.handle; }
 	bool operator!=(const Handle& other) const { return handle != other.handle; }
 private:

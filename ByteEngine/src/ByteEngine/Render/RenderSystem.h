@@ -9,7 +9,8 @@
 
 #include "RendererAllocator.h"
 #include "RenderTypes.h"
-#include "StaticMeshRenderGroup.h"
+
+#include "ByteEngine/Handle.hpp"
 
 namespace GTSL {
 	class Window;
@@ -189,21 +190,27 @@ public:
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 
-	ComponentReference CreateMesh(Id name, Buffer scratchBuffer, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
+	MAKE_HANDLE(uint32, SharedMesh)
+	MAKE_HANDLE(uint32, GPUMesh)
+	
+	SharedMeshHandle CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
+	GPUMeshHandle CreateGPUMesh(SharedMeshHandle sharedMeshHandle);
+
+	byte* GetSharedMeshPointer(SharedMeshHandle sharedMesh) { return static_cast<byte*>(sharedMeshes[static_cast<uint32>(sharedMesh)].Allocation.Data); }
 	
 	void RenderAllMeshesForMaterial(Id material);
 
-	void AddMeshToId(ComponentReference mesh, Id material)
+	void AddMeshToId(GPUMeshHandle mesh, Id material)
 	{
 		if(meshesByMaterial.Find(material)) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
 		{
-			meshesByMaterial.At(material).EmplaceBack(mesh.Component);
+			meshesByMaterial.At(material).EmplaceBack(mesh());
 		}
 		else
 		{
 			auto& e = meshesByMaterial.Emplace(material);
 			e.Initialize(8, GetPersistentAllocator());
-			e.EmplaceBack(mesh.Component);
+			e.EmplaceBack(mesh());
 		}
 	}
 	
@@ -212,7 +219,7 @@ public:
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
 	void OnResize(GTSL::Extent2D extent);
-	
+
 private:	
 	GTSL::Mutex testMutex;
 	
@@ -250,9 +257,19 @@ private:
 	{
 		Buffer Buffer;
 		uint32 IndicesCount;
-		IndexType IndexType;
-		RenderAllocation Allocation;
+		IndexType IndexType;	
 		uint32 OffsetToIndices;
+	};
+	
+	struct SharedMesh : Mesh
+	{
+		uint32 Size = 0;
+		HostRenderAllocation Allocation;
+	};
+
+	struct GPUMesh : Mesh
+	{
+		RenderAllocation Allocation;
 	};
 	
 	struct RayTracingMesh
@@ -265,8 +282,10 @@ private:
 		uint64 Address;
 	};
 	
+	GTSL::KeepVector<SharedMesh, BE::PersistentAllocatorReference> sharedMeshes;
+	GTSL::KeepVector<GPUMesh, BE::PersistentAllocatorReference> gpuMeshes;
+	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
-	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 
 	GTSL::Array<GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> buildAccelerationStructureInfos;
 	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;

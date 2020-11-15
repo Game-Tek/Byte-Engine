@@ -64,7 +64,14 @@ class UIRenderManager : public RenderManager
 	void Setup(const SetupInfo& info) override;
 
 private:
-	ComponentReference square;
+	RenderSystem::GPUMeshHandle square;
+
+	uint64 matrixUniformBufferMemberHandle;
+	uint64 uiDataStructHandle;
+
+	SetHandle dataSet;
+
+	uint8 comps = 0, comps2 = 1;
 };
 
 class RenderOrchestrator : public System
@@ -79,15 +86,56 @@ public:
 	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 
-	void AddRenderPass(Id renderPass)
+	void AddAttachment(RenderSystem* renderSystem, Id name, TextureFormat format, TextureUses::value_type uses, TextureType::value_type type);
+	GTSL::Range<const GTSL::RGBA*> GetClearValues(const uint8 rp)
 	{
-		renderPassesMap.Emplace(renderPass);
-		renderPasses.EmplaceBack(renderPass);
+		auto& renderPass = apiRenderPasses[rp];
+		return renderPass.ClearValues;
 	}
+
+	struct AttachmentInfo
+	{
+		Id Name;
+		TextureLayout StartState, EndState;
+		GAL::RenderTargetLoadOperations Load;
+		GAL::RenderTargetStoreOperations Store;
+	};
+
+	struct PassData
+	{
+		GTSL::Array<Id, 8> ReadAttachments, WriteAttachments;
+		GTSL::Array<TextureLayout, 8> ReadAttachmentsLayouts, WriteAttachmentsLayouts;
+		Id Name;
+
+		struct AttachmentUse
+		{
+			Id Name;
+			TextureLayout Layout;
+		};
+		AttachmentUse DepthStencilAttachment;
+	};
+	void AddPass(RenderSystem* renderSystem, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const PassData*> passesData);
+
+	void OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize);
+
+	[[nodiscard]] RenderPass getAPIRenderPass(const uint8 rp) const { return apiRenderPasses[rp].RenderPass; }
+
+	uint8 GetRenderPassIndex(const Id name) const { return apiRenderPassesMap.At(name); }
+	[[nodiscard]] uint8 GetSubPassIndex(const uint8 renderPass, const Id subPassName) const { return subPassMap[renderPass].At(subPassName); }
+
+	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
+	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
+	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasses[renderPass].GetLength(); }
+
+	Id GetRenderPassName(const uint8 rp) { return apiRenderPasses[rp].Name; }
+	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
 	
 	void AddToRenderPass(Id renderPass, Id renderGroup)
 	{
-		renderPassesMap.At(renderPass).RenderGroups.EmplaceBack(renderGroup);
+		if(renderPassesMap.Find(renderPass))
+		{
+			renderPassesMap.At(renderPass).RenderGroups.EmplaceBack(renderGroup);
+		}
 	}
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
@@ -105,5 +153,63 @@ private:
 		GTSL::Array<Id, 8> RenderGroups;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
-	GTSL::Array<Id, 8> renderPasses;
+	GTSL::Array<Id, 8> renderPassesNames;
+
+	using RenderPassFunctionType = GTSL::FunctionPointer<void(RenderSystem*, MaterialSystem*, uint32[4], CommandBuffer, PipelineLayout, uint8)>;
+	
+	GTSL::Array<RenderPassFunctionType, 8> renderPassesFunctions;
+
+	void renderScene(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp);
+
+	struct RenderPassAttachment
+	{
+		TextureLayout Layout;
+		uint8 Index;
+	};
+
+	struct APIRenderPassData
+	{
+		Id Name;
+		RenderPass RenderPass;
+		GTSL::StaticMap<RenderPassAttachment, 8> Attachments;
+		GTSL::Array<GTSL::RGBA, 8> ClearValues;
+		GTSL::Array<Id, 8> AttachmentNames;
+
+		GTSL::Array<uint8, 8> RenderPasses;
+		
+		FrameBuffer FrameBuffer;
+	};
+	GTSL::Array<APIRenderPassData, 16> apiRenderPasses;
+	GTSL::StaticMap<uint8, 16> apiRenderPassesMap;
+
+	struct SubPass
+	{
+		Id Name;
+		uint8 DepthAttachment;
+	};
+	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasses;
+
+	GTSL::Array<GTSL::StaticMap<uint8, 16>, 8> subPassMap;
+
+	struct Attachment
+	{
+		TextureFormat Format;
+		Texture Texture;
+		TextureView TextureView;
+		TextureSampler TextureSampler;
+
+		GTSL::RGBA ClearValue;
+
+		RenderAllocation Allocation;
+
+		Id Name;
+		TextureType::value_type Type;
+		TextureUses::value_type Uses;
+	};
+	GTSL::StaticMap<Attachment, 32> attachments;
+
+public:
+	Texture GetAttachmentTexture(const Id attachment) const { return attachments.At(attachment).Texture; }
+	TextureView GetAttachmentTextureView(const Id attachment) const { return attachments.At(attachment).TextureView; }
+	TextureSampler GetAttachmentTextureSampler(const Id attachment) const { return attachments.At(attachment).TextureSampler; }
 };

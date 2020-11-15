@@ -136,7 +136,6 @@
     <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Render\TextSystem.h" />
-    <ClInclude Include="src\ByteEngine\Render\FrameManager.h" />
     <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\rayTracing.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
@@ -183,7 +182,6 @@
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\TextSystem.cpp" />
-    <ClCompile Include="src\ByteEngine\Render\FrameManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
   </ItemGroup>
 </Project>

@@ -4,7 +4,6 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
-#include "ByteEngine/Render/FrameManager.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -100,18 +99,18 @@ void GameApplication::PostInitialize()
 
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 
-	auto* staticMeshRenderGroup = gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 
 	auto* textSystem = gameInstance->AddSystem<TextSystem>("TextSystem");
+	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 	
 	{
-		auto* frameManager = gameInstance->AddSystem<FrameManager>("FrameManager");
-		frameManager->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
-		frameManager->AddAttachment(renderSystem, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
+		renderOrchestrator->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
+		renderOrchestrator->AddAttachment(renderSystem, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
 
-		GTSL::Array<FrameManager::AttachmentInfo, 6> attachments(2);
+		GTSL::Array<RenderOrchestrator::AttachmentInfo, 6> attachments(2);
 		attachments[0].Name = "Color";
 		attachments[0].StartState = TextureLayout::UNDEFINED;
 		attachments[0].EndState = TextureLayout::TRANSFER_SRC;
@@ -124,32 +123,30 @@ void GameApplication::PostInitialize()
 		attachments[1].Load = GAL::RenderTargetLoadOperations::CLEAR;
 		attachments[1].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
 
-		GTSL::Array<FrameManager::SubPassData, 6> subPasses;
-		FrameManager::SubPassData geoRenderPass;
+		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
+		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.Name = "SceneRenderPass";
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
 		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_ATTACHMENT;
 		geoRenderPass.WriteAttachments.EmplaceBack("Color");
 		geoRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		passes.EmplaceBack(geoRenderPass);
 
-		FrameManager::SubPassData uiRenderPass;
-		uiRenderPass.Name = "UI";
-		uiRenderPass.WriteAttachments.EmplaceBack("Color");
-		uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
-
-		subPasses.EmplaceBack(geoRenderPass); subPasses.EmplaceBack(uiRenderPass);
+		//RenderOrchestrator::PassData uiRenderPass;
+		//uiRenderPass.Name = "UIRenderPass";
+		//uiRenderPass.WriteAttachments.EmplaceBack("Color");
+		//uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		//passes.EmplaceBack(uiRenderPass);
 		
-		frameManager->AddPass(renderSystem, "SceneRenderPass", attachments, subPasses);
+		renderOrchestrator->AddPass(renderSystem, attachments, passes);
 	}
 
-	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 	
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
 
-	renderOrchestrator->AddRenderPass("SceneRenderPass");
-
 	materialSystem->AddSet(renderSystem, "SceneRenderPass", "GlobalData", MaterialSystem::SetInfo());
+	materialSystem->AddSet(renderSystem, "UIRenderPass", "GlobalData", MaterialSystem::SetInfo());
 	
 	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
 	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
@@ -497,10 +494,10 @@ void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 	auto resize = [](TaskInfo info, Extent2D newSize)
 	{
 		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-		auto* frameManager = info.GameInstance->GetSystem<FrameManager>("FrameManager");
+		auto* renderOrchestrator = info.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
 		renderSystem->OnResize(newSize);
-		frameManager->OnResize(info, newSize);
+		renderOrchestrator->OnResize(renderSystem, newSize);
 	};
 	
 	if (extent != 0 && extent != oldSize)

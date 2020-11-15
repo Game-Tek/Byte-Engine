@@ -55,9 +55,7 @@ public:
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
 	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
-	void UPDATE_SET_OFFSET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
 	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle set);
-	void RELEASE_SET() { --boundSets; }
 	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct Member
@@ -151,7 +149,6 @@ private:
 		uint64 TextureRefsTableHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
-	uint32 boundSets = 0;
 
 	struct PendingMaterialData : MaterialData
 	{

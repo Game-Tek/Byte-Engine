@@ -4,12 +4,13 @@
 
 #include <GTSL/Array.hpp>
 #include <GTSL/FlatHashMap.h>
+#include <GTSL/FunctionPointer.hpp>
 
 #include "ByteEngine/Id.h"
 #include <GTSL/Vector.hpp>
 
-#include "BindingsManager.hpp"
 #include "MaterialSystem.h"
+#include "RenderSystem.h"
 #include "RenderTypes.h"
 #include "ByteEngine/Game/Tasks.h"
 
@@ -48,7 +49,7 @@ class StaticMeshRenderManager : public RenderManager
 	void Setup(const SetupInfo& info) override;
 
 private:
-	uint64 matrixUniformBufferMemberHandle;
+	MemberHandle matrixUniformBufferMemberHandle;
 	uint64 staticMeshDataStructHandle;
 
 	SetHandle dataSet;
@@ -66,12 +67,13 @@ class UIRenderManager : public RenderManager
 private:
 	RenderSystem::GPUMeshHandle square;
 
-	uint64 matrixUniformBufferMemberHandle;
+	MemberHandle matrixUniformBufferMemberHandle;
 	uint64 uiDataStructHandle;
 
 	SetHandle dataSet;
 
 	uint8 comps = 0, comps2 = 1;
+	MaterialHandle uiMaterial;
 };
 
 class RenderOrchestrator : public System
@@ -160,6 +162,7 @@ private:
 	GTSL::Array<RenderPassFunctionType, 8> renderPassesFunctions;
 
 	void renderScene(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp);
+	void renderUI(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp);
 
 	struct RenderPassAttachment
 	{
@@ -175,6 +178,9 @@ private:
 		GTSL::Array<GTSL::RGBA, 8> ClearValues;
 		GTSL::Array<Id, 8> AttachmentNames;
 
+		/**
+		 * \brief Handles to application defined render passes that have to occur in this GAL render api.
+		 */
 		GTSL::Array<uint8, 8> RenderPasses;
 		
 		FrameBuffer FrameBuffer;

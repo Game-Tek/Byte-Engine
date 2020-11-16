@@ -132,11 +132,11 @@ void GameApplication::PostInitialize()
 		geoRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
 		passes.EmplaceBack(geoRenderPass);
 
-		//RenderOrchestrator::PassData uiRenderPass;
-		//uiRenderPass.Name = "UIRenderPass";
-		//uiRenderPass.WriteAttachments.EmplaceBack("Color");
-		//uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
-		//passes.EmplaceBack(uiRenderPass);
+		RenderOrchestrator::PassData uiRenderPass{};
+		uiRenderPass.Name = "UIRenderPass";
+		uiRenderPass.WriteAttachments.EmplaceBack("Color");
+		uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		passes.EmplaceBack(uiRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, attachments, passes);
 	}

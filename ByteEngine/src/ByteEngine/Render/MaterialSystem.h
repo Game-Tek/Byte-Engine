@@ -27,50 +27,65 @@ struct MaterialHandle
 	uint32 Element = 0;
 };
 
+struct MemberDescription
+{
+	uint8 SetBufferDataIndex, StructSize, DataType;
+};
+
 MAKE_HANDLE(Id, Set)
+MAKE_HANDLE(MemberDescription, Member)
 
 class MaterialSystem : public System
-{
+{	
 public:
 	MaterialSystem() : System("MaterialSystem")
 	{}
-	
-	void Initialize(const InitializeInfo& initializeInfo) override;
-	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-
-	template<typename T>
-	T* GetMemberPointer(uint64 member, uint64 index);
-
-	template<>
-	GTSL::Matrix4* GetMemberPointer(uint64 member, uint64 index)
-	{
-		return reinterpret_cast<GTSL::Matrix4*>(getSetMemberPointer(member, index, frame));
-	}
-
-	template<>
-	uint32* GetMemberPointer(uint64 member, uint64 index)
-	{
-		return reinterpret_cast<uint32*>(getSetMemberPointer(member, index, frame));
-	}
-
-	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle set);
-	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct Member
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, MATRIX4, FVEC4
+			FLOAT32, INT32, UINT32, MATRIX4, FVEC4, FVEC2
 		};
 
+		uint32 Count = 1;
 		DataType Type;
 	};
+	
+	void Initialize(const InitializeInfo& initializeInfo) override;
+	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+
+	template<typename T>
+	T* GetMemberPointer(MemberHandle member, uint64 index);
+
+	template<>
+	GTSL::Matrix4* GetMemberPointer(MemberHandle member, uint64 index)
+	{
+		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::MATRIX4, "Type mismatch");
+		return getSetMemberPointer<GTSL::Matrix4>(member(), index, frame);
+	}
+
+	template<>
+	int32* GetMemberPointer(MemberHandle member, uint64 index)
+	{
+		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::INT32, "Type mismatch");
+		return getSetMemberPointer<int32>(member(), index, frame);
+	}
+
+	template<>
+	uint32* GetMemberPointer(MemberHandle member, uint64 index)
+	{
+		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::UINT32, "Type mismatch");
+		return getSetMemberPointer<uint32>(member(), index, frame);
+	}
+
+	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
+	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct MemberInfo : Member
 	{
-		uint64* Handle;
+		MemberHandle* Handle;
 	};
 
 	enum class Frequency : uint8
@@ -110,7 +125,7 @@ public:
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager;
 	};
-	MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
+	[[nodiscard]] MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
 
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
@@ -121,15 +136,12 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
-	byte* getSetMemberPointer(uint64 member, uint64 index, uint8 frameToUpdate)
+	template<typename T>
+	T* getSetMemberPointer(MemberDescription member, uint64 index, uint8 frameToUpdate)
 	{
-		byte* data = reinterpret_cast<byte*>(&member);
-
-		//TODO: ASSERT SIZE
-		
-		auto& setBufferData = setsBufferData[data[0]];
+		auto& setBufferData = setsBufferData[member.SetBufferDataIndex];
 		auto memberSize = setBufferData.MemberSize;
-		return static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * memberSize) + data[1];
+		return reinterpret_cast<T*>(static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * memberSize) + member.StructSize);
 	}
 	
 	uint32 matNum = 0;
@@ -145,7 +157,7 @@ private:
 
 		SetHandle Set;
 		RasterizationPipeline Pipeline;
-		uint64 TextureRefHandle[8];
+		MemberHandle TextureRefHandle[8];
 		uint64 TextureRefsTableHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;

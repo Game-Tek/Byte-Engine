@@ -5,7 +5,6 @@
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Matrix4.h>
 
-#include <ByteEngine\Render\BindingsManager.hpp>
 #include "RenderGroup.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Game/Tasks.h"
@@ -88,11 +87,22 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	square = renderSystem->CreateGPUMesh(mesh);
 
+	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	createMaterialInfo.RenderSystem = renderSystem;
+	createMaterialInfo.GameInstance = initializeInfo.GameInstance;
+	createMaterialInfo.MaterialName = "UIMat";
+	createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	uiMaterial = materialSystem->CreateMaterial(createMaterialInfo);
+	
+	renderSystem->AddMeshToId(square, uiMaterial.MaterialType);
+
 	MaterialSystem::SetInfo setInfo;
 
 	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
+	members[0].Count = 1;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
 	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
@@ -272,6 +282,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 
 	renderPassesFunctions.EmplaceBack(RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
+	renderPassesFunctions.EmplaceBack(RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -337,9 +348,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		beginRenderPass.ClearValues = GetClearValues(arp);
 		commandBuffer.BeginRenderPass(beginRenderPass);
 		
-		for (uint8 rp = 0; rp < renderPassesNames.GetLength(); ++rp) //TODO: FETCH CORRECT RENDER PASS FROM API RENDER PASS
+		for (uint8 arprp = 0; arprp < apiRenderPasses[arp].RenderPasses.GetLength(); ++arprp)
 		{
 			//auto subPassName = frameManager->GetSubPassName(rp, sp);
+
+			auto rp = apiRenderPasses[arp].RenderPasses[arprp];
+			
 			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(renderPassesNames[rp]), 0);
 
 			uint32 pushConstant[] = { 0, 0, 0, 0 };
@@ -830,4 +844,8 @@ void RenderOrchestrator::renderScene(RenderSystem* renderSystem, MaterialSystem*
 			++pushConstant[3];
 		}
 	}
+}
+
+void RenderOrchestrator::renderUI(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp)
+{
 }

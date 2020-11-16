@@ -192,7 +192,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\ByteEngine\Handle.hpp" />
-    <ClInclude Include="src\ByteEngine\Render\BindingsManager.hpp" />
     <ClInclude Include="src\ByteEngine\Render\LightsRenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\rayTracing.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />

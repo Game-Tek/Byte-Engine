@@ -152,7 +152,7 @@ uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 	switch (data)
 	{
 	case MaterialSystem::Member::DataType::FLOAT32: return 4;
-	case MaterialSystem::Member::DataType::INT32: return 4;
+	case MaterialSystem::Member::DataType::UINT32: return 4;
 	case MaterialSystem::Member::DataType::MATRIX4: return 4 * 4 * 4;
 	case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
 	default: return 0;
@@ -184,8 +184,8 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 	if (structSize)
 	{
-		const auto place = setNodes.At(static_cast<Id>(setHandle))->Data.SetBufferData;
-		auto& setBufferData = setsBufferData[place];
+		const auto setBufferDataIndex = setNodes.At(static_cast<Id>(setHandle))->Data.SetBufferData;
+		auto& setBufferData = setsBufferData[setBufferDataIndex];
 
 		{
 			uint32 structSize = 0;
@@ -194,13 +194,10 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 			{
 				for (auto m : s.Members)
 				{
-					reinterpret_cast<byte*>(m.Handle)[0] = place;
-					reinterpret_cast<byte*>(m.Handle)[1] = structSize;
+					*m.Handle = MemberHandle(MemberDescription{ static_cast<uint8>(setBufferDataIndex), static_cast<uint8>(structSize), static_cast<uint8>(m.Type) });
+					
 					structSize += DataTypeSize(m.Type);
 				}
-
-				reinterpret_cast<byte*>(s.Handle)[0] = place;
-				reinterpret_cast<byte*>(s.Handle)[1] = structSize;
 
 				//setBufferData.Structs.EmplaceBack(s);
 				setBufferData.StructsSizes.EmplaceBack(structSize);
@@ -236,7 +233,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 		for (uint8 f = 0; f < queuedFrames; ++f)
 		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(place, GetPersistentAllocator());
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setBufferDataIndex, GetPersistentAllocator());
 
 			BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
 			bufferBindingsUpdate.Buffer = setBufferData.Buffers[f];
@@ -510,7 +507,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 			}
 
-			uint64 textureHandle = 0xFFFFFFFFFFFFFFFF, textureTableStructRef = ~(0ULL);
+			MemberHandle textureHandle; uint64 textureTableStructRef = ~(0ULL);
 			
 			{
 				SetInfo setInfo;
@@ -521,7 +518,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				for (auto& e : onMaterialLoadInfo.Textures)
 				{
 					MemberInfo textureHandles;
-					textureHandles.Type = Member::DataType::INT32;
+					textureHandles.Type = Member::DataType::UINT32;
 					textureHandles.Handle = &textureHandle;
 					members.EmplaceBack(textureHandles);
 				}
@@ -632,7 +629,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					materialSystem->addPendingMaterialToTexture(textureComp, PendingMaterialHandle(place));
 					for (uint8 f = 0; f < materialSystem->queuedFrames; ++f)
 					{
-						*reinterpret_cast<uint32*>(materialSystem->getSetMemberPointer(material.TextureRefHandle[0], 0, f)) = textureComp;
+						*materialSystem->getSetMemberPointer<uint32>(material.TextureRefHandle[0](), 0, f) = textureComp;
 					}
 					++materialSystem->pendingMaterials[place].Target;
 				}

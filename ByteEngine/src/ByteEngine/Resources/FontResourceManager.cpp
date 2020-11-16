@@ -406,29 +406,29 @@ FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const U
 	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
 	BE_ASSERT(result > -1, "Failed to parse!")
 	
-	for(auto& e : fontData.Glyphs[fontData.GlyphMap['A']].Paths)
-	{
-		BE_LOG_MESSAGE("Path")
-
-		for(auto& j : e.Segments)
-		{			
-			if(j.IsBezierCurve())
-			{			
-				BE_LOG_MESSAGE("Curve")
-				
-				BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
-				BE_LOG_MESSAGE("CP: ", j.Points[1].X, " ", j.Points[1].Y)
-				BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
-			}
-			else
-			{
-				BE_LOG_MESSAGE("Line")
-
-				BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
-				BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
-			}
-		}
-	}
+	//for(auto& e : fontData.Glyphs[fontData.GlyphMap['A']].Paths)
+	//{
+	//	BE_LOG_MESSAGE("Path")
+	//
+	//	for(auto& j : e.Segments)
+	//	{			
+	//		if(j.IsBezierCurve())
+	//		{			
+	//			BE_LOG_MESSAGE("Curve")
+	//			
+	//			BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
+	//			BE_LOG_MESSAGE("CP: ", j.Points[1].X, " ", j.Points[1].Y)
+	//			BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
+	//		}
+	//		else
+	//		{
+	//			BE_LOG_MESSAGE("Line")
+	//
+	//			BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
+	//			BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
+	//		}
+	//	}
+	//}
 	
 	fileBuffer.Free(8, GetTransientAllocator());
 	fontFile.CloseFile();
@@ -453,26 +453,6 @@ void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
 	
 	fontLoadInfo.GameInstance->AddAsyncTask(fontLoadInfo.OnFontLoadDelegate, GTSL::MoveRef(onFontLoadInfo));
 }
-
-//void FontResourceManager::GetFontFromSDF(const GTSL::Range<const UTF8> fontName)
-//{
-//	StaticString<255> basePath(BE::Application::Get()->GetPathToApplication()); basePath += "/resources/";
-//	StaticString<255> path(basePath); path += fontName; path += ".ttf";
-//
-//	auto handle = msdfgen::initializeFreetype();
-//	msdfgen::FontHandle* font = msdfgen::loadFont(handle, path.begin());
-//
-//	msdfgen::Shape shape;
-//	msdfgen::loadGlyph(shape, font, 'c');
-//	{
-//		shape.normalize();
-//		msdfgen::edgeColoringSimple(shape, 3.0);
-//		msdfgen::Bitmap<float, 3> bitmap(64, 64);
-//		msdfgen::generateMSDF(bitmap, shape, 4.0, 1, msdfgen::Vector2(4.0, 4.0));
-//		GTSL::StaticString<64> name(basePath); name += "c"; name += ".bmp";
-//		msdfgen::saveBmp(bitmap, name.begin());
-//	}
-//}
 
 GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y); }
 

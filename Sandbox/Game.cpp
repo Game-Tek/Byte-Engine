@@ -157,7 +157,7 @@ void Game::Initialize()
 	//	materialCreateInfo.BlendEnable = false;
 	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
-	//}
+	//}//
 	
 	//show loading screen
 	//load menu

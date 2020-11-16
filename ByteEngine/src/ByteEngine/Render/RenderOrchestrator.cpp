@@ -792,27 +792,38 @@ void RenderOrchestrator::renderScene(RenderSystem* renderSystem, MaterialSystem*
 	{
 		auto mats = materialSystem->GetMaterialHandles();
 
+		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), 0);
+		
 		for (auto m : mats)
 		{
 			auto pipeline = materialSystem->GET_PIPELINE(m);
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType), 0);
-			
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), pushConstant[3]);
-
-			CommandBuffer::UpdatePushConstantsInfo updatePush;
-			updatePush.RenderDevice = renderSystem->GetRenderDevice();
-			updatePush.Size = 16;
-			updatePush.Offset = 0;
-			updatePush.Data = reinterpret_cast<byte*>(&pushConstant);
-			updatePush.PipelineLayout = &pipelineLayout;
-			updatePush.ShaderStages = ShaderStage::VERTEX;
-			//commandBuffer.UpdatePushConstant(updatePush);
 
 			CommandBuffer::BindPipelineInfo bindPipelineInfo;
 			bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
 			bindPipelineInfo.PipelineType = PipelineType::RASTER;
 			bindPipelineInfo.Pipeline = &pipeline;
 			commandBuffer.BindPipeline(bindPipelineInfo);
+			
+			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType), 0);
+
+			
+			if (BE::Application::Get()->GetOption("usePushConstants"))
+			{
+				auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(m.MaterialType));
+				
+				CommandBuffer::UpdatePushConstantsInfo updatePush;
+				updatePush.RenderDevice = renderSystem->GetRenderDevice();
+				updatePush.Size = 16;
+				updatePush.Offset = 0;
+				updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+				updatePush.PipelineLayout = &ppLay;
+				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+				commandBuffer.UpdatePushConstant(updatePush);
+			}
+			else
+			{
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), pushConstant[3]);
+			}
 
 			renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
 

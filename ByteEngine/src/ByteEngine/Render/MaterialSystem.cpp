@@ -7,6 +7,7 @@
 #include <GAL/Texture.h>
 
 #include "RenderOrchestrator.h"
+#include "ByteEngine/Application/Application.h"
 
 const char* BindingTypeString(const BindingType binding)
 {
@@ -68,11 +69,18 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 5/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 
 		PipelineLayout::PushConstant pushConstant;
-		pushConstant.ShaderStages = ShaderStage::VERTEX;
+		pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
 		pushConstant.Offset = 0;
 		pushConstant.Size = 16;
-		
-		makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors, nullptr);
+
+		if (BE::Application::Get()->GetOption("usePushConstants"))
+		{
+			makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors, &pushConstant);
+		}
+		else
+		{
+			makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors, nullptr);
+		}
 	}
 }
 
@@ -233,7 +241,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 			BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
 			bufferBindingsUpdate.Buffer = setBufferData.Buffers[f];
 			bufferBindingsUpdate.Offset = 0;
-			bufferBindingsUpdate.Range = setBufferData.StructsSizes[0];
+			bufferBindingsUpdate.Range = BE::Application::Get()->GetOption("usePushConstants") ? setBufferData.AllocatedInstances * setBufferData.StructsSizes[0] : setBufferData.StructsSizes[0];
 			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, bufferBindingsUpdate);
 		}
 	}
@@ -523,8 +531,20 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				structsInfos[0].Handle = &textureTableStructRef;
 				
 				setInfo.Structs = structsInfos;
-				
-				material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo, nullptr);
+
+				if (BE::Application::Get()->GetOption("usePushConstants"))
+				{
+
+					PipelineLayout::PushConstant pushConstant;
+					pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+					pushConstant.Offset = 0;
+					pushConstant.Size = 16;
+					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo, &pushConstant);
+				}
+				else
+				{
+					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo, nullptr);
+				}
 			}
 
 			materialSystem->AddObjects(renderSystem, material.Set, 1);

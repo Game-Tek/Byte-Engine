@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include <GTSL/Id.h>
+#include <GTSL/ShortString.hpp>
 
 class Id
 {
@@ -14,11 +15,11 @@ public:
 	constexpr Id(const UTF8* name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 
-	[[nodiscard]] const UTF8* GetString() const { return stringName; }
+	[[nodiscard]] const UTF8* GetString() const { return GTSL::Range<const UTF8*>(stringName).begin(); }
 	[[nodiscard]] GTSL::Id64 GetHash() const { return hashedName; }
 
 	operator GTSL::Id64() const { return hashedName; }
-	explicit operator const UTF8* () const { return stringName; }
+	explicit operator const UTF8* () const { return GTSL::Range<const UTF8*>(stringName).begin(); }
 
 	operator uint64() const { return hashedName; }
 
@@ -29,5 +30,5 @@ public:
 	bool operator==(const GTSL::Id64 other) const { return hashedName == other; }
 private:
 	GTSL::Id64 hashedName;
-	const UTF8* stringName = "null";
+	GTSL::ShortString<24> stringName;
 };

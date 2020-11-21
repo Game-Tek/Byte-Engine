@@ -58,7 +58,6 @@ public:
 	{
 		uint32 MaterialOffset = 0;
 		GTSL::Id64 RenderGroup;
-		GTSL::Id64 SubPass;
 		GTSL::Array<uint32, 12> ShaderSizes;
 		GTSL::Array<uint8, 20> VertexElements;
 		bool DepthWrite; bool DepthTest; bool StencilTest;
@@ -86,7 +85,6 @@ public:
 		GTSL::StaticString<128> ShaderName;
 		GTSL::StaticString<128> RenderGroup;
 		GTSL::Id64 RenderPass;
-		GTSL::Id64 SubPass;
 		GTSL::Range<const GAL::ShaderDataType*> VertexFormat;
 
 		GTSL::Array<Uniform, 8> MaterialParameters;
@@ -130,7 +128,6 @@ public:
 		StencilState Front;
 		StencilState Back;
 		GTSL::Id64 RenderPass;
-		GTSL::Id64 SubPass;
 		bool StencilTest;
 		bool BlendEnable = false;
 	};

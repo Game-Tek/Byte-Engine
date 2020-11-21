@@ -105,7 +105,6 @@ public:
 		GTSL::Range<StructInfo*> Structs;
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
-	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo, PipelineLayout::PushConstant* pushConstant);
 
 	
 	void AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count);
@@ -353,7 +352,7 @@ private:
 	uint8 frame;
 	const uint8 queuedFrames = 2;
 
-	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors, PipelineLayout::PushConstant* pushConstant);
+	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, uint32 set);
 };

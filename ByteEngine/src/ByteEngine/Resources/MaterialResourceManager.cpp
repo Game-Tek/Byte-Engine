@@ -97,7 +97,6 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
 		
 		materialInfo.RenderPass = materialCreateInfo.RenderPass;
-		materialInfo.SubPass = materialCreateInfo.SubPass;
 		
 		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
 		materialInfo.DepthTest = materialCreateInfo.DepthTest;
@@ -158,7 +157,6 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
 	
 	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
-	onMaterialLoadInfo.SubPass = materialInfo.SubPass;
 
 	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
 	onMaterialLoadInfo.Textures = materialInfo.Textures;
@@ -209,7 +207,6 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	Insert(materialInfo.MaterialOffset, buffer);
 	Insert(materialInfo.RenderGroup, buffer);
 	Insert(materialInfo.RenderPass, buffer);
-	Insert(materialInfo.SubPass, buffer);
 	
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
@@ -237,7 +234,6 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	Extract(materialInfo.MaterialOffset, buffer);
 	Extract(materialInfo.RenderGroup, buffer);
 	Extract(materialInfo.RenderPass, buffer);
-	Extract(materialInfo.SubPass, buffer);
 	
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);

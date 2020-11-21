@@ -68,19 +68,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 5/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 
-		PipelineLayout::PushConstant pushConstant;
-		pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-		pushConstant.Offset = 0;
-		pushConstant.Size = 16;
-
-		if (BE::Application::Get()->GetOption("usePushConstants"))
-		{
-			makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors, &pushConstant);
-		}
-		else
-		{
-			makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors, nullptr);
-		}
+		makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors);
 	}
 }
 
@@ -91,7 +79,12 @@ void MaterialSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 Pipeline MaterialSystem::GET_PIPELINE(MaterialHandle materialHandle)
 {
-	return materials[materialHandle.Element].Pipeline;
+	if (materials.IsSlotOccupied(materialHandle.Element))
+	{
+		return materials[materialHandle.Element].Pipeline;
+	}
+
+	return Pipeline();
 }
 
 void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle setHandle, uint32 index)
@@ -118,35 +111,6 @@ void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandB
 	}
 }
 
-//void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, uint64 structHandle, uint64 index, SetHandle setHandle)
-//{
-//	auto& set = setNodes.At(static_cast<Id>(setHandle))->Data;
-//
-//	if (set.SetBufferData != 0xFFFFFFFF)
-//	{
-//		auto& setBufferData = setsBufferData[set.SetBufferData];
-//
-//		GTSL::Array<uint32, 2> offsets;
-//
-//		byte* data = reinterpret_cast<byte*>(&structHandle);
-//		
-//		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * index); }
-//
-//		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-//		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
-//		bindBindingsSetInfo.FirstSet = boundSets;
-//		bindBindingsSetInfo.BoundSets = 1;
-//		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &setBufferData.BindingsSet[frame]);
-//		bindBindingsSetInfo.PipelineLayout = &set.PipelineLayout;
-//		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
-//		bindBindingsSetInfo.Offsets = offsets;
-//		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
-//
-//	}
-//	
-//	boundSets += 1;
-//}
-
 uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 {
 	switch (data)
@@ -159,7 +123,7 @@ uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 	}
 }
 
-SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo, PipelineLayout::PushConstant* pushConstant)
+SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo)
 {
 	GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 
@@ -180,7 +144,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::STORAGE_BUFFER_DYNAMIC, ShaderStage::ALL, 1, 0 });
 	}
 
-	auto setHandle = makeSetEx(renderSystem, setName, parent, bindingDescriptors, pushConstant);
+	auto setHandle = makeSetEx(renderSystem, setName, parent, bindingDescriptors);
 
 	if (structSize)
 	{
@@ -217,7 +181,11 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 		Buffer::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
-		createInfo.Name = GTSL::StaticString<64>("undefined");
+		if constexpr (_DEBUG)
+		{
+			GTSL::StaticString<64> name("Set"); name += " "; name += setName;
+			createInfo.Name = name;
+		}
 		createInfo.Size = newBufferSize;
 		createInfo.BufferType = BufferType::ADDRESS;
 		createInfo.BufferType |= BufferType::STORAGE;
@@ -238,17 +206,12 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 			BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
 			bufferBindingsUpdate.Buffer = setBufferData.Buffers[f];
 			bufferBindingsUpdate.Offset = 0;
-			bufferBindingsUpdate.Range = BE::Application::Get()->GetOption("usePushConstants") ? setBufferData.AllocatedInstances * setBufferData.StructsSizes[0] : setBufferData.StructsSizes[0];
+			bufferBindingsUpdate.Range = setBufferData.AllocatedInstances * setBufferData.StructsSizes[0];
 			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, bufferBindingsUpdate);
 		}
 	}
 
 	return setHandle;
-}
-
-SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo)
-{
-	return AddSet(renderSystem, setName, parent, setInfo, nullptr);
 }
 
 void MaterialSystem::AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count)
@@ -258,16 +221,20 @@ void MaterialSystem::AddObjects(RenderSystem* renderSystem, SetHandle set, uint3
 
 	//auto& renderGroupData = renderGroupsData.At(renderGroup);
 	auto setBufferDataHandle = setNodes.At(static_cast<Id>(set))->Data.SetBufferData;
-	auto& setBufferData = setsBufferData[setBufferDataHandle];
-	
-	if(setBufferData.UsedInstances + count > setBufferData.AllocatedInstances)
-	{
-		resizeSet(renderSystem, setBufferDataHandle); // Resize now
-		
-		queuedBufferUpdates.EmplaceBack(setBufferDataHandle); //Defer resizing
-	}
 
-	setBufferData.UsedInstances += count;
+	if (setBufferDataHandle != 0xFFFFFFFF)
+	{
+		auto& setBufferData = setsBufferData[setBufferDataHandle];
+
+		if (setBufferData.UsedInstances + count > setBufferData.AllocatedInstances)
+		{
+			resizeSet(renderSystem, setBufferDataHandle); // Resize now
+
+			queuedBufferUpdates.EmplaceBack(setBufferDataHandle); //Defer resizing
+		}
+
+		setBufferData.UsedInstances += count;
+	}
 }
 
 MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
@@ -288,7 +255,7 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
 	info.MaterialResourceManager->LoadMaterial(material_load_info);
 
-	return MaterialHandle{ info.MaterialName, 0/*materials[comp].MaterialInstances*//*TODO: WHAT*/, ++matNum };
+	return MaterialHandle{ info.MaterialName, 0/*materials[comp].MaterialInstances*//*TODO: WHAT*/, matNum++ };
 }
 
 void MaterialSystem::SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
@@ -507,46 +474,43 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				pipelineCreateInfo.VertexDescriptor = vertexDescriptor;
 			}
 
-			MemberHandle textureHandle; uint64 textureTableStructRef = ~(0ULL);
+			MemberHandle textureHandle[8]; uint64 textureTableStructRef = ~(0ULL);
 			
 			{
 				SetInfo setInfo;
 
 				GTSL::Array<MemberInfo, 8> members;
-				GTSL::Array<StructInfo, 8> structsInfos(1);
+				GTSL::Array<StructInfo, 8> structsInfos;
 				
-				for (auto& e : onMaterialLoadInfo.Textures)
+				for (uint32 t = 0; t < onMaterialLoadInfo.Textures.GetLength(); ++t)
 				{
 					MemberInfo textureHandles;
 					textureHandles.Type = Member::DataType::UINT32;
-					textureHandles.Handle = &textureHandle;
+					textureHandles.Handle = &textureHandle[t];
 					members.EmplaceBack(textureHandles);
 				}
 
-				structsInfos[0].Members = members;
-				structsInfos[0].Frequency = Frequency::PER_INSTANCE;
-				structsInfos[0].Handle = &textureTableStructRef;
+				if (onMaterialLoadInfo.Textures.GetLength())
+				{
+					StructInfo structInfo;
+					structInfo.Members = members;
+					structInfo.Frequency = Frequency::PER_INSTANCE;
+					structInfo.Handle = &textureTableStructRef;
+					structsInfos.EmplaceBack(structInfo);
+				}
 				
 				setInfo.Structs = structsInfos;
 
-				if (BE::Application::Get()->GetOption("usePushConstants"))
-				{
-
-					PipelineLayout::PushConstant pushConstant;
-					pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-					pushConstant.Offset = 0;
-					pushConstant.Size = 16;
-					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo, &pushConstant);
-				}
-				else
-				{
-					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, "StaticMeshRenderGroup"/*TODO: SHOULD BE DYNAMIC*/, setInfo, nullptr);
-				}
+				material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
 			}
 
-			materialSystem->AddObjects(renderSystem, material.Set, 1);
+			materialSystem->AddObjects(renderSystem, material.Set, 1); //Add current material to set
+
+			for (uint32 t = 0; t < onMaterialLoadInfo.Textures.GetLength(); ++t)
+			{
+				material.TextureRefHandle[t] = textureHandle[t];
+			}
 			
-			material.TextureRefHandle[0] = textureHandle;
 			material.TextureRefsTableHandle = textureTableStructRef;
 			
 			//pipelineCreateInfo.IsInheritable = true;
@@ -584,10 +548,8 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 				auto* renderOrchestrator = taskInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
-				auto renderPassIndex = renderOrchestrator->GetRenderPassIndex(onMaterialLoadInfo.RenderPass);
-
-				auto renderPass = renderOrchestrator->getAPIRenderPass(renderPassIndex);
-				pipelineCreateInfo.SubPass = renderOrchestrator->GetSubPassIndex(renderPassIndex, onMaterialLoadInfo.SubPass);
+				auto renderPass = renderOrchestrator->getAPIRenderPass(onMaterialLoadInfo.RenderPass);
+				pipelineCreateInfo.SubPass = renderOrchestrator->getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
 				pipelineCreateInfo.RenderPass = &renderPass;
 				pipelineCreateInfo.PipelineLayout = &materialSystem->setNodes.At(static_cast<Id>(material.Set))->Data.PipelineLayout;
 				pipelineCreateInfo.PipelineCache = renderSystem->GetPipelineCache();
@@ -713,7 +675,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 //	for (auto& e : shaders) { e.Destroy(loadInfo->RenderSystem->GetRenderDevice()); }
 //}
 
-SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDesc, PipelineLayout::PushConstant* pushConstant)
+SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDesc)
 {
 	decltype(setsTree)::Node* parentNode, * set;
 	uint32 level;
@@ -834,7 +796,13 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 			pipelineLayout.Name = name;
 		}
 
-		pipelineLayout.PushConstant = pushConstant;
+		PipelineLayout::PushConstant pushConstant;
+		pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+		pushConstant.Offset = 0;
+		pushConstant.Size = 16;
+
+		pipelineLayout.PushConstant = &pushConstant;
+		
 		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
 		set->Data.PipelineLayout.Initialize(pipelineLayout);
 	}

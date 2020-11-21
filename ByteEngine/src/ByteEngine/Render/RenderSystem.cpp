@@ -145,7 +145,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		for(uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 		{
-			if constexpr (_DEBUG) { semaphoreCreateInfo.Name = GTSL::StaticString<32>("Transfer semaphore"); }
+			if constexpr (_DEBUG) { GTSL::StaticString<32> name("Transfer semaphore. Frame: "); name += i;  semaphoreCreateInfo.Name = name; }
 			transferDoneSemaphores.EmplaceBack(semaphoreCreateInfo);
 		}
 	}
@@ -156,7 +156,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	GTSL::Window::Win32NativeHandles handles;
 	initializeRenderer.Window->GetNativeHandles(&handles);
 	GAL::WindowsWindowData windowsWindowData;
-	windowsWindowData.InstanceHandle = GetModuleHandle(NULL);
+	windowsWindowData.InstanceHandle = GetModuleHandle(nullptr);
 	windowsWindowData.WindowHandle = handles.HWND;
 	surfaceCreateInfo.SystemData = &windowsWindowData;
 	new(&surface) Surface(surfaceCreateInfo);
@@ -493,6 +493,34 @@ RenderSystem::GPUMeshHandle RenderSystem::CreateGPUMesh(SharedMeshHandle sharedM
 	AddBufferCopy(bufferCopyData);
 
 	return GPUMeshHandle(gpuMeshes.Emplace(mesh));
+}
+
+void RenderSystem::RenderMesh(GPUMeshHandle handle)
+{
+	auto& mesh = gpuMeshes[handle()];
+
+	{
+		CommandBuffer::BindVertexBufferInfo bindInfo;
+		bindInfo.RenderDevice = GetRenderDevice();
+		bindInfo.Buffer = &mesh.Buffer;
+		bindInfo.Offset = 0;
+		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
+	}
+
+	{
+		CommandBuffer::BindIndexBufferInfo bindInfo;
+		bindInfo.RenderDevice = GetRenderDevice();
+		bindInfo.Buffer = &mesh.Buffer;
+		bindInfo.Offset = mesh.OffsetToIndices;
+		bindInfo.IndexType = mesh.IndexType;
+		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
+	}
+	
+	CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+	drawIndexedInfo.RenderDevice = GetRenderDevice();
+	drawIndexedInfo.InstanceCount = 1;
+	drawIndexedInfo.IndexCount = mesh.IndicesCount;
+	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
 }
 
 void RenderSystem::RenderAllMeshesForMaterial(Id material)
@@ -859,7 +887,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 		pipelineBarrierInfo.RenderDevice = GetRenderDevice();
 		pipelineBarrierInfo.TextureBarriers = sourceTextureBarriers;
-		pipelineBarrierInfo.InitialStage = PipelineStage::TOP_OF_PIPE;
+		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
 		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
@@ -877,7 +905,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			
 		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;
 		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::TOP_OF_PIPE;
+		pipelineBarrierInfo.FinalStage = PipelineStage::FRAGMENT_SHADER | PipelineStage::RAY_TRACING_SHADER;
 		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();

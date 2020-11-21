@@ -57,12 +57,15 @@ private:
 
 class UIRenderManager : public RenderManager
 {
+public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
 	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
 
 	void Setup(const SetupInfo& info) override;
+	RenderSystem::GPUMeshHandle GetSquareMesh() const { return square; }
+	MaterialHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
 	RenderSystem::GPUMeshHandle square;
@@ -120,10 +123,10 @@ public:
 
 	void OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize);
 
-	[[nodiscard]] RenderPass getAPIRenderPass(const uint8 rp) const { return apiRenderPasses[rp].RenderPass; }
+	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
 
 	uint8 GetRenderPassIndex(const Id name) const { return apiRenderPassesMap.At(name); }
-	[[nodiscard]] uint8 GetSubPassIndex(const uint8 renderPass, const Id subPassName) const { return subPassMap[renderPass].At(subPassName); }
+	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const { return renderPassesMap.At(renderPass).APISubPass; }
 
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
@@ -131,6 +134,21 @@ public:
 
 	Id GetRenderPassName(const uint8 rp) { return apiRenderPasses[rp].Name; }
 	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
+
+	void ToggleRenderPass(Id renderPassName, bool enable)
+	{
+		if(enable)
+		{
+			enabledRenderPasses.EmplaceBack(renderPassName);
+		}
+		else
+		{
+			for(uint8 i = 0; i < enabledRenderPasses.GetLength(); ++i)
+			{
+				if (enabledRenderPasses[i] == renderPassName) { enabledRenderPasses.Pop(i); break; }
+			}
+		}
+	}
 	
 	void AddToRenderPass(Id renderPass, Id renderGroup)
 	{
@@ -149,20 +167,22 @@ private:
 	
 	GTSL::FlatHashMap<uint16, BE::PersistentAllocatorReference> renderManagers;
 
+	GTSL::Array<Id, 16> enabledRenderPasses;
 
 	struct RenderPassData
 	{
 		GTSL::Array<Id, 8> RenderGroups;
+		uint8 APIRenderPass = 0, APISubPass = 0;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
 
-	using RenderPassFunctionType = GTSL::FunctionPointer<void(RenderSystem*, MaterialSystem*, uint32[4], CommandBuffer, PipelineLayout, uint8)>;
+	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, uint32[4], CommandBuffer, PipelineLayout, Id)>;
 	
-	GTSL::Array<RenderPassFunctionType, 8> renderPassesFunctions;
+	GTSL::StaticMap<RenderPassFunctionType, 8> renderPassesFunctions;
 
-	void renderScene(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp);
-	void renderUI(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp);
+	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp);
+	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp);
 
 	struct RenderPassAttachment
 	{

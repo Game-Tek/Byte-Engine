@@ -16,6 +16,8 @@
 #include "ByteEngine/Render/TextSystem.h"
 #include "ByteEngine/Render/UIManager.h"
 
+#include "GTSL/ShortString.hpp"
+
 class UIManager;
 class TestSystem;
 
@@ -77,7 +79,6 @@ void Game::Initialize()
 		materialCreateInfo.ShaderName = "HydrantMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
-		materialCreateInfo.SubPass = "SceneRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
 		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
@@ -102,7 +103,6 @@ void Game::Initialize()
 		materialCreateInfo.ShaderName = "TvMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
-		materialCreateInfo.SubPass = "SceneRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
 		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
 		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
@@ -140,26 +140,25 @@ void Game::Initialize()
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	//}
 	
-	//{
-	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.ShaderName = "UIMat";
-	//	materialCreateInfo.RenderGroup = "UIRenderGroup";
-	//	materialCreateInfo.RenderPass = "MainRenderPass";
-	//	materialCreateInfo.SubPass = "UI";
-	//	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-	//	materialCreateInfo.VertexFormat = format;
-	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	//	
-	//	materialCreateInfo.DepthWrite = true;
-	//	materialCreateInfo.DepthTest = true;
-	//	materialCreateInfo.StencilTest = false;
-	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
-	//	materialCreateInfo.BlendEnable = false;
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
-	//}//
+	{
+		MaterialResourceManager::MaterialCreateInfo materialCreateInfo{};
+		materialCreateInfo.ShaderName = "UIMat";
+		materialCreateInfo.RenderGroup = "UIRenderGroup";
+		materialCreateInfo.RenderPass = "UIRenderPass";
+		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT2 };
+		materialCreateInfo.VertexFormat = format;
+		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
+		
+		materialCreateInfo.DepthWrite = true;
+		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.StencilTest = false;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
+		materialCreateInfo.BlendEnable = false;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -175,8 +174,12 @@ void Game::PostInitialize()
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 
+	const GTSL::ShortString<32> string("Hello, test here!");
+
+	BE_LOG_MESSAGE(string)
+	
 	//{
-	//	TextureSystem::CreateTextureInfo createTextureInfo;
+	//	TextureSystem::CreateTextureInfo createTextureInfo;//
 	//	createTextureInfo.RenderSystem = renderSystem;
 	//	createTextureInfo.GameInstance = gameInstance;
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
@@ -191,7 +194,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
-		material = material_system->CreateMaterial(createMaterialInfo);
+		//material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
 	//{//
@@ -211,11 +214,11 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{
+	//{//
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;
@@ -277,7 +280,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "TvMat";
-		tvMat = material_system->CreateMaterial(createMaterialInfo);
+		//tvMat = material_system->CreateMaterial(createMaterialInfo);
 	}
 	
 	{
@@ -287,42 +290,9 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
-
-	//{
-	//	GTSL::GVector<GTSL::StaticString<64>, BE::SystemAllocatorReference> vec;
-	//	vec.Initialize(6, systemAllocatorReference);
-	//
-	//	vec.EmplaceAt(0, "Hello");
-	//	vec.EmplaceAt(1, " my name is");
-	//
-	//	for(uint32 i = 0; i < vec.GetGroupCount(); ++i)
-	//	{
-	//		BE_LOG_MESSAGE("Group ", i)
-	//		
-	//		for(uint32 j = 0; j < vec[i].ElementCount; ++j)
-	//		{
-	//			auto eg = vec[i].At(j);
-	//			BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
-	//		}
-	//	}
-	//
-	//	vec.Clear();
-	//	vec.EmplaceAt(3, " Sal.");
-	//	
-	//	for (uint32 i = 0; i < vec.GetGroupCount(); ++i)
-	//	{
-	//		BE_LOG_MESSAGE("Group ", i)
-	//
-	//		for (uint32 j = 0; j < vec[i].ElementCount; ++j)
-	//		{
-	//			auto eg = vec[i].At(j);
-	//			BE_LOG_MESSAGE("Item in Group, ", eg.First, " ", eg.Second)
-	//		}
-	//	}
-	//}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -344,7 +314,7 @@ void Game::PostInitialize()
 	//	auto textComp = gameInstance->GetSystem<TextSystem>("TextSystem")->AddText(addTextInfo);
 	//}
 
-	GetResourceManager<FontResourceManager>("FontResourceManager")->GetFont(GTSL::StaticString<64>("FTLTLT"));
+	//GetResourceManager<FontResourceManager>("FontResourceManager")->GetFont(GTSL::StaticString<64>("FTLTLT"));
 	
 	//{
 	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;

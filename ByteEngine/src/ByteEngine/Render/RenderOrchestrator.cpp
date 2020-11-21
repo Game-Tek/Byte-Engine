@@ -30,6 +30,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
+	members[0].Count = 1;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
 	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
@@ -80,13 +81,14 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	
 	auto mesh = renderSystem->CreateSharedMesh("BE_UI_SQUARE", 4 * 2 * 4, 6, 2);
-
+	
 	auto* meshPointer = renderSystem->GetSharedMeshPointer(mesh);
-	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer += 4 * 2 * 4);
+	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
+	meshPointer += 4 * 2 * 4;
 	GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
-
+	
 	square = renderSystem->CreateGPUMesh(mesh);
-
+	
 	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	createMaterialInfo.RenderSystem = renderSystem;
 	createMaterialInfo.GameInstance = initializeInfo.GameInstance;
@@ -281,8 +283,8 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 
-	renderPassesFunctions.EmplaceBack(RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
-	renderPassesFunctions.EmplaceBack(RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
+	renderPassesFunctions.Emplace(Id("SceneRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
+	renderPassesFunctions.Emplace(Id("UIRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -334,40 +336,72 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	
 	CommandBuffer::EndRegionInfo endRegionInfo;
 	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
+
+	uint8 arp = 0xFF, apiRpSp = 0;
 	
-	for (uint8 arp = 0; arp < getAPIRenderPassesCount(); ++arp)
+	for(uint8 erp = 0; erp < enabledRenderPasses.GetLength(); ++erp)
 	{
-		auto renderPass = getAPIRenderPass(arp);
-		auto frameBuffer = getFrameBuffer(arp);
+		auto& renderPass = renderPassesMap.At(enabledRenderPasses[erp]);
 
-		CommandBuffer::BeginRenderPassInfo beginRenderPass;
-		beginRenderPass.RenderDevice = renderSystem->GetRenderDevice();
-		beginRenderPass.RenderPass = &renderPass;
-		beginRenderPass.Framebuffer = &frameBuffer;
-		beginRenderPass.RenderArea = renderSystem->GetRenderExtent();
-		beginRenderPass.ClearValues = GetClearValues(arp);
-		commandBuffer.BeginRenderPass(beginRenderPass);
-		
-		for (uint8 arprp = 0; arprp < apiRenderPasses[arp].RenderPasses.GetLength(); ++arprp)
+		if(arp == renderPass.APIRenderPass)
 		{
-			//auto subPassName = frameManager->GetSubPassName(rp, sp);
+			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+			++apiRpSp;
+		}
+		else
+		{
+			arp = renderPass.APIRenderPass;
+			auto apiRenderPass = apiRenderPasses[arp].RenderPass;
+			auto frameBuffer = getFrameBuffer(arp);
 
-			auto rp = apiRenderPasses[arp].RenderPasses[arprp];
-			
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(renderPassesNames[rp]), 0);
+			CommandBuffer::BeginRenderPassInfo beginRenderPass;
+			beginRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+			beginRenderPass.RenderPass = &apiRenderPass;
+			beginRenderPass.Framebuffer = &frameBuffer;
+			beginRenderPass.RenderArea = renderSystem->GetRenderExtent();
+			beginRenderPass.ClearValues = GetClearValues(arp);
+			commandBuffer.BeginRenderPass(beginRenderPass);
 
-			uint32 pushConstant[] = { 0, 0, 0, 0 };
+			apiRpSp = 0;
 
-			renderPassesFunctions[rp](this, renderSystem, materialSystem, pushConstant, commandBuffer, pipelineLayout, rp);
-			
-			if (rp < GetSubPassCount(rp) - 1) { commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{}); }
+			while(apiRpSp != renderPass.APISubPass) // Render passes and subpasses respectively HAVE to be in order
+			{
+				commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+				++apiRpSp;
+			}
 		}
 
-		CommandBuffer::EndRenderPassInfo endRenderPass;
-		endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
-		commandBuffer.EndRenderPass(endRenderPass);
+		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(enabledRenderPasses[erp]), 0);
+
+		uint32 pushConstant[] = { 0, 0, 0, 0 };
+
+		auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(enabledRenderPasses[erp]));
+
+		CommandBuffer::UpdatePushConstantsInfo updatePush;
+		updatePush.RenderDevice = renderSystem->GetRenderDevice();
+		updatePush.Size = 16;
+		updatePush.Offset = 0;
+		updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+		updatePush.PipelineLayout = &ppLay;
+		updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+		commandBuffer.UpdatePushConstant(updatePush);
+		
+		renderPassesFunctions.At(enabledRenderPasses[erp])(this, taskInfo.GameInstance, renderSystem, materialSystem, pushConstant, commandBuffer, pipelineLayout, enabledRenderPasses[erp]);
 	}
 
+	if (subPasses[arp].GetLength() > apiRpSp)
+	{
+		for (uint32 sp = apiRpSp; sp < subPasses[arp].GetLength() - 1; ++sp)
+		{
+			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+		}
+	}
+
+	//WHAT IF NO RENDER PASSES?
+	CommandBuffer::EndRenderPassInfo endRenderPass;
+	endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+	commandBuffer.EndRenderPass(endRenderPass);
+	
 	commandBuffer.EndRegion(endRegionInfo);
 	
 	{
@@ -408,14 +442,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_READ;
 			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 		}
-
-		//pipelineBarrierInfo.InitialStage = PipelineStage::ALL_COMMANDS;
-		//pipelineBarrierInfo.FinalStage = PipelineStage::TOP_OF_PIPE; //DST CANT OCCUR BEFORE INI
-		//textureBarriers[0].Texture = GetAttachmentTexture("Color");
-		//textureBarriers[0].CurrentLayout = TextureLayout::TRANSFER_SRC;
-		//textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_SRC;
-		//textureBarriers[0].SourceAccessFlags = AccessFlags::MEMORY_READ;
-		//textureBarriers[0].DestinationAccessFlags = AccessFlags::MEMORY_WRITE;
 
 		CommandBuffer::CopyTextureToTextureInfo copyTexture;
 		copyTexture.RenderDevice = renderSystem->GetRenderDevice();
@@ -583,7 +609,8 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 	{
 		apiRenderPassData.RenderPasses.EmplaceBack(static_cast<uint8>(renderPassesNames.EmplaceBack(passesData[s].Name)));
 
-		renderPassesMap.Emplace(passesData[s].Name);
+		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name);
+		renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
 		
 		RenderPass::SubPassDescriptor subPassDescriptor;
 
@@ -653,6 +680,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 		subPassDescriptors.EmplaceBack(subPassDescriptor);
 
+		renderPass.APISubPass = subPasses.back().GetLength();
 		subPasses.back().EmplaceBack();
 		auto& newSubPass = subPasses.back().back();
 		newSubPass.Name = passesData[s].Name;
@@ -800,9 +828,9 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 	}
 }
 
-void RenderOrchestrator::renderScene(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp)
+void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp)
 {	
-	for (auto e : renderPassesMap.At(renderPassesNames[rp]).RenderGroups)
+	for (auto e : renderPassesMap.At(rp).RenderGroups)
 	{
 		auto mats = materialSystem->GetMaterialHandles();
 
@@ -819,25 +847,17 @@ void RenderOrchestrator::renderScene(RenderSystem* renderSystem, MaterialSystem*
 			commandBuffer.BindPipeline(bindPipelineInfo);
 			
 			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType), 0);
-
 			
-			if (BE::Application::Get()->GetOption("usePushConstants"))
-			{
-				auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(m.MaterialType));
+			auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(m.MaterialType));
 				
-				CommandBuffer::UpdatePushConstantsInfo updatePush;
-				updatePush.RenderDevice = renderSystem->GetRenderDevice();
-				updatePush.Size = 16;
-				updatePush.Offset = 0;
-				updatePush.Data = reinterpret_cast<byte*>(pushConstant);
-				updatePush.PipelineLayout = &ppLay;
-				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-				commandBuffer.UpdatePushConstant(updatePush);
-			}
-			else
-			{
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), pushConstant[3]);
-			}
+			CommandBuffer::UpdatePushConstantsInfo updatePush;
+			updatePush.RenderDevice = renderSystem->GetRenderDevice();
+			updatePush.Size = 4;
+			updatePush.Offset = 12;
+			updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+			updatePush.PipelineLayout = &ppLay;
+			updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+			commandBuffer.UpdatePushConstant(updatePush);
 
 			renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
 
@@ -846,6 +866,37 @@ void RenderOrchestrator::renderScene(RenderSystem* renderSystem, MaterialSystem*
 	}
 }
 
-void RenderOrchestrator::renderUI(RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, uint8 rp)
+void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp)
 {
+	auto* uiRenderManager = gameInstance->GetSystem<UIRenderManager>("UIRenderManager");
+
+	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"), 0);
+
+	auto pipeline = materialSystem->GET_PIPELINE(uiRenderManager->GetUIMaterial());
+
+	if (pipeline.GetVkPipeline())
+	{
+		CommandBuffer::BindPipelineInfo bindPipelineInfo;
+		bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+		bindPipelineInfo.PipelineType = PipelineType::RASTER;
+		bindPipelineInfo.Pipeline = &pipeline;
+		commandBuffer.BindPipeline(bindPipelineInfo);
+
+		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(uiRenderManager->GetUIMaterial().MaterialType), 0);
+
+		auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(uiRenderManager->GetUIMaterial().MaterialType));
+
+		CommandBuffer::UpdatePushConstantsInfo updatePush;
+		updatePush.RenderDevice = renderSystem->GetRenderDevice();
+		updatePush.Size = 4;
+		updatePush.Offset = 12;
+		updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+		updatePush.PipelineLayout = &ppLay;
+		updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+		commandBuffer.UpdatePushConstant(updatePush);
+
+		renderSystem->RenderMesh(uiRenderManager->GetSquareMesh());
+	}
+	
+	++pushConstant[3];
 }

@@ -139,6 +139,8 @@ void GameApplication::PostInitialize()
 		passes.EmplaceBack(uiRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, attachments, passes);
+		renderOrchestrator->ToggleRenderPass("SceneRenderPass", false);
+		renderOrchestrator->ToggleRenderPass("UIRenderPass", true);
 	}
 
 	

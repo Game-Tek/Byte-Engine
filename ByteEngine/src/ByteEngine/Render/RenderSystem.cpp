@@ -495,7 +495,7 @@ RenderSystem::GPUMeshHandle RenderSystem::CreateGPUMesh(SharedMeshHandle sharedM
 	return GPUMeshHandle(gpuMeshes.Emplace(mesh));
 }
 
-void RenderSystem::RenderMesh(GPUMeshHandle handle)
+void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 {
 	auto& mesh = gpuMeshes[handle()];
 
@@ -518,7 +518,7 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle)
 	
 	CommandBuffer::DrawIndexedInfo drawIndexedInfo;
 	drawIndexedInfo.RenderDevice = GetRenderDevice();
-	drawIndexedInfo.InstanceCount = 1;
+	drawIndexedInfo.InstanceCount = instanceCount;
 	drawIndexedInfo.IndexCount = mesh.IndicesCount;
 	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
 }

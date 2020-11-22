@@ -16,7 +16,8 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/CameraSystem.h"
 
-static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -1.f, 1.f }, { 1.f, 1.f }, { 1.f, -1.f }, { -1.f, -1.f } };
+static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -0.5f, 0.5f }, { 0.5f, 0.5f }, { 0.5f, -0.5f }, { -0.5f, -0.5f } };
+//static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -1.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, -1.0f }, { -1.0f, -1.0f } };
 static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 
 void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
@@ -137,7 +138,11 @@ void UIRenderManager::Setup(const SetupInfo& info)
 	info.MaterialSystem->AddObjects(info.RenderSystem, dataSet, comps2 - comps);
 	comps = comps2;
 
-	*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, 0) = GTSL::Matrix4(1.0f);
+	auto mat = GTSL::Matrix4(1.0f);
+	GTSL::Math::Translate(mat, GTSL::Vector3(0.95f, -0.95f, 0));
+	GTSL::Math::Scale(mat, GTSL::Vector3(0.1f, 0.1f, 0.0f));
+	
+	*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, 0) = mat;
 
 	
 	//auto* data = info.MaterialSystem->GetRenderGroupDataPointer("UIRenderGroup");
@@ -551,7 +556,7 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 	}
 	else
 	{
-		attachment.ClearValue = GTSL::RGBA(0.5, 0.5, 0.5, 0);
+		attachment.ClearValue = GTSL::RGBA(0, 0, 0, 0);
 	}
 
 	attachments.Emplace(name, attachment);

@@ -28,6 +28,10 @@ public:
 	{
 	};
 	void LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo);
+	byte* GetAssetPointer(const Id id) { return audioAssets.At(id).Bytes.GetData(); }
+	uint32 GetSampleCount(Id id) const {
+		return 0;
+	}//return audioResourceInfos.At(id).SampleCount; }
 
 	AudioResourceManager();
 

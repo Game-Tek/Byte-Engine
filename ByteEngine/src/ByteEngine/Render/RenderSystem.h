@@ -196,7 +196,7 @@ public:
 	SharedMeshHandle CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
 	GPUMeshHandle CreateGPUMesh(SharedMeshHandle sharedMeshHandle);
 	
-	void RenderMesh(GPUMeshHandle handle);
+	void RenderMesh(GPUMeshHandle handle, uint32 instanceCount = 1);
 
 	byte* GetSharedMeshPointer(SharedMeshHandle sharedMesh) { return static_cast<byte*>(sharedMeshes[static_cast<uint32>(sharedMesh)].Allocation.Data); }
 	

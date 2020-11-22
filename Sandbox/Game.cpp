@@ -158,7 +158,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -294,7 +294,7 @@ void Game::PostInitialize()
 		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
 	
-	//{
+	//{//
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");

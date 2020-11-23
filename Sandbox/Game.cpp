@@ -194,18 +194,18 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
-		//material = material_system->CreateMaterial(createMaterialInfo);
+		//material = material_system->CreateMaterial(createMaterialInfo);//
 	}
 
-	//{//
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
-	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	createMaterialInfo.MaterialName = "UIMat";
-	//	buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
-	//}
+	{
+		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "UIMat";//
+		buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
+	}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -229,49 +229,50 @@ void Game::PostInitialize()
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	//}
 
-	//{
-	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");//
-	//
-	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
-	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
-	//	uiManager->AddColor("sandboxGreen", { 0.5882f, 0.9607f, 0.2588f, 1.0f });
-	//	
-	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
-	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
-	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
-	//	canvasRef.SetExtent({ 1269, 718 });
-	//
-	//	uiManager->AddCanvas(canvas);//
-	//
-	//	//auto organizerComp = canvasRef.AddOrganizer("TopBar");
-	//	//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
-	//
-	//	//canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
-	//	//canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
-	//
-	//	auto closeButtonComp = canvasRef.AddSquare();
-	//	canvasRef.SetSquareAspectRatio(closeButtonComp, { 0.05f, 0.02f });
-	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
-	//	canvasRef.SetSquarePosition(closeButtonComp, { 0.f, 0.f });
-	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
-	//	
-	//	//auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
-	//	//canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });//
-	//	//canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
-	//	//
-	//	//auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
-	//	//canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
-	//	//canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, "sandboxGreen");
-	//
-	//	//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
-	//	//closeButtonRef.SetMaterial(closeButtonMaterial);
-	//	//
-	//	//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
-	//	//toggleButtonRef.SetMaterial(toggleButtonMaterial);
-	//	//
-	//	//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
-	//	//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
-	//}
+	{
+		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");//
+	
+		uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+		uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+		uiManager->AddColor("sandboxGreen", { 0.5882f, 0.9607f, 0.2588f, 1.0f });
+		
+		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+		auto& canvasRef = canvasSystem->GetCanvas(canvas);
+		canvasRef.SetExtent({ 1264, 681 });//
+	
+		uiManager->AddCanvas(canvas);//
+	
+		//auto organizerComp = canvasRef.AddOrganizer("TopBar");
+		//auto& organizerRef = canvasRef.GetOrganizer(organizerComp);
+	
+		//canvasRef.SetOrganizerAspectRatio(organizerComp, { 1.0f, 0.05f });
+		//canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+	
+		auto closeButtonComp = canvasRef.AddSquare();
+		canvasRef.SetSquareAspectRatio(closeButtonComp, { 0.05f, 0.02f });
+		//canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
+		canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
+		canvasRef.SetSquarePosition(closeButtonComp, { 0.98f, 0.98f });
+		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
+		
+		//auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
+		//canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });//
+		//canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
+		//
+		//auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
+		//canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });
+		//canvasRef.SetSquareColor(organizerComp, minimizeButtonComp, "sandboxGreen");
+	
+		//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
+		//closeButtonRef.SetMaterial(closeButtonMaterial);
+		//
+		//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
+		//toggleButtonRef.SetMaterial(toggleButtonMaterial);
+		//
+		//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
+		//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
+	}
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;

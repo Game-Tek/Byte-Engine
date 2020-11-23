@@ -90,13 +90,13 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	
 	square = renderSystem->CreateGPUMesh(mesh);
 	
-	MaterialSystem::CreateMaterialInfo createMaterialInfo;
-	createMaterialInfo.RenderSystem = renderSystem;
-	createMaterialInfo.GameInstance = initializeInfo.GameInstance;
-	createMaterialInfo.MaterialName = "UIMat";
-	createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	uiMaterial = materialSystem->CreateMaterial(createMaterialInfo);
+	//MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//createMaterialInfo.RenderSystem = renderSystem;
+	//createMaterialInfo.GameInstance = initializeInfo.GameInstance;
+	//createMaterialInfo.MaterialName = "UIMat";
+	//createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//uiMaterial = materialSystem->CreateMaterial(createMaterialInfo);
 	
 	renderSystem->AddMeshToId(square, uiMaterial.MaterialType);
 
@@ -137,53 +137,42 @@ void UIRenderManager::Setup(const SetupInfo& info)
 
 	info.MaterialSystem->AddObjects(info.RenderSystem, dataSet, comps2 - comps);
 	comps = comps2;
+	
+	for (auto& ref : canvases)
+	{
+		auto& canvas = canvasSystem->GetCanvas(ref);
+		auto canvasSize = canvas.GetExtent();
 
-	auto mat = GTSL::Matrix4(1.0f);
-	GTSL::Math::Translate(mat, GTSL::Vector3(0.95f, -0.95f, 0));
-	GTSL::Math::Scale(mat, GTSL::Vector3(0.1f, 0.1f, 0.0f));
-	
-	*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, 0) = mat;
+		GTSL::Matrix4 ortho(1.0f);
+		GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(canvasSize.Width) * 0.5f,
+		                            static_cast<float32>(canvasSize.Width) * -0.5f,
+		                            static_cast<float32>(canvasSize.Height) * 0.5f,
+		                            static_cast<float32>(canvasSize.Height) * -0.5f, 1, 100);
 
-	
-	//auto* data = info.MaterialSystem->GetRenderGroupDataPointer("UIRenderGroup");
-	
-	//for (auto& ref : canvases)
-	//{
-	//	auto& canvas = canvasSystem->GetCanvas(ref);
-	//	auto canvasSize = canvas.GetExtent();
-	//
-	//	GTSL::Matrix4 ortho;
-	//	GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(canvasSize.Width) * 0.5f,
-	//	                            static_cast<float32>(canvasSize.Width) * -0.5f,
-	//	                            static_cast<float32>(canvasSize.Height) * 0.5f,
-	//	                            static_cast<float32>(canvasSize.Height) * -0.5f, 1, 100);
-	//
-	//	auto& organizers = canvas.GetOrganizersTree();
-	//	auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
-	//	//auto organizersSquares = canvas.GetOrganizersSquares();
-	//	//auto primitivesPerOrganizer = canvas.GetPrimitivesPerOrganizer();
-	//
-	//	auto primitives = canvas.GetPrimitives();
-	//	auto squares = canvas.GetSquares();
-	//
-	//	uint32 offset = 0;
-	//	
-	//	auto* parentOrganizer = organizers.GetRootNode();
-	//
-	//	for(auto& e : squares)
-	//	{
-	//		GTSL::Matrix4 trans;
-	//
-	//		auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
-	//		auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
-	//		
-	//		trans = GTSL::Math::Translation(GTSL::Vector3(location.X, location.Y, 0)) * ortho;
-	//		trans *= GTSL::Math::Scaling(GTSL::Vector3(scale.X, scale.Y, 1));
-	//
-	//		//*static_cast<GTSL::Matrix4*>(data) = trans;
-	//		
-	//		offset += 16 * 4;
-	//	}
+		GTSL::Math::Scale(ortho, GTSL::Vector3(static_cast<float32>(canvasSize.Height), static_cast<float32>(canvasSize.Height), 1));
+		//GTSL::Math::MakeOrthoMatrix(ortho, 0.5f, -0.5f, 0.5f, -0.5f, 1, 100);
+		
+		auto& organizers = canvas.GetOrganizersTree();
+		auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
+
+		auto primitives = canvas.GetPrimitives();
+		auto squares = canvas.GetSquares();
+
+		auto* parentOrganizer = organizers.GetRootNode();
+
+		for(auto& e : squares)
+		{
+			GTSL::Matrix4 trans(1.0f);
+
+			auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
+			auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
+			//
+			GTSL::Math::Translate(trans, GTSL::Vector3(location.X, -location.Y, 0));
+			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X, scale.Y, 1));
+			//
+			
+			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, 0) = trans * ortho;
+		}
 		
 		//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
 		//{
@@ -202,7 +191,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 		//};
 		//
 		//processNode(parentOrganizer, 0, ortho, processNode);
-	//}
+	}
 
 	//if (textSystem->GetTexts().ElementCount())
 	//{
@@ -877,31 +866,54 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 
 	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"), 0);
 
-	auto pipeline = materialSystem->GET_PIPELINE(uiRenderManager->GetUIMaterial());
+	auto* uiSystem = gameInstance->GetSystem<UIManager>("UIManager");
+	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 
-	if (pipeline.GetVkPipeline())
+	auto canvases = uiSystem->GetCanvases();
+
+	for (auto& ref : canvases)
 	{
-		CommandBuffer::BindPipelineInfo bindPipelineInfo;
-		bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-		bindPipelineInfo.PipelineType = PipelineType::RASTER;
-		bindPipelineInfo.Pipeline = &pipeline;
-		commandBuffer.BindPipeline(bindPipelineInfo);
+		auto& canvas = canvasSystem->GetCanvas(ref);
+		auto canvasSize = canvas.GetExtent();
 
-		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(uiRenderManager->GetUIMaterial().MaterialType), 0);
+		auto& organizers = canvas.GetOrganizersTree();
+		auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
 
-		auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(uiRenderManager->GetUIMaterial().MaterialType));
+		auto primitives = canvas.GetPrimitives();
+		auto squares = canvas.GetSquares();
 
-		CommandBuffer::UpdatePushConstantsInfo updatePush;
-		updatePush.RenderDevice = renderSystem->GetRenderDevice();
-		updatePush.Size = 4;
-		updatePush.Offset = 12;
-		updatePush.Data = reinterpret_cast<byte*>(pushConstant);
-		updatePush.PipelineLayout = &ppLay;
-		updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-		commandBuffer.UpdatePushConstant(updatePush);
+		auto* parentOrganizer = organizers.GetRootNode();
 
-		renderSystem->RenderMesh(uiRenderManager->GetSquareMesh());
+		for (auto& e : squares)
+		{
+			auto mat = primitives.begin()[e.PrimitiveIndex].Material;
+			auto pipeline = materialSystem->GET_PIPELINE(mat);
+
+			if (pipeline.GetVkPipeline())
+			{
+				CommandBuffer::BindPipelineInfo bindPipelineInfo;
+				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+				bindPipelineInfo.PipelineType = PipelineType::RASTER;
+				bindPipelineInfo.Pipeline = &pipeline;
+				commandBuffer.BindPipeline(bindPipelineInfo);
+
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(mat.MaterialType), 0);
+
+				auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(mat.MaterialType));
+
+				CommandBuffer::UpdatePushConstantsInfo updatePush;
+				updatePush.RenderDevice = renderSystem->GetRenderDevice();
+				updatePush.Size = 4;
+				updatePush.Offset = 12;
+				updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+				updatePush.PipelineLayout = &ppLay;
+				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+				commandBuffer.UpdatePushConstant(updatePush);
+
+				renderSystem->RenderMesh(uiRenderManager->GetSquareMesh());
+			}
+
+			++pushConstant[3];
+		}
 	}
-	
-	++pushConstant[3];
 }

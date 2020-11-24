@@ -1,7 +1,8 @@
 #include "UIManager.h"
 
 Canvas::Canvas() : Object("Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizerAspectRatios(4, GetPersistentAllocator()), squares(8, GetPersistentAllocator()),
-primitives(8, GetPersistentAllocator())
+primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()), organizersPosition(4, GetPersistentAllocator()), organizerSizingPolicies(4, GetPersistentAllocator()),
+organizerAlignments(4, GetPersistentAllocator())
 {
 	organizerTree.Initialize(GetPersistentAllocator());
 }
@@ -13,6 +14,8 @@ uint16 Canvas::AddOrganizer(const Id name)
 	organizerAlignments.Emplace();
 	organizerSizingPolicies.Emplace();
 	organizerDepth.Emplace();
+	organizersPosition.Emplace();
+	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 
 	auto node = organizerTree.GetRootNode();
 	node->Data = organizer;
@@ -29,6 +32,8 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 	organizerAlignments.Emplace();
 	organizerSizingPolicies.Emplace();
 	organizerDepth.Emplace();
+	organizersPosition.Emplace();
+	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	//squaresPerOrganizer.Emplace(4, GetPersistentAllocator());
 	
 	auto* child = organizerTree.AddChild(organizers[parentOrganizer]);

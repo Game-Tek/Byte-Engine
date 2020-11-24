@@ -147,13 +147,17 @@ void UIRenderManager::Setup(const SetupInfo& info)
 		auto& canvas = canvasSystem->GetCanvas(ref);
 		auto canvasSize = canvas.GetExtent();
 
+		float xyRatio = static_cast<float32>(canvasSize.Width) / static_cast<float32>(canvasSize.Height);
+		float yxRatio = static_cast<float32>(canvasSize.Height) / static_cast<float32>(canvasSize.Width);
+		
 		GTSL::Matrix4 ortho(1.0f);
-		GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(canvasSize.Width) * 0.5f,
-		                            static_cast<float32>(canvasSize.Width) * -0.5f,
-		                            static_cast<float32>(canvasSize.Height) * 0.5f,
-		                            static_cast<float32>(canvasSize.Height) * -0.5f, 1, 100);
+		GTSL::Math::MakeOrthoMatrix(ortho, 1.0f,
+		                            -1.0f,
+		                            yxRatio,
+		                            -yxRatio, 0, 100);
 
-		GTSL::Math::Scale(ortho, GTSL::Vector3(static_cast<float32>(canvasSize.Height), static_cast<float32>(canvasSize.Height), 1));
+		//GTSL::Math::MakeOrthoMatrix(ortho, canvasSize.Width, -canvasSize.Width, canvasSize.Height, -canvasSize.Height, 0, 100);
+		
 		//GTSL::Math::MakeOrthoMatrix(ortho, 0.5f, -0.5f, 0.5f, -0.5f, 1, 100);
 		
 		auto& organizers = canvas.GetOrganizersTree();
@@ -174,6 +178,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 			//
 			GTSL::Math::Translate(trans, GTSL::Vector3(location.X, -location.Y, 0));
 			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X, scale.Y, 1));
+			//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
 			//
 			
 			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, sq) = trans * ortho;

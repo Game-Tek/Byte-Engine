@@ -17,7 +17,9 @@
 
 enum class Alignment : uint8
 {
-	LEFT, CENTER, RIGHT
+			TOP,
+	LEFT, CENTER, RIGHT,
+			BOTTOM
 };
 
 enum class SizingPolicy : uint8
@@ -147,7 +149,45 @@ public:
 	}
 
 	auto GetSquares() const { return squares.GetRange(); }
-	auto GetPrimitives() const { return primitives.GetRange(); };
+	auto GetPrimitives() const { return primitives.GetRange(); }
+	
+	void AddSquareToOrganizer(uint16 organizer, uint16 square)
+	{
+		organizersPrimitives[organizer].EmplaceBack(squares[square].PrimitiveIndex);
+		auto& primitive = primitives[squares[square].PrimitiveIndex];
+
+		auto orgAR = organizerAspectRatios[organizer];
+		auto orgLoc = organizersPosition[organizer];
+
+		GTSL::Vector2 perPrimitiveInOrganizerAspectRatio;
+
+		switch (organizerAlignments[organizer])
+		{
+		case Alignment::LEFT: break;
+		case Alignment::CENTER: break;
+		case Alignment::RIGHT: break;
+		default: break;
+		}
+
+		perPrimitiveInOrganizerAspectRatio.X = orgAR.X / organizersPrimitives[organizer].GetLength();
+		perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y;
+
+		GTSL::Vector2 startPos = { (-(orgAR.X / 2.0f) + (perPrimitiveInOrganizerAspectRatio.X / 2)), orgLoc.Y };
+		GTSL::Vector2 increment = perPrimitiveInOrganizerAspectRatio;
+		
+		for (uint32 i = 0; i < organizersPrimitives[organizer].GetLength(); ++i)
+		{
+			primitives[organizersPrimitives[organizer][i]].AspectRatio = perPrimitiveInOrganizerAspectRatio;
+			primitives[organizersPrimitives[organizer][i]].RelativeLocation = startPos;
+
+			startPos += increment;
+		}
+	}
+
+	void SetOrganizerPosition(uint16 organizerComp, GTSL::Vector2 pos)
+	{
+		organizersPosition[organizerComp] = pos;
+	}
 
 	//auto GetPrimitivesPerOrganizer() const
 	//{
@@ -161,7 +201,9 @@ private:
 	GTSL::KeepVector<PrimitiveData, BE::PAR> primitives;
 	GTSL::KeepVector<Square, BE::PAR> squares;
 	GTSL::KeepVector<uint32, BE::PAR> organizerDepth;
+	GTSL::KeepVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPrimitives;
 	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
+	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizersPosition;
 	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;
 	GTSL::KeepVector<SizingPolicy, BE::PAR> organizerSizingPolicies;	
 	

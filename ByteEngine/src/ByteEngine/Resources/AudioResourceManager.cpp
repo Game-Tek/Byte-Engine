@@ -95,8 +95,11 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			default:break;
 			}
 
+			
 			file_buffer.ReadBytes(4, data_chunk_header);
 			Extract(data_size, file_buffer);
+			
+			data.Frames = data_size / channels / (bits_per_sample / 8);
 
 			data.ByteOffset = (uint32)packageFile.GetFileSize();
 
@@ -123,33 +126,40 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 AudioResourceManager::~AudioResourceManager()
 {
+	GTSL::ForEach(audioBytes, [&](GTSL::Buffer& buffer) { buffer.Free(8, GetPersistentAllocator()); });
 	packageFile.CloseFile(); indexFile.CloseFile();
 }
 
 void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer)
 {
-	GTSL::Insert(audioResourceInfo.AudioBitDepth, buffer);
+	GTSL::Insert(audioResourceInfo.ByteOffset, buffer);
+	GTSL::Insert(audioResourceInfo.Frames, buffer);
 	GTSL::Insert(audioResourceInfo.AudioChannelCount, buffer);
 	GTSL::Insert(audioResourceInfo.AudioSampleRate, buffer);
-	GTSL::Insert(audioResourceInfo.ByteOffset, buffer);
+	GTSL::Insert(audioResourceInfo.AudioBitDepth, buffer);
 }
 
 void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer)
 {
-	GTSL::Extract(audioResourceInfo.AudioBitDepth, buffer);
+	GTSL::Extract(audioResourceInfo.ByteOffset, buffer);
+	GTSL::Extract(audioResourceInfo.Frames, buffer);
 	GTSL::Extract(audioResourceInfo.AudioChannelCount, buffer);
 	GTSL::Extract(audioResourceInfo.AudioSampleRate, buffer);
-	GTSL::Extract(audioResourceInfo.ByteOffset, buffer);
+	GTSL::Extract(audioResourceInfo.AudioBitDepth, buffer);
 }
 
 void AudioResourceManager::LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo)
 {
 	auto& audio_resource_info = audioResourceInfos.At(loadAudioAssetInfo.Name);
 	
-	if(!audioAssets.Find(loadAudioAssetInfo.Name))
+	if(!audioBytes.Find(loadAudioAssetInfo.Name))
 	{
-		indexFile.SetPointer(audio_resource_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-		//packageFile.ReadFromFile()
+		packageFile.SetPointer(audio_resource_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+		auto& bytes = audioBytes.At(loadAudioAssetInfo.Name);
+		auto allocSize = audio_resource_info.AudioChannelCount * (audio_resource_info.AudioBitDepth / 8) * audio_resource_info.Frames;
+		bytes.Allocate(allocSize, 8, GetPersistentAllocator());
+		packageFile.ReadFromFile(GTSL::Range<byte*>(allocSize, bytes.GetData()));
+		bytes.Resize(allocSize);
 	}
 
 	//handle resource is loaded

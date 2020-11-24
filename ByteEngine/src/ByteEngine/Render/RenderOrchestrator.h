@@ -70,12 +70,12 @@ public:
 private:
 	RenderSystem::GPUMeshHandle square;
 
-	MemberHandle matrixUniformBufferMemberHandle;
+	MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	uint64 uiDataStructHandle;
 
 	SetHandle dataSet;
 
-	uint8 comps = 0, comps2 = 1;
+	uint8 comps = 0, comps2 = 2;
 	MaterialHandle uiMaterial;
 };
 
@@ -105,19 +105,19 @@ public:
 		GAL::RenderTargetLoadOperations Load;
 		GAL::RenderTargetStoreOperations Store;
 	};
-
+	
 	struct PassData
 	{
-		GTSL::Array<Id, 8> ReadAttachments, WriteAttachments;
-		GTSL::Array<TextureLayout, 8> ReadAttachmentsLayouts, WriteAttachmentsLayouts;
 		Id Name;
-
-		struct AttachmentUse
+		
+		struct AttachmentReference
 		{
 			Id Name;
 			TextureLayout Layout;
 		};
-		AttachmentUse DepthStencilAttachment;
+		GTSL::Array<AttachmentReference, 8> ReadAttachments, WriteAttachments;
+
+		AttachmentReference DepthStencilAttachment;
 	};
 	void AddPass(RenderSystem* renderSystem, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const PassData*> passesData);
 

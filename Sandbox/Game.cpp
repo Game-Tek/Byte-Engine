@@ -253,12 +253,14 @@ void Game::PostInitialize()
 		canvasRef.SetSquareAspectRatio(closeButtonComp, { 0.05f, 0.02f });
 		//canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
 		canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
-		canvasRef.SetSquarePosition(closeButtonComp, { 0.98f, 0.98f });
+		canvasRef.SetSquarePosition(closeButtonComp, { 0.97f, 0.98f });
 		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
 		
-		//auto toggleButtonComp = canvasRef.AddSquare(organizerComp);
-		//canvasRef.SetSquareAspectRatio(organizerComp, toggleButtonComp, { 0.05f, 0.02f });//
-		//canvasRef.SetSquareColor(organizerComp, toggleButtonComp, "sandboxYellow");
+		auto toggleButtonComp = canvasRef.AddSquare();
+		canvasRef.SetSquareAspectRatio(toggleButtonComp, { 0.05f, 0.02f });
+		canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });//
+		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
+		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
 		//
 		//auto minimizeButtonComp = canvasRef.AddSquare(organizerComp);
 		//canvasRef.SetSquareAspectRatio(organizerComp, minimizeButtonComp, { 0.05f, 0.02f });

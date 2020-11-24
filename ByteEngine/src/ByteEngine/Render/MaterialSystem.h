@@ -29,7 +29,7 @@ struct MaterialHandle
 
 struct MemberDescription
 {
-	uint8 SetBufferDataIndex, StructSize, DataType;
+	uint8 SetBufferDataIndex, OffsetIntoStruct, DataType;
 };
 
 MAKE_HANDLE(Id, Set)
@@ -63,6 +63,13 @@ public:
 	{
 		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::MATRIX4, "Type mismatch");
 		return getSetMemberPointer<GTSL::Matrix4>(member(), index, frame);
+	}
+
+	template<>
+	GTSL::Vector4* GetMemberPointer(MemberHandle member, uint64 index)
+	{
+		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::FVEC4, "Type mismatch");
+		return getSetMemberPointer<GTSL::Vector4>(member(), index, frame);
 	}
 
 	template<>
@@ -139,8 +146,9 @@ private:
 	T* getSetMemberPointer(MemberDescription member, uint64 index, uint8 frameToUpdate)
 	{
 		auto& setBufferData = setsBufferData[member.SetBufferDataIndex];
-		auto memberSize = setBufferData.MemberSize;
-		return reinterpret_cast<T*>(static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * memberSize) + member.StructSize);
+		auto structSize = setBufferData.MemberSize;
+		//												//BUFFER										//OFFSET TO STRUCT		//OFFSET TO MEMBER
+		return reinterpret_cast<T*>(static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * structSize) + member.OffsetIntoStruct);
 	}
 	
 	uint32 matNum = 0;

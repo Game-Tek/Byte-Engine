@@ -127,15 +127,13 @@ void GameApplication::PostInitialize()
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.Name = "SceneRenderPass";
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
-		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_ATTACHMENT;
-		geoRenderPass.WriteAttachments.EmplaceBack("Color");
-		geoRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color", TextureLayout::COLOR_ATTACHMENT } );
 		passes.EmplaceBack(geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.Name = "UIRenderPass";
-		uiRenderPass.WriteAttachments.EmplaceBack("Color");
-		uiRenderPass.WriteAttachmentsLayouts.EmplaceBack(TextureLayout::COLOR_ATTACHMENT);
+		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color", TextureLayout::COLOR_ATTACHMENT });
 		passes.EmplaceBack(uiRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, attachments, passes);

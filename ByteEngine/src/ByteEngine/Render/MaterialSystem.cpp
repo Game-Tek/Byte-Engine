@@ -183,7 +183,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<64> name("Set"); name += " "; name += setName;
+			GTSL::StaticString<64> name("Set"); name += " "; name += setName.GetString();
 			createInfo.Name = name;
 		}
 		createInfo.Size = newBufferSize;
@@ -734,7 +734,7 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 			if constexpr (_DEBUG)
 			{
-				GTSL::StaticString<64> name("Bindings pool. Set: "); name += setName;
+				GTSL::StaticString<64> name("Bindings pool. Set: "); name += setName.GetString();
 				bindingsPoolCreateInfo.Name = name;
 			}
 
@@ -773,7 +773,7 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 					if constexpr (_DEBUG)
 					{
-						GTSL::StaticString<64> name("BindingsSet. Set: "); name += setName;
+						GTSL::StaticString<64> name("BindingsSet. Set: "); name += setName.GetString();
 						bindingsSetsCreateInfo[0].RenderDevice = renderSystem->GetRenderDevice();
 						bindingsSetsCreateInfo[0].Name = name;
 					}
@@ -792,7 +792,7 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 		if constexpr (_DEBUG)
 		{
-			GTSL::StaticString<128> name("Pipeline layout. Set: "); name += setName;
+			GTSL::StaticString<128> name("Pipeline layout. Set: "); name += setName.GetString();
 			pipelineLayout.Name = name;
 		}
 

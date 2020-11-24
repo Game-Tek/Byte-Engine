@@ -76,15 +76,16 @@ void AudioSystem::requestAudioStreams()
 void AudioSystem::render()
 {
 	GTSL::Array<uint32, 16> soundsToRemoveFromPlaying;
+	GTSL::Array<Id, 16> samplesToRemoveFromPlaying;
 	
 	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
 
-	auto samplesToBytes = [](uint32 samples, AAL::AudioChannelCount audioChannelCount, AAL::AudioBitDepth audioBits)
+	auto framesToBytes = [](uint32 samples, AAL::AudioChannelCount audioChannelCount, AAL::AudioBitDepth audioBits)
 	{
 		return samples * static_cast<GTSL::UnderlyingType<AAL::AudioSampleRate>>(audioChannelCount) * (static_cast<GTSL::UnderlyingType<AAL::AudioBitDepth>>(audioBits) / 8u); //TODO: chek
 	};
 	
-	uint64 availableAudioFrames = 0;
+	uint32 availableAudioFrames = 0;
 	audioDevice.GetAvailableBufferFrames(availableAudioFrames);
 	
 	auto* buffer = audioBuffer.GetData();
@@ -93,22 +94,26 @@ void AudioSystem::render()
 	{
 		byte* audio = audioResourceManager->GetAssetPointer(playingAudioFiles[i]);
 
-		auto audioSamples = audioResourceManager->GetSampleCount(playingAudioFiles[i]);
-		auto remainingSamples = audioSamples - playingAudioFilesPlayedSamples[i];
-		auto clampedSamples = GTSL::Math::Limit(availableAudioFrames, static_cast<uint64>(remainingSamples));
+		auto audioFrames = audioResourceManager->GetFrameCount(playingAudioFiles[i]);
+		auto remainingFrames = audioFrames - playingAudioFilesPlayedFrames[i];
+		auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
 		
-		audio += samplesToBytes(playingAudioFilesPlayedSamples[i], AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32);
+		audio += framesToBytes(playingAudioFilesPlayedFrames[i], AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32);
 
-		GTSL::MemCopy(samplesToBytes(clampedSamples, AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32) , audio, buffer);
+		GTSL::MemCopy(framesToBytes(clampedFrames, AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32) , audio, buffer);
 
-		if((playingAudioFilesPlayedSamples[i] += clampedSamples) == audioSamples)
+		if((playingAudioFilesPlayedFrames[i] += clampedFrames) == audioFrames)
 		{
 			soundsToRemoveFromPlaying.EmplaceBack(i);
-			//TODO: RELEASE SOUND FROM SOUND MANAGER
+			samplesToRemoveFromPlaying.EmplaceBack(playingAudioFiles[i]);
 		}
 	}
 
 	audioDevice.PushAudioData(audioBuffer.GetData(), availableAudioFrames);
 
-	for (auto e : soundsToRemoveFromPlaying) { removePlayingSound(e); }
+	for (uint32 i = 0; i < soundsToRemoveFromPlaying.GetLength(); ++i)
+	{
+		removePlayingSound(soundsToRemoveFromPlaying[i]);
+		audioResourceManager->ReleaseAudioAsset(samplesToRemoveFromPlaying[i]);
+	}
 }

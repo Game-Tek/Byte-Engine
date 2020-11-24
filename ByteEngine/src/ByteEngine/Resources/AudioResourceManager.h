@@ -4,7 +4,7 @@
 
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
-#include <GTSL/Vector.hpp>
+#include <GTSL/Buffer.h>
 
 #include "ResourceManager.h"
 
@@ -14,24 +14,25 @@ public:
 	struct AudioResourceInfo final
 	{
 		uint32 ByteOffset = 0;
+		uint32 Frames;
 		uint8 AudioChannelCount;
 		uint8 AudioSampleRate;
 		uint8 AudioBitDepth;
-	};
-
-	struct AudioAsset
-	{
-		GTSL::Vector<byte, BE::PersistentAllocatorReference> Bytes;
 	};
 
 	struct LoadAudioAssetInfo : ResourceLoadInfo
 	{
 	};
 	void LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo);
-	byte* GetAssetPointer(const Id id) { return audioAssets.At(id).Bytes.GetData(); }
-	uint32 GetSampleCount(Id id) const {
-		return 0;
-	}//return audioResourceInfos.At(id).SampleCount; }
+
+	void ReleaseAudioAsset(Id asset)
+	{
+		audioBytes.At(asset).Free(8, GetPersistentAllocator());
+		audioBytes.Remove(asset);
+	}
+	
+	byte* GetAssetPointer(const Id id) { return audioBytes.At(id).GetData(); }
+	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id).Frames; }
 
 	AudioResourceManager();
 
@@ -39,8 +40,8 @@ public:
 	
 private:
 	GTSL::File indexFile, packageFile;
-	GTSL::FlatHashMap<AudioAsset, BE::PersistentAllocatorReference> audioAssets;
 	GTSL::FlatHashMap<AudioResourceInfo, BE::PersistentAllocatorReference> audioResourceInfos;
+	GTSL::FlatHashMap<GTSL::Buffer, BE::PersistentAllocatorReference> audioBytes;
 };
 
 void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer);

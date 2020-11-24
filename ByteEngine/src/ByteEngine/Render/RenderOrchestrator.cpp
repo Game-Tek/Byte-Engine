@@ -102,10 +102,14 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	MaterialSystem::SetInfo setInfo;
 
-	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
+	GTSL::Array<MaterialSystem::MemberInfo, 8> members(2);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
 	members[0].Count = 1;
+
+	members[1].Type = MaterialSystem::Member::DataType::FVEC4;
+	members[1].Handle = &colorHandle;
+	members[1].Count = 1;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
 	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
@@ -160,6 +164,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 
 		auto* parentOrganizer = organizers.GetRootNode();
 
+		uint32 sq = 0;
 		for(auto& e : squares)
 		{
 			GTSL::Matrix4 trans(1.0f);
@@ -171,7 +176,9 @@ void UIRenderManager::Setup(const SetupInfo& info)
 			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X, scale.Y, 1));
 			//
 			
-			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, 0) = trans * ortho;
+			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, sq) = trans * ortho;
+			*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
+			++sq;
 		}
 		
 		//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
@@ -608,12 +615,12 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		
 		RenderPass::SubPassDescriptor subPassDescriptor;
 
-		for (auto e : passesData[s].ReadAttachments)
+		for (auto& e : passesData[s].ReadAttachments)
 		{
-			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e);
+			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
 
-			renderpassAttachment.Layout = passesData[s].ReadAttachmentsLayouts[readAttachmentReferences[s].GetLength()];
-			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e).Index;
+			renderpassAttachment.Layout = passesData[s].ReadAttachments[readAttachmentReferences[s].GetLength()].Layout;
+			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
 			attachmentReference.Layout = renderpassAttachment.Layout;
@@ -626,10 +633,10 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 		for (auto e : passesData[s].WriteAttachments)
 		{
-			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e);
+			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
 
-			renderpassAttachment.Layout = passesData[s].WriteAttachmentsLayouts[writeAttachmentReferences[s].GetLength()];
-			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e).Index;
+			renderpassAttachment.Layout = passesData[s].WriteAttachments[writeAttachmentReferences[s].GetLength()].Layout;
+			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
 			attachmentReference.Layout = renderpassAttachment.Layout;
@@ -641,12 +648,11 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
 
 		{
-			auto isUsed = [&](Id name) -> bool //Determines if an attachment is read/written in any other later pass
-			{
+			auto isUsed = [&](Id name) -> bool //Determines if an attachment is read in any other later pass
+			{ //TODO: CHECK IF ATTACHMENT IS READ AFTER IT'S LAST RESPECTIVE WRITE TO IT, ONLY THEN IT NEEDS TO BE PRESERVED. IF DONE LIKE THIS IT WILL BE PRESERVED NO MATTER IF IT IS READ LATER AFTER ANOTHER WRITE THAT OVERWRITES THE CURRENT ONE
 				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i)
 				{
-					for (auto e : passesData[s].ReadAttachments) { if (e == name) { return true; } }
-					for (auto e : passesData[s].WriteAttachments) { if (e == name) { return true; } }
+					for (auto e : passesData[s].ReadAttachments) { if (e.Name == name) { return true; } }
 					return false;
 				}
 			};
@@ -687,52 +693,10 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 	{
 		uint8 subPass = 0;
 
-		//{
-		//	auto& e = subPassDependencies[subPass];
-		//	e.SourceSubPass = RenderPass::EXTERNAL;
-		//	e.DestinationSubPass = 0;
-		//
-		//	e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//	e.DestinationAccessFlags = 0;//AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//
-		//	e.SourcePipelineStage = PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS;
-		//	e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-		//
-		//	++subPass;
-		//}
-		//
-		//{
-		//	auto& e = subPassDependencies[subPass];
-		//	e.SourceSubPass = 0;
-		//	e.DestinationSubPass = RenderPass::EXTERNAL;
-		//
-		//	e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//	e.DestinationAccessFlags = 0;//AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//
-		//	e.SourcePipelineStage = PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS;
-		//	e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-		//
-		//	++subPass;
-		//}
-		//
 		//for (; subPass < passesData.ElementCount() - 1; ++subPass)
 		//{
 		//	auto& e = subPassDependencies[subPass];
 		//	e.SourceSubPass = RenderPass::EXTERNAL;
-		//	e.DestinationSubPass = RenderPass::EXTERNAL;
-		//
-		//	e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//	e.DestinationAccessFlags = 0;
-		//
-		//	e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
-		//	e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-		//}
-
-		//if (subPass < subPassDependencies.GetLength())
-		//{
-		//	auto& e = subPassDependencies[subPass];
-		//
-		//	e.SourceSubPass = 0;
 		//	e.DestinationSubPass = RenderPass::EXTERNAL;
 		//
 		//	e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
@@ -905,7 +869,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 				updatePush.RenderDevice = renderSystem->GetRenderDevice();
 				updatePush.Size = 4;
 				updatePush.Offset = 12;
-				updatePush.Data = reinterpret_cast<byte*>(pushConstant);
+				updatePush.Data = reinterpret_cast<byte*>(&pushConstant[3]);
 				updatePush.PipelineLayout = &ppLay;
 				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
 				commandBuffer.UpdatePushConstant(updatePush);

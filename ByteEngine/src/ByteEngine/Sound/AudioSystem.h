@@ -36,7 +36,7 @@ private:
 	GTSL::Array<uint8, 8> audioEmitters;
 
 	GTSL::Array<AudioEmitterHandle, 8> playingEmitters;
-	GTSL::Array<uint32, 8> playingAudioFilesPlayedSamples;
+	GTSL::Array<uint32, 8> playingAudioFilesPlayedFrames;
 	GTSL::Array<Id, 8> playingAudioFiles;
 
 	GTSL::Array<Id, 8> lastRequestedAudios;
@@ -48,6 +48,6 @@ private:
 
 	void removePlayingSound(uint32 i)
 	{
-		playingEmitters.Pop(i); playingAudioFilesPlayedSamples.Pop(i); playingAudioFiles.Pop(i);
+		playingEmitters.Pop(i); playingAudioFilesPlayedFrames.Pop(i); playingAudioFiles.Pop(i);
 	}
 };

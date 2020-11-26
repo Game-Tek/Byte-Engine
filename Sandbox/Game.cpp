@@ -239,7 +239,7 @@ void Game::PostInitialize()
 		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
 		auto& canvasRef = canvasSystem->GetCanvas(canvas);
-		canvasRef.SetExtent({ 1264, 681 });
+		canvasRef.SetExtent({ 1280, 720 });
 	
 		uiManager->AddCanvas(canvas);//
 	
@@ -247,6 +247,8 @@ void Game::PostInitialize()
 		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.5 });
 		canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
 		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.0f });
+		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::FILL);
+		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::DISTRIBUTE);
 
 		auto minimizeButtonComp = canvasRef.AddSquare();
 		canvasRef.SetSquareAspectRatio(minimizeButtonComp, { 0.05f, 0.02f });
@@ -259,7 +261,7 @@ void Game::PostInitialize()
 		canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });
 		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
 		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
+		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);//
 
 		auto closeButtonComp = canvasRef.AddSquare();
 		canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });

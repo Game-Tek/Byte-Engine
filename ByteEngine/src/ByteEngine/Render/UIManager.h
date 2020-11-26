@@ -22,9 +22,20 @@ enum class Alignment : uint8
 			BOTTOM
 };
 
-enum class SizingPolicy : uint8
+enum class ScalingPolicy : uint8
 {
 	FROM_WINDOW, FROM_OTHER_CONTAINER
+};
+
+enum class SizingPolicy : uint8
+{
+	KEEP_CHILDREN_ASPECT_RATIO,
+	FILL
+};
+
+enum class SpacingPolicy : uint8
+{
+	PACK, DISTRIBUTE
 };
 
 class Button : public Object
@@ -129,11 +140,13 @@ public:
 	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio)
 	{
 		organizerAspectRatios[organizer] = aspectRatio;
+		updateBranch(organizer);
 	}
 
 	void SetOrganizerAlignment(const uint16 organizer, Alignment alignment)
 	{
 		organizerAlignments[organizer] = alignment;
+		updateBranch(organizer);
 	}
 
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
@@ -154,39 +167,31 @@ public:
 	void AddSquareToOrganizer(uint16 organizer, uint16 square)
 	{
 		organizersPrimitives[organizer].EmplaceBack(squares[square].PrimitiveIndex);
-		auto& primitive = primitives[squares[square].PrimitiveIndex];
-
-		auto orgAR = organizerAspectRatios[organizer];
-		auto orgLoc = organizersPosition[organizer];
-
-		GTSL::Vector2 perPrimitiveInOrganizerAspectRatio;
-
-		switch (organizerAlignments[organizer])
-		{
-		case Alignment::LEFT: break;
-		case Alignment::CENTER: break;
-		case Alignment::RIGHT: break;
-		default: break;
-		}
-
-		perPrimitiveInOrganizerAspectRatio.X = orgAR.X / organizersPrimitives[organizer].GetLength();
-		perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y;
-
-		GTSL::Vector2 startPos = { (-(orgAR.X / 2.0f) + (perPrimitiveInOrganizerAspectRatio.X / 2)), orgLoc.Y };
-		GTSL::Vector2 increment = perPrimitiveInOrganizerAspectRatio;
-		
-		for (uint32 i = 0; i < organizersPrimitives[organizer].GetLength(); ++i)
-		{
-			primitives[organizersPrimitives[organizer][i]].AspectRatio = perPrimitiveInOrganizerAspectRatio;
-			primitives[organizersPrimitives[organizer][i]].RelativeLocation = startPos;
-
-			startPos += increment;
-		}
+		updateBranch(organizer);
 	}
 
 	void SetOrganizerPosition(uint16 organizerComp, GTSL::Vector2 pos)
 	{
 		organizersPosition[organizerComp] = pos;
+		updateBranch(organizerComp);
+	}
+
+	void SetOrganizerSizingPolicy(uint16 organizer, SizingPolicy sizingPolicy)
+	{
+		organizerSizingPolicies[organizer].SizingPolicy = sizingPolicy;
+		updateBranch(organizer);
+	}
+
+	void SetOrganizerScalingPolicy(uint16 organizer, ScalingPolicy scalingPolicy)
+	{
+		organizerSizingPolicies[organizer].ScalingPolicy = scalingPolicy;
+		updateBranch(organizer);
+	}
+
+	void SetOrganizerSpacingPolicy(uint16 organizer, SpacingPolicy spacingPolicy)
+	{
+		organizerSizingPolicies[organizer].SpacingPolicy = spacingPolicy;
+		updateBranch(organizer);
 	}
 
 	//auto GetPrimitivesPerOrganizer() const
@@ -205,13 +210,23 @@ private:
 	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
 	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizersPosition;
 	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;
-	GTSL::KeepVector<SizingPolicy, BE::PAR> organizerSizingPolicies;	
+
+	struct SizingParameters
+	{
+		SizingPolicy SizingPolicy;
+		ScalingPolicy ScalingPolicy;
+		SpacingPolicy SpacingPolicy;
+		uint16 OrganizerRef;
+	};
+	GTSL::KeepVector<SizingParameters, BE::PAR> organizerSizingPolicies;
 	
 	GTSL::Tree<uint32, BE::PAR> organizerTree;
 	
 	GTSL::KeepVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
 	
 	GTSL::Extent2D realExtent;
+
+	void updateBranch(uint32 organizer);
 };
 
 class CanvasSystem : public System

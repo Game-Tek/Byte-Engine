@@ -33,12 +33,6 @@ void GameApplication::Initialize()
 {
 	Application::Initialize();
 
-	GTSL::Window::WindowCreateInfo create_window_info;
-	create_window_info.Application = &systemApplication;
-	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
-	create_window_info.Extent = { 1280, 720 };
-	::new(&window) GTSL::Window(create_window_info);
-
 	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::onWindowResize>(this));
 
 	auto window_close = []()
@@ -91,6 +85,14 @@ void GameApplication::PostInitialize()
 	gameInstance->AddGoal("FrameEnd");
 	
 	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
+	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+
+	GTSL::Window::WindowCreateInfo create_window_info;
+	create_window_info.Application = &systemApplication;
+	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
+	create_window_info.Extent = { 1280, 720 };
+	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator as window creation may call ResizeDelegate which
+	//queues a function that depends on these elements existing
 
 	RenderSystem::InitializeRendererInfo initialize_renderer_info;
 	initialize_renderer_info.Window = &window;
@@ -104,7 +106,6 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 
 	auto* textSystem = gameInstance->AddSystem<TextSystem>("TextSystem");
-	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 	
 	{
 		renderOrchestrator->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
@@ -487,7 +488,7 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE } };
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE } }; //TODO: FIX ACCESS
 
 	auto ext = extent;
 
@@ -502,8 +503,7 @@ void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 	
 	if (extent != 0 && extent != oldSize)
 	{
-		gameInstance->AddDynamicTask("RenderSystemWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
-		gameInstance->AddDynamicTask("FrameManagerWindowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
+		gameInstance->AddDynamicTask("windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
 		oldSize = extent;
 	}
 }

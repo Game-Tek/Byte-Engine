@@ -8,8 +8,7 @@
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vector2.h>
-#include <GTSl/Tree.hpp>
-
+#include <GTSL/Tree.hpp>
 
 #include "MaterialSystem.h"
 #include "RenderGroup.h"
@@ -24,7 +23,7 @@ enum class Alignment : uint8
 
 enum class ScalingPolicy : uint8
 {
-	FROM_WINDOW, FROM_OTHER_CONTAINER
+	FROM_SCREEN, FROM_OTHER_CONTAINER
 };
 
 enum class SizingPolicy : uint8
@@ -139,7 +138,7 @@ public:
 	
 	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio)
 	{
-		organizerAspectRatios[organizer] = aspectRatio;
+		primitives[organizersAsPrimitives[organizer]].AspectRatio = aspectRatio;
 		updateBranch(organizer);
 	}
 
@@ -151,7 +150,24 @@ public:
 
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
 
-	[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
+	bool CheckHit(GTSL::Vector2 point)
+	{
+		uint32 i = 0;
+		
+		for(auto& e : organizersAsPrimitives)
+		{
+			const auto translatedPoint = (primitives[organizersAsPrimitives[e]].AspectRatio * 0.5f) + primitives[organizersAsPrimitives[e]].RelativeLocation;
+			
+			if(point.X < translatedPoint.X && point.X > -translatedPoint.X && point.Y < translatedPoint.Y && point.Y > -translatedPoint.Y)
+			{
+				return true;
+			}
+
+			++i;
+		}
+	}
+	
+	//[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
 
 	[[nodiscard]] auto GetOrganizers() const { return organizers.GetRange(); }
 	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
@@ -170,9 +186,14 @@ public:
 		updateBranch(organizer);
 	}
 
+	void AddOrganizerToOrganizer(uint16 organizer, uint16 to)
+	{
+		organizersPerOrganizer[to].EmplaceBack(organizer);
+	}
+	
 	void SetOrganizerPosition(uint16 organizerComp, GTSL::Vector2 pos)
 	{
-		organizersPosition[organizerComp] = pos;
+		primitives[organizersAsPrimitives[organizerComp]].RelativeLocation = pos;
 		updateBranch(organizerComp);
 	}
 
@@ -207,8 +228,9 @@ private:
 	GTSL::KeepVector<Square, BE::PAR> squares;
 	GTSL::KeepVector<uint32, BE::PAR> organizerDepth;
 	GTSL::KeepVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPrimitives;
-	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
-	GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizersPosition;
+	GTSL::KeepVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPerOrganizer;
+	//GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
+	//GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizersPosition;
 	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;
 
 	struct SizingParameters
@@ -222,6 +244,7 @@ private:
 	
 	GTSL::Tree<uint32, BE::PAR> organizerTree;
 	
+	GTSL::KeepVector<uint32, BE::PAR> organizersAsPrimitives;
 	GTSL::KeepVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
 	
 	GTSL::Extent2D realExtent;

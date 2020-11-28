@@ -2,22 +2,22 @@
 
 #include <GTSL/Math/Math.hpp>
 
-Canvas::Canvas() : Object("Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizerAspectRatios(4, GetPersistentAllocator()), squares(8, GetPersistentAllocator()),
-                   primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()), organizersPosition(4, GetPersistentAllocator()), organizerSizingPolicies(4, GetPersistentAllocator()),
-                   organizerAlignments(4, GetPersistentAllocator())
+Canvas::Canvas() : Object("Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
+squares(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()),
+organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator())
 {
 	organizerTree.Initialize(GetPersistentAllocator());
 }
 
 uint16 Canvas::AddOrganizer(const Id name)
 {
-	auto organizer = organizerDepth.Emplace(0);
-	organizerAspectRatios.Emplace();
+	auto organizer = organizersAsPrimitives.Emplace(primitives.Emplace());
+	organizerDepth.Emplace(0);
 	organizerAlignments.Emplace();
 	organizerSizingPolicies.Emplace();
 	organizerDepth.Emplace();
-	organizersPosition.Emplace();
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
+	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 
 	auto node = organizerTree.GetRootNode();
 	node->Data = organizer;
@@ -29,13 +29,13 @@ uint16 Canvas::AddOrganizer(const Id name)
 
 uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 {
-	auto organizer = organizerDepth.Emplace(0);
-	organizerAspectRatios.Emplace();
+	auto organizer = organizersAsPrimitives.Emplace(0);
+	organizerDepth.Emplace(0);
 	organizerAlignments.Emplace();
 	organizerSizingPolicies.Emplace();
 	organizerDepth.Emplace();
-	organizersPosition.Emplace();
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
+	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 	
 	auto* child = organizerTree.AddChild(organizers[parentOrganizer]);
 	child->Data = organizer;
@@ -47,10 +47,24 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 
 void Canvas::updateBranch(uint32 organizer)
 {
+	for (uint32 i = 0; i < organizersPerOrganizer[organizer].GetLength(); ++i) { updateBranch(organizersPerOrganizer[organizer][i]); }
+	
 	if (organizersPrimitives[organizer].GetLength())
 	{
-		auto orgAR = organizerAspectRatios[organizer]; auto orgLoc = organizersPosition[organizer];
+		auto primCount = static_cast<float32>(organizersPrimitives[organizer].GetLength());
+		
+		auto orgAR = primitives[organizersAsPrimitives[organizer]].AspectRatio; auto orgLoc = primitives[organizersAsPrimitives[organizer]].RelativeLocation;
 
+		float32 way = 1.0f;
+
+		switch (organizerAlignments[organizer])
+		{
+		case Alignment::LEFT: way = -1.0f; break;
+		case Alignment::CENTER: way = 0.0f; break;
+		case Alignment::RIGHT: way = 1.0f; break;
+		default: break;
+		}
+		
 		GTSL::Vector2 perPrimitiveInOrganizerAspectRatio;
 
 		switch (organizerSizingPolicies[organizer].SizingPolicy)
@@ -64,19 +78,27 @@ void Canvas::updateBranch(uint32 organizer)
 		}
 			
 		case SizingPolicy::FILL:
-			perPrimitiveInOrganizerAspectRatio.X = orgAR.X / organizersPrimitives[organizer].GetLength();
-			perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y;
+			switch (organizerAlignments[organizer])
+			{
+				case Alignment::LEFT:
+				case Alignment::RIGHT:
+					perPrimitiveInOrganizerAspectRatio.X = orgAR.X / organizersPrimitives[organizer].GetLength();
+					perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y;
+					break;
+
+				case Alignment::TOP:
+				case Alignment::BOTTOM:
+					perPrimitiveInOrganizerAspectRatio.X = orgAR.X;
+					perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y / organizersPrimitives[organizer].GetLength();
+					break;				
+				
+				case Alignment::CENTER:
+					BE_ASSERT(false);
+				default: break;
+			}
 			break;
 			
 		default: BE_ASSERT(false);
-		}
-		
-		switch (organizerAlignments[organizer])
-		{
-		case Alignment::LEFT: break;
-		case Alignment::CENTER: break;
-		case Alignment::RIGHT: break;
-		default: break;
 		}
 
 		GTSL::Vector2 startPos, increment;
@@ -85,20 +107,19 @@ void Canvas::updateBranch(uint32 organizer)
 		{
 		case SpacingPolicy::PACK:
 		{
-			startPos = { (-(orgAR.X * 0.5f) + (perPrimitiveInOrganizerAspectRatio.X * 0.5f)), orgLoc.Y };
-			increment = perPrimitiveInOrganizerAspectRatio;
+			startPos = { ((orgAR.X * 0.5f * way) + (perPrimitiveInOrganizerAspectRatio.X * 0.5f * (-way))), orgLoc.Y };
+			increment = perPrimitiveInOrganizerAspectRatio * (-way);
 			increment.Y = 0;
 				
 			break;
 		}
 		case SpacingPolicy::DISTRIBUTE:
 		{
-			auto primCount = static_cast<float32>(organizersPrimitives[organizer].GetLength());
 			auto primCount1 = primCount + 1.0f;
 			auto freeArea = GTSL::Vector2(orgAR.X - (perPrimitiveInOrganizerAspectRatio.X * primCount), orgAR.Y - (perPrimitiveInOrganizerAspectRatio.Y * primCount));
 			auto freeAreaPerPrim = freeArea / primCount1;
-			startPos = { -(orgAR.X * 0.5f) + freeAreaPerPrim.X + perPrimitiveInOrganizerAspectRatio.X * 0.5f, orgLoc.Y };
-			increment = perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim;
+			startPos = { (orgAR.X * 0.5f * way) + ((freeAreaPerPrim.X + perPrimitiveInOrganizerAspectRatio.X * 0.5f) * (-way)), orgLoc.Y };
+			increment = (perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim) * (-way);
 			increment.Y = 0;
 				
 			break;

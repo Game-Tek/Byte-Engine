@@ -5,37 +5,41 @@
 #include "ByteEngine/Application/AllocatorReferences.h"
 
 #include "ByteEngine/Resources/FontResourceManager.h"
-#include <GTSL\Bitman.h>
 #include <GTSL/Math/Vector2.h>
-#include <GTSL/Math/Line.h>
 
 #include "ByteEngine/Debug/Assert.h"
-#include "ByteEngine/Utility/Shapes/Box.h"
-
-struct FontPoint
-{
-	FontPoint() = default;
-	FontPoint(int32 x, int32 y) : X(x), Y(y) {}
-
-	int32 X, Y;
-};
 
 struct LinearBezier
 {
-	LinearBezier(FontPoint a, FontPoint b) : Points{ a, b } {}
-	FontPoint Points[2];
+	LinearBezier(GTSL::Vector2 a, GTSL::Vector2 b) : Points{ a, b } {}
+	GTSL::Vector2 Points[2];
 
-	[[nodiscard]] bool IsPerfectlyVertical() const { return Points[0].X == Points[1].X; }
-	[[nodiscard]] bool IsPerfectlyHorizontal() const { return Points[0].Y == Points[1].Y; }
+	bool IsPerfectlyVertical() const
+	{
+		return Points[0].X == Points[1].X;
+	}
+
+	bool IsPerfectlyHorizontal() const
+	{
+		return Points[0].Y == Points[1].Y;
+	}
 };
 
 struct CubicBezier
 {
-	CubicBezier(FontPoint a, FontPoint b, FontPoint c) : Points{ a, b, c } {}
-	FontPoint Points[3];
-};
+	CubicBezier(GTSL::Vector2 a, GTSL::Vector2 b, GTSL::Vector2 c) : Points{ a, b, c } {}
+	GTSL::Vector2 Points[3];
 
-FontPoint makePoint(const GTSL::Vector2 vector) { return FontPoint(vector.X, vector.Y); }
+	bool IsPerfectlyVertical() const
+	{
+		return Points[0].X == Points[1].X == Points[2].X;
+	}
+
+	bool IsPerfectlyHorizontal() const
+	{
+		return Points[0].Y == Points[1].Y == Points[2].Y;
+	}
+};
 
 struct Quad
 {	
@@ -88,50 +92,53 @@ struct FaceTree
 {
 	FaceTree() = default;
 
-	FaceTree(const BE::PersistentAllocatorReference allocator) : cubicBeziers(64, allocator), linearBeziers(64, allocator)
-	{}
-
-	void MakeFromPaths(const FontResourceManager::Glyph& outline, const BE::TAR& allocator)
+	FaceTree(const BE::PersistentAllocatorReference allocator) : Faces(64, allocator)
 	{
-		auto& curves = outline.Paths[0].Segments;
 		
-		for(uint16 i = 0; i < curves.GetLength(); ++i)
-		{
-			if(curves[i].IsBezierCurve())
-			{
-				cubicBeziers.EmplaceBack(makePoint(curves[i].Points[0]), makePoint(curves[i].Points[1]), makePoint(curves[i].Points[2]));
-			}
-			else
-			{
-				linearBeziers.EmplaceBack(makePoint(curves[i].Points[0]), makePoint(curves[i].Points[2]));
-			}
-		}
-
-		//for(uint32 level = 0; level < 10/*max levels*/; ++level)
-		//{
-		//	ContentType content;
-		//	Quad quad;
-		//
-		//	if(quad.IntersectionCount())
-		//	{
-		//		//subdivide
-		//	}
-		//	else
-		//	{
-		//		blankOrFilledQuads.EmplaceBack(0/*quad index*/);
-		//	}
-		//	
-		//	//quads[level][]
-		//}
-		
-		//intersect with grid
 	}
 
+	void MakeFromPaths(const FontResourceManager::Font& font, const BE::PAR& allocator)
+	{
+		for(auto& e : font.Glyphs)
+		{
+			auto& glyph = e.second;
+
+			Faces.EmplaceBack();
+			auto& face = Faces.back();
+			face.LinearBeziers.Initialize(16, allocator);
+			face.CubicBeziers.Initialize(16, allocator);
+			
+			for(const auto& path : glyph.Paths)
+			{
+				for(const auto& segment : path.Segments)
+				{
+					if(segment.IsBezierCurve())
+					{
+						face.CubicBeziers.EmplaceBack(segment.Points[0], segment.Points[1], segment.Points[2]);
+					}
+					else
+					{
+						face.LinearBeziers.EmplaceBack(segment.Points[0], segment.Points[2]);
+					}
+				}
+			}
+		}
+	}
+
+	struct Band
+	{
+		GTSL::Vector<uint32, BE::PAR> Lines;
+		GTSL::Vector<uint32, BE::PAR> Curves;
+	};
 	
-	GTSL::Vector<Quad, BE::PersistentAllocatorReference> quads[10];
+	struct Face
+	{
+		GTSL::Vector<LinearBezier, BE::PersistentAllocatorReference> LinearBeziers;
+		GTSL::Vector<CubicBezier, BE::PersistentAllocatorReference> CubicBeziers;
 
-	GTSL::Vector<CubicBezier, BE::PersistentAllocatorReference> cubicBeziers;
-	GTSL::Vector<LinearBezier, BE::PersistentAllocatorReference> linearBeziers;
+		GTSL::Vector<Band, BE::PAR> HorizontalBars;
+		GTSL::Vector<Band, BE::PAR> VerticalBars;
+	};
 
-	Quad firstQuad;
+	GTSL::Vector<Face, BE::PAR> Faces;
 };

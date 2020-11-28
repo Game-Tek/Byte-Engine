@@ -2,15 +2,17 @@
 
 #include <GTSL/Math/Vector2.h>
 
-InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
-characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
-linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()),
-vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator()),
+#include "ByteEngine/Debug/Logger.h"
 
-actionInputSourceRecords(10, GetPersistentAllocator()),
-characterInputSourceRecords(10, GetPersistentAllocator()),
-linearInputSourceRecords(10, GetPersistentAllocator()),
-vector2DInputSourceRecords(10, GetPersistentAllocator())
+InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
+                               characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
+                               linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()),
+                               vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator()),
+
+                               actionInputSourceRecords(10, GetPersistentAllocator()),
+                               characterInputSourceRecords(10, GetPersistentAllocator()),
+                               linearInputSourceRecords(10, GetPersistentAllocator()),
+                               vector2DInputSourceRecords(10, GetPersistentAllocator())
 {
 }
 
@@ -30,21 +32,57 @@ void InputManager::Update()
 
 void InputManager::RegisterActionInputSource(const GTSL::Id64 inputSourceName)
 {
+	if constexpr (_DEBUG)
+	{
+		if (actionInputSourcesToActionInputEvents.Find(inputSourceName))
+		{
+			BE_LOG_ERROR("Tried to register action input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
+	
 	actionInputSourcesToActionInputEvents.Emplace(inputSourceName, ActionInputSourceData());
 }
 
 void InputManager::RegisterCharacterInputSource(const GTSL::Id64 inputSourceName)
 {
+	if constexpr (_DEBUG)
+	{
+		if (characterInputSourcesToCharacterInputEvents.Find(inputSourceName))
+		{
+			BE_LOG_ERROR("Tried to register character input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
+	
 	characterInputSourcesToCharacterInputEvents.Emplace(inputSourceName, CharacterInputSourceData());
 }
 
 void InputManager::RegisterLinearInputSource(const GTSL::Id64 inputSourceName)
 {
+	if constexpr (_DEBUG)
+	{
+		if (linearInputSourcesToLinearInputEvents.Find(inputSourceName))
+		{
+			BE_LOG_ERROR("Tried to register linear input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
+	
 	linearInputSourcesToLinearInputEvents.Emplace(inputSourceName, LinearInputSourceData());
 }
 
 void InputManager::Register2DInputSource(const GTSL::Id64 inputSourceName)
 {
+	if constexpr (_DEBUG)
+	{
+		if (vector2dInputSourceEventsToVector2DInputEvents.Find(inputSourceName))
+		{
+			BE_LOG_ERROR("Tried to register 2D input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
+	
 	vector2dInputSourceEventsToVector2DInputEvents.Emplace(inputSourceName, Vector2DInputSourceData());
 }
 
@@ -86,6 +124,8 @@ void InputManager::Register2DInputEvent(GTSL::Id64 actionName, GTSL::Range<const
 
 void InputManager::RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue)
 {
+	if (!actionInputSourcesToActionInputEvents.Find(inputSourceName)) { BE_LOG_WARNING("Tried to record ", inputSourceName, " with value ", newValue, " which is not registered as an action input source!"); return; }
+	
 	actionInputSourceRecords.EmplaceBack(inputSourceName, newValue );
 }
 

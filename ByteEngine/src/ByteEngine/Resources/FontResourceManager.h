@@ -49,10 +49,6 @@ public:
 		bool IsCurve = false;
 		
 		bool IsBezierCurve() const { return IsCurve; }
-		
-	private:
-		bool b = false, c = false, d = false;
-		uint32 e = 0;
 	};
 
 	struct FontMetaData

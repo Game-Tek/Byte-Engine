@@ -179,13 +179,13 @@ void Game::PostInitialize()
 	BE_LOG_MESSAGE(string)
 	
 	//{
-	//	TextureSystem::CreateTextureInfo createTextureInfo;//
+	//	TextureSystem::CreateTextureInfo createTextureInfo;
 	//	createTextureInfo.RenderSystem = renderSystem;
 	//	createTextureInfo.GameInstance = gameInstance;
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}
+	//}//
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -230,7 +230,7 @@ void Game::PostInitialize()
 	//}
 
 	{
-		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");//
+		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	
 		uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
 		uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
@@ -244,11 +244,12 @@ void Game::PostInitialize()
 		uiManager->AddCanvas(canvas);//
 	
 		auto organizerComp = canvasRef.AddOrganizer("TopBar");
-		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.5 });
+		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
 		canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
-		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.0f });
-		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::FILL);
-		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::DISTRIBUTE);
+		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
+		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::KEEP_CHILDREN_ASPECT_RATIO);
+		canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
+		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
 
 		auto minimizeButtonComp = canvasRef.AddSquare();
 		canvasRef.SetSquareAspectRatio(minimizeButtonComp, { 0.05f, 0.02f });
@@ -261,7 +262,7 @@ void Game::PostInitialize()
 		canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });
 		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
 		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);//
+		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
 
 		auto closeButtonComp = canvasRef.AddSquare();
 		canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
@@ -269,15 +270,11 @@ void Game::PostInitialize()
 		canvasRef.SetSquarePosition(closeButtonComp, { 0, 0 });
 		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
 		canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-	
-		//auto& closeButtonRef = canvasRef.GetButton(closeButtonComp);
-		//closeButtonRef.SetMaterial(closeButtonMaterial);
-		//
-		//auto& toggleButtonRef = canvasRef.GetButton(toggleButtonComp);
-		//toggleButtonRef.SetMaterial(toggleButtonMaterial);
-		//
-		//auto& minimizeButtonRef = canvasRef.GetButton(minimizeButtonComp);
-		//minimizeButtonRef.SetMaterial(minimizeButtonMaterial);
+
+		if(canvasRef.CheckHit({ 0, 0.98f }))
+		{
+			BE_LOG_SUCCESS("HIT!")
+		}
 	}
 	
 	{

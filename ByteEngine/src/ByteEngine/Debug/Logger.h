@@ -18,6 +18,8 @@ class Object;
 
 namespace BE
 {
+	constexpr const char* FIX_OR_CRASH_STRING = "Fix this issue as it will lead to a crash in release mode!";
+	
 	/**
 	 * \brief Self locking class that manages logging to console and to disk.
 	 * All logs get dumped to disk, verbosity levels are only for console.

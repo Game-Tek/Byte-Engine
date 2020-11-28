@@ -501,7 +501,15 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				
 				setInfo.Structs = structsInfos;
 
-				material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
+				
+				if(!materialSystem->setNodes.Find(onMaterialLoadInfo.ResourceName))
+				{
+					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
+				}
+				else
+				{
+					//material.Set = materialSystem->
+				}
 			}
 
 			materialSystem->AddObjects(renderSystem, material.Set, 1); //Add current material to set

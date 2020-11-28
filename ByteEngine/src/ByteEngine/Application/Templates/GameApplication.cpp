@@ -91,6 +91,7 @@ void GameApplication::PostInitialize()
 	create_window_info.Application = &systemApplication;
 	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
 	create_window_info.Extent = { 1280, 720 };
+	create_window_info.Type = GTSL::Window::WindowType::OS_WINDOW;
 	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator as window creation may call ResizeDelegate which
 	//queues a function that depends on these elements existing
 

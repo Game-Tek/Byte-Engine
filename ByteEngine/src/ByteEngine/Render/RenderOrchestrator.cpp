@@ -161,7 +161,6 @@ void UIRenderManager::Setup(const SetupInfo& info)
 		//GTSL::Math::MakeOrthoMatrix(ortho, 0.5f, -0.5f, 0.5f, -0.5f, 1, 100);
 		
 		auto& organizers = canvas.GetOrganizersTree();
-		auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
 
 		auto primitives = canvas.GetPrimitives();
 		auto squares = canvas.GetSquares();
@@ -694,10 +693,37 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 	renderPassCreateInfo.SubPasses = subPassDescriptors;
 
-	GTSL::Array<RenderPass::SubPassDependency, 8> subPassDependencies;
+	GTSL::Array<RenderPass::SubPassDependency, 16> subPassDependencies;
+	
 	{
 		uint8 subPass = 0;
 
+		for(uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
+		{
+			RenderPass::SubPassDependency e;
+			e.SourceSubPass = i;
+			e.DestinationSubPass = i + 1;
+		
+			e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+			e.DestinationAccessFlags = 0;
+		
+			e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
+			e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
+
+			subPassDependencies.EmplaceBack(e);
+			
+			//e.SourceSubPass = i + 1;
+			//e.DestinationSubPass = i;
+			//
+			//e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+			//e.DestinationAccessFlags = 0;
+			//
+			//e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
+			//e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
+			//
+			//subPassDependencies.EmplaceBack(e);
+		}
+		
 		//for (; subPass < passesData.ElementCount() - 1; ++subPass)
 		//{
 		//	auto& e = subPassDependencies[subPass];
@@ -846,7 +872,6 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 		auto canvasSize = canvas.GetExtent();
 
 		auto& organizers = canvas.GetOrganizersTree();
-		auto organizersAspectRatio = canvas.GetOrganizersAspectRatio();
 
 		auto primitives = canvas.GetPrimitives();
 		auto squares = canvas.GetSquares();

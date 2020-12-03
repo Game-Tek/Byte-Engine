@@ -11,7 +11,6 @@
 
 #include "MaterialSystem.h"
 #include "StaticMeshRenderGroup.h"
-#include "TextSystem.h"
 #include "UIManager.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/CameraSystem.h"

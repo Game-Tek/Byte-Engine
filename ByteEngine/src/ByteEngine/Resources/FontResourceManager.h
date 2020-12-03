@@ -70,7 +70,6 @@ public:
 		int16 GlyphIndex;
 		int16 NumContours;
 		GTSL::Vector<Path, BE::PersistentAllocatorReference> Paths;
-		GTSL::Vector<GTSL::Vector<ShortVector, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> RawPaths;
 		uint16 AdvanceWidth;
 		int16 LeftSideBearing;
 		int16 BoundingBox[4];
@@ -113,12 +112,6 @@ public:
 		GAL::TextureFormat TextureFormat;
 		GTSL::Extent3D Extent;
 	};
-	
-	struct FontLoadInfo : ResourceLoadInfo
-	{
-		GTSL::Delegate<void(TaskInfo, OnFontLoadInfo)> OnFontLoadDelegate;
-	};
-	void LoadImageFont(const FontLoadInfo& fontLoadInfo);
 
 	~FontResourceManager()
 	{

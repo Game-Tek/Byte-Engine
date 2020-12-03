@@ -436,24 +436,6 @@ FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const U
 	return fontData;
 }
 
-void FontResourceManager::LoadImageFont(const FontLoadInfo& fontLoadInfo)
-{
-	OnFontLoadInfo onFontLoadInfo;
-	onFontLoadInfo.ResourceName = fontLoadInfo.Name;
-	onFontLoadInfo.DataBuffer = fontLoadInfo.DataBuffer;
-	onFontLoadInfo.UserData = fontLoadInfo.UserData;
-
-	auto& font = fonts.At(fontLoadInfo.Name);
-
-	GTSL::MemCopy(font.ImageData.GetLength(), font.ImageData.GetData(), onFontLoadInfo.DataBuffer.begin());
-	
-	onFontLoadInfo.Font = &font;
-	onFontLoadInfo.TextureFormat = GAL::TextureFormat::R_I8;
-	onFontLoadInfo.Extent = { font.Extent.Width, font.Extent.Height, 1 };
-	
-	fontLoadInfo.GameInstance->AddAsyncTask(fontLoadInfo.OnFontLoadDelegate, GTSL::MoveRef(onFontLoadInfo));
-}
-
 GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y); }
 
 int8 FontResourceManager::parseData(const char* data, Font* fontData)
@@ -638,7 +620,6 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 		Glyph& currentGlyph = fontData->Glyphs[i]; //when replacing for own map remember to emplace first, std []operator try_emplaces
 		currentGlyph.Paths.Initialize(3, GetPersistentAllocator());
-		currentGlyph.RawPaths.Initialize(3, GetPersistentAllocator());
 		currentGlyph.GlyphIndex = static_cast<int16>(i);
 		currentGlyph.Character = glyphReverseMap[static_cast<int16>(i)];
 
@@ -794,9 +775,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; ++contourIndex)
 			{
 				currentGlyph.Paths.EmplaceBack();
-				currentGlyph.RawPaths.EmplaceBack();
 				currentGlyph.Paths[contourIndex].Segments.Initialize(64, GetPersistentAllocator());
-				currentGlyph.RawPaths[contourIndex].Initialize(64, GetPersistentAllocator());
 				
 				const uint16 numPointsInContour = pointsInContour[contourIndex];
 
@@ -806,11 +785,6 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				
 				//If the first point is control point
 				while(contourPointsFlags[pointsPerContour[contourIndex][pointInIndices]].isControlPoint) { ++pointInIndices; }
-
-				for (uint16 pointInContour = 0; pointInContour < numPointsInContour; pointInContour++)
-				{
-					currentGlyph.RawPaths[contourIndex].EmplaceBack(glyphPoints[pointsPerContour[contourIndex][pointInContour % numPointsInContour]]);
-				}
 				
 				bool lastPointWasControlPoint = false;
 				bool thisPointIsControlPoint = false;

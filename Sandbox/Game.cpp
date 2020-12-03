@@ -13,8 +13,8 @@
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
-#include "ByteEngine/Render/TextSystem.h"
 #include "ByteEngine/Render/UIManager.h"
+#include "ByteEngine/Resources/TextRendering.h"
 
 #include "GTSL/ShortString.hpp"
 
@@ -227,55 +227,70 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	//}
+	//}//
 
+	auto res = GTSL::Math::MapToRange(50.0f, -50.0f, 50.0f, 0.0f, 1.0f);
+
+	auto testSide = [](const GTSL::Vector2 a, const GTSL::Vector2 b, const GTSL::Vector2 p)
 	{
-		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
-	
-		uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
-		uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
-		uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
-		
-		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
-		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
-		auto& canvasRef = canvasSystem->GetCanvas(canvas);
-		canvasRef.SetExtent({ 1280, 720 });
-	
-		uiManager->AddCanvas(canvas);//
-	
-		auto organizerComp = canvasRef.AddOrganizer("TopBar");
-		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
-		canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
-		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
-		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::KEEP_CHILDREN_ASPECT_RATIO);
-		canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
-		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
+		return ((a.X - b.X) * (p.Y - b.Y) - (a.Y - b.Y) * (p.X - b.X));
+	};
 
-		auto minimizeButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(minimizeButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
-		canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
-		canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
-		
-		auto toggleButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(toggleButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });
-		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
-		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
-
-		auto closeButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
-		canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
-		canvasRef.SetSquarePosition(closeButtonComp, { 0, 0 });
-		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-
-		if(canvasRef.CheckHit({ 0, 0.98f }))
-		{
-			BE_LOG_SUCCESS("HIT!")
-		}
-	}
+	auto side = testSide({0, 0}, {1, 0}, {0.5f, -1.0f});
+	
+	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
+	
+	FaceTree faceTree(GetPersistentAllocator());
+	faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
+	faceTree.RenderChar({ 512, 512 }, 65, GetPersistentAllocator());//
+	
+	//{
+	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
+	//
+	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
+	//	
+	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
+	//	canvasRef.SetExtent({ 1280, 720 });
+	//
+	//	uiManager->AddCanvas(canvas);//
+	//
+	//	auto organizerComp = canvasRef.AddOrganizer("TopBar");
+	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
+	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+	//	canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
+	//	canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::KEEP_CHILDREN_ASPECT_RATIO);
+	//	canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
+	//	canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
+	//
+	//	auto minimizeButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareAspectRatio(minimizeButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
+	//	canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
+	//	canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
+	//	
+	//	auto toggleButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareAspectRatio(toggleButtonComp, { 0.05f, 0.02f });
+	//	canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });
+	//	canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
+	//	canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
+	//	canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
+	//
+	//	auto closeButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
+	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
+	//	canvasRef.SetSquarePosition(closeButtonComp, { 0, 0 });
+	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
+	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
+	//
+	//	if(canvasRef.CheckHit({ 0, 0.98f }))
+	//	{
+	//		BE_LOG_SUCCESS("HIT!")
+	//	}
+	//}
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;

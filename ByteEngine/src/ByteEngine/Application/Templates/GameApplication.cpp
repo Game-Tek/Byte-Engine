@@ -9,7 +9,6 @@
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 #include "ByteEngine/Render/RenderSystem.h"
-#include "ByteEngine/Render/TextSystem.h"
 #include "ByteEngine/Render/UIManager.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
@@ -17,6 +16,7 @@
 #include "ByteEngine/Resources/TextureResourceManager.h"
 
 #include "ByteEngine/Resources/AudioResourceManager.h"
+#include "ByteEngine/Resources/FontResourceManager.h"
 
 #pragma comment(lib, "XInput.lib")
 
@@ -105,8 +105,6 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
-
-	auto* textSystem = gameInstance->AddSystem<TextSystem>("TextSystem");
 	
 	{
 		renderOrchestrator->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);

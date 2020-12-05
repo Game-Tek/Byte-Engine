@@ -4,7 +4,8 @@
 
 Canvas::Canvas() : Object("Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
 squares(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()),
-organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator())
+organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator()),
+queuedUpdates(8, GetPersistentAllocator())
 {
 	organizerTree.Initialize(GetPersistentAllocator());
 }
@@ -43,6 +44,28 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 	organizers.EmplaceAt(organizer, child);
 
 	return organizer;
+}
+
+void Canvas::ProcessUpdates()
+{
+	for(auto e : queuedUpdates) { updateBranch(e); }
+	queuedUpdates.ResizeDown(0);
+}
+
+void Canvas::queueUpdateAndCull(uint32 organizer)
+{
+	GTSL::Array<uint32, 32> branchesToProne;
+
+	uint32 i = 0;
+	for(auto e : queuedUpdates)
+	{
+		if(organizerDepth[organizer] < organizerDepth[e]) { branchesToProne.EmplaceBack(i); }
+		
+		++i;
+	}
+
+	for(auto e : branchesToProne) { queuedUpdates.Pop(e); }
+	queuedUpdates.EmplaceBack(organizer);
 }
 
 void Canvas::updateBranch(uint32 organizer)

@@ -140,12 +140,14 @@ public:
 	{
 		primitives[organizersAsPrimitives[organizer]].AspectRatio = aspectRatio;
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	void SetOrganizerAlignment(const uint16 organizer, Alignment alignment)
 	{
 		organizerAlignments[organizer] = alignment;
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
@@ -154,17 +156,17 @@ public:
 	{
 		uint32 i = 0;
 		
-		for(auto& e : organizersAsPrimitives)
+		for(auto e : organizersAsPrimitives)
 		{
-			const auto translatedPoint = (primitives[organizersAsPrimitives[e]].AspectRatio * 0.5f) + primitives[organizersAsPrimitives[e]].RelativeLocation;
+			const auto top = (primitives[e].AspectRatio * 0.5f) + primitives[e].RelativeLocation;
+			const auto bottom = primitives[e].RelativeLocation - (primitives[e].AspectRatio * 0.5f);
 			
-			if(point.X < translatedPoint.X && point.X > -translatedPoint.X && point.Y < translatedPoint.Y && point.Y > -translatedPoint.Y)
-			{
-				return true;
-			}
+			if(point.X <= top.X && point.X >= bottom.X && point.Y <= top.Y && point.Y >= bottom.Y) { return true; }
 
 			++i;
 		}
+
+		return false;
 	}
 	
 	//[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
@@ -184,37 +186,45 @@ public:
 	{
 		organizersPrimitives[organizer].EmplaceBack(squares[square].PrimitiveIndex);
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	void AddOrganizerToOrganizer(uint16 organizer, uint16 to)
 	{
 		organizersPerOrganizer[to].EmplaceBack(organizer);
+		queueUpdateAndCull(organizer);
 	}
 	
-	void SetOrganizerPosition(uint16 organizerComp, GTSL::Vector2 pos)
+	void SetOrganizerPosition(uint16 organizer, GTSL::Vector2 pos)
 	{
-		primitives[organizersAsPrimitives[organizerComp]].RelativeLocation = pos;
-		updateBranch(organizerComp);
+		primitives[organizersAsPrimitives[organizer]].RelativeLocation = pos;
+		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	void SetOrganizerSizingPolicy(uint16 organizer, SizingPolicy sizingPolicy)
 	{
 		organizerSizingPolicies[organizer].SizingPolicy = sizingPolicy;
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	void SetOrganizerScalingPolicy(uint16 organizer, ScalingPolicy scalingPolicy)
 	{
 		organizerSizingPolicies[organizer].ScalingPolicy = scalingPolicy;
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
 	void SetOrganizerSpacingPolicy(uint16 organizer, SpacingPolicy spacingPolicy)
 	{
 		organizerSizingPolicies[organizer].SpacingPolicy = spacingPolicy;
 		updateBranch(organizer);
+		queueUpdateAndCull(organizer);
 	}
 
+	void ProcessUpdates();
+	
 	//auto GetPrimitivesPerOrganizer() const
 	//{
 	//	return primitivesPerOrganizer.begin();
@@ -249,6 +259,14 @@ private:
 	
 	GTSL::Extent2D realExtent;
 
+	GTSL::Vector<uint16, BE::PAR> queuedUpdates;
+
+	/**
+	 * \brief Queues an organizer update to a list and prunes any redundant children updates if a parent is already updating higher up in the hierarchy.
+	 * \param organizer organizer to update from
+	 */
+	void queueUpdateAndCull(uint32 organizer);
+	
 	void updateBranch(uint32 organizer);
 };
 
@@ -270,6 +288,11 @@ public:
 		return canvases[componentReference.Component];
 	}
 	
+	void SignalHit(const GTSL::Vector2 pos)
+	{
+		for (auto& c : canvases) { if (c.CheckHit(pos)) { BE_LOG_MESSAGE("Hit"); } }
+	}
+
 private:
 	GTSL::KeepVector<Canvas, BE::PAR> canvases;
 };
@@ -289,6 +312,7 @@ public:
 
 	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
+
 private:
 	GTSL::KeepVector<ComponentReference, BE::PersistentAllocatorReference> canvases;
 	GTSL::FlatHashMap<GTSL::RGBA, BE::PAR> colors;

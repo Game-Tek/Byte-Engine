@@ -79,7 +79,7 @@ struct FaceTree : public Object
 	//Fonts are in the range 0 <-> 1
 	void MakeFromPaths(const FontResourceManager::Font& font, const BE::PAR& allocator)
 	{
-		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('M'));
+		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('d'));
 
 		Faces.EmplaceBack();
 		auto& face = Faces.back();
@@ -261,7 +261,7 @@ struct FaceTree : public Object
 				}
 
 				auto line = face.LinearBeziers[closestLineSegment];
-				auto pixelsThree = 0.01f / iResolution.X;
+				auto pixelsThree = 0.005f / iResolution.X;
 				auto side = testSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : -1.0f;
 				
 				result = GTSL::Math::MapToRange(GTSL::Math::Clamp(minLength * side, 0.0f, pixelsThree), 0.0f, pixelsThree, 0.0f, 1.0f);
@@ -304,24 +304,9 @@ struct FaceTree : public Object
 				
 					if(point.X >= min.X && point.X <= max.X || point.Y >= min.Y && point.Y <= max.Y)
 					{
-						////GTSL::Vector2 percent = ((point / iResolution) - GTSL::Vector2(0.25,0.5));
-						//GTSL::Vector2 percent(0, 0);
-						//percent.X *= (iResolution.X / iResolution.Y); //TODO: CHECK HOW RESOLUTION COMES INTO PLAY      
-						//GTSL::Vector2 v0 = curve.Points[2] - curve.Points[0];
-						//GTSL::Vector2 v1 = curve.Points[1] - curve.Points[0];
-						//GTSL::Vector2 v2 = percent - curve.Points[0];
-						//float32 dot00 = GTSL::Math::DotProduct(v0, v0); float32 dot01 = GTSL::Math::DotProduct(v0, v1);
-						//float32 dot02 = GTSL::Math::DotProduct(v0, v2); float32 dot11 = GTSL::Math::DotProduct(v1, v1);
-						//float32 dot12 = GTSL::Math::DotProduct(v1, v2);
-						//const float32 invDenom = 1.0f / (dot00 * dot11 - dot01 * dot01);
-						//float32 u = (dot11 * dot02 - dot01 * dot12) * invDenom;
-						//float32 v = (dot00 * dot12 - dot01 * dot02) * invDenom;
-						//// use the blinn and loop method					
-						//counter += GTSL::Math::Sign(1.0f - u - v);
-
 						float32 dist = 100.0f;  GTSL::Vector2 csAB, csBC;
 
-						constexpr uint16 LOOPS = 128;
+						constexpr uint16 LOOPS = 32;
 						
 						for(uint32 i = 0; i < LOOPS; ++i)
 						{
@@ -340,7 +325,7 @@ struct FaceTree : public Object
 
 				if(minLength < lowestLength)
 				{
-					auto pixelsThree = 0.01f / iResolution.X;
+					auto pixelsThree = 0.005f / iResolution.X;
 					auto side = testSide(closestAB, closestBC, point) > 0.0f ? 1.0f : -1.0f;
 				
 					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(minLength * side, 0.0f, pixelsThree), 0.0f, pixelsThree, 0.0f, 1.0f);

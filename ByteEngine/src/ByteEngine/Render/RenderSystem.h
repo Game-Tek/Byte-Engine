@@ -178,20 +178,19 @@ public:
 
 	[[nodiscard]] GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 
+	MAKE_HANDLE(uint32, SharedMesh)
+	MAKE_HANDLE(uint32, GPUMesh)
+	
 	struct CreateRayTracingMeshInfo
 	{
-		uint32 Vertices;
+		uint32 VertexCount, VertexSize;
 		uint32 IndexCount;
 		IndexType IndexType;
 		uint32 IndicesOffset;
 		GTSL::Matrix3x4* Matrix;
-		Buffer SourceBuffer;
-		HostRenderAllocation SourceAllocation;
+		SharedMeshHandle SharedMesh;
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
-
-	MAKE_HANDLE(uint32, SharedMesh)
-	MAKE_HANDLE(uint32, GPUMesh)
 	
 	SharedMeshHandle CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
 	GPUMeshHandle CreateGPUMesh(SharedMeshHandle sharedMeshHandle);
@@ -222,6 +221,8 @@ public:
 
 	void OnResize(GTSL::Extent2D extent);
 
+	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
+	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
 private:	
 	GTSL::Mutex testMutex;
 	
@@ -343,4 +344,6 @@ private:
 	Vector<PipelineCache> pipelineCaches;
 
 	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PAR> meshesByMaterial;
+
+	uint32 shaderGroupAlignment = 0, shaderGroupHandleSize = 0;
 };

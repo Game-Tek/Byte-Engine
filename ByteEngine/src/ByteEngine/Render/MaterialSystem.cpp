@@ -67,6 +67,12 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	{
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 5/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
+		if(BE::Application::Get()->GetOption("rayTracing"))
+		{
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::ACCELERATION_STRUCTURE,
+				ShaderStage::ANY_HIT | ShaderStage::CLOSEST_HIT | ShaderStage::INTERSECTION | ShaderStage::MISS,
+				1/*max bindings, TODO: CHECK HOW TO UPDATE*/, 0 });
+		}
 
 		makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors);
 	}
@@ -119,6 +125,8 @@ uint32 DataTypeSize(MaterialSystem::Member::DataType data)
 	case MaterialSystem::Member::DataType::UINT32: return 4;
 	case MaterialSystem::Member::DataType::MATRIX4: return 4 * 4 * 4;
 	case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
+	case MaterialSystem::Member::DataType::INT32: return 4;
+	case MaterialSystem::Member::DataType::FVEC2: return 4 * 2;
 	default: return 0;
 	}
 }
@@ -148,7 +156,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 	if (structSize)
 	{
-		const auto setBufferDataIndex = setNodes.At(static_cast<Id>(setHandle))->Data.SetBufferData;
+		const auto setBufferDataIndex = setNodes.At(setHandle())->Data.SetBufferData;
 		auto& setBufferData = setsBufferData[setBufferDataIndex];
 
 		{
@@ -258,11 +266,39 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	return MaterialHandle{ info.MaterialName, 0/*materials[comp].MaterialInstances*//*TODO: WHAT*/, matNum++ };
 }
 
+MaterialHandle MaterialSystem::CreateRayTracingMaterial(const CreateMaterialInfo& info)
+{
+	RayTracingPipeline rayTracingPipeline;
+
+
+	RayTracingPipeline::CreateInfo createInfo;
+	createInfo.RenderDevice = info.RenderSystem->GetRenderDevice();
+	createInfo.Name;
+	createInfo.MaxRecursionDepth = 2;
+	createInfo.Stages;
+	createInfo.PipelineLayout;
+	createInfo.BindingsSetLayouts;
+
+	GTSL::Array<RayTracingPipeline::Group, 8> groups;
+
+	RayTracingPipeline::Group group;
+	group.AnyHitShader;
+	group.ClosestHitShader;
+	group.GeneralShader;
+	group.IntersectionShader;
+	group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+	
+	createInfo.Groups = groups;
+	rayTracingPipeline.Initialize(createInfo);
+
+	return MaterialHandle();
+}
+
 void MaterialSystem::SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
 {
-	//auto& mat = materials[material.MaterialInstance];
+	auto& mat = materials[material.MaterialInstance];
 	//
-	//auto* matData = static_cast<byte*>(mat.Allocation.Data) + mat.DataSize * material.MaterialInstance;
+	//auto* matData = static_cast<byte*>(setsBufferData[mat.Set()].Allocations[frame].Data) + mat.DataSize * material.MaterialInstance;
 	//
 	////TODO: DEFER WRITING TO NOT OVERWRITE RUNNING FRAME
 	//byte* FILL = matData + mat.DynamicParameters.At(parameterName);
@@ -620,69 +656,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		GTSL::Array<TaskDependency, 2>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } }, GTSL::MoveRef(onMaterialLoadInfo), this);
 }
 
-//void MaterialSystem::test()
-//{
-//	MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo{};
-//	MaterialLoadInfo* loadInfo = nullptr;
-//
-//	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
-//	
-//	RayTracingPipeline::CreateInfo createInfo;
-//	createInfo.RenderDevice;
-//	if constexpr (_DEBUG) { createInfo.Name = GTSL::StaticString<32>("RayTracing Pipeline"); }
-//	createInfo.IsInheritable = false;
-//
-//	//TODO: MOVE TO GLOBAL SETUP
-//	{
-//		PipelineLayout::CreateInfo pipelineLayoutCreateInfo;
-//		pipelineLayoutCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-//		pipelineLayoutCreateInfo.Name = GTSL::StaticString<32>("RayTracing Pipeline Layout");
-//		
-//		{
-//			GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
-//
-//			bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[0]);
-//			
-//			pipelineLayoutCreateInfo.BindingsSetLayouts = bindingsSetLayouts;
-//
-//			rayTracingPipelineLayout.Initialize(pipelineLayoutCreateInfo);
-//		}
-//	}
-//	
-//	createInfo.PipelineLayout = &rayTracingPipelineLayout;
-//
-//	{
-//		bindingsSetLayouts.EmplaceBack(globalBindingsSetLayout[0]);
-//		
-//		createInfo.BindingsSetLayouts = bindingsSetLayouts;
-//	}
-//
-//	GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups;
-//	{
-//		RayTracingPipeline::Group group;
-//		group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
-//		group.GeneralShader = 0;
-//		group.AnyHitShader = 0;
-//		group.ClosestHitShader = 0;
-//		group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
-//
-//		groups.EmplaceBack(group);
-//	}
-//	
-//	createInfo.Groups = groups;
-//	createInfo.MaxRecursionDepth = 2;
-//
-//	GTSL::Array<Shader, 10> shaders; GTSL::Array<Pipeline::ShaderInfo, 16> shaderInfos;
-//	
-//	{
-//		genShaderStages(loadInfo->RenderSystem->GetRenderDevice(), shaders, shaderInfos, onMaterialLoadInfo);
-//		createInfo.Stages = shaderInfos;
-//	}
-//
-//
-//	for (auto& e : shaders) { e.Destroy(loadInfo->RenderSystem->GetRenderDevice()); }
-//}
-
 SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDesc)
 {
 	decltype(setsTree)::Node* parentNode, * set;
@@ -871,6 +844,14 @@ void MaterialSystem::resizeSet(RenderSystem* renderSystem, uint32 set)
 	bufferBindingsUpdate.Offset = 0;
 	bufferBindingsUpdate.Range = newBufferSize;
 	descriptorsUpdates[frame].AddBufferUpdate(setUpdateHandle, 0, bufferBindingsUpdate);
+}
+
+void MaterialSystem::sbt()
+{
+	uint32 shaderGroupCount = 3;
+	uint32 groupHandleSize = 0;
+
+	
 }
 
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)

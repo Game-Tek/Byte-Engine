@@ -213,7 +213,10 @@ void GameApplication::RegisterMouse()
 	{
 		switch (button)
 		{
-		case GTSL::Window::MouseButton::LEFT_BUTTON: Get()->GetInputManager()->RecordActionInputSource("LeftMouseButton", buttonState); break;
+		case GTSL::Window::MouseButton::LEFT_BUTTON:
+			Get()->GetInputManager()->RecordActionInputSource("LeftMouseButton", buttonState);
+			Get()->GetGameInstance()->GetSystem<CanvasSystem>("CanvasSystem")->SignalHit(GTSL::Vector2());
+			break;
 		case GTSL::Window::MouseButton::RIGHT_BUTTON: Get()->GetInputManager()->RecordActionInputSource("RightMouseButton", buttonState); break;
 		case GTSL::Window::MouseButton::MIDDLE_BUTTON: Get()->GetInputManager()->RecordActionInputSource("MiddleMouseButton", buttonState); break;
 		default:;

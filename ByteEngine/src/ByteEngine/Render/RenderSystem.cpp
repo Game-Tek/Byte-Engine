@@ -113,6 +113,9 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 				scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
 			}
+
+			shaderGroupAlignment = rayTracingCapabilities.ShaderGroupAlignment;
+			shaderGroupHandleSize = rayTracingCapabilities.ShaderGroupHandleSize;
 		}
 		else
 		{
@@ -310,6 +313,8 @@ const PipelineCache* RenderSystem::GetPipelineCache() const { return &pipelineCa
 
 ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshInfo& info)
 {
+	auto& sharedMesh = sharedMeshes[info.SharedMesh()];
+	
 	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
 
 	RayTracingMesh rayTracingMesh;
@@ -317,9 +322,8 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		Buffer::CreateInfo createInfo;
 		createInfo.RenderDevice = GetRenderDevice();
 
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Render System. Mesh Buffer");
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Render System. RayTraced Mesh Buffer");
 			createInfo.Name = name;
 		}
 
@@ -350,7 +354,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryDescriptor.Type = GeometryType::TRIANGLES;
 		geometryDescriptor.IndexType = rayTracingMesh.IndexType;
 		geometryDescriptor.VertexType = ShaderDataType::FLOAT3;
-		geometryDescriptor.MaxVertexCount = info.Vertices;
+		geometryDescriptor.MaxVertexCount = info.VertexCount;
 		geometryDescriptor.MaxPrimitiveCount = info.IndexCount / 3;
 		geometryDescriptor.AllowTransforms = false;
 
@@ -390,7 +394,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometry.IndexType = rayTracingMesh.IndexType;
 		geometry.Flags = GeometryFlags::OPAQUE;
 		geometry.VertexData = rayTracingMesh.Buffer.GetAddress(GetRenderDevice());
-		geometry.VertexStride = 12;
+		geometry.VertexStride = info.VertexSize;
 		geometry.VertexFormat = ShaderDataType::FLOAT3;
 		geometry.IndexData = geometry.VertexData + info.IndicesOffset;
 		
@@ -422,15 +426,15 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		
 		++instanceCount;
 	}
-
+	
 	{
 		BufferCopyData bufferCopyData;
 		bufferCopyData.SourceOffset = 0;
 		bufferCopyData.DestinationOffset = 0;
-		bufferCopyData.SourceBuffer = info.SourceBuffer;
+		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
 		bufferCopyData.DestinationBuffer = rayTracingMesh.Buffer;
 		bufferCopyData.Size = info.IndicesOffset + info.IndexCount * 2;
-		bufferCopyData.Allocation = info.SourceAllocation;
+		bufferCopyData.Allocation = sharedMesh.Allocation;
 		AddBufferCopy(bufferCopyData);
 	}
 	

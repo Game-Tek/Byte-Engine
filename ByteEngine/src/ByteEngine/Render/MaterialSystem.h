@@ -132,6 +132,7 @@ public:
 		TextureResourceManager* TextureResourceManager;
 	};
 	[[nodiscard]] MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
+	[[nodiscard]] MaterialHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
@@ -363,4 +364,6 @@ private:
 	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, uint32 set);
+
+	void sbt();
 };

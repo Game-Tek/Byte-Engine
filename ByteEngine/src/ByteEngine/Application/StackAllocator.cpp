@@ -23,13 +23,13 @@ void StackAllocator::Block::DeallocateBlock(BE::SystemAllocatorReference* alloca
 
 void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
+	allocatedSize = GTSL::Math::RoundUpByPowerOf2(size, alignment);
 	*data = GTSL::AlignPointer(alignment, at); at += allocatedSize;
 }
 
 bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
 {
-	allocatedSize = GTSL::Math::PowerOf2RoundUp(size, alignment);
+	allocatedSize = GTSL::Math::RoundUpByPowerOf2(size, alignment);
 	if (at + allocatedSize < end)
 	{
 		*data = GTSL::AlignPointer(alignment, at);
@@ -231,7 +231,7 @@ void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void*
 
 	if constexpr (BE_DEBUG)
 	{
-		const auto bytes_deallocated{ GTSL::Math::PowerOf2RoundUp(size, alignment) };
+		const auto bytes_deallocated{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
 
 		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
 		perNameData[GTSL::Id64(name)].BytesDeallocated += bytes_deallocated;

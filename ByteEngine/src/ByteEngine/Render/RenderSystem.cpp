@@ -47,11 +47,10 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		auto queues = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
 		createInfo.Queues = queues;
 
-		GTSL::Array<RenderDevice::Extension, 8> extensions{ RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC };
-		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING); }
+		GTSL::Array<GTSL::Pair<RenderDevice::Extension, void*>, 8> extensions{ { RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC, nullptr } };
+		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING, &rayTracingCapabilities); }
 		
 		createInfo.Extensions = extensions;
-		createInfo.ExtensionCapabilities = GTSL::Array<void*, 8>{ &rayTracingCapabilities };
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
@@ -529,7 +528,7 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 
 void RenderSystem::RenderAllMeshesForMaterial(Id material)
 {
-	auto range = meshesByMaterial.At(material).GetRange();
+	auto range = meshesByMaterial.At(material).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
 	
 	for(auto& e : range)
 	{

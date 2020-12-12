@@ -126,19 +126,20 @@ void GameApplication::PostInitialize()
 		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.Name = "SceneRenderPass";
+		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
-		geoRenderPass.DepthStencilAttachment.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color", TextureLayout::COLOR_ATTACHMENT } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } );
 		passes.EmplaceBack(geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.Name = "UIRenderPass";
-		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color", TextureLayout::COLOR_ATTACHMENT });
+		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
 		passes.EmplaceBack(uiRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, attachments, passes);
-		renderOrchestrator->ToggleRenderPass("SceneRenderPass", false);
-		renderOrchestrator->ToggleRenderPass("UIRenderPass", true);
+		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
+		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
 	}
 
 	

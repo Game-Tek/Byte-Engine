@@ -38,7 +38,7 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 	
 	AllocID allocationId;
 	
-	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, bufferMemoryAlignment);
 	
 	for (auto& e : bufferMemoryBlocks)
 	{
@@ -360,7 +360,7 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 	
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, bufferMemoryAlignment);
 	
 	for(auto& block : bufferMemoryBlocks)
 	{
@@ -396,7 +396,7 @@ void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, Dev
 {
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::PowerOf2RoundUp(renderAllocation->Size, textureMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, textureMemoryAlignment);
 
 	for (auto& block : textureMemoryBlocks)
 	{

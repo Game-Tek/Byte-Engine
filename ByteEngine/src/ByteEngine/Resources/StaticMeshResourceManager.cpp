@@ -118,14 +118,14 @@ void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadSta
 	on_static_mesh_load.IndexSize = meshInfo.IndexSize;
 	on_static_mesh_load.UserData = loadStaticMeshInfo.UserData;
 	on_static_mesh_load.DataBuffer = GTSL::Range<byte*>(mesh_size, loadStaticMeshInfo.DataBuffer.begin());
-	loadStaticMeshInfo.GameInstance->AddAsyncTask(loadStaticMeshInfo.OnStaticMeshLoad, GTSL::MoveRef(on_static_mesh_load));
+	loadStaticMeshInfo.GameInstance->AddDynamicTask("onSMLoad", loadStaticMeshInfo.OnStaticMeshLoad, loadStaticMeshInfo.ActsOn, GTSL::MoveRef(on_static_mesh_load));
 }
 
 void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, uint16* indexSize, const uint16* indicesAlignment, uint32* meshSize, uint32* indicesOffset)
 {
 	auto& mesh = meshInfos.At(name);
 	*indexSize = mesh.IndexSize;
-	*indicesOffset = GTSL::Math::PowerOf2RoundUp(mesh.VerticesSize, static_cast<uint32>(*indicesAlignment));
+	*indicesOffset = GTSL::Math::RoundUpByPowerOf2(mesh.VerticesSize, static_cast<uint32>(*indicesAlignment));
 	*meshSize = *indicesOffset + mesh.IndicesSize;
 }
 

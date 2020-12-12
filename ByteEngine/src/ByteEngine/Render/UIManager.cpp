@@ -14,9 +14,8 @@ uint16 Canvas::AddOrganizer(const Id name)
 {
 	auto organizer = organizersAsPrimitives.Emplace(primitives.Emplace());
 	organizerDepth.Emplace(0);
-	organizerAlignments.Emplace();
-	organizerSizingPolicies.Emplace();
-	organizerDepth.Emplace();
+	organizerAlignments.Emplace(Alignment::CENTER);
+	organizerSizingPolicies.Emplace(SizingPolicy::SET_ASPECT_RATIO);
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 
@@ -34,7 +33,6 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 	organizerDepth.Emplace(0);
 	organizerAlignments.Emplace();
 	organizerSizingPolicies.Emplace();
-	organizerDepth.Emplace();
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 	

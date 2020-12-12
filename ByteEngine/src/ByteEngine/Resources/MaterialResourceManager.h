@@ -68,7 +68,6 @@ public:
 		GTSL::Array<GTSL::Id64, 8> Textures;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
 		
-		GTSL::Array<Binding, 6> BindingSets;
 		GTSL::Array<uint8, 12> ShaderTypes;
 		GAL::BlendOperation ColorBlendOperation;
 
@@ -115,7 +114,6 @@ public:
 		GTSL::Array<Uniform, 8> MaterialParameters;
 		GTSL::Array<Binding, 8> PerInstanceParameters;
 
-		GTSL::Array<Binding, 6> BindingSets;
 		GTSL::Array<Uniform, 6> Uniforms;
 		GTSL::Array<GTSL::Id64, 8> Textures;
 		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
@@ -137,9 +135,16 @@ public:
 		GTSL::Delegate<void(TaskInfo, OnMaterialLoadInfo)> OnMaterialLoad;
 	};
 	void LoadMaterial(const MaterialLoadInfo& loadInfo);
+
+	OnMaterialLoadInfo LoadMaterialSynchronous(uint64 id, GTSL::Range<byte*> buffer);
 	
+	uint32 GetRayTracingMaterialsCount() const { return rayTracingMaterials.GetLength(); }
+	GTSL::Id64 GetRayTracingMaterialHandle(uint32 mat) const { return rayTracingMaterials[mat]; }
+
 private:
 	GTSL::File package, index;
 	GTSL::FlatHashMap<MaterialInfo, BE::PersistentAllocatorReference> materialInfos;
 	GTSL::ReadWriteMutex mutex;
+
+	GTSL::Vector<GTSL::Id64, BE::PAR> rayTracingMaterials;
 };

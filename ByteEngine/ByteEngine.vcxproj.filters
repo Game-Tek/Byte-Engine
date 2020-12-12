@@ -180,5 +180,6 @@
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
+    <ClCompile Include="src\ByteEngine\SIMDMath.ixx" />
   </ItemGroup>
 </Project>

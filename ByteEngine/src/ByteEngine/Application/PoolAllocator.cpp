@@ -45,7 +45,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 {
 	GTSL::Lock lock(globalLock);
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
-	uint64 allocation_min_size{ 0 }; GTSL::NextPowerOfTwo(GTSL::Math::PowerOf2RoundUp(size, alignment), allocation_min_size);
+	uint64 allocation_min_size{ 0 }; GTSL::NextPowerOfTwo(GTSL::Math::RoundUpByPowerOf2(size, alignment), allocation_min_size);
 
 	uint8 set_bit { 0 }; GTSL::FindFirstSetBit(allocation_min_size, set_bit);
 	BE_ASSERT(POOL_COUNT > set_bit, "No pool big enough!");	

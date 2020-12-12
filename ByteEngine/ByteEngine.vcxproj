@@ -279,6 +279,7 @@
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\SIMDMath.ixx" />
     <ClCompile Include="src\ByteEngine\Sound\AudioSystem.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />

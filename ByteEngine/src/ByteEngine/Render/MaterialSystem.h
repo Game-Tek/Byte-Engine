@@ -87,7 +87,7 @@ public:
 	}
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
 	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct MemberInfo : Member
@@ -138,7 +138,8 @@ public:
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 
 	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
-	
+
+	Buffer GetSBTBuffer() const { return shaderBindingTableBuffer; }
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -154,6 +155,9 @@ private:
 	
 	uint32 matNum = 0;
 	
+	RayTracingPipeline rayTracingPipeline;
+	Buffer shaderBindingTableBuffer;
+
 	struct MaterialData
 	{
 		struct MaterialInstanceData

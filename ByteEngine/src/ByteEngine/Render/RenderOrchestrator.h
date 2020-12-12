@@ -98,6 +98,11 @@ public:
 		return renderPass.ClearValues;
 	}
 
+	enum class PassType : uint8
+	{
+		RASTER, COMPUTE, RAY_TRACING
+	};
+
 	struct AttachmentInfo
 	{
 		Id Name;
@@ -113,9 +118,10 @@ public:
 		struct AttachmentReference
 		{
 			Id Name;
-			TextureLayout Layout;
 		};
 		GTSL::Array<AttachmentReference, 8> ReadAttachments, WriteAttachments;
+
+		PassType PassType;
 
 		AttachmentReference DepthStencilAttachment;
 	};
@@ -125,16 +131,18 @@ public:
 
 	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
 
-	uint8 GetRenderPassIndex(const Id name) const { return apiRenderPassesMap.At(name); }
+	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name).APIRenderPass; }
 	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const { return renderPassesMap.At(renderPass).APISubPass; }
 
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
 	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasses[renderPass].GetLength(); }
 
-	Id GetRenderPassName(const uint8 rp) { return apiRenderPasses[rp].Name; }
 	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
 
+	//Enables or disables render passes
+	//Right now we have to guarantee enabledRenderPasses has the correct order
+	//TODO: maybe everytime we have to execute a render pass check if is enabled so we don't have to keep order between the two collections
 	void ToggleRenderPass(Id renderPassName, bool enable)
 	{
 		if(enable)
@@ -172,17 +180,19 @@ private:
 	struct RenderPassData
 	{
 		GTSL::Array<Id, 8> RenderGroups;
+		PassType PassType;
 		uint8 APIRenderPass = 0, APISubPass = 0;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
 
-	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, uint32[4], CommandBuffer, PipelineLayout, Id)>;
+	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, CommandBuffer, Id)>;
 	
 	GTSL::StaticMap<RenderPassFunctionType, 8> renderPassesFunctions;
 
-	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp);
-	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp);
+	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
+	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
+	void renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 
 	struct RenderPassAttachment
 	{
@@ -192,7 +202,6 @@ private:
 
 	struct APIRenderPassData
 	{
-		Id Name;
 		RenderPass RenderPass;
 		GTSL::StaticMap<RenderPassAttachment, 8> Attachments;
 		GTSL::Array<GTSL::RGBA, 8> ClearValues;
@@ -206,7 +215,6 @@ private:
 		FrameBuffer FrameBuffer;
 	};
 	GTSL::Array<APIRenderPassData, 16> apiRenderPasses;
-	GTSL::StaticMap<uint8, 16> apiRenderPassesMap;
 
 	struct SubPass
 	{

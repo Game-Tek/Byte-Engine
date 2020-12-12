@@ -112,8 +112,6 @@ void MaterialResourceManager::CreateMaterial(const MaterialCreateInfo& materialC
 		materialInfo.Textures = materialCreateInfo.Textures;
 		materialInfo.PerInstanceParameters = materialCreateInfo.PerInstanceParameters;
 		
-		materialInfo.BindingSets = materialCreateInfo.Bindings;
-		
 		materialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(materialInfos, index_buffer);
@@ -171,11 +169,52 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
 	
-	onMaterialLoadInfo.BindingSets = materialInfo.BindingSets;
-	
 	onMaterialLoadInfo.VertexElements = GTSL::Range<GAL::ShaderDataType*>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
 	
-	loadInfo.GameInstance->AddAsyncTask(loadInfo.OnMaterialLoad, GTSL::MoveRef(onMaterialLoadInfo));
+	auto functionName = GTSL::StaticString<64>("Load Material: "); functionName += loadInfo.Name;
+	loadInfo.GameInstance->AddDynamicTask(Id(functionName.begin()), loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
+}
+
+MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMaterialSynchronous(uint64 id, GTSL::Range<byte*> buffer)
+{
+	auto materialInfo = materialInfos.At(id);
+
+	uint32 mat_size = 0;
+	for (auto e : materialInfo.ShaderSizes) { mat_size += e; }
+	BE_ASSERT(mat_size <= buffer.Bytes(), "Buffer can't hold required data!");
+
+	BE_ASSERT(materialInfo.MaterialOffset != materialInfo.ShaderSizes[0], ":|");
+
+	package.SetPointer(materialInfo.MaterialOffset, GTSL::File::MoveFrom::BEGIN);
+
+	[[maybe_unused]] const auto read = package.ReadFromFile(buffer);
+	BE_ASSERT(read != 0, "Read 0 bytes!");
+
+	OnMaterialLoadInfo onMaterialLoadInfo;
+	onMaterialLoadInfo.ResourceName = GTSL::Id64();
+	onMaterialLoadInfo.DataBuffer = buffer;
+	onMaterialLoadInfo.ShaderTypes = GTSL::Range<GAL::ShaderType*>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
+	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
+	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
+
+	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
+
+	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
+	onMaterialLoadInfo.Textures = materialInfo.Textures;
+	onMaterialLoadInfo.PerInstanceParameters = materialInfo.PerInstanceParameters;
+
+	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
+	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
+	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
+	onMaterialLoadInfo.StencilTest = materialInfo.StencilTest;
+	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
+	onMaterialLoadInfo.BlendEnable = materialInfo.BlendEnable;
+	onMaterialLoadInfo.Front = materialInfo.Front;
+	onMaterialLoadInfo.Back = materialInfo.Back;
+
+	onMaterialLoadInfo.VertexElements = GTSL::Range<GAL::ShaderDataType*>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
+
+	return onMaterialLoadInfo;
 }
 
 void Insert(const MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)
@@ -210,7 +249,6 @@ void Insert(const MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buf
 	
 	Insert(materialInfo.ShaderSizes, buffer);
 	Insert(materialInfo.VertexElements, buffer);
-	Insert(materialInfo.BindingSets, buffer);
 	Insert(materialInfo.ShaderTypes, buffer);
 	
 	Insert(materialInfo.Textures, buffer);
@@ -237,7 +275,6 @@ void Extract(MaterialResourceManager::MaterialInfo& materialInfo, GTSL::Buffer& 
 	
 	Extract(materialInfo.ShaderSizes, buffer);
 	Extract(materialInfo.VertexElements, buffer);
-	Extract(materialInfo.BindingSets, buffer);
 	Extract(materialInfo.ShaderTypes, buffer);
 
 	Extract(materialInfo.Textures, buffer);

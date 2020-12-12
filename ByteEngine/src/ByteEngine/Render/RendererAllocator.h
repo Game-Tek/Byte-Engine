@@ -61,14 +61,14 @@ public:
 	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
 		const auto alloc = AllocID(allocation.AllocationId);
-		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
 	}
 
 	void AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
 	void DeallocateTexture(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
 		const auto alloc = AllocID(allocation.AllocationId);
-		textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
 	}
 
 private:
@@ -110,7 +110,7 @@ public:
 	void DeallocateBuffer(const RenderDevice& renderDevice, const HostRenderAllocation allocation)
 	{
 		const auto alloc = AllocID(allocation.AllocationId);
-		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::PowerOf2RoundUp(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);

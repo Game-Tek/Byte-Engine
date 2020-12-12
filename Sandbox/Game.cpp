@@ -16,8 +16,6 @@
 #include "ByteEngine/Render/UIManager.h"
 #include "ByteEngine/Resources/TextRendering.h"
 
-#include "GTSL/ShortString.hpp"
-
 class UIManager;
 class TestSystem;
 
@@ -190,18 +188,18 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
-		//material = material_system->CreateMaterial(createMaterialInfo);//
+		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
-	{
-		MaterialSystem::CreateMaterialInfo createMaterialInfo;
-		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		createMaterialInfo.MaterialName = "UIMat";//
-		buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
-	}
+	//{
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	createMaterialInfo.GameInstance = gameInstance;
+	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+	//	createMaterialInfo.MaterialName = "UIMat";
+	//	buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
+	//}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -210,11 +208,11 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	}
 
-	//{//
+	//{
 	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "hydrant";
 	//	addStaticMeshInfo.Material = material;
@@ -223,7 +221,7 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
-	//}//
+	//}
 	
 	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
 	
@@ -231,49 +229,44 @@ void Game::PostInitialize()
 	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
 	//faceTree.RenderChar({ 64, 64 }, 65, GetPersistentAllocator());
 	
-	{
-		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
-	
-		uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
-		uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
-		uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
-		
-		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
-		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
-		auto& canvasRef = canvasSystem->GetCanvas(canvas);
-		canvasRef.SetExtent({ 1280, 720 });
-	
-		uiManager->AddCanvas(canvas);//
-	
-		auto organizerComp = canvasRef.AddOrganizer("TopBar");
-		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
-		canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
-		//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });//
-		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });
-		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::KEEP_CHILDREN_ASPECT_RATIO);
-		canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
-		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
-	
-		auto minimizeButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(minimizeButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
-		canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
-		canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
-		
-		auto toggleButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(toggleButtonComp, { 0.05f, 0.02f });
-		canvasRef.SetSquarePosition(toggleButtonComp, { 0.91f, 0.98f });
-		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
-		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
-	
-		auto closeButtonComp = canvasRef.AddSquare();
-		canvasRef.SetSquareAspectRatio(closeButtonComp, { 1.0f, 1.0f });
-		canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
-		canvasRef.SetSquarePosition(closeButtonComp, { 0, 0 });
-		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
-		canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-	}
+	//{
+	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
+	//
+	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+	//	uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
+	//	
+	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
+	//	canvasRef.SetExtent({ 1280, 720 });
+	//
+	//	uiManager->AddCanvas(canvas);
+	//
+	//	auto organizerComp = canvasRef.AddOrganizer("TopBar");
+	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
+	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+	//	canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
+	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });
+	//	canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::SET_ASPECT_RATIO);
+	//	canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
+	//	canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
+	//
+	//	auto minimizeButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
+	//	canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
+	//	canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
+	//	
+	//	auto toggleButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
+	//	canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
+	//	canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
+	//
+	//	auto closeButtonComp = canvasRef.AddSquare();
+	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
+	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
+	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
+	//}
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -282,7 +275,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "TvMat";
-		//tvMat = material_system->CreateMaterial(createMaterialInfo);
+		tvMat = material_system->CreateMaterial(createMaterialInfo);
 	}
 	
 	{
@@ -292,16 +285,16 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
 	
-	//{//
+	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.MaterialName = "TextMaterial";
+	//	createMaterialInfo.MaterialName = "TextMaterial";//
 	//	textMaterial = material_system->CreateMaterial(createMaterialInfo);
 	//}
 	

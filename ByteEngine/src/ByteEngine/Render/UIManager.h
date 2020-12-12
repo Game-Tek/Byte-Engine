@@ -29,6 +29,7 @@ enum class ScalingPolicy : uint8
 enum class SizingPolicy : uint8
 {
 	KEEP_CHILDREN_ASPECT_RATIO,
+	SET_ASPECT_RATIO,
 	FILL
 };
 

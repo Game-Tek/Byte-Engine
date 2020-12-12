@@ -289,6 +289,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 	renderPassesFunctions.Emplace(Id("SceneRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
 	renderPassesFunctions.Emplace(Id("UIRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
+	renderPassesFunctions.Emplace(Id("RaysRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -335,8 +336,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
 
-	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"), 0);
-	PipelineLayout pipelineLayout = materialSystem->GET_PIPELINE_LAYOUT(SetHandle("GlobalData"));
+	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"));
 	
 	CommandBuffer::EndRegionInfo endRegionInfo;
 	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -375,22 +375,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			}
 		}
 
-		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(enabledRenderPasses[erp]), 0);
-
-		uint32 pushConstant[] = { 0, 0, 0, 0 };
-
-		auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(enabledRenderPasses[erp]));
-
-		CommandBuffer::UpdatePushConstantsInfo updatePush;
-		updatePush.RenderDevice = renderSystem->GetRenderDevice();
-		updatePush.Size = 16;
-		updatePush.Offset = 0;
-		updatePush.Data = reinterpret_cast<byte*>(pushConstant);
-		updatePush.PipelineLayout = &ppLay;
-		updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-		commandBuffer.UpdatePushConstant(updatePush);
+		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(enabledRenderPasses[erp]));
 		
-		renderPassesFunctions.At(enabledRenderPasses[erp])(this, taskInfo.GameInstance, renderSystem, materialSystem, pushConstant, commandBuffer, pipelineLayout, enabledRenderPasses[erp]);
+		renderPassesFunctions.At(enabledRenderPasses[erp])(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, enabledRenderPasses[erp]);
 	}
 
 	if (subPasses[arp].GetLength() > apiRpSp)
@@ -416,7 +403,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	}
 
 	{
-
 		{
 			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
 			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
@@ -562,17 +548,17 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 }
 
 void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const PassData*> passesData)
-{
-	auto apiRenderPassName = Id("SceneRenderPass");
-	
-	apiRenderPassesMap.Emplace(apiRenderPassName, apiRenderPasses.GetLength());
+{	
 	auto& apiRenderPassData = apiRenderPasses[apiRenderPasses.EmplaceBack()];
-	
-	apiRenderPassData.Name = "SceneRenderPass";
+
+	//apiRenderPassData.Name = "RenderPass";
 
 	RenderPass::CreateInfo renderPassCreateInfo;
 	renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) { renderPassCreateInfo.Name = GTSL::StaticString<32>("RenderPass"); }
+	if constexpr (_DEBUG) {
+		auto name = GTSL::StaticString<32>("RenderPass");
+		renderPassCreateInfo.Name = name;
+	}
 
 	{
 		GTSL::Array<RenderPass::AttachmentDescriptor, 16> attachmentDescriptors;
@@ -594,7 +580,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 			attachmentDescriptors.EmplaceBack(attachmentDescriptor);
 
 			apiRenderPassData.ClearValues.EmplaceBack(attachment.ClearValue);
-			
+
 			apiRenderPassData.AttachmentNames.EmplaceBack(e.Name);
 		}
 
@@ -615,14 +601,14 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name);
 		renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
-		
+
 		RenderPass::SubPassDescriptor subPassDescriptor;
 
 		for (auto& e : passesData[s].ReadAttachments)
 		{
 			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
 
-			renderpassAttachment.Layout = passesData[s].ReadAttachments[readAttachmentReferences[s].GetLength()].Layout;
+			renderpassAttachment.Layout = TextureLayout::SHADER_READ_ONLY;
 			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
@@ -638,7 +624,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		{
 			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
 
-			renderpassAttachment.Layout = passesData[s].WriteAttachments[writeAttachmentReferences[s].GetLength()].Layout;
+			renderpassAttachment.Layout = TextureLayout::COLOR_ATTACHMENT;
 			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
@@ -651,18 +637,24 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
 
 		{
-			auto isUsed = [&](Id name) -> bool //Determines if an attachment is read in any other later pass
-			{ //TODO: CHECK IF ATTACHMENT IS READ AFTER IT'S LAST RESPECTIVE WRITE TO IT, ONLY THEN IT NEEDS TO BE PRESERVED. IF DONE LIKE THIS IT WILL BE PRESERVED NO MATTER IF IT IS READ LATER AFTER ANOTHER WRITE THAT OVERWRITES THE CURRENT ONE
-				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i)
-				{
-					for (auto e : passesData[s].ReadAttachments) { if (e.Name == name) { return true; } }
-					return false;
+			auto hasToBePreserved = [&](Id name) -> bool //Determines if an attachment is read in any other later pass
+			{
+				uint8 nextWrite = 0, nextRead = 0xFFFFFFFF;
+
+				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i) {
+					for (auto e : passesData[s].WriteAttachments) { if (e.Name == name) { nextWrite = i; break; } }
 				}
+
+				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i) {
+					for (auto e : passesData[s].ReadAttachments) { if (e.Name == name) { nextRead = i; break; } }
+				}
+
+				return nextRead < nextWrite;
 			};
 
 			for (uint32 a = 0; a < attachmentInfos.ElementCount(); ++a)
 			{
-				if (isUsed(attachmentInfos[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
+				if (hasToBePreserved(attachmentInfos[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
 			}
 		}
 
@@ -673,7 +665,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 			auto& attachmentInfo = apiRenderPassData.Attachments.At(passesData[s].DepthStencilAttachment.Name);
 
 			subPassDescriptor.DepthAttachmentReference.Index = attachmentInfo.Index;
-			subPassDescriptor.DepthAttachmentReference.Layout = passesData[s].DepthStencilAttachment.Layout;
+			subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
 		}
 		else
 		{
@@ -693,53 +685,30 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 	renderPassCreateInfo.SubPasses = subPassDescriptors;
 
 	GTSL::Array<RenderPass::SubPassDependency, 16> subPassDependencies;
-	
+
 	{
 		uint8 subPass = 0;
 
-		for(uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
+		for (uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
 		{
 			RenderPass::SubPassDependency e;
 			e.SourceSubPass = i;
 			e.DestinationSubPass = i + 1;
-		
+
 			e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
 			e.DestinationAccessFlags = 0;
-		
+
 			e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
 			e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
 
 			subPassDependencies.EmplaceBack(e);
-			
-			//e.SourceSubPass = i + 1;
-			//e.DestinationSubPass = i;
-			//
-			//e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-			//e.DestinationAccessFlags = 0;
-			//
-			//e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
-			//e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-			//
-			//subPassDependencies.EmplaceBack(e);
 		}
-		
-		//for (; subPass < passesData.ElementCount() - 1; ++subPass)
-		//{
-		//	auto& e = subPassDependencies[subPass];
-		//	e.SourceSubPass = RenderPass::EXTERNAL;
-		//	e.DestinationSubPass = RenderPass::EXTERNAL;
-		//
-		//	e.SourceAccessFlags = AccessFlags::INPUT_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-		//	e.DestinationAccessFlags = 0;
-		//
-		//	e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
-		//	e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-		//}
 	}
 
 	renderPassCreateInfo.SubPassDependencies = subPassDependencies;
 
 	apiRenderPassData.RenderPass = RenderPass(renderPassCreateInfo);
+	
 }
 
 void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize)
@@ -816,49 +785,43 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 	}
 }
 
-void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp)
+void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
 	for (auto e : renderPassesMap.At(rp).RenderGroups)
 	{
 		auto mats = materialSystem->GetMaterialHandles();
 
-		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), 0);
+		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e));
 		
+		uint32 meshIndex = 0;
 		for (auto m : mats)
 		{
 			auto pipeline = materialSystem->GET_PIPELINE(m);
 
-			CommandBuffer::BindPipelineInfo bindPipelineInfo;
-			bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-			bindPipelineInfo.PipelineType = PipelineType::RASTER;
-			bindPipelineInfo.Pipeline = &pipeline;
-			commandBuffer.BindPipeline(bindPipelineInfo);
-			
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType), 0);
-			
-			auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(m.MaterialType));
-				
-			CommandBuffer::UpdatePushConstantsInfo updatePush;
-			updatePush.RenderDevice = renderSystem->GetRenderDevice();
-			updatePush.Size = 4;
-			updatePush.Offset = 12;
-			updatePush.Data = reinterpret_cast<byte*>(pushConstant);
-			updatePush.PipelineLayout = &ppLay;
-			updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-			commandBuffer.UpdatePushConstant(updatePush);
+			if (pipeline.GetVkPipeline())
+			{
+				CommandBuffer::BindPipelineInfo bindPipelineInfo;
+				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+				bindPipelineInfo.PipelineType = PipelineType::RASTER;
+				bindPipelineInfo.Pipeline = &pipeline;
+				commandBuffer.BindPipeline(bindPipelineInfo);
 
-			renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType));
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), meshIndex);
 
-			++pushConstant[3];
+				renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+			}
+
+			++meshIndex;
 		}
 	}
 }
 
-void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 pushConstant[4], CommandBuffer commandBuffer, PipelineLayout pipelineLayout, Id rp)
+void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {
 	auto* uiRenderManager = gameInstance->GetSystem<UIRenderManager>("UIRenderManager");
 
-	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"), 0);
+	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"));
 
 	auto* uiSystem = gameInstance->GetSystem<UIManager>("UIManager");
 	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
@@ -877,6 +840,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 
 		auto* parentOrganizer = organizers.GetRootNode();
 
+		uint32 squareIndex = 0;
 		for (auto& e : squares)
 		{
 			auto mat = primitives.begin()[e.PrimitiveIndex].Material;
@@ -890,23 +854,40 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 				bindPipelineInfo.Pipeline = &pipeline;
 				commandBuffer.BindPipeline(bindPipelineInfo);
 
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(mat.MaterialType), 0);
-
-				auto ppLay = materialSystem->GET_PIPELINE_LAYOUT(SetHandle(mat.MaterialType));
-
-				CommandBuffer::UpdatePushConstantsInfo updatePush;
-				updatePush.RenderDevice = renderSystem->GetRenderDevice();
-				updatePush.Size = 4;
-				updatePush.Offset = 12;
-				updatePush.Data = reinterpret_cast<byte*>(&pushConstant[3]);
-				updatePush.PipelineLayout = &ppLay;
-				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-				commandBuffer.UpdatePushConstant(updatePush);
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(mat.MaterialType));
+				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"), squareIndex);
 
 				renderSystem->RenderMesh(uiRenderManager->GetSquareMesh());
 			}
 
-			++pushConstant[3];
+			++squareIndex;
 		}
 	}
+}
+
+void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
+{
+	auto sbtBuffer = materialSystem->GetSBTBuffer();
+
+	auto handleSize = renderSystem->GetShaderGroupHandleSize();
+	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupAlignment());
+
+	CommandBuffer::TraceRaysInfo traceRaysInfo;
+	traceRaysInfo.DispatchSize = GTSL::Extent3D(renderSystem->GetRenderExtent());
+	traceRaysInfo.RayGenDescriptor.Size = alignedHandleSize * 1;
+	traceRaysInfo.RayGenDescriptor.Offset = 0;
+	traceRaysInfo.RayGenDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.RayGenDescriptor.Stride = alignedHandleSize;
+
+	traceRaysInfo.HitDescriptor.Size = alignedHandleSize * 1;
+	traceRaysInfo.HitDescriptor.Offset = alignedHandleSize * 1;
+	traceRaysInfo.HitDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.HitDescriptor.Stride = alignedHandleSize;
+
+	traceRaysInfo.MissDescriptor.Size = alignedHandleSize * 1;
+	traceRaysInfo.MissDescriptor.Offset = alignedHandleSize * 2;
+	traceRaysInfo.MissDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.MissDescriptor.Stride = alignedHandleSize;
+
+	commandBuffer.TraceRays(traceRaysInfo);
 }

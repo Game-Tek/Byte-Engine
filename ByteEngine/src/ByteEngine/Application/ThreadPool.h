@@ -21,7 +21,7 @@
 class ThreadPool : public Object
 {
 	using TaskDelegate = GTSL::Delegate<void(ThreadPool*, void*)>;
-	using Tasks = GTSL::Tuple<TaskDelegate, void*, GTSL::Semaphore*>;
+	using Tasks = GTSL::Tuple<TaskDelegate, void*>;
 public:
 	explicit ThreadPool() : Object("Thread Pool"), queues(threadCount)
 	{		
@@ -58,7 +58,7 @@ public:
 	}
 
 	template<typename F, typename... ARGS>
-	void EnqueueTask(const GTSL::Delegate<F>& task, GTSL::Semaphore* semaphore, ARGS&&... args)
+	void EnqueueTask(const GTSL::Delegate<F>& task, ARGS&&... args)
 	{
 		TaskInfo<F, ARGS...>* taskInfoAlloc = GTSL::New<TaskInfo<F, ARGS...>>(GetPersistentAllocator(), task, GTSL::ForwardRef<ARGS>(args)...);
 
@@ -68,7 +68,6 @@ public:
 			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(*task));
 			
 			GTSL::Call(taskInfo->Delegate, taskInfo->Arguments);
-			static_cast<GTSL::Semaphore*>(GTSL::Get<TUPLE_SEMAPHORE_INDEX>(*task))->Post();
 
 			GTSL::Delete<TaskInfo<F, ARGS...>>(taskInfo, threadPool->GetPersistentAllocator());
 		};
@@ -79,10 +78,10 @@ public:
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 
-			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc), GTSL::MoveRef(semaphore)))) { return; }
+			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc)))) { return; }
 		}
 
-		queues[currentIndex % threadCount].Push(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc), GTSL::MoveRef(semaphore)));
+		queues[currentIndex % threadCount].Push(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc)));
 	}
 
 	uint8 GetNumberOfThreads() { return threadCount; }
@@ -93,7 +92,6 @@ private:
 
 	static constexpr uint8 TUPLE_LAMBDA_DELEGATE_INDEX = 0;
 	static constexpr uint8 TUPLE_LAMBDA_TASK_INFO_INDEX = 1;
-	static constexpr uint8 TUPLE_SEMAPHORE_INDEX = 2;
 	
 	GTSL::Array<GTSL::BlockingQueue<Tasks>, 32> queues;
 	GTSL::Array<GTSL::Thread, 32> threads;

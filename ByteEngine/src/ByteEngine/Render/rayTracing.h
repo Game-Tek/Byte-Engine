@@ -20,23 +20,4 @@ inline void queries()
 inline void trace()
 {
 	CommandBuffer commandBuffer;
-
-	CommandBuffer::TraceRaysInfo traceRaysInfo;
-	traceRaysInfo.DispatchSize = { 1280, 720, 0 };
-	traceRaysInfo.RayGenDescriptor.Size = 32;
-	traceRaysInfo.RayGenDescriptor.Offset = 0;
-	traceRaysInfo.RayGenDescriptor.Buffer;
-	traceRaysInfo.RayGenDescriptor.Stride = 32;
-
-	traceRaysInfo.HitDescriptor.Size = 32;
-	traceRaysInfo.HitDescriptor.Offset = 0;
-	traceRaysInfo.HitDescriptor.Buffer;
-	traceRaysInfo.HitDescriptor.Stride = 32;
-
-	traceRaysInfo.MissDescriptor.Size = 32;
-	traceRaysInfo.MissDescriptor.Offset = 0;
-	traceRaysInfo.MissDescriptor.Buffer;
-	traceRaysInfo.MissDescriptor.Stride = 32;
-	
-	commandBuffer.TraceRays(traceRaysInfo);
 }

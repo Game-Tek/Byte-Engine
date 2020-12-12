@@ -118,7 +118,7 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 	onTextureLoadInfo.LODPercentage = 1.0f;
 	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
 	
-	textureLoadInfo.GameInstance->AddAsyncTask(textureLoadInfo.OnTextureLoadInfo, GTSL::MoveRef(onTextureLoadInfo));
+	textureLoadInfo.GameInstance->AddDynamicTask("loadTextureFromTextureResourceManager", textureLoadInfo.OnTextureLoadInfo, textureLoadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
 }
 
 void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)

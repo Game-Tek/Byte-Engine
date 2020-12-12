@@ -27,47 +27,6 @@ struct CubicBezier
 	GTSL::Vector2 Points[3];
 };
 
-struct Line
-{
-	GTSL::Vector2 Start, End;
-};
-
-inline bool LinevLine(const Line l1, const Line l2, GTSL::Vector2* i)
-{
-	GTSL::Vector2 s1, s2;
-	s1.X = l1.End.X - l1.Start.X; s1.Y = l1.End.Y - l1.Start.Y;
-	s2.X = l2.End.X - l2.Start.X; s2.Y = l2.End.Y - l2.Start.Y;
-
-	const float32 div = -s2.X * s1.Y + s1.X * s2.Y;
-	if (div == 0.0f) { BE_ASSERT(false, "") }
-	const float s = (-s1.Y * (l1.Start.X - l2.Start.X) + s1.X * (l1.Start.Y - l2.Start.Y)) / div;
-	const float t = (s2.X * (l1.Start.Y - l2.Start.Y) - s2.Y * (l1.Start.X - l2.Start.X)) / div;
-
-	if (s >= 0 && s <= 1 && t >= 0 && t <= 1)
-	{
-		// Collision detected
-		if (i)
-		{
-			i->X = l1.Start.X + (t * s1.X);
-			i->Y = l1.Start.Y + (t * s1.Y);
-		}
-		
-		return true;
-	}
-
-	return false; // No collision
-}
-
-//inline bool Box_V_Line(const Box box, const LinearBezier linearBezier)
-//{
-//	auto a = LinevLine(box.GetTopLine(), linearBezier, nullptr);
-//	auto b = LinevLine(box.GetRightLine(), linearBezier, nullptr);
-//	auto c = LinevLine(box.GetBottomLine(), linearBezier, nullptr);
-//	auto d = LinevLine(box.GetLeftLine(), linearBezier, nullptr);
-//
-//	return a || b || c || d;
-//}
-
 struct FaceTree : public Object
 {	
 	FaceTree(const BE::PersistentAllocatorReference allocator) : Faces(64, allocator)

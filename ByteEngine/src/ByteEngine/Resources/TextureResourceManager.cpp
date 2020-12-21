@@ -103,22 +103,48 @@ TextureResourceManager::~TextureResourceManager()
 
 void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 {
-	auto& texture_info = textureInfos.At(textureLoadInfo.Name);
+	//auto loadTextureImplementation = [](TaskInfo taskInfo, TextureResourceManager* textureResourceManager, const TextureLoadInfo loadInfo) -> void
+	//{
+	//	auto& texture_info = textureResourceManager->textureInfos.At(loadInfo.Name);
+	//	textureResourceManager->packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+	//	textureResourceManager->packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, loadInfo.DataBuffer.begin()));
+	//
+	//	OnTextureLoadInfo onTextureLoadInfo;
+	//	onTextureLoadInfo.ResourceName = loadInfo.Name;
+	//	onTextureLoadInfo.UserData = loadInfo.UserData;
+	//	onTextureLoadInfo.DataBuffer = loadInfo.DataBuffer;
+	//
+	//	onTextureLoadInfo.Extent = texture_info.Extent;
+	//	onTextureLoadInfo.Dimensions = texture_info.Dimensions;
+	//	onTextureLoadInfo.LODPercentage = 1.0f;
+	//	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
+	//
+	//	taskInfo.GameInstance->AddDynamicTask("loadTextureFromTextureResourceManager", loadInfo.OnTextureLoadInfo, loadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
+	//};
 
+	auto var = textureLoadInfo;
+
+	textureLoadInfo.GameInstance->AddDynamicTask(Id("loadTextureFromDisk"),
+		GTSL::Delegate<void(TaskInfo, TextureLoadInfo)>::Create<TextureResourceManager, &TextureResourceManager::loadTextureImplementation>(this), {}, GTSL::MoveRef(var));
+}
+
+void TextureResourceManager::loadTextureImplementation(TaskInfo taskInfo, const TextureLoadInfo loadInfo)
+{
+	auto& texture_info = textureInfos.At(loadInfo.Name);
 	packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-	packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, textureLoadInfo.DataBuffer.begin()));
+	packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, loadInfo.DataBuffer.begin()));
 
 	OnTextureLoadInfo onTextureLoadInfo;
-	onTextureLoadInfo.ResourceName = textureLoadInfo.Name;
-	onTextureLoadInfo.UserData = textureLoadInfo.UserData;
-	onTextureLoadInfo.DataBuffer = textureLoadInfo.DataBuffer;
-	
+	onTextureLoadInfo.ResourceName = loadInfo.Name;
+	onTextureLoadInfo.UserData = loadInfo.UserData;
+	onTextureLoadInfo.DataBuffer = loadInfo.DataBuffer;
+
 	onTextureLoadInfo.Extent = texture_info.Extent;
 	onTextureLoadInfo.Dimensions = texture_info.Dimensions;
 	onTextureLoadInfo.LODPercentage = 1.0f;
 	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
-	
-	textureLoadInfo.GameInstance->AddDynamicTask("loadTextureFromTextureResourceManager", textureLoadInfo.OnTextureLoadInfo, textureLoadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
+
+	taskInfo.GameInstance->AddDynamicTask("loadTextureFromTextureResourceManager", loadInfo.OnTextureLoadInfo, loadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
 }
 
 void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)

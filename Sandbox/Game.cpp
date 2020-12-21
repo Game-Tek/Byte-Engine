@@ -172,6 +172,12 @@ void Game::PostInitialize()
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
+	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
+
+	FaceTree faceTree(GetPersistentAllocator());
+	faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
+	faceTree.RenderChar({ 10, 10 }, 65, GetPersistentAllocator());
+
 	//{
 	//	TextureSystem::CreateTextureInfo createTextureInfo;
 	//	createTextureInfo.RenderSystem = renderSystem;
@@ -179,7 +185,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}//
+	//}
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -222,12 +228,6 @@ void Game::PostInitialize()
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
 	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	//}
-	
-	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
-	
-	//FaceTree faceTree(GetPersistentAllocator());
-	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
-	//faceTree.RenderChar({ 64, 64 }, 65, GetPersistentAllocator());
 	
 	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
@@ -275,7 +275,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "TvMat";
-		tvMat = material_system->CreateMaterial(createMaterialInfo);
+		//tvMat = material_system->CreateMaterial(createMaterialInfo);
 	}
 	
 	{
@@ -285,8 +285,8 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
 	}
 	
 	//{
@@ -294,7 +294,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.MaterialName = "TextMaterial";//
+	//	createMaterialInfo.MaterialName = "TextMaterial";
 	//	textMaterial = material_system->CreateMaterial(createMaterialInfo);
 	//}
 	

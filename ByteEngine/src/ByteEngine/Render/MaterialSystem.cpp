@@ -404,7 +404,8 @@ ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 
 	textureLoadInfo.OnTextureLoadInfo = GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onTextureLoad>(this);
 
-	const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	//const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	const GTSL::Array<TaskDependency, 6> loadTaskDependencies;
 
 	textureLoadInfo.ActsOn = loadTaskDependencies;
 

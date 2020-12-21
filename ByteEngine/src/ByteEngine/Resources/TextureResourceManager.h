@@ -50,7 +50,8 @@ public:
 private:
 	GTSL::File packageFile, indexFile;
 	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureInfos;
-	
+
+	void loadTextureImplementation(TaskInfo taskInfo, TextureLoadInfo loadInfo);
 };
 
 void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer);

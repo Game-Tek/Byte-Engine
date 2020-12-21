@@ -38,7 +38,7 @@ struct FaceTree : public Object
 	//Fonts are in the range 0 <-> 1
 	void MakeFromPaths(const FontResourceManager::Font& font, const BE::PAR& allocator)
 	{
-		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('d'));
+		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('h'));
 
 		Faces.EmplaceBack();
 		auto& face = Faces.back();
@@ -113,24 +113,24 @@ struct FaceTree : public Object
 			auto height = 1.0f / (float32)(BANDS);
 			auto min = 0.0f; auto max = height;
 
-			for(uint16 i = 0; i < BANDS; ++i)
-			{
-				if(linearBezier.Points[0].Y >= min && linearBezier.Points[0].Y <= max)
-				{
-					from = i;
-				}
-
-				if(linearBezier.Points[1].Y >= min && linearBezier.Points[1].Y <= max)
-				{
-					to = i;
-				}
-				
-				min += height;
-				max += height;
-			}
+			//for(uint16 i = 0; i < BANDS; ++i)
+			//{
+			//	if(linearBezier.Points[0].Y >= min && linearBezier.Points[0].Y <= max)
+			//	{
+			//		from = i;
+			//	}
+			//
+			//	if(linearBezier.Points[1].Y >= min && linearBezier.Points[1].Y <= max)
+			//	{
+			//		to = i;
+			//	}
+			//	
+			//	min += height;
+			//	max += height;
+			//}
 			
-			//from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
-			//to   = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			to   = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
 		};
 		
 		auto GetBandsForCubic = [&](const CubicBezier& cubicBezier, uint16& from, uint16& to) -> void
@@ -138,48 +138,43 @@ struct FaceTree : public Object
 			auto height = 1.0f / (float32)(BANDS);
 			auto min = 0.0f; auto max = height;
 
-			for(uint16 i = 0; i < BANDS; ++i)
-			{
-				if(cubicBezier.Points[0].Y >= min && cubicBezier.Points[0].Y <= max)
-				{
-					from = i;
-				}
-
-				if(cubicBezier.Points[2].Y >= min && cubicBezier.Points[2].Y <= max)
-				{
-					to = i;
-				}
-				
-				min += height;
-				max += height;
-			}
+			//for(uint16 i = 0; i < BANDS; ++i)
+			//{
+			//	if(cubicBezier.Points[0].Y >= min && cubicBezier.Points[0].Y <= max)
+			//	{
+			//		from = i;
+			//	}
+			//
+			//	if(cubicBezier.Points[2].Y >= min && cubicBezier.Points[2].Y <= max)
+			//	{
+			//		to = i;
+			//	}
+			//	
+			//	min += height;
+			//	max += height;
+			//}
 			
-			//from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
-			//to   = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			to   = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
 		};
 		
 		for(uint16 l = 0; l < face.LinearBeziers.GetLength(); ++l)
 		{
 			uint16 from, to;
-			GetBandsForLinear(face.LinearBeziers[l], from, to);
+			GetBandsForLinear(face.LinearBeziers[l], from, to); GTSL::Math::MinMax(from, to, from, to);
 			for(uint16 b = from; b < to + 1; ++b) { face.Bands[b].Lines.EmplaceBack(l); }
 		}
 		
 		for(uint16 c = 0; c < face.CubicBeziers.GetLength(); ++c)
 		{
 			uint16 from, to;
-			GetBandsForCubic(face.CubicBeziers[c], from, to);
+			GetBandsForCubic(face.CubicBeziers[c], from, to); GTSL::Math::MinMax(from, to, from, to);
 			for(uint16 b = from; b < to + 1; ++b) { face.Bands[b].Curves.EmplaceBack(c); }
 		}
 	}
 
 	float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
 	{
-		auto testSide = [](const GTSL::Vector2 a, const GTSL::Vector2 b, const GTSL::Vector2 p)
-		{
-			return ((a.X - b.X) * (p.Y - b.Y) - (a.Y - b.Y) * (p.X - b.X));
-		};
-
 		auto getBandIndex = [](const GTSL::Vector2 pos)
 		{
 			return GTSL::Math::Clamp(static_cast<uint16>(pos.Y * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
@@ -189,57 +184,34 @@ struct FaceTree : public Object
 
 		auto& band = face.Bands[getBandIndex(point)];
 
-		float32 result = 0.0f; float32 lowestLength = 0.0f;
+		float32 result = 0.0f; float32 lowestLength = 100.0f;
 		
-		{
+		{				
+			for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
 			{
-				uint16 closestLineSegment = 0;
-				float32 minLength = 1000.0f;
+				auto line = face.LinearBeziers[band.Lines[i]];
+
+				GTSL::Vector2 min, max;
 				
-				for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
+				GTSL::Math::MinMax(line.Points[0], line.Points[1], min, max);
+
+				if(GTSL::Math::PointInBoxProjection(min, max, point))
 				{
-					auto line = face.LinearBeziers[band.Lines[i]];
-
-					GTSL::Vector2 min, max;
+					float32 isOnSegment;
+					auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point, isOnSegment);
+					auto dist = GTSL::Math::LengthSquared(point, pointLine);
 					
-					if (line.Points[0].X <= line.Points[1].X)
-					{ min.X = line.Points[0].X; max.X = line.Points[1].X; }
-					else { min.X = line.Points[1].X; max.X = line.Points[0].X; }
-					
-					if (line.Points[0].Y <= line.Points[1].Y)
-					{ min.Y = line.Points[0].Y; max.Y = line.Points[1].Y; }
-					else { min.Y = line.Points[1].Y; max.Y = line.Points[0].Y; }
-
-					if(point.X >= min.X && point.X <= max.X || point.Y >= min.Y && point.Y <= max.Y)
+					if(dist < lowestLength)
 					{
-						auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point);
-						auto dist = GTSL::Math::LengthSquared(point, pointLine);
-						
-						if(dist <= minLength) { minLength = dist; closestLineSegment = band.Lines[i]; }
+						result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
+						result *= isOnSegment;
+						lowestLength = dist;
 					}
 				}
-
-				auto line = face.LinearBeziers[closestLineSegment];
-				auto pixelsThree = 0.005f / iResolution.X;
-				auto side = testSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : -1.0f;
-				
-				result = GTSL::Math::MapToRange(GTSL::Math::Clamp(minLength * side, 0.0f, pixelsThree), 0.0f, pixelsThree, 0.0f, 1.0f);
-
-				lowestLength = minLength;
 			}
-			
-			//BE_LOG_MESSAGE("X: ", point.X, " Y: ", point.Y, " C. Segment[0]: X ", line0.Points[0].X, " Y ", line0.Points[0].Y, " C. Segment[1]: X ", line0.Points[1].X, " Y ", line0.Points[1].Y, " Best Distance: ", minLength)
-			//return testSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
 
 			{
-				float32 minLength = 100.0f; GTSL::Vector2 closestAB, closestBC;
-				
-				auto evalBezier = [](const CubicBezier segment, float32 t)
-				{
-					auto ab = GTSL::Math::Lerp(segment.Points[0], segment.Points[1], t);
-					auto bc = GTSL::Math::Lerp(segment.Points[1], segment.Points[2], t);
-					return GTSL::Math::Lerp(ab, bc, t);
-				};
+				GTSL::Vector2 closestAB, closestBC;
 				
 				for(uint8 i = 0; i < band.Curves.GetLength(); ++i)
 				{
@@ -247,49 +219,38 @@ struct FaceTree : public Object
 				
 					GTSL::Vector2 min, max;
 					
-					if (curve.Points[0].X <= curve.Points[2].X) {
-						min.X = curve.Points[0].X; max.X = curve.Points[2].X;
-					}
-					else {
-						min.X = curve.Points[2].X; max.X = curve.Points[0].X;
-					}
+					GTSL::Math::MinMax(curve.Points[0], curve.Points[2], min, max);
 				
-					if (curve.Points[0].Y <= curve.Points[2].Y) {
-						min.Y = curve.Points[0].Y; max.Y = curve.Points[2].Y;
-					}
-					else {
-						min.Y = curve.Points[2].Y; max.Y = curve.Points[0].Y;
-					}
-				
-					if(point.X >= min.X && point.X <= max.X || point.Y >= min.Y && point.Y <= max.Y)
+					if(GTSL::Math::PointInBoxProjection(min, max, point))
 					{
-						float32 dist = 100.0f;  GTSL::Vector2 csAB, csBC;
+						float32 dist = 100.0f;
 
-						constexpr uint16 LOOPS = 32;
-						
-						for(uint32 i = 0; i < LOOPS; ++i)
+						constexpr uint16 LOOPS = 8; float32 bounds[2] = { 0.0f, 1.0f };
+
+						uint8 sideToAdjust = 0;
+
+						for (uint32 l = 0; l < LOOPS; ++l)
 						{
-							auto t = static_cast<float32>(i) / float32(LOOPS - 1);
-							auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
-							auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
-							auto pos = GTSL::Math::Lerp(ab, bc, t);
-							auto newDist = GTSL::Math::LengthSquared(point, pos);
+							for (uint8 i = 0, ni = 1; i < 2; ++i, --ni)
+							{
+								auto t = GTSL::Math::Lerp(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f);
+								auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
+								auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
+								auto pos = GTSL::Math::Lerp(ab, bc, t);
+								auto newDist = GTSL::Math::LengthSquared(pos, point);
 
-							if(newDist < dist) { dist = newDist; csAB = ab; csBC = bc; }
+								if (newDist < dist) { sideToAdjust = ni; dist = newDist; closestAB = ab; closestBC = bc; }
+							}
+
+							bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f;
 						}
 
-						if(dist < minLength) { minLength = dist; closestAB = csAB; closestBC = csBC; }
+						if (dist < lowestLength)
+						{
+							lowestLength = dist;
+							result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
+						}
 					}
-				}
-
-				if(minLength < lowestLength)
-				{
-					auto pixelsThree = 0.005f / iResolution.X;
-					auto side = testSide(closestAB, closestBC, point) > 0.0f ? 1.0f : -1.0f;
-				
-					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(minLength * side, 0.0f, pixelsThree), 0.0f, pixelsThree, 0.0f, 1.0f);
-					
-					lowestLength = minLength;
 				}
 			}
 		}
@@ -297,7 +258,7 @@ struct FaceTree : public Object
 		return result;
 	}
 
-	static constexpr uint16 BANDS = 1;
+	static constexpr uint16 BANDS = 4;
 	
 	void RenderChar(GTSL::Extent2D res, uint16 ch, const BE::PAR& allocator)
 	{

@@ -789,31 +789,22 @@ void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, 
 {	
 	for (auto e : renderPassesMap.At(rp).RenderGroups)
 	{
-		auto mats = materialSystem->GetMaterialHandles();
+		auto mats = materialSystem->GetMaterialHandlesForRenderGroup(e);
 
 		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e));
 		
 		uint32 meshIndex = 0;
 		for (auto m : mats)
 		{
-			auto pipeline = materialSystem->GET_PIPELINE(m);
+			materialSystem->BindMaterial(m, &commandBuffer, renderSystem);
 
-			if (pipeline.GetVkPipeline())
-			{
-				CommandBuffer::BindPipelineInfo bindPipelineInfo;
-				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-				bindPipelineInfo.PipelineType = PipelineType::RASTER;
-				bindPipelineInfo.Pipeline = &pipeline;
-				commandBuffer.BindPipeline(bindPipelineInfo);
+			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), meshIndex);
 
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(m.MaterialType));
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), meshIndex);
-
-				renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
-			}
+			renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
 
 			++meshIndex;
 		}
+
 	}
 }
 

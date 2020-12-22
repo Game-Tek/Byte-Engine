@@ -19,6 +19,8 @@ class Game final : public GameApplication
 	float32 fov = 45.0f;
 	
 	ComponentReference camera;
+	ComponentReference box;
+	ComponentReference tv;
 	MaterialHandle material;
 	MaterialHandle textMaterial;
 	ComponentReference texture;

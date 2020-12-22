@@ -88,7 +88,6 @@ public:
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
 	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
-	PipelineLayout GET_PIPELINE_LAYOUT(SetHandle handle) { return setNodes.At((Id)handle)->Data.PipelineLayout; }
 
 	struct MemberInfo : Member
 	{
@@ -112,7 +111,6 @@ public:
 		GTSL::Range<StructInfo*> Structs;
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
-
 	
 	void AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count);
 
@@ -140,6 +138,20 @@ public:
 	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
 
 	Buffer GetSBTBuffer() const { return shaderBindingTableBuffer; }
+
+	auto GetMaterialHandlesForRenderGroup(Id renderGroup) const
+	{
+		if (readyMaterialsPerRenderGroup.Find(renderGroup)) //TODO: MAYBE ADD DECLARATION OF RENDER GROUP UP AHEAD AND AVOID THIS
+		{
+			return readyMaterialsPerRenderGroup.At(renderGroup).GetRange();
+		}
+		else
+		{
+			return GTSL::Range<const MaterialHandle*>();
+		}
+	}
+
+	void BindMaterial(MaterialHandle handle, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
 private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -180,11 +192,15 @@ private:
 		
 		uint32 Counter = 0, Target = 0;
 		MaterialHandle Material;
+		Id RenderGroup;
 	};
 	GTSL::KeepVector<PendingMaterialData, BE::PAR> pendingMaterials;
 	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
+	GTSL::FlatHashMap<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
 	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
 	
+	void setMaterialAsLoaded(const MaterialHandle matIndex, const MaterialData material, const Id renderGroup);
+
 	struct CreateTextureInfo
 	{
 		Id TextureName;

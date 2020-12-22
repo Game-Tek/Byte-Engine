@@ -53,6 +53,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	setsTree.Initialize(GetPersistentAllocator());
 
 	renderGroupsData.Initialize(4, GetPersistentAllocator());
+	readyMaterialsPerRenderGroup.Initialize(8, GetPersistentAllocator());
 	
 	setsBufferData.Initialize(4, GetPersistentAllocator());
 	
@@ -466,6 +467,22 @@ ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 	return ComponentReference(GetSystemId(), component);
 }
 
+void MaterialSystem::BindMaterial(MaterialHandle handle, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
+{
+	auto pipeline = GET_PIPELINE(handle);
+
+	if (pipeline.GetVkPipeline())
+	{
+		CommandBuffer::BindPipelineInfo bindPipelineInfo;
+		bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+		bindPipelineInfo.PipelineType = PipelineType::RASTER;
+		bindPipelineInfo.Pipeline = &pipeline;
+		commandBuffer->BindPipeline(bindPipelineInfo);
+
+		BIND_SET(renderSystem, *commandBuffer, SetHandle(handle.MaterialType));
+	}
+}
+
 void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -486,8 +503,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 		{
 			if (++pendingMaterials[static_cast<uint32>(b)].Counter == pendingMaterials[static_cast<uint32>(b)].Target)
 			{
-				materials.EmplaceAt(pendingMaterials[static_cast<uint32>(b)].Material.Element, pendingMaterials[static_cast<uint32>(b)]);
-				readyMaterialHandles.EmplaceBack(pendingMaterials[static_cast<uint32>(b)].Material);
+				setMaterialAsLoaded(pendingMaterials[static_cast<uint32>(b)].Material, pendingMaterials[static_cast<uint32>(b)], pendingMaterials[static_cast<uint32>(b)].RenderGroup);
 			}
 		}
 	}
@@ -688,6 +704,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			{
 				auto place = materialSystem->pendingMaterials.Emplace(targetValue, GTSL::MoveRef(material));
 				materialSystem->pendingMaterials[place].Material = matHandle;
+				materialSystem->pendingMaterials[place].RenderGroup = onMaterialLoadInfo.RenderGroup;
 				
 				for (auto& e : onMaterialLoadInfo.Textures)
 				{
@@ -721,8 +738,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			}
 			else
 			{
-				materialSystem->materials.EmplaceAt(loadInfo->Component, material);
-				materialSystem->readyMaterialHandles.EmplaceBack(matHandle);
+				materialSystem->setMaterialAsLoaded(matHandle, material, onMaterialLoadInfo.RenderGroup);
 			}
 		}
 
@@ -732,6 +748,25 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	
 	taskInfo.GameInstance->AddDynamicTask("mmmm", GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo, MaterialSystem*)>::Create(createMaterialInstance),
 		GTSL::Array<TaskDependency, 2>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } }, GTSL::MoveRef(onMaterialLoadInfo), this);
+}
+
+void MaterialSystem::setMaterialAsLoaded(const MaterialHandle matIndex, const MaterialData material, const Id renderGroup)
+{
+	materials.EmplaceAt(matIndex.Element, material);
+	readyMaterialHandles.EmplaceBack(matIndex);
+
+	GTSL::Vector<MaterialHandle, BE::PAR>* collection;
+
+	if (!readyMaterialsPerRenderGroup.Find(renderGroup, collection))
+	{
+		collection = &readyMaterialsPerRenderGroup.Emplace(renderGroup);
+		collection->Initialize(8, GetPersistentAllocator());
+		collection->EmplaceBack(matIndex);
+	}
+	else
+	{
+		collection->EmplaceBack(matIndex);
+	}
 }
 
 SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDesc)

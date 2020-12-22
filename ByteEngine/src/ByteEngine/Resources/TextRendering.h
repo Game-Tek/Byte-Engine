@@ -38,7 +38,7 @@ struct FaceTree : public Object
 	//Fonts are in the range 0 <-> 1
 	void MakeFromPaths(const FontResourceManager::Font& font, const BE::PAR& allocator)
 	{
-		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('h'));
+		const auto& glyph = font.Glyphs.at(font.GlyphMap.at('w'));
 
 		Faces.EmplaceBack();
 		auto& face = Faces.back();
@@ -175,6 +175,8 @@ struct FaceTree : public Object
 
 	float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
 	{
+		constexpr auto AA_LENGTH = 0.001f;
+
 		auto getBandIndex = [](const GTSL::Vector2 pos)
 		{
 			return GTSL::Math::Clamp(static_cast<uint16>(pos.Y * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
@@ -203,9 +205,10 @@ struct FaceTree : public Object
 					
 					if(dist < lowestLength)
 					{
-						result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
-						result *= isOnSegment;
 						lowestLength = dist;
+						auto side = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : 0.0f;
+						result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+						//result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
 					}
 				}
 			}
@@ -225,7 +228,7 @@ struct FaceTree : public Object
 					{
 						float32 dist = 100.0f;
 
-						constexpr uint16 LOOPS = 8; float32 bounds[2] = { 0.0f, 1.0f };
+						constexpr uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f };
 
 						uint8 sideToAdjust = 0;
 
@@ -248,7 +251,11 @@ struct FaceTree : public Object
 						if (dist < lowestLength)
 						{
 							lowestLength = dist;
-							result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
+
+							auto side = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) > 0.0f ? 1.0f : 0.0f;
+							result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+
+							//result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
 						}
 					}
 				}

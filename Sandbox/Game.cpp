@@ -174,9 +174,9 @@ void Game::PostInitialize()
 	
 	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
 
-	FaceTree faceTree(GetPersistentAllocator());
-	faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
-	faceTree.RenderChar({ 10, 10 }, 65, GetPersistentAllocator());
+	//FaceTree faceTree(GetPersistentAllocator());
+	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
+	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
 
 	//{
 	//	TextureSystem::CreateTextureInfo createTextureInfo;
@@ -185,7 +185,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}
+	//}//
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -214,8 +214,8 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+		box = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
 	}
 
 	//{
@@ -226,7 +226,7 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.RenderSystem = renderSystem;
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
 	//}
 	
 	//{
@@ -275,7 +275,7 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "TvMat";
-		//tvMat = material_system->CreateMaterial(createMaterialInfo);
+		tvMat = material_system->CreateMaterial(createMaterialInfo);
 	}
 	
 	{
@@ -285,8 +285,8 @@ void Game::PostInitialize()
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		//const auto component = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(component, GTSL::Vector3(200, 0, 250));
+		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		staticMeshRenderer->SetPosition(tv, GTSL::Vector3(200, 0, 250));
 	}
 	
 	//{
@@ -325,6 +325,11 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 1000000.0f);
 	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
+
+	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
+	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
+
 	//auto r = 1.0f;
 	//auto g = 1.0f;
 	//auto b = 1.0f;
@@ -340,7 +345,7 @@ void Game::Shutdown()
 
 void Game::move(InputManager::Vector2DInputEvent data)
 {
-	posDelta += (data.Value - data.LastValue) * 1;
+	posDelta += (data.Value - data.LastValue) * 2;
 
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y));

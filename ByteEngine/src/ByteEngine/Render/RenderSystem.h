@@ -61,22 +61,39 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, MemoryRequirementsType type)
+	void AllocateAccelerationStructureMemory(Buffer* buffer, AccelerationStructure* accelerationStructure, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, MemoryRequirementsType type)
 	{
 		AccelerationStructure::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
 		memoryRequirements.CreateInfo = createInfo;
 		memoryRequirements.BuildType = build;
 		memoryRequirements.MemoryRequirementsType = type;
+		memoryRequirements.Flags = 0;
 		accelerationStructure->GetMemoryRequirements(&memoryRequirements);
 		
-		renderAllocation->Size = memoryRequirements.MemoryRequirements.Size;
+		renderAllocation->Size = memoryRequirements.BufferSize;
 		
+		Buffer::CreateInfo bufferCreateInfo;
+		bufferCreateInfo.RenderDevice = GetRenderDevice();
+		bufferCreateInfo.BufferType = BufferType::ACCELERATION_STRUCTURE;
+		bufferCreateInfo.Size = memoryRequirements.BufferSize;
+
 		testMutex.Lock();
-		localMemoryAllocator.AllocateBuffer(renderDevice, &createInfo->Memory, renderAllocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateBuffer(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
-		createInfo->Offset = renderAllocation->Offset;
+		Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
+		bufferMemoryRequirements.RenderDevice = GetRenderDevice();
+		bufferMemoryRequirements.CreateInfo = &bufferCreateInfo;
+		buffer->GetMemoryRequirements(&bufferMemoryRequirements);
+
+		bufferCreateInfo.Offset = renderAllocation->Offset;
+		buffer->Initialize(bufferCreateInfo);
+
+		createInfo->Buffer = *buffer;
+
+		createInfo->Offset = 0;
+		createInfo->Size = memoryRequirements.BufferSize;
 		accelerationStructure->Initialize(*createInfo);
 	}
 	
@@ -277,7 +294,7 @@ private:
 	
 	struct RayTracingMesh
 	{
-		Buffer Buffer;
+		Buffer MeshBuffer, StructureBuffer;
 		uint32 IndicesCount;
 		IndexType IndexType;
 
@@ -292,13 +309,14 @@ private:
 
 	GTSL::Array<GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> buildAccelerationStructureInfos;
 	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;
-	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
+	GTSL::Vector<AccelerationStructure::GeometryTriangles, BE::PersistentAllocatorReference> geometries;
 
 	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
 	uint64 scratchBufferAddress;
 
 	AccelerationStructure topLevelAccelerationStructure;
+	Buffer topLevelAccelerationStructureBuffer;
 	uint64 topLevelAccelerationStructureAddress;
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;

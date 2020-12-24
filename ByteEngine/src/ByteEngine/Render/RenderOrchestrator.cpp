@@ -842,7 +842,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 				CommandBuffer::BindPipelineInfo bindPipelineInfo;
 				bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
 				bindPipelineInfo.PipelineType = PipelineType::RASTER;
-				bindPipelineInfo.Pipeline = &pipeline;
+				bindPipelineInfo.Pipeline = pipeline;
 				commandBuffer.BindPipeline(bindPipelineInfo);
 
 				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(mat.MaterialType));
@@ -863,21 +863,20 @@ void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, M
 	auto handleSize = renderSystem->GetShaderGroupHandleSize();
 	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupAlignment());
 
+	auto bufferAddress = sbtBuffer.GetAddress(renderSystem->GetRenderDevice());
+
 	CommandBuffer::TraceRaysInfo traceRaysInfo;
 	traceRaysInfo.DispatchSize = GTSL::Extent3D(renderSystem->GetRenderExtent());
 	traceRaysInfo.RayGenDescriptor.Size = alignedHandleSize * 1;
-	traceRaysInfo.RayGenDescriptor.Offset = 0;
-	traceRaysInfo.RayGenDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.RayGenDescriptor.Address = bufferAddress;
 	traceRaysInfo.RayGenDescriptor.Stride = alignedHandleSize;
 
 	traceRaysInfo.HitDescriptor.Size = alignedHandleSize * 1;
-	traceRaysInfo.HitDescriptor.Offset = alignedHandleSize * 1;
-	traceRaysInfo.HitDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.HitDescriptor.Address = bufferAddress + alignedHandleSize * 1;
 	traceRaysInfo.HitDescriptor.Stride = alignedHandleSize;
 
 	traceRaysInfo.MissDescriptor.Size = alignedHandleSize * 1;
-	traceRaysInfo.MissDescriptor.Offset = alignedHandleSize * 2;
-	traceRaysInfo.MissDescriptor.Buffer = &sbtBuffer;
+	traceRaysInfo.MissDescriptor.Address = bufferAddress + alignedHandleSize * 2;
 	traceRaysInfo.MissDescriptor.Stride = alignedHandleSize;
 
 	commandBuffer.TraceRays(traceRaysInfo);

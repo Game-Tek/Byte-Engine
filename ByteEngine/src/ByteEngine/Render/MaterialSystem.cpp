@@ -476,7 +476,7 @@ void MaterialSystem::BindMaterial(MaterialHandle handle, CommandBuffer* commandB
 		CommandBuffer::BindPipelineInfo bindPipelineInfo;
 		bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
 		bindPipelineInfo.PipelineType = PipelineType::RASTER;
-		bindPipelineInfo.Pipeline = &pipeline;
+		bindPipelineInfo.Pipeline = pipeline;
 		commandBuffer->BindPipeline(bindPipelineInfo);
 
 		BIND_SET(renderSystem, *commandBuffer, SetHandle(handle.MaterialType));

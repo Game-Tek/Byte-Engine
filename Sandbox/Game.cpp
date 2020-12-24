@@ -226,7 +226,7 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.RenderSystem = renderSystem;
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
+	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
 	//}
 	
 	//{

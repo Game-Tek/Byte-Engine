@@ -1,6 +1,6 @@
 ![Byte Engine](https://i.imgur.com/VRRaCOp.png)  
 
-**BYTΞ Engine** is a C++ based game engine with focus on API simplicity and speed. It's also intended to serve as an educational resource for everyone trying to build a game engine.
+**BYTΞ Engine** is a C++ based game engine with focus on control and speed.
 
 ---
 
@@ -12,13 +12,15 @@
   - Custom Allocators
   - [Custom Standard Library](https://github.com/Game-Tek/Game-Tek-Standard-Library)
   - Resource Manager with Asynchronous IO
+  - Heavily multithreaded task driven work distribution
 
 - **Features in development:**  :construction_worker:
-  - Heavy Multithreading
   - Multi-backend Raytraced Renderer
   - Multi-backend Audio Engine
   - Custom UI framework
   - [Accompanying Editor](https://github.com/Game-Tek/Byte-Engine-Editor)
+  - Custom GPU font and vector rendering
+  - Extensible renderer
 
 - **Intended features:**  :brain:
   - Custom Physics Engine

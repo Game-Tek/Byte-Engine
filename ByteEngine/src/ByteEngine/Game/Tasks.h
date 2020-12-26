@@ -171,7 +171,7 @@ struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator)
+	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), objectNames(num, allocator), inUseSystems(32, allocator)
 	{
 	}
 
@@ -198,10 +198,12 @@ struct TaskSorter
 			{
 				currentObjectAccessState[objects[i]] = accesses[i];
 				++currentObjectAccessCount[objects[i]];
+				inUseSystems.EmplaceBack(objectNames[objects[i]]);
 			}
 			
 			auto i = ongoingTasksAccesses.Emplace(accesses);
 			auto j = ongoingTasksObjects.Emplace(objects);
+
 
 			BE_ASSERT(i == j, "Error")
 			return GTSL::Result<uint32>(GTSL::MoveRef(i), true);
@@ -225,14 +227,16 @@ struct TaskSorter
 				currentObjectAccessState[objects[i]] = 0;
 			}
 
+			inUseSystems.Pop(inUseSystems.end() - inUseSystems.Find(objectNames[objects[i]]), 1);
 		}
 		
 		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);
 	}
 
-	void AddSystem()
+	void AddSystem(Id objectName)
 	{
 		GTSL::WriteLock lock(mutex);
+		objectNames.Emplace(objectName);
 		currentObjectAccessState.Emplace(0);
 		currentObjectAccessCount.Emplace(0);
 	}
@@ -243,6 +247,9 @@ private:
 
 	GTSL::KeepVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
 	GTSL::KeepVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
+
+	GTSL::Vector<Id, ALLOCATOR> inUseSystems;
+	GTSL::KeepVector<Id, ALLOCATOR> objectNames;
 
 	GTSL::ReadWriteMutex mutex;
 };

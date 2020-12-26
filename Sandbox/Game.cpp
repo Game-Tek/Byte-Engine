@@ -185,7 +185,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}//
+	//}
 
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -226,7 +226,7 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.RenderSystem = renderSystem;
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));
+	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
 	//}
 	
 	//{
@@ -310,7 +310,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
 	//}
 	
-	//window.ShowMouse(false);
+	//window.ShowMouse(false);//
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

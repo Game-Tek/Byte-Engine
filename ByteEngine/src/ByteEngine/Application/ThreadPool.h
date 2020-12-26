@@ -34,12 +34,26 @@ public:
 				
 				for (auto n = 0; n < threadCount * K; ++n)
 				{
-					if (pool->queues[(i + n) % threadCount].TryPop(task)) { break; }
+					auto queueIndex = (i + n) % threadCount;
+
+					if (pool->queues[queueIndex].TryPop(task))
+					{
+						GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(pool, GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(task));
+						pool->queues[queueIndex].Done();
+						break;
+					}
 				}
 
-				if (!GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task) && !pool->queues[i].Pop(task)) { break;	}
-				
-				GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(pool, &task);
+				//if (!GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task) && !pool->queues[i].Pop(task)) { break;	}
+				if (pool->queues[i].Pop(task))
+				{
+					GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(pool, GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(task));
+					pool->queues[i].Done();
+				}
+				else
+				{
+					break;
+				}
 			}
 		};
 
@@ -53,7 +67,7 @@ public:
 
 	~ThreadPool()
 	{
-		for (auto& queue : queues) { queue.Done(); }
+		for (auto& queue : queues) { queue.End(); }
 		for (auto& thread : threads) { thread.Join(GetPersistentAllocator()); }
 	}
 
@@ -64,20 +78,19 @@ public:
 
 		auto work = [](ThreadPool* threadPool, void* voidTask) -> void
 		{
-			Tasks* task = static_cast<Tasks*>(voidTask);
-			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(*task));
+			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(voidTask);
 			
 			GTSL::Call(taskInfo->Delegate, taskInfo->Arguments);
 
 			GTSL::Delete<TaskInfo<F, ARGS...>>(taskInfo, threadPool->GetPersistentAllocator());
 		};
 		
-		const auto currentIndex = ++index;
+		const auto currentIndex = index++;
 
 		for (auto n = 0; n < threadCount * K; ++n)
 		{
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
-
+		
 			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc)))) { return; }
 		}
 

@@ -27,6 +27,15 @@ namespace BE {
 template<typename... ARGS>
 using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
 
+inline const char* AccessTypeToString(const AccessType access)
+{
+	switch (access)
+	{
+	case AccessType::READ: return "READ";
+	case AccessType::READ_WRITE: return "READ_WRITE";
+	}
+}
+
 class GameInstance : public Object
 {
 	using FunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32, uint32)>;
@@ -216,6 +225,7 @@ private:
 	
 	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::KeepVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::KeepVector<Id, BE::PersistentAllocatorReference> systemNames;
 	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
@@ -260,6 +270,49 @@ private:
 	GTSL::Vector<GTSL::Semaphore, BE::PAR> semaphores;
 
 	uint32 scalingFactor = 16;
+
+	uint64 frameNumber = 0;
+
+	GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
+	{
+		GTSL::StaticString<1024> log;
+
+		log += from;
+		log += taskName.GetString();
+
+		log += '\n';
+		
+		log += "Accessed objects: \n	";
+		for (uint16 i = 0; i < objects.ElementCount(); ++i)
+		{
+			log += "Obj: "; log += systemNames[objects[i]].GetString(); log += ". Access: "; log += AccessTypeToString(accesses[i]); log += "\n	";
+		}
+
+		return log;
+	}
+	
+	GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
+	{
+		GTSL::StaticString<1024> log;
+
+		log += from;
+		log += taskName.GetString();
+
+		log += '\n';
+
+		log += " Goal: ";
+		log += goalName.GetString();
+
+		log += '\n';
+		
+		log += "Accessed objects: \n	";
+		for (uint16 i = 0; i < objects.ElementCount(); ++i)
+		{
+			log += "Obj: "; log += systemNames[objects[i]].GetString(); log += ". Access: "; log += AccessTypeToString(accesses[i]); log += "\n	";
+		}
+
+		return log;
+	}
 
 	uint16 getGoalIndex(const Id name) const
 	{
@@ -340,12 +393,13 @@ public:
 			l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
 			systemsMap.Emplace(systemName, systems[l]);
 			systemsIndirectionTable.Emplace(systemName, l);
+			systemNames.Emplace(systemName);
 			system = systems[l];
 		}
 
 		initSystem(system, systemName, static_cast<uint16>(l));
 
-		taskSorter.AddSystem();
+		taskSorter.AddSystem(systemName);
 		
 		return static_cast<T*>(system);
 	}

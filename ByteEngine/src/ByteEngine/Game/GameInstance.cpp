@@ -16,8 +16,7 @@ recurringGoals(16, GetPersistentAllocator()), goalNames(8, GetPersistentAllocato
 dynamicGoals(32, GetPersistentAllocator()),
 taskSorter(64, GetPersistentAllocator()),
 recurringTasksInfo(32, GetPersistentAllocator()),
-dynamicTasksInfo(32, GetPersistentAllocator()),
-asyncTasks(32, GetPersistentAllocator()), asyncTasksInfo(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator())
+asyncTasks(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator())
 {
 }
 
@@ -51,6 +50,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 
 	asyncTasksMutex.ReadLock();
 	Goal<FunctionType, BE::TAR> localAsyncTasks(asyncTasks, GetTransientAllocator());
+	asyncTasks.Clear();
 	asyncTasksMutex.ReadUnlock();
 	
 	uint32 goalCount;
@@ -65,8 +65,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 	TaskInfo task_info;
 	task_info.GameInstance = this;
 	
-	uint16 numberOfAsyncTasks = localAsyncTasks.GetNumberOfTasks();
-	uint16 asyncTaskIndex = numberOfAsyncTasks;
+	uint16 asyncTasksIndex = localAsyncTasks.GetNumberOfTasks();
 
 	for(uint32 goal = 0; goal < goalCount; ++goal)
 	{
@@ -75,90 +74,66 @@ void GameInstance::OnUpdate(BE::Application* application)
 			localRecurringGoals.EmplaceBack(recurringGoals[goal], GetTransientAllocator());
 		}
 		
-		uint16 recurringGoalNumberOfTasks = localRecurringGoals[goal].GetNumberOfTasks();
+		uint16 recurringTasksIndex = localRecurringGoals[goal].GetNumberOfTasks();
 
 		{
 			GTSL::ReadLock lock(dynamicGoalsMutex);
 			localDynamicGoals.EmplaceBack(dynamicGoals[goal], GetTransientAllocator());
+			dynamicGoals[goal].Clear();
 		}
 		
-		uint16 dynamicGoalNumberOfTasks = localDynamicGoals[goal].GetNumberOfTasks();
+		uint16 dynamicTasksIndex = localDynamicGoals[goal].GetNumberOfTasks();
 		
-		uint16 recurringGoalTask = recurringGoalNumberOfTasks;
-		uint16 dynamicGoalTask = dynamicGoalNumberOfTasks;
-		
-		while(recurringGoalNumberOfTasks + dynamicGoalNumberOfTasks + numberOfAsyncTasks > 0)
+		while(recurringTasksIndex + dynamicTasksIndex + asyncTasksIndex > 0)
 		{
-			--recurringGoalTask;
-			
-			while (recurringGoalNumberOfTasks > 0) //try recurring goals
+			if(recurringTasksIndex)
 			{
-				auto res = taskSorter.CanRunTask(localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask));
+				auto index = recurringTasksIndex - 1;
+				auto res = taskSorter.CanRunTask(localRecurringGoals[goal].GetTaskAccessedObjects(index), localRecurringGoals[goal].GetTaskAccessTypes(index));
 				
 				if (res.State())
 				{
-					const uint16 targetGoalIndex = localRecurringGoals[goal].GetTaskGoalIndex(recurringGoalTask);
+					const uint16 targetGoalIndex = localRecurringGoals[goal].GetTaskGoalIndex(index);
 					
-					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(recurringGoalTask), this, GTSL::MoveRef(goal), GTSL::MoveRef(recurringGoalTask), GTSL::MoveRef(res.Get()));
+					application->GetThreadPool()->EnqueueTask(localRecurringGoals[goal].GetTask(index), this, GTSL::MoveRef(goal), GTSL::MoveRef(res.Get()), localRecurringGoals[goal].GetTaskInfo(index));
 					
 					//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[goal].GetTaskName(recurringGoalTask), goalNames[goal], localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask)));
 					
-					--recurringGoalNumberOfTasks;
-					--recurringGoalTask;
+					--recurringTasksIndex;
 					semaphores[goal].Add();
 				}
-				else
-				{
-					//BE_LOG_MESSAGE(genTaskLog("Failed to dispatch recurring task ", localRecurringGoals[goal].GetTaskName(recurringGoalTask), goalNames[goal], localRecurringGoals[goal].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[goal].GetTaskAccessedObjects(recurringGoalTask)));
-					++recurringGoalTask;
-					break;
-				}
 			}
-			
-			--dynamicGoalTask;
-			
-			while (dynamicGoalNumberOfTasks > 0) //try dynamic goals
+
+			if(dynamicTasksIndex)
 			{
-				auto res = taskSorter.CanRunTask(localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask));
+				auto index = dynamicTasksIndex - 1;
+				auto res = taskSorter.CanRunTask(localDynamicGoals[goal].GetTaskAccessedObjects(index), localDynamicGoals[goal].GetTaskAccessTypes(index));
 				
 				if (res.State())
 				{
-					const uint16 targetGoalIndex = localDynamicGoals[goal].GetTaskGoalIndex(dynamicGoalTask);
+					const uint16 targetGoalIndex = localDynamicGoals[goal].GetTaskGoalIndex(index);
 					
-					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(dynamicGoalTask), this, GTSL::MoveRef(goal), GTSL::MoveRef(dynamicGoalTask), GTSL::MoveRef(res.Get()));
+					application->GetThreadPool()->EnqueueTask(localDynamicGoals[goal].GetTask(index), this, GTSL::MoveRef(goal), GTSL::MoveRef(res.Get()), localDynamicGoals[goal].GetTaskInfo(index));
 
 					//BE_LOG_MESSAGE(genTaskLog("Dispatched dynamic task ", localDynamicGoals[goal].GetTaskName(dynamicGoalTask), goalNames[goal], localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask)));
 					
-					--dynamicGoalNumberOfTasks;
-					--dynamicGoalTask;
+					--dynamicTasksIndex;
 					semaphores[goal].Add();
-				}
-				else
-				{
-					//BE_LOG_WARNING(genTaskLog("Tried to dispatch dynamic task ", localDynamicGoals[goal].GetTaskName(dynamicGoalTask), goalNames[goal], localDynamicGoals[goal].GetTaskAccessTypes(dynamicGoalTask), localDynamicGoals[goal].GetTaskAccessedObjects(dynamicGoalTask)));
-					++dynamicGoalTask;
-					break;
 				}
 			}
 
-			--asyncTaskIndex;
-
-			while (numberOfAsyncTasks > 0) //try dynamic goals
+			if(asyncTasksIndex)
 			{
-				auto res = taskSorter.CanRunTask(localAsyncTasks.GetTaskAccessedObjects(asyncTaskIndex), localAsyncTasks.GetTaskAccessTypes(asyncTaskIndex));
+				auto index = asyncTasksIndex - 1;
+				auto res = taskSorter.CanRunTask(localAsyncTasks.GetTaskAccessedObjects(index), localAsyncTasks.GetTaskAccessTypes(index));
 
 				if (res.State())
-				{
-					application->GetThreadPool()->EnqueueTask(localAsyncTasks.GetTask(asyncTaskIndex), this, GTSL::MoveRef(goal), GTSL::MoveRef(asyncTaskIndex), GTSL::MoveRef(res.Get()));
+				{					
+					application->GetThreadPool()->EnqueueTask(localAsyncTasks.GetTask(index), this, GTSL::MoveRef(goal), GTSL::MoveRef(res.Get()), localAsyncTasks.GetTaskInfo(index));
 
-					//BE_LOG_MESSAGE(genTaskLog("Dispatched async task ", localAsyncTasks.GetTaskName(asyncTaskIndex), localAsyncTasks.GetTaskAccessTypes(asyncTaskIndex), localAsyncTasks.GetTaskAccessedObjects(asyncTaskIndex)));
+					//BE_LOG_MESSAGE(genTaskLog("Dispatched async task ", localAsyncTasks.GetTaskName(index), localAsyncTasks.GetTaskAccessTypes(index), localAsyncTasks.GetTaskAccessedObjects(index)), "frame: ", frameNumber);
 
-					--numberOfAsyncTasks; --asyncTaskIndex;
-				}
-				else //this guarantees ordering
-				{
-					++asyncTaskIndex;
-					break;
+					--asyncTasksIndex;
 				}
 			}
 
@@ -168,28 +143,6 @@ void GameInstance::OnUpdate(BE::Application* application)
 
 		semaphores[goal].Wait();
 	} //goals
-
-	{
-		{
-			GTSL::WriteLock lock(dynamicGoalsMutex);
-			GTSL::WriteLock lock2(dynamicTasksInfoMutex);
-
-			for (uint32 i = 0; i < goalCount; ++i)
-			{
-				dynamicGoals[i].Pop(0, localDynamicGoals[i].GetNumberOfTasks());
-				dynamicTasksInfo[i].Pop(0, localDynamicGoals[i].GetNumberOfTasks());
-			}
-		}
-
-		{
-			GTSL::WriteLock lock(asyncTasksMutex);
-			GTSL::WriteLock lock2(asyncTasksInfoMutex);
-
-			asyncTasks.Pop(0, localAsyncTasks.GetNumberOfTasks());
-			asyncTasksInfo.Pop(0, localAsyncTasks.GetNumberOfTasks());
-		}
-		//TODO keep count of done tasks as with other tasks
-	}
 
 	++frameNumber;
 }
@@ -264,11 +217,6 @@ void GameInstance::AddGoal(Id name)
 	{
 		GTSL::WriteLock lock(recurringTasksInfoMutex);
 		recurringTasksInfo.EmplaceBack(64, GetPersistentAllocator());
-	}
-
-	{
-		GTSL::WriteLock lock(dynamicTasksInfoMutex);
-		dynamicTasksInfo.EmplaceBack(64, GetPersistentAllocator());
 	}
 
 	semaphores.EmplaceBack();

@@ -50,7 +50,8 @@ public:
 private:
 	GTSL::File packageFile, indexFile;
 	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureInfos;
-
+	GTSL::Mutex fileLock;
+	
 	void loadTextureImplementation(TaskInfo taskInfo, TextureLoadInfo loadInfo);
 };
 

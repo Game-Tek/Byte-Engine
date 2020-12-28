@@ -45,7 +45,7 @@ public:
 		const uint32 SLOTS_SIZE{ 0 };
 		const uint32 MAX_SLOTS_COUNT{ 0 };
 
-		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return &slotsData[slotIndex * SLOTS_SIZE]; }
+		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return slotsData + (slotIndex * SLOTS_SIZE); }
 		uint32 getSlotIndexFromPointer(void* pointer) const { return static_cast<uint32>((static_cast<byte*>(pointer) - slotsData) / SLOTS_SIZE); }
 
 		[[nodiscard]] uint64 slotsDataAllocationSize() const { return static_cast<uint64>(MAX_SLOTS_COUNT) * SLOTS_SIZE; }

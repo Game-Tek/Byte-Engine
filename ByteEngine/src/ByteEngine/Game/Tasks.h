@@ -46,6 +46,7 @@ struct Goal
 	taskAccessedObjects(num, allocatorReference),
 	taskAccessTypes(num, allocatorReference),
 	taskGoalIndex(num, allocatorReference),
+	tasksInfos(num, allocatorReference),
 	taskNames(num, allocatorReference),
 	tasks(num, allocatorReference)
 	{
@@ -57,7 +58,7 @@ struct Goal
 	taskAccessTypes(other.taskAccessTypes.GetCapacity(), allocatorReference),
 	taskGoalIndex(other.taskGoalIndex, allocatorReference),
 	taskNames(other.taskNames, allocatorReference),
-	tasks(other.tasks, allocatorReference)
+	tasks(other.tasks, allocatorReference), tasksInfos(other.tasksInfos, allocatorReference)
 	{
 		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i)
 		{
@@ -77,7 +78,7 @@ struct Goal
 		return *this;
 	}
 	
-	void AddTask(Id name, TASK task, GTSL::Range<const uint16*> offsets, const GTSL::Range<const AccessType*> accessTypes, uint16 goalIndex, const ALLOCATOR& allocator)
+	void AddTask(Id name, TASK task, GTSL::Range<const uint16*> offsets, const GTSL::Range<const AccessType*> accessTypes, uint16 goalIndex, void* taskInfo, const ALLOCATOR& allocator)
 	{
 		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
 		taskAccessTypes.EmplaceBack(16, allocator);
@@ -87,6 +88,7 @@ struct Goal
 		
 		taskNames.EmplaceBack(name);
 		taskGoalIndex.EmplaceBack(goalIndex);
+		tasksInfos.EmplaceBack(taskInfo);
 		tasks.EmplaceBack(task);
 	}
 
@@ -114,11 +116,13 @@ struct Goal
 		taskAccessedObjects.Pop(i);
 		taskAccessTypes.Pop(i);
 		taskGoalIndex.Pop(i);
+		tasksInfos.Pop(i);
 		taskNames.Pop(i);
 		tasks.Pop(i);
 	}
 
 	[[nodiscard]] TASK GetTask(const uint32 i) const { return tasks[i]; }
+	[[nodiscard]] void* GetTaskInfo(const uint16 task) const { return tasksInfos[task]; }
 
 	[[nodiscard]] GTSL::Range<const uint16*> GetTaskAccessedObjects(uint16 task) const { return taskAccessedObjects[task]; }
 
@@ -139,6 +143,7 @@ struct Goal
 
 		taskGoalIndex.ResizeDown(0);
 
+		tasksInfos.ResizeDown(0);
 		taskNames.ResizeDown(0);
 		tasks.ResizeDown(0);
 	}
@@ -150,6 +155,7 @@ struct Goal
 		taskAccessedObjects.Pop(from, range);
 		taskAccessTypes.Pop(from, range);
 		taskGoalIndex.Pop(from, range);
+		tasksInfos.Pop(from, range);
 		taskNames.Pop(from, range);
 		tasks.Pop(from, range);
 	}
@@ -161,6 +167,7 @@ private:
 	GTSL::Vector<uint16, ALLOCATOR> taskGoalIndex;
 	
 	GTSL::Vector<Id, ALLOCATOR> taskNames;
+	GTSL::Vector<void*, ALLOCATOR> tasksInfos;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 
 	friend struct Goal;

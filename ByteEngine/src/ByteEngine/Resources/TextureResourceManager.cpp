@@ -50,13 +50,15 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
 
 			query_file.ReadFile(file_buffer);
-
+			
 			int32 x, y, channel_count = 0;
-			auto* const data = stbi_load_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count, 0);
-
+			stbi_info_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count);
+			auto finalChannelCount = GTSL::NextPowerOfTwo(static_cast<uint32>(channel_count));
+			auto* const data = stbi_load_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
+			
 			TextureInfo texture_info;
 
-			switch (channel_count)
+			switch (finalChannelCount)
 			{
 			case 1: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::R_I8); break;
 			case 2: texture_info.Format = static_cast<uint8>(GAL::TextureFormat::RG_I8); break;
@@ -67,7 +69,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 			texture_info.ByteOffset = static_cast<uint32>(packageFile.GetFileSize());
 
-			const uint32 size = static_cast<uint32>(x) * y * channel_count;
+			const uint32 size = static_cast<uint32>(x) * y * finalChannelCount;
 
 			texture_info.ImageSize = size;
 			texture_info.Dimensions = GAL::Dimension::SQUARE;
@@ -131,7 +133,9 @@ void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
 void TextureResourceManager::loadTextureImplementation(TaskInfo taskInfo, const TextureLoadInfo loadInfo)
 {
 	auto& texture_info = textureInfos.At(loadInfo.Name);
+	fileLock.Lock();
 	packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+	fileLock.Unlock();
 	packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, loadInfo.DataBuffer.begin()));
 
 	OnTextureLoadInfo onTextureLoadInfo;

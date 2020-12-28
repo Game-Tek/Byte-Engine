@@ -184,7 +184,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.GameInstance = gameInstance;
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
+	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);//
 	//}
 
 	{
@@ -215,7 +215,7 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		box = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
+		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
 	}
 
 	//{
@@ -226,7 +226,6 @@ void Game::PostInitialize()
 	//	addStaticMeshInfo.RenderSystem = renderSystem;
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//	//staticMeshRenderer->SetPosition(component, GTSL::Vector3(0, 0, 250));//
 	//}
 	
 	//{
@@ -247,7 +246,7 @@ void Game::PostInitialize()
 	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
 	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
 	//	canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
-	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });
+	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });//
 	//	canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::SET_ASPECT_RATIO);
 	//	canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
 	//	canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
@@ -286,11 +285,10 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		staticMeshRenderer->SetPosition(tv, GTSL::Vector3(200, 0, 250));
 	}
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
@@ -310,7 +308,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
 	//}
 	
-	//window.ShowMouse(false);//
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

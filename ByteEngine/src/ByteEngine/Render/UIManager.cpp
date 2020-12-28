@@ -31,8 +31,8 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 {
 	auto organizer = organizersAsPrimitives.Emplace(0);
 	organizerDepth.Emplace(0);
-	organizerAlignments.Emplace();
-	organizerSizingPolicies.Emplace();
+	organizerAlignments.Emplace(Alignment::CENTER);
+	organizerSizingPolicies.Emplace(SizingPolicy::SET_ASPECT_RATIO);
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 	
@@ -118,6 +118,14 @@ void Canvas::updateBranch(uint32 organizer)
 				default: break;
 			}
 			break;
+			
+		case SizingPolicy::SET_ASPECT_RATIO:
+		{
+			const auto minDimension = GTSL::Math::Min(orgAR.X, orgAR.Y);
+			perPrimitiveInOrganizerAspectRatio = { minDimension, minDimension };
+
+			break;
+		}
 			
 		default: BE_ASSERT(false);
 		}

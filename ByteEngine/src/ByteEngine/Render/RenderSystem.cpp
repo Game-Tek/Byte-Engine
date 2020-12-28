@@ -357,6 +357,11 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryTriangles.IndexType = rayTracingMesh.IndexType;
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
 		geometryTriangles.MaxVertices = info.VertexCount;
+		geometryTriangles.TransformData = 0;
+		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
+		geometryTriangles.IndexData = geometryTriangles.VertexData + info.IndicesOffset;
+		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
+		geometryTriangles.VertexStride = info.VertexSize;
 
 		AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
 		accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
@@ -390,7 +395,6 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		AccelerationStructure::GeometryTriangles geometryTriangles;
 		geometryTriangles.Type = GeometryType::TRIANGLES;
 		geometryTriangles.IndexType = rayTracingMesh.IndexType;
-		geometryTriangles.Flags = GeometryFlags::OPAQUE;
 		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
 		geometryTriangles.VertexStride = info.VertexSize;
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;

@@ -46,7 +46,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
-	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
+	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 	
 
 	++addedMeshes.Second;
@@ -77,7 +77,7 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
-	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName);
+	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 	positions.EmplaceAt(index);
 
 	return ComponentReference(GetSystemId(), index);

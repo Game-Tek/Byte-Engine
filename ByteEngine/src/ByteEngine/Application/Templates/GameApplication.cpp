@@ -17,6 +17,7 @@
 
 #include "ByteEngine/Resources/AudioResourceManager.h"
 #include "ByteEngine/Resources/FontResourceManager.h"
+#include "ByteEngine/Sound/AudioSystem.h"
 
 #pragma comment(lib, "XInput.lib")
 
@@ -103,6 +104,7 @@ void GameApplication::PostInitialize()
 	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	gameInstance->AddSystem<AudioSystem>("AudioSystem");
 
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	

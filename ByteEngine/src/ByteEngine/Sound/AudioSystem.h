@@ -7,6 +7,7 @@
 #include <GTSL/Array.hpp>
 #include <GTSL/Buffer.h>
 #include "ByteEngine/Id.h"
+#include "ByteEngine/Game/Tasks.h"
 
 class Sound;
 
@@ -44,7 +45,7 @@ private:
 	GTSL::Buffer audioBuffer;
 	
 	void requestAudioStreams();
-	void render();
+	void render(TaskInfo);
 
 	void removePlayingSound(uint32 i)
 	{

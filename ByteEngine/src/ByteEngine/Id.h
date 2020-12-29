@@ -14,6 +14,7 @@ public:
 	
 	constexpr Id(const UTF8* name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
+	explicit Id(const uint64 value) noexcept : hashedName(value) {}
 
 	[[nodiscard]] const UTF8* GetString() const { return GTSL::Range<const UTF8*>(stringName).begin(); }
 	[[nodiscard]] GTSL::Id64 GetHash() const { return hashedName; }

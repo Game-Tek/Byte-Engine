@@ -135,8 +135,8 @@ void TextureResourceManager::loadTextureImplementation(TaskInfo taskInfo, const 
 	auto& texture_info = textureInfos.At(loadInfo.Name);
 	fileLock.Lock();
 	packageFile.SetPointer(texture_info.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-	fileLock.Unlock();
 	packageFile.ReadFromFile(GTSL::Range<byte*>(texture_info.ImageSize, loadInfo.DataBuffer.begin()));
+	fileLock.Unlock();
 
 	OnTextureLoadInfo onTextureLoadInfo;
 	onTextureLoadInfo.ResourceName = loadInfo.Name;

@@ -15,6 +15,8 @@
 #define STBI_MSC_SECURE_CRT
 #include "stb image/stb_image_write.h"
 
+#undef MinMax
+
 struct LinearBezier
 {
 	LinearBezier(GTSL::Vector2 a, GTSL::Vector2 b) : Points{ a, b } {}

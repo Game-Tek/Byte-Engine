@@ -35,8 +35,21 @@ MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialRe
 	if (file_buffer.GetLength())
 	{
 		Extract(materialInfos, file_buffer);
+		
+		//auto addRTmats = [&](uint64 key, const MaterialInfo& material)
+		//{
+		//	bool isRt = false;
+		//	for(auto& e : material.ShaderTypes)
+		//	{
+		//		auto st = (GAL::ShaderType)
+		//		if(e == )
+		//	}
+		//	
+		//	rayTracingMaterials.EmplaceBack(Id(key));
+		//};
+		//GTSL::ForEachIndexed(materialInfos, addRTmats);
 	}
-	
+
 	file_buffer.Free(8, GetTransientAllocator());
 }
 

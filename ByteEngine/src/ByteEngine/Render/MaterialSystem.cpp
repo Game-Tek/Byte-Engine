@@ -24,13 +24,13 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	minUniformBufferOffset = renderSystem->GetRenderDevice()->GetMinUniformBufferOffset();
-	
+
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
 		//initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "FrameStart", "RenderStart");
 		initializeInfo.GameInstance->AddTask("updateDescriptors", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateDescriptors>(this), taskDependencies, "RenderStartSetup", "RenderEndSetup");
 	}
-	
+
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, };
 		initializeInfo.GameInstance->AddTask("updateCounter", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateCounter>(this), taskDependencies, "RenderEnd", "FrameEnd");
@@ -54,30 +54,30 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	renderGroupsData.Initialize(4, GetPersistentAllocator());
 	readyMaterialsPerRenderGroup.Initialize(8, GetPersistentAllocator());
-	
+
 	setsBufferData.Initialize(4, GetPersistentAllocator());
-	
-	for(uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
+
+	for (uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 	{
 		descriptorsUpdates.EmplaceBack();
 		descriptorsUpdates.back().Initialize(GetPersistentAllocator());
 	}
-	
+
 	frame = 0;
 
 	{
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> bindingDescriptors;
 		bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 5/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
-		
-		if(BE::Application::Get()->GetOption("rayTracing"))
+
+		if (BE::Application::Get()->GetOption("rayTracing"))
 		{
 			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::ACCELERATION_STRUCTURE,
 				ShaderStage::ANY_HIT | ShaderStage::CLOSEST_HIT | ShaderStage::INTERSECTION | ShaderStage::MISS,
-				1/*max bindings, TODO: CHECK HOW TO UPDATE*/, 0 });
-			
+				1, 0 });
+
 			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::STORAGE_BUFFER,
 				ShaderStage::ANY_HIT | ShaderStage::CLOSEST_HIT | ShaderStage::INTERSECTION,
-				16/*max bindings, TODO: CHECK HOW TO UPDATE*/, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
+				16, BindingFlags::PARTIALLY_BOUND | BindingFlags::VARIABLE_DESCRIPTOR_COUNT });
 		}
 
 		makeSetEx(renderSystem, "GlobalData", Id(), bindingDescriptors);
@@ -86,15 +86,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
 		auto* materialResorceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-
-		uint32 bufferSize = 0;
-
-		for (uint32 i = 0; i < materialResorceManager->GetRayTracingMaterialsCount(); ++i)
-		{
-			uint32 size = 0;
-			materialResorceManager->GetMaterialSize(materialResorceManager->GetRayTracingMaterialHandle(i), size);
-			bufferSize += size;
-		}
 
 		Buffer::CreateInfo sbtCreateInfo;
 		sbtCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -112,82 +103,90 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		for (uint32 i = 0; i < materialResorceManager->GetRayTracingMaterialsCount(); ++i)
 		{
-			Pipeline::ShaderInfo shaderInfo;
-			auto material = materialResorceManager->LoadMaterialSynchronous(materialResorceManager->GetRayTracingMaterialHandle(i), {});
+			uint32 bufferSize = 0;
+			materialResorceManager->GetMaterialSize(materialResorceManager->GetRayTracingMaterialHandle(i), bufferSize);
+			GTSL::Buffer shaderBuffer; shaderBuffer.Allocate(bufferSize, 8, GetTransientAllocator());
 
-			shaderInfo.Shader = &shaders[0];
-			shaderInfo.Type = ConvertShaderType(material.ShaderTypes[0]); //TODO: WHAT
+			auto material = materialResorceManager->LoadMaterialSynchronous(materialResorceManager->GetRayTracingMaterialHandle(i), GTSL::Range<byte*>(shaderBuffer.GetLength(), shaderBuffer.GetData()));
 
-			Shader::CreateInfo createInfo;
-			createInfo.RenderDevice = renderSystem->GetRenderDevice();
-			createInfo.ShaderData = GTSL::Range<const byte*>(material.ShaderSizes[0], nullptr); //TODO: SET REAL DATA
+			uint32 offset = 0;
 
-			shaderInfos.EmplaceBack(shaderInfo); shaders.EmplaceBack(createInfo);
-
-			RayTracingPipeline::Group group{};
-			
-			switch(material.ShaderTypes[i])
+			for (uint32 s = 0; s < material.ShaderSizes.GetLength(); ++s)
 			{
-			case GAL::ShaderType::RAY_GEN:
-			case GAL::ShaderType::MISS:
-			case GAL::ShaderType::CALLABLE:
-			{
-				//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
-				//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL;
-				group.GeneralShader = i;
-				group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				break;
+				Shader::CreateInfo createInfo;
+				createInfo.RenderDevice = renderSystem->GetRenderDevice();
+				createInfo.ShaderData = GTSL::Range<const byte*>(material.ShaderSizes[s], shaderBuffer.GetData() + offset);
+				offset += material.ShaderSizes[s];
+
+				Pipeline::ShaderInfo shaderInfo;
+				shaderInfo.Shader = &shaders[s];
+				shaderInfo.Type = ConvertShaderType(material.ShaderTypes[s]);
+				shaderInfos.EmplaceBack(shaderInfo); shaders.EmplaceBack(createInfo);
+
+				RayTracingPipeline::Group group{};
+
+				group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
+				group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED; group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
+
+				switch (material.ShaderTypes[i])
+				{
+				case GAL::ShaderType::RAY_GEN:
+				case GAL::ShaderType::MISS:
+				case GAL::ShaderType::CALLABLE:
+				{
+					//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
+					//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+					group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL;
+					group.GeneralShader = i + s;
+					break;
+				}
+
+				case GAL::ShaderType::CLOSEST_HIT:
+				{
+					//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
+					//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+					group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+					group.ClosestHitShader = i + s;
+					break;
+				}
+
+				case GAL::ShaderType::ANY_HIT:
+				{
+					//anyHitShader is the optional index of the any-hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the
+					//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
+					//and VK_SHADER_UNUSED_KHR otherwise.
+					group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+					group.AnyHitShader = i + s;
+					break;
+				}
+
+				case GAL::ShaderType::INTERSECTION:
+				{
+					//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
+					//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+					group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL;
+					group.IntersectionShader = i + s;
+					break;
+				}
+
+				default: BE_LOG_MESSAGE("Non raytracing shader found in raytracing material");
+				}
+
+				groups.EmplaceBack(group);
+
 			}
 
-			case GAL::ShaderType::CLOSEST_HIT:
-			{
-				//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
-				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
-				group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.ClosestHitShader = i;
-				group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				break;
-			}
-				
-			case GAL::ShaderType::ANY_HIT:
-			{
-				//anyHitShader is the optional index of the any-hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the
-				//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
-				//and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
-				group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.AnyHitShader = i;
-				group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				break;
-			}
-				
-			case GAL::ShaderType::INTERSECTION:
-			{
-				//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
-				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL;
-				group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.IntersectionShader = i;
-				break;
-			}
-			default: ;
-			}
-
+			shaderBuffer.Free(8, GetTransientAllocator());
 		}
 
 		auto& set = setNodes.At(Id("GlobalData"))->Data;
-		
+
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
-		createInfo.Name;
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<32> name("Ray Tracing Pipeline: "); createInfo.Name = name;
+		}
+		
 		createInfo.MaxRecursionDepth = 3;
 		createInfo.Stages = shaderInfos;
 		createInfo.PipelineLayout = set.PipelineLayout;

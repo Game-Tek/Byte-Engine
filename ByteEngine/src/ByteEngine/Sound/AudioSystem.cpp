@@ -9,6 +9,7 @@
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
 AudioSystem::AudioSystem() : System("AudioSystem")
@@ -29,6 +30,8 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 	audioDevice.Start();
 
 	audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 32, GetPersistentAllocator());
+
+	initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessType::READ_WRITE } }, "RenderDo", "RenderEnd");
 }
 
 void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -73,7 +76,7 @@ void AudioSystem::requestAudioStreams()
 	lastRequestedAudios.Resize(0);
 }
 
-void AudioSystem::render()
+void AudioSystem::render(TaskInfo)
 {
 	GTSL::Array<uint32, 16> soundsToRemoveFromPlaying;
 	GTSL::Array<Id, 16> samplesToRemoveFromPlaying;
@@ -89,6 +92,8 @@ void AudioSystem::render()
 	audioDevice.GetAvailableBufferFrames(availableAudioFrames);
 	
 	auto* buffer = audioBuffer.GetData();
+
+	GTSL::SetMemory(audioBuffer.GetCapacity(), audioBuffer.GetData(), 0);
 	
 	for(uint32 i = 0; i < playingEmitters.GetLength(); ++i)
 	{

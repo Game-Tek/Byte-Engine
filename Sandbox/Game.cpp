@@ -184,7 +184,7 @@ void Game::PostInitialize()
 	//	createTextureInfo.GameInstance = gameInstance;
 	//	createTextureInfo.TextureName = "hydrant_Albedo";
 	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);//
+	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
 	//}
 
 	{
@@ -246,7 +246,7 @@ void Game::PostInitialize()
 	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
 	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
 	//	canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
-	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });//
+	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });
 	//	canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::SET_ASPECT_RATIO);
 	//	canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
 	//	canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
@@ -288,7 +288,7 @@ void Game::PostInitialize()
 	}
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");

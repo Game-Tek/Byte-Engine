@@ -226,8 +226,6 @@ private:
 	
 	mutable GTSL::ReadWriteMutex asyncTasksMutex;
 	Goal<FunctionType, BE::PersistentAllocatorReference> asyncTasks;
-	//mutable GTSL::ReadWriteMutex asyncTasksInfoMutex;
-	//GTSL::Vector<void*, BE::PersistentAllocatorReference> asyncTasksInfo;
 
 	GTSL::ConditionVariable resourcesUpdated;
 	
@@ -236,9 +234,6 @@ private:
 
 	mutable GTSL::ReadWriteMutex recurringTasksInfoMutex;
 	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
-	
-	//mutable GTSL::ReadWriteMutex dynamicTasksInfoMutex;
-	//GTSL::Vector<GTSL::Vector<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 

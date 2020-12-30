@@ -230,7 +230,7 @@ void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandB
 
 	auto& set = sets[setHandle()];
 
-	if (set.MemberSize)
+	if (set.BindingsSet[frame].GetVkDescriptorSet())
 	{
 		GTSL::Array<uint32, 2> offsets;
 

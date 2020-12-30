@@ -129,10 +129,10 @@ public:
 
 	void OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize);
 
-	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
+	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName()).APIRenderPass].RenderPass; }
 
-	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name).APIRenderPass; }
-	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const { return renderPassesMap.At(renderPass).APISubPass; }
+	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name()).APIRenderPass; }
+	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const { return renderPassesMap.At(renderPass()).APISubPass; }
 
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
@@ -160,9 +160,9 @@ public:
 	
 	void AddToRenderPass(Id renderPass, Id renderGroup)
 	{
-		if(renderPassesMap.Find(renderPass))
+		if(renderPassesMap.Find(renderPass()))
 		{
-			renderPassesMap.At(renderPass).RenderGroups.EmplaceBack(renderGroup);
+			renderPassesMap.At(renderPass()).RenderGroups.EmplaceBack(renderGroup);
 		}
 	}
 private:
@@ -243,7 +243,7 @@ private:
 	GTSL::StaticMap<Attachment, 32> attachments;
 
 public:
-	Texture GetAttachmentTexture(const Id attachment) const { return attachments.At(attachment).Texture; }
-	TextureView GetAttachmentTextureView(const Id attachment) const { return attachments.At(attachment).TextureView; }
-	TextureSampler GetAttachmentTextureSampler(const Id attachment) const { return attachments.At(attachment).TextureSampler; }
+	Texture GetAttachmentTexture(const Id attachment) const { return attachments.At(attachment()).Texture; }
+	TextureView GetAttachmentTextureView(const Id attachment) const { return attachments.At(attachment()).TextureView; }
+	TextureSampler GetAttachmentTextureSampler(const Id attachment) const { return attachments.At(attachment()).TextureSampler; }
 };

@@ -107,7 +107,7 @@ namespace BE
 
 		uint32 GetOption(const Id name) const
 		{
-			return settings.At(name);
+			return settings.At(name());
 		}
 		
 	protected:

@@ -220,13 +220,13 @@ public:
 
 	void AddMeshToId(GPUMeshHandle mesh, Id material)
 	{
-		if(meshesByMaterial.Find(material)) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
+		if(meshesByMaterial.Find(material())) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
 		{
-			meshesByMaterial.At(material).EmplaceBack(mesh());
+			meshesByMaterial.At(material()).EmplaceBack(mesh());
 		}
 		else
 		{
-			auto& e = meshesByMaterial.Emplace(material);
+			auto& e = meshesByMaterial.Emplace(material());
 			e.Initialize(8, GetPersistentAllocator());
 			e.EmplaceBack(mesh());
 		}

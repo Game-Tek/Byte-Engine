@@ -73,7 +73,7 @@ void Game::Initialize()
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	{
-		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.ShaderName = "HydrantMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
@@ -93,11 +93,11 @@ void Game::Initialize()
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
 
 	{
-		MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.ShaderName = "TvMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
@@ -117,11 +117,11 @@ void Game::Initialize()
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
 	
 	//{
-	//	MaterialResourceManager::MaterialCreateInfo materialCreateInfo;
+	//	MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
 	//	materialCreateInfo.ShaderName = "TextMaterial";
 	//	materialCreateInfo.RenderGroup = "TextSystem";
 	//	materialCreateInfo.RenderPass = "MainRenderPass";
@@ -135,11 +135,11 @@ void Game::Initialize()
 	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 	//	materialCreateInfo.BlendEnable = true;
 	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	//}
 	
 	{
-		MaterialResourceManager::MaterialCreateInfo materialCreateInfo{};
+		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo{};
 		materialCreateInfo.ShaderName = "UIMat";
 		materialCreateInfo.RenderGroup = "UIRenderGroup";
 		materialCreateInfo.RenderPass = "UIRenderPass";
@@ -153,7 +153,7 @@ void Game::Initialize()
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
 		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateMaterial(materialCreateInfo);
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
 	
 	//show loading screen
@@ -204,7 +204,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "UIMat";
-	//	buttonMaterial = material_system->CreateMaterial(createMaterialInfo);
+	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
 	//}
 	
 	{
@@ -288,12 +288,12 @@ void Game::PostInitialize()
 	}
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.MaterialName = "TextMaterial";
-	//	textMaterial = material_system->CreateMaterial(createMaterialInfo);
+	//	textMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
 	//}
 	
 	//{

@@ -95,7 +95,7 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	//createMaterialInfo.MaterialName = "UIMat";
 	//createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//uiMaterial = materialSystem->CreateMaterial(createMaterialInfo);
+	//uiMaterial = materialSystem->CreateRasterMaterial(createMaterialInfo);
 	
 	renderSystem->AddMeshToId(square, uiMaterial.MaterialType);
 
@@ -287,9 +287,9 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 
-	renderPassesFunctions.Emplace(Id("SceneRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
-	renderPassesFunctions.Emplace(Id("UIRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
-	renderPassesFunctions.Emplace(Id("RaysRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
+	renderPassesFunctions.Emplace(Id("SceneRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
+	renderPassesFunctions.Emplace(Id("UIRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
+	renderPassesFunctions.Emplace(Id("RaysRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -336,7 +336,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
 
-	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("GlobalData"));
+	materialSystem->BIND_SET(renderSystem, commandBuffer, Id("GlobalData"));
 	
 	CommandBuffer::EndRegionInfo endRegionInfo;
 	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -345,7 +345,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	
 	for(uint8 erp = 0; erp < enabledRenderPasses.GetLength(); ++erp)
 	{
-		auto& renderPass = renderPassesMap.At(enabledRenderPasses[erp]);
+		auto& renderPass = renderPassesMap.At(enabledRenderPasses[erp]());
 
 		if(arp == renderPass.APIRenderPass)
 		{
@@ -375,9 +375,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			}
 		}
 
-		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(enabledRenderPasses[erp]));
+		materialSystem->BIND_SET(renderSystem, commandBuffer, enabledRenderPasses[erp]);
 		
-		renderPassesFunctions.At(enabledRenderPasses[erp])(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, enabledRenderPasses[erp]);
+		renderPassesFunctions.At(enabledRenderPasses[erp]())(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, enabledRenderPasses[erp]);
 	}
 
 	if (subPasses[arp].GetLength() > apiRpSp)
@@ -497,7 +497,7 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
-	renderManagers.Emplace(renderManager, systemReference);
+	renderManagers.Emplace(renderManager(), systemReference);
 }
 
 void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const uint16 systemReference)
@@ -544,7 +544,7 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 		attachment.ClearValue = GTSL::RGBA(0, 0, 0, 0);
 	}
 
-	attachments.Emplace(name, attachment);
+	attachments.Emplace(name(), attachment);
 }
 
 void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const PassData*> passesData)
@@ -567,9 +567,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		{
 			RenderPassAttachment renderPassAttachment;
 			renderPassAttachment.Index = attachmentDescriptors.GetLength();
-			apiRenderPassData.Attachments.Emplace(e.Name, renderPassAttachment);
+			apiRenderPassData.Attachments.Emplace(e.Name(), renderPassAttachment);
 
-			auto& attachment = attachments.At(e.Name);
+			auto& attachment = attachments.At(e.Name());
 
 			RenderPass::AttachmentDescriptor attachmentDescriptor;
 			attachmentDescriptor.Format = attachment.Format;
@@ -599,17 +599,17 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 	{
 		apiRenderPassData.RenderPasses.EmplaceBack(static_cast<uint8>(renderPassesNames.EmplaceBack(passesData[s].Name)));
 
-		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name);
+		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name());
 		renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
 
 		RenderPass::SubPassDescriptor subPassDescriptor;
 
 		for (auto& e : passesData[s].ReadAttachments)
 		{
-			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
+			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name());
 
 			renderpassAttachment.Layout = TextureLayout::SHADER_READ_ONLY;
-			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
+			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name()).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
 			attachmentReference.Layout = renderpassAttachment.Layout;
@@ -622,10 +622,10 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 		for (auto e : passesData[s].WriteAttachments)
 		{
-			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name);
+			auto& renderpassAttachment = apiRenderPassData.Attachments.At(e.Name());
 
 			renderpassAttachment.Layout = TextureLayout::COLOR_ATTACHMENT;
-			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name).Index;
+			renderpassAttachment.Index = apiRenderPassData.Attachments.At(e.Name()).Index;
 
 			RenderPass::AttachmentReference attachmentReference;
 			attachmentReference.Layout = renderpassAttachment.Layout;
@@ -660,9 +660,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 
 		subPassDescriptor.PreserveAttachments = preserveAttachmentReferences[s];
 
-		if (passesData[s].DepthStencilAttachment.Name)
+		if (passesData[s].DepthStencilAttachment.Name())
 		{
-			auto& attachmentInfo = apiRenderPassData.Attachments.At(passesData[s].DepthStencilAttachment.Name);
+			auto& attachmentInfo = apiRenderPassData.Attachments.At(passesData[s].DepthStencilAttachment.Name());
 
 			subPassDescriptor.DepthAttachmentReference.Index = attachmentInfo.Index;
 			subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
@@ -679,7 +679,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 		subPasses.back().EmplaceBack();
 		auto& newSubPass = subPasses.back().back();
 		newSubPass.Name = passesData[s].Name;
-		subPassMap.back().Emplace(passesData[s].Name, s);
+		subPassMap.back().Emplace(passesData[s].Name(), s);
 	}
 
 	renderPassCreateInfo.SubPasses = subPassDescriptors;
@@ -775,7 +775,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 
 		GTSL::Array<TextureView, 8> textureViews;
 
-		for (auto e : renderPass.AttachmentNames) { textureViews.EmplaceBack(attachments.At(e).TextureView); }
+		for (auto e : renderPass.AttachmentNames) { textureViews.EmplaceBack(attachments.At(e()).TextureView); }
 
 		framebufferCreateInfo.TextureViews = textureViews;
 		framebufferCreateInfo.RenderPass = &renderPass.RenderPass;
@@ -787,18 +787,18 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
-	for (auto e : renderPassesMap.At(rp).RenderGroups)
+	for (auto e : renderPassesMap.At(rp()).RenderGroups)
 	{
 		auto mats = materialSystem->GetMaterialHandlesForRenderGroup(e);
 
-		materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e));
+		materialSystem->BIND_SET(renderSystem, commandBuffer, e);
 		
 		uint32 meshIndex = 0;
 		for (auto m : mats)
 		{
 			materialSystem->BindMaterial(m, &commandBuffer, renderSystem);
 
-			materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(e), meshIndex);
+			materialSystem->BIND_SET(renderSystem, commandBuffer, e, meshIndex);
 
 			renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
 
@@ -812,7 +812,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 {
 	auto* uiRenderManager = gameInstance->GetSystem<UIRenderManager>("UIRenderManager");
 
-	materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"));
+	materialSystem->BIND_SET(renderSystem, commandBuffer, Id("UIRenderGroup"));
 
 	auto* uiSystem = gameInstance->GetSystem<UIManager>("UIManager");
 	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
@@ -845,8 +845,8 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 				bindPipelineInfo.Pipeline = pipeline;
 				commandBuffer.BindPipeline(bindPipelineInfo);
 
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle(mat.MaterialType));
-				materialSystem->BIND_SET(renderSystem, commandBuffer, SetHandle("UIRenderGroup"), squareIndex);
+				materialSystem->BIND_SET(renderSystem, commandBuffer, mat.MaterialType);
+				materialSystem->BIND_SET(renderSystem, commandBuffer, Id("UIRenderGroup"), squareIndex);
 
 				renderSystem->RenderMesh(uiRenderManager->GetSquareMesh());
 			}

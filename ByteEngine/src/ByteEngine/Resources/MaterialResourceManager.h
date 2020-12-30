@@ -21,7 +21,7 @@ public:
 
 		Binding() = default;
 		Binding(const GAL::BindingType type, const GAL::ShaderStage::value_type pipelineStage) : Type(type), Stage(pipelineStage) {}
-		//Binding(const MaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)), Stage(other.Stage) {}
+		//Binding(const RasterMaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)), Stage(other.Stage) {}
 
 		friend void Insert(const Binding& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(Binding& materialInfo, GTSL::Buffer& buffer);
@@ -34,7 +34,7 @@ public:
 
 		Uniform() = default;
 		Uniform(const GTSL::Id64 name, const GAL::ShaderDataType type) : Name(name), Type(type) {}
-		//Uniform(const MaterialInfo::Uniform& other) : Name(other.Name), Type(static_cast<GAL::ShaderDataType>(other.Type)) {}
+		//Uniform(const RasterMaterialInfo::Uniform& other) : Name(other.Name), Type(static_cast<GAL::ShaderDataType>(other.Type)) {}
 
 		friend void Insert(const Uniform& materialInfo, GTSL::Buffer& buffer);
 		friend void Extract(Uniform& materialInfo, GTSL::Buffer& buffer);
@@ -54,7 +54,7 @@ public:
 		friend void Extract(StencilState& materialInfo, GTSL::Buffer& buffer);
 	};
 	
-	struct MaterialInfo
+	struct RasterMaterialInfo
 	{
 		uint32 MaterialOffset = 0;
 		GTSL::Id64 RenderGroup;
@@ -75,14 +75,14 @@ public:
 		StencilState Back;
 		bool BlendEnable = false;
 		
-		friend void Insert(const MaterialInfo& materialInfo, GTSL::Buffer& buffer);
-		friend void Extract(MaterialInfo& materialInfo, GTSL::Buffer& buffer);
+		friend void Insert(const RasterMaterialInfo& materialInfo, GTSL::Buffer& buffer);
+		friend void Extract(RasterMaterialInfo& materialInfo, GTSL::Buffer& buffer);
 	};
 	
-	struct MaterialCreateInfo
+	struct RasterMaterialCreateInfo
 	{
-		GTSL::StaticString<128> ShaderName;
-		GTSL::StaticString<128> RenderGroup;
+		GTSL::StaticString<64> ShaderName;
+		GTSL::StaticString<64> RenderGroup;
 		GTSL::Id64 RenderPass;
 		GTSL::Range<const GAL::ShaderDataType*> VertexFormat;
 
@@ -103,9 +103,34 @@ public:
 		bool StencilTest;
 		bool BlendEnable = false;
 	};
-	void CreateMaterial(const MaterialCreateInfo& materialCreateInfo);
+	void CreateRasterMaterial(const RasterMaterialCreateInfo& materialCreateInfo);
+
+	struct RayTraceMaterialCreateInfo
+	{
+		GTSL::StaticString<64> ShaderName;
+		GAL::ShaderType Type;
+		GAL::BlendOperation ColorBlendOperation;
+	};
+	void CreateRayTraceMaterial(const RayTraceMaterialCreateInfo& materialCreateInfo);
 
 	void GetMaterialSize(GTSL::Id64 name, uint32& size);
+
+	struct RayTracingShaderInfo
+	{
+		/**
+		 * \brief Size of the precompiled binary blob to be provided to the API.
+		 */
+		uint32 BinarySize;
+
+		GAL::ShaderType ShaderType;
+		GAL::BlendOperation ColorBlendOperation;
+	};
+
+	struct RayTraceMaterialInfo
+	{
+		uint32 OffsetToBinary;
+		RayTracingShaderInfo ShaderInfo;
+	};
 	
 	struct OnMaterialLoadInfo : OnResourceLoad
 	{
@@ -138,13 +163,21 @@ public:
 
 	OnMaterialLoadInfo LoadMaterialSynchronous(uint64 id, GTSL::Range<byte*> buffer);
 	
-	uint32 GetRayTracingMaterialsCount() const { return rayTracingMaterials.GetLength(); }
-	GTSL::Id64 GetRayTracingMaterialHandle(uint32 mat) const { return rayTracingMaterials[mat]; }
+	RayTracingShaderInfo LoadRayTraceShaderSynchronous(Id id, GTSL::Range<byte*> buffer);
 
+	uint32 GetRayTraceShaderSize(Id handle) const
+	{
+		GTSL::ReadLock lock(mutex);
+		return rtMaterialInfos.At(handle()).ShaderInfo.BinarySize;
+	}
+	
+	uint32 GetRayTraceShaderCount() const { return rtHandles.GetLength(); }
+	Id GetRayTraceShaderHandle(const uint32 handle) const { return rtHandles[handle]; }
 private:
 	GTSL::File package, index;
-	GTSL::FlatHashMap<MaterialInfo, BE::PersistentAllocatorReference> materialInfos;
-	GTSL::ReadWriteMutex mutex;
+	GTSL::FlatHashMap<RasterMaterialInfo, BE::PersistentAllocatorReference> rasterMaterialInfos;
+	GTSL::FlatHashMap<RayTraceMaterialInfo, BE::PersistentAllocatorReference> rtMaterialInfos;
+	mutable GTSL::ReadWriteMutex mutex;
 
-	GTSL::Vector<GTSL::Id64, BE::PAR> rayTracingMaterials;
+	GTSL::Vector<Id, BE::PAR> rtHandles;
 };

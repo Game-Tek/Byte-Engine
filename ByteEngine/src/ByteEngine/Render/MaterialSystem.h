@@ -27,12 +27,14 @@ struct MaterialHandle
 	uint32 Element = 0;
 };
 
+MAKE_HANDLE(uint32, Set)
+
 struct MemberDescription
 {
-	uint8 SetBufferDataIndex, OffsetIntoStruct, DataType;
+	SetHandle Set;
+	uint8 OffsetIntoStruct, DataType;
 };
 
-MAKE_HANDLE(Id, Set)
 MAKE_HANDLE(MemberDescription, Member)
 
 class MaterialSystem : public System
@@ -87,6 +89,10 @@ public:
 	}
 
 	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
+	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, uint32 index = 0)
+	{
+		BIND_SET(renderSystem, commandBuffer, setHandlesByName.At(setName()), index);
+	}
 	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
 
 	struct MemberInfo : Member
@@ -112,7 +118,7 @@ public:
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
 	
-	void AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count);
+	void AddObjects(RenderSystem* renderSystem, SetHandle setHandle, uint32 count);
 
 	struct BindingsSetData
 	{
@@ -141,9 +147,9 @@ public:
 
 	auto GetMaterialHandlesForRenderGroup(Id renderGroup) const
 	{
-		if (readyMaterialsPerRenderGroup.Find(renderGroup)) //TODO: MAYBE ADD DECLARATION OF RENDER GROUP UP AHEAD AND AVOID THIS
+		if (readyMaterialsPerRenderGroup.Find(renderGroup())) //TODO: MAYBE ADD DECLARATION OF RENDER GROUP UP AHEAD AND AVOID THIS
 		{
-			return readyMaterialsPerRenderGroup.At(renderGroup).GetRange();
+			return readyMaterialsPerRenderGroup.At(renderGroup()).GetRange();
 		}
 		else
 		{
@@ -152,17 +158,22 @@ public:
 	}
 
 	void BindMaterial(MaterialHandle handle, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
+
+	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
 private:
+	Id rayGenMaterial;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
+	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
+	
 	template<typename T>
 	T* getSetMemberPointer(MemberDescription member, uint64 index, uint8 frameToUpdate)
 	{
-		auto& setBufferData = setsBufferData[member.SetBufferDataIndex];
-		auto structSize = setBufferData.MemberSize;
+		auto& set = sets[member.Set()];
+		auto structSize = set.MemberSize;
 		//												//BUFFER										//OFFSET TO STRUCT		//OFFSET TO MEMBER
-		return reinterpret_cast<T*>(static_cast<byte*>(setBufferData.Allocations[frameToUpdate].Data) + (index * structSize) + member.OffsetIntoStruct);
+		return reinterpret_cast<T*>(static_cast<byte*>(set.Allocations[frameToUpdate].Data) + (index * structSize) + member.OffsetIntoStruct);
 	}
 	
 	uint32 matNum = 0;
@@ -222,9 +233,9 @@ private:
 			PerSetToUpdateTextureBindingsUpdate.Initialize(4, allocator);
 		}
 
-		[[nodiscard]] uint32 AddSetToUpdate(uint32 set, const BE::PAR& allocator)
+		[[nodiscard]] uint32 AddSetToUpdate(SetHandle set, const BE::PAR& allocator)
 		{
-			const auto handle = setsToUpdate.EmplaceBack(set);
+			const auto handle = setsToUpdate.EmplaceBack(set());
 			PerSetToUpdateBufferBindingsUpdate.EmplaceBack(4, allocator);
 			PerSetToUpdateTextureBindingsUpdate.EmplaceBack(4, allocator);
 			return handle;
@@ -247,7 +258,7 @@ private:
 			PerSetToUpdateTextureBindingsUpdate.ResizeDown(0);
 		}
 		
-		GTSL::Vector<uint32, BE::PAR> setsToUpdate;
+		GTSL::Vector<SetHandle, BE::PAR> setsToUpdate;
 
 		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBufferBindingsUpdate;
 		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateTextureBindingsUpdate;
@@ -259,20 +270,6 @@ private:
 		uint32 SetReference;
 	};
 	GTSL::FlatHashMap<RenderGroupData, BE::PAR> renderGroupsData;
-	
-	struct SetData
-	{
-		Id Name;
-		void* Parent;
-		uint32 Level = 0;
-		PipelineLayout PipelineLayout;
-		BindingsSetLayout BindingsSetLayout;
-		BindingsPool BindingsPool;
-		uint32 SetBufferData = 0xFFFFFFFF;
-	};
-	
-	GTSL::Tree<SetData, BE::PAR> setsTree;
-	GTSL::FlatHashMap<decltype(setsTree)::Node*, BE::PAR> setNodes;
 
 	struct Struct
 	{
@@ -280,12 +277,19 @@ private:
 		{
 			PER_INSTANCE
 		} Frequency;
-		
+
 		GTSL::Array<Member, 8> Members;
 	};
 	
-	struct SetBufferData
+	struct SetData
 	{
+		Id Name;
+		SetHandle Parent;
+		uint32 Level = 0;
+		PipelineLayout PipelineLayout;
+		BindingsSetLayout BindingsSetLayout;
+		BindingsPool BindingsPool;
+
 		/**
 		 * \brief Size (in bytes) of the structure this set has. Right now is only one "Member" but could be several.
 		 */
@@ -294,16 +298,19 @@ private:
 		Buffer Buffers[MAX_CONCURRENT_FRAMES];
 
 		uint32 UsedInstances = 0, AllocatedInstances = 0;
-		
+
 		GTSL::Array<uint32, 8> AllocatedStructsPerInstance;
 		GTSL::Array<uint16, 8> StructsSizes;
 		GTSL::Array<Struct, 8> Structs;
 
 		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
 	};
-	GTSL::KeepVector<SetBufferData, BE::PAR> setsBufferData;
+	
+	//GTSL::Tree<SetHandle, BE::PAR> setsTree;
+	GTSL::FlatHashMap<SetHandle, BE::PAR> setHandlesByName;
+	GTSL::KeepVector<SetData, BE::PAR> sets;
 
-	GTSL::PagedVector<uint32, BE::PAR> queuedBufferUpdates;
+	GTSL::PagedVector<SetHandle, BE::PAR> queuedBufferUpdates;
 	
 	struct TextureLoadInfo
 	{
@@ -383,7 +390,5 @@ private:
 
 	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
-	void resizeSet(RenderSystem* renderSystem, uint32 set);
-
-	void sbt();
+	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
 };

@@ -277,7 +277,7 @@ namespace BE
 						if(currentToken != Token::VALUE) { return false; }
 						if (text.IsEmpty()) { return false; }
 						auto value = processNumber();
-						settings.Emplace(key, value);
+						settings.Emplace(key(), value);
 						lastParsedToken = Token::VALUE;
 						currentToken = Token::NONE;
 						parseEnded = true;
@@ -329,7 +329,7 @@ namespace BE
 				if(!text.IsEmpty())
 				{
 					auto value = processNumber();
-					settings.Emplace(key, value);
+					settings.Emplace(key(), value);
 					parseEnded = true;
 					break;
 				}

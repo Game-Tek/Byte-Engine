@@ -63,7 +63,7 @@ public:
 	T* GetSystem(const Id systemName)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return static_cast<T*>(systemsMap.At(systemName));
+		return static_cast<T*>(systemsMap.At(systemName()));
 	}
 	
 	template<class T>
@@ -76,7 +76,7 @@ public:
 	uint16 GetSystemReference(const Id systemName)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return static_cast<uint16>(systemsIndirectionTable.At(systemName));
+		return static_cast<uint16>(systemsIndirectionTable.At(systemName()));
 	}
 
 	template<typename... ARGS>
@@ -301,7 +301,7 @@ private:
 		
 		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
 		{
-			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject);
+			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject());
 			access[i] = (taskDependencies.begin() + i)->Access;
 		}
 	}
@@ -340,7 +340,7 @@ private:
 
 			for(auto e : dependencies)
 			{
-				if (!systemsMap.Find(e.AccessedObject)) {
+				if (!systemsMap.Find(e.AccessedObject())) {
 					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
@@ -364,9 +364,9 @@ public:
 		{
 			GTSL::WriteLock lock(systemsMutex);
 			l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
-			systemsMap.Emplace(systemName, systems[l]);
-			systemsIndirectionTable.Emplace(systemName, l);
-			systemNames.Emplace(systemName);
+			systemsMap.Emplace(systemName(), systems[l]);
+			systemsIndirectionTable.Emplace(systemName(), l);
+			systemNames.Emplace(systemName());
 			system = systems[l];
 		}
 

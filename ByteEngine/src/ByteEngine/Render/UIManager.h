@@ -311,8 +311,8 @@ public:
 
 	auto GetCanvases() { return canvases.GetRange(); }
 
-	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
-	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
+	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name(), color); }
+	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color()); }
 
 private:
 	GTSL::KeepVector<ComponentReference, BE::PersistentAllocatorReference> canvases;

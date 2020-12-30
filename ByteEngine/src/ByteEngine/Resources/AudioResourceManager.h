@@ -27,12 +27,12 @@ public:
 
 	void ReleaseAudioAsset(Id asset)
 	{
-		audioBytes.At(asset).Free(8, GetPersistentAllocator());
-		audioBytes.Remove(asset);
+		audioBytes.At(asset()).Free(8, GetPersistentAllocator());
+		audioBytes.Remove(asset());
 	}
 	
-	byte* GetAssetPointer(const Id id) { return audioBytes.At(id).GetData(); }
-	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id).Frames; }
+	byte* GetAssetPointer(const Id id) { return audioBytes.At(id()).GetData(); }
+	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id()).Frames; }
 
 	AudioResourceManager();
 

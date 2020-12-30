@@ -49,14 +49,15 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	readyMaterialsMap.Initialize(32, GetPersistentAllocator());
 	readyMaterialHandles.Initialize(16, GetPersistentAllocator());
 
-	setNodes.Initialize(16, GetPersistentAllocator());
-	setsTree.Initialize(GetPersistentAllocator());
+	setHandlesByName.Initialize(16, GetPersistentAllocator());
 
 	renderGroupsData.Initialize(4, GetPersistentAllocator());
 	readyMaterialsPerRenderGroup.Initialize(8, GetPersistentAllocator());
 
-	setsBufferData.Initialize(4, GetPersistentAllocator());
+	shaderGroupsByName.Initialize(16, GetPersistentAllocator());
 
+	sets.Initialize(16, GetPersistentAllocator());
+	
 	for (uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
 	{
 		descriptorsUpdates.EmplaceBack();
@@ -90,7 +91,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		Buffer::CreateInfo sbtCreateInfo;
 		sbtCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { sbtCreateInfo.Name = GTSL::StaticString<32>("SBT Buffer. Material System"); }
-		sbtCreateInfo.Size = materialResorceManager->GetRayTracingMaterialsCount();
+		sbtCreateInfo.Size = materialResorceManager->GetRayTraceShaderCount();
 		sbtCreateInfo.BufferType = BufferType::RAY_TRACING;
 		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryInfo;
 		scratchMemoryInfo.Buffer = &shaderBindingTableBuffer;
@@ -101,85 +102,80 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
 		GTSL::Vector<Shader, BE::TAR> shaders(16, GetTransientAllocator());
 
-		for (uint32 i = 0; i < materialResorceManager->GetRayTracingMaterialsCount(); ++i)
+		for (uint32 i = 0; i < materialResorceManager->GetRayTraceShaderCount(); ++i)
 		{
 			uint32 bufferSize = 0;
-			materialResorceManager->GetMaterialSize(materialResorceManager->GetRayTracingMaterialHandle(i), bufferSize);
+			bufferSize = materialResorceManager->GetRayTraceShaderSize(materialResorceManager->GetRayTraceShaderHandle(i));
 			GTSL::Buffer shaderBuffer; shaderBuffer.Allocate(bufferSize, 8, GetTransientAllocator());
 
-			auto material = materialResorceManager->LoadMaterialSynchronous(materialResorceManager->GetRayTracingMaterialHandle(i), GTSL::Range<byte*>(shaderBuffer.GetLength(), shaderBuffer.GetData()));
+			shaderGroupsByName.Emplace(materialResorceManager->GetRayTraceShaderHandle(i)(), i);
+			
+			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffer.GetLength(), shaderBuffer.GetData()));
 
-			uint32 offset = 0;
+			Shader::CreateInfo createInfo;
+			createInfo.RenderDevice = renderSystem->GetRenderDevice();
+			createInfo.ShaderData = GTSL::Range<const byte*>(material.BinarySize, shaderBuffer.GetData());
 
-			for (uint32 s = 0; s < material.ShaderSizes.GetLength(); ++s)
+			Pipeline::ShaderInfo shaderInfo;
+			shaderInfo.Shader = &shaders[i];
+			shaderInfo.Type = ConvertShaderType(material.ShaderType);
+			shaderInfos.EmplaceBack(shaderInfo); shaders.EmplaceBack(createInfo);
+
+			RayTracingPipeline::Group group{};
+
+			group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
+			group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED; group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
+
+			switch (material.ShaderType)
 			{
-				Shader::CreateInfo createInfo;
-				createInfo.RenderDevice = renderSystem->GetRenderDevice();
-				createInfo.ShaderData = GTSL::Range<const byte*>(material.ShaderSizes[s], shaderBuffer.GetData() + offset);
-				offset += material.ShaderSizes[s];
-
-				Pipeline::ShaderInfo shaderInfo;
-				shaderInfo.Shader = &shaders[s];
-				shaderInfo.Type = ConvertShaderType(material.ShaderTypes[s]);
-				shaderInfos.EmplaceBack(shaderInfo); shaders.EmplaceBack(createInfo);
-
-				RayTracingPipeline::Group group{};
-
-				group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-				group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED; group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
-
-				switch (material.ShaderTypes[i])
-				{
-				case GAL::ShaderType::RAY_GEN:
-				case GAL::ShaderType::MISS:
-				case GAL::ShaderType::CALLABLE:
-				{
-					//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
-					//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-					group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL;
-					group.GeneralShader = i + s;
-					break;
-				}
-
-				case GAL::ShaderType::CLOSEST_HIT:
-				{
-					//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
-					//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-					group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
-					group.ClosestHitShader = i + s;
-					break;
-				}
-
-				case GAL::ShaderType::ANY_HIT:
-				{
-					//anyHitShader is the optional index of the any-hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the
-					//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
-					//and VK_SHADER_UNUSED_KHR otherwise.
-					group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
-					group.AnyHitShader = i + s;
-					break;
-				}
-
-				case GAL::ShaderType::INTERSECTION:
-				{
-					//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
-					//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-					group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL;
-					group.IntersectionShader = i + s;
-					break;
-				}
-
-				default: BE_LOG_MESSAGE("Non raytracing shader found in raytracing material");
-				}
-
-				groups.EmplaceBack(group);
-
+			case GAL::ShaderType::RAY_GEN:
+			case GAL::ShaderType::MISS:
+			case GAL::ShaderType::CALLABLE:
+			{
+				//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
+				//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL;
+				group.GeneralShader = i;
+				break;
 			}
+
+			case GAL::ShaderType::CLOSEST_HIT:
+			{
+				//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
+				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+				group.ClosestHitShader = i;
+				break;
+			}
+
+			case GAL::ShaderType::ANY_HIT:
+			{
+				//anyHitShader is the optional index of the any-hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the
+				//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
+				//and VK_SHADER_UNUSED_KHR otherwise.
+				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES;
+				group.AnyHitShader = i;
+				break;
+			}
+
+			case GAL::ShaderType::INTERSECTION:
+			{
+				//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
+				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
+				group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL;
+				group.IntersectionShader = i;
+				break;
+			}
+
+			default: BE_LOG_MESSAGE("Non raytracing shader found in raytracing material");
+			}
+
+			groups.EmplaceBack(group);
 
 			shaderBuffer.Free(8, GetTransientAllocator());
 		}
 
-		auto& set = setNodes.At(Id("GlobalData"))->Data;
+		auto& set = sets[setHandlesByName.At(Id("GlobalData")())()];
 
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -229,24 +225,22 @@ void MaterialSystem::BIND_SET(RenderSystem* renderSystem, CommandBuffer commandB
 {
 	if constexpr (_DEBUG)
 	{
-		if(!setNodes.Find(setHandle())) { BE_LOG_ERROR("Tried to bind set which doesn't exist at render time!. ", BE::FIX_OR_CRASH_STRING) }
+		//if(!setHandlesByName.Find(setHandle())) { BE_LOG_ERROR("Tried to bind set which doesn't exist at render time!. ", BE::FIX_OR_CRASH_STRING) }
 	}
 
-	auto& set = setNodes.At(static_cast<Id>(setHandle))->Data;
+	auto& set = sets[setHandle()];
 
-	if (set.SetBufferData != 0xFFFFFFFF)
+	if (set.MemberSize)
 	{
-		auto& setBufferData = setsBufferData[set.SetBufferData];
-
 		GTSL::Array<uint32, 2> offsets;
 
-		if (setBufferData.AllocatedInstances) { offsets.EmplaceBack(setBufferData.MemberSize * 0); }
+		if (set.AllocatedInstances) { offsets.EmplaceBack(set.MemberSize * 0); }
 
 		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
 		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
 		bindBindingsSetInfo.FirstSet = set.Level;
 		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &setBufferData.BindingsSet[frame]);
+		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]);
 		bindBindingsSetInfo.PipelineLayout = &set.PipelineLayout;
 		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
 		bindBindingsSetInfo.Offsets = offsets;
@@ -302,8 +296,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 	if (structSize)
 	{
-		const auto setBufferDataIndex = setNodes.At(setHandle())->Data.SetBufferData;
-		auto& setBufferData = setsBufferData[setBufferDataIndex];
+		auto& set = sets[setHandle()];
 
 		{
 			uint32 structSize = 0;
@@ -312,24 +305,24 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 			{
 				for (auto m : s.Members)
 				{
-					*m.Handle = MemberHandle(MemberDescription{ static_cast<uint8>(setBufferDataIndex), static_cast<uint8>(structSize), static_cast<uint8>(m.Type) });
+					*m.Handle = MemberHandle(MemberDescription{ setHandle, static_cast<uint8>(structSize), static_cast<uint8>(m.Type) });
 					
 					structSize += DataTypeSize(m.Type);
 				}
 
 				//setBufferData.Structs.EmplaceBack(s);
-				setBufferData.StructsSizes.EmplaceBack(structSize);
+				set.StructsSizes.EmplaceBack(structSize);
 			}
 
-			setBufferData.MemberSize = structSize;
+			set.MemberSize = structSize;
 		}
 
 		uint32 newBufferSize = 0;
-		setBufferData.AllocatedInstances = 16;
+		set.AllocatedInstances = 16;
 
-		for (uint32 i = 0; i < setBufferData.StructsSizes.GetLength(); ++i)
+		for (uint32 i = 0; i < set.StructsSizes.GetLength(); ++i)
 		{
-			auto newStructSize = setBufferData.StructsSizes[i] * setBufferData.AllocatedInstances;
+			auto newStructSize = set.StructsSizes[i] * set.AllocatedInstances;
 			newBufferSize += newStructSize;
 		}
 
@@ -348,19 +341,19 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo allocationInfo;
 			allocationInfo.CreateInfo = &createInfo;
-			allocationInfo.Allocation = &setBufferData.Allocations[f];
-			allocationInfo.Buffer = &setBufferData.Buffers[f];
+			allocationInfo.Allocation = &set.Allocations[f];
+			allocationInfo.Buffer = &set.Buffers[f];
 			renderSystem->AllocateScratchBufferMemory(allocationInfo);
 		}
 
 		for (uint8 f = 0; f < queuedFrames; ++f)
 		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setBufferDataIndex, GetPersistentAllocator());
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle, GetPersistentAllocator());
 
 			BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
-			bufferBindingsUpdate.Buffer = setBufferData.Buffers[f];
+			bufferBindingsUpdate.Buffer = set.Buffers[f];
 			bufferBindingsUpdate.Offset = 0;
-			bufferBindingsUpdate.Range = setBufferData.AllocatedInstances * setBufferData.StructsSizes[0];
+			bufferBindingsUpdate.Range = set.AllocatedInstances * set.StructsSizes[0];
 			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, bufferBindingsUpdate);
 		}
 	}
@@ -368,26 +361,24 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 	return setHandle;
 }
 
-void MaterialSystem::AddObjects(RenderSystem* renderSystem, SetHandle set, uint32 count)
+void MaterialSystem::AddObjects(RenderSystem* renderSystem, SetHandle setHandle, uint32 count)
 {
 	//GRAB ALL PER INSTANCE DATA
 	//CALCULATE IF EXCEEDS CURRENT SIZE, IF IT DOES RESIZE
 
 	//auto& renderGroupData = renderGroupsData.At(renderGroup);
-	auto setBufferDataHandle = setNodes.At(static_cast<Id>(set))->Data.SetBufferData;
+	auto set = sets[setHandle()];
 
-	if (setBufferDataHandle != 0xFFFFFFFF)
+	if (set.MemberSize)
 	{
-		auto& setBufferData = setsBufferData[setBufferDataHandle];
-
-		if (setBufferData.UsedInstances + count > setBufferData.AllocatedInstances)
+		if (set.UsedInstances + count > set.AllocatedInstances)
 		{
-			resizeSet(renderSystem, setBufferDataHandle); // Resize now
+			resizeSet(renderSystem, setHandle); // Resize now
 
-			queuedBufferUpdates.EmplaceBack(setBufferDataHandle); //Defer resizing
+			queuedBufferUpdates.EmplaceBack(setHandle); //Defer resizing
 		}
 
-		setBufferData.UsedInstances += count;
+		set.UsedInstances += count;
 	}
 }
 
@@ -497,7 +488,7 @@ ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
 		}
 
-		texturesRefTable.Emplace(info.TextureName, component);
+		texturesRefTable.Emplace(info.TextureName(), component);
 		
 		auto* loadInfo = GTSL::New<TextureLoadInfo>(GetPersistentAllocator(), component, GTSL::MoveRef(scratchBuffer), info.RenderSystem, allocation);
 
@@ -526,7 +517,7 @@ void MaterialSystem::BindMaterial(MaterialHandle handle, CommandBuffer* commandB
 		bindPipelineInfo.Pipeline = pipeline;
 		commandBuffer->BindPipeline(bindPipelineInfo);
 
-		BIND_SET(renderSystem, *commandBuffer, SetHandle(handle.MaterialType));
+		BIND_SET(renderSystem, *commandBuffer, handle.MaterialType);
 	}
 }
 
@@ -603,7 +594,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 				bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
 
-				setsBufferData[descriptorsUpdate.setsToUpdate[s]].BindingsSet[frame].Update(bindingsUpdateInfo);
+				sets[descriptorsUpdate.setsToUpdate[s]()].BindingsSet[frame].Update(bindingsUpdateInfo);
 			}
 		}
 
@@ -677,7 +668,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				setInfo.Structs = structsInfos;
 
 				
-				if(!materialSystem->setNodes.Find(onMaterialLoadInfo.ResourceName))
+				if(!materialSystem->setHandlesByName.Find(onMaterialLoadInfo.ResourceName))
 				{
 					material.Set = materialSystem->AddSet(loadInfo->RenderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
 				}
@@ -734,7 +725,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				auto renderPass = renderOrchestrator->getAPIRenderPass(onMaterialLoadInfo.RenderPass);
 				pipelineCreateInfo.SubPass = renderOrchestrator->getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
 				pipelineCreateInfo.RenderPass = &renderPass;
-				pipelineCreateInfo.PipelineLayout = materialSystem->setNodes.At(static_cast<Id>(material.Set))->Data.PipelineLayout;
+				pipelineCreateInfo.PipelineLayout = materialSystem->sets[material.Set()].PipelineLayout;
 				pipelineCreateInfo.PipelineCache = *renderSystem->GetPipelineCache();
 				material.Pipeline = RasterizationPipeline(pipelineCreateInfo);
 			}
@@ -775,7 +766,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					materialSystem->addPendingMaterialToTexture(textureComp, PendingMaterialHandle(place));
 					for (uint8 f = 0; f < materialSystem->queuedFrames; ++f)
 					{
-						*materialSystem->getSetMemberPointer<uint32>(material.TextureRefHandle[0](), 0, f) = textureComp;
+						*materialSystem->getSetMemberPointer<uint32>(material.TextureRefHandle[0](), 0, f) = textureComp; //TODO: FIX ACCESS
 					}
 					++materialSystem->pendingMaterials[place].Target;
 				}
@@ -802,9 +793,9 @@ void MaterialSystem::setMaterialAsLoaded(const MaterialHandle matIndex, const Ma
 
 	GTSL::Vector<MaterialHandle, BE::PAR>* collection;
 
-	if (!readyMaterialsPerRenderGroup.Find(renderGroup, collection))
+	if (!readyMaterialsPerRenderGroup.Find(renderGroup(), collection))
 	{
-		collection = &readyMaterialsPerRenderGroup.Emplace(renderGroup);
+		collection = &readyMaterialsPerRenderGroup.Emplace(renderGroup());
 		collection->Initialize(8, GetPersistentAllocator());
 		collection->EmplaceBack(matIndex);
 	}
@@ -816,40 +807,41 @@ void MaterialSystem::setMaterialAsLoaded(const MaterialHandle matIndex, const Ma
 
 SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDesc)
 {
-	decltype(setsTree)::Node* parentNode, * set;
+	SetHandle parentHandle, setHandle;
 	uint32 level;
 
 	if (parent.GetHash())
 	{
-		parentNode = static_cast<decltype(setsTree)::Node*>(setNodes.At(parent));
-		level = parentNode->Data.Level + 1;
-		set = setsTree.AddChild(parentNode);
+		parentHandle = setHandlesByName.At(parent());
+		level = sets[parentHandle()].Level + 1;
+		setHandle = SetHandle(sets.Emplace());
 	}
 	else
 	{
-		parentNode = nullptr;
-		set = setsTree.GetRootNode();
+		parentHandle = SetHandle();
+		setHandle = SetHandle(sets.Emplace());
 		level = 0;
 	}
 
-	setNodes.Emplace(setName, set);
+	setHandlesByName.Emplace(setName(), setHandle);
 
-	set->Data.Name = setName;
-	set->Data.Parent = parentNode;
-	set->Data.Level = level;
-
+	auto& set = sets[setHandle()];
+	
+	set.Parent = parentHandle;
+	set.Level = level;
+	
 	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts(level); //"Pre-Allocate" _level_ elements as to be able to place them in order while traversing tree upwards
 
 	// Traverse tree to find parent's pipeline layouts
-	{	
-		auto* iterParentNode = set;
-
+	{
 		uint32 loopLevel = level;
 
-		while (iterParentNode->Data.Parent)
+		auto lastSet = setHandle;
+		
+		while (loopLevel)
 		{
-			iterParentNode = static_cast<decltype(setsTree)::Node*>(iterParentNode->Data.Parent);
-			bindingsSetLayouts[--loopLevel] = iterParentNode->Data.BindingsSetLayout;
+			lastSet = sets[lastSet()].Parent;
+			bindingsSetLayouts[--loopLevel] = sets[lastSet()].BindingsSetLayout;
 		}
 	}
 
@@ -860,9 +852,9 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 		bindingsSetLayoutCreateInfo.Name = bindingsSetLayoutName;
 
 		bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDesc;
-		set->Data.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
+		set.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
 
-		bindingsSetLayouts.EmplaceBack(set->Data.BindingsSetLayout);
+		bindingsSetLayouts.EmplaceBack(set.BindingsSetLayout);
 	}
 	
 	if (bindingDesc.ElementCount())
@@ -886,12 +878,8 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 			bindingsPoolCreateInfo.DescriptorPoolSizes = descriptorPoolSizes;
 			bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
-			set->Data.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
+			set.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
 		}
-
-		auto place = setsBufferData.Emplace();
-		auto& setBufferData = setsBufferData[place];
-		set->Data.SetBufferData = place;
 
 		{
 			BindingsPool::AllocateBindingsSetsInfo allocateBindings;
@@ -900,7 +888,7 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 			for (uint8 f = 0; f < queuedFrames; ++f)
 			{
 				GTSL::Array<BindingsSet*, 8> bindingsSets;
-				bindingsSets.EmplaceBack(&setBufferData.BindingsSet[f]);
+				bindingsSets.EmplaceBack(&set.BindingsSet[f]);
 
 				allocateBindings.BindingsSets = bindingsSets;
 
@@ -924,7 +912,7 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 					allocateBindings.BindingsSetCreateInfos = bindingsSetsCreateInfo;
 
-					set->Data.BindingsPool.AllocateBindingsSets(allocateBindings);
+					set.BindingsPool.AllocateBindingsSets(allocateBindings);
 				}
 			}
 		}
@@ -948,23 +936,23 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 		pipelineLayout.PushConstant = &pushConstant;
 		
 		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
-		set->Data.PipelineLayout.Initialize(pipelineLayout);
+		set.PipelineLayout.Initialize(pipelineLayout);
 	}
 	
-	return SetHandle(setName);
+	return setHandle;
 }
 
-void MaterialSystem::resizeSet(RenderSystem* renderSystem, uint32 set)
+void MaterialSystem::resizeSet(RenderSystem* renderSystem, SetHandle setHandle)
 {
-	auto& setBufferData = setsBufferData[set];
+	auto& set = sets[setHandle()];
 	
 	//REALLOCATE
 	uint32 newBufferSize = 0;
 	Buffer newBuffer; HostRenderAllocation newAllocation;
 
-	for (uint32 i = 0; i < setBufferData.StructsSizes.GetLength(); ++i)
+	for (uint32 i = 0; i < set.StructsSizes.GetLength(); ++i)
 	{
-		auto newStructSize = setBufferData.StructsSizes[i] * setBufferData.AllocatedInstances * 2;
+		auto newStructSize = set.StructsSizes[i] * set.AllocatedInstances * 2;
 		newBufferSize += newStructSize;
 	}
 
@@ -983,38 +971,30 @@ void MaterialSystem::resizeSet(RenderSystem* renderSystem, uint32 set)
 
 	uint32 oldOffset = 0, newOffset = 0;
 
-	for (uint32 i = 0; i < setBufferData.StructsSizes.GetLength(); ++i)
+	for (uint32 i = 0; i < set.StructsSizes.GetLength(); ++i)
 	{
-		auto oldStructSize = setBufferData.StructsSizes[i] * setBufferData.AllocatedInstances;
-		auto newStructSize = setBufferData.StructsSizes[i] * setBufferData.AllocatedInstances * 2;
+		auto oldStructSize = set.StructsSizes[i] * set.AllocatedInstances;
+		auto newStructSize = set.StructsSizes[i] * set.AllocatedInstances * 2;
 
-		GTSL::MemCopy(oldStructSize, static_cast<byte*>(setBufferData.Allocations[frame].Data) + oldOffset, static_cast<byte*>(newAllocation.Data) + newOffset);
+		GTSL::MemCopy(oldStructSize, static_cast<byte*>(set.Allocations[frame].Data) + oldOffset, static_cast<byte*>(newAllocation.Data) + newOffset);
 
 		oldOffset += oldStructSize;
 		newOffset += newStructSize;
 	}
 
-	renderSystem->DeallocateScratchBufferMemory(setBufferData.Allocations[frame]);
+	renderSystem->DeallocateScratchBufferMemory(set.Allocations[frame]);
 
-	setBufferData.AllocatedInstances *= 2;
-	setBufferData.Buffers[frame].Destroy(renderSystem->GetRenderDevice());
-	setBufferData.Buffers[frame] = newBuffer;
+	set.AllocatedInstances *= 2;
+	set.Buffers[frame].Destroy(renderSystem->GetRenderDevice());
+	set.Buffers[frame] = newBuffer;
 
-	const auto setUpdateHandle = descriptorsUpdates[frame].AddSetToUpdate(set, GetPersistentAllocator());
+	const auto setUpdateHandle = descriptorsUpdates[frame].AddSetToUpdate(setHandle, GetPersistentAllocator());
 
 	BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
-	bufferBindingsUpdate.Buffer = setBufferData.Buffers[frame];
+	bufferBindingsUpdate.Buffer = set.Buffers[frame];
 	bufferBindingsUpdate.Offset = 0;
 	bufferBindingsUpdate.Range = newBufferSize;
 	descriptorsUpdates[frame].AddBufferUpdate(setUpdateHandle, 0, bufferBindingsUpdate);
-}
-
-void MaterialSystem::sbt()
-{
-	uint32 shaderGroupCount = 3;
-	uint32 groupHandleSize = 0;
-
-	
 }
 
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
@@ -1136,7 +1116,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
 	{
-		auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setNodes.At(Id("GlobalData"))->Data.SetBufferData, GetPersistentAllocator());
+		auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandlesByName.At(Id("GlobalData")()), GetPersistentAllocator());
 		descriptorsUpdates[f].AddTextureUpdate(updateHandle, loadInfo->Component, textureBindingsUpdateInfo);
 	}
 	

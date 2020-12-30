@@ -530,7 +530,7 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 
 void RenderSystem::RenderAllMeshesForMaterial(Id material)
 {
-	auto range = meshesByMaterial.At(material).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
+	auto range = meshesByMaterial.At(material()).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
 	
 	for(auto& e : range)
 	{

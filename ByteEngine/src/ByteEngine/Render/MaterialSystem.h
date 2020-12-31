@@ -95,6 +95,22 @@ public:
 	}
 	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
 
+	void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
+	{
+		auto& set = sets[setHandle()];
+		for(uint8 f = 0; f < queuedFrames; ++f)
+		{
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle, GetPersistentAllocator());
+
+			BindingsSet::TextureBindingsUpdateInfo info;
+			info.TextureView = textureView;
+			info.Sampler = textureSampler;
+			info.TextureLayout = TextureLayout::COLOR_ATTACHMENT;
+			
+			descriptorsUpdates[f].AddTextureUpdate(updateHandle, index, BindingType::STORAGE_IMAGE, info);
+		}
+	}
+	
 	struct MemberInfo : Member
 	{
 		MemberHandle* Handle;
@@ -239,6 +255,8 @@ private:
 			setsToUpdate.Initialize(4, allocator);
 			PerSetToUpdateBufferBindingsUpdate.Initialize(4, allocator);
 			PerSetToUpdateTextureBindingsUpdate.Initialize(4, allocator);
+			PerSetToUpdateBufferBindingType.Initialize(4, allocator);
+			PerSetToUpdateTextureBindingType.Initialize(4, allocator);
 		}
 
 		[[nodiscard]] uint32 AddSetToUpdate(SetHandle set, const BE::PAR& allocator)
@@ -246,16 +264,20 @@ private:
 			const auto handle = setsToUpdate.EmplaceBack(set());
 			PerSetToUpdateBufferBindingsUpdate.EmplaceBack(4, allocator);
 			PerSetToUpdateTextureBindingsUpdate.EmplaceBack(4, allocator);
+			PerSetToUpdateBufferBindingType.EmplaceBack(4, allocator);
+			PerSetToUpdateTextureBindingType.EmplaceBack(4, allocator);
 			return handle;
 		}
 
-		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, BindingsSet::BufferBindingsUpdateInfo update)
+		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, BindingType bindingType, BindingsSet::BufferBindingsUpdateInfo update)
 		{
+			PerSetToUpdateBufferBindingType[set].EmplaceBack(bindingType);
 			PerSetToUpdateBufferBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
 		}
 
-		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, BindingsSet::TextureBindingsUpdateInfo update)
+		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, BindingType bindingType, BindingsSet::TextureBindingsUpdateInfo update)
 		{
+			PerSetToUpdateTextureBindingType[set].EmplaceBack(bindingType);
 			PerSetToUpdateTextureBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
 		}
 		
@@ -264,12 +286,18 @@ private:
 			setsToUpdate.ResizeDown(0);
 			PerSetToUpdateBufferBindingsUpdate.ResizeDown(0);
 			PerSetToUpdateTextureBindingsUpdate.ResizeDown(0);
+
+			PerSetToUpdateBufferBindingType.ResizeDown(0);
+			PerSetToUpdateTextureBindingType.ResizeDown(0);
 		}
 		
 		GTSL::Vector<SetHandle, BE::PAR> setsToUpdate;
 
 		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBufferBindingsUpdate;
 		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateTextureBindingsUpdate;
+
+		GTSL::Vector<GTSL::Vector<BindingType, BE::PAR>, BE::PAR> PerSetToUpdateBufferBindingType;
+		GTSL::Vector<GTSL::Vector<BindingType, BE::PAR>, BE::PAR> PerSetToUpdateTextureBindingType;
 	};
 	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
 	

@@ -21,6 +21,7 @@ public:
 	
 	operator GTSL::Id64() const { return hashedName; }
 	explicit operator const UTF8* () const { return GTSL::Range<const UTF8*>(stringName).begin(); }
+	operator GTSL::Range<const UTF8*>() const { return stringName; }
 
 	Id& operator=(const UTF8* name) { hashedName = name; stringName = name; return *this; }
 	Id& operator=(const GTSL::Id64 other) { hashedName = other; return *this; }

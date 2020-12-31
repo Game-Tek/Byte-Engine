@@ -508,7 +508,7 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 	{
 		CommandBuffer::BindVertexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &mesh.Buffer;
+		bindInfo.Buffer = mesh.Buffer;
 		bindInfo.Offset = 0;
 		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
 	}
@@ -516,7 +516,7 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 	{
 		CommandBuffer::BindIndexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = &mesh.Buffer;
+		bindInfo.Buffer = mesh.Buffer;
 		bindInfo.Offset = mesh.OffsetToIndices;
 		bindInfo.IndexType = mesh.IndexType;
 		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
@@ -540,7 +540,7 @@ void RenderSystem::RenderAllMeshesForMaterial(Id material)
 		{
 			CommandBuffer::BindVertexBufferInfo bindInfo;
 			bindInfo.RenderDevice = GetRenderDevice();
-			bindInfo.Buffer = &mesh.Buffer;
+			bindInfo.Buffer = mesh.Buffer;
 			bindInfo.Offset = 0;
 			graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
 		}
@@ -548,7 +548,7 @@ void RenderSystem::RenderAllMeshesForMaterial(Id material)
 		{
 			CommandBuffer::BindIndexBufferInfo bindInfo;
 			bindInfo.RenderDevice = GetRenderDevice();
-			bindInfo.Buffer = &mesh.Buffer;
+			bindInfo.Buffer = mesh.Buffer;
 			bindInfo.Offset = mesh.OffsetToIndices;
 			bindInfo.IndexType = mesh.IndexType;
 			graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
@@ -866,9 +866,9 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		{
 			CommandBuffer::CopyBuffersInfo copy_buffers_info;
 			copy_buffers_info.RenderDevice = &renderDevice;
-			copy_buffers_info.Destination = &e.DestinationBuffer;
+			copy_buffers_info.Destination = e.DestinationBuffer;
 			copy_buffers_info.DestinationOffset = e.DestinationOffset;
-			copy_buffers_info.Source = &e.SourceBuffer;
+			copy_buffers_info.Source = e.SourceBuffer;
 			copy_buffers_info.SourceOffset = e.SourceOffset;
 			copy_buffers_info.Size = e.Size;
 			commandBuffer.CopyBuffers(copy_buffers_info);
@@ -910,10 +910,10 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		{
 			CommandBuffer::CopyBufferToTextureInfo copyBufferToImageInfo;
 			copyBufferToImageInfo.RenderDevice = GetRenderDevice();
-			copyBufferToImageInfo.DestinationTexture = &textureCopyData[i].DestinationTexture;
+			copyBufferToImageInfo.DestinationTexture = textureCopyData[i].DestinationTexture;
 			copyBufferToImageInfo.Offset = { 0, 0, 0 };
 			copyBufferToImageInfo.Extent = textureCopyData[i].Extent;
-			copyBufferToImageInfo.SourceBuffer = &textureCopyData[i].SourceBuffer;
+			copyBufferToImageInfo.SourceBuffer = textureCopyData[i].SourceBuffer;
 			copyBufferToImageInfo.TextureLayout = textureCopyData[i].Layout;
 			commandBuffer.CopyBufferToTexture(copyBufferToImageInfo);
 		}

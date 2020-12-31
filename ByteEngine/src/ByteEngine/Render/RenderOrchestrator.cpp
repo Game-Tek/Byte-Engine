@@ -332,7 +332,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	{
 		CommandBuffer::BeginRegionInfo beginRegionInfo;
 		beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
-		beginRegionInfo.Name = GTSL::StaticString<64>("Graphics");
+		beginRegionInfo.Name = GTSL::StaticString<64>("Render");
 		commandBuffer.BeginRegion(beginRegionInfo);
 	}
 
@@ -347,21 +347,22 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	{
 		auto& renderPass = renderPassesMap.At(enabledRenderPasses[erp]());
 
-		if(arp == renderPass.APIRenderPass)
 		{
-			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
-			++apiRpSp;
+			CommandBuffer::BeginRegionInfo beginRegionInfo;
+			beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
+			GTSL::ShortString<64> name("Render Pass: "); name += enabledRenderPasses[erp];
+			beginRegionInfo.Name = GTSL::ShortString<32>(enabledRenderPasses[erp].GetString());
+			commandBuffer.BeginRegion(beginRegionInfo);
 		}
-		else
+		
+		if(arp != renderPass.APIRenderPass)
 		{
 			arp = renderPass.APIRenderPass;
-			auto apiRenderPass = apiRenderPasses[arp].RenderPass;
-			auto frameBuffer = getFrameBuffer(arp);
 
 			CommandBuffer::BeginRenderPassInfo beginRenderPass;
 			beginRenderPass.RenderDevice = renderSystem->GetRenderDevice();
-			beginRenderPass.RenderPass = &apiRenderPass;
-			beginRenderPass.Framebuffer = &frameBuffer;
+			beginRenderPass.RenderPass = apiRenderPasses[arp].RenderPass;
+			beginRenderPass.Framebuffer = getFrameBuffer(arp);
 			beginRenderPass.RenderArea = renderSystem->GetRenderExtent();
 			beginRenderPass.ClearValues = GetClearValues(arp);
 			commandBuffer.BeginRenderPass(beginRenderPass);
@@ -374,26 +375,51 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				++apiRpSp;
 			}
 		}
-
+		else
+		{
+			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+			++apiRpSp;
+		}
+		
 		materialSystem->BIND_SET(renderSystem, commandBuffer, enabledRenderPasses[erp]);
 		
 		renderPassesFunctions.At(enabledRenderPasses[erp]())(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, enabledRenderPasses[erp]);
-	}
 
-	if (subPasses[arp].GetLength() > apiRpSp)
-	{
-		for (uint32 sp = apiRpSp; sp < subPasses[arp].GetLength() - 1; ++sp)
 		{
-			commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+			commandBuffer.EndRegion(endRegionInfo);
+		}
+
+		if (erp != enabledRenderPasses.GetLength() - 1)
+		{
+			if (renderPassesMap.At(enabledRenderPasses[erp + 1]()).APIRenderPass != arp)
+			{
+				if (subPasses[arp].GetLength() > apiRpSp)
+				{
+					for (uint32 sp = apiRpSp; sp < subPasses[arp].GetLength() - 1; ++sp)
+					{
+						commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+					}
+				}
+				
+				CommandBuffer::EndRenderPassInfo endRenderPass;
+				endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+				commandBuffer.EndRenderPass(endRenderPass);
+			}
+		}
+		else //if is last render pass
+		{
+			if (subPasses[arp].GetLength() > apiRpSp)
+			{
+				for (uint32 sp = apiRpSp; sp < subPasses[arp].GetLength() - 1; ++sp) {
+					commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
+				}
+			}
+
+			CommandBuffer::EndRenderPassInfo endRenderPass;
+			endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
+			commandBuffer.EndRenderPass(endRenderPass);
 		}
 	}
-
-	//WHAT IF NO RENDER PASSES?
-	CommandBuffer::EndRenderPassInfo endRenderPass;
-	endRenderPass.RenderDevice = renderSystem->GetRenderDevice();
-	commandBuffer.EndRenderPass(endRenderPass);
-	
-	commandBuffer.EndRegion(endRegionInfo);
 	
 	{
 		CommandBuffer::BeginRegionInfo beginRegionInfo;
@@ -458,6 +484,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 	}
 
+	commandBuffer.EndRegion(endRegionInfo);
 	commandBuffer.EndRegion(endRegionInfo);
 }
 

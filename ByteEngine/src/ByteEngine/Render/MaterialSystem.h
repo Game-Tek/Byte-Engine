@@ -160,12 +160,19 @@ public:
 	void BindMaterial(MaterialHandle handle, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
 
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
+
+	uint32 GetRayGenShaderCount() const { return rayGenShaderCount; }
+	uint32 GetHitShaderCount() const { return hitShaderCount; }
+	uint32 GetMissShaderCount() const { return missShaderCount; }
+
 private:
 	Id rayGenMaterial;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
+
+	uint32 rayGenShaderCount = 0, hitShaderCount = 0, missShaderCount = 0, callableShaderCount = 0;
 	
 	template<typename T>
 	T* getSetMemberPointer(MemberDescription member, uint64 index, uint8 frameToUpdate)
@@ -180,6 +187,7 @@ private:
 	
 	RayTracingPipeline rayTracingPipeline;
 	Buffer shaderBindingTableBuffer;
+	HostRenderAllocation shaderBindingTableAllocation;
 
 	struct MaterialData
 	{
@@ -377,7 +385,7 @@ private:
 
 		for (uint32 i = 0; i < container.GetLength(); ++i)
 		{
-			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), &container[i] });
+			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), container[i] });
 		}
 	}
 

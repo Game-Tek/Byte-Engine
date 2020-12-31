@@ -16,7 +16,8 @@ using VertexElementsType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 using ShaderTypeType = GTSL::UnderlyingType<GAL::ShaderType>;
 using BindingTypeType = GTSL::UnderlyingType<GAL::BindingType>;
 
-MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()), rtMaterialInfos(16, GetPersistentAllocator())
+MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
+rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAllocator())
 {
 	GTSL::Buffer rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 	
@@ -35,12 +36,12 @@ MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialRe
 	if (rasterFileBuffer.GetLength())
 	{
 		Extract(rasterMaterialInfos, rasterFileBuffer);
-		//Extract(rtMaterialInfos, rasterFileBuffer);
+		Extract(rtMaterialInfos, rasterFileBuffer);
 	}
 	else
 	{
 		Insert(rasterMaterialInfos, rasterFileBuffer);
-		//Insert(rtMaterialInfos, rasterFileBuffer);
+		Insert(rtMaterialInfos, rasterFileBuffer);
 	}
 	
 	rasterFileBuffer.Free(8, GetTransientAllocator());
@@ -121,6 +122,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		rasterMaterialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(rasterMaterialInfos, index_buffer);
+		Insert(rtMaterialInfos, index_buffer);
 		index.WriteToFile(index_buffer);
 
 		shader.CloseFile();
@@ -166,6 +168,8 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		BE_ASSERT(comp_res != false, shader_error_buffer.GetData());
 
 		materialInfo.ShaderInfo.BinarySize = shader_buffer.GetLength();
+		materialInfo.ShaderInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
+		materialInfo.ShaderInfo.ShaderType = materialCreateInfo.Type;
 		package.WriteToFile(shader_buffer);
 
 		resources_path.Drop(resources_path.FindLast('/') + 1);
@@ -175,10 +179,9 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		shader_buffer.Resize(0);
 		shader.CloseFile();
 
-		materialInfo.ShaderInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
-
 		rtMaterialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
+		Insert(rasterMaterialInfos, index_buffer);
 		Insert(rtMaterialInfos, index_buffer);
 		index.WriteToFile(index_buffer);
 
@@ -187,7 +190,10 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		index_buffer.Free(8, GetTransientAllocator());
 		shader_buffer.Free(8, GetTransientAllocator());
 		shader_error_buffer.Free(8, GetTransientAllocator());
+
 	}
+	
+	rtHandles.EmplaceBack(hashed_name);
 }
 
 void MaterialResourceManager::GetMaterialSize(const GTSL::Id64 name, uint32& size)

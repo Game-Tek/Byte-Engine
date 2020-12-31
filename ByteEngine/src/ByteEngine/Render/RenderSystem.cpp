@@ -69,6 +69,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			AccelerationStructure::GeometryInstances geometryInstances;
 			geometryInstances.Data;
 			descriptor.Data = &geometryInstances;
+			descriptor.Flags = 0;
 			
 			AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
 			accelerationStructureCreateInfo.IsTopLevel = true;
@@ -419,7 +420,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE;
 		instance.AccelerationStructureReference = reinterpret_cast<uint64>(rayTracingMesh.AccelerationStructure.GetVkAccelerationStructure());
 		instance.Mask = 0xFF;
-		instance.InstanceCustomIndex = 0;
+		instance.InstanceCustomIndex = component;
 		instance.InstanceShaderBindingTableRecordOffset = 0;
 		instance.Transform = *info.Matrix;
 

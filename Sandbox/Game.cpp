@@ -82,10 +82,8 @@ void Game::Initialize()
 		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-
 		materialCreateInfo.Textures.EmplaceBack("hydrant_Albedo");
-		//materialCreateInfo.PerInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-		
+		//materialCreateInfo.erInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
 		materialCreateInfo.Bindings = binding_sets;
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
@@ -106,10 +104,8 @@ void Game::Initialize()
 		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-
 		materialCreateInfo.Textures.EmplaceBack("TV_Albedo");
 		//materialCreateInfo.PerInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-
 		materialCreateInfo.Bindings = binding_sets;
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
@@ -146,7 +142,6 @@ void Game::Initialize()
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT2 };
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-		
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
 		materialCreateInfo.StencilTest = false;
@@ -155,8 +150,32 @@ void Game::Initialize()
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
+
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
+		materialCreateInfo.ShaderName = "RayGen";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
+
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
+		materialCreateInfo.ShaderName = "ClosestHit";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
+
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::MISS;
+		materialCreateInfo.ShaderName = "Miss";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -288,7 +307,7 @@ void Game::PostInitialize()
 	}
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");

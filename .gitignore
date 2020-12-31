@@ -13,3 +13,4 @@ ext/
 *.DotSettings.user
 *.sln.DotSettings.user
 *.log
+*.ifc

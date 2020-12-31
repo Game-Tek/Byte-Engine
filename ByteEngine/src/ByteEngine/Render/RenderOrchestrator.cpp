@@ -865,19 +865,24 @@ void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, M
 
 	auto bufferAddress = sbtBuffer.GetAddress(renderSystem->GetRenderDevice());
 
+	uint32 offset = 0;
+	
 	CommandBuffer::TraceRaysInfo traceRaysInfo;
 	traceRaysInfo.DispatchSize = GTSL::Extent3D(renderSystem->GetRenderExtent());
-	traceRaysInfo.RayGenDescriptor.Size = alignedHandleSize * 1;
+	traceRaysInfo.RayGenDescriptor.Size = materialSystem->GetRayGenShaderCount() * alignedHandleSize;
 	traceRaysInfo.RayGenDescriptor.Address = bufferAddress;
 	traceRaysInfo.RayGenDescriptor.Stride = alignedHandleSize;
-
-	traceRaysInfo.HitDescriptor.Size = alignedHandleSize * 1;
-	traceRaysInfo.HitDescriptor.Address = bufferAddress + alignedHandleSize * 1;
+	offset += traceRaysInfo.RayGenDescriptor.Size;
+	
+	traceRaysInfo.HitDescriptor.Size = materialSystem->GetHitShaderCount() * alignedHandleSize;
+	traceRaysInfo.HitDescriptor.Address = bufferAddress + offset;
 	traceRaysInfo.HitDescriptor.Stride = alignedHandleSize;
+	offset += traceRaysInfo.HitDescriptor.Size;
 
-	traceRaysInfo.MissDescriptor.Size = alignedHandleSize * 1;
-	traceRaysInfo.MissDescriptor.Address = bufferAddress + alignedHandleSize * 2;
+	traceRaysInfo.MissDescriptor.Size = materialSystem->GetMissShaderCount() * alignedHandleSize;
+	traceRaysInfo.MissDescriptor.Address = bufferAddress + offset;
 	traceRaysInfo.MissDescriptor.Stride = alignedHandleSize;
+	offset += traceRaysInfo.MissDescriptor.Size;
 
 	commandBuffer.TraceRays(traceRaysInfo);
 }

@@ -105,16 +105,16 @@ public:
 		uint16 startOnGoalIndex, taskObjectiveIndex;
 
 		{
-			GTSL::ReadLock lock(goalNamesMutex);
+			GTSL::ReadLock lock(stagesNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			startOnGoalIndex = getGoalIndex(startOn);
-			taskObjectiveIndex = getGoalIndex(doneFor);
+			startOnGoalIndex = getStageIndex(startOn);
+			taskObjectiveIndex = getStageIndex(doneFor);
 		}
 
 		{
 			GTSL::WriteLock lock(recurringTasksInfoMutex);
-			GTSL::WriteLock lock2(recurringGoalsMutex);
-			recurringGoals[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
+			GTSL::WriteLock lock2(recurringTasksMutex);
+			recurringTasksPerStage[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
 			recurringTasksInfo[startOnGoalIndex].EmplaceBack(GTSL::MoveRef(taskInfo));
 		}
 
@@ -149,15 +149,15 @@ public:
 		};
 
 		{
-			GTSL::ReadLock lock(goalNamesMutex);
+			GTSL::ReadLock lock(stagesNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
-			startOnGoalIndex = getGoalIndex(startOn);
-			taskObjectiveIndex = getGoalIndex(doneFor);
+			startOnGoalIndex = getStageIndex(startOn);
+			taskObjectiveIndex = getStageIndex(doneFor);
 		}
 		
 		{
-			GTSL::WriteLock lock2(dynamicGoalsMutex);
-			dynamicGoals[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
+			GTSL::WriteLock lock2(dynamicTasksPerStageMutex);
+			dynamicTasksPerStage[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
 		}
 
 		BE_LOG_MESSAGE("Added dynamic task ", name.GetString(), " to goal ", startOn.GetString(), " to be done before ", doneFor.GetString())
@@ -183,7 +183,7 @@ public:
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
 		{
-			GTSL::ReadLock lock(goalNamesMutex);
+			GTSL::ReadLock lock(stagesNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
 		}
 
@@ -196,7 +196,7 @@ public:
 		BE_LOG_MESSAGE("Added async task ", name.GetString())
 	}
 
-	void AddGoal(Id name);
+	void AddStage(Id name);
 
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
@@ -219,26 +219,23 @@ private:
 		GTSL::Tuple<ARGS...> Arguments;
 	};
 	
-	mutable GTSL::ReadWriteMutex recurringGoalsMutex;
-	GTSL::Vector<Goal<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringGoals;
-	mutable GTSL::ReadWriteMutex dynamicGoalsMutex;
-	GTSL::Vector<Goal<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicGoals;
+	mutable GTSL::ReadWriteMutex recurringTasksMutex;
+	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;
+	mutable GTSL::ReadWriteMutex dynamicTasksPerStageMutex;
+	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicTasksPerStage;
 	
 	mutable GTSL::ReadWriteMutex asyncTasksMutex;
-	Goal<FunctionType, BE::PersistentAllocatorReference> asyncTasks;
+	Stage<FunctionType, BE::PersistentAllocatorReference> asyncTasks;
 
 	GTSL::ConditionVariable resourcesUpdated;
 	
-	mutable GTSL::ReadWriteMutex goalNamesMutex;
-	GTSL::Vector<Id, BE::PersistentAllocatorReference> goalNames;
+	mutable GTSL::ReadWriteMutex stagesNamesMutex;
+	GTSL::Vector<Id, BE::PersistentAllocatorReference> stagesNames;
 
 	mutable GTSL::ReadWriteMutex recurringTasksInfoMutex;
 	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
-
-	mutable GTSL::ReadWriteMutex functionDependenciesMutex;
-	GTSL::KeepVector<GTSL::Pair<GTSL::Array<uint16, 32>, GTSL::Array<AccessType, 32>>, BE::PAR> functionDependencies;
 	
 	GTSL::Vector<GTSL::Semaphore, BE::PAR> semaphores;
 
@@ -273,7 +270,7 @@ private:
 
 		log += '\n';
 
-		log += " Goal: ";
+		log += " Stage: ";
 		log += goalName.GetString();
 
 		log += '\n';
@@ -287,10 +284,10 @@ private:
 		return log;
 	}
 
-	uint16 getGoalIndex(const Id name) const
+	uint16 getStageIndex(const Id name) const
 	{
-		uint16 i = 0; for (auto goal_name : goalNames) { if (goal_name == name) break; ++i; }
-		BE_ASSERT(i != goalNames.GetLength(), "No goal found with that name!")
+		uint16 i = 0; for (auto goal_name : stagesNames) { if (goal_name == name) break; ++i; }
+		BE_ASSERT(i != stagesNames.GetLength(), "No stage found with that name!")
 		return i;
 	}
 	
@@ -309,28 +306,28 @@ private:
 	[[nodiscard]] bool assertTask(const Id name, const Id startGoal, const Id endGoal, const GTSL::Range<const TaskDependency*> dependencies) const
 	{
 		{
-			GTSL::ReadLock lock(goalNamesMutex);
+			GTSL::ReadLock lock(stagesNamesMutex);
 			
-			if (goalNames.Find(startGoal) == goalNames.end())
+			if (stagesNames.Find(startGoal) == stagesNames.end())
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 
 			//assert done for exists
-			if (goalNames.Find(endGoal) == goalNames.end())
+			if (stagesNames.Find(endGoal) == stagesNames.end())
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " ending for goal ", endGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " ending for stage ", endGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
 
 		{
-			GTSL::ReadLock lock(recurringGoalsMutex);
+			GTSL::ReadLock lock(recurringTasksMutex);
 			
-			if (recurringGoals[getGoalIndex(startGoal)].DoesTaskExist(name))
+			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(name))
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " which already exists to goal ", startGoal.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", name.GetString(), " which already exists to stage ", startGoal.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -341,7 +338,7 @@ private:
 			for(auto e : dependencies)
 			{
 				if (!systemsMap.Find(e.AccessedObject())) {
-					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to goal ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
 			}

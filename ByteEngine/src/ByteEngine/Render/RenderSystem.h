@@ -240,6 +240,8 @@ public:
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
 	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
+
+	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
 private:	
 	GTSL::Mutex testMutex;
 	

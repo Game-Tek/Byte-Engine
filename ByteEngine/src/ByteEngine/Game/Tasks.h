@@ -38,11 +38,11 @@ struct TaskDependency
 };
 
 template<typename TASK, class ALLOCATOR>
-struct Goal
+struct Stage
 {
-	Goal() = default;
+	Stage() = default;
 
-	Goal(uint32 num, const ALLOCATOR& allocatorReference) :
+	Stage(uint32 num, const ALLOCATOR& allocatorReference) :
 	taskAccessedObjects(num, allocatorReference),
 	taskAccessTypes(num, allocatorReference),
 	taskGoalIndex(num, allocatorReference),
@@ -53,7 +53,7 @@ struct Goal
 	}
 
 	template<class OALLOC>
-	Goal(const Goal<TASK, OALLOC>& other, const ALLOCATOR& allocatorReference) :
+	Stage(const Stage<TASK, OALLOC>& other, const ALLOCATOR& allocatorReference) :
 	taskAccessedObjects(other.taskAccessedObjects.GetCapacity(), allocatorReference),
 	taskAccessTypes(other.taskAccessTypes.GetCapacity(), allocatorReference),
 	taskGoalIndex(other.taskGoalIndex, allocatorReference),
@@ -68,7 +68,7 @@ struct Goal
 	}
 
 	template<class OALLOC>
-	Goal& operator=(const Goal<TASK, OALLOC>& other)
+	Stage& operator=(const Stage<TASK, OALLOC>& other)
 	{
 		taskAccessedObjects = other.taskAccessedObjects;
 		taskAccessTypes = other.taskAccessTypes;
@@ -93,7 +93,7 @@ struct Goal
 	}
 
 	template<class ALLOC>
-	void AddTask(const Goal<TASK, ALLOC>& other, const uint16 taskS, const uint16 taskE, const ALLOCATOR& allocator)
+	void AddTask(const Stage<TASK, ALLOC>& other, const uint16 taskS, const uint16 taskE, const ALLOCATOR& allocator)
 	{
 		for (uint32 i = taskS; i < taskE; ++i)
 		{
@@ -170,7 +170,7 @@ private:
 	GTSL::Vector<void*, ALLOCATOR> tasksInfos;
 	GTSL::Vector<TASK, ALLOCATOR> tasks;
 
-	friend struct Goal;
+	friend struct Stage;
 };
 
 template<class ALLOCATOR>

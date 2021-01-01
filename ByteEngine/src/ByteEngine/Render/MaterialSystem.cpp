@@ -194,7 +194,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			shaderBuffer.Free(8, GetTransientAllocator());
 		}
 
-		auto& set = sets[setHandlesByName.At(Id("GlobalData")())()];
+		auto globalDataSetHandle = setHandlesByName[Id("GlobalData")()];
+		auto& set = sets[globalDataSetHandle()];
 
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -223,6 +224,12 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		for (uint32 h = 0; h < groups.GetLength(); ++h)
 		{
 			GTSL::MemCopy(handleSize, handlesBuffer->GetData() + h * handleSize, sbt + alignedHandleSize * h);
+		}
+
+		for(auto& e : descriptorsUpdates)
+		{
+			auto updateHandle = e.AddSetToUpdate(globalDataSetHandle, GetPersistentAllocator());
+			e.AddAccelerationStructureUpdate(updateHandle, 0, 2, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
 		}
 	}
 }
@@ -371,11 +378,11 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 		{
 			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle, GetPersistentAllocator());
 
-			BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
-			bufferBindingsUpdate.Buffer = set.Buffers[f];
-			bufferBindingsUpdate.Offset = 0;
-			bufferBindingsUpdate.Range = set.AllocatedInstances * set.StructsSizes[0];
-			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, 0, BindingType::STORAGE_BUFFER_DYNAMIC, bufferBindingsUpdate);
+			BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
+			bufferBindingUpdate.Buffer = set.Buffers[f];
+			bufferBindingUpdate.Offset = 0;
+			bufferBindingUpdate.Range = set.AllocatedInstances * set.StructsSizes[0];
+			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, 0, BindingType::STORAGE_BUFFER_DYNAMIC, bufferBindingUpdate);
 		}
 	}
 
@@ -577,45 +584,28 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 		for(uint32 s = 0; s < descriptorsUpdate.setsToUpdate.GetLength(); ++s)
 		{
-			auto& bufferBindingsUpdate = descriptorsUpdate.PerSetToUpdateBufferBindingsUpdate[s];
-			auto& textureBindingsUpdate = descriptorsUpdate.PerSetToUpdateTextureBindingsUpdate[s];
+			auto& bindingsUpdate = descriptorsUpdate.PerSetToUpdateBindingUpdate[s];
 			
-			if (bufferBindingsUpdate.GetGroupCount() || textureBindingsUpdate.GetGroupCount())
+			if (bindingsUpdate.GetGroupCount())
 			{				
-				Vector<BindingsSet::BindingUpdateInfo, BE::TAR> bindingUpdateInfos(4/*bindings sets*/, GetTransientAllocator());
+				Vector<BindingsSet::BindingsUpdateInfo, BE::TAR> bindingsUpdateInfos(4/*bindings sets*/, GetTransientAllocator());
 				{
-					for (uint32 i = 0; i < bufferBindingsUpdate.GetGroupCount(); ++i)
+					for (uint32 i = 0; i < bindingsUpdate.GetGroupCount(); ++i)
 					{
-						BindingsSet::BindingUpdateInfo bindingUpdateInfo;
+						BindingsSet::BindingsUpdateInfo bindingsUpdateInfo;
 
-						const auto& group = bufferBindingsUpdate.GetGroups()[i];
+						const auto& group = bindingsUpdate.GetGroups()[i];
 						
-						bindingUpdateInfo.Binding = descriptorsUpdate.PerSetToUpdateBufferData[s][i].Binding;
-						bindingUpdateInfo.Type = descriptorsUpdate.PerSetToUpdateBufferData[s][i].BindingType;
-						bindingUpdateInfo.ArrayElement = group.First;
-						bindingUpdateInfo.Count = group.ElementCount;
-						bindingUpdateInfo.BindingsUpdates = group.Elements;
+						bindingsUpdateInfo.Binding = descriptorsUpdate.PerSetToUpdateData[s][i].Binding;
+						bindingsUpdateInfo.Type = descriptorsUpdate.PerSetToUpdateData[s][i].BindingType;
+						bindingsUpdateInfo.ArrayElement = group.First;
+						bindingsUpdateInfo.BindingUpdateInfos = group.GetElements();
 
-						bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
-					}
-
-					for (uint32 i = 0; i < textureBindingsUpdate.GetGroupCount(); ++i)
-					{
-						BindingsSet::BindingUpdateInfo bindingUpdateInfo;
-
-						const auto& group = textureBindingsUpdate.GetGroups()[i];
-						
-						bindingUpdateInfo.Binding = descriptorsUpdate.PerSetToUpdateTextureData[s][i].Binding;
-						bindingUpdateInfo.Type = descriptorsUpdate.PerSetToUpdateTextureData[s][i].BindingType;
-						bindingUpdateInfo.ArrayElement = group.First;
-						bindingUpdateInfo.Count = group.ElementCount;
-						bindingUpdateInfo.BindingsUpdates = group.Elements;
-
-						bindingUpdateInfos.EmplaceBack(bindingUpdateInfo);
+						bindingsUpdateInfos.EmplaceBack(bindingsUpdateInfo);
 					}
 				}
 
-				bindingsUpdateInfo.BindingUpdateInfos = bindingUpdateInfos;
+				bindingsUpdateInfo.BindingsUpdateInfos = bindingsUpdateInfos;
 
 				sets[descriptorsUpdate.setsToUpdate[s]()].BindingsSet[frame].Update(bindingsUpdateInfo);
 			}
@@ -1013,11 +1003,11 @@ void MaterialSystem::resizeSet(RenderSystem* renderSystem, SetHandle setHandle)
 
 	const auto setUpdateHandle = descriptorsUpdates[frame].AddSetToUpdate(setHandle, GetPersistentAllocator());
 
-	BindingsSet::BufferBindingsUpdateInfo bufferBindingsUpdate;
-	bufferBindingsUpdate.Buffer = set.Buffers[frame];
-	bufferBindingsUpdate.Offset = 0;
-	bufferBindingsUpdate.Range = newBufferSize;
-	descriptorsUpdates[frame].AddBufferUpdate(setUpdateHandle, 0, 0, BindingType::STORAGE_BUFFER_DYNAMIC, bufferBindingsUpdate);
+	BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
+	bufferBindingUpdate.Buffer = set.Buffers[frame];
+	bufferBindingUpdate.Offset = 0;
+	bufferBindingUpdate.Range = newBufferSize;
+	descriptorsUpdates[frame].AddBufferUpdate(setUpdateHandle, 0, 0, BindingType::STORAGE_BUFFER_DYNAMIC, bufferBindingUpdate);
 }
 
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
@@ -1131,16 +1121,16 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 
 	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
 
-	BindingsSet::TextureBindingsUpdateInfo textureBindingsUpdateInfo;
+	BindingsSet::TextureBindingUpdateInfo textureBindingUpdateInfo;
 
-	textureBindingsUpdateInfo.TextureView = textureComponent.TextureView;
-	textureBindingsUpdateInfo.Sampler = textureComponent.TextureSampler;
-	textureBindingsUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
+	textureBindingUpdateInfo.TextureView = textureComponent.TextureView;
+	textureBindingUpdateInfo.Sampler = textureComponent.TextureSampler;
+	textureBindingUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
 	{
 		auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandlesByName.At(Id("GlobalData")()), GetPersistentAllocator());
-		descriptorsUpdates[f].AddTextureUpdate(updateHandle, loadInfo->Component, 0, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingsUpdateInfo);
+		descriptorsUpdates[f].AddTextureUpdate(updateHandle, loadInfo->Component, 0, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
 	}
 	
 	latestLoadedTextures.EmplaceBack(loadInfo->Component);

@@ -62,28 +62,28 @@ void GameApplication::Initialize()
 void GameApplication::PostInitialize()
 {
 	//FRAME START
-	gameInstance->AddGoal("FrameStart");
+	gameInstance->AddStage("FrameStart");
 
 	//GAMEPLAY CODE BEGINS
-	gameInstance->AddGoal("GameplayStart");
+	gameInstance->AddStage("GameplayStart");
 	//GAMEPLAY CODE ENDS
-	gameInstance->AddGoal("GameplayEnd");
+	gameInstance->AddStage("GameplayEnd");
 	
 	//RENDER CODE BEGINS
-	gameInstance->AddGoal("RenderStart");
+	gameInstance->AddStage("RenderStart");
 	//RENDER SETUP BEGINS
-	gameInstance->AddGoal("RenderStartSetup");
+	gameInstance->AddStage("RenderStartSetup");
 	//RENDER SETUP ENDS
-	gameInstance->AddGoal("RenderEndSetup");
+	gameInstance->AddStage("RenderEndSetup");
 	//RENDER IS DISPATCHED
-	gameInstance->AddGoal("RenderDo");
+	gameInstance->AddStage("RenderDo");
 	//RENDER DISPATCH IS DONE
-	gameInstance->AddGoal("RenderFinished");
+	gameInstance->AddStage("RenderFinished");
 	//RENDER CODE ENDS
-	gameInstance->AddGoal("RenderEnd");
+	gameInstance->AddStage("RenderEnd");
 	
 	//FRAME ENDS
-	gameInstance->AddGoal("FrameEnd");
+	gameInstance->AddStage("FrameEnd");
 	
 	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");

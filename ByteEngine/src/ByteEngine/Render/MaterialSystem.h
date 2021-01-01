@@ -105,7 +105,7 @@ public:
 		{
 			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
 
-			BindingsSet::TextureBindingsUpdateInfo info;
+			BindingsSet::TextureBindingUpdateInfo info;
 			info.TextureView = textureView;
 			info.Sampler = textureSampler;
 			info.TextureLayout = TextureLayout::GENERAL;
@@ -256,56 +256,53 @@ private:
 		void Initialize(const BE::PAR& allocator)
 		{
 			setsToUpdate.Initialize(4, allocator);
-			PerSetToUpdateBufferBindingsUpdate.Initialize(4, allocator);
-			PerSetToUpdateTextureBindingsUpdate.Initialize(4, allocator);
-			PerSetToUpdateBufferData.Initialize(4, allocator);
-			PerSetToUpdateTextureData.Initialize(4, allocator);
+			PerSetToUpdateBindingUpdate.Initialize(4, allocator);
+			PerSetToUpdateData.Initialize(4, allocator);
 		}
 
 		[[nodiscard]] uint32 AddSetToUpdate(SetHandle set, const BE::PAR& allocator)
 		{
 			const auto handle = setsToUpdate.EmplaceBack(set());
-			PerSetToUpdateBufferBindingsUpdate.EmplaceBack(4, allocator);
-			PerSetToUpdateTextureBindingsUpdate.EmplaceBack(4, allocator);
-			PerSetToUpdateBufferData.EmplaceBack(4, allocator);
-			PerSetToUpdateTextureData.EmplaceBack(4, allocator);
+			PerSetToUpdateBindingUpdate.EmplaceBack(4, allocator);
+			PerSetToUpdateData.EmplaceBack(4, allocator);
 			return handle;
 		}
 
-		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::BufferBindingsUpdateInfo update)
+		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
 		{
-			PerSetToUpdateBufferData[set].EmplaceBack(bindingType, binding);
-			PerSetToUpdateBufferBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
+			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
 		}
 
-		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::TextureBindingsUpdateInfo update)
+		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
 		{
-			PerSetToUpdateTextureData[set].EmplaceBack(bindingType, binding);
-			PerSetToUpdateTextureBindingsUpdate[set].EmplaceAt(firstArrayElement, update);
+			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
+		}
+
+		void AddAccelerationStructureUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
+		{
+			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
 		}
 		
 		void Reset()
 		{
 			setsToUpdate.ResizeDown(0);
-			PerSetToUpdateBufferBindingsUpdate.ResizeDown(0);
-			PerSetToUpdateTextureBindingsUpdate.ResizeDown(0);
-
-			PerSetToUpdateBufferData.ResizeDown(0);
-			PerSetToUpdateTextureData.ResizeDown(0);
+			PerSetToUpdateBindingUpdate.ResizeDown(0);
+			PerSetToUpdateData.ResizeDown(0);
 		}
 		
 		GTSL::Vector<SetHandle, BE::PAR> setsToUpdate;
 
-		GTSL::Vector<GTSL::SparseVector<BindingsSet::BufferBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBufferBindingsUpdate;
-		GTSL::Vector<GTSL::SparseVector<BindingsSet::TextureBindingsUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateTextureBindingsUpdate;
+		GTSL::Vector<GTSL::SparseVector<BindingsSet::BindingUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBindingUpdate;
 
 		struct UpdateData
 		{
 			BindingType BindingType; uint32 Binding;
 		};
 		
-		GTSL::Vector<GTSL::Vector<UpdateData, BE::PAR>, BE::PAR> PerSetToUpdateBufferData;
-		GTSL::Vector<GTSL::Vector<UpdateData, BE::PAR>, BE::PAR> PerSetToUpdateTextureData;
+		GTSL::Vector<GTSL::Vector<UpdateData, BE::PAR>, BE::PAR> PerSetToUpdateData;
 	};
 	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
 	

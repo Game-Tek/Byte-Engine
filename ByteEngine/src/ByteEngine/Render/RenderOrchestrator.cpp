@@ -568,6 +568,7 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 	}
 	else
 	{
+		attachment.Uses |= TextureUses::STORAGE;
 		attachment.ClearValue = GTSL::RGBA(0, 0, 0, 0);
 	}
 
@@ -738,8 +739,8 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const A
 	
 }
 
-void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize)
-{
+void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize)
+{	
 	auto resize = [&](Attachment& attachment) -> void
 	{
 		//TODO: MAYBE HAVE A SETUP FUNCTION SO WE CAN GUARANTEE THERE'S AN ALLOCATION AND CAN JUST DEALLOCATE ALWAYS
@@ -809,6 +810,24 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 		framebufferCreateInfo.Extent = renderSystem->GetRenderExtent();
 
 		renderPass.FrameBuffer = FrameBuffer(framebufferCreateInfo);
+	}
+
+	for(auto e : renderPassesNames)
+	{
+		auto& rp = renderPassesMap.At(e());
+
+		uint32 i = 0;
+		
+		for(auto& a : apiRenderPasses[rp.APIRenderPass].AttachmentNames)
+		{
+			auto& attachment = attachments.At(a());
+
+			if (attachment.Type & TextureType::COLOR)
+			{
+				materialSystem->WriteSetTexture(materialSystem->GetSetHandleByName(e), i, attachment.Texture, attachment.TextureView, TextureSampler());
+				++i;
+			}
+		}
 	}
 }
 
@@ -893,6 +912,9 @@ void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, M
 	auto bufferAddress = sbtBuffer.GetAddress(renderSystem->GetRenderDevice());
 
 	uint32 offset = 0;
+
+	//TODO: TRANSITION ATTACHMENTS TO GENERAL BEFORE RENDERING TO THEM
+	//TODO: SYNC ACCESS
 	
 	CommandBuffer::TraceRaysInfo traceRaysInfo;
 	traceRaysInfo.DispatchSize = GTSL::Extent3D(renderSystem->GetRenderExtent());

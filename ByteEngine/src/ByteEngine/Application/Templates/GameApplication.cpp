@@ -493,7 +493,8 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE } }; //TODO: FIX ACCESS
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE }, { "RenderOrchestrator", AccessType::READ_WRITE },
+	{ "MaterialSystem", AccessType::READ_WRITE } };
 
 	auto ext = extent;
 
@@ -501,9 +502,10 @@ void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 	{
 		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 		auto* renderOrchestrator = info.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
+		auto* materialSystem = info.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 		renderSystem->OnResize(newSize);
-		renderOrchestrator->OnResize(renderSystem, newSize);
+		renderOrchestrator->OnResize(renderSystem, materialSystem, newSize);
 	};
 	
 	if (extent != 0 && extent != oldSize)

@@ -25,16 +25,18 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 
 ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 bufferSize = 0, indicesOffset = 0; uint16 indexSize = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &indexSize, &indexSize, &bufferSize, &indicesOffset);
+	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, indicesOffset, (bufferSize - indicesOffset) / indexSize, indexSize);
+	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
 	uint32 index = positions.Emplace();
 	
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
 
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
+
+	auto bufferSize = vertexCount * vertexSize + indexCount * indexSize;
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = Task<StaticMeshResourceManager::OnStaticMeshLoad>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
@@ -56,10 +58,10 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 bufferSize = 0, indicesOffset = 0; uint16 indexSize = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &indexSize, &indexSize, &bufferSize, &indicesOffset);
+	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
+	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, indicesOffset, (bufferSize - indicesOffset) / indexSize, indexSize);
+	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
 	uint32 index = positions.GetFirstFreeIndex().Get();
 
@@ -67,6 +69,8 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
 
+	auto bufferSize = vertexCount * vertexSize + indexCount * indexSize;
+	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onRayTracedStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, addStaticMeshInfo.RenderSystem->GetSharedMeshPointer(sharedMesh));
@@ -110,8 +114,7 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		meshInfo.VertexCount = onStaticMeshLoad.VertexCount;
 		meshInfo.VertexSize = onStaticMeshLoad.VertexSize;
 		meshInfo.IndexCount = onStaticMeshLoad.IndexCount;
-		meshInfo.IndicesOffset = onStaticMeshLoad.IndicesOffset;
-		meshInfo.IndexType = SelectIndexType(onStaticMeshLoad.IndexSize);
+		meshInfo.IndexSize = onStaticMeshLoad.IndexSize;
 		
 		GTSL::Matrix3x4 matrix;
 		meshInfo.Matrix = &matrix;

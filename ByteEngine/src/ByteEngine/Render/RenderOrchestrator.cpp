@@ -80,7 +80,7 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	
-	auto mesh = renderSystem->CreateSharedMesh("BE_UI_SQUARE", 4 * 2 * 4, 6, 2);
+	auto mesh = renderSystem->CreateSharedMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2);
 	
 	auto* meshPointer = renderSystem->GetSharedMeshPointer(mesh);
 	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);

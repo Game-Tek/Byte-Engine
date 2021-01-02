@@ -316,6 +316,9 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	
 	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
 
+	auto verticesSize = info.VertexSize * info.VertexCount; auto indecesSize = info.IndexCount * info.IndexSize;
+	auto meshSize = verticesSize + indecesSize;
+	
 	RayTracingMesh rayTracingMesh;
 	{
 		Buffer::CreateInfo createInfo;
@@ -326,7 +329,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 			createInfo.Name = name;
 		}
 
-		createInfo.Size = info.IndicesOffset + info.IndexCount * 2;
+		createInfo.Size = meshSize;
 		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION | BufferType::ADDRESS;
 
 		RenderAllocation allocation;
@@ -338,7 +341,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		AllocateLocalBufferMemory(bufferLocal);
 	}
 	
-	rayTracingMesh.IndexType = info.IndexType;
+	rayTracingMesh.IndexType = SelectIndexType(info.IndexSize);
 	rayTracingMesh.IndicesCount = info.IndexCount;
 	
 	GAL::BuildOffset offset;
@@ -351,7 +354,8 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	{
 		AccelerationStructure::GeometryDescriptor geometryDescriptor;
 		geometryDescriptor.Type = GeometryType::TRIANGLES;
-
+		geometryDescriptor.Flags = 0;
+		
 		AccelerationStructure::GeometryTriangles geometryTriangles;
 		geometryDescriptor.Data = &geometryTriangles;
 
@@ -360,7 +364,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryTriangles.MaxVertices = info.VertexCount;
 		geometryTriangles.TransformData = 0;
 		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
-		geometryTriangles.IndexData = geometryTriangles.VertexData + info.IndicesOffset;
+		geometryTriangles.IndexData = geometryTriangles.VertexData + verticesSize;
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
 		geometryTriangles.VertexStride = info.VertexSize;
 
@@ -370,6 +374,8 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		if constexpr (_DEBUG) { accelerationStructureCreateInfo.Name = GTSL::StaticString<64>("Render Device. Bottom Acceleration Structure"); }
 		accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
 		accelerationStructureCreateInfo.DeviceAddress = 0;
+		accelerationStructureCreateInfo.Offset = 0;
+		accelerationStructureCreateInfo.Buffer = rayTracingMesh.MeshBuffer;
 
 		RenderAllocation allocation;
 		AllocateAccelerationStructureMemory(&rayTracingMesh.StructureBuffer, &rayTracingMesh.AccelerationStructure, &accelerationStructureCreateInfo, &allocation, BuildType::GPU_LOCAL, MemoryRequirementsType::OBJECT);
@@ -399,7 +405,9 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
 		geometryTriangles.VertexStride = info.VertexSize;
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
-		geometryTriangles.IndexData = geometryTriangles.VertexData + info.IndicesOffset;
+		geometryTriangles.IndexData = geometryTriangles.VertexData + verticesSize;
+		geometryTriangles.TransformData = 0;
+		geometryTriangles.MaxVertices = info.VertexCount;
 
 		GAL::BuildAccelerationStructureInfo build;
 		build.Update = false;
@@ -435,7 +443,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		bufferCopyData.DestinationOffset = 0;
 		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
 		bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
-		bufferCopyData.Size = info.IndicesOffset + info.IndexCount * 2;
+		bufferCopyData.Size = meshSize;
 		bufferCopyData.Allocation = sharedMesh.Allocation;
 		AddBufferCopy(bufferCopyData);
 	}
@@ -443,14 +451,14 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	return ComponentReference(GetSystemId(), component);
 }
 
-RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize)
+RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize)
 {
 	SharedMesh mesh;
 
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
 	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE;
-	createInfo.Size = verticesSize + indexCount * indexSize;
+	createInfo.Size = vertexCount * vertexSize + indexCount * indexSize;
 	mesh.Size = createInfo.Size;
 
 	mesh.IndexType = SelectIndexType(indexSize);
@@ -462,7 +470,7 @@ RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 ve
 	bufferLocal.Buffer = &mesh.Buffer;
 	AllocateScratchBufferMemory(bufferLocal);
 
-	mesh.OffsetToIndices = verticesSize; //TODO: MAYBE ROUND TO INDEX SIZE?
+	mesh.OffsetToIndices = vertexCount * vertexSize; //TODO: MAYBE ROUND TO INDEX SIZE?
 	
 	auto place = sharedMeshes.Emplace(mesh);
 
@@ -926,7 +934,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
 
-	buildAccelerationStructures(this);
+	//buildAccelerationStructures(this);
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;
 	endRecordingInfo.RenderDevice = &renderDevice;

@@ -34,8 +34,6 @@ public:
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
 		uint16 IndexCount;
-
-		uint32 IndicesOffset;
 		
 		/**
 		 * \brief Size of a single vertex.
@@ -57,17 +55,17 @@ public:
 	};
 	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
 
-	void GetMeshSize(GTSL::Id64 name, uint16* indexSize, const uint16* indicesAlignment, uint32* meshSize, uint32* indecesOffset);
+	void GetMeshSize(const GTSL::Id64 name, uint32* vertexCount, uint32* vertexSize, uint32* indexCount, uint32* indexSize);
 
 	struct MeshInfo
 	{
-		GTSL::Array<uint8, 20> VertexDescriptor;
-		uint32 VerticesSize = 0;
-		uint32 IndicesSize = 0;
+		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
+		uint32 VertexCount = 0;
+		uint32 IndexCount = 0;
 		uint32 ByteOffset = 0;
 		uint8 IndexSize = 0;
 
-		[[nodiscard]] uint32 MeshSize()const { return VerticesSize + IndicesSize; }
+		[[nodiscard]] uint32 MeshSize()const { return VertexCount + IndexCount; }
 		
 		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer);
 		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer);

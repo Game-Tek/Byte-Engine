@@ -107,7 +107,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		sbtCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { sbtCreateInfo.Name = GTSL::StaticString<32>("SBT Buffer. Material System"); }
 		sbtCreateInfo.Size = materialResorceManager->GetRayTraceShaderCount() * renderSystem->GetShaderGroupHandleSize();
-		sbtCreateInfo.BufferType = BufferType::RAY_TRACING;
+		sbtCreateInfo.BufferType = BufferType::RAY_TRACING | BufferType::ADDRESS;
 		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryInfo;
 		scratchMemoryInfo.Buffer = &shaderBindingTableBuffer;
 		scratchMemoryInfo.CreateInfo = &sbtCreateInfo;
@@ -219,7 +219,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer->GetCapacity(), handlesBuffer->GetData()));
 
-		auto* sbt = reinterpret_cast<byte*>(shaderBindingTableBuffer.GetAddress(renderSystem->GetRenderDevice()));
+		auto* sbt = reinterpret_cast<byte*>(shaderBindingTableAllocation.Data);
 
 		for (uint32 h = 0; h < groups.GetLength(); ++h)
 		{

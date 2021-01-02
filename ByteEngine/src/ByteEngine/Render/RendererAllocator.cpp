@@ -15,7 +15,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::RAY_TRACING;
 	Buffer scratch_buffer;
 
 	Buffer::GetMemoryRequirementsInfo memory_requirements;

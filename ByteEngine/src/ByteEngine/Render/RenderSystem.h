@@ -201,15 +201,13 @@ public:
 	struct CreateRayTracingMeshInfo
 	{
 		uint32 VertexCount, VertexSize;
-		uint32 IndexCount;
-		IndexType IndexType;
-		uint32 IndicesOffset;
+		uint32 IndexCount, IndexSize;
 		GTSL::Matrix3x4* Matrix;
 		SharedMeshHandle SharedMesh;
 	};
 	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
-	SharedMeshHandle CreateSharedMesh(Id name, uint32 verticesSize, const uint32 indexCount, const uint8 indexSize);
+	SharedMeshHandle CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
 	GPUMeshHandle CreateGPUMesh(SharedMeshHandle sharedMeshHandle);
 	
 	void RenderMesh(GPUMeshHandle handle, uint32 instanceCount = 1);

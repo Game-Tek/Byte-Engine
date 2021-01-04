@@ -61,9 +61,11 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
 	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
+	//RenderSystem::SharedMeshHandle sharedMesh;
 	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
-	uint32 index = positions.GetFirstFreeIndex().Get();
+	uint32 index = 0;
+	//uint32 index = positions.Emplace();
 
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
 
@@ -81,8 +83,7 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
-	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
-	positions.EmplaceAt(index);
+	//resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 
 	return ComponentReference(GetSystemId(), index);
 }
@@ -116,7 +117,7 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 		meshInfo.IndexCount = onStaticMeshLoad.IndexCount;
 		meshInfo.IndexSize = onStaticMeshLoad.IndexSize;
 		
-		GTSL::Matrix3x4 matrix;
+		GTSL::Matrix3x4 matrix(1.0f);
 		meshInfo.Matrix = &matrix;
 		loadInfo->RenderSystem->CreateRayTracedMesh(meshInfo);
 		

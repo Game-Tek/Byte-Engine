@@ -47,10 +47,10 @@ private:
 	GTSL::Vector<FreeSpace, BE::PersistentAllocatorReference> freeSpaces;
 };
 
-class LocalMemoryAllocator
+class LocalMemoryAllocator : public Object
 {
 public:
-	LocalMemoryAllocator() = default;
+	LocalMemoryAllocator() : Object("LocalMemoryAllocator") {}
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
@@ -60,19 +60,27 @@ public:
 	
 	void DeallocateBuffer(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
-		const auto alloc = AllocID(allocation.AllocationId);
-		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		if constexpr (!SINGLE_ALLOC)
+		{
+			const auto alloc = AllocID(allocation.AllocationId);
+			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		}
 	}
 
 	void AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
 	void DeallocateTexture(const RenderDevice& renderDevice, const RenderAllocation allocation)
 	{
-		const auto alloc = AllocID(allocation.AllocationId);
-		textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		if constexpr (!SINGLE_ALLOC)
+		{
+			const auto alloc = AllocID(allocation.AllocationId);
+			textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		}
 	}
 
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+
+	static constexpr bool SINGLE_ALLOC = false;
 	
 	uint32 bufferMemoryType = 0, textureMemoryType = 0;
 	
@@ -99,18 +107,21 @@ private:
 	GTSL::Vector<FreeSpace, BE::PersistentAllocatorReference> freeSpaces;
 };
 
-class ScratchMemoryAllocator
+class ScratchMemoryAllocator : public Object
 {
 public:
-	ScratchMemoryAllocator() = default;
+	ScratchMemoryAllocator() : Object("ScratchMemoryAllocator") {}
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
 	void DeallocateBuffer(const RenderDevice& renderDevice, const HostRenderAllocation allocation)
 	{
-		const auto alloc = AllocID(allocation.AllocationId);
-		bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		if constexpr (!SINGLE_ALLOC)
+		{
+			const auto alloc = AllocID(allocation.AllocationId);
+			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+		}
 	}
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
@@ -118,6 +129,8 @@ public:
 private:
 	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
+	static constexpr bool SINGLE_ALLOC = false;
+	
 	uint32 bufferMemoryType = 0;
 
 	uint32 bufferMemoryAlignment = 0;

@@ -20,7 +20,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	apiAllocations.reserve(16);
 
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
-	buildOffsets.Initialize(32, GetPersistentAllocator());
+	buildRanges.Initialize(32, GetPersistentAllocator());
 	geometries.Initialize(32, GetPersistentAllocator());
 	sharedMeshes.Initialize(32, GetPersistentAllocator());
 	gpuMeshes.Initialize(32, GetPersistentAllocator());
@@ -63,21 +63,25 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		if (rayTracing)
 		{
-			AccelerationStructure::GeometryDescriptor descriptor;
-			descriptor.Type = GeometryType::INSTANCES;
+			buildAccelerationStructureInfos.Initialize(16, GetPersistentAllocator());
 
 			AccelerationStructure::GeometryInstances geometryInstances;
-			geometryInstances.Data;
-			descriptor.Data = &geometryInstances;
-			descriptor.Flags = 0;
+			geometryInstances.Data = 0;
+
+			AccelerationStructure::GeometryDescriptor geometryDescriptor;
+			geometryDescriptor.Type = GeometryType::INSTANCES;
+			geometryDescriptor.Data = &geometryInstances;
+			geometryDescriptor.Flags = 0;
+			geometryDescriptor.PrimitiveCount = MAX_INSTANCES_COUNT;
 			
 			AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
 			accelerationStructureCreateInfo.IsTopLevel = true;
 			accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
-			accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &descriptor);
+			accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<const AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
 
-			RenderAllocation allocation;
-			AllocateAccelerationStructureMemory(&topLevelAccelerationStructureBuffer, &topLevelAccelerationStructure, &accelerationStructureCreateInfo, &allocation, BuildType::GPU_LOCAL, MemoryRequirementsType::OBJECT);
+			AllocateAccelerationStructureMemory(&topLevelAccelerationStructure, &topLevelAccelerationStructureBuffer, 
+				GTSL::Range<const AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor), &accelerationStructureCreateInfo, &topLevelAccelerationStructureAllocation,
+				BuildType::GPU_LOCAL);
 
 			{
 				topLevelAccelerationStructureAddress = topLevelAccelerationStructure.GetAddress(GetRenderDevice());
@@ -102,7 +106,13 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				Buffer::CreateInfo buffer;
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = GTSL::Byte(GTSL::MegaByte(1));
-				buffer.BufferType = BufferType::ADDRESS | BufferType::RAY_TRACING;
+				buffer.BufferType = BufferType::ADDRESS | BufferType::STORAGE;
+
+				//BufferScratchMemoryAllocationInfo allocationInfo;
+				//allocationInfo.Allocation = &scratchBufferAllocation;
+				//allocationInfo.CreateInfo = &buffer;
+				//allocationInfo.Buffer = &accelerationStructureScratchBuffer;
+				//AllocateScratchBufferMemory(allocationInfo);
 
 				BufferLocalMemoryAllocationInfo allocationInfo;
 				allocationInfo.Allocation = &scratchBufferAllocation;
@@ -138,7 +148,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	{
 		processedTextureCopies.EmplaceBack(0);
 		processedBufferCopies.EmplaceBack(0);
-		processedAccelerationStructureBuilds.EmplaceBack(0);
 	}
 
 	{
@@ -251,7 +260,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 		bufferCopyDatas.EmplaceBack(128, GetPersistentAllocator());
 		textureCopyDatas.EmplaceBack(128, GetPersistentAllocator());
-		buildAccelerationStructureInfos.EmplaceBack(32, GetPersistentAllocator());
 	}
 
 	bool pipelineCacheAvailable;
@@ -316,57 +324,92 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	
 	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
 
-	auto verticesSize = info.VertexSize * info.VertexCount; auto indecesSize = info.IndexCount * info.IndexSize;
-	auto meshSize = verticesSize + indecesSize;
+	auto verticesSize = info.VertexCount * info.VertexSize; auto indecesSize = info.IndexCount * info.IndexSize;
+	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, info.IndexSize) + indecesSize;
 	
 	RayTracingMesh rayTracingMesh;
-	{
-		Buffer::CreateInfo createInfo;
-		createInfo.RenderDevice = GetRenderDevice();
 
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Render System. RayTraced Mesh Buffer");
-			createInfo.Name = name;
-		}
+	//Buffer verticesBuffer, indecesBuffer;
+	//HostRenderAllocation vertices, indeces;
+	
+	//{
+	//	Buffer::CreateInfo createInfo;
+	//	createInfo.RenderDevice = GetRenderDevice();
+	//
+	//	if constexpr (_DEBUG) {
+	//		GTSL::StaticString<64> name("Render System. RayTraced Mesh Buffer");
+	//		createInfo.Name = name;
+	//	}
+	//
+	//	createInfo.Size = meshSize;
+	//	createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::ADDRESS;
+	//
+	//	BufferLocalMemoryAllocationInfo bufferLocal;
+	//	bufferLocal.Buffer = &rayTracingMesh.MeshBuffer;
+	//	bufferLocal.Allocation = &rayTracingMesh.MeshBufferAllocation;
+	//	bufferLocal.CreateInfo = &createInfo;
+	//	AllocateLocalBufferMemory(bufferLocal);
+	//}
 
-		createInfo.Size = meshSize;
-		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::TRANSFER_DESTINATION | BufferType::ADDRESS;
-
-		RenderAllocation allocation;
-
-		BufferLocalMemoryAllocationInfo bufferLocal;
-		bufferLocal.Buffer = &rayTracingMesh.MeshBuffer;
-		bufferLocal.Allocation = &allocation;
-		bufferLocal.CreateInfo = &createInfo;
-		AllocateLocalBufferMemory(bufferLocal);
-	}
+	//{
+	//	Buffer::CreateInfo createInfo;
+	//	createInfo.RenderDevice = GetRenderDevice();
+	//
+	//	if constexpr (_DEBUG) {
+	//		GTSL::StaticString<64> name("Render System. TestBuffer");
+	//		createInfo.Name = name;
+	//	}
+	//
+	//	createInfo.Size = verticesSize;
+	//	createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::ADDRESS;
+	//
+	//	BufferScratchMemoryAllocationInfo bufferLocal;
+	//	bufferLocal.Buffer = &verticesBuffer;
+	//	bufferLocal.Allocation = &vertices;
+	//	bufferLocal.CreateInfo = &createInfo;
+	//	AllocateScratchBufferMemory(bufferLocal);
+	//	
+	//	createInfo.Size = indecesSize;
+	//
+	//	bufferLocal.Buffer = &indecesBuffer;
+	//	bufferLocal.Allocation = &indeces;
+	//	bufferLocal.CreateInfo = &createInfo;
+	//	AllocateScratchBufferMemory(bufferLocal);
+	//}
+	//
+	//GTSL::MemCopy(verticesSize, sharedMesh.Allocation.Data, vertices.Data);
+	//GTSL::MemCopy(indecesSize, static_cast<byte*>(sharedMesh.Allocation.Data) + verticesSize, indeces.Data);
+	
+	//rayTracingMesh.MeshBuffer = sharedMesh.Buffer; rayTracingMesh.MeshBufferAllocation = sharedMesh.Allocation;
 	
 	rayTracingMesh.IndexType = SelectIndexType(info.IndexSize);
 	rayTracingMesh.IndicesCount = info.IndexCount;
 	
-	GAL::BuildOffset offset;
-	offset.FirstVertex = 0;
-	offset.PrimitiveCount = rayTracingMesh.IndicesCount / 3;
-	offset.PrimitiveOffset = 0;
-	offset.TransformOffset = 0;
-	buildOffsets.EmplaceBack(offset);
+	GAL::BuildRange buildRange;
+	buildRange.FirstVertex = 0;
+	buildRange.PrimitiveCount = rayTracingMesh.IndicesCount / 3;
+	buildRange.PrimitiveOffset = 0;
+	buildRange.TransformOffset = 0;
+	buildRanges.EmplaceBack(buildRange);
 
+	auto meshDataBuffer = sharedMesh.Buffer;
+	
+	AccelerationStructure::GeometryTriangles geometryTriangles;
+	geometryTriangles.IndexType = rayTracingMesh.IndexType;
+	geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
+	geometryTriangles.MaxVertices = info.VertexCount;
+	geometryTriangles.TransformData = 0;
+	geometryTriangles.VertexData = meshDataBuffer.GetAddress(GetRenderDevice());
+	geometryTriangles.IndexData = meshDataBuffer.GetAddress(GetRenderDevice()) + verticesSize;
+	geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
+	geometryTriangles.VertexStride = info.VertexSize;
+	
 	{
 		AccelerationStructure::GeometryDescriptor geometryDescriptor;
 		geometryDescriptor.Type = GeometryType::TRIANGLES;
 		geometryDescriptor.Flags = 0;
-		
-		AccelerationStructure::GeometryTriangles geometryTriangles;
 		geometryDescriptor.Data = &geometryTriangles;
-
-		geometryTriangles.IndexType = rayTracingMesh.IndexType;
-		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
-		geometryTriangles.MaxVertices = info.VertexCount;
-		geometryTriangles.TransformData = 0;
-		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
-		geometryTriangles.IndexData = geometryTriangles.VertexData + verticesSize;
-		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
-		geometryTriangles.VertexStride = info.VertexSize;
+		geometryDescriptor.PrimitiveCount = buildRange.PrimitiveCount;
 
 		AccelerationStructure::CreateInfo accelerationStructureCreateInfo;
 		accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
@@ -375,58 +418,42 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		accelerationStructureCreateInfo.GeometryDescriptors = GTSL::Range<AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor);
 		accelerationStructureCreateInfo.DeviceAddress = 0;
 		accelerationStructureCreateInfo.Offset = 0;
-		accelerationStructureCreateInfo.Buffer = rayTracingMesh.MeshBuffer;
-
-		RenderAllocation allocation;
-		AllocateAccelerationStructureMemory(&rayTracingMesh.StructureBuffer, &rayTracingMesh.AccelerationStructure, &accelerationStructureCreateInfo, &allocation, BuildType::GPU_LOCAL, MemoryRequirementsType::OBJECT);
-		rayTracingMesh.Address = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
+		
+		AllocateAccelerationStructureMemory(&rayTracingMesh.AccelerationStructure, &rayTracingMesh.StructureBuffer, 
+			GTSL::Range<const AccelerationStructure::GeometryDescriptor*>(1, &geometryDescriptor), &accelerationStructureCreateInfo,
+			&rayTracingMesh.StructureBufferAllocation, BuildType::GPU_LOCAL);
 	}
-
-	//{
-	//	//Query size of scratch buffer for acc struct build, right now for debugging purposes
-	//	
-	//	GAL::MemoryRequirements memReqs;
-	//	RenderDevice::GetAccelerationStructureMemoryRequirementsInfo accStructMemReqs;
-	//	accStructMemReqs.MemoryRequirements = &memReqs;
-	//	accStructMemReqs.AccelerationStructure = &rayTracingMesh.AccelerationStructure;
-	//	accStructMemReqs.AccelerationStructureMemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType::BUILD_SCRATCH;
-	//	accStructMemReqs.AccelerationStructureBuildType = GAL::VulkanAccelerationStructureBuildType::GPU_LOCAL;
-	//	GetRenderDevice()->GetAccelerationStructureMemoryRequirements(accStructMemReqs);
-	//
-	//	BE_ASSERT(memReqs.Size < scratchBufferAllocation.Size, "Scratch buffer not sufficient")
-	//}
 
 	rayTracingMeshes.Emplace(rayTracingMesh);
 
+	//{
+	//	BufferCopyData bufferCopyData;
+	//	bufferCopyData.SourceOffset = 0;
+	//	bufferCopyData.DestinationOffset = 0;
+	//	bufferCopyData.SourceBuffer = sharedMesh.Buffer;
+	//	bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
+	//	bufferCopyData.Size = meshSize;
+	//	bufferCopyData.Allocation = sharedMesh.Allocation;
+	//	AddBufferCopy(bufferCopyData);
+	//}
+	
 	{
-		AccelerationStructure::GeometryTriangles geometryTriangles;
-		geometryTriangles.Type = GeometryType::TRIANGLES;
-		geometryTriangles.IndexType = rayTracingMesh.IndexType;
-		geometryTriangles.VertexData = rayTracingMesh.MeshBuffer.GetAddress(GetRenderDevice());
-		geometryTriangles.VertexStride = info.VertexSize;
-		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
-		geometryTriangles.IndexData = geometryTriangles.VertexData + verticesSize;
-		geometryTriangles.TransformData = 0;
-		geometryTriangles.MaxVertices = info.VertexCount;
-
 		GAL::BuildAccelerationStructureInfo build;
 		build.Update = false;
 		build.Flags = AccelerationStructureFlags::PREFER_FAST_TRACE;
-		build.Count = 1;
 		build.Type = GAL::VKAccelerationStructureType::BOTTOM_LEVEL;
 		build.SourceAccelerationStructure = AccelerationStructure();
 		build.DestinationAccelerationStructure = rayTracingMesh.AccelerationStructure;
-		build.ScratchBufferAddress = scratchBufferAddress;
 		geometries.EmplaceBack(geometryTriangles);
 
-		buildAccelerationStructureInfos[GetCurrentFrame()].EmplaceBack(build);
+		buildAccelerationStructureInfos.EmplaceBack(build);
 	}
 
 	{
 		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + instanceCount);
 		
 		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE;
-		instance.AccelerationStructureReference = reinterpret_cast<uint64>(rayTracingMesh.AccelerationStructure.GetVkAccelerationStructure());
+		instance.AccelerationStructureReference = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 		instance.Mask = 0xFF;
 		instance.InstanceCustomIndex = component;
 		instance.InstanceShaderBindingTableRecordOffset = 0;
@@ -435,17 +462,6 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		BE_ASSERT(instanceCount < MAX_INSTANCES_COUNT);
 		
 		++instanceCount;
-	}
-	
-	{
-		BufferCopyData bufferCopyData;
-		bufferCopyData.SourceOffset = 0;
-		bufferCopyData.DestinationOffset = 0;
-		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
-		bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
-		bufferCopyData.Size = meshSize;
-		bufferCopyData.Allocation = sharedMesh.Allocation;
-		AddBufferCopy(bufferCopyData);
 	}
 	
 	return ComponentReference(GetSystemId(), component);
@@ -457,7 +473,7 @@ RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 ve
 
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE;
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY;
 	createInfo.Size = vertexCount * vertexSize + indexCount * indexSize;
 	mesh.Size = createInfo.Size;
 
@@ -744,40 +760,44 @@ void RenderSystem::buildAccelerationStructuresOnDevice()
 {
 	auto& commandBuffer = transferCommandBuffers[GetCurrentFrame()];
 
-	if (buildAccelerationStructureInfos[GetCurrentFrame()].GetLength())
-	{
-		GTSL::Array<GAL::BuildOffset*, 10> bO; bO.EmplaceBack(buildOffsets.GetData());
-		
-		GTSL::Array<GTSL::Array<AccelerationStructure::GeometryDescriptor, 8>, 16> geometryDescriptors(buildAccelerationStructureInfos[GetCurrentFrame()].GetLength());
+	if (buildAccelerationStructureInfos.GetLength())
+	{		
+		GTSL::Array<GTSL::Array<AccelerationStructure::GeometryDescriptor, 8>, 16> geometryDescriptors;
 
-		for (uint32 i = 0; i < buildAccelerationStructureInfos[GetCurrentFrame()].GetLength(); ++i)
+		for (uint32 i = 0; i < buildAccelerationStructureInfos.GetLength(); ++i)
 		{
-			auto& desc = geometryDescriptors[i][geometryDescriptors[i].EmplaceBack()];
-			desc.Type = GeometryType::TRIANGLES;
-			desc.Data = &geometries[i];
-			buildAccelerationStructureInfos[GetCurrentFrame()][i].Geometries = geometryDescriptors[i];
+			geometryDescriptors.EmplaceBack();
+			AccelerationStructure::GeometryDescriptor geometryDescriptor;
+			geometryDescriptor.Type = GeometryType::TRIANGLES;
+			geometryDescriptor.Data = &geometries[i];
+			geometryDescriptors[i].EmplaceBack(geometryDescriptor);
+			
+			buildAccelerationStructureInfos[i].Geometries = geometryDescriptors[i];
+			buildAccelerationStructureInfos[i].BuildRanges = buildRanges;
+			buildAccelerationStructureInfos[i].ScratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice()); //TODO: UPDATE ADDRESS BECAUSE MULTIPLE BUILDS CAN BE IN FLIGHT
 		}
 
 		GAL::BuildAccelerationStructuresInfo build;
 		build.RenderDevice = GetRenderDevice();
-		build.BuildAccelerationStructureInfos = buildAccelerationStructureInfos[GetCurrentFrame()];
-		build.BuildOffsets = bO.begin();
+		build.BuildAccelerationStructureInfos = buildAccelerationStructureInfos;
 		
 		commandBuffer.BuildAccelerationStructure(build);
 		
-		CommandBuffer::AddPipelineBarrierInfo addPipelineBarrierInfo;
-		addPipelineBarrierInfo.InitialStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
-		addPipelineBarrierInfo.FinalStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
-		
-		GTSL::Array<CommandBuffer::MemoryBarrier, 1> memoryBarriers(1);
-		memoryBarriers[0].SourceAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_WRITE;
-		memoryBarriers[0].DestinationAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_READ;
-		
-		addPipelineBarrierInfo.MemoryBarriers = memoryBarriers;
-		commandBuffer.AddPipelineBarrier(addPipelineBarrierInfo);
+		//CommandBuffer::AddPipelineBarrierInfo addPipelineBarrierInfo;
+		//addPipelineBarrierInfo.InitialStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
+		//addPipelineBarrierInfo.FinalStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
+		//
+		//GTSL::Array<CommandBuffer::MemoryBarrier, 1> memoryBarriers(1);
+		//memoryBarriers[0].SourceAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_WRITE;
+		//memoryBarriers[0].DestinationAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_READ;
+		//
+		//addPipelineBarrierInfo.MemoryBarriers = memoryBarriers;
+		//commandBuffer.AddPipelineBarrier(addPipelineBarrierInfo);
 	}
 	
-	processedAccelerationStructureBuilds[GetCurrentFrame()] = buildAccelerationStructureInfos[GetCurrentFrame()].GetLength();
+	buildAccelerationStructureInfos.ResizeDown(0);
+	buildRanges.ResizeDown(0);
+	geometries.ResizeDown(0);
 }
 
 void RenderSystem::renderBegin(TaskInfo taskInfo)
@@ -826,7 +846,6 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
-	auto& buildData = buildAccelerationStructureInfos[GetCurrentFrame()];
 	
 	//if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
@@ -844,9 +863,6 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		
 		bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
 		textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
-		buildData.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
-		buildOffsets.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
-		geometries.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
 		//triangleDatas.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
 
 		Fence::ResetFencesInfo reset_fences_info;
@@ -934,7 +950,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
 
-	//buildAccelerationStructures(this);
+	buildAccelerationStructures(this);
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;
 	endRecordingInfo.RenderDevice = &renderDevice;

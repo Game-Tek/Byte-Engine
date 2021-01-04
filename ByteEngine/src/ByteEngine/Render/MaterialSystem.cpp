@@ -107,7 +107,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		sbtCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) { sbtCreateInfo.Name = GTSL::StaticString<32>("SBT Buffer. Material System"); }
 		sbtCreateInfo.Size = materialResorceManager->GetRayTraceShaderCount() * renderSystem->GetShaderGroupHandleSize();
-		sbtCreateInfo.BufferType = BufferType::RAY_TRACING | BufferType::ADDRESS;
+		sbtCreateInfo.BufferType = BufferType::SHADER_BINDING_TABLE | BufferType::ADDRESS;
 		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryInfo;
 		scratchMemoryInfo.Buffer = &shaderBindingTableBuffer;
 		scratchMemoryInfo.CreateInfo = &sbtCreateInfo;

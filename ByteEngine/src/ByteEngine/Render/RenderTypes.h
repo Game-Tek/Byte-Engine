@@ -123,7 +123,6 @@ using QueueCapabilities = GAL::VulkanQueueCapabilities;
 using BuildType = GAL::VulkanAccelerationStructureBuildType;
 using GeometryInstanceFlags = GAL::VulkanGeometryInstanceFlags;
 using AccelerationStructureFlags = GAL::VulkanAccelerationStructureFlags;
-using MemoryRequirementsType = GAL::VulkanAccelerationStructureMemoryRequirementsType;
 #endif
 
 constexpr GAL::RenderAPI API = GAL::RenderAPI::VULKAN;

@@ -207,6 +207,16 @@ void Game::PostInitialize()
 	//}
 
 	{
+		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "hydrant";
+		addStaticMeshInfo.Material = material;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
+	}
+	
+	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
 		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -220,7 +230,7 @@ void Game::PostInitialize()
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");//
+	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "UIMat";
 	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
@@ -236,18 +246,8 @@ void Game::PostInitialize()
 		box = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
 	}
-
-	//{
-	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "hydrant";
-	//	addStaticMeshInfo.Material = material;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//}
 	
-	//{//
+	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });

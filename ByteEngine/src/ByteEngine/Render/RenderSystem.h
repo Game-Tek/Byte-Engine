@@ -61,22 +61,26 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(Buffer* buffer, AccelerationStructure* accelerationStructure, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, MemoryRequirementsType type)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::GeometryDescriptor*> geometryDescriptors, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build)
 	{
+		uint32 bufferSize, scratchSize;
+		
 		AccelerationStructure::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = createInfo;
 		memoryRequirements.BuildType = build;
-		memoryRequirements.MemoryRequirementsType = type;
 		memoryRequirements.Flags = 0;
-		accelerationStructure->GetMemoryRequirements(&memoryRequirements);
+		memoryRequirements.GeometryDescriptors = geometryDescriptors;
+		memoryRequirements.IsTopLevel = geometryDescriptors[0].Type == GeometryType::INSTANCES ? true : false;
+		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &scratchSize);
+
+		bufferSize *= 2;
 		
-		renderAllocation->Size = memoryRequirements.BufferSize;
+		renderAllocation->Size = bufferSize;
 		
 		Buffer::CreateInfo bufferCreateInfo;
 		bufferCreateInfo.RenderDevice = GetRenderDevice();
 		bufferCreateInfo.BufferType = BufferType::ACCELERATION_STRUCTURE;
-		bufferCreateInfo.Size = memoryRequirements.BufferSize;
+		bufferCreateInfo.Size = bufferSize;
 
 		testMutex.Lock();
 		localMemoryAllocator.AllocateBuffer(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
@@ -93,7 +97,7 @@ public:
 		createInfo->Buffer = *buffer;
 
 		createInfo->Offset = 0;
-		createInfo->Size = memoryRequirements.BufferSize;
+		createInfo->Size = bufferSize;
 		accelerationStructure->Initialize(*createInfo);
 	}
 	
@@ -253,8 +257,6 @@ private:
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
-
-	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedAccelerationStructureBuilds;
 	
 	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
@@ -299,7 +301,7 @@ private:
 		IndexType IndexType;
 
 		AccelerationStructure AccelerationStructure;
-		uint64 Address;
+		RenderAllocation MeshBufferAllocation, StructureBufferAllocation;
 	};
 	
 	GTSL::KeepVector<SharedMesh, BE::PersistentAllocatorReference> sharedMeshes;
@@ -307,15 +309,17 @@ private:
 	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	GTSL::Array<GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> buildAccelerationStructureInfos;
-	GTSL::Vector<GAL::BuildOffset, BE::PersistentAllocatorReference> buildOffsets;
+	GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
+	GTSL::Vector<GAL::BuildRange, BE::PersistentAllocatorReference> buildRanges;
 	GTSL::Vector<AccelerationStructure::GeometryTriangles, BE::PersistentAllocatorReference> geometries;
 
-	RenderAllocation scratchBufferAllocation;
+	//RenderAllocation scratchBufferAllocation;
+	HostRenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
 	uint64 scratchBufferAddress;
 
 	AccelerationStructure topLevelAccelerationStructure;
+	HostRenderAllocation topLevelAccelerationStructureAllocation;
 	Buffer topLevelAccelerationStructureBuffer;
 	uint64 topLevelAccelerationStructureAddress;
 

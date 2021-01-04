@@ -1,5 +1,8 @@
 #include "RendererAllocator.h"
 
+#include <GTSL/ShortString.hpp>
+
+
 #include "ByteEngine/Debug/Assert.h"
 
 static constexpr uint8 ALLOC_IS_ISOLATED = 0;
@@ -15,7 +18,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::RAY_TRACING;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE;
 	Buffer scratch_buffer;
 
 	Buffer::GetMemoryRequirementsInfo memory_requirements;
@@ -38,27 +41,50 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 	
 	AllocID allocationId;
 	
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, bufferMemoryAlignment);
-	
-	for (auto& e : bufferMemoryBlocks)
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, bufferMemoryAlignment);
+
+	if constexpr (!SINGLE_ALLOC)
 	{
-		if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo))
+		for (auto& e : bufferMemoryBlocks)
 		{
-			renderAllocation->Size = alignedSize;
-			renderAllocation->AllocationId = allocationId;
-			
-			return;
+			if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo))
+			{
+				renderAllocation->Size = alignedSize;
+				renderAllocation->AllocationId = allocationId;
+
+				BE_LOG_WARNING("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
+
+					return;
+			}
+
+			++allocationId.Index;
 		}
-	
-		++allocationId.Index;
+
+		bufferMemoryBlocks.EmplaceBack();
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
+		bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo);
+	}
+	else
+	{
+		DeviceMemory::CreateInfo memory_create_info;
+		memory_create_info.RenderDevice = &renderDevice;
+		memory_create_info.Name = GTSL::ShortString<64>("Buffer GPU Memory Block");
+		memory_create_info.Size = alignedSize;
+		memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT);
+		memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
+		deviceMemory->Initialize(memory_create_info);
+
+		DeviceMemory::MapInfo map_info;
+		map_info.RenderDevice = &renderDevice;
+		map_info.Size = memory_create_info.Size;
+		map_info.Offset = 0;
+		renderAllocation->Data = deviceMemory->Map(map_info);
 	}
 	
-	bufferMemoryBlocks.EmplaceBack();
-	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().AllocateFirstBlock(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo);
-
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocationId;
+
+	BE_LOG_WARNING("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
 }
 
 void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::PersistentAllocatorReference& allocatorReference)
@@ -312,7 +338,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	Buffer::CreateInfo buffer_create_info;
 	buffer_create_info.RenderDevice = &renderDevice;
 	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS;
+	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE | BufferType::ACCELERATION_STRUCTURE | BufferType::BUILD_INPUT_READ_ONLY;
 	Buffer dummyBuffer;
 
 	Texture::CreateInfo create_info;
@@ -360,36 +386,45 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 	
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, bufferMemoryAlignment);
-	
-	for(auto& block : bufferMemoryBlocks)
-	{
-		//TODO: GET BLOCK INFO
-		if(block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
-		{
-			renderAllocation->Size = alignedSize;
-			renderAllocation->AllocationId = allocId;
-			return;
-		}
-		
-		++allocId.Index;
-	}
-	
-	bufferMemoryBlocks.EmplaceBack();
-	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
-	bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, allocId.BlockInfo);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, bufferMemoryAlignment);
 
-	//{
-	//	DeviceMemory::CreateInfo memory_create_info;
-	//	memory_create_info.RenderDevice = &renderDevice;
-	//	memory_create_info.Name = "Buffer GPU Memory Block";
-	//	memory_create_info.Size = alignedSize;
-	//	memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::GPU);
-	//	*deviceMemory = DeviceMemory(memory_create_info);
-	//}
+	if constexpr (!SINGLE_ALLOC)
+	{
+		for (auto& block : bufferMemoryBlocks)
+		{
+			//TODO: GET BLOCK INFO
+			if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
+			{
+				renderAllocation->Size = alignedSize;
+				renderAllocation->AllocationId = allocId;
+
+				BE_LOG_WARNING("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
+
+					return;
+			}
+
+			++allocId.Index;
+		}
+
+		bufferMemoryBlocks.EmplaceBack();
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, allocatorReference);
+		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, allocId.BlockInfo);
+	}
+	else
+	{
+		DeviceMemory::CreateInfo memory_create_info;
+		memory_create_info.RenderDevice = &renderDevice;
+		memory_create_info.Name = GTSL::ShortString<64>("Buffer GPU Memory Block");
+		memory_create_info.Size = alignedSize;
+		memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::GPU);
+		memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
+		deviceMemory->Initialize(memory_create_info);
+	}
 	
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocId;
+
+	BE_LOG_WARNING("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
 }
 
 void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference)

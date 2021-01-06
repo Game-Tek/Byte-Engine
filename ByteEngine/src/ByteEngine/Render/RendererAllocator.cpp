@@ -33,6 +33,8 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	bufferMemoryAlignment = memory_requirements.MemoryRequirements.Alignment;
 	
 	scratch_buffer.Destroy(&renderDevice);
+
+	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
 
 void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, HostRenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
@@ -41,7 +43,7 @@ void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, De
 	
 	AllocID allocationId;
 	
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, granularity);
 
 	if constexpr (!SINGLE_ALLOC)
 	{
@@ -238,18 +240,18 @@ void LocalMemoryBlock::Free(const RenderDevice& renderDevice, const BE::Persiste
 	deviceMemory.Destroy(&renderDevice);
 }
 
-bool LocalMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset)
+bool LocalMemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32 alignment, uint32* offset)
 {
 	uint32 i = 0;
-
+	
 	for (auto& e : freeSpaces)
 	{
 		if (e.Size >= size)
 		{
 			*offset = e.Offset;
 			*deviceMemory = this->deviceMemory;
-
-			if (e.Size == size)
+			
+			if (e.Size == alignment)
 			{
 				freeSpaces.Pop(i);
 				return true;
@@ -372,6 +374,8 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 
 	bufferMemoryAlignment = bufferMemoryRequirements.MemoryRequirements.Alignment;
 	textureMemoryAlignment = imageMemoryRequirements.MemoryRequirements.Alignment;
+
+	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
 
 void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
@@ -386,14 +390,14 @@ void LocalMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, Devi
 	
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, bufferMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, granularity);
 
 	if constexpr (!SINGLE_ALLOC)
 	{
 		for (auto& block : bufferMemoryBlocks)
 		{
 			//TODO: GET BLOCK INFO
-			if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
+			if (block.TryAllocate(deviceMemory, alignedSize, granularity, &renderAllocation->Offset))
 			{
 				renderAllocation->Size = alignedSize;
 				renderAllocation->AllocationId = allocId;
@@ -431,12 +435,12 @@ void LocalMemoryAllocator::AllocateTexture(const RenderDevice& renderDevice, Dev
 {
 	AllocID allocId;
 
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, textureMemoryAlignment);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, granularity);
 
 	for (auto& block : textureMemoryBlocks)
 	{
 		//TODO: GET BLOCK INFO
-		if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset))
+		if (block.TryAllocate(deviceMemory, alignedSize, granularity, &renderAllocation->Offset))
 		{
 			renderAllocation->Size = alignedSize;
 			renderAllocation->AllocationId = allocId;

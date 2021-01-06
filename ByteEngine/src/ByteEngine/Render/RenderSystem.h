@@ -72,8 +72,6 @@ public:
 		memoryRequirements.GeometryDescriptors = geometryDescriptors;
 		memoryRequirements.IsTopLevel = geometryDescriptors[0].Type == GeometryType::INSTANCES ? true : false;
 		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &scratchSize);
-
-		bufferSize *= 2;
 		
 		renderAllocation->Size = bufferSize;
 		
@@ -309,9 +307,18 @@ private:
 	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
-	GTSL::Vector<GAL::BuildRange, BE::PersistentAllocatorReference> buildRanges;
-	GTSL::Vector<AccelerationStructure::GeometryTriangles, BE::PersistentAllocatorReference> geometries;
+	//GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
+
+	struct AccelerationStructureBuildData
+	{
+		GAL::VKAccelerationStructureType StructureType;
+		uint32 ScratchBuildSize;
+		AccelerationStructure Destination;
+		uint32 BuildFlags = 0;
+	};
+	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas;
+	
+	GTSL::Vector<AccelerationStructure::GeometryDescriptor, BE::PersistentAllocatorReference> geometries;
 
 	//RenderAllocation scratchBufferAllocation;
 	HostRenderAllocation scratchBufferAllocation;

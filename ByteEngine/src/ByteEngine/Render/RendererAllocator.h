@@ -37,7 +37,7 @@ struct LocalMemoryBlock
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset);
+	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32 alignment, uint32* offset);
 	void Allocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, uint32& id);
 	void Deallocate(uint32 size, uint32 offset, uint32 id);
 
@@ -63,7 +63,7 @@ public:
 		if constexpr (!SINGLE_ALLOC)
 		{
 			const auto alloc = AllocID(allocation.AllocationId);
-			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
 		}
 	}
 
@@ -73,7 +73,7 @@ public:
 		if constexpr (!SINGLE_ALLOC)
 		{
 			const auto alloc = AllocID(allocation.AllocationId);
-			textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, textureMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+			textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
 		}
 	}
 
@@ -87,6 +87,7 @@ private:
 	GTSL::Array<LocalMemoryBlock, 32> bufferMemoryBlocks;
 	GTSL::Array<LocalMemoryBlock, 32> textureMemoryBlocks;
 	uint32 bufferMemoryAlignment = 0, textureMemoryAlignment = 0;
+	GTSL::uint32 granularity;
 };
 
 
@@ -120,7 +121,7 @@ public:
 		if constexpr (!SINGLE_ALLOC)
 		{
 			const auto alloc = AllocID(allocation.AllocationId);
-			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, bufferMemoryAlignment), allocation.Offset, alloc.BlockInfo);
+			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
 		}
 	}
 	
@@ -134,6 +135,8 @@ private:
 	uint32 bufferMemoryType = 0;
 
 	uint32 bufferMemoryAlignment = 0;
+
+	GTSL::uint32 granularity;
 	
 	GTSL::Array<ScratchMemoryBlock, 32> bufferMemoryBlocks;
 };

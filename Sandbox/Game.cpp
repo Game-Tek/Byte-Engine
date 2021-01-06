@@ -312,7 +312,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.MaterialName = "TextMaterial";
-	//	textMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
+	//	textMaterial = material_system->CreateRasterMaterial(createMaterialInfo);//
 	//}
 	
 	//{
@@ -327,7 +327,7 @@ void Game::PostInitialize()
 	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
 	//}
 	
-	//window.ShowMouse(false);////
+	//window.ShowMouse(false);
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)

@@ -122,6 +122,7 @@ using AllocationFlags = GAL::VulkanAllocateFlags;
 using QueueCapabilities = GAL::VulkanQueueCapabilities;
 using BuildType = GAL::VulkanAccelerationStructureBuildType;
 using GeometryInstanceFlags = GAL::VulkanGeometryInstanceFlags;
+using AccelerationStructureType = GAL::VulkanAccelerationStructureType;
 using AccelerationStructureFlags = GAL::VulkanAccelerationStructureFlags;
 #endif
 

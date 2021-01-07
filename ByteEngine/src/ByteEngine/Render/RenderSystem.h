@@ -61,7 +61,7 @@ public:
 		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::GeometryDescriptor*> geometryDescriptors, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build)
 	{
 		uint32 bufferSize, scratchSize;
 		
@@ -69,8 +69,7 @@ public:
 		memoryRequirements.RenderDevice = GetRenderDevice();
 		memoryRequirements.BuildType = build;
 		memoryRequirements.Flags = 0;
-		memoryRequirements.GeometryDescriptors = geometryDescriptors;
-		memoryRequirements.IsTopLevel = geometryDescriptors[0].Type == GeometryType::INSTANCES ? true : false;
+		memoryRequirements.Geometries = geometries;
 		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &scratchSize);
 		
 		renderAllocation->Size = bufferSize;
@@ -251,6 +250,8 @@ private:
 	
 	GTSL::Extent2D renderArea;
 
+	uint32 scratchBufferOffsetAlignment = 0;
+
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
@@ -311,22 +312,21 @@ private:
 
 	struct AccelerationStructureBuildData
 	{
-		GAL::VKAccelerationStructureType StructureType;
 		uint32 ScratchBuildSize;
 		AccelerationStructure Destination;
 		uint32 BuildFlags = 0;
 	};
 	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas;
 	
-	GTSL::Vector<AccelerationStructure::GeometryDescriptor, BE::PersistentAllocatorReference> geometries;
+	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
 
 	//RenderAllocation scratchBufferAllocation;
-	HostRenderAllocation scratchBufferAllocation;
+	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
 	uint64 scratchBufferAddress;
 
 	AccelerationStructure topLevelAccelerationStructure;
-	HostRenderAllocation topLevelAccelerationStructureAllocation;
+	RenderAllocation topLevelAccelerationStructureAllocation;
 	Buffer topLevelAccelerationStructureBuffer;
 	uint64 topLevelAccelerationStructureAddress;
 
@@ -342,9 +342,9 @@ private:
 	 * Since acc. structures can be built on the host or on the device depending on device capabilities
 	 * we determine which one we are able to do and cache it.
 	 */
-	GTSL::FunctionPointer<void()> buildAccelerationStructures;
+	GTSL::FunctionPointer<void(CommandBuffer&)> buildAccelerationStructures;
 
-	void buildAccelerationStructuresOnDevice();
+	void buildAccelerationStructuresOnDevice(CommandBuffer&);
 	
 	uint8 currentFrameIndex = 0;
 

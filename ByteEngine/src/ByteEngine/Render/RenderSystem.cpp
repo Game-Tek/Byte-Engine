@@ -2,7 +2,6 @@
 
 #include <GTSL/Window.h>
 
-
 #include "MaterialSystem.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
@@ -23,14 +22,16 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	geometries.Initialize(32, GetPersistentAllocator());
 	sharedMeshes.Initialize(32, GetPersistentAllocator());
 	gpuMeshes.Initialize(32, GetPersistentAllocator());
+
+	addedRayTracingMeshes.Initialize(32, GetPersistentAllocator());
 	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
 	bool rayTracing = BE::Application::Get()->GetOption("rayTracing");
 	
-	{		
+	{
 		RenderDevice::CreateInfo createInfo;
-		createInfo.ApplicationName = GTSL::StaticString<128>("Test");
+		createInfo.ApplicationName = GTSL::StaticString<128>(BE::Application::Get()->GetApplicationName());
 		createInfo.ApplicationVersion[0] = 0;
 		createInfo.ApplicationVersion[1] = 0;
 		createInfo.ApplicationVersion[2] = 0;
@@ -78,10 +79,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				BuildType::GPU_LOCAL);
 
 			{
-				topLevelAccelerationStructureAddress = topLevelAccelerationStructure.GetAddress(GetRenderDevice());
-			}
-
-			{
 				Buffer::CreateInfo buffer;
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
@@ -92,8 +89,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				allocationInfo.Buffer = &instancesBuffer;
 				allocationInfo.CreateInfo = &buffer;
 				AllocateScratchBufferMemory(allocationInfo);
-
-				instancesBufferAddress = instancesBuffer.GetAddress(GetRenderDevice());
 			}
 
 			{				
@@ -107,8 +102,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				allocationInfo.CreateInfo = &buffer;
 				allocationInfo.Buffer = &accelerationStructureScratchBuffer;
 				AllocateLocalBufferMemory(allocationInfo);
-
-				scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
 			}
 
 			shaderGroupAlignment = rayTracingCapabilities.ShaderGroupAlignment;
@@ -297,77 +290,46 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
 
 	auto verticesSize = info.VertexCount * info.VertexSize; auto indecesSize = info.IndexCount * info.IndexSize;
-	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, info.IndexSize) + indecesSize;
+	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, 16) + indecesSize;
 	
 	RayTracingMesh rayTracingMesh;
 
-	//Buffer verticesBuffer, indecesBuffer;
-	//HostRenderAllocation vertices, indeces;
-	
-	//{
-	//	Buffer::CreateInfo createInfo;
-	//	createInfo.RenderDevice = GetRenderDevice();
-	//
-	//	if constexpr (_DEBUG) {
-	//		GTSL::StaticString<64> name("Render System. RayTraced Mesh Buffer");
-	//		createInfo.Name = name;
-	//	}
-	//
-	//	createInfo.Size = meshSize;
-	//	createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::ADDRESS;
-	//
-	//	BufferLocalMemoryAllocationInfo bufferLocal;
-	//	bufferLocal.Buffer = &rayTracingMesh.MeshBuffer;
-	//	bufferLocal.Allocation = &rayTracingMesh.MeshBufferAllocation;
-	//	bufferLocal.CreateInfo = &createInfo;
-	//	AllocateLocalBufferMemory(bufferLocal);
-	//}
+	addedRayTracingMeshes.EmplaceBack(component);
 
-	//{
-	//	Buffer::CreateInfo createInfo;
-	//	createInfo.RenderDevice = GetRenderDevice();
-	//
-	//	if constexpr (_DEBUG) {
-	//		GTSL::StaticString<64> name("Render System. TestBuffer");
-	//		createInfo.Name = name;
-	//	}
-	//
-	//	createInfo.Size = verticesSize;
-	//	createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::ADDRESS;
-	//
-	//	BufferScratchMemoryAllocationInfo bufferLocal;
-	//	bufferLocal.Buffer = &verticesBuffer;
-	//	bufferLocal.Allocation = &vertices;
-	//	bufferLocal.CreateInfo = &createInfo;
-	//	AllocateScratchBufferMemory(bufferLocal);
-	//	
-	//	createInfo.Size = indecesSize;
-	//
-	//	bufferLocal.Buffer = &indecesBuffer;
-	//	bufferLocal.Allocation = &indeces;
-	//	bufferLocal.CreateInfo = &createInfo;
-	//	AllocateScratchBufferMemory(bufferLocal);
-	//}
-	//
-	//GTSL::MemCopy(verticesSize, sharedMesh.Allocation.Data, vertices.Data);
-	//GTSL::MemCopy(indecesSize, static_cast<byte*>(sharedMesh.Allocation.Data) + verticesSize, indeces.Data);
+	rayTracingMesh.VertexSize = info.VertexSize; rayTracingMesh.VertexCount = info.VertexCount;
 	
-	//rayTracingMesh.MeshBuffer = sharedMesh.Buffer; rayTracingMesh.MeshBufferAllocation = sharedMesh.Allocation;
+	{
+		Buffer::CreateInfo createInfo;
+		createInfo.RenderDevice = GetRenderDevice();
 	
-	rayTracingMesh.IndexType = SelectIndexType(info.IndexSize);
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Render System. RayTraced Mesh Buffer");
+			createInfo.Name = name;
+		}
+	
+		createInfo.Size = meshSize;
+		createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::STORAGE | BufferType::ADDRESS;
+	
+		BufferLocalMemoryAllocationInfo bufferLocal;
+		bufferLocal.Buffer = &rayTracingMesh.MeshBuffer;
+		bufferLocal.Allocation = &rayTracingMesh.MeshBufferAllocation;
+		bufferLocal.CreateInfo = &createInfo;
+		AllocateLocalBufferMemory(bufferLocal);
+	}
+	
+	rayTracingMesh.IndexSize = info.IndexSize;
 	rayTracingMesh.IndicesCount = info.IndexCount;
 
 	auto meshDataBuffer = sharedMesh.Buffer;
 	
 	{
 		AccelerationStructure::GeometryTriangles geometryTriangles;
-		geometryTriangles.IndexType = rayTracingMesh.IndexType;
+		geometryTriangles.IndexType = SelectIndexType(info.IndexSize);
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
 		geometryTriangles.MaxVertices = info.VertexCount;
 		geometryTriangles.TransformData = 0;
 		geometryTriangles.VertexData = meshDataBuffer.GetAddress(GetRenderDevice());
 		geometryTriangles.IndexData = meshDataBuffer.GetAddress(GetRenderDevice()) + verticesSize;
-		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
 		geometryTriangles.VertexStride = info.VertexSize;
 		geometryTriangles.FirstVertex = 0;
 		
@@ -392,17 +354,16 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 
 	rayTracingMeshes.Emplace(rayTracingMesh);
 
-	//{
-	//	BufferCopyData bufferCopyData;
-	//	bufferCopyData.SourceOffset = 0;
-	//	bufferCopyData.DestinationOffset = 0;
-	//	bufferCopyData.SourceBuffer = sharedMesh.Buffer;
-	//	bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
-	//	bufferCopyData.Size = meshSize;
-	//	bufferCopyData.Allocation = sharedMesh.Allocation;
-	//	AddBufferCopy(bufferCopyData);
-	//}
-	
+	{
+		BufferCopyData bufferCopyData;
+		bufferCopyData.SourceOffset = 0;
+		bufferCopyData.DestinationOffset = 0;
+		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
+		bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
+		bufferCopyData.Size = meshSize;
+		bufferCopyData.Allocation = sharedMesh.Allocation;
+		AddBufferCopy(bufferCopyData);
+	}
 	
 	{
 		AccelerationStructureBuildData buildData;
@@ -436,7 +397,7 @@ RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 ve
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
 	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY;
-	createInfo.Size = vertexCount * vertexSize + indexCount * indexSize;
+	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
 	mesh.Size = createInfo.Size;
 
 	mesh.IndexType = SelectIndexType(indexSize);
@@ -726,6 +687,8 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuf
 		GTSL::Array<GTSL::Array<AccelerationStructure::Geometry, 8>, 16> geometryDescriptors;
 
 		uint32 offset = 0;
+
+		auto scratchBufferAddress = accelerationStructureScratchBuffer.GetAddress(GetRenderDevice());
 		
 		for (uint32 i = 0; i < buildDatas.GetLength(); ++i)
 		{
@@ -777,19 +740,22 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 {
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 
-	AccelerationStructure::Geometry geometry;
-	geometry.Flags = 0;
-	geometry.PrimitiveCount = instanceCount;
-	geometry.PrimitiveOffset = 0;
-	geometry.SetGeometryInstances(AccelerationStructure::GeometryInstances{ instancesBuffer.GetAddress(GetRenderDevice()) });
-	geometries.EmplaceBack(geometry);
-	
-	AccelerationStructureBuildData buildData;
-	buildData.BuildFlags = 0;
-	buildData.Destination = topLevelAccelerationStructure;
-	buildData.ScratchBuildSize = 250000;
-	buildDatas.EmplaceBack(buildData);
-	
+	if (BE::Application::Get()->GetOption("rayTracing"))
+	{
+		AccelerationStructure::Geometry geometry;
+		geometry.Flags = 0;
+		geometry.PrimitiveCount = instanceCount;
+		geometry.PrimitiveOffset = 0;
+		geometry.SetGeometryInstances(AccelerationStructure::GeometryInstances{ instancesBuffer.GetAddress(GetRenderDevice()) });
+		geometries.EmplaceBack(geometry);
+
+		AccelerationStructureBuildData buildData;
+		buildData.BuildFlags = 0;
+		buildData.Destination = topLevelAccelerationStructure;
+		buildData.ScratchBuildSize = 250000;
+		buildDatas.EmplaceBack(buildData);
+	}
+		
 	buildAccelerationStructures(this, commandBuffer);
 	
 	commandBuffer.EndRecording({});

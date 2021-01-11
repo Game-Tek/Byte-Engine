@@ -29,6 +29,13 @@ struct MaterialHandle
 
 MAKE_HANDLE(uint32, Set)
 
+struct SubSetDescription
+{
+	SetHandle SetHandle; uint32 Subset;
+};
+
+MAKE_HANDLE(SubSetDescription, SubSet)
+
 struct MemberDescription
 {
 	SetHandle Set;
@@ -47,7 +54,7 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, MATRIX4, FVEC4, FVEC2
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2
 		};
 
 		uint32 Count = 1;
@@ -88,12 +95,20 @@ public:
 		return getSetMemberPointer<uint32>(member(), index, frame);
 	}
 
-	Pipeline GET_PIPELINE(MaterialHandle materialHandle);
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, uint32 index = 0)
+	template<>
+	uint64* GetMemberPointer(MemberHandle member, uint64 index)
 	{
-		BIND_SET(renderSystem, commandBuffer, setHandlesByName.At(setName()), index);
+		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::UINT64, "Type mismatch");
+		return getSetMemberPointer<uint64>(member(), index, frame);
 	}
-	void BIND_SET(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
+
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, uint32 index = 0)
+	{
+		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), index);
+	}
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
+	
+	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle set);
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
 	
@@ -123,12 +138,16 @@ public:
 	{
 		PER_INSTANCE
 	};
+
+	enum class SubSetType : uint8
+	{
+		BUFFER, TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE
+	};
 	
 	struct StructInfo
 	{
 		Frequency Frequency;
 		GTSL::Range<MemberInfo*> Members;
-		uint64* Handle;
 	};
 	
 	struct SetInfo
@@ -136,6 +155,19 @@ public:
 		GTSL::Range<StructInfo*> Structs;
 	};
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
+	
+	struct SubSetInfo
+	{
+		SubSetType Type;
+		SubSetHandle* Handle;
+		uint32 Count;
+	};
+	
+	struct SetXInfo
+	{
+		GTSL::Range<SubSetInfo*> SubSets;
+	};
+	SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
 	
 	void AddObjects(RenderSystem* renderSystem, SetHandle setHandle, uint32 count);
 
@@ -162,8 +194,6 @@ public:
 
 	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
 
-	Buffer GetSBTBuffer() const { return shaderBindingTableBuffer; }
-
 	auto GetMaterialHandlesForRenderGroup(Id renderGroup) const
 	{
 		if (readyMaterialsPerRenderGroup.Find(renderGroup())) //TODO: MAYBE ADD DECLARATION OF RENDER GROUP UP AHEAD AND AVOID THIS
@@ -176,19 +206,23 @@ public:
 		}
 	}
 
-	void BindMaterial(MaterialHandle handle, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
+	void TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
 
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
-
-	uint32 GetRayGenShaderCount() const { return rayGenShaderCount; }
-	uint32 GetHitShaderCount() const { return hitShaderCount; }
-	uint32 GetMissShaderCount() const { return missShaderCount; }
 
 private:
 	Id rayGenMaterial;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
+	static constexpr BindingType BUFFER_BINDING_TYPE = BindingType::STORAGE_BUFFER;
+	
+	SubSetHandle textureSubsetsHandle;
+	SubSetHandle attachmentsHandle;
+	SubSetHandle topLevelAsHandle;
+	SubSetHandle vertexBuffersSubSetHandle;
+	SubSetHandle indexBuffersSubSetHandle;
+	
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
 
 	uint32 rayGenShaderCount = 0, hitShaderCount = 0, missShaderCount = 0, callableShaderCount = 0;
@@ -198,9 +232,14 @@ private:
 	{
 		auto& set = sets[member.Set()];
 		auto structSize = set.MemberSize;
+
+		BE_ASSERT(index < set.AllocatedInstances, "Requested sub set buffer member index greater than allocated instances count.")
+		
 		//												//BUFFER										//OFFSET TO STRUCT		//OFFSET TO MEMBER
 		return reinterpret_cast<T*>(static_cast<byte*>(set.Allocations[frameToUpdate].Data) + (index * structSize) + member.OffsetIntoStruct);
 	}
+
+	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, const GTSL::Range<StructInfo*> structs);
 	
 	uint32 matNum = 0;
 	
@@ -220,7 +259,6 @@ private:
 		SetHandle Set;
 		RasterizationPipeline Pipeline;
 		MemberHandle TextureRefHandle[8];
-		uint64 TextureRefsTableHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
@@ -268,22 +306,22 @@ private:
 			return handle;
 		}
 
-		void AddBufferUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
+		void AddBufferUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
 		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
+			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
 		}
 
-		void AddTextureUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
+		void AddTextureUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
 		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
+			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
 		}
 
-		void AddAccelerationStructureUpdate(uint32 set, uint32 firstArrayElement, uint32 binding, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
+		void AddAccelerationStructureUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
 		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, binding);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(firstArrayElement, update);
+			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
+			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
 		}
 		
 		void Reset()
@@ -338,7 +376,7 @@ private:
 		HostRenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
 		Buffer Buffers[MAX_CONCURRENT_FRAMES];
 
-		uint32 UsedInstances = 0, AllocatedInstances = 0;
+		uint32 AllocatedInstances = 0;
 
 		GTSL::Array<uint32, 8> AllocatedStructsPerInstance;
 		GTSL::Array<uint16, 8> StructsSizes;
@@ -346,12 +384,14 @@ private:
 
 		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
 	};
+
+	uint32 meshCount = 0;
 	
 	//GTSL::Tree<SetHandle, BE::PAR> setsTree;
 	GTSL::FlatHashMap<SetHandle, BE::PAR> setHandlesByName;
 	GTSL::KeepVector<SetData, BE::PAR> sets;
 
-	GTSL::PagedVector<SetHandle, BE::PAR> queuedBufferUpdates;
+	GTSL::PagedVector<SetHandle, BE::PAR> queuedSetUpdates;
 	
 	struct TextureLoadInfo
 	{

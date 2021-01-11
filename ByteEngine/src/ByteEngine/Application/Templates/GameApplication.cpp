@@ -112,19 +112,6 @@ void GameApplication::PostInitialize()
 		renderOrchestrator->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
 		renderOrchestrator->AddAttachment(renderSystem, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
 
-		GTSL::Array<RenderOrchestrator::AttachmentInfo, 6> attachments(2);
-		attachments[0].Name = "Color";
-		attachments[0].StartState = TextureLayout::UNDEFINED;
-		attachments[0].EndState = TextureLayout::TRANSFER_SRC;
-		attachments[0].Load = GAL::RenderTargetLoadOperations::CLEAR;
-		attachments[0].Store = GAL::RenderTargetStoreOperations::STORE;
-
-		attachments[1].Name = "RenderDepth";
-		attachments[1].StartState = TextureLayout::UNDEFINED;
-		attachments[1].EndState = TextureLayout::DEPTH_ATTACHMENT;
-		attachments[1].Load = GAL::RenderTargetLoadOperations::CLEAR;
-		attachments[1].Store = GAL::RenderTargetStoreOperations::UNDEFINED;
-
 		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.Name = "SceneRenderPass";
@@ -139,7 +126,7 @@ void GameApplication::PostInitialize()
 		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
 		passes.EmplaceBack(uiRenderPass);
 		
-		renderOrchestrator->AddPass(renderSystem, attachments, passes);
+		renderOrchestrator->AddPass(renderSystem, passes);
 		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
 		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
 	}

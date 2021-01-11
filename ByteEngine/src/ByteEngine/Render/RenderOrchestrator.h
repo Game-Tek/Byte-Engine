@@ -50,7 +50,6 @@ class StaticMeshRenderManager : public RenderManager
 
 private:
 	MemberHandle matrixUniformBufferMemberHandle;
-	uint64 staticMeshDataStructHandle;
 
 	SetHandle dataSet;
 };
@@ -71,11 +70,10 @@ private:
 	RenderSystem::GPUMeshHandle square;
 
 	MemberHandle matrixUniformBufferMemberHandle, colorHandle;
-	uint64 uiDataStructHandle;
 
 	SetHandle dataSet;
 
-	uint8 comps = 0, comps2 = 2;
+	uint8 comps = 2;
 	MaterialHandle uiMaterial;
 };
 
@@ -92,11 +90,6 @@ public:
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 
 	void AddAttachment(RenderSystem* renderSystem, Id name, TextureFormat format, TextureUses::value_type uses, TextureType::value_type type);
-	GTSL::Range<const GTSL::RGBA*> GetClearValues(const uint8 rp)
-	{
-		auto& renderPass = apiRenderPasses[rp];
-		return renderPass.ClearValues;
-	}
 
 	enum class PassType : uint8
 	{
@@ -125,14 +118,19 @@ public:
 
 		AttachmentReference DepthStencilAttachment;
 	};
-	void AddPass(RenderSystem* renderSystem, GTSL::Range<const AttachmentInfo*> attachmentInfos, GTSL::Range<const PassData*> passesData);
+	void AddPass(RenderSystem* renderSystem, GTSL::Range<const PassData*> passesData);
 
 	void OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize);
 
 	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName()).APIRenderPass].RenderPass; }
 
 	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name()).APIRenderPass; }
-	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const { return renderPassesMap.At(renderPass()).APISubPass; }
+	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const
+	{
+		uint8 i = 0;
+		
+		for(auto& e : subPasses[renderPassesMap.At(renderPass()).APIRenderPass]) { if (e.Name == renderPass) { return i; } } 
+	}
 
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
 	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
@@ -145,17 +143,7 @@ public:
 	//TODO: maybe everytime we have to execute a render pass check if is enabled so we don't have to keep order between the two collections
 	void ToggleRenderPass(Id renderPassName, bool enable)
 	{
-		if(enable)
-		{
-			enabledRenderPasses.EmplaceBack(renderPassName);
-		}
-		else
-		{
-			for(uint8 i = 0; i < enabledRenderPasses.GetLength(); ++i)
-			{
-				if (enabledRenderPasses[i] == renderPassName) { enabledRenderPasses.Pop(i); break; }
-			}
-		}
+		renderPassesMap[renderPassName()].Enabled = enable;
 	}
 	
 	void AddToRenderPass(Id renderPass, Id renderGroup)
@@ -175,13 +163,26 @@ private:
 	
 	GTSL::FlatHashMap<uint16, BE::PersistentAllocatorReference> renderManagers;
 
-	GTSL::Array<Id, 16> enabledRenderPasses;
+	GTSL::Array<Id, 8> renderPasses;
 
+	struct AttachmentData
+	{
+		Id Name;
+		TextureLayout Layout;
+		AccessFlags AccessFlags;
+	};
+	
 	struct RenderPassData
 	{
 		GTSL::Array<Id, 8> RenderGroups;
 		PassType PassType;
-		uint8 APIRenderPass = 0, APISubPass = 0;
+
+		GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
+
+		bool Enabled = false;
+		
+		uint8 APIRenderPass = 0;
+		PipelineStage::value_type PipelineStages;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
@@ -194,25 +195,14 @@ private:
 	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 	void renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 
-	struct RenderPassAttachment
-	{
-		TextureLayout Layout;
-		uint8 Index;
-	};
+	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId);
 
 	struct APIRenderPassData
 	{
 		RenderPass RenderPass;
-		GTSL::StaticMap<RenderPassAttachment, 8> Attachments;
-		GTSL::Array<GTSL::RGBA, 8> ClearValues;
-		GTSL::Array<Id, 8> AttachmentNames;
-
-		/**
-		 * \brief Handles to application defined render passes that have to occur in this GAL render api.
-		 */
-		GTSL::Array<uint8, 8> RenderPasses;
 		
 		FrameBuffer FrameBuffer;
+		GTSL::Array<Id, 8> AttachmentNames;
 	};
 	GTSL::Array<APIRenderPassData, 16> apiRenderPasses;
 
@@ -232,15 +222,20 @@ private:
 		TextureView TextureView;
 		TextureSampler TextureSampler;
 
-		GTSL::RGBA ClearValue;
-
 		RenderAllocation Allocation;
 
 		Id Name;
 		TextureType::value_type Type;
 		TextureUses::value_type Uses;
+		TextureLayout Layout;
+		AccessFlags::value_type AccessFlags;
 	};
 	GTSL::StaticMap<Attachment, 32> attachments;
+	
+	void updateImage(Attachment& attachment, AccessFlags::value_type accessFlags, TextureLayout textureLayout)
+	{
+		attachment.AccessFlags = accessFlags; attachment.Layout = textureLayout;
+	}
 
 public:
 	Texture GetAttachmentTexture(const Id attachment) const { return attachments.At(attachment()).Texture; }

@@ -175,7 +175,7 @@ void Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
 	}
 	
-	//show loading screen//
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -206,15 +206,15 @@ void Game::PostInitialize()
 	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
 	//}
 
-	{
-		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "hydrant";
-		addStaticMeshInfo.Material = material;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	}
+	//{
+	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
+	//	addStaticMeshInfo.MeshName = "hydrant";
+	//	addStaticMeshInfo.Material = material;
+	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.RenderSystem = renderSystem;
+	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
+	//}//
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;

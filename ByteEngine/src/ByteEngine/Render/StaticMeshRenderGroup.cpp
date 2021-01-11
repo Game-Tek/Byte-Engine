@@ -13,8 +13,6 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
-
-	addedMeshes.First = 0; addedMeshes.Second = 0;
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
@@ -51,7 +49,7 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 	
 
-	++addedMeshes.Second;
+	++staticMeshCount;
 	
 	return ComponentReference(GetSystemId(), index);
 }
@@ -61,7 +59,6 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
 	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-	//RenderSystem::SharedMeshHandle sharedMesh;
 	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
 	uint32 index = 0;
@@ -71,13 +68,13 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
 
-	auto bufferSize = vertexCount * vertexSize + indexCount * indexSize;
+	auto bufferSize = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onRayTracedStaticMeshLoaded>(this);
 	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, addStaticMeshInfo.RenderSystem->GetSharedMeshPointer(sharedMesh));
 	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
-	load_static_meshInfo.IndicesAlignment = indexSize;
+	load_static_meshInfo.IndicesAlignment = 16;
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);
 	load_static_meshInfo.ActsOn = acts_on;
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;

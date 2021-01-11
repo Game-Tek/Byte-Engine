@@ -39,14 +39,7 @@ public:
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
-
-	GTSL::Pair<uint32, uint32> GetAddedObjectsRangeAndReset()
-	{
-		auto ret = addedMeshes;
-		addedMeshes.First = addedMeshes.Second;
-		return ret;
-	}
-	
+	uint32 GetStaticMeshes() const { return staticMeshCount; }
 private:
 	struct MeshLoadInfo
 	{
@@ -55,7 +48,7 @@ private:
 		{
 		}
 		
-		RenderSystem* RenderSystem = nullptr;
+		RenderSystem* RenderSystem;
 		RenderSystem::SharedMeshHandle MeshHandle;
 		uint32 InstanceId;
 		MaterialHandle Material;
@@ -65,8 +58,6 @@ private:
 	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
-
+	uint32 staticMeshCount = 0;
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
-
-	GTSL::Pair<uint32, uint32> addedMeshes;
 };

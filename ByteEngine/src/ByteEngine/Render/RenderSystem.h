@@ -241,6 +241,16 @@ public:
 	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
 
 	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
+
+	Buffer GetRayTracingMeshVertexBuffer(const uint32 mesh) const { return rayTracingMeshes[mesh].MeshBuffer; }
+	uint32 GetRayTracingMeshVertexBufferSize(const uint32 mesh) const { return rayTracingMeshes[mesh].VertexSize * rayTracingMeshes[mesh].VertexCount; }
+	uint32 GetRayTracingMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
+	Buffer GetRayTracingMeshIndexBuffer(const uint32 mesh) const { return rayTracingMeshes[mesh].MeshBuffer; }
+	uint32 GetRayTracingMeshIndexBufferSize(const uint32 mesh) const { return rayTracingMeshes[mesh].IndexSize * rayTracingMeshes[mesh].IndicesCount; }
+	uint32 GetRayTracingMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(rayTracingMeshes[mesh].VertexSize * rayTracingMeshes[mesh].VertexCount, 16); }
+
+	auto GetAddedRayTracingMeshes() const { return addedRayTracingMeshes.GetRange(); }
+	void ClearAddedRayTracingMeshes() { return addedRayTracingMeshes.ResizeDown(0); }
 private:	
 	GTSL::Mutex testMutex;
 	
@@ -249,8 +259,6 @@ private:
 	RenderContext renderContext;
 	
 	GTSL::Extent2D renderArea;
-
-	uint32 scratchBufferOffsetAlignment = 0;
 
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
@@ -267,6 +275,8 @@ private:
 	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
+
+	GTSL::Vector<uint32, BE::PAR> addedRayTracingMeshes;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;
@@ -297,18 +307,18 @@ private:
 	{
 		Buffer MeshBuffer, StructureBuffer;
 		uint32 IndicesCount;
-		IndexType IndexType;
+		uint8 IndexSize;
 
 		AccelerationStructure AccelerationStructure;
 		RenderAllocation MeshBufferAllocation, StructureBufferAllocation;
+		uint8 VertexSize;
+		uint32 VertexCount;
 	};
 	
 	GTSL::KeepVector<SharedMesh, BE::PersistentAllocatorReference> sharedMeshes;
 	GTSL::KeepVector<GPUMesh, BE::PersistentAllocatorReference> gpuMeshes;
 	
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
-
-	//GTSL::Vector<GAL::BuildAccelerationStructureInfo, BE::PersistentAllocatorReference> buildAccelerationStructureInfos;
 
 	struct AccelerationStructureBuildData
 	{
@@ -317,18 +327,14 @@ private:
 		uint32 BuildFlags = 0;
 	};
 	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas;
-	
 	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
 
-	//RenderAllocation scratchBufferAllocation;
 	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
-	uint64 scratchBufferAddress;
 
 	AccelerationStructure topLevelAccelerationStructure;
 	RenderAllocation topLevelAccelerationStructureAllocation;
 	Buffer topLevelAccelerationStructureBuffer;
-	uint64 topLevelAccelerationStructureAddress;
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
 	HostRenderAllocation instancesAllocation;
@@ -375,4 +381,5 @@ private:
 	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PAR> meshesByMaterial;
 
 	uint32 shaderGroupAlignment = 0, shaderGroupHandleSize = 0;
+	uint32 scratchBufferOffsetAlignment = 0;
 };

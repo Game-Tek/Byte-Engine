@@ -49,7 +49,7 @@ public:
 		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		localMemoryAllocator.AllocateTexture(renderDevice, &allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
@@ -80,7 +80,7 @@ public:
 		bufferCreateInfo.Size = bufferSize;
 
 		testMutex.Lock();
-		localMemoryAllocator.AllocateBuffer(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateLinearMemory(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
@@ -102,7 +102,7 @@ public:
 	{
 		Buffer* Buffer;
 		Buffer::CreateInfo* CreateInfo;
-		HostRenderAllocation* Allocation = nullptr;
+		RenderAllocation* Allocation = nullptr;
 	};
 
 	struct BufferLocalMemoryAllocationInfo
@@ -130,7 +130,7 @@ public:
 		allocationInfo.Buffer->Initialize(*allocationInfo.CreateInfo);
 	}
 	
-	void DeallocateScratchBufferMemory(const HostRenderAllocation allocation)
+	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
 	{
 		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation);
 	}
@@ -145,7 +145,7 @@ public:
 		memoryAllocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 
 		testMutex.Lock();
-		localMemoryAllocator.AllocateBuffer(renderDevice, &memoryAllocationInfo.CreateInfo->Memory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateLinearMemory(renderDevice, &memoryAllocationInfo.CreateInfo->Memory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		memoryAllocationInfo.CreateInfo->Offset = memoryAllocationInfo.Allocation->Offset;
@@ -169,7 +169,7 @@ public:
 		 */
 		uint32 SourceOffset = 0, DestinationOffset = 0;
 		uint32 Size = 0;
-		HostRenderAllocation Allocation;
+		RenderAllocation Allocation;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
 
@@ -179,7 +179,7 @@ public:
 		Texture DestinationTexture;
 		
 		uint32 SourceOffset = 0;
-		HostRenderAllocation Allocation;
+		RenderAllocation Allocation;
 
 		GTSL::Extent3D Extent;
 		
@@ -295,7 +295,7 @@ private:
 	struct SharedMesh : Mesh
 	{
 		uint32 Size = 0;
-		HostRenderAllocation Allocation;
+		RenderAllocation Allocation;
 	};
 
 	struct GPUMesh : Mesh
@@ -337,7 +337,7 @@ private:
 	Buffer topLevelAccelerationStructureBuffer;
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
-	HostRenderAllocation instancesAllocation;
+	RenderAllocation instancesAllocation;
 	uint64 instancesBufferAddress;
 	Buffer instancesBuffer;
 

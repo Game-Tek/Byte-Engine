@@ -566,7 +566,7 @@ ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 
 		Buffer scratchBuffer;
 
-		HostRenderAllocation allocation;
+		RenderAllocation allocation;
 
 		{
 			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
@@ -1115,7 +1115,7 @@ void MaterialSystem::resizeSet(RenderSystem* renderSystem, SetHandle setHandle)
 	
 	//REALLOCATE
 	uint32 newBufferSize = 0;
-	Buffer newBuffer; HostRenderAllocation newAllocation;
+	Buffer newBuffer; RenderAllocation newAllocation;
 
 	for (uint32 i = 0; i < set.StructsSizes.GetLength(); ++i)
 	{

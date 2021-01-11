@@ -245,7 +245,7 @@ private:
 	
 	RayTracingPipeline rayTracingPipeline;
 	Buffer shaderBindingTableBuffer;
-	HostRenderAllocation shaderBindingTableAllocation;
+	RenderAllocation shaderBindingTableAllocation;
 
 	struct MaterialData
 	{
@@ -373,7 +373,7 @@ private:
 		 * \brief Size (in bytes) of the structure this set has. Right now is only one "Member" but could be several.
 		 */
 		uint32 MemberSize = 0;
-		HostRenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
+		RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
 		Buffer Buffers[MAX_CONCURRENT_FRAMES];
 
 		uint32 AllocatedInstances = 0;
@@ -395,14 +395,14 @@ private:
 	
 	struct TextureLoadInfo
 	{
-		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, HostRenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
+		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
 		{
 		}
 
 		uint32 Component;
 		Buffer Buffer;
 		RenderSystem* RenderSystem;
-		HostRenderAllocation RenderAllocation;
+		RenderAllocation RenderAllocation;
 	};
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
 	

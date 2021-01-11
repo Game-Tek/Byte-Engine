@@ -52,15 +52,9 @@ struct RenderAllocation
 	 * \brief An opaque ID which MIGHT be used to keep track of some allocator internal data.
 	 */
 	AllocationId AllocationId = 0;
-};
 
-/**
- * \brief Handle to a host visible/shared GPU allocation.
- */
-struct HostRenderAllocation : RenderAllocation
-{
 	/**
-	 * \brief Pointer to a mapped memory section.
+	* \brief Pointer to a mapped memory section.
 	 */
 	void* Data = nullptr;
 };

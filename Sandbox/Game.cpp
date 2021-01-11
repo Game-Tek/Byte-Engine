@@ -284,7 +284,7 @@ void Game::PostInitialize()
 	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
 	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
 	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-	//}
+	//}//
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;

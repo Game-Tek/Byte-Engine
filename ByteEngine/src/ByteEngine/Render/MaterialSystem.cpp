@@ -702,9 +702,9 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 						const auto& group = bindingsUpdate.GetGroups()[i];
 						
-						bindingsUpdateInfo.Binding = descriptorsUpdate.PerSetToUpdateData[s][i].Binding;
+						bindingsUpdateInfo.SubsetIndex = descriptorsUpdate.PerSetToUpdateData[s][i].SubSetIndex;
 						bindingsUpdateInfo.Type = descriptorsUpdate.PerSetToUpdateData[s][i].BindingType;
-						bindingsUpdateInfo.ArrayElement = group.First;
+						bindingsUpdateInfo.BindingIndex = group.First;
 						bindingsUpdateInfo.BindingUpdateInfos = group.GetElements();
 
 						bindingsUpdateInfos.EmplaceBack(bindingsUpdateInfo);
@@ -789,7 +789,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		
 		auto* renderSystem = loadInfo->RenderSystem;
 
-		GTSL::Array<BindingsPool::DescriptorPoolSize, 32> descriptorPoolSizes;
+		GTSL::Array<BindingsPool::BindingsPoolSize, 32> bindingsPoolSizes;
 
 		{
 			RasterizationPipeline::CreateInfo pipelineCreateInfo;
@@ -1036,14 +1036,14 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 				bindingsPoolCreateInfo.Name = name;
 			}
 
-			GTSL::Array<BindingsPool::DescriptorPoolSize, 10> descriptorPoolSizes;
+			GTSL::Array<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
 
 			for (auto e : bindingDesc)
 			{
-				descriptorPoolSizes.PushBack(BindingsPool::DescriptorPoolSize{ e.BindingType, e.UniformCount * queuedFrames });
+				bindingsPoolSizes.PushBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * queuedFrames });
 			}
 
-			bindingsPoolCreateInfo.DescriptorPoolSizes = descriptorPoolSizes;
+			bindingsPoolCreateInfo.BindingsPoolSizes = bindingsPoolSizes;
 			bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
 			set.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
 		}
@@ -1061,12 +1061,6 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 
 				{
 					allocateBindings.BindingsSetLayouts = GTSL::Range<const BindingsSetLayout*>(1, &bindingsSetLayouts.back());
-					GTSL::Array<uint32, 8> dynamicBindings;
-					for(auto e : bindingDesc)
-					{
-						if (e.Flags & BindingFlags::VARIABLE_DESCRIPTOR_COUNT) { dynamicBindings.EmplaceBack(e.UniformCount); }
-					}
-					allocateBindings.BindingsSetDynamicBindingsCounts = dynamicBindings;
 
 					GTSL::Array<GAL::VulkanCreateInfo, 1> bindingsSetsCreateInfo(1);
 

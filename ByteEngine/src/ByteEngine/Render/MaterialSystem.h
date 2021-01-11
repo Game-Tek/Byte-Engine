@@ -337,7 +337,7 @@ private:
 
 		struct UpdateData
 		{
-			BindingType BindingType; uint32 Binding;
+			BindingType BindingType; uint32 SubSetIndex;
 		};
 		
 		GTSL::Vector<GTSL::Vector<UpdateData, BE::PAR>, BE::PAR> PerSetToUpdateData;

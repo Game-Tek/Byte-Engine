@@ -456,6 +456,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 
 		{
+			auto& attachment = attachments.At(Id("Color")());
+			
 			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
 			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 			pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -463,9 +465,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			pipelineBarrierInfo.InitialStage = PipelineStage::ALL_GRAPHICS; //wait for //TODO: FIND CORRECT PIPELINE STAGE
 			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER; //to allow this to run
 			textureBarriers[0].Texture = GetAttachmentTexture("Color");
-			textureBarriers[0].CurrentLayout = TextureLayout::COLOR_ATTACHMENT;
+			textureBarriers[0].CurrentLayout = attachment.Layout;
 			textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_SRC;
-			textureBarriers[0].SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE;
+			textureBarriers[0].SourceAccessFlags = attachment.AccessFlags;
 			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_READ;
 			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
@@ -666,8 +668,15 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name());
 		renderPasses.EmplaceBack(passesData[s].Name);
 		renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
-		renderPass.PipelineStages = PipelineStage::ALL_GRAPHICS; //TODO: SELECT CORRECT VALUES
+		
 		renderPass.PassType = PassType::RASTER;
+		
+		switch (renderPass.PassType)
+		{
+		case PassType::RASTER: renderPass.PipelineStages |= PipelineStage::ALL_GRAPHICS; break; //TODO: SELECT CORRECT VALUES
+		case PassType::COMPUTE: renderPass.PipelineStages |= PipelineStage::COMPUTE_SHADER; break;
+		case PassType::RAY_TRACING: renderPass.PipelineStages |= PipelineStage::RAY_TRACING_SHADER; break;
+		}
 
 		RenderPass::SubPassDescriptor subPassDescriptor;
 
@@ -831,7 +840,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 	for (auto& apiRenderPassData : apiRenderPasses)
 	{
-		if (apiRenderPassData.FrameBuffer.GetVkFramebuffer())
+		if (apiRenderPassData.FrameBuffer.GetHandle())
 		{
 			apiRenderPassData.FrameBuffer.Destroy(renderSystem->GetRenderDevice());
 		}
@@ -868,6 +877,20 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			}
 		}
 	}
+}
+
+void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
+{
+	auto& renderPass = renderPassesMap[renderPassName()];
+	switch (renderPass.PassType)
+	{
+		case PassType::RASTER: break;
+		case PassType::COMPUTE: break;
+		case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetOption("rayTracing"); break; // Enable render pass only if function is enaled in settings
+		default: break;
+	}
+	
+	renderPass.Enabled = enable;
 }
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
@@ -962,7 +985,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	
 	auto& renderPass = renderPassesMap.At(renderPassId());
 
-	auto buildTextureBarrier = [&](AttachmentData& attachmentData)
+	auto buildTextureBarrier = [&](const AttachmentData& attachmentData)
 	{
 		auto& attachment = attachments.At(attachmentData.Name());
 
@@ -983,19 +1006,8 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 	pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
 	pipelineBarrierInfo.TextureBarriers = textureBarriers;
-	pipelineBarrierInfo.InitialStage = renderPass.PipelineStages;
-	
-	{
-		PipelineStage pipelineStages;
-		
-		switch(renderPass.PassType)
-		{
-		case PassType::RAY_TRACING: pipelineStages |= PipelineStage::RAY_TRACING_SHADER;
-		}
-		
-		pipelineBarrierInfo.FinalStage = pipelineStages;
-		renderPass.PipelineStages = pipelineStages;
-	}
+	pipelineBarrierInfo.InitialStage = PipelineStage::ALL_COMMANDS; //TODO: WHERE ARE WE COMING FROM?
+	pipelineBarrierInfo.FinalStage = renderPass.PipelineStages;
 	
 	commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 }

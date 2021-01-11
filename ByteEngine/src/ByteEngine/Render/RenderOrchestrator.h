@@ -138,14 +138,13 @@ public:
 
 	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
 
-	//Enables or disables render passes
-	//Right now we have to guarantee enabledRenderPasses has the correct order
-	//TODO: maybe everytime we have to execute a render pass check if is enabled so we don't have to keep order between the two collections
-	void ToggleRenderPass(Id renderPassName, bool enable)
-	{
-		renderPassesMap[renderPassName()].Enabled = enable;
-	}
-	
+	/**
+	 * \brief Enables or disables the rendering of a render pass
+	 * \param renderPassName Name of the render Pass to toggle
+	 * \param enable Whether to enable(true) or disable(false) the render pass
+	 */
+	void ToggleRenderPass(Id renderPassName, bool enable);
+
 	void AddToRenderPass(Id renderPass, Id renderGroup)
 	{
 		if(renderPassesMap.Find(renderPass()))

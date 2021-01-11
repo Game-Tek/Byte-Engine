@@ -58,7 +58,7 @@ public:
 	}
 	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
 	{
-		localMemoryAllocator.DeallocateTexture(renderDevice, allocation);
+		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
 	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build)
@@ -80,7 +80,7 @@ public:
 		bufferCreateInfo.Size = bufferSize;
 
 		testMutex.Lock();
-		localMemoryAllocator.AllocateLinearMemory(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
@@ -122,7 +122,7 @@ public:
 		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		scratchMemoryAllocator.AllocateBuffer(renderDevice,	&allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateLinearMemory(renderDevice,	&allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
 		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
@@ -132,7 +132,7 @@ public:
 	
 	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
 	{
-		scratchMemoryAllocator.DeallocateBuffer(renderDevice, allocation);
+		scratchMemoryAllocator.DeallocateLinearMemory(renderDevice, allocation);
 	}
 	
 	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
@@ -155,7 +155,7 @@ public:
 
 	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)
 	{
-		localMemoryAllocator.DeallocateBuffer(renderDevice, renderAllocation);
+		localMemoryAllocator.DeallocateLinearMemory(renderDevice, renderAllocation);
 	}
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }

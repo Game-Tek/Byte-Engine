@@ -37,7 +37,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
 
-void ScratchMemoryAllocator::AllocateBuffer(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	BE_ASSERT(renderAllocation->Size > 0 && renderAllocation->Size <= ALLOCATION_SIZE, "Invalid size!")
 	

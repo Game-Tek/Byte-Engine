@@ -117,6 +117,8 @@ public:
 		PassType PassType;
 
 		AttachmentReference DepthStencilAttachment;
+
+		Id ResultAttachment;
 	};
 	void AddPass(RenderSystem* renderSystem, GTSL::Range<const PassData*> passesData);
 
@@ -162,13 +164,15 @@ private:
 	
 	GTSL::FlatHashMap<uint16, BE::PersistentAllocatorReference> renderManagers;
 
+	Id finalAttachment;
+	
 	GTSL::Array<Id, 8> renderPasses;
 
 	struct AttachmentData
 	{
 		Id Name;
 		TextureLayout Layout;
-		AccessFlags AccessFlags;
+		AccessFlags::value_type AccessFlags;
 	};
 	
 	struct RenderPassData
@@ -199,7 +203,6 @@ private:
 	struct APIRenderPassData
 	{
 		RenderPass RenderPass;
-		
 		FrameBuffer FrameBuffer;
 		GTSL::Array<Id, 8> AttachmentNames;
 	};

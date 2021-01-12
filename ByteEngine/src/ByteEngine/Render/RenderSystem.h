@@ -238,6 +238,7 @@ public:
 	void OnResize(GTSL::Extent2D extent);
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
+	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
 	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
 
 	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
@@ -380,6 +381,6 @@ private:
 
 	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PAR> meshesByMaterial;
 
-	uint32 shaderGroupAlignment = 0, shaderGroupHandleSize = 0;
+	uint32 shaderGroupAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;
 };

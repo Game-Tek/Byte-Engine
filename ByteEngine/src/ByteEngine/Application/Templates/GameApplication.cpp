@@ -118,17 +118,27 @@ void GameApplication::PostInitialize()
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } );
+		geoRenderPass.ResultAttachment = "Color";
 		passes.EmplaceBack(geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.Name = "UIRenderPass";
 		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
+		uiRenderPass.ResultAttachment = "Color";
 		passes.EmplaceBack(uiRenderPass);
+
+		RenderOrchestrator::PassData rtRenderPass{};
+		rtRenderPass.Name = "SceneRTRenderPass";
+		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
+		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
+		rtRenderPass.ResultAttachment = "Color";
+		passes.EmplaceBack(rtRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, passes);
-		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
+		renderOrchestrator->ToggleRenderPass("SceneRenderPass", false);
 		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
+		renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
 	}
 
 	

@@ -284,7 +284,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 	renderPassesFunctions.Emplace(Id("SceneRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
 	renderPassesFunctions.Emplace(Id("UIRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
-	renderPassesFunctions.Emplace(Id("RaysRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
+	renderPassesFunctions.Emplace(Id("SceneRTRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -391,6 +391,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		if (canBeginRenderPass())
 		{
 			beginRenderPass();
+
+			auto doRender = [&]() { if (renderPassesFunctions.Find(renderPassId())) { renderPassesFunctions.At(renderPassId())(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, renderPassId); } };
 			
 			switch (renderPass->PassType)
 			{
@@ -412,7 +414,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 				auto doRaster = [&]() {
 					materialSystem->BindSet(renderSystem, commandBuffer, renderPassId);
-					renderPassesFunctions.At(renderPassId())(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, renderPassId);
+					doRender();
 				};
 
 				doRaster();
@@ -431,6 +433,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 			case PassType::RAY_TRACING:
 			{
+				doRender();
 				break;
 			}
 			}
@@ -456,7 +459,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 
 		{
-			auto& attachment = attachments.At(Id("Color")());
+			auto& attachment = attachments.At(finalAttachment());
 			
 			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
 			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
@@ -464,19 +467,19 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			pipelineBarrierInfo.TextureBarriers = textureBarriers;
 			pipelineBarrierInfo.InitialStage = PipelineStage::ALL_GRAPHICS; //wait for //TODO: FIND CORRECT PIPELINE STAGE
 			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER; //to allow this to run
-			textureBarriers[0].Texture = GetAttachmentTexture("Color");
+			textureBarriers[0].Texture = attachment.Texture;
 			textureBarriers[0].CurrentLayout = attachment.Layout;
 			textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_SRC;
 			textureBarriers[0].SourceAccessFlags = attachment.AccessFlags;
 			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_READ;
 			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
-			updateImage(attachments.At(Id("Color")()), AccessFlags::TRANSFER_READ, TextureLayout::TRANSFER_SRC);
+			updateImage(attachment, AccessFlags::TRANSFER_READ, TextureLayout::TRANSFER_SRC);
 		}
 
 		CommandBuffer::CopyTextureToTextureInfo copyTexture;
 		copyTexture.RenderDevice = renderSystem->GetRenderDevice();
-		copyTexture.SourceTexture = GetAttachmentTexture("Color");
+		copyTexture.SourceTexture = GetAttachmentTexture(finalAttachment);
 		copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
 		copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
 		copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
@@ -576,216 +579,233 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 	attachment.Format = format;
 	attachment.Name = name;
 	attachment.Type = type;
-	attachment.Uses = uses;
+	attachment.Uses = uses;	
 
-	switch(uses)
-	{
-	case TextureUses::COLOR_ATTACHMENT:
-	{
-		attachment.Layout = TextureLayout::COLOR_ATTACHMENT;
-		break;
-	}
-
-	case TextureUses::DEPTH_STENCIL_ATTACHMENT:
-	{
-		attachment.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
-		break;
-	}
-	}
-	
-
-	if (type & (TextureType::DEPTH | TextureType::STENCIL))
-	{
-	}
-	else
+	if (type & TextureType::COLOR)
 	{
 		attachment.Uses |= TextureUses::STORAGE;
 	}
+	
+	attachment.Layout = TextureLayout::UNDEFINED;
+	attachment.AccessFlags = 0;
 
 	attachments.Emplace(name(), attachment);
 }
 
 void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const PassData*> passesData)
-{	
-	auto& apiRenderPassData = apiRenderPasses[apiRenderPasses.EmplaceBack()];
-	
-	//apiRenderPassData.Name = "RenderPass";
-
-	RenderPass::CreateInfo renderPassCreateInfo;
-	renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) {
-		auto name = GTSL::StaticString<32>("RenderPass");
-		renderPassCreateInfo.Name = name;
-	}
-
-	//gather used attachments
-
-	GTSL::Array<Id, 8> usedAttachments;
-
-	auto addIfNotUsed = [&](const Id name)
+{
+	for (uint8 passIndex = 0; passIndex < passesData.ElementCount(); ++passIndex)
 	{
-		if (name() == 0) { return; }
-		for (auto e : usedAttachments) { if (e == name) { return; } }
-		usedAttachments.EmplaceBack(name);
-	};
-	
-	for(auto& p : passesData)
-	{
-		for(auto& ra : p.ReadAttachments) { addIfNotUsed(ra.Name); }
-		for(auto& wa : p.WriteAttachments) { addIfNotUsed(wa.Name); }
-		addIfNotUsed(p.DepthStencilAttachment.Name);
-	}
-
-	apiRenderPassData.AttachmentNames = usedAttachments;
-	
-	GTSL::Array<RenderPass::AttachmentDescriptor, 16> attachmentDescriptors;
-	
-	for(auto e : usedAttachments)
-	{
-		auto& attachment = attachments.At(e());
+		finalAttachment = passesData[passIndex].ResultAttachment;
 		
-		RenderPass::AttachmentDescriptor attachmentDescriptor;
-		attachmentDescriptor.Format = attachment.Format;
-		attachmentDescriptor.LoadOperation = GAL::RenderTargetLoadOperations::CLEAR;
-		attachmentDescriptor.StoreOperation = GAL::RenderTargetStoreOperations::STORE;
-		attachmentDescriptor.InitialLayout = TextureLayout::UNDEFINED;
-		attachmentDescriptor.FinalLayout = attachment.Type & TextureType::COLOR ? TextureLayout::COLOR_ATTACHMENT : TextureLayout::DEPTH_STENCIL_ATTACHMENT; //TODO: SELECT CORRECT END LAYOUT
-		attachmentDescriptors.EmplaceBack(attachmentDescriptor);
-	}
-
-	renderPassCreateInfo.RenderPassAttachments = attachmentDescriptors;
-
-	GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
-	GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> readAttachmentReferences(passesData.ElementCount());
-	GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(passesData.ElementCount());
-	GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(passesData.ElementCount());
-
-	subPasses.EmplaceBack();
-	subPassMap.EmplaceBack();
-
-	for (uint32 s = 0; s < passesData.ElementCount(); ++s)
-	{
-		auto& renderPass = renderPassesMap.Emplace(passesData[s].Name());
-		renderPasses.EmplaceBack(passesData[s].Name);
-		renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
-		
-		renderPass.PassType = PassType::RASTER;
-		
-		switch (renderPass.PassType)
+		switch (passesData[passIndex].PassType)
 		{
-		case PassType::RASTER: renderPass.PipelineStages |= PipelineStage::ALL_GRAPHICS; break; //TODO: SELECT CORRECT VALUES
-		case PassType::COMPUTE: renderPass.PipelineStages |= PipelineStage::COMPUTE_SHADER; break;
-		case PassType::RAY_TRACING: renderPass.PipelineStages |= PipelineStage::RAY_TRACING_SHADER; break;
-		}
-
-		RenderPass::SubPassDescriptor subPassDescriptor;
-
-		auto getAttachmentIndex = [&](const Id name)
+		case PassType::RASTER:
 		{
-			for(uint8 i = 0; i < usedAttachments.GetLength(); ++i) { if (name == usedAttachments[i]) { return i; } }
-			return GAL::ATTACHMENT_UNUSED;
-		};
-		
-		for (auto& e : passesData[s].ReadAttachments)
-		{
-			RenderPass::AttachmentReference attachmentReference;
-			attachmentReference.Layout = TextureLayout::SHADER_READ_ONLY;
-			attachmentReference.Index = getAttachmentIndex(e.Name);
-
-			readAttachmentReferences[s].EmplaceBack(attachmentReference);
-
-			renderPass.ReadAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::SHADER_READ_ONLY, 0 });
-		}
-
-		subPassDescriptor.ReadColorAttachments = readAttachmentReferences[s];
-
-		for (auto e : passesData[s].WriteAttachments)
-		{
-			RenderPass::AttachmentReference attachmentReference;
-			attachmentReference.Layout = TextureLayout::COLOR_ATTACHMENT;
-			attachmentReference.Index = getAttachmentIndex(e.Name);
-
-			writeAttachmentReferences[s].EmplaceBack(attachmentReference);
-
-			renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::COLOR_ATTACHMENT, 0 });
-		}
-
-		subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
-
-		{
-			auto hasToBePreserved = [&](Id name) -> bool //Determines if an attachment is read in any other later pass
+			uint32 lastContiguousRasterPassIndex = passIndex;
+			while (lastContiguousRasterPassIndex < passesData.ElementCount() && passesData[lastContiguousRasterPassIndex].PassType == PassType::RASTER)
 			{
-				uint8 nextWrite = 0, nextRead = 0xFFFFFFFF;
-		
-				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i) {
-					for (auto e : passesData[s].WriteAttachments) { if (e.Name == name) { nextWrite = i; break; } }
-				}
-		
-				for (uint8 i = s + static_cast<uint8>(1); i < passesData.ElementCount(); ++i) {
-					for (auto e : passesData[s].ReadAttachments) { if (e.Name == name) { nextRead = i; break; } }
-				}
-		
-				return nextRead < nextWrite;
+				++lastContiguousRasterPassIndex;
+			}
+			auto& apiRenderPassData = apiRenderPasses[apiRenderPasses.EmplaceBack()];
+
+			RenderPass::CreateInfo renderPassCreateInfo;
+			renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+			if constexpr (_DEBUG) {
+				auto name = GTSL::StaticString<32>("RenderPass");
+				renderPassCreateInfo.Name = name;
+			}
+
+			GTSL::Array<Id, 8> usedAttachments;
+
+			auto addIfNotUsed = [&](const Id name) {
+				if (name() == 0) { return; }
+				for (auto e : usedAttachments) { if (e == name) { return; } }
+				usedAttachments.EmplaceBack(name);
 			};
-		
-			for (uint32 a = 0; a < renderPass.WriteAttachments.GetLength(); ++a) {
-				if (hasToBePreserved(renderPass.WriteAttachments[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
+
+			for (uint8 p = passIndex; p < lastContiguousRasterPassIndex; ++p) {
+				for (auto& ra : passesData[p].ReadAttachments) { addIfNotUsed(ra.Name); }
+				for (auto& wa : passesData[p].WriteAttachments) { addIfNotUsed(wa.Name); }
+				addIfNotUsed(passesData[p].DepthStencilAttachment.Name);
 			}
-			for (uint32 a = 0; a < renderPass.ReadAttachments.GetLength(); ++a) {
-				if (hasToBePreserved(renderPass.ReadAttachments[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
+
+			apiRenderPassData.AttachmentNames = usedAttachments;
+
+			GTSL::Array<RenderPass::AttachmentDescriptor, 16> attachmentDescriptors;
+
+			for (auto e : usedAttachments)
+			{
+				auto& attachment = attachments.At(e());
+
+				RenderPass::AttachmentDescriptor attachmentDescriptor;
+				attachmentDescriptor.Format = attachment.Format;
+				attachmentDescriptor.LoadOperation = GAL::RenderTargetLoadOperations::CLEAR;
+				attachmentDescriptor.StoreOperation = passesData[passIndex].ResultAttachment == e ? GAL::RenderTargetStoreOperations::STORE : GAL::RenderTargetStoreOperations::UNDEFINED;
+				attachmentDescriptor.InitialLayout = TextureLayout::UNDEFINED;
+				attachmentDescriptor.FinalLayout = attachment.Type & TextureType::COLOR ? TextureLayout::COLOR_ATTACHMENT : TextureLayout::DEPTH_STENCIL_ATTACHMENT; //TODO: SELECT CORRECT END LAYOUT
+				attachmentDescriptors.EmplaceBack(attachmentDescriptor);
 			}
+
+			renderPassCreateInfo.RenderPassAttachments = attachmentDescriptors;
+
+			GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
+			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> readAttachmentReferences(lastContiguousRasterPassIndex);
+			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(lastContiguousRasterPassIndex);
+			GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(lastContiguousRasterPassIndex);
+
+			subPasses.EmplaceBack();
+			subPassMap.EmplaceBack();
+
+			for (uint32 s = passIndex; s < lastContiguousRasterPassIndex; ++s, ++passIndex)
+			{
+				auto& renderPass = renderPassesMap.Emplace(passesData[s].Name());
+				renderPasses.EmplaceBack(passesData[s].Name);
+				renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
+
+				renderPass.PassType = PassType::RASTER;
+				renderPass.PipelineStages = PipelineStage::ALL_GRAPHICS;
+
+				RenderPass::SubPassDescriptor subPassDescriptor;
+
+				auto getAttachmentIndex = [&](const Id name)
+				{
+					for (uint8 i = 0; i < usedAttachments.GetLength(); ++i) { if (name == usedAttachments[i]) { return i; } }
+					return GAL::ATTACHMENT_UNUSED;
+				};
+
+				for (auto& e : passesData[s].ReadAttachments)
+				{
+					RenderPass::AttachmentReference attachmentReference;
+					attachmentReference.Layout = TextureLayout::SHADER_READ_ONLY;
+					attachmentReference.Index = getAttachmentIndex(e.Name);
+
+					readAttachmentReferences[s].EmplaceBack(attachmentReference);
+
+					renderPass.ReadAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::SHADER_READ_ONLY, 0 });
+				}
+
+				subPassDescriptor.ReadColorAttachments = readAttachmentReferences[s];
+
+				for (auto e : passesData[s].WriteAttachments)
+				{
+					RenderPass::AttachmentReference attachmentReference;
+					attachmentReference.Layout = TextureLayout::COLOR_ATTACHMENT;
+					attachmentReference.Index = getAttachmentIndex(e.Name);
+
+					writeAttachmentReferences[s].EmplaceBack(attachmentReference);
+
+					renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::COLOR_ATTACHMENT, 0 });
+				}
+
+				subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
+
+				//{ //TODO: FIX PRESERVE
+				//	auto hasToBePreserved = [&](Id name) -> bool //Determines if an attachment is read in any other later pass
+				//	{
+				//		uint8 nextWrite = 0, nextRead = 0xFF;
+				//
+				//		for (uint8 i = s + static_cast<uint8>(1); i < lastContiguousRasterPassIndex; ++i) {
+				//			for (auto e : passesData[s].WriteAttachments) { if (e.Name == name) { nextWrite = i; break; } }
+				//		}
+				//
+				//		for (uint8 i = s + static_cast<uint8>(1); i < lastContiguousRasterPassIndex; ++i) {
+				//			for (auto e : passesData[s].ReadAttachments) { if (e.Name == name) { nextRead = i; break; } }
+				//		}
+				//
+				//		return nextRead < nextWrite;
+				//	};
+				//
+				//	GTSL::Array<Id, 16> attachmentsNotUsedThisSubPass;
+				//	
+				//	for (uint32 a = passIndex; a < lastContiguousRasterPassIndex; ++a) {
+				//		for(auto& e : passesData[a].WriteAttachments) {
+				//			if()
+				//		}
+				//		if (hasToBePreserved(renderPass.WriteAttachments[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
+				//	}
+				//	for (uint32 a = 0; a < renderPass.ReadAttachments.GetLength(); ++a) {
+				//		if (hasToBePreserved(renderPass.ReadAttachments[a].Name)) { preserveAttachmentReferences[s].EmplaceBack(a); }
+				//	}
+				//}
+
+				subPassDescriptor.PreserveAttachments = preserveAttachmentReferences[s];
+
+				if (passesData[s].DepthStencilAttachment.Name())
+				{
+					subPassDescriptor.DepthAttachmentReference.Index = getAttachmentIndex(passesData[s].DepthStencilAttachment.Name);
+					subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+
+					renderPass.WriteAttachments.EmplaceBack(passesData[s].DepthStencilAttachment.Name);
+				}
+				else
+				{
+					subPassDescriptor.DepthAttachmentReference.Index = GAL::ATTACHMENT_UNUSED;
+					subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::UNDEFINED;
+				}
+
+				subPassDescriptors.EmplaceBack(subPassDescriptor);
+
+				subPasses.back().EmplaceBack();
+				auto& newSubPass = subPasses.back().back();
+				newSubPass.Name = passesData[s].Name;
+				subPassMap.back().Emplace(passesData[s].Name(), s);
+			}
+
+			--passIndex;
+
+			renderPassCreateInfo.SubPasses = subPassDescriptors;
+
+			GTSL::Array<RenderPass::SubPassDependency, 16> subPassDependencies;
+
+			for (uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
+			{
+				RenderPass::SubPassDependency e;
+				e.SourceSubPass = i;
+				e.DestinationSubPass = i + 1;
+				e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+				e.DestinationAccessFlags = 0;
+
+				e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
+				e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
+				subPassDependencies.EmplaceBack(e);
+			}
+
+			renderPassCreateInfo.SubPassDependencies = subPassDependencies;
+
+			apiRenderPassData.RenderPass = RenderPass(renderPassCreateInfo);
+
+			break;
 		}
-
-		subPassDescriptor.PreserveAttachments = preserveAttachmentReferences[s];
-
-		if (passesData[s].DepthStencilAttachment.Name())
+		case PassType::COMPUTE:
+		case PassType::RAY_TRACING:
 		{
-			subPassDescriptor.DepthAttachmentReference.Index = getAttachmentIndex(passesData[s].DepthStencilAttachment.Name);
-			subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+			renderPasses.EmplaceBack(passesData[passIndex].Name);
+			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name());
 
-			renderPass.WriteAttachments.EmplaceBack(passesData[s].DepthStencilAttachment.Name);
+			renderPass.PassType = PassType::RAY_TRACING;
+			renderPass.PipelineStages = PipelineStage::RAY_TRACING_SHADER;
+
+			for (auto& e : passesData[passIndex].WriteAttachments) {
+				AttachmentData attachmentData;
+				attachmentData.Name = e.Name;
+				attachmentData.Layout = TextureLayout::GENERAL;
+				attachmentData.AccessFlags = AccessFlags::SHADER_WRITE;
+				renderPass.WriteAttachments.EmplaceBack(attachmentData);
+			}
+
+			for (auto& e : passesData[passIndex].ReadAttachments) {
+				AttachmentData attachmentData;
+				attachmentData.Name = e.Name;
+				attachmentData.Layout = TextureLayout::SHADER_READ_ONLY;
+				attachmentData.AccessFlags = AccessFlags::SHADER_READ;
+				renderPass.ReadAttachments.EmplaceBack(attachmentData);
+			}
+
+			break;
 		}
-		else
-		{
-			subPassDescriptor.DepthAttachmentReference.Index = GAL::ATTACHMENT_UNUSED;
-			subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::UNDEFINED;
 		}
-
-		subPassDescriptors.EmplaceBack(subPassDescriptor);
-
-		subPasses.back().EmplaceBack();
-		auto& newSubPass = subPasses.back().back();
-		newSubPass.Name = passesData[s].Name;
-		subPassMap.back().Emplace(passesData[s].Name(), s);
 	}
-
-	renderPassCreateInfo.SubPasses = subPassDescriptors;
-
-	GTSL::Array<RenderPass::SubPassDependency, 16> subPassDependencies;
-
-	{
-		uint8 subPass = 0;
-
-		for (uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
-		{
-			RenderPass::SubPassDependency e;
-			e.SourceSubPass = i;
-			e.DestinationSubPass = i + 1;
-
-			e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-			e.DestinationAccessFlags = 0;
-
-			e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
-			e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
-
-			subPassDependencies.EmplaceBack(e);
-		}
-	}
-
-	renderPassCreateInfo.SubPassDependencies = subPassDependencies;
-
-	apiRenderPassData.RenderPass = RenderPass(renderPassCreateInfo);
-	
 }
 
 void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize)
@@ -860,23 +880,17 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 		apiRenderPassData.FrameBuffer = FrameBuffer(framebufferCreateInfo);
 	}
 
-	for(auto e : renderPassesNames)
-	{
-		auto& rp = renderPassesMap.At(e());
-
-		uint32 i = 0;
-		
-		for(auto& a : apiRenderPasses[rp.APIRenderPass].AttachmentNames)
+	uint32 i = 0;
+	
+	auto updateDescriptors = [&](const Attachment& attachment) {
+		if (attachment.Type & TextureType::COLOR)
 		{
-			auto& attachment = attachments.At(a());
-
-			if (attachment.Type & TextureType::COLOR)
-			{
-				materialSystem->WriteSetTexture(materialSystem->GetSetHandleByName(e), i, attachment.Texture, attachment.TextureView, TextureSampler());
-				++i;
-			}
+			materialSystem->WriteSetTexture(materialSystem->GetSetHandleByName("GlobalData"), i, attachment.Texture, attachment.TextureView, TextureSampler());
+			++i;
 		}
-	}
+	};
+	
+	GTSL::ForEach(attachments, updateDescriptors);
 }
 
 void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
@@ -957,25 +971,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 }
 
 void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
-{
-	//TODO: TRANSITION ATTACHMENTS TO GENERAL BEFORE RENDERING TO THEM
-	//TODO: SYNC ACCESS
-
-	{
-		GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
-		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-		pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-		pipelineBarrierInfo.TextureBarriers = textureBarriers;
-		pipelineBarrierInfo.InitialStage = PipelineStage::COLOR_ATTACHMENT_OUTPUT;
-		pipelineBarrierInfo.FinalStage = PipelineStage::RAY_TRACING_SHADER;
-		textureBarriers[0].Texture = GetAttachmentTexture("Color");
-		textureBarriers[0].CurrentLayout = TextureLayout::COLOR_ATTACHMENT;
-		textureBarriers[0].TargetLayout = TextureLayout::GENERAL;
-		textureBarriers[0].SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE;
-		textureBarriers[0].DestinationAccessFlags = AccessFlags::MEMORY_WRITE;
-		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
-	}
-	
+{	
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
 }
 

@@ -233,9 +233,9 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		for (auto& s : shaders) { s.Destroy(renderSystem->GetRenderDevice()); }
 		
 		auto handleSize = renderSystem->GetShaderGroupHandleSize();
-		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupAlignment());
+		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
-		GTSL::SmartBuffer<BE::TAR> handlesBuffer(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupAlignment(), GetTransientAllocator());
+		GTSL::SmartBuffer<BE::TAR> handlesBuffer(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
 
 		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer->GetCapacity(), handlesBuffer->GetData()));
 
@@ -280,6 +280,14 @@ void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBu
 		bindBindingsSetInfo.PipelineLayout = set.PipelineLayout;
 		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
 		bindBindingsSetInfo.Offsets = GTSL::Range<const uint32*>();
+		
+		bindBindingsSetInfo.PipelineType = PipelineType::RASTER;
+		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
+
+		bindBindingsSetInfo.PipelineType = PipelineType::COMPUTE;
+		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
+
+		bindBindingsSetInfo.PipelineType = PipelineType::RAY_TRACING;
 		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
 	}
 
@@ -602,13 +610,14 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 	commandBuffer->BindPipeline(bindPipelineInfo);
 
 	auto handleSize = renderSystem->GetShaderGroupHandleSize();
-	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupAlignment());
+	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
 	auto bufferAddress = shaderBindingTableBuffer.GetAddress(renderSystem->GetRenderDevice());
 	
 	uint32 offset = 0;
 	
 	CommandBuffer::TraceRaysInfo traceRaysInfo;
+	traceRaysInfo.RenderDevice = renderSystem->GetRenderDevice();
 	traceRaysInfo.DispatchSize = GTSL::Extent3D(rayGrid);
 	traceRaysInfo.RayGenDescriptor.Size = rayGenShaderCount * alignedHandleSize;
 	traceRaysInfo.RayGenDescriptor.Address = bufferAddress;
@@ -624,6 +633,11 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 	traceRaysInfo.MissDescriptor.Address = bufferAddress + offset;
 	traceRaysInfo.MissDescriptor.Stride = alignedHandleSize;
 	offset += traceRaysInfo.MissDescriptor.Size;
+
+	traceRaysInfo.CallableDescriptor.Size = 0;
+	traceRaysInfo.CallableDescriptor.Address = 0;
+	traceRaysInfo.CallableDescriptor.Stride = 0;
+	offset += traceRaysInfo.CallableDescriptor.Size;
 
 	commandBuffer->TraceRays(traceRaysInfo);
 }

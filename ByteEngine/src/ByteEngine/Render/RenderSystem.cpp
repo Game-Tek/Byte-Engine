@@ -107,6 +107,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			shaderGroupAlignment = rayTracingCapabilities.ShaderGroupAlignment;
 			shaderGroupHandleSize = rayTracingCapabilities.ShaderGroupHandleSize;
 			scratchBufferOffsetAlignment = rayTracingCapabilities.ScratchBuildOffsetAlignment;
+			shaderGroupBaseAlignment = rayTracingCapabilities.ShaderGroupBaseAlignment;
 		}
 		else
 		{

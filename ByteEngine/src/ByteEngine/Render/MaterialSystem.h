@@ -113,12 +113,10 @@ public:
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
 	
 	void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
-	{
-		//auto& set = sets[setHandle()];
-		
+	{		
 		for(uint8 f = 0; f < queuedFrames; ++f)
 		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle, GetPersistentAllocator());
 
 			BindingsSet::TextureBindingUpdateInfo info;
 			info.TextureView = textureView;

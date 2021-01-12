@@ -51,6 +51,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING, &rayTracingCapabilities); }
 		
 		createInfo.Extensions = extensions;
+		createInfo.PerformanceValidation = true;
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
@@ -335,7 +336,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryTriangles.FirstVertex = 0;
 		
 		AccelerationStructure::Geometry geometry;
-		geometry.Flags = 0;
+		geometry.Flags = GeometryFlags::OPAQUE;
 		geometry.SetGeometryTriangles(geometryTriangles);
 		geometry.PrimitiveCount = rayTracingMesh.IndicesCount / 3;
 		geometry.PrimitiveOffset = 0;
@@ -376,12 +377,12 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	{
 		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + instanceCount);
 		
-		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE;
+		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
 		instance.AccelerationStructureReference = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 		instance.Mask = 0xFF;
 		instance.InstanceCustomIndex = component;
 		instance.InstanceShaderBindingTableRecordOffset = 0;
-		instance.Transform = *info.Matrix;
+		instance.Transform = GTSL::Matrix3x4(GTSL::Math::Translation(GTSL::Vector3(0.0f, 0.0f, 0.0f)));
 
 		BE_ASSERT(instanceCount < MAX_INSTANCES_COUNT);
 		
@@ -398,7 +399,7 @@ RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 ve
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
 	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY;
-	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
+	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, GetBufferSubDataAlignment()) + indexCount * indexSize;
 	mesh.Size = createInfo.Size;
 
 	mesh.IndexType = SelectIndexType(indexSize);
@@ -744,7 +745,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
 		AccelerationStructure::Geometry geometry;
-		geometry.Flags = 0;
+		geometry.Flags = GeometryFlags::OPAQUE;
 		geometry.PrimitiveCount = instanceCount;
 		geometry.PrimitiveOffset = 0;
 		geometry.SetGeometryInstances(AccelerationStructure::GeometryInstances{ instancesBuffer.GetAddress(GetRenderDevice()) });
@@ -797,11 +798,11 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	
 	//if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
 	{
-		for(uint32 i = 0; i < processedBufferCopies[GetCurrentFrame()]; ++i)
-		{
-			bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
-		}
+		//for(uint32 i = 0; i < processedBufferCopies[GetCurrentFrame()]; ++i)
+		//{
+		//	bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
+		//	DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
+		//}
 
 		for(uint32 i = 0; i < processedTextureCopies[GetCurrentFrame()]; ++i)
 		{

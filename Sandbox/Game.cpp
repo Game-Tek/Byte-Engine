@@ -208,13 +208,13 @@ void Game::PostInitialize()
 
 	{
 		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "hydrant";
+		addStaticMeshInfo.MeshName = "plane";
 		addStaticMeshInfo.Material = material;
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	}//
+	}
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;

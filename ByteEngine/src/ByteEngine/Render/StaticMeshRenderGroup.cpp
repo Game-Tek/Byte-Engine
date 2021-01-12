@@ -1,6 +1,7 @@
 #include "StaticMeshRenderGroup.h"
 
 #include "RenderSystem.h"
+#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/GameInstance.h"
 
 class RenderStaticMeshCollection;
@@ -56,30 +57,33 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
-	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
-
-	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
-
 	uint32 index = 0;
-	//uint32 index = positions.Emplace();
+	if (BE::Application::Get()->GetOption("rayTracing"))
+	{
+		uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
+		addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
+		auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
-	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
+		//uint32 index = positions.Emplace();
 
-	auto bufferSize = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
+		auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
+
+		auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
+
+		auto bufferSize = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, addStaticMeshInfo.RenderSystem->GetBufferSubDataAlignment()) + indexCount * indexSize;
+
+		StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
+		load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onRayTracedStaticMeshLoaded>(this);
+		load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, addStaticMeshInfo.RenderSystem->GetSharedMeshPointer(sharedMesh));
+		load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
+		load_static_meshInfo.IndicesAlignment = addStaticMeshInfo.RenderSystem->GetBufferSubDataAlignment();
+		load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);
+		load_static_meshInfo.ActsOn = acts_on;
+		load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
+		addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
+	}
 	
-	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
-	load_static_meshInfo.OnStaticMeshLoad = GTSL::Delegate<void(TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad)>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onRayTracedStaticMeshLoaded>(this);
-	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, addStaticMeshInfo.RenderSystem->GetSharedMeshPointer(sharedMesh));
-	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
-	load_static_meshInfo.IndicesAlignment = 16;
-	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);
-	load_static_meshInfo.ActsOn = acts_on;
-	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
-	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
-
 	//resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 
 	return ComponentReference(GetSystemId(), index);

@@ -172,7 +172,8 @@ private:
 	{
 		Id Name;
 		TextureLayout Layout;
-		AccessFlags::value_type AccessFlags;
+		//AccessFlags::value_type AccessFlags;
+		bool WriteAccess = false;
 	};
 	
 	struct RenderPassData
@@ -190,6 +191,8 @@ private:
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
 
+	AccessFlags::value_type accessFlagsFromStageAndAccessType(PipelineStage::value_type, bool writeAccess);
+	
 	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, CommandBuffer, Id)>;
 	
 	GTSL::StaticMap<RenderPassFunctionType, 8> renderPassesFunctions;
@@ -230,13 +233,15 @@ private:
 		TextureType::value_type Type;
 		TextureUses::value_type Uses;
 		TextureLayout Layout;
-		AccessFlags::value_type AccessFlags;
+		//AccessFlags::value_type AccessFlags;
+		PipelineStage::value_type ConsumingStages;
+		bool WriteAccess = false;
 	};
 	GTSL::StaticMap<Attachment, 32> attachments;
-	
-	void updateImage(Attachment& attachment, AccessFlags::value_type accessFlags, TextureLayout textureLayout)
+
+	void updateImage(Attachment& attachment, TextureLayout textureLayout, PipelineStage::value_type stages, bool writeAccess)
 	{
-		attachment.AccessFlags = accessFlags; attachment.Layout = textureLayout;
+		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.WriteAccess = writeAccess;
 	}
 
 public:

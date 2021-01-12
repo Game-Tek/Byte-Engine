@@ -353,11 +353,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			{
 				case PassType::RASTER: // Don't transition attachments as API render pass will handle transitions
 					for (auto& e : renderPass->WriteAttachments) {
-						updateImage(attachments.At(e.Name()), e.AccessFlags, e.Layout);
+						updateImage(attachments.At(e.Name()), e.Layout, renderPass->PipelineStages, e.WriteAccess);
 					}
 
 					for (auto& e : renderPass->ReadAttachments) {
-						updateImage(attachments.At(e.Name()), e.AccessFlags, e.Layout);
+						updateImage(attachments.At(e.Name()), e.Layout, renderPass->PipelineStages, e.WriteAccess);
 					}
 					break;
 				
@@ -465,16 +465,16 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 			pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
 			pipelineBarrierInfo.TextureBarriers = textureBarriers;
-			pipelineBarrierInfo.InitialStage = PipelineStage::ALL_GRAPHICS; //wait for //TODO: FIND CORRECT PIPELINE STAGE
-			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER; //to allow this to run
+			pipelineBarrierInfo.InitialStage = attachment.ConsumingStages;
+			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
 			textureBarriers[0].Texture = attachment.Texture;
 			textureBarriers[0].CurrentLayout = attachment.Layout;
 			textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_SRC;
-			textureBarriers[0].SourceAccessFlags = attachment.AccessFlags;
+			textureBarriers[0].SourceAccessFlags = accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess);
 			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_READ;
 			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 
-			updateImage(attachment, AccessFlags::TRANSFER_READ, TextureLayout::TRANSFER_SRC);
+			updateImage(attachment, TextureLayout::TRANSFER_SRC, PipelineStage::TRANSFER, false);
 		}
 
 		CommandBuffer::CopyTextureToTextureInfo copyTexture;
@@ -587,7 +587,8 @@ void RenderOrchestrator::AddAttachment(RenderSystem* renderSystem, Id name, Text
 	}
 	
 	attachment.Layout = TextureLayout::UNDEFINED;
-	attachment.AccessFlags = 0;
+	attachment.WriteAccess = false;
+	attachment.ConsumingStages = PipelineStage::TOP_OF_PIPE;
 
 	attachments.Emplace(name(), attachment);
 }
@@ -664,7 +665,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 				renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
 
 				renderPass.PassType = PassType::RASTER;
-				renderPass.PipelineStages = PipelineStage::ALL_GRAPHICS;
+				renderPass.PipelineStages = PipelineStage::COLOR_ATTACHMENT_OUTPUT;
 
 				RenderPass::SubPassDescriptor subPassDescriptor;
 
@@ -682,7 +683,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 
 					readAttachmentReferences[s].EmplaceBack(attachmentReference);
 
-					renderPass.ReadAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::SHADER_READ_ONLY, 0 });
+					renderPass.ReadAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::SHADER_READ_ONLY, false });
 				}
 
 				subPassDescriptor.ReadColorAttachments = readAttachmentReferences[s];
@@ -695,7 +696,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 
 					writeAttachmentReferences[s].EmplaceBack(attachmentReference);
 
-					renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::COLOR_ATTACHMENT, 0 });
+					renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::COLOR_ATTACHMENT, true });
 				}
 
 				subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
@@ -790,7 +791,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 				AttachmentData attachmentData;
 				attachmentData.Name = e.Name;
 				attachmentData.Layout = TextureLayout::GENERAL;
-				attachmentData.AccessFlags = AccessFlags::SHADER_WRITE;
+				attachmentData.WriteAccess = true;
 				renderPass.WriteAttachments.EmplaceBack(attachmentData);
 			}
 
@@ -798,7 +799,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, GTSL::Range<const P
 				AttachmentData attachmentData;
 				attachmentData.Name = e.Name;
 				attachmentData.Layout = TextureLayout::SHADER_READ_ONLY;
-				attachmentData.AccessFlags = AccessFlags::SHADER_READ;
+				attachmentData.WriteAccess = false;
 				renderPass.ReadAttachments.EmplaceBack(attachmentData);
 			}
 
@@ -907,6 +908,17 @@ void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 	renderPass.Enabled = enable;
 }
 
+#define TRANSLATE_MASK(fromVal, toVal, toVar, store) GTSL::SetBitAs(GTSL::FindFirstSetBit(fromVal), toVar & (toVal), store)
+
+AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(PipelineStage::value_type stage, bool writeAccess)
+{
+	AccessFlags::value_type accessFlags = 0; //TODO: SWITCH FLAGS BY ATTACHMENT TYPE. E.J: COLOR, DEPTH, etc
+	accessFlags |= stage & PipelineStage::COLOR_ATTACHMENT_OUTPUT ? writeAccess ? AccessFlags::COLOR_ATTACHMENT_WRITE : AccessFlags::COLOR_ATTACHMENT_READ : 0;
+	accessFlags |= stage & PipelineStage::RAY_TRACING_SHADER ? writeAccess ? AccessFlags::SHADER_WRITE : AccessFlags::SHADER_READ : 0;
+	accessFlags |= stage & PipelineStage::TRANSFER ? writeAccess ? AccessFlags::TRANSFER_WRITE : AccessFlags::TRANSFER_READ : 0;
+	return accessFlags;
+}
+
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
 	for (auto e : renderPassesMap.At(rp()).RenderGroups)
@@ -981,6 +993,8 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	
 	auto& renderPass = renderPassesMap.At(renderPassId());
 
+	uint32 initialStage = 0;
+	
 	auto buildTextureBarrier = [&](const AttachmentData& attachmentData)
 	{
 		auto& attachment = attachments.At(attachmentData.Name());
@@ -989,11 +1003,13 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 		textureBarrier.Texture = attachment.Texture;
 		textureBarrier.CurrentLayout = attachment.Layout;
 		textureBarrier.TargetLayout = attachmentData.Layout;
-		textureBarrier.SourceAccessFlags = attachment.AccessFlags;
-		textureBarrier.DestinationAccessFlags = attachmentData.AccessFlags;
+		textureBarrier.SourceAccessFlags = accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess);
+		textureBarrier.DestinationAccessFlags = accessFlagsFromStageAndAccessType(renderPass.PipelineStages, attachmentData.WriteAccess);
 		textureBarriers.EmplaceBack(textureBarrier);
 
-		updateImage(attachment, attachmentData.AccessFlags, attachmentData.Layout);
+		initialStage |= attachment.ConsumingStages;
+		
+		updateImage(attachment, attachmentData.Layout, renderPass.PipelineStages, attachmentData.WriteAccess);
 	};
 	
 	for (auto& e : renderPass.WriteAttachments) { buildTextureBarrier(e); }
@@ -1002,7 +1018,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
 	pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
 	pipelineBarrierInfo.TextureBarriers = textureBarriers;
-	pipelineBarrierInfo.InitialStage = PipelineStage::ALL_COMMANDS; //TODO: WHERE ARE WE COMING FROM?
+	pipelineBarrierInfo.InitialStage = initialStage;
 	pipelineBarrierInfo.FinalStage = renderPass.PipelineStages;
 	
 	commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);

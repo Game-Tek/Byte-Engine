@@ -252,6 +252,8 @@ public:
 
 	auto GetAddedRayTracingMeshes() const { return addedRayTracingMeshes.GetRange(); }
 	void ClearAddedRayTracingMeshes() { return addedRayTracingMeshes.ResizeDown(0); }
+
+	uint32 GetBufferSubDataAlignment() const { return 16; }
 private:	
 	GTSL::Mutex testMutex;
 	

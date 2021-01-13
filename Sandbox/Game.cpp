@@ -197,18 +197,9 @@ void Game::PostInitialize()
 	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
 	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
 
-	//{
-	//	TextureSystem::CreateTextureInfo createTextureInfo;
-	//	createTextureInfo.RenderSystem = renderSystem;
-	//	createTextureInfo.GameInstance = gameInstance;
-	//	createTextureInfo.TextureName = "hydrant_Albedo";
-	//	createTextureInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	texture = gameInstance->GetSystem<TextureSystem>("TextureSystem")->CreateTexture(createTextureInfo);
-	//}
-
 	{
 		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "plane";
+		addStaticMeshInfo.MeshName = "hydrant";
 		addStaticMeshInfo.Material = material;
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;

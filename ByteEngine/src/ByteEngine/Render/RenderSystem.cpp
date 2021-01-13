@@ -292,7 +292,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
 
 	auto verticesSize = info.VertexCount * info.VertexSize; auto indecesSize = info.IndexCount * info.IndexSize;
-	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, 16) + indecesSize;
+	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 	
 	RayTracingMesh rayTracingMesh;
 
@@ -331,7 +331,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		geometryTriangles.MaxVertices = info.VertexCount;
 		geometryTriangles.TransformData = 0;
 		geometryTriangles.VertexData = meshDataBuffer.GetAddress(GetRenderDevice());
-		geometryTriangles.IndexData = meshDataBuffer.GetAddress(GetRenderDevice()) + verticesSize;
+		geometryTriangles.IndexData = meshDataBuffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment());
 		geometryTriangles.VertexStride = info.VertexSize;
 		geometryTriangles.FirstVertex = 0;
 		
@@ -377,7 +377,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 	{
 		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + instanceCount);
 		
-		instance.Flags = GeometryInstanceFlags::DISABLE_CULLING | GeometryInstanceFlags::OPAQUE | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
+		instance.Flags = GeometryInstanceFlags::OPAQUE;// | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
 		instance.AccelerationStructureReference = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 		instance.Mask = 0xFF;
 		instance.InstanceCustomIndex = component;

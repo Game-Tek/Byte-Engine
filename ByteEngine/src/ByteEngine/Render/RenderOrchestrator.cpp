@@ -914,7 +914,7 @@ AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(Pi
 {
 	AccessFlags::value_type accessFlags = 0; //TODO: SWITCH FLAGS BY ATTACHMENT TYPE. E.J: COLOR, DEPTH, etc
 	accessFlags |= stage & PipelineStage::COLOR_ATTACHMENT_OUTPUT ? writeAccess ? AccessFlags::COLOR_ATTACHMENT_WRITE : AccessFlags::COLOR_ATTACHMENT_READ : 0;
-	accessFlags |= stage & PipelineStage::RAY_TRACING_SHADER ? writeAccess ? AccessFlags::SHADER_WRITE : AccessFlags::SHADER_READ : 0;
+	accessFlags |= stage & (PipelineStage::RAY_TRACING_SHADER | PipelineStage::COMPUTE_SHADER) ? writeAccess ? AccessFlags::SHADER_WRITE : AccessFlags::SHADER_READ : 0;
 	accessFlags |= stage & PipelineStage::TRANSFER ? writeAccess ? AccessFlags::TRANSFER_WRITE : AccessFlags::TRANSFER_READ : 0;
 	return accessFlags;
 }
@@ -982,8 +982,21 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 	}
 }
 
-void RenderOrchestrator::renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
-{	
+void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
+{
+	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+
+	GTSL::Matrix4 projectionMatrix;
+	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.5f, 1000.f);
+
+	auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * cameraSystem->GetPositionMatrices()[0];
+	
+	auto matHandle = materialSystem->GetCameraMatricesHandle();
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 0) = viewMatrix;
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 1) = projectionMatrix; //view
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 2) = GTSL::Math::Inverse(viewMatrix); //inv proj
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 3) = GTSL::Math::Inverse(projectionMatrix); //inv view
+	
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
 }
 

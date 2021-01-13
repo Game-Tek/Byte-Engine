@@ -112,6 +112,14 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 				subSetInfo.Count = 16;
 				subSetInfos.EmplaceBack(subSetInfo);
 			}
+
+			{ //CAMERA DATA BUFFER
+				SubSetInfo subSetInfo;
+				subSetInfo.Type = SubSetType::BUFFER;
+				subSetInfo.Handle = &cameraDataSubSetHandle;
+				subSetInfo.Count = 1;
+				subSetInfos.EmplaceBack(subSetInfo);
+			}
 		}
 
 		setInfo.SubSets = subSetInfos;
@@ -121,6 +129,24 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
+		{
+			GTSL::Array<MemberInfo, 2> members;
+			
+			MemberInfo memberInfo;
+			memberInfo.Handle = &cameraMatricesHandle;
+			memberInfo.Type = Member::DataType::MATRIX4;
+			memberInfo.Count = 4;
+			members.EmplaceBack(memberInfo);
+			
+			StructInfo structInfo;
+			structInfo.Members = members;
+
+			GTSL::Array<StructInfo, 2> structInfos;
+			structInfos.EmplaceBack(structInfo);
+			
+			createBuffer(renderSystem, cameraDataSubSetHandle, structInfos);
+		}
+		
 		auto* materialResorceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 
 		Buffer::CreateInfo sbtCreateInfo;
@@ -788,7 +814,7 @@ void MaterialSystem::createBuffer(RenderSystem* renderSystem, SubSetHandle subSe
 			bufferBindingUpdate.Buffer = set.Buffers[f];
 			bufferBindingUpdate.Offset = 0;
 			bufferBindingUpdate.Range = set.AllocatedInstances * set.StructsSizes[0];
-			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, 0, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0/*TODO: WHERE*/, subSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 		}
 	}
 }

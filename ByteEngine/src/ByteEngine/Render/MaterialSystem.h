@@ -208,8 +208,12 @@ public:
 
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
 
+	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
+
 private:
 	Id rayGenMaterial;
+	SubSetHandle cameraDataSubSetHandle;
+	MemberHandle cameraMatricesHandle;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 

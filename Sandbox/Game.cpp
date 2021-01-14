@@ -235,7 +235,7 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		box = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
+		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));//
 	}
 	
 	//{

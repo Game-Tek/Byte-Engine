@@ -48,6 +48,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.Queues = queues;
 
 		GTSL::Array<GTSL::Pair<RenderDevice::Extension, void*>, 8> extensions{ { RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC, nullptr } };
+		extensions.EmplaceBack(RenderDevice::Extension::SCALAR_LAYOUT, nullptr);
 		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING, &rayTracingCapabilities); }
 		
 		createInfo.Extensions = extensions;

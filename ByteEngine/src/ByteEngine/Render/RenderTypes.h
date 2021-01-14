@@ -26,7 +26,7 @@
  *
  * This number was chosen since we consider that under normal conditions no more than two frames will ever be worked on concurrently.
  */
-static constexpr uint8 MAX_CONCURRENT_FRAMES = 2;
+static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 
 /**
  * \brief Typedef for opaque GPU allocator ID. Refer to RenderAllocation::AllocationId for more details.

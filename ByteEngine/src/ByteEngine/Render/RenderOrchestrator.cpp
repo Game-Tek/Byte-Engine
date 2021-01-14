@@ -30,7 +30,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
-	members[0].Count = 1;
+	members[0].Count = 16;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
 	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
@@ -54,7 +54,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
 	
-	info.MaterialSystem->AddObjects(info.RenderSystem, dataSet, renderGroup->GetStaticMeshes());
+	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMeshes());
 	
 	{
 		uint32 index = 0;
@@ -64,7 +64,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			auto pos = GTSL::Math::Translation(e);
 			pos(2, 3) *= -1.f;
 			
-			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, index) = info.ProjectionMatrix * info.ViewMatrix * pos;
+			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, index) = info.ProjectionMatrix * info.ViewMatrix * pos;
 
 			++index;
 		}
@@ -101,11 +101,11 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	GTSL::Array<MaterialSystem::MemberInfo, 8> members(2);
 	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
 	members[0].Handle = &matrixUniformBufferMemberHandle;
-	members[0].Count = 1;
+	members[0].Count = 16;
 
 	members[1].Type = MaterialSystem::Member::DataType::FVEC4;
 	members[1].Handle = &colorHandle;
-	members[1].Count = 1;
+	members[1].Count = 16;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
 	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
@@ -134,7 +134,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 
 	auto canvases = uiSystem->GetCanvases();
 
-	info.MaterialSystem->AddObjects(info.RenderSystem, dataSet, comps);
+	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, comps);
 	
 	for (auto& ref : canvases)
 	{
@@ -174,8 +174,8 @@ void UIRenderManager::Setup(const SetupInfo& info)
 			//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
 			//
 			
-			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, sq) = trans * ortho;
-			*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
+			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, sq) = trans * ortho;
+			//*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
 			++sq;
 		}
 		
@@ -989,13 +989,24 @@ void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* re
 	GTSL::Matrix4 projectionMatrix;
 	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.5f, 1000.f);
 
-	auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * cameraSystem->GetPositionMatrices()[0];
+	auto positionMatrix = cameraSystem->GetPositionMatrices()[0];
+	positionMatrix(0, 3) *= -1;
+	positionMatrix(1, 3) *= -1;
+	
+	auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * positionMatrix;
 	
 	auto matHandle = materialSystem->GetCameraMatricesHandle();
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 0) = viewMatrix;
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 1) = projectionMatrix; //view
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 2) = GTSL::Math::Inverse(viewMatrix); //inv proj
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(matHandle, 3) = GTSL::Math::Inverse(projectionMatrix); //inv view
+
+	MaterialSystem::BufferIterator bufferIterator;
+	materialSystem->MoveIterator(bufferIterator, matHandle);
+	
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = viewMatrix;
+	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = projectionMatrix; //view
+	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(viewMatrix); //inv proj
+	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix); //inv view
 	
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
 }

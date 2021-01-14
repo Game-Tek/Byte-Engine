@@ -38,8 +38,8 @@ MAKE_HANDLE(SubSetDescription, SubSet)
 
 struct MemberDescription
 {
-	SetHandle Set;
-	uint8 OffsetIntoStruct, DataType;
+	SubSetDescription SubSet;
+	uint32 MemberIndirectionIndex = 0;
 };
 
 MAKE_HANDLE(MemberDescription, Member)
@@ -54,52 +54,49 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2, STRUCT
 		};
 
-		uint32 Count = 1;
+		uint32 Count = 1, Reference = 0xFFFFFFFF;
 		DataType Type;
 	};
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
+	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0, ElementIndex = 0; };
+	
 	template<typename T>
-	T* GetMemberPointer(MemberHandle member, uint64 index);
+	T* GetMemberPointer(BufferIterator iterator);
 
 	template<>
-	GTSL::Matrix4* GetMemberPointer(MemberHandle member, uint64 index)
+	GTSL::Matrix4* GetMemberPointer(BufferIterator iterator)
 	{
-		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::MATRIX4, "Type mismatch");
-		return getSetMemberPointer<GTSL::Matrix4>(member(), index, frame);
+		return getSetMemberPointer<GTSL::Matrix4, Member::DataType::MATRIX4>(iterator, frame);
 	}
 
 	template<>
-	GTSL::Vector4* GetMemberPointer(MemberHandle member, uint64 index)
+	GTSL::Vector4* GetMemberPointer(BufferIterator iterator)
 	{
-		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::FVEC4, "Type mismatch");
-		return getSetMemberPointer<GTSL::Vector4>(member(), index, frame);
+		return getSetMemberPointer<GTSL::Vector4, Member::DataType::FVEC4>(iterator, frame);
 	}
-
+	
 	template<>
-	int32* GetMemberPointer(MemberHandle member, uint64 index)
+	int32* GetMemberPointer(BufferIterator iterator)
 	{
-		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::INT32, "Type mismatch");
-		return getSetMemberPointer<int32>(member(), index, frame);
+		return getSetMemberPointer<int32, Member::DataType::INT32>(iterator, frame);
 	}
-
+	
 	template<>
-	uint32* GetMemberPointer(MemberHandle member, uint64 index)
+	uint32* GetMemberPointer(BufferIterator iterator)
 	{
-		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::UINT32, "Type mismatch");
-		return getSetMemberPointer<uint32>(member(), index, frame);
+		return getSetMemberPointer<uint32, Member::DataType::UINT32>(iterator, frame);
 	}
-
+	
 	template<>
-	uint64* GetMemberPointer(MemberHandle member, uint64 index)
+	uint64* GetMemberPointer(BufferIterator iterator)
 	{
-		GTSL_ASSERT(Member::DataType(member().DataType) == Member::DataType::UINT64, "Type mismatch");
-		return getSetMemberPointer<uint64>(member(), index, frame);
+		return getSetMemberPointer<uint64, Member::DataType::UINT64>(iterator, frame);
 	}
 
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, uint32 index = 0)
@@ -130,6 +127,7 @@ public:
 	struct MemberInfo : Member
 	{
 		MemberHandle* Handle;
+		GTSL::Range<MemberInfo*> MemberInfos;
 	};
 
 	enum class Frequency : uint8
@@ -167,7 +165,7 @@ public:
 	};
 	SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
 	
-	void AddObjects(RenderSystem* renderSystem, SetHandle setHandle, uint32 count);
+	void UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count);
 
 	struct BindingsSetData
 	{
@@ -209,11 +207,60 @@ public:
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
 
 	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
+	
+	void MoveIterator(BufferIterator& iterator, MemberHandle member)
+	{
+		auto& set = sets[member().SubSet.SetHandle()]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
+		iterator.Set = member().SubSet.SetHandle(); iterator.SubSet = member().SubSet.Subset;
+		iterator.Level = memberData.Level;
+		iterator.ByteOffset += memberData.ByteOffsetIntoStruct;
+		iterator.MemberIndex = member().MemberIndirectionIndex;
+		iterator.ElementIndex = 0;
+	}
+	
+	void AdvanceIterator(BufferIterator& iterator, MemberHandle member)
+	{
+		auto& set = sets[iterator.Set]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
+		BE_ASSERT(memberData.Level == iterator.Level, "Not expected structure")
+		BE_ASSERT(iterator.ElementIndex < memberData.Count, "Advanced more elements than there are in this member!")
+		iterator.ByteOffset += memberData.Size; ++iterator.ElementIndex;
+	}
 
 private:
+	uint32 dataTypeSize(MaterialSystem::Member::DataType data)
+	{
+		switch (data)
+		{
+		case MaterialSystem::Member::DataType::FLOAT32: return 4;
+		case MaterialSystem::Member::DataType::UINT32: return 4;
+		case MaterialSystem::Member::DataType::UINT64: return 8;
+		case MaterialSystem::Member::DataType::MATRIX4: return 4 * 4 * 4;
+		case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
+		case MaterialSystem::Member::DataType::INT32: return 4;
+		case MaterialSystem::Member::DataType::FVEC2: return 4 * 2;
+		default: BE_ASSERT(false, "Unknown value!")
+		}
+	}
+	
+	template<typename T, Member::DataType DT>
+	T* getSetMemberPointer(BufferIterator iterator, uint8 frameToUpdate)
+	{
+		auto& set = sets[iterator.Set];
+		auto& subSet = set.SubSets[iterator.SubSet];
+
+		BE_ASSERT(DT == set.MemberData[iterator.MemberIndex].Type, "Type mismatch")
+		//BE_ASSERT(index < s., "Requested sub set buffer member index greater than allocated instances count.")
+
+		//												//BUFFER							//OFFSET TO STRUCT
+		return reinterpret_cast<T*>(static_cast<byte*>(subSet.Allocations[frameToUpdate].Data) + iterator.ByteOffset);
+	}
+	
 	Id rayGenMaterial;
 	SubSetHandle cameraDataSubSetHandle;
 	MemberHandle cameraMatricesHandle;
+	MemberHandle materialTextureHandles;
+	SubSetHandle materialsDataHandle;
+	MemberHandle materialDataStructHandle;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
@@ -228,20 +275,8 @@ private:
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
 
 	uint32 rayGenShaderCount = 0, hitShaderCount = 0, missShaderCount = 0, callableShaderCount = 0;
-	
-	template<typename T>
-	T* getSetMemberPointer(MemberDescription member, uint64 index, uint8 frameToUpdate)
-	{
-		auto& set = sets[member.Set()];
-		auto structSize = set.MemberSize;
 
-		BE_ASSERT(index < set.AllocatedInstances, "Requested sub set buffer member index greater than allocated instances count.")
-		
-		//												//BUFFER										//OFFSET TO STRUCT		//OFFSET TO MEMBER
-		return reinterpret_cast<T*>(static_cast<byte*>(set.Allocations[frameToUpdate].Data) + (index * structSize) + member.OffsetIntoStruct);
-	}
-
-	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, const GTSL::Range<StructInfo*> structs);
+	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, GTSL::Range<MemberInfo*> members);
 	
 	uint32 matNum = 0;
 	
@@ -260,7 +295,7 @@ private:
 
 		SetHandle Set;
 		RasterizationPipeline Pipeline;
-		MemberHandle TextureRefHandle[8];
+		MemberHandle TextureHandles;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
@@ -354,14 +389,17 @@ private:
 
 	struct Struct
 	{
-		enum class Frequency : uint8
-		{
-			PER_INSTANCE
-		} Frequency;
-
 		GTSL::Array<Member, 8> Members;
 	};
+
+	struct StructData : Struct
+	{
+		
+	};
 	
+	/**
+	 * \brief Stores all data per binding set.
+	 */
 	struct SetData
 	{
 		Id Name;
@@ -370,21 +408,32 @@ private:
 		PipelineLayout PipelineLayout;
 		BindingsSetLayout BindingsSetLayout;
 		BindingsPool BindingsPool;
+		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
 
 		/**
-		 * \brief Size (in bytes) of the structure this set has. Right now is only one "Member" but could be several.
+		 * \brief Stores all data per sub set, and manages managed buffers.
+		 * Each struct instance is pointed to by one binding. But a big per sub set buffer is used to store all instances.
 		 */
-		uint32 MemberSize = 0;
-		RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
-		Buffer Buffers[MAX_CONCURRENT_FRAMES];
+		struct SubSetData
+		{
+			RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
+			Buffer Buffers[MAX_CONCURRENT_FRAMES];
+						
+			uint32 AllocatedBindings = 0;
 
-		uint32 AllocatedInstances = 0;
-
-		GTSL::Array<uint32, 8> AllocatedStructsPerInstance;
-		GTSL::Array<uint16, 8> StructsSizes;
-		GTSL::Array<Struct, 8> Structs;
-
-		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
+			//GTSL::Array<StructData, 16> DefinedStructs;
+		};
+		GTSL::Array<SubSetData, 8> SubSets;
+		
+		struct MemberData
+		{
+			uint16 ByteOffsetIntoStruct;
+			uint16 Count = 0;
+			uint8 Level = 0;
+			Member::DataType Type;
+			uint16 Size;
+		};
+		GTSL::Array<MemberData, 16> MemberData;
 	};
 
 	uint32 meshCount = 0;

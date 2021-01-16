@@ -57,7 +57,7 @@ public:
 			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2, STRUCT
 		};
 
-		uint32 Count = 1, Reference = 0xFFFFFFFF;
+		uint32 Count = 1;
 		DataType Type;
 	};
 	
@@ -130,11 +130,6 @@ public:
 		GTSL::Range<MemberInfo*> MemberInfos;
 	};
 
-	enum class Frequency : uint8
-	{
-		PER_INSTANCE
-	};
-
 	enum class SubSetType : uint8
 	{
 		BUFFER, TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE
@@ -142,7 +137,6 @@ public:
 	
 	struct StructInfo
 	{
-		Frequency Frequency;
 		GTSL::Range<MemberInfo*> Members;
 	};
 	
@@ -165,6 +159,12 @@ public:
 	};
 	SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
 	
+	/**
+	 * \brief Update the member instance count to be able to fit at least count requested elements.
+	 * \param renderSystem Pointer to the active RenderSystem instance.
+	 * \param memberHandle Handle to the member whose count is going to be updated.
+	 * \param count Number to check against if enough instances are allocated. Doesn't have to be incremental, can be any index as long as it represents the new boundary of the collection(in terms of indeces) or any index inside the range.
+	 */
 	void UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count);
 
 	struct BindingsSetData
@@ -229,6 +229,11 @@ public:
 	}
 
 private:
+	PipelineLayout getmaterialPipelineLayout(const Id id)
+	{
+		return sets[GetSetHandleByName("GlobalData")()].PipelineLayout;
+	}
+	
 	uint32 dataTypeSize(MaterialSystem::Member::DataType data)
 	{
 		switch (data)
@@ -283,8 +288,6 @@ private:
 
 	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, GTSL::Range<MemberInfo*> members);
 	
-	uint32 matNum = 0;
-	
 	RayTracingPipeline rayTracingPipeline;
 	Buffer shaderBindingTableBuffer;
 	RenderAllocation shaderBindingTableAllocation;
@@ -301,23 +304,16 @@ private:
 		SetHandle Set;
 		RasterizationPipeline Pipeline;
 		MemberHandle TextureHandles;
+		uint32 Counter = 0, Target = 0;
+		Id RenderGroup;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
-	struct PendingMaterialData : MaterialData
-	{
-		PendingMaterialData(uint32 targetValue, MaterialData&& materialData) : MaterialData(materialData), Target(targetValue) {}
-		
-		uint32 Counter = 0, Target = 0;
-		MaterialHandle Material;
-		Id RenderGroup;
-	};
-	GTSL::KeepVector<PendingMaterialData, BE::PAR> pendingMaterials;
 	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
 	GTSL::FlatHashMap<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
 	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
 	
-	void setMaterialAsLoaded(const MaterialHandle matIndex, const MaterialData material, const Id renderGroup);
+	void setMaterialAsLoaded(const MaterialHandle matIndex);
 
 	struct CreateTextureInfo
 	{
@@ -470,13 +466,11 @@ private:
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
-
-	MAKE_HANDLE(uint32, PendingMaterial)
 	
 	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
-	GTSL::KeepVector<GTSL::Vector<PendingMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
+	GTSL::KeepVector<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
 	
-	void addPendingMaterialToTexture(uint32 texture, PendingMaterialHandle material)
+	void addPendingMaterialToTexture(uint32 texture, MaterialHandle material)
 	{
 		pendingMaterialsPerTexture[texture].EmplaceBack(material);
 	}
@@ -518,9 +512,11 @@ private:
 	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
 	
 	uint8 frame;
-	const uint8 queuedFrames = 2;
+	uint8 queuedFrames = 2;
 
 	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
+
+	friend class RenderSystem;
 };

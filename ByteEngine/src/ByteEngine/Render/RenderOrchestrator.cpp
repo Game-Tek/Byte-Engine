@@ -33,7 +33,6 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	members[0].Count = 16;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
-	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
 	structs[0].Members = members;
 
 	setInfo.Structs = structs;
@@ -55,6 +54,9 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	auto positions = renderGroup->GetPositions();
 	
 	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMeshes());
+
+	MaterialSystem::BufferIterator bufferIterator;
+	info.MaterialSystem->UpdateIteratorMember(bufferIterator, matrixUniformBufferMemberHandle);
 	
 	{
 		uint32 index = 0;
@@ -64,7 +66,8 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			auto pos = GTSL::Math::Translation(e);
 			pos(2, 3) *= -1.f;
 			
-			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(matrixUniformBufferMemberHandle, index) = info.ProjectionMatrix * info.ViewMatrix * pos;
+			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = info.ProjectionMatrix * info.ViewMatrix * pos;
+			info.MaterialSystem->UpdateIteratorMemberIndex(bufferIterator, index);
 
 			++index;
 		}
@@ -108,7 +111,6 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	members[1].Count = 16;
 
 	GTSL::Array<MaterialSystem::StructInfo, 4> structs(1);
-	structs[0].Frequency = MaterialSystem::Frequency::PER_INSTANCE;
 	structs[0].Members = members;
 
 	setInfo.Structs = structs;
@@ -332,7 +334,33 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	}
 
 	materialSystem->BindSet(renderSystem, commandBuffer, Id("GlobalData"));
-	
+
+	{
+		auto* cameraSystem = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem");
+
+		GTSL::Matrix4 projectionMatrix;
+		GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.5f, 1000.f);
+
+		auto positionMatrix = cameraSystem->GetPositionMatrices()[0];
+		positionMatrix(0, 3) *= -1;
+		positionMatrix(1, 3) *= -1;
+
+		auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * positionMatrix;
+
+		auto matHandle = materialSystem->GetCameraMatricesHandle();
+
+		MaterialSystem::BufferIterator bufferIterator;
+		materialSystem->UpdateIteratorMember(bufferIterator, matHandle);
+
+		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = viewMatrix;
+		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 1);
+		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = projectionMatrix; //view
+		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 2);
+		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(viewMatrix); //inv proj
+		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 3);
+		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix); //inv view
+	}
+		
 	for (uint8 renderPassIndex = 0; renderPassIndex < renderPasses.GetLength();)
 	{
 		Id renderPassId;
@@ -932,13 +960,12 @@ void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, 
 		{
 			if (materialSystem->BindMaterial(renderSystem, commandBuffer, m))
 			{
-				materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
-				renderSystem->RenderAllMeshesForMaterial(m.MaterialType);
+				//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
+				renderSystem->RenderAllMeshesForMaterial(m.MaterialType, materialSystem);
 			}
 			
 			++meshIndex;
 		}
-
 	}
 }
 
@@ -983,31 +1010,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 }
 
 void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
-{
-	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
-
-	GTSL::Matrix4 projectionMatrix;
-	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.5f, 1000.f);
-
-	auto positionMatrix = cameraSystem->GetPositionMatrices()[0];
-	positionMatrix(0, 3) *= -1;
-	positionMatrix(1, 3) *= -1;
-	
-	auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * positionMatrix;
-	
-	auto matHandle = materialSystem->GetCameraMatricesHandle();
-
-	MaterialSystem::BufferIterator bufferIterator;
-	materialSystem->UpdateIteratorMember(bufferIterator, matHandle);
-	
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = viewMatrix;
-	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 1);
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = projectionMatrix; //view
-	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 2);
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(viewMatrix); //inv proj
-	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 3);
-	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix); //inv view
-	
+{	
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
 }
 

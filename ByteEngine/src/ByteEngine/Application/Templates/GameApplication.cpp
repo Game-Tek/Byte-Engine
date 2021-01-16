@@ -132,11 +132,12 @@ void GameApplication::PostInitialize()
 		rtRenderPass.Name = "SceneRTRenderPass";
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
+		//rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
 		rtRenderPass.ResultAttachment = "Color";
 		passes.EmplaceBack(rtRenderPass);
 		
 		renderOrchestrator->AddPass(renderSystem, passes);
-		renderOrchestrator->ToggleRenderPass("SceneRenderPass", false);
+		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
 		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
 		renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
 	}

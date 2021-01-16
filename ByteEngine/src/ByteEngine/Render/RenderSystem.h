@@ -217,14 +217,20 @@ public:
 	
 	void RenderMesh(MeshHandle handle, uint32 instanceCount = 1);
 
-	byte* GetMeshPointer(MeshHandle sharedMesh)
+	byte* GetMeshPointer(MeshHandle sharedMesh) const
 	{
-		auto& mesh = meshes[sharedMesh()];
+		const auto& mesh = meshes[sharedMesh()];
 		BE_ASSERT(mesh.MeshAllocation.Data, "This mesh has no CPU accessible data!");
 		return static_cast<byte*>(mesh.MeshAllocation.Data);
 	}
+
+	uint32 GetMeshSize(MeshHandle meshHandle) const
+	{
+		const auto& mesh = meshes[meshHandle()];
+		return GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()) + mesh.IndexSize * mesh.IndicesCount;
+	}
 	
-	void RenderAllMeshesForMaterial(Id material);
+	void RenderAllMeshesForMaterial(Id material, MaterialSystem* materialSystem);
 
 	void AddMeshToMaterial(MeshHandle meshHandle, MaterialHandle materialHandle)
 	{

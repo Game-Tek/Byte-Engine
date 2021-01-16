@@ -34,21 +34,18 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 	auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
 
 	auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "StaticMeshRenderGroup", AccessType::READ_WRITE } };
-
-	auto bufferSize = vertexCount * vertexSize + indexCount * indexSize;
 	
 	StaticMeshResourceManager::LoadStaticMeshInfo load_static_meshInfo;
 	load_static_meshInfo.OnStaticMeshLoad = Task<StaticMeshResourceManager::OnStaticMeshLoad>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this);
-	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(bufferSize, addStaticMeshInfo.RenderSystem->GetMeshPointer(sharedMesh));
+	load_static_meshInfo.DataBuffer = GTSL::Range<byte*>(addStaticMeshInfo.RenderSystem->GetMeshSize(sharedMesh), addStaticMeshInfo.RenderSystem->GetMeshPointer(sharedMesh));
 	load_static_meshInfo.Name = addStaticMeshInfo.MeshName;
-	load_static_meshInfo.IndicesAlignment = indexSize;
+	load_static_meshInfo.IndicesAlignment = addStaticMeshInfo.RenderSystem->GetBufferSubDataAlignment();
 	load_static_meshInfo.UserData = DYNAMIC_TYPE(MeshLoadInfo, mesh_load_info);	
 	load_static_meshInfo.ActsOn = acts_on;
 	load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
-	
 
 	++staticMeshCount;
 	
@@ -91,18 +88,12 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
-	auto loadStaticMesh = [](TaskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad, StaticMeshRenderGroup* staticMeshRenderGroup)
-	{
-		MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
+	MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
-		auto meshRef = loadInfo->RenderSystem->CreateGPUMesh(loadInfo->MeshHandle);
-		loadInfo->RenderSystem->AddMeshToMaterial(meshRef, loadInfo->Material);
+	auto meshRef = loadInfo->RenderSystem->CreateGPUMesh(loadInfo->MeshHandle);
+	loadInfo->RenderSystem->AddMeshToMaterial(meshRef, loadInfo->Material);
 
-		GTSL::Delete(loadInfo, staticMeshRenderGroup->GetPersistentAllocator());
-	};
-	
-	taskInfo.GameInstance->AddDynamicTask("loadStaticMeshFromManager", Task<StaticMeshResourceManager::OnStaticMeshLoad, StaticMeshRenderGroup*>::Create(loadStaticMesh),
-	GTSL::Array<TaskDependency, 2>{ {"StaticMeshRenderGroup", AccessType::READ_WRITE} }, GTSL::MoveRef(onStaticMeshLoad), this);
+	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
 
 void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)

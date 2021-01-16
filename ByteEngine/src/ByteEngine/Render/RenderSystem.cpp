@@ -397,7 +397,7 @@ RenderSystem::MeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCo
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
 	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY | BufferType::STORAGE;
-	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
+	createInfo.Size = meshSize;
 
 	BufferScratchMemoryAllocationInfo bufferLocal;
 	bufferLocal.CreateInfo = &createInfo;
@@ -415,7 +415,7 @@ RenderSystem::MeshHandle RenderSystem::CreateGPUMesh(MeshHandle sharedMeshHandle
 	// Remember material system also has to update buffers and descriptor in consequence
 	Mesh mesh; mesh.VertexSize = sharedMesh.VertexSize; mesh.VertexCount = sharedMesh.VertexCount; mesh.IndexSize = sharedMesh.IndexSize; mesh.IndicesCount = sharedMesh.IndicesCount;
 
-	auto verticesSize = sharedMesh.VertexSize * sharedMesh.VertexCount; auto indecesSize = sharedMesh.IndexSize * sharedMesh.IndicesCount;
+	auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
 	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 	
 	Buffer::CreateInfo createInfo;
@@ -476,37 +476,51 @@ void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
 	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
 }
 
-void RenderSystem::RenderAllMeshesForMaterial(Id material)
+void RenderSystem::RenderAllMeshesForMaterial(Id material, MaterialSystem* materialSystem)
 {
-	auto range = meshesByMaterial.At(material()).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
-	
-	for(auto& e : range)
+	if (meshesByMaterial.Find(material())) //so it doesn't blow up, TODO: FIX
 	{
-		auto& mesh = meshes[e];
+		auto range = meshesByMaterial.At(material()).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
 
+		for (auto e : range)
 		{
-			CommandBuffer::BindVertexBufferInfo bindInfo;
-			bindInfo.RenderDevice = GetRenderDevice();
-			bindInfo.Buffer = mesh.Buffer;
-			bindInfo.Offset = 0;
-			graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
-		}
+			auto& mesh = meshes[e];
 
-		{
-			CommandBuffer::BindIndexBufferInfo bindInfo;
-			bindInfo.RenderDevice = GetRenderDevice();
-			bindInfo.Buffer = mesh.Buffer;
-			bindInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
-			bindInfo.IndexType = SelectIndexType(mesh.IndexSize);
-			graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
-		}
+			{
+				CommandBuffer::BindVertexBufferInfo bindInfo;
+				bindInfo.RenderDevice = GetRenderDevice();
+				bindInfo.Buffer = mesh.Buffer;
+				bindInfo.Offset = 0;
+				graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
+			}
 
-		{
-			CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-			drawIndexedInfo.RenderDevice = GetRenderDevice();
-			drawIndexedInfo.InstanceCount = 1;
-			drawIndexedInfo.IndexCount = mesh.IndicesCount;
-			graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
+			{
+				CommandBuffer::BindIndexBufferInfo bindInfo;
+				bindInfo.RenderDevice = GetRenderDevice();
+				bindInfo.Buffer = mesh.Buffer;
+				bindInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
+				bindInfo.IndexType = SelectIndexType(mesh.IndexSize);
+				graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
+			}
+
+			{
+				CommandBuffer::UpdatePushConstantsInfo updatePush;
+				updatePush.RenderDevice = GetRenderDevice();
+				updatePush.Size = 4;
+				updatePush.Offset = 0;
+				updatePush.Data = reinterpret_cast<byte*>(&e);
+				updatePush.PipelineLayout = materialSystem->getmaterialPipelineLayout(material);
+				updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+				graphicsCommandBuffers[GetCurrentFrame()].UpdatePushConstant(updatePush);
+			}
+
+			{
+				CommandBuffer::DrawIndexedInfo drawIndexedInfo;
+				drawIndexedInfo.RenderDevice = GetRenderDevice();
+				drawIndexedInfo.InstanceCount = 1;
+				drawIndexedInfo.IndexCount = mesh.IndicesCount;
+				graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
+			}
 		}
 	}
 }

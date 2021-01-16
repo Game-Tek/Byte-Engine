@@ -63,11 +63,11 @@ public:
 	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
 
 	void Setup(const SetupInfo& info) override;
-	RenderSystem::GPUMeshHandle GetSquareMesh() const { return square; }
+	RenderSystem::MeshHandle GetSquareMesh() const { return square; }
 	MaterialHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
-	RenderSystem::GPUMeshHandle square;
+	RenderSystem::MeshHandle square;
 
 	MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 

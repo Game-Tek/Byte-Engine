@@ -23,7 +23,6 @@ const char* BindingTypeString(const BindingType binding)
 void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	minUniformBufferOffset = renderSystem->GetRenderDevice()->GetMinUniformBufferOffset();
 
 	{
 		const GTSL::Array<TaskDependency, 6> taskDependencies{ { "MaterialSystem", AccessType::READ_WRITE }, { "RenderSystem", AccessType::READ } };
@@ -91,7 +90,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			SubSetInfo subSetInfo;
 			subSetInfo.Type = SubSetType::BUFFER;
 			subSetInfo.Count = 16;
-			subSetInfo.Handle = &materialsDataHandle;
+			subSetInfo.Handle = &materialsDataSubSetHandle;
 			subSetInfos.EmplaceBack(subSetInfo);
 		}
 
@@ -102,6 +101,30 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			subSetInfo.Count = 1;
 			subSetInfos.EmplaceBack(subSetInfo);
 		}
+
+		{ //INSTANCE DATA BUFFER
+			SubSetInfo subSetInfo;
+			subSetInfo.Type = SubSetType::BUFFER;
+			subSetInfo.Handle = &instanceDataSubsetHandle;
+			subSetInfo.Count = 16;
+			subSetInfos.EmplaceBack(subSetInfo);
+		}
+
+		{ //VERTEX BUFFERS					
+			SubSetInfo subSetInfo;
+			subSetInfo.Type = SubSetType::BUFFER;
+			subSetInfo.Handle = &vertexBuffersSubSetHandle;
+			subSetInfo.Count = 16;
+			subSetInfos.EmplaceBack(subSetInfo);
+		}
+
+		{ //INDEX BUFFERS								
+			SubSetInfo subSetInfo;
+			subSetInfo.Type = SubSetType::BUFFER;
+			subSetInfo.Handle = &indexBuffersSubSetHandle;
+			subSetInfo.Count = 16;
+			subSetInfos.EmplaceBack(subSetInfo);
+		}
 		
 		if (BE::Application::Get()->GetOption("rayTracing"))
 		{
@@ -110,22 +133,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 				subSetInfo.Type = SubSetType::ACCELERATION_STRUCTURE;
 				subSetInfo.Handle = &topLevelAsHandle;
 				subSetInfo.Count = 1;
-				subSetInfos.EmplaceBack(subSetInfo);
-			}
-
-			{ //VERTEX BUFFERS				
-				SubSetInfo subSetInfo;
-				subSetInfo.Type = SubSetType::BUFFER;
-				subSetInfo.Handle = &vertexBuffersSubSetHandle;
-				subSetInfo.Count = 16;
-				subSetInfos.EmplaceBack(subSetInfo);
-			}
-
-			{ //INDEX BUFFERS								
-				SubSetInfo subSetInfo;
-				subSetInfo.Type = SubSetType::BUFFER;
-				subSetInfo.Handle = &indexBuffersSubSetHandle;
-				subSetInfo.Count = 16;
 				subSetInfos.EmplaceBack(subSetInfo);
 			}
 		}
@@ -151,7 +158,27 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			structHandle.MemberInfos = materialDataStructContents;
 			materialDataStruct.EmplaceBack(structHandle);
 
-			createBuffer(renderSystem, materialsDataHandle, materialDataStruct);
+			createBuffer(renderSystem, materialsDataSubSetHandle, materialDataStruct);
+		}
+
+		{
+			GTSL::Array<MemberInfo, 1> instanceDataStructContents;
+
+			MemberInfo textureHandles;
+			textureHandles.Handle = &instanceMaterialReferenceHandle;
+			textureHandles.Type = Member::DataType::UINT32;
+			textureHandles.Count = 1;
+			instanceDataStructContents.EmplaceBack(textureHandles);
+
+			GTSL::Array<MemberInfo, 1> instanceDataStruct;
+			MemberInfo structHandle;
+			structHandle.Handle = &instanceDataStructHandle;
+			structHandle.Type = Member::DataType::STRUCT;
+			structHandle.Count = 16;
+			structHandle.MemberInfos = instanceDataStructContents;
+			instanceDataStruct.EmplaceBack(structHandle);
+
+			createBuffer(renderSystem, instanceDataSubsetHandle, instanceDataStruct);
 		}
 
 		{
@@ -216,26 +243,26 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			{
 			case GAL::ShaderType::RAY_GEN: {
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++rayGenShaderCount;
+				++shaderCounts[GAL::RAY_GEN_TABLE_INDEX];
 				break;
 			}
 			case GAL::ShaderType::MISS: {
 				//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
 				//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++missShaderCount;
+				++shaderCounts[GAL::MISS_TABLE_INDEX];
 				break;
 			}
 			case GAL::ShaderType::CALLABLE: {
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++callableShaderCount;
+				++shaderCounts[GAL::CALLABLE_TABLE_INDEX];
 				break;
 			}
 			case GAL::ShaderType::CLOSEST_HIT: {
 				//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.ClosestHitShader = i;
-				++hitShaderCount;
+				++shaderCounts[GAL::HIT_TABLE_INDEX];
 				break;
 			}
 			case GAL::ShaderType::ANY_HIT: {
@@ -243,14 +270,14 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 				//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
 				//and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.AnyHitShader = i;
-				++hitShaderCount;
+				++shaderCounts[GAL::HIT_TABLE_INDEX];
 				break;
 			}
 			case GAL::ShaderType::INTERSECTION: {
 				//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL; group.IntersectionShader = i;
-				++hitShaderCount;
+				++shaderCounts[GAL::HIT_TABLE_INDEX];
 				break;
 			}
 
@@ -297,7 +324,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		for(auto& e : descriptorsUpdates)
 		{
 			auto updateHandle = e.AddSetToUpdate(globalDataSetHandle, GetPersistentAllocator());
-			e.AddAccelerationStructureUpdate(updateHandle, 0, 4, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
+			e.AddAccelerationStructureUpdate(updateHandle, 0, topLevelAsHandle().Subset, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
 		}
 	}
 }
@@ -610,25 +637,14 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 	CommandBuffer::TraceRaysInfo traceRaysInfo;
 	traceRaysInfo.RenderDevice = renderSystem->GetRenderDevice();
 	traceRaysInfo.DispatchSize = GTSL::Extent3D(rayGrid);
-	traceRaysInfo.RayGenDescriptor.Size = rayGenShaderCount * alignedHandleSize;
-	traceRaysInfo.RayGenDescriptor.Address = bufferAddress;
-	traceRaysInfo.RayGenDescriptor.Stride = alignedHandleSize;
-	offset += traceRaysInfo.RayGenDescriptor.Size;
 
-	traceRaysInfo.HitDescriptor.Size = hitShaderCount * alignedHandleSize;
-	traceRaysInfo.HitDescriptor.Address = bufferAddress + offset;
-	traceRaysInfo.HitDescriptor.Stride = alignedHandleSize;
-	offset += traceRaysInfo.HitDescriptor.Size;
-
-	traceRaysInfo.MissDescriptor.Size = missShaderCount * alignedHandleSize;
-	traceRaysInfo.MissDescriptor.Address = bufferAddress + offset;
-	traceRaysInfo.MissDescriptor.Stride = alignedHandleSize;
-	offset += traceRaysInfo.MissDescriptor.Size;
-
-	traceRaysInfo.CallableDescriptor.Size = 0;
-	traceRaysInfo.CallableDescriptor.Address = 0;
-	traceRaysInfo.CallableDescriptor.Stride = 0;
-	offset += traceRaysInfo.CallableDescriptor.Size;
+	for(uint8 i = 0; i < 4; ++i)
+	{
+		traceRaysInfo.ShaderTableDescriptors[i].Size = shaderCounts[i] * alignedHandleSize;
+		traceRaysInfo.ShaderTableDescriptors[i].Address = bufferAddress + offset;
+		traceRaysInfo.ShaderTableDescriptors[i].Stride = alignedHandleSize;
+		offset += traceRaysInfo.ShaderTableDescriptors[i].Size;
+	}
 
 	commandBuffer->TraceRays(traceRaysInfo);
 }
@@ -657,35 +673,37 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 	latestLoadedTextures.ResizeDown(0);
 
-	if(BE::Application::Get()->GetOption("rayTracing"))
+	
+	auto addedMeshes = renderSystem->GetAddedMeshes();
+	
+	for(auto e : addedMeshes)
 	{
-		auto addedRayTracingMeshes = renderSystem->GetAddedRayTracingMeshes();
+		BufferIterator bufferIterator;
+		UpdateIteratorMember(bufferIterator, instanceDataStructHandle);
+		UpdateIteratorMemberIndex(bufferIterator, e);
+		UpdateIteratorMember(bufferIterator, instanceMaterialReferenceHandle);
 		
-		for(auto e : addedRayTracingMeshes)
+		for (uint8 f = 0; f < queuedFrames; ++f)
 		{
-			for (uint8 f = 0; f < queuedFrames; ++f)
-			{
-				auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
 
-				BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
-				bufferBindingUpdate.Buffer = renderSystem->GetRayTracingMeshVertexBuffer(e);
-				bufferBindingUpdate.Range = renderSystem->GetRayTracingMeshVertexBufferSize(e);
-				bufferBindingUpdate.Offset = renderSystem->GetRayTracingMeshVertexBufferOffset(e);
-				descriptorsUpdates[f].AddBufferUpdate(updateHandle, meshCount, vertexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
+			bufferBindingUpdate.Buffer = renderSystem->GetMeshVertexBuffer(e);
+			bufferBindingUpdate.Range = renderSystem->GetMeshVertexBufferSize(e);
+			bufferBindingUpdate.Offset = renderSystem->GetMeshVertexBufferOffset(e);
+			descriptorsUpdates[f].AddBufferUpdate(updateHandle, e, vertexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
-				bufferBindingUpdate.Buffer = renderSystem->GetRayTracingMeshIndexBuffer(e);
-				bufferBindingUpdate.Range = renderSystem->GetRayTracingMeshIndexBufferSize(e);
-				bufferBindingUpdate.Offset = renderSystem->GetRayTracingMeshIndexBufferOffset(e);
-				descriptorsUpdates[f].AddBufferUpdate(updateHandle, meshCount, indexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			bufferBindingUpdate.Buffer = renderSystem->GetMeshIndexBuffer(e);
+			bufferBindingUpdate.Range = renderSystem->GetMeshIndexBufferSize(e);
+			bufferBindingUpdate.Offset = renderSystem->GetMeshIndexBufferOffset(e);
+			descriptorsUpdates[f].AddBufferUpdate(updateHandle, e, indexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
-				//TODO: CORRECTLY UPDATE MESH DESCRIPTOR BY INDEX
-			}
-
-			++meshCount;
+			*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = renderSystem->GetMeshMaterialHandle(e).Element;
+			//TODO: CORRECTLY UPDATE MESH DESCRIPTOR BY INDEX
 		}
-		
-		renderSystem->ClearAddedRayTracingMeshes();
 	}
+	
+	renderSystem->ClearAddedMeshes();
 	
 	BindingsSet::BindingsSetUpdateInfo bindingsUpdateInfo;
 	bindingsUpdateInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -875,8 +893,9 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		uint32 targetValue = 0;
 
 		BufferIterator bufferIterator;
-		MoveIterator(bufferIterator, materialDataStructHandle);
-		MoveIterator(bufferIterator, materialTextureHandles);
+		UpdateIteratorMember(bufferIterator, materialDataStructHandle);
+		UpdateIteratorMemberIndex(bufferIterator, loadInfo->Component);
+		UpdateIteratorMember(bufferIterator, materialTextureHandles);
 		
 		if (onMaterialLoadInfo.Textures.GetLength())
 		{
@@ -884,6 +903,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			pendingMaterials[place].Material = matHandle;
 			pendingMaterials[place].RenderGroup = onMaterialLoadInfo.RenderGroup;
 
+			uint32 i = 0;
 			for (auto& e : onMaterialLoadInfo.Textures)
 			{
 				uint32 textureComp;
@@ -909,9 +929,9 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 				*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, 0) = textureComp;
 				*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, 1) = textureComp;
-				AdvanceIterator(bufferIterator, materialTextureHandles);
+				UpdateIteratorMemberIndex(bufferIterator, i);
 				
-				++pendingMaterials[place].Target;
+				++pendingMaterials[place].Target; ++i;
 			}
 			
 		}

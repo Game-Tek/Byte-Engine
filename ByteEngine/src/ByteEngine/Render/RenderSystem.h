@@ -1,9 +1,12 @@
 #pragma once
 
 #include <unordered_map>
+#include <GTSL/Atomic.hpp>
 #include <GTSL/Pair.h>
 #include <GTSL/FunctionPointer.hpp>
 
+
+#include "MaterialSystem.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -196,38 +199,46 @@ public:
 
 	[[nodiscard]] GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 
-	MAKE_HANDLE(uint32, SharedMesh)
-	MAKE_HANDLE(uint32, GPUMesh)
+	MAKE_HANDLE(uint32, Mesh)
 	
 	struct CreateRayTracingMeshInfo
 	{
 		uint32 VertexCount, VertexSize;
 		uint32 IndexCount, IndexSize;
 		GTSL::Matrix3x4* Matrix;
-		SharedMeshHandle SharedMesh;
+		MeshHandle SharedMesh;
 	};
-	ComponentReference CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
+	MeshHandle CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
-	SharedMeshHandle CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
-	GPUMeshHandle CreateGPUMesh(SharedMeshHandle sharedMeshHandle);
-	
-	void RenderMesh(GPUMeshHandle handle, uint32 instanceCount = 1);
+	MeshHandle CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
+	MeshHandle CreateGPUMesh(MeshHandle sharedMeshHandle);
 
-	byte* GetSharedMeshPointer(SharedMeshHandle sharedMesh) { return static_cast<byte*>(sharedMeshes[static_cast<uint32>(sharedMesh)].Allocation.Data); }
+	void UpdateMesh(MeshHandle meshHandle);
+	
+	void RenderMesh(MeshHandle handle, uint32 instanceCount = 1);
+
+	byte* GetMeshPointer(MeshHandle sharedMesh)
+	{
+		auto& mesh = meshes[sharedMesh()];
+		BE_ASSERT(mesh.MeshAllocation.Data, "This mesh has no CPU accessible data!");
+		return static_cast<byte*>(mesh.MeshAllocation.Data);
+	}
 	
 	void RenderAllMeshesForMaterial(Id material);
 
-	void AddMeshToId(GPUMeshHandle mesh, Id material)
+	void AddMeshToMaterial(MeshHandle meshHandle, MaterialHandle materialHandle)
 	{
-		if(meshesByMaterial.Find(material())) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
+		auto& mesh = meshes[meshHandle()]; mesh.MaterialHandle = materialHandle;
+		
+		if(meshesByMaterial.Find(materialHandle.MaterialType())) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
 		{
-			meshesByMaterial.At(material()).EmplaceBack(mesh());
+			meshesByMaterial.At(materialHandle.MaterialType()).EmplaceBack(meshHandle());
 		}
 		else
 		{
-			auto& e = meshesByMaterial.Emplace(material());
+			auto& e = meshesByMaterial.Emplace(materialHandle.MaterialType());
 			e.Initialize(8, GetPersistentAllocator());
-			e.EmplaceBack(mesh());
+			e.EmplaceBack(meshHandle());
 		}
 	}
 	
@@ -243,19 +254,22 @@ public:
 
 	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
 
-	Buffer GetRayTracingMeshVertexBuffer(const uint32 mesh) const { return rayTracingMeshes[mesh].MeshBuffer; }
-	uint32 GetRayTracingMeshVertexBufferSize(const uint32 mesh) const { return rayTracingMeshes[mesh].VertexSize * rayTracingMeshes[mesh].VertexCount; }
-	uint32 GetRayTracingMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
-	Buffer GetRayTracingMeshIndexBuffer(const uint32 mesh) const { return rayTracingMeshes[mesh].MeshBuffer; }
-	uint32 GetRayTracingMeshIndexBufferSize(const uint32 mesh) const { return rayTracingMeshes[mesh].IndexSize * rayTracingMeshes[mesh].IndicesCount; }
-	uint32 GetRayTracingMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(rayTracingMeshes[mesh].VertexSize * rayTracingMeshes[mesh].VertexCount, 16); }
+	MaterialHandle GetMeshMaterialHandle(const uint32 mesh) const { return meshes[mesh].MaterialHandle; }
+	Buffer GetMeshVertexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
+	uint32 GetMeshVertexBufferSize(const uint32 mesh) const { return meshes[mesh].VertexSize * meshes[mesh].VertexCount; }
+	uint32 GetMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
+	Buffer GetMeshIndexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
+	uint32 GetMeshIndexBufferSize(const uint32 mesh) const { return meshes[mesh].IndexSize * meshes[mesh].IndicesCount; }
+	uint32 GetMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(meshes[mesh].VertexSize * meshes[mesh].VertexCount, GetBufferSubDataAlignment()); }
 
-	auto GetAddedRayTracingMeshes() const { return addedRayTracingMeshes.GetRange(); }
-	void ClearAddedRayTracingMeshes() { return addedRayTracingMeshes.ResizeDown(0); }
+	auto GetAddedMeshes() const { return addedMeshes.GetRange(); }
+	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
 
-	uint32 GetBufferSubDataAlignment() const { return 16; }
+	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 private:	
 	GTSL::Mutex testMutex;
+
+	bool needsStagingBuffer = true;
 	
 	RenderDevice renderDevice;
 	Surface surface;
@@ -279,7 +293,12 @@ private:
 	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
 	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
 
-	GTSL::Vector<uint32, BE::PAR> addedRayTracingMeshes;
+	/**
+	 * \brief Keeps track of created instances. Mesh / Material combo.
+	 */
+	uint32 rayTracingInstancesCount = 0;
+	
+	GTSL::Vector<uint32, BE::PAR> addedMeshes;
 	
 	Queue graphicsQueue;
 	Queue transferQueue;
@@ -290,39 +309,33 @@ private:
 	struct Mesh
 	{
 		Buffer Buffer;
-		uint32 IndicesCount;
-		IndexType IndexType;	
-		uint32 OffsetToIndices;
-	};
-	
-	struct SharedMesh : Mesh
-	{
-		uint32 Size = 0;
-		RenderAllocation Allocation;
-	};
 
-	struct GPUMesh : Mesh
-	{
-		RenderAllocation Allocation;
+		uint8 IndexSize;
+		uint32 IndicesCount;
+		uint8 VertexSize;
+		uint32 VertexCount;
+		RenderAllocation MeshAllocation;
+		MaterialHandle MaterialHandle;
+		
+		uint32 DerivedTypeIndex;
 	};
 	
 	struct RayTracingMesh
 	{
-		Buffer MeshBuffer, StructureBuffer;
-		uint32 IndicesCount;
-		uint8 IndexSize;
-
+		Buffer StructureBuffer;
+		RenderAllocation StructureBufferAllocation;
 		AccelerationStructure AccelerationStructure;
-		RenderAllocation MeshBufferAllocation, StructureBufferAllocation;
-		uint8 VertexSize;
-		uint32 VertexCount;
 	};
 	
-	GTSL::KeepVector<SharedMesh, BE::PersistentAllocatorReference> sharedMeshes;
-	GTSL::KeepVector<GPUMesh, BE::PersistentAllocatorReference> gpuMeshes;
-	
+	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
+	MeshHandle addMesh(Mesh mesh)
+	{
+		MeshHandle meshHandle{ meshes.Emplace(mesh) }; addedMeshes.EmplaceBack(meshHandle());
+		return meshHandle;
+	}
+	
 	struct AccelerationStructureBuildData
 	{
 		uint32 ScratchBuildSize;
@@ -343,8 +356,6 @@ private:
 	RenderAllocation instancesAllocation;
 	uint64 instancesBufferAddress;
 	Buffer instancesBuffer;
-
-	uint32 instanceCount = 0;
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.

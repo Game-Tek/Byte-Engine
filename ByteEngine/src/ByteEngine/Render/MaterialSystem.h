@@ -64,7 +64,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
-	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0, ElementIndex = 0; };
+	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0; MemberHandle Member; };
 	
 	template<typename T>
 	T* GetMemberPointer(BufferIterator iterator);
@@ -208,22 +208,24 @@ public:
 
 	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
 	
-	void MoveIterator(BufferIterator& iterator, MemberHandle member)
+	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle member)
 	{
 		auto& set = sets[member().SubSet.SetHandle()]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
 		iterator.Set = member().SubSet.SetHandle(); iterator.SubSet = member().SubSet.Subset;
 		iterator.Level = memberData.Level;
 		iterator.ByteOffset += memberData.ByteOffsetIntoStruct;
-		iterator.MemberIndex = member().MemberIndirectionIndex;
-		iterator.ElementIndex = 0;
+		iterator.Member = member;
+		iterator.MemberIndex = 0;
 	}
 	
-	void AdvanceIterator(BufferIterator& iterator, MemberHandle member)
+	void UpdateIteratorMemberIndex(BufferIterator& iterator, uint32 index)
 	{
-		auto& set = sets[iterator.Set]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
-		BE_ASSERT(memberData.Level == iterator.Level, "Not expected structure")
-		BE_ASSERT(iterator.ElementIndex < memberData.Count, "Advanced more elements than there are in this member!")
-		iterator.ByteOffset += memberData.Size; ++iterator.ElementIndex;
+		auto& set = sets[iterator.Set]; auto& memberData = set.MemberData[iterator.Member().MemberIndirectionIndex];
+		BE_ASSERT(memberData.Level == iterator.Level, "Not expected structure");
+		BE_ASSERT(index < memberData.Count, "Advanced more elements than there are in this member!");
+		int32 shiftedElements = index - iterator.MemberIndex;
+		iterator.ByteOffset += shiftedElements * memberData.Size;
+		iterator.MemberIndex = index;
 	}
 
 private:
@@ -248,7 +250,7 @@ private:
 		auto& set = sets[iterator.Set];
 		auto& subSet = set.SubSets[iterator.SubSet];
 
-		BE_ASSERT(DT == set.MemberData[iterator.MemberIndex].Type, "Type mismatch")
+		BE_ASSERT(DT == set.MemberData[iterator.Member().MemberIndirectionIndex].Type, "Type mismatch")
 		//BE_ASSERT(index < s., "Requested sub set buffer member index greater than allocated instances count.")
 
 		//												//BUFFER							//OFFSET TO STRUCT
@@ -259,8 +261,11 @@ private:
 	SubSetHandle cameraDataSubSetHandle;
 	MemberHandle cameraMatricesHandle;
 	MemberHandle materialTextureHandles;
-	SubSetHandle materialsDataHandle;
+	SubSetHandle materialsDataSubSetHandle;
 	MemberHandle materialDataStructHandle;
+	SubSetHandle instanceDataSubsetHandle;
+	MemberHandle instanceMaterialReferenceHandle;
+	MemberHandle instanceDataStructHandle;
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
@@ -274,7 +279,7 @@ private:
 	
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
 
-	uint32 rayGenShaderCount = 0, hitShaderCount = 0, missShaderCount = 0, callableShaderCount = 0;
+	uint32 shaderCounts[4]{ 0 };
 
 	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, GTSL::Range<MemberInfo*> members);
 	
@@ -435,10 +440,7 @@ private:
 		};
 		GTSL::Array<MemberData, 16> MemberData;
 	};
-
-	uint32 meshCount = 0;
 	
-	//GTSL::Tree<SetHandle, BE::PAR> setsTree;
 	GTSL::FlatHashMap<SetHandle, BE::PAR> setHandlesByName;
 	GTSL::KeepVector<SetData, BE::PAR> sets;
 
@@ -514,8 +516,6 @@ private:
 	}
 
 	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
-
-	uint16 minUniformBufferOffset = 0;
 	
 	uint8 frame;
 	const uint8 queuedFrames = 2;

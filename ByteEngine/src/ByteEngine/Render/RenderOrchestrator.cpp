@@ -79,7 +79,7 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	
 	auto mesh = renderSystem->CreateSharedMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2);
 	
-	auto* meshPointer = renderSystem->GetSharedMeshPointer(mesh);
+	auto* meshPointer = renderSystem->GetMeshPointer(mesh);
 	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
 	meshPointer += 4 * 2 * 4;
 	GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
@@ -94,7 +94,7 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	//createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//uiMaterial = materialSystem->CreateRasterMaterial(createMaterialInfo);
 	
-	renderSystem->AddMeshToId(square, uiMaterial.MaterialType);
+	renderSystem->AddMeshToMaterial(square, uiMaterial);
 
 	MaterialSystem::SetInfo setInfo;
 
@@ -998,14 +998,14 @@ void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* re
 	auto matHandle = materialSystem->GetCameraMatricesHandle();
 
 	MaterialSystem::BufferIterator bufferIterator;
-	materialSystem->MoveIterator(bufferIterator, matHandle);
+	materialSystem->UpdateIteratorMember(bufferIterator, matHandle);
 	
 	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = viewMatrix;
-	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 1);
 	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = projectionMatrix; //view
-	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 2);
 	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(viewMatrix); //inv proj
-	materialSystem->AdvanceIterator(bufferIterator, matHandle);
+	materialSystem->UpdateIteratorMemberIndex(bufferIterator, 3);
 	*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix); //inv view
 	
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);

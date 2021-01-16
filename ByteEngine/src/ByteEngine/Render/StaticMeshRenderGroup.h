@@ -43,13 +43,13 @@ public:
 private:
 	struct MeshLoadInfo
 	{
-		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::SharedMeshHandle meshHandle, uint32 instance, MaterialHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
+		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::MeshHandle meshHandle, uint32 instance, MaterialHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
 		InstanceId(instance), Material(material)
 		{
 		}
 		
 		RenderSystem* RenderSystem;
-		RenderSystem::SharedMeshHandle MeshHandle;
+		RenderSystem::MeshHandle MeshHandle;
 		uint32 InstanceId;
 		MaterialHandle Material;
 	};

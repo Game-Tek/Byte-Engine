@@ -20,10 +20,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 	rayTracingMeshes.Initialize(32, GetPersistentAllocator());
 	geometries.Initialize(32, GetPersistentAllocator());
-	sharedMeshes.Initialize(32, GetPersistentAllocator());
-	gpuMeshes.Initialize(32, GetPersistentAllocator());
-
-	addedRayTracingMeshes.Initialize(32, GetPersistentAllocator());
+	meshes.Initialize(32, GetPersistentAllocator());
+	addedMeshes.Initialize(32, GetPersistentAllocator());
 	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
@@ -286,20 +284,16 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 
 const PipelineCache* RenderSystem::GetPipelineCache() const { return &pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
-ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshInfo& info)
+RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshInfo& info)
 {
-	auto& sharedMesh = sharedMeshes[info.SharedMesh()];
-	
-	const auto component = rayTracingMeshes.GetFirstFreeIndex().Get();
+	auto& localMesh = meshes[info.SharedMesh()]; BE_ASSERT(localMesh.MeshAllocation.Data, "!");
 
 	auto verticesSize = info.VertexCount * info.VertexSize; auto indecesSize = info.IndexCount * info.IndexSize;
 	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
+
+	Mesh mesh; RayTracingMesh rayTracingMesh;
 	
-	RayTracingMesh rayTracingMesh;
-
-	addedRayTracingMeshes.EmplaceBack(component);
-
-	rayTracingMesh.VertexSize = info.VertexSize; rayTracingMesh.VertexCount = info.VertexCount;
+	mesh.VertexSize = info.VertexSize; mesh.VertexCount = info.VertexCount;	mesh.IndexSize = info.IndexSize; mesh.IndicesCount = info.IndexCount;
 	
 	{
 		Buffer::CreateInfo createInfo;
@@ -314,16 +308,13 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		createInfo.BufferType = BufferType::TRANSFER_DESTINATION | BufferType::BUILD_INPUT_READ_ONLY | BufferType::STORAGE | BufferType::ADDRESS;
 	
 		BufferLocalMemoryAllocationInfo bufferLocal;
-		bufferLocal.Buffer = &rayTracingMesh.MeshBuffer;
-		bufferLocal.Allocation = &rayTracingMesh.MeshBufferAllocation;
+		bufferLocal.Buffer = &mesh.Buffer;
+		bufferLocal.Allocation = &mesh.MeshAllocation;
 		bufferLocal.CreateInfo = &createInfo;
 		AllocateLocalBufferMemory(bufferLocal);
 	}
-	
-	rayTracingMesh.IndexSize = info.IndexSize;
-	rayTracingMesh.IndicesCount = info.IndexCount;
 
-	auto meshDataBuffer = sharedMesh.Buffer;
+	auto meshDataBuffer = localMesh.Buffer;
 	
 	{
 		AccelerationStructure::GeometryTriangles geometryTriangles;
@@ -339,7 +330,7 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		AccelerationStructure::Geometry geometry;
 		geometry.Flags = GeometryFlags::OPAQUE;
 		geometry.SetGeometryTriangles(geometryTriangles);
-		geometry.PrimitiveCount = rayTracingMesh.IndicesCount / 3;
+		geometry.PrimitiveCount = mesh.IndicesCount / 3;
 		geometry.PrimitiveOffset = 0;
 		geometries.EmplaceBack(geometry);
 
@@ -355,16 +346,14 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 			&rayTracingMesh.StructureBufferAllocation, BuildType::GPU_LOCAL);
 	}
 
-	rayTracingMeshes.Emplace(rayTracingMesh);
-
 	{
 		BufferCopyData bufferCopyData;
 		bufferCopyData.SourceOffset = 0;
 		bufferCopyData.DestinationOffset = 0;
-		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
-		bufferCopyData.DestinationBuffer = rayTracingMesh.MeshBuffer;
+		bufferCopyData.SourceBuffer = localMesh.Buffer;
+		bufferCopyData.DestinationBuffer = mesh.Buffer;
 		bufferCopyData.Size = meshSize;
-		bufferCopyData.Allocation = sharedMesh.Allocation;
+		bufferCopyData.Allocation = localMesh.MeshAllocation;
 		AddBufferCopy(bufferCopyData);
 	}
 	
@@ -375,85 +364,93 @@ ComponentReference RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshI
 		buildDatas.EmplaceBack(buildData);
 	}
 
+	mesh.DerivedTypeIndex = rayTracingMeshes.Emplace(rayTracingMesh);
+	auto meshHandle = addMesh(mesh);
+	
 	{
-		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + instanceCount);
+		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation.Data) + mesh.DerivedTypeIndex);
 		
 		instance.Flags = GeometryInstanceFlags::OPAQUE;// | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
 		instance.AccelerationStructureReference = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 		instance.Mask = 0xFF;
-		instance.InstanceCustomIndex = component;
+		instance.InstanceCustomIndex = meshHandle();
 		instance.InstanceShaderBindingTableRecordOffset = 0;
-		instance.Transform = GTSL::Matrix3x4(GTSL::Math::Translation(GTSL::Vector3(0.0f, 0.0f, 0.0f)));
+		instance.Transform = *info.Matrix;
 
-		BE_ASSERT(instanceCount < MAX_INSTANCES_COUNT);
+		++rayTracingInstancesCount;
 		
-		++instanceCount;
+		BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
 	}
 	
-	return ComponentReference(GetSystemId(), component);
+	return meshHandle;
 }
 
-RenderSystem::SharedMeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize)
+RenderSystem::MeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize)
 {
-	SharedMesh mesh;
+	Mesh mesh;
 
+	mesh.VertexSize = vertexSize; mesh.VertexCount = vertexCount; mesh.IndexSize = indexSize; mesh.IndicesCount = indexCount;
+
+	auto verticesSize = vertexCount * vertexSize; auto indecesSize = indexCount * indexSize;
+	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
+	
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY;
-	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, GetBufferSubDataAlignment()) + indexCount * indexSize;
-	mesh.Size = createInfo.Size;
-
-	mesh.IndexType = SelectIndexType(indexSize);
-	mesh.IndicesCount = indexCount;
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY | BufferType::STORAGE;
+	createInfo.Size = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 
 	BufferScratchMemoryAllocationInfo bufferLocal;
 	bufferLocal.CreateInfo = &createInfo;
-	bufferLocal.Allocation = &mesh.Allocation;
+	bufferLocal.Allocation = &mesh.MeshAllocation;
 	bufferLocal.Buffer = &mesh.Buffer;
 	AllocateScratchBufferMemory(bufferLocal);
 
-	mesh.OffsetToIndices = vertexCount * vertexSize; //TODO: MAYBE ROUND TO INDEX SIZE?
-	
-	auto place = sharedMeshes.Emplace(mesh);
-
-	return SharedMeshHandle(place);
+	return addMesh(mesh);
 }
 
-RenderSystem::GPUMeshHandle RenderSystem::CreateGPUMesh(SharedMeshHandle sharedMeshHandle)
+RenderSystem::MeshHandle RenderSystem::CreateGPUMesh(MeshHandle sharedMeshHandle)
 {
-	auto& sharedMesh = sharedMeshes[sharedMeshHandle()];
+	auto& sharedMesh = meshes[sharedMeshHandle()];
+	//TODO: keep mesh index, don't create another one, and simply queue the copy on another list, to avoid moving so much data aound.
+	// Remember material system also has to update buffers and descriptor in consequence
+	Mesh mesh; mesh.VertexSize = sharedMesh.VertexSize; mesh.VertexCount = sharedMesh.VertexCount; mesh.IndexSize = sharedMesh.IndexSize; mesh.IndicesCount = sharedMesh.IndicesCount;
 
-	GPUMesh mesh;
+	auto verticesSize = sharedMesh.VertexSize * sharedMesh.VertexCount; auto indecesSize = sharedMesh.IndexSize * sharedMesh.IndicesCount;
+	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 	
 	Buffer::CreateInfo createInfo;
 	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION;
-	createInfo.Size = sharedMesh.Size;
-
-	mesh.IndexType = sharedMesh.IndexType;
-	mesh.IndicesCount = sharedMesh.IndicesCount;
-	mesh.OffsetToIndices = sharedMesh.OffsetToIndices;
+	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION | BufferType::STORAGE;
+	createInfo.Size = meshSize;
 	
 	BufferLocalMemoryAllocationInfo bufferLocal;
 	bufferLocal.CreateInfo = &createInfo;
-	bufferLocal.Allocation = &mesh.Allocation;
+	bufferLocal.Allocation = &mesh.MeshAllocation;
 	bufferLocal.Buffer = &mesh.Buffer;
 	AllocateLocalBufferMemory(bufferLocal);
 
 	BufferCopyData bufferCopyData;
-	bufferCopyData.Size = sharedMesh.Size;
+	bufferCopyData.Size = meshSize;
 	bufferCopyData.DestinationBuffer = mesh.Buffer;
 	bufferCopyData.DestinationOffset = 0;
 	bufferCopyData.SourceBuffer = sharedMesh.Buffer;
 	bufferCopyData.SourceOffset = 0;
 	AddBufferCopy(bufferCopyData);
-
-	return GPUMeshHandle(gpuMeshes.Emplace(mesh));
+	
+	return MeshHandle(addMesh(mesh));
 }
 
-void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
+void RenderSystem::UpdateMesh(MeshHandle meshHandle)
 {
-	auto& mesh = gpuMeshes[handle()];
+	if(needsStagingBuffer)
+	{
+		
+	}
+}
+
+void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
+{
+	auto& mesh = meshes[handle()];
 
 	{
 		CommandBuffer::BindVertexBufferInfo bindInfo;
@@ -467,8 +464,8 @@ void RenderSystem::RenderMesh(GPUMeshHandle handle, const uint32 instanceCount)
 		CommandBuffer::BindIndexBufferInfo bindInfo;
 		bindInfo.RenderDevice = GetRenderDevice();
 		bindInfo.Buffer = mesh.Buffer;
-		bindInfo.Offset = mesh.OffsetToIndices;
-		bindInfo.IndexType = mesh.IndexType;
+		bindInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
+		bindInfo.IndexType = SelectIndexType(mesh.IndexSize);
 		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
 	}
 	
@@ -485,7 +482,7 @@ void RenderSystem::RenderAllMeshesForMaterial(Id material)
 	
 	for(auto& e : range)
 	{
-		auto& mesh = gpuMeshes[e];
+		auto& mesh = meshes[e];
 
 		{
 			CommandBuffer::BindVertexBufferInfo bindInfo;
@@ -499,8 +496,8 @@ void RenderSystem::RenderAllMeshesForMaterial(Id material)
 			CommandBuffer::BindIndexBufferInfo bindInfo;
 			bindInfo.RenderDevice = GetRenderDevice();
 			bindInfo.Buffer = mesh.Buffer;
-			bindInfo.Offset = mesh.OffsetToIndices;
-			bindInfo.IndexType = mesh.IndexType;
+			bindInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
+			bindInfo.IndexType = SelectIndexType(mesh.IndexSize);
 			graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
 		}
 
@@ -747,7 +744,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	{
 		AccelerationStructure::Geometry geometry;
 		geometry.Flags = GeometryFlags::OPAQUE;
-		geometry.PrimitiveCount = instanceCount;
+		geometry.PrimitiveCount = rayTracingInstancesCount; //TODO: WHAT HAPPENS IF MESH IS REMOVED FROM THE MIDDLE OF THE COLLECTION, maybe: keep index of highest element in the colection
 		geometry.PrimitiveOffset = 0;
 		geometry.SetGeometryInstances(AccelerationStructure::GeometryInstances{ instancesBuffer.GetAddress(GetRenderDevice()) });
 		geometries.EmplaceBack(geometry);

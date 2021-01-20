@@ -80,14 +80,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			subSetInfos.EmplaceBack(subSetInfo);
 		}
 
-		{ //ATTACHMENTS
-			SubSetInfo subSetInfo;
-			subSetInfo.Type = SubSetType::RENDER_ATTACHMENT;
-			subSetInfo.Count = 16;
-			subSetInfo.Handle = &attachmentsHandle;
-			subSetInfos.EmplaceBack(subSetInfo);
-		}
-
 		{ //MATERIAL DATA
 			SubSetInfo subSetInfo;
 			subSetInfo.Type = SubSetType::BUFFER;
@@ -291,9 +283,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			shaderBuffer.Free(8, GetTransientAllocator());
 		}
 
-		auto globalDataSetHandle = setHandlesByName[Id("GlobalData")()];
-		auto& set = sets[globalDataSetHandle()];
-
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) {
@@ -302,7 +291,11 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		
 		createInfo.MaxRecursionDepth = 3;
 		createInfo.Stages = shaderInfos;
-		createInfo.PipelineLayout = set.PipelineLayout;
+		GTSL::Array<BindingsSetLayout::BindingDescriptor, 8> bindingDescriptors;
+		bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::VulkanBindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, 16, BindingFlags::PARTIALLY_BOUND });
+		bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::VulkanBindingType::STORAGE_IMAGE, ShaderStage::ALL, 16, BindingFlags::PARTIALLY_BOUND });
+		createInfo.PipelineLayout = declareSetHull(renderSystem, "GlobalData", bindingDescriptors);
+		//createInfo.PipelineLayout = sets[GetSetHandleByName(ma)declareSetHull(renderSystem, "GlobalData", bindingDescriptors);
 
 		createInfo.Groups = groups;
 		rayTracingPipeline.Initialize(createInfo);
@@ -325,7 +318,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		for(auto& e : descriptorsUpdates)
 		{
-			auto updateHandle = e.AddSetToUpdate(globalDataSetHandle, GetPersistentAllocator());
+			auto updateHandle = e.AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
 			e.AddAccelerationStructureUpdate(updateHandle, 0, topLevelAsHandle().Subset, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
 		}
 	}
@@ -421,7 +414,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 SetHandle MaterialSystem::AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo)
 {
-	GTSL::Array<BindingsSetLayout::BindingDescriptor, 8> bindingDescriptors;
+	GTSL::Array<BindingsSetLayout::BindingDescriptor, 16> bindingDescriptors;
 
 	for(auto& ss : setInfo.SubSets)
 	{
@@ -888,6 +881,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 			createInfo.RenderPass = renderOrchestrator->getAPIRenderPass(onMaterialLoadInfo.RenderPass);
 			createInfo.SubPass = renderOrchestrator->getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
+			createInfo.AttachmentCount = renderOrchestrator->GetRenderPassColorWriteAttachmentCount(onMaterialLoadInfo.RenderPass);
 			createInfo.PipelineLayout = sets[setHandle()].PipelineLayout;
 			
 			createInfo.PipelineCache = *renderSystem->GetPipelineCache();
@@ -1105,6 +1099,62 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id p
 	}
 	
 	return setHandle;
+}
+
+PipelineLayout MaterialSystem::declareSetHull(RenderSystem* renderSystem, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors)
+{
+	SetHandle parentHandle;
+	uint32 level;
+
+	if (parent.GetHash())
+	{
+		parentHandle = setHandlesByName.At(parent());
+		level = sets[parentHandle()].Level + 1;
+	}
+	else
+	{
+		parentHandle = SetHandle();
+		level = 0;
+	}
+
+	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts(level); //"Pre-Allocate" _level_ elements as to be able to place them in order while traversing tree upwards
+
+	// Traverse tree to find parent's pipeline layouts
+	{
+		uint32 loopLevel = level;
+
+		auto lastSet = parentHandle;
+
+		while (loopLevel)
+		{
+			bindingsSetLayouts[--loopLevel] = sets[lastSet()].BindingsSetLayout;
+			lastSet = sets[lastSet()].Parent;
+		}
+	}
+
+	BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo{};
+	bindingsSetLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+	bindingsSetLayoutCreateInfo.BindingsDescriptors = bindingDescriptors;
+	auto bindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
+
+	bindingsSetLayouts.EmplaceBack(bindingsSetLayout);
+
+	{
+		PipelineLayout::CreateInfo pipelineLayoutCreateInfo{};
+		pipelineLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+
+		PipelineLayout::PushConstant pushConstant;
+		pushConstant.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+		pushConstant.Offset = 0;
+		pushConstant.Size = 4;
+
+		pipelineLayoutCreateInfo.PushConstant = &pushConstant;
+
+		pipelineLayoutCreateInfo.BindingsSetLayouts = bindingsSetLayouts;
+		PipelineLayout pipelineLayout;
+		pipelineLayout.Initialize(pipelineLayoutCreateInfo);
+		return pipelineLayout;
+	}
 }
 
 void MaterialSystem::resizeSet(RenderSystem* renderSystem, SetHandle setHandle)

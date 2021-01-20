@@ -304,7 +304,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.MaterialName = "TextMaterial";
 	//	textMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
-	//}
+	//}//
 	
 	//{
 	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;
@@ -335,8 +335,8 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
-//	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
+	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
 	//auto r = 1.0f;
 	//auto g = 1.0f;

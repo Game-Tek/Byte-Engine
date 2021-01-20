@@ -875,12 +875,14 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			sourceTextureBarriers[i].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
 			sourceTextureBarriers[i].CurrentLayout = TextureLayout::UNDEFINED;
 			sourceTextureBarriers[i].TargetLayout = TextureLayout::TRANSFER_DST;
+			sourceTextureBarriers[i].TextureType = TextureType::COLOR;
 
 			destinationTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
 			destinationTextureBarriers[i].SourceAccessFlags = AccessFlags::TRANSFER_WRITE;
 			destinationTextureBarriers[i].DestinationAccessFlags = AccessFlags::SHADER_READ;
 			destinationTextureBarriers[i].CurrentLayout = TextureLayout::TRANSFER_DST;
 			destinationTextureBarriers[i].TargetLayout = TextureLayout::SHADER_READ_ONLY;
+			destinationTextureBarriers[i].TextureType = TextureType::COLOR;
 		}
 
 

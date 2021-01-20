@@ -88,8 +88,24 @@ public:
 
 	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
+	
+	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
+	{
+		auto& renderPass = renderPassesMap[renderPassName()];
+		uint8 count = 0;
+		for(const auto& e : renderPass.WriteAttachments)
+		{
+			if (e.Layout == TextureLayout::COLOR_ATTACHMENT || e.Layout == TextureLayout::GENERAL) { ++count; }
+		}
 
-	void AddAttachment(RenderSystem* renderSystem, Id name, TextureFormat format, TextureUses::value_type uses, TextureType::value_type type);
+		return count;
+	}
+
+	enum class TextureComponentType
+	{
+		FLOAT, INT
+	};
+	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, TextureComponentType compType, TextureType::value_type type, GTSL::RGBA clearColor);
 
 	enum class PassType : uint8
 	{
@@ -116,11 +132,9 @@ public:
 
 		PassType PassType;
 
-		AttachmentReference DepthStencilAttachment;
-
 		Id ResultAttachment;
 	};
-	void AddPass(RenderSystem* renderSystem, GTSL::Range<const PassData*> passesData);
+	void AddPass(RenderSystem* renderSystem, MaterialSystem* materialSystem, GTSL::Range<const PassData*> passesData);
 
 	void OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize);
 
@@ -181,12 +195,14 @@ private:
 		GTSL::Array<Id, 8> RenderGroups;
 		PassType PassType;
 
+		SubSetHandle WriteAttachmentsHandle, ReadAttachmentsHandle;
 		GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
 
 		bool Enabled = false;
 		
 		uint8 APIRenderPass = 0;
 		PipelineStage::value_type PipelineStages;
+		SetHandle AttachmentsSetHandle;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
@@ -233,9 +249,9 @@ private:
 		TextureType::value_type Type;
 		TextureUses::value_type Uses;
 		TextureLayout Layout;
-		//AccessFlags::value_type AccessFlags;
 		PipelineStage::value_type ConsumingStages;
 		bool WriteAccess = false;
+		GTSL::RGBA ClearColor;
 	};
 	GTSL::StaticMap<Attachment, 32> attachments;
 

@@ -108,7 +108,26 @@ public:
 	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle set);
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
-	
+
+	void WriteSetTexture(SubSetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler, bool writeAccess)
+	{
+		TextureLayout layout; BindingType bindingType;
+		if (writeAccess) { layout = TextureLayout::GENERAL; bindingType = BindingType::STORAGE_IMAGE;  }
+		else { layout = TextureLayout::SHADER_READ_ONLY; bindingType = BindingType::COMBINED_IMAGE_SAMPLER; }
+		
+		for(uint8 f = 0; f < queuedFrames; ++f)
+		{
+			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle().SetHandle, GetPersistentAllocator());
+
+			BindingsSet::TextureBindingUpdateInfo info;
+			info.TextureView = textureView;
+			info.Sampler = textureSampler;
+			info.TextureLayout = layout;
+			
+			descriptorsUpdates[f].AddTextureUpdate(updateHandle, index, setHandle().Subset, bindingType, info);
+		}
+	}
+
 	void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
 	{		
 		for(uint8 f = 0; f < queuedFrames; ++f)
@@ -157,7 +176,7 @@ public:
 	{
 		GTSL::Range<SubSetInfo*> SubSets;
 	};
-	SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
+	[[nodiscard]] SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
 	
 	/**
 	 * \brief Update the member instance count to be able to fit at least count requested elements.
@@ -277,7 +296,6 @@ private:
 	static constexpr BindingType BUFFER_BINDING_TYPE = BindingType::STORAGE_BUFFER;
 	
 	SubSetHandle textureSubsetsHandle;
-	SubSetHandle attachmentsHandle;
 	SubSetHandle topLevelAsHandle;
 	SubSetHandle vertexBuffersSubSetHandle;
 	SubSetHandle indexBuffersSubSetHandle;
@@ -424,7 +442,7 @@ private:
 
 			//GTSL::Array<StructData, 16> DefinedStructs;
 		};
-		GTSL::Array<SubSetData, 8> SubSets;
+		GTSL::Array<SubSetData, 16> SubSets;
 		
 		struct MemberData
 		{
@@ -515,6 +533,7 @@ private:
 	uint8 queuedFrames = 2;
 
 	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
+	PipelineLayout declareSetHull(RenderSystem* renderSystem, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
 

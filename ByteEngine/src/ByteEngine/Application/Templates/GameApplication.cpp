@@ -109,15 +109,19 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	
 	{
-		renderOrchestrator->AddAttachment(renderSystem, "Color", TextureFormat::BGRA_I8, TextureUses::COLOR_ATTACHMENT | TextureUses::TRANSFER_SOURCE, TextureType::COLOR);
-		renderOrchestrator->AddAttachment(renderSystem, "RenderDepth", TextureFormat::DEPTH32, TextureUses::DEPTH_STENCIL_ATTACHMENT, TextureType::DEPTH);
+		renderOrchestrator->AddAttachment("Color", 8, 4, RenderOrchestrator::TextureComponentType::INT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Position", 16, 4, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Normal", 16, 4, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
 
 		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.Name = "SceneRenderPass";
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.DepthStencilAttachment.Name = "RenderDepth";
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "RenderDepth" } );
 		geoRenderPass.ResultAttachment = "Color";
 		passes.EmplaceBack(geoRenderPass);
 
@@ -132,11 +136,12 @@ void GameApplication::PostInitialize()
 		rtRenderPass.Name = "SceneRTRenderPass";
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
-		//rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
+		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" });
+		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" });
 		rtRenderPass.ResultAttachment = "Color";
 		passes.EmplaceBack(rtRenderPass);
 		
-		renderOrchestrator->AddPass(renderSystem, passes);
+		renderOrchestrator->AddPass(renderSystem, materialSystem, passes);
 		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
 		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
 		renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
@@ -145,9 +150,6 @@ void GameApplication::PostInitialize()
 	
 	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
 	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
-
-	materialSystem->AddSet(renderSystem, "SceneRenderPass", "GlobalData", MaterialSystem::SetInfo());
-	materialSystem->AddSet(renderSystem, "UIRenderPass", "GlobalData", MaterialSystem::SetInfo());
 	
 	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
 	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");

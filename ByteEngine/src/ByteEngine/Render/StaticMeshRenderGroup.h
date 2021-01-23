@@ -39,6 +39,7 @@ public:
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
+	//void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
 	uint32 GetStaticMeshes() const { return staticMeshCount; }
 private:
 	struct MeshLoadInfo

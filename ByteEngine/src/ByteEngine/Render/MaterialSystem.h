@@ -117,31 +117,27 @@ public:
 		
 		for(uint8 f = 0; f < queuedFrames; ++f)
 		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle().SetHandle, GetPersistentAllocator());
-
 			BindingsSet::TextureBindingUpdateInfo info;
 			info.TextureView = textureView;
 			info.Sampler = textureSampler;
 			info.TextureLayout = layout;
 			
-			descriptorsUpdates[f].AddTextureUpdate(updateHandle, index, setHandle().Subset, bindingType, info);
+			descriptorsUpdates[f].AddTextureUpdate(setHandle, index, bindingType, info);
 		}
 	}
 
-	void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
-	{		
-		for(uint8 f = 0; f < queuedFrames; ++f)
-		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandle, GetPersistentAllocator());
-
-			BindingsSet::TextureBindingUpdateInfo info;
-			info.TextureView = textureView;
-			info.Sampler = textureSampler;
-			info.TextureLayout = TextureLayout::GENERAL;
-			
-			descriptorsUpdates[f].AddTextureUpdate(updateHandle, index, 1, BindingType::STORAGE_IMAGE, info);
-		}
-	}
+	//void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
+	//{		
+	//	for(uint8 f = 0; f < queuedFrames; ++f)
+	//	{
+	//		BindingsSet::TextureBindingUpdateInfo info;
+	//		info.TextureView = textureView;
+	//		info.Sampler = textureSampler;
+	//		info.TextureLayout = TextureLayout::GENERAL;
+	//		
+	//		descriptorsUpdates[f].AddTextureUpdate(index, 1, BindingType::STORAGE_IMAGE, info);
+	//	}
+	//}
 	
 	struct MemberInfo : Member
 	{
@@ -349,55 +345,71 @@ private:
 
 		void Initialize(const BE::PAR& allocator)
 		{
-			setsToUpdate.Initialize(4, allocator);
-			PerSetToUpdateBindingUpdate.Initialize(4, allocator);
-			PerSetToUpdateData.Initialize(4, allocator);
+			sets.Initialize(16, allocator);
 		}
 
-		[[nodiscard]] uint32 AddSetToUpdate(SetHandle set, const BE::PAR& allocator)
+		void AddBufferUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
 		{
-			const auto handle = setsToUpdate.EmplaceBack(set());
-			PerSetToUpdateBindingUpdate.EmplaceBack(4, allocator);
-			PerSetToUpdateData.EmplaceBack(4, allocator);
-			return handle;
+			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
 		}
 
-		void AddBufferUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
+		void AddTextureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
 		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
+			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
 		}
 
-		void AddTextureUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
+		void AddAccelerationStructureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
 		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
-		}
-
-		void AddAccelerationStructureUpdate(uint32 set, uint32 binding, uint32 subSet, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
-		{
-			PerSetToUpdateData[set].EmplaceBack(bindingType, subSet);
-			PerSetToUpdateBindingUpdate[set].EmplaceAt(binding, update);
+			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
 		}
 		
 		void Reset()
 		{
-			setsToUpdate.ResizeDown(0);
-			PerSetToUpdateBindingUpdate.ResizeDown(0);
-			PerSetToUpdateData.ResizeDown(0);
+			sets.Clear();
 		}
-		
-		GTSL::Vector<SetHandle, BE::PAR> setsToUpdate;
 
-		GTSL::Vector<GTSL::SparseVector<BindingsSet::BindingUpdateInfo, BE::PAR>, BE::PAR> PerSetToUpdateBindingUpdate;
+		GTSL::SparseVector<GTSL::SparseVector<GTSL::Pair<BindingType, GTSL::SparseVector<BindingsSet::BindingUpdateInfo, BE::PAR>>, BE::PAR>, BE::PAR> sets;
 
-		struct UpdateData
-		{
-			BindingType BindingType; uint32 SubSetIndex;
-		};
-		
-		GTSL::Vector<GTSL::Vector<UpdateData, BE::PAR>, BE::PAR> PerSetToUpdateData;
+	private:
+		void addUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::BindingUpdateInfo update)
+		{			
+			if (sets.IsSlotOccupied(subSetHandle().SetHandle())) {
+				auto& set = sets[subSetHandle().SetHandle()];
+				
+				if (set.IsSlotOccupied(subSetHandle().Subset)) {
+					auto& subSet = set[subSetHandle().Subset];
+					
+					if (subSet.Second.IsSlotOccupied(binding)) {
+						subSet.Second[binding] = update;
+					}
+					else { //there isn't binding
+						subSet.Second.EmplaceAt(binding, update);
+					}
+				}
+				else //there isn't sub set
+				{
+					auto& subSet = set.EmplaceAt(subSetHandle().Subset);
+					subSet.First = bindingType;
+
+					auto& bindings = subSet.Second;
+					bindings.Initialize(8, sets.GetAllocator());
+					bindings.EmplaceAt(binding, update);
+				}
+			}
+			else { //there isn't set
+				auto& set = sets.EmplaceAt(subSetHandle().SetHandle());
+				
+				set.Initialize(16, sets.GetAllocator());
+				auto& subSet = set.EmplaceAt(subSetHandle().Subset);
+				subSet.First = bindingType;
+				
+				auto& bindings = subSet.Second;
+				bindings.Initialize(8, sets.GetAllocator());
+				bindings.EmplaceAt(binding, update);
+			}
+		}
 	};
+	
 	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
 	
 	struct RenderGroupData

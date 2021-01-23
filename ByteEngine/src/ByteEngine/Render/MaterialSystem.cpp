@@ -36,7 +36,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	}
 
 	queuedFrames = BE::Application::Get()->GetOption("buffer");
-	queuedFrames = GTSL::Math::Clamp(queuedFrames, (uint8)2, (uint8)2);
+	queuedFrames = GTSL::Math::Clamp(queuedFrames, (uint8)2, (uint8)3);
 	
 	textures.Initialize(64, GetPersistentAllocator());
 	texturesRefTable.Initialize(64, GetPersistentAllocator());
@@ -59,7 +59,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	sets.Initialize(16, GetPersistentAllocator());
 	
-	for (uint32 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
+	for (uint32 i = 0; i < queuedFrames; ++i)
 	{
 		descriptorsUpdates.EmplaceBack();
 		descriptorsUpdates.back().Initialize(GetPersistentAllocator());
@@ -318,8 +318,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		for(auto& e : descriptorsUpdates)
 		{
-			auto updateHandle = e.AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
-			e.AddAccelerationStructureUpdate(updateHandle, 0, topLevelAsHandle().Subset, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
+			e.AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
 		}
 	}
 }
@@ -637,10 +636,10 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	
-	for(uint32 p = 0; p < queuedSetUpdates.GetReference().GetPageCount(); ++p)
+
+	for (uint32 p = 0; p < queuedSetUpdates.GetReference().GetPageCount(); ++p)
 	{
-		for(uint32 i = 0; i < queuedSetUpdates.GetReference().GetPage(p).ElementCount(); ++i)
+		for (uint32 i = 0; i < queuedSetUpdates.GetReference().GetPage(p).ElementCount(); ++i)
 		{
 			resizeSet(renderSystem, queuedSetUpdates.GetReference().GetPage(p)[i]);
 		}
@@ -648,7 +647,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 	queuedSetUpdates.Clear();
 
-	for(auto e : latestLoadedTextures) {
+	for (auto e : latestLoadedTextures) {
 		for (auto b : pendingMaterialsPerTexture[e]) {
 			if (++materials[b.Element].Counter == materials[b.Element].Target) {
 				setMaterialAsLoaded(b);
@@ -658,73 +657,65 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 	latestLoadedTextures.ResizeDown(0);
 
-	
 	auto addedMeshes = renderSystem->GetAddedMeshes();
-	
-	for(auto e : addedMeshes)
+
+	for (auto e : addedMeshes)
 	{
 		BufferIterator bufferIterator;
 		UpdateIteratorMember(bufferIterator, instanceDataStructHandle);
 		UpdateIteratorMemberIndex(bufferIterator, e);
 		UpdateIteratorMember(bufferIterator, instanceMaterialReferenceHandle);
-		
+
 		for (uint8 f = 0; f < queuedFrames; ++f)
 		{
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(GetSetHandleByName("GlobalData"), GetPersistentAllocator());
-
 			BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
 			bufferBindingUpdate.Buffer = renderSystem->GetMeshVertexBuffer(e);
 			bufferBindingUpdate.Range = renderSystem->GetMeshVertexBufferSize(e);
 			bufferBindingUpdate.Offset = renderSystem->GetMeshVertexBufferOffset(e);
-			descriptorsUpdates[f].AddBufferUpdate(updateHandle, e, vertexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			descriptorsUpdates[f].AddBufferUpdate(vertexBuffersSubSetHandle, e, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
 			bufferBindingUpdate.Buffer = renderSystem->GetMeshIndexBuffer(e);
 			bufferBindingUpdate.Range = renderSystem->GetMeshIndexBufferSize(e);
 			bufferBindingUpdate.Offset = renderSystem->GetMeshIndexBufferOffset(e);
-			descriptorsUpdates[f].AddBufferUpdate(updateHandle, e, indexBuffersSubSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			descriptorsUpdates[f].AddBufferUpdate(indexBuffersSubSetHandle, e, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
 			*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = renderSystem->GetMeshMaterialHandle(e).Element;
 			//TODO: CORRECTLY UPDATE MESH DESCRIPTOR BY INDEX
 		}
 	}
-	
+
 	renderSystem->ClearAddedMeshes();
-	
+
 	BindingsSet::BindingsSetUpdateInfo bindingsUpdateInfo;
 	bindingsUpdateInfo.RenderDevice = renderSystem->GetRenderDevice();
 
 	{
 		auto& descriptorsUpdate = descriptorsUpdates[frame];
 
-		for(uint32 s = 0; s < descriptorsUpdate.setsToUpdate.GetLength(); ++s)
-		{
-			auto& bindingsUpdate = descriptorsUpdate.PerSetToUpdateBindingUpdate[s];
-			
-			if (bindingsUpdate.GetGroupCount())
-			{				
-				Vector<BindingsSet::BindingsUpdateInfo, BE::TAR> bindingsUpdateInfos(4/*bindings sets*/, GetTransientAllocator());
-				{
-					for (uint32 i = 0; i < bindingsUpdate.GetGroupCount(); ++i)
-					{
+		for (auto& set : descriptorsUpdate.sets)  {
+			Vector<BindingsSet::BindingsUpdateInfo, BE::TAR> bindingsUpdateInfos(16/*bindings sets*/, GetTransientAllocator());
+
+			for (auto& subSet : set.GetElements()) {
+				for (auto& b : subSet) {
+					for (auto& a : b.GetElements()) {
 						BindingsSet::BindingsUpdateInfo bindingsUpdateInfo;
+						bindingsUpdateInfo.Type = a.First;
+						bindingsUpdateInfo.SubsetIndex = b.First;
 
-						const auto& group = bindingsUpdate.GetGroups()[i];
-						
-						bindingsUpdateInfo.SubsetIndex = descriptorsUpdate.PerSetToUpdateData[s][i].SubSetIndex;
-						bindingsUpdateInfo.Type = descriptorsUpdate.PerSetToUpdateData[s][i].BindingType;
-						bindingsUpdateInfo.BindingIndex = group.First;
-						bindingsUpdateInfo.BindingUpdateInfos = group.GetElements();
-
-						bindingsUpdateInfos.EmplaceBack(bindingsUpdateInfo);
+						for (auto& t : a.Second) {
+							bindingsUpdateInfo.BindingIndex = t.First;
+							bindingsUpdateInfo.BindingUpdateInfos = t.GetElements();
+							bindingsUpdateInfos.EmplaceBack(bindingsUpdateInfo);
+						}
 					}
 				}
 
 				bindingsUpdateInfo.BindingsUpdateInfos = bindingsUpdateInfos;
-
-				sets[descriptorsUpdate.setsToUpdate[s]()].BindingsSet[frame].Update(bindingsUpdateInfo);
+				sets[set.First].BindingsSet[frame].Update(bindingsUpdateInfo, GetTransientAllocator());
 			}
-		}
 
+		}
+		
 		descriptorsUpdate.Reset();
 	}
 }
@@ -804,13 +795,11 @@ void MaterialSystem::createBuffer(RenderSystem* renderSystem, SubSetHandle subSe
 			allocationInfo.Buffer = &subSet.Buffers[f];
 			renderSystem->AllocateScratchBufferMemory(allocationInfo);
 
-			auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(subSetHandle().SetHandle, GetPersistentAllocator());
-
 			BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
 			bufferBindingUpdate.Buffer = subSet.Buffers[f];
 			bufferBindingUpdate.Offset = 0;
 			bufferBindingUpdate.Range = instanceCount * structSize;
-			descriptorsUpdates[f].AddBufferUpdate(updateHandle, 0, subSetHandle().Subset, BUFFER_BINDING_TYPE, bufferBindingUpdate);
+			descriptorsUpdates[f].AddBufferUpdate(subSetHandle, 0, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 			
 			//for (uint32 i = 0; i < subSet.AllocatedBindings; ++i) {
 			//}
@@ -1331,8 +1320,7 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
 	{
-		auto updateHandle = descriptorsUpdates[f].AddSetToUpdate(setHandlesByName.At(Id("GlobalData")()), GetPersistentAllocator());
-		descriptorsUpdates[f].AddTextureUpdate(updateHandle, loadInfo->Component, 0, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
+		descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, loadInfo->Component, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
 	}
 	
 	latestLoadedTextures.EmplaceBack(loadInfo->Component);

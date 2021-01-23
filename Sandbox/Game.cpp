@@ -195,7 +195,7 @@ void Game::PostInitialize()
 
 	//FaceTree faceTree(GetPersistentAllocator());
 	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
-	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
+	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());//
 
 	{
 		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;

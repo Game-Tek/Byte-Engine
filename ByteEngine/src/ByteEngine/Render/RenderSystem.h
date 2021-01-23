@@ -64,16 +64,16 @@ public:
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, uint32* scratchSize)
 	{
-		uint32 bufferSize, scratchSize;
+		uint32 bufferSize, memoryScratchSize;
 		
 		AccelerationStructure::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
 		memoryRequirements.BuildType = build;
 		memoryRequirements.Flags = 0;
 		memoryRequirements.Geometries = geometries;
-		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &scratchSize);
+		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &memoryScratchSize);
 		
 		renderAllocation->Size = bufferSize;
 		
@@ -99,6 +99,8 @@ public:
 		createInfo->Offset = 0;
 		createInfo->Size = bufferSize;
 		accelerationStructure->Initialize(*createInfo);
+
+		*scratchSize = memoryScratchSize;
 	}
 	
 	struct BufferScratchMemoryAllocationInfo
@@ -252,6 +254,8 @@ public:
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
+	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix4& matrix);
+	
 	void OnResize(GTSL::Extent2D extent);
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
@@ -276,6 +280,8 @@ private:
 	GTSL::Mutex testMutex;
 
 	bool needsStagingBuffer = true;
+
+	uint8 pipelinedFrames = 0;
 	
 	RenderDevice renderDevice;
 	Surface surface;
@@ -359,9 +365,11 @@ private:
 	Buffer topLevelAccelerationStructureBuffer;
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
-	RenderAllocation instancesAllocation;
-	uint64 instancesBufferAddress;
-	Buffer instancesBuffer;
+
+	uint32 topLevelStructureScratchSize;
+	
+	RenderAllocation instancesAllocation[MAX_CONCURRENT_FRAMES];
+	Buffer instancesBuffer[MAX_CONCURRENT_FRAMES];
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.

@@ -186,8 +186,7 @@ private:
 	{
 		Id Name;
 		TextureLayout Layout;
-		//AccessFlags::value_type AccessFlags;
-		bool WriteAccess = false;
+		PipelineStage::value_type ConsumingStages;
 	};
 	
 	struct RenderPassData
@@ -221,9 +220,10 @@ private:
 
 	struct APIRenderPassData
 	{
+		Id Name;
 		RenderPass RenderPass;
 		FrameBuffer FrameBuffer;
-		GTSL::Array<Id, 8> AttachmentNames;
+		GTSL::Array<Id, 16> UsedAttachments;
 	};
 	GTSL::Array<APIRenderPassData, 16> apiRenderPasses;
 
@@ -233,8 +233,6 @@ private:
 		uint8 DepthAttachment;
 	};
 	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasses;
-
-	GTSL::Array<GTSL::StaticMap<uint8, 16>, 8> subPassMap;
 
 	struct Attachment
 	{

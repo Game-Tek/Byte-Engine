@@ -62,7 +62,7 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 
 		auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
 
-		//uint32 index = positions.Emplace();
+		index = positions.Emplace();
 
 		auto* mesh_load_info = GTSL::New<MeshLoadInfo>(GetPersistentAllocator(), addStaticMeshInfo.RenderSystem, sharedMesh, index, addStaticMeshInfo.Material);
 
@@ -80,8 +80,6 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 		load_static_meshInfo.GameInstance = addStaticMeshInfo.GameInstance;
 		addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 	}
-	
-	//resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 
 	return ComponentReference(GetSystemId(), index);
 }

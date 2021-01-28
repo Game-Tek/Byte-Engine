@@ -1,7 +1,7 @@
 #include "ByteEngine/Application/Application.h"
 
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticString.hpp>
@@ -155,9 +155,9 @@ namespace BE
 		//don't try parsing if file is empty or it's impractically large
 		if(settingsFile.GetFileSize() == 0 || settingsFile.GetFileSize() > GTSL::Byte(GTSL::KiloByte(512))) { return false; }
 		
-		GTSL::SmartBuffer<PAR> fileBuffer(1024, 8, GetPersistentAllocator());
+		GTSL::Buffer<PAR> fileBuffer; fileBuffer.Allocate(1024, 8, GetPersistentAllocator());
 
-		settingsFile.ReadFile(fileBuffer);
+		settingsFile.ReadFile(fileBuffer.GetBufferInterface());
 		
 		uint32 i = 0;
 
@@ -201,9 +201,9 @@ namespace BE
 			return value;
 		};
 		
-		while (i < fileBuffer->GetLength())
+		while (i < fileBuffer.GetLength())
 		{			
-			switch (static_cast<UTF8>(fileBuffer->GetData()[i]))
+			switch (static_cast<UTF8>(fileBuffer.GetData()[i]))
 			{
 			case '[':
 				{
@@ -303,7 +303,7 @@ namespace BE
 			default:
 				{
 					if (text.GetLength() == 128) { return false; }
-					text += static_cast<UTF8>(fileBuffer->GetData()[i]);
+					text += static_cast<UTF8>(fileBuffer.GetData()[i]);
 				}
 			}
 
@@ -340,8 +340,6 @@ namespace BE
 			
 		case Token::VALUE: break;
 		}
-
-		settingsFile.CloseFile();
 
 		return parseEnded;
 	}

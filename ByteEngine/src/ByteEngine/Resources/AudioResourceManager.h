@@ -4,7 +4,8 @@
 
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
+#include <GTSL/Serialize.h>
 
 #include "ResourceManager.h"
 
@@ -27,7 +28,6 @@ public:
 
 	void ReleaseAudioAsset(Id asset)
 	{
-		audioBytes.At(asset()).Free(8, GetPersistentAllocator());
 		audioBytes.Remove(asset());
 	}
 	
@@ -41,8 +41,25 @@ public:
 private:
 	GTSL::File indexFile, packageFile;
 	GTSL::FlatHashMap<AudioResourceInfo, BE::PersistentAllocatorReference> audioResourceInfos;
-	GTSL::FlatHashMap<GTSL::Buffer, BE::PersistentAllocatorReference> audioBytes;
+	GTSL::FlatHashMap<GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
 };
 
-void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer);
-void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer);
+template<class ALLOCATOR>
+void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+{
+	Insert(audioResourceInfo.ByteOffset, buffer);
+	Insert(audioResourceInfo.Frames, buffer);
+	Insert(audioResourceInfo.AudioChannelCount, buffer);
+	Insert(audioResourceInfo.AudioSampleRate, buffer);
+	Insert(audioResourceInfo.AudioBitDepth, buffer);
+}
+
+template<class ALLOCATOR>
+void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+{
+	Extract(audioResourceInfo.ByteOffset, buffer);
+	Extract(audioResourceInfo.Frames, buffer);
+	Extract(audioResourceInfo.AudioChannelCount, buffer);
+	Extract(audioResourceInfo.AudioSampleRate, buffer);
+	Extract(audioResourceInfo.AudioBitDepth, buffer);
+}

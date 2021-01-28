@@ -16,6 +16,8 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
+#include "ByteEngine/Handle.hpp"
+
 class World;
 class ComponentCollection;
 class System;
@@ -36,6 +38,14 @@ inline const char* AccessTypeToString(const AccessType access)
 	}
 }
 
+template<typename... ARGS>
+struct DynamicTaskHandle
+{
+	DynamicTaskHandle(uint32 reference) : Reference(reference) {}
+	
+	uint32 Reference;
+};
+
 class GameInstance : public Object
 {
 	using FunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32, void*)>;
@@ -45,6 +55,7 @@ public:
 	
 	void OnUpdate(BE::Application* application);
 
+	
 	using WorldReference = uint8;
 	
 	struct CreateNewWorldInfo
@@ -92,7 +103,7 @@ public:
 				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 				
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, info->Arguments);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 			}
 
 			gameInstance->resourcesUpdated.NotifyAll();
@@ -138,7 +149,7 @@ public:
 				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, info->Arguments);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 
 				gameInstance->resourcesUpdated.NotifyAll();
 				gameInstance->semaphores[goal].Post();
@@ -172,7 +183,7 @@ public:
 				auto* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
 				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, info->Arguments);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
 			}
 
@@ -196,6 +207,61 @@ public:
 		BE_LOG_MESSAGE("Added async task ", name.GetString())
 	}
 
+	template<typename... ARGS>
+	DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies)
+	{
+		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void
+		{
+			{
+				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
+			}
+
+			gameInstance->resourcesUpdated.NotifyAll();
+			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
+		};
+
+		uint32 index;
+
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function);
+
+		{
+			GTSL::ReadLock lock(stagesNamesMutex);
+			decomposeTaskDescriptor(dependencies, objects, accesses);
+		}
+		
+		{
+			GTSL::WriteLock lock(storedDynamicTasksMutex);
+			index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ name, objects, accesses, FunctionType::Create(task), static_cast<void*>(taskInfo) });
+		}
+
+		return DynamicTaskHandle<ARGS...>(index);
+	}
+	
+	template<typename... ARGS>
+	void AddStoredDynamicTask(const DynamicTaskHandle<ARGS...> taskHandle, ARGS&&... args)
+	{
+		StoredDynamicTaskData storedDynamicTask;
+		
+		{
+			GTSL::WriteLock lock(storedDynamicTasksMutex);
+			storedDynamicTask = storedDynamicTasks[taskHandle.Reference];
+			storedDynamicTasks.Pop(taskHandle.Reference);
+		}
+
+		DispatchTaskInfo<TaskInfo, ARGS...>* data = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(storedDynamicTask.Data);
+		::new(&data->Arguments) GTSL::Tuple<TaskInfo, ARGS...>(TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		
+		{
+			GTSL::WriteLock lock(asyncTasksMutex);
+			asyncTasks.AddTask(storedDynamicTask.Name, storedDynamicTask.Function, storedDynamicTask.Objects, storedDynamicTask.Access, 0xFFFFFFFF, storedDynamicTask.Data, GetPersistentAllocator());
+		}
+	}
+
 	void AddStage(Id name);
 
 private:
@@ -210,6 +276,10 @@ private:
 	template<typename... ARGS>
 	struct DispatchTaskInfo
 	{
+		DispatchTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate) : Delegate(delegate)
+		{
+		}
+
 		DispatchTaskInfo(const GTSL::Delegate<void(ARGS...)>& delegate, ARGS&&... args) : Delegate(delegate), Arguments(GTSL::ForwardRef<ARGS>(args)...)
 		{
 		}
@@ -219,6 +289,13 @@ private:
 		GTSL::Tuple<ARGS...> Arguments;
 	};
 	
+	mutable GTSL::ReadWriteMutex storedDynamicTasksMutex;
+	struct StoredDynamicTaskData
+	{
+		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType Function; void* Data;
+	};
+	GTSL::KeepVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
+
 	mutable GTSL::ReadWriteMutex recurringTasksMutex;
 	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;
 	mutable GTSL::ReadWriteMutex dynamicTasksPerStageMutex;

@@ -63,7 +63,6 @@ struct RenderAllocation
 #undef OPAQUE
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
-using Shader = GAL::VulkanShader;
 using Buffer = GAL::VulkanBuffer;
 using Texture = GAL::VulkanTexture;
 using Surface = GAL::VulkanSurface;

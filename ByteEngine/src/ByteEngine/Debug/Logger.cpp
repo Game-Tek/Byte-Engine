@@ -28,7 +28,6 @@ void Logger::Shutdown() const
 	//auto range = GTSL::Range<const byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data) + posInBuffer + buffersInBuffer * subBufferIndex);
 	//logFile.WriteToFile(range);
 	//logMutex.Unlock();
-	logFile.CloseFile();
 }
 
 void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GTSL::UTF8*> text) const

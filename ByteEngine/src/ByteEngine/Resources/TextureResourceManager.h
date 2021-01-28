@@ -55,5 +55,22 @@ private:
 	void loadTextureImplementation(TaskInfo taskInfo, TextureLoadInfo loadInfo);
 };
 
-void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer);
-void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer);
+template<class ALLOCATOR>
+void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+{
+	Insert(textureInfo.ByteOffset, buffer);
+	Insert(textureInfo.ImageSize, buffer);
+	Insert(textureInfo.Format, buffer);
+	Insert(textureInfo.Dimensions, buffer);
+	Insert(textureInfo.Extent, buffer);
+}
+
+template<class ALLOCATOR>
+void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+{
+	Extract(textureInfo.ByteOffset, buffer);
+	Extract(textureInfo.ImageSize, buffer);
+	Extract(textureInfo.Format, buffer);
+	Extract(textureInfo.Dimensions, buffer);
+	Extract(textureInfo.Extent, buffer);
+}

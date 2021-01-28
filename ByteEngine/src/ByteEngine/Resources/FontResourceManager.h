@@ -4,7 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <GAL/RenderCore.h>
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/Extent.h>
 #include <GTSL/FlatHashMap.h>
@@ -26,6 +26,7 @@ struct IVector2D
 };
 
 namespace GTSL {
+	template<class ALLOCATOR>
 	class Buffer;
 }
 
@@ -100,7 +101,7 @@ public:
 	struct ImageFont
 	{
 		std::map<char, Character> Characters;
-		GTSL::Buffer ImageData;
+		GTSL::Buffer<BE::PAR> ImageData;
 		GTSL::Extent2D Extent;
 	};
 	
@@ -112,16 +113,6 @@ public:
 		GAL::TextureFormat TextureFormat;
 		GTSL::Extent3D Extent;
 	};
-
-	~FontResourceManager()
-	{
-		auto deallocate = [&](ImageFont& imageFont)
-		{
-			imageFont.ImageData.Free(8, GetPersistentAllocator());
-		};
-		
-		GTSL::ForEach(fonts, deallocate);
-	}
 	
 private:
 	int8 parseData(const char* data, Font* fontData);

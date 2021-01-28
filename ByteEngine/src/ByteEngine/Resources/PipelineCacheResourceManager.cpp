@@ -11,12 +11,4 @@ PipelineCacheResourceManager::PipelineCacheResourceManager() : ResourceManager("
 
 PipelineCacheResourceManager::~PipelineCacheResourceManager()
 {
-	cache.CloseFile();
-}
-
-void PipelineCacheResourceManager::WriteCache(GTSL::Buffer& buffer)
-{
-	cache.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
-	cache.SetEndOfFile();
-	cache.WriteToFile(buffer);
 }

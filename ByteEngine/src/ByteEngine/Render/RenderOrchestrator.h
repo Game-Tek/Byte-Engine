@@ -215,6 +215,8 @@ private:
 	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 	void renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
+	void dispatch(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem,
+	              CommandBuffer commandBuffer, Id rp);
 
 	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId);
 

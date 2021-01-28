@@ -1,6 +1,6 @@
 #include "MaterialResourceManager.h"
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/Serialize.h>
 #include "ByteEngine/Application/Application.h"
@@ -19,7 +19,7 @@ using BindingTypeType = GTSL::UnderlyingType<GAL::BindingType>;
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
 rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAllocator())
 {
-	GTSL::Buffer rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 	
 	GTSL::StaticString<256> resources_path;
 	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
@@ -31,7 +31,7 @@ rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAlloca
 	resources_path += "Materials.beidx";
 
 	index.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ | (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
-	index.ReadFile(rasterFileBuffer);
+	index.ReadFile(rasterFileBuffer.GetBufferInterface());
 
 	if (rasterFileBuffer.GetLength())
 	{
@@ -43,13 +43,10 @@ rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAlloca
 		Insert(rasterMaterialInfos, rasterFileBuffer);
 		Insert(rtMaterialInfos, rasterFileBuffer);
 	}
-	
-	rasterFileBuffer.Free(8, GetTransientAllocator());
 }
 
 MaterialResourceManager::~MaterialResourceManager()
 {
-	package.CloseFile(); index.CloseFile();
 }
 
 void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInfo& materialCreateInfo)
@@ -58,10 +55,10 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 	
 	if (!rasterMaterialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
 		
 		RasterMaterialInfo materialInfo;
 		
@@ -77,10 +74,10 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.ShaderTypes[i])];
 
 			shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-			shader.ReadFile(shader_source_buffer);
+			shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
 			auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-			const auto comp_res = Shader::CompileShader(f, resources_path, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
+			const auto comp_res = GAL::CompileShader(f, resources_path, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 			if(comp_res == false)
 			{
@@ -96,7 +93,6 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			shader_source_buffer.Resize(0);
 			shader_error_buffer.Resize(0);
 			shader_buffer.Resize(0);
-			shader.CloseFile();
 		}
 
 		materialInfo.VertexElements = GTSL::Range<const VertexElementsType*>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
@@ -124,12 +120,6 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		Insert(rasterMaterialInfos, index_buffer);
 		Insert(rtMaterialInfos, index_buffer);
 		index.WriteToFile(index_buffer);
-
-		shader.CloseFile();
-		shader_source_buffer.Free(8, GetTransientAllocator());
-		index_buffer.Free(8, GetTransientAllocator());
-		shader_buffer.Free(8, GetTransientAllocator());
-		shader_error_buffer.Free(8, GetTransientAllocator());
 	}
 }
 
@@ -139,10 +129,10 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 
 	if (!rtMaterialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
 
 		RayTraceMaterialInfo materialInfo;
 		
@@ -156,10 +146,10 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.Type)];
 
 		shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
-		shader.ReadFile(shader_source_buffer);
+		shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
 		auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-		const auto comp_res = Shader::CompileShader(f, resources_path, materialCreateInfo.Type, GAL::ShaderLanguage::GLSL, shader_buffer, shader_error_buffer);
+		const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.Type, GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 		*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 		if (comp_res == false)
 		{
@@ -177,20 +167,12 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		shader_source_buffer.Resize(0);
 		shader_error_buffer.Resize(0);
 		shader_buffer.Resize(0);
-		shader.CloseFile();
 
 		rtMaterialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(rasterMaterialInfos, index_buffer);
 		Insert(rtMaterialInfos, index_buffer);
 		index.WriteToFile(index_buffer);
-
-		shader.CloseFile();
-		shader_source_buffer.Free(8, GetTransientAllocator());
-		index_buffer.Free(8, GetTransientAllocator());
-		shader_buffer.Free(8, GetTransientAllocator());
-		shader_error_buffer.Free(8, GetTransientAllocator());
-
 	}
 	
 	rtHandles.EmplaceBack(hashed_name);
@@ -301,128 +283,4 @@ MaterialResourceManager::RayTracingShaderInfo MaterialResourceManager::LoadRayTr
 	BE_ASSERT(read != 0, "Read 0 bytes!");
 
 	return materialInfo.ShaderInfo;
-}
-
-void Insert(const MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)
-{
-	Insert(materialInfo.Type, buffer);
-	Insert(materialInfo.Stage, buffer);
-}
-
-void Extract(MaterialResourceManager::Binding& materialInfo, GTSL::Buffer& buffer)
-{
-	Extract(materialInfo.Type, buffer);
-	Extract(materialInfo.Stage, buffer);
-}
-
-void Insert(const MaterialResourceManager::Uniform& materialInfo, GTSL::Buffer& buffer)
-{
-	Insert(materialInfo.Name, buffer);
-	Insert(materialInfo.Type, buffer);
-}
-
-void Extract(MaterialResourceManager::Uniform& materialInfo, GTSL::Buffer& buffer)
-{
-	Extract(materialInfo.Name, buffer);
-	Extract(materialInfo.Type, buffer);
-}
-
-void Insert(const MaterialResourceManager::RayTracingShaderInfo& shaderInfo, GTSL::Buffer& buffer)
-{
-	Insert(shaderInfo.ShaderType, buffer);
-	Insert(shaderInfo.BinarySize, buffer);
-	Insert(shaderInfo.ColorBlendOperation, buffer);
-}
-
-void Extract(MaterialResourceManager::RayTracingShaderInfo& shaderInfo, GTSL::Buffer& buffer)
-{
-	Extract(shaderInfo.ShaderType, buffer);
-	Extract(shaderInfo.BinarySize, buffer);
-	Extract(shaderInfo.ColorBlendOperation, buffer);
-}
-
-void Insert(const MaterialResourceManager::RayTraceMaterialInfo& materialInfo, GTSL::Buffer& buffer)
-{
-	Insert(materialInfo.ShaderInfo, buffer);
-	Insert(materialInfo.OffsetToBinary, buffer);
-}
-
-void Extract(MaterialResourceManager::RayTraceMaterialInfo& materialInfo, GTSL::Buffer& buffer)
-{
-	Extract(materialInfo.ShaderInfo, buffer);
-	Extract(materialInfo.OffsetToBinary, buffer);
-}
-
-void Insert(const MaterialResourceManager::RasterMaterialInfo& materialInfo, GTSL::Buffer& buffer)
-{
-	Insert(materialInfo.MaterialOffset, buffer);
-	Insert(materialInfo.RenderGroup, buffer);
-	Insert(materialInfo.RenderPass, buffer);
-	
-	Insert(materialInfo.ShaderSizes, buffer);
-	Insert(materialInfo.VertexElements, buffer);
-	Insert(materialInfo.ShaderTypes, buffer);
-	
-	Insert(materialInfo.Textures, buffer);
-	
-	Insert(materialInfo.DepthTest, buffer);
-	Insert(materialInfo.DepthWrite, buffer);
-	Insert(materialInfo.StencilTest, buffer);
-	Insert(materialInfo.CullMode, buffer);
-	Insert(materialInfo.ColorBlendOperation, buffer);
-	Insert(materialInfo.BlendEnable, buffer);
-
-	Insert(materialInfo.MaterialParameters, buffer);
-	Insert(materialInfo.PerInstanceParameters, buffer);
-
-	Insert(materialInfo.Front, buffer);
-	Insert(materialInfo.Back, buffer);
-}
-
-void Extract(MaterialResourceManager::RasterMaterialInfo& materialInfo, GTSL::Buffer& buffer)
-{
-	Extract(materialInfo.MaterialOffset, buffer);
-	Extract(materialInfo.RenderGroup, buffer);
-	Extract(materialInfo.RenderPass, buffer);
-	
-	Extract(materialInfo.ShaderSizes, buffer);
-	Extract(materialInfo.VertexElements, buffer);
-	Extract(materialInfo.ShaderTypes, buffer);
-
-	Extract(materialInfo.Textures, buffer);
-	
-	Extract(materialInfo.DepthTest, buffer);
-	Extract(materialInfo.DepthWrite, buffer);
-	Extract(materialInfo.StencilTest, buffer);
-	Extract(materialInfo.CullMode, buffer);
-	Extract(materialInfo.ColorBlendOperation, buffer);
-	Extract(materialInfo.BlendEnable, buffer);
-
-	Extract(materialInfo.MaterialParameters, buffer);
-	Extract(materialInfo.PerInstanceParameters, buffer);
-	
-	Extract(materialInfo.Front, buffer);
-	Extract(materialInfo.Back, buffer);
-}
-
-void Insert(const MaterialResourceManager::StencilState& stencilState, GTSL::Buffer& buffer)
-{
-	Insert(stencilState.FailOperation, buffer);
-	Insert(stencilState.PassOperation, buffer);
-	Insert(stencilState.DepthFailOperation, buffer);
-	Insert(stencilState.CompareOperation, buffer);
-	Insert(stencilState.CompareMask, buffer);
-	Insert(stencilState.WriteMask, buffer);
-	Insert(stencilState.Reference, buffer);
-}
-
-void Extract(MaterialResourceManager::StencilState& stencilState, GTSL::Buffer& buffer)
-{
-	Extract(stencilState.FailOperation, buffer);
-	Extract(stencilState.PassOperation, buffer);
-	Extract(stencilState.DepthFailOperation, buffer);
-	Extract(stencilState.CompareOperation, buffer);
-	Extract(stencilState.CompareMask, buffer);
-	Extract(stencilState.WriteMask, buffer);
-	Extract(stencilState.Reference, buffer);
 }

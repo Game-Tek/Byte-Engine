@@ -80,7 +80,7 @@ public:
 		{
 			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(voidTask);
 			
-			GTSL::Call(taskInfo->Delegate, taskInfo->Arguments);
+			GTSL::Call(taskInfo->Delegate, GTSL::MoveRef(taskInfo->Arguments));
 
 			GTSL::Delete<TaskInfo<F, ARGS...>>(taskInfo, threadPool->GetPersistentAllocator());
 		};

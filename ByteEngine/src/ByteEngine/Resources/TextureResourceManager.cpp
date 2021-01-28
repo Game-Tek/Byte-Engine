@@ -1,6 +1,6 @@
 #include "TextureResourceManager.h"
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <stb image/stb_image.h>
 
 #include <GTSL/File.h>
@@ -28,12 +28,11 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
-	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> file_buffer; file_buffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
 
-	if (indexFile.ReadFile(file_buffer))
+	if (indexFile.ReadFile(file_buffer.GetBufferInterface()))
 	{
 		GTSL::Extract(textureInfos, file_buffer);
-		file_buffer.Free(32, GetTransientAllocator());
 		return;
 	}
 	
@@ -49,7 +48,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			GTSL::File query_file;
 			query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
 
-			query_file.ReadFile(file_buffer);
+			query_file.ReadFile(file_buffer.GetBufferInterface());
 			
 			int32 x, y, channel_count = 0;
 			stbi_info_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count);
@@ -80,27 +79,19 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			textureInfos.Emplace(hashed_name, texture_info);
 
 			stbi_image_free(data);
-
-			query_file.CloseFile();
 		}
 	};
 	
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, load);
 
-	indexFile.CloseFile();
-	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
-
 	file_buffer.Resize(0);
 	Insert(textureInfos, file_buffer);
 	indexFile.WriteToFile(file_buffer);
-	
-	file_buffer.Free(32, GetTransientAllocator());
 }
 
 TextureResourceManager::~TextureResourceManager()
 {
-	packageFile.CloseFile(); indexFile.CloseFile();
 }
 
 void TextureResourceManager::LoadTexture(const TextureLoadInfo& textureLoadInfo)
@@ -149,22 +140,4 @@ void TextureResourceManager::loadTextureImplementation(TaskInfo taskInfo, const 
 	onTextureLoadInfo.TextureFormat = static_cast<GAL::TextureFormat>(texture_info.Format);
 
 	taskInfo.GameInstance->AddDynamicTask("loadTextureFromTextureResourceManager", loadInfo.OnTextureLoadInfo, loadInfo.ActsOn, GTSL::MoveRef(onTextureLoadInfo));
-}
-
-void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
-{
-	Insert(textureInfo.ByteOffset, buffer);
-	Insert(textureInfo.ImageSize, buffer);
-	Insert(textureInfo.Format, buffer);
-	Insert(textureInfo.Dimensions, buffer);
-	Insert(textureInfo.Extent, buffer);
-}
-
-void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer& buffer)
-{
-	Extract(textureInfo.ByteOffset, buffer);
-	Extract(textureInfo.ImageSize, buffer);
-	Extract(textureInfo.Format, buffer);
-	Extract(textureInfo.Dimensions, buffer);
-	Extract(textureInfo.Extent, buffer);
 }

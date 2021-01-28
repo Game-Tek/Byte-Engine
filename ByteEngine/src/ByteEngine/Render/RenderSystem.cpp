@@ -251,8 +251,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		uint32 cacheSize = 0;
 		initializeRenderer.PipelineCacheResourceManager->GetCacheSize(cacheSize);
 
-		GTSL::Buffer pipelineCacheBuffer;
-		pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
+		GTSL::Buffer<BE::TAR> pipelineCacheBuffer;
+		pipelineCacheBuffer.Allocate(cacheSize, 32, GetTransientAllocator());
 
 		initializeRenderer.PipelineCacheResourceManager->GetCache(pipelineCacheBuffer);
 		
@@ -269,8 +269,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			
 			pipelineCaches.EmplaceBack(pipelineCacheCreateInfo);
 		}
-		
-		pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 	}
 	else
 	{
@@ -539,15 +537,18 @@ void RenderSystem::OnResize(const GTSL::Extent2D extent)
 {
 	graphicsQueue.Wait(GetRenderDevice());
 
-	BE_ASSERT(surface.IsSupported(&renderDevice) != false, "Surface is not supported!");
+	Surface::SurfaceCapabilities surfaceCapabilities;
+	auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
+	
+	if(!isSupported) {
+		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>("No supported surface found!"));
+	}
 
-	GTSL::Array<PresentMode, 4> present_modes{ swapchainPresentMode };
-	auto res = surface.GetSupportedPresentMode(&renderDevice, present_modes);
-	if (res != 0xFFFFFFFF) { swapchainPresentMode = present_modes[res]; }
+	auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
+	swapchainPresentMode = supportedPresentModes[0];
 
-	GTSL::Array<GTSL::Pair<ColorSpace, TextureFormat>, 8> surface_formats{ { swapchainColorSpace, swapchainFormat } };
-	res = surface.GetSupportedRenderContextFormat(&renderDevice, surface_formats);
-	if (res != 0xFFFFFFFF) { swapchainColorSpace = surface_formats[res].First; swapchainFormat = surface_formats[res].Second; }
+	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
+	swapchainColorSpace = supportedSurfaceFormats[0].First; swapchainFormat = supportedSurfaceFormats[0].Second;
 	
 	RenderContext::RecreateInfo recreate;
 	recreate.RenderDevice = GetRenderDevice();
@@ -667,11 +668,11 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 		if (cacheSize)
 		{
 			auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
-			GTSL::Buffer pipelineCacheBuffer;
-			pipelineCacheBuffer.Allocate(cacheSize, 32, GetPersistentAllocator());
-			pipelineCache.GetCache(&renderDevice, cacheSize, pipelineCacheBuffer);
+			
+			GTSL::Buffer<BE::TAR> pipelineCacheBuffer;
+			pipelineCacheBuffer.Allocate(cacheSize, 32, GetTransientAllocator());
+			pipelineCache.GetCache(&renderDevice, pipelineCacheBuffer.GetBufferInterface());
 			pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
-			pipelineCacheBuffer.Free(32, GetPersistentAllocator());
 		}
 	}
 }
@@ -809,7 +810,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	presentInfo.ImageIndex = imageIndex;
 	renderContext.Present(presentInfo);
 
-	currentFrameIndex = (currentFrameIndex + 1) % swapchainTextureViews.GetLength();
+	currentFrameIndex = (currentFrameIndex + 1) % pipelinedFrames;
 }
 
 void RenderSystem::frameStart(TaskInfo taskInfo)

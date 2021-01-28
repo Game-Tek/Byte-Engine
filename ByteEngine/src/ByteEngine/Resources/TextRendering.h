@@ -289,7 +289,7 @@ struct FaceTree : public Object
 	
 	void RenderChar(GTSL::Extent2D res, uint16 ch, const BE::PAR& allocator)
 	{
-		GTSL::Buffer buffer; buffer.Allocate(res.Width * res.Width, 8, allocator);
+		GTSL::Buffer<BE::PAR> buffer; buffer.Allocate(res.Width * res.Width, 8, allocator);
 		
 		for(uint16 xr = 0, x = 0; xr < res.Width; ++xr, ++x)
 		{
@@ -300,8 +300,6 @@ struct FaceTree : public Object
 		}
 
 		stbi_write_bmp("A_CharRender.bmp", res.Width, res.Height, 1, buffer.GetData());
-		
-		buffer.Free(8, allocator);
 	}
 	
 	struct Band

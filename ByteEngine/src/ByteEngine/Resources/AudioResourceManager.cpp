@@ -1,6 +1,6 @@
 #include "AudioResourceManager.h"
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
 
@@ -20,9 +20,9 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	packageFile.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
-	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 	
-	if(indexFile.ReadFile(file_buffer))
+	if(indexFile.ReadFile(file_buffer.GetBufferInterface()))
 	{
 		GTSL::Extract(audioResourceInfos, file_buffer);
 	}
@@ -39,7 +39,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			GTSL::File query_file;
 			query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
 
-			query_file.ReadFile(file_buffer);
+			query_file.ReadFile(file_buffer.GetBufferInterface());
 
 			AudioResourceInfo data;
 
@@ -106,46 +106,19 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, file_buffer.GetData() + file_buffer.GetReadPosition()));
 
 			audioResourceInfos.Emplace(hashed_name, data);
-
-			query_file.CloseFile();
 		}
 	};
 	
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, load);
 
-	indexFile.CloseFile();
-	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::CLEAR);
-
 	file_buffer.Resize(0);
 	GTSL::Insert(audioResourceInfos, file_buffer);
 	indexFile.WriteToFile(file_buffer);
-	
-	file_buffer.Free(32, GetTransientAllocator());
 }
 
 AudioResourceManager::~AudioResourceManager()
 {
-	GTSL::ForEach(audioBytes, [&](GTSL::Buffer& buffer) { buffer.Free(8, GetPersistentAllocator()); });
-	packageFile.CloseFile(); indexFile.CloseFile();
-}
-
-void Insert(const AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer)
-{
-	GTSL::Insert(audioResourceInfo.ByteOffset, buffer);
-	GTSL::Insert(audioResourceInfo.Frames, buffer);
-	GTSL::Insert(audioResourceInfo.AudioChannelCount, buffer);
-	GTSL::Insert(audioResourceInfo.AudioSampleRate, buffer);
-	GTSL::Insert(audioResourceInfo.AudioBitDepth, buffer);
-}
-
-void Extract(AudioResourceManager::AudioResourceInfo& audioResourceInfo, GTSL::Buffer& buffer)
-{
-	GTSL::Extract(audioResourceInfo.ByteOffset, buffer);
-	GTSL::Extract(audioResourceInfo.Frames, buffer);
-	GTSL::Extract(audioResourceInfo.AudioChannelCount, buffer);
-	GTSL::Extract(audioResourceInfo.AudioSampleRate, buffer);
-	GTSL::Extract(audioResourceInfo.AudioBitDepth, buffer);
 }
 
 void AudioResourceManager::LoadAudioAsset(const LoadAudioAssetInfo& loadAudioAssetInfo)

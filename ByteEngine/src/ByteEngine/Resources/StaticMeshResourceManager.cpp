@@ -8,7 +8,7 @@
 #include <assimp/scene.h>
 #include <GAL/Pipelines.h>
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GAL/RenderCore.h>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Pair.h>
@@ -34,14 +34,11 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	indexFile.OpenFile(index_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	staticMeshPackage.OpenFile(package_path, (uint8)GTSL::File::AccessMode::WRITE | (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
 	
-	GTSL::Buffer file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
-	GTSL::Buffer mesh_buffer; mesh_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
-
-	if (indexFile.ReadFile(file_buffer))
+	if (indexFile.GetFileSize())
 	{
-		GTSL::Extract(meshInfos, file_buffer);
-		file_buffer.Free(32, GetTransientAllocator());
-		mesh_buffer.Free(32, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(indexFile.GetFileSize(), 16, GetTransientAllocator());
+		indexFile.ReadFile(meshInfosFileBuffer.GetBufferInterface());
+		GTSL::Extract(meshInfos, meshInfosFileBuffer);
 		return;
 	}
 	
@@ -54,23 +51,24 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 		if (!meshInfos.Find(hashed_name))
 		{
-			GTSL::File query_file;
-			query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
-
-			query_file.ReadFile(file_buffer);
-
-			MeshInfo mesh_info;
-
-			loadMesh(file_buffer, mesh_info, mesh_buffer); //writes into file buffer after reading, SAFE
-			file_buffer.Resize(0);
+			GTSL::Buffer<BE::TAR> meshFileBuffer;
 			
-			mesh_info.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
+			GTSL::File queryFile;
+			queryFile.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
+			meshFileBuffer.Allocate(queryFile.GetFileSize(), 32, GetTransientAllocator());
+			queryFile.ReadFile(meshFileBuffer.GetBufferInterface());
 
-			staticMeshPackage.WriteToFile(mesh_buffer);
+			GTSL::Buffer<BE::TAR> meshDataBuffer; meshDataBuffer.Allocate(2048 * 2048, 8, GetTransientAllocator());
+			
+			MeshInfo meshInfo;
 
-			meshInfos.Emplace(hashed_name, mesh_info);
+			loadMesh(meshFileBuffer, meshInfo, meshDataBuffer);
+			
+			meshInfo.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
 
-			query_file.CloseFile();
+			staticMeshPackage.WriteToFile(meshDataBuffer.GetBufferInterface());
+
+			meshInfos.Emplace(hashed_name, meshInfo);
 		}
 	};
 
@@ -78,19 +76,15 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	GTSL::FileQuery file_query(query_path);
 	GTSL::ForEach(file_query, load);
 
-	file_buffer.Resize(0);
-	Insert(meshInfos, file_buffer);
+	GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(4096, 16, GetTransientAllocator());
+	Insert(meshInfos, meshInfosFileBuffer);
 	
 	indexFile.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
-	indexFile.WriteToFile(file_buffer);
-	
-	file_buffer.Free(32, GetTransientAllocator());
-	mesh_buffer.Free(32, GetTransientAllocator());
+	indexFile.WriteToFile(meshInfosFileBuffer.GetBufferInterface());
 }
 
 StaticMeshResourceManager::~StaticMeshResourceManager()
 {
-	staticMeshPackage.CloseFile(); indexFile.CloseFile();
 }
 
 void StaticMeshResourceManager::LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo)
@@ -135,7 +129,7 @@ void StaticMeshResourceManager::GetMeshSize(const GTSL::Id64 name, uint32* verte
 	*indexSize = mesh.IndexSize;
 }
 
-void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, GTSL::Buffer& mesh)
+void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, MeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& mesh)
 {
 	Assimp::Importer importer;
 	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_FlipUVs |
@@ -186,7 +180,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 	{		
 		for(auto& e : vertexElements)
 		{
-			mesh.WriteBytes(GTSL::Get<1>(e), static_cast<byte*>(GTSL::Get<0>(e)) + vertex * GTSL::Get<2>(e));
+			mesh.CopyBytes(GTSL::Get<1>(e), static_cast<byte*>(GTSL::Get<0>(e)) + vertex * GTSL::Get<2>(e));
 		}
 	}
 
@@ -199,7 +193,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 		for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 			for (uint32 index = 0; index < 3; ++index) {
 				uint16 idx = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
-				mesh.WriteBytes(indexSize, reinterpret_cast<byte*>(&idx));
+				mesh.CopyBytes(indexSize, reinterpret_cast<byte*>(&idx));
 			}
 		}
 	}
@@ -209,29 +203,11 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer& sourceBuffer, MeshI
 
 		for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 			for (uint32 index = 0; index < 3; ++index) {
-				mesh.WriteBytes(indexSize, reinterpret_cast<byte*>(inMesh->mFaces[face].mIndices + index));
+				mesh.CopyBytes(indexSize, reinterpret_cast<byte*>(inMesh->mFaces[face].mIndices + index));
 			}
 		}
 	}
 
 	meshInfo.IndexCount = inMesh->mNumFaces * 3;
 	meshInfo.IndexSize = indexSize;
-}
-
-void Insert(const StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer)
-{
-	GTSL::Insert(meshInfo.VertexDescriptor, buffer);
-	GTSL::Insert(meshInfo.VertexCount, buffer);
-	GTSL::Insert(meshInfo.IndexCount, buffer);
-	GTSL::Insert(meshInfo.ByteOffset, buffer);
-	GTSL::Insert(meshInfo.IndexSize, buffer);
-}
-
-void Extract(StaticMeshResourceManager::MeshInfo& meshInfo, GTSL::Buffer& buffer)
-{
-	GTSL::Extract(meshInfo.VertexDescriptor, buffer);
-	GTSL::Extract(meshInfo.VertexCount, buffer);
-	GTSL::Extract(meshInfo.IndexCount, buffer);
-	GTSL::Extract(meshInfo.ByteOffset, buffer);
-	GTSL::Extract(meshInfo.IndexSize, buffer);
 }

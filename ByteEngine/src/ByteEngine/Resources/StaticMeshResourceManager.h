@@ -66,9 +66,26 @@ public:
 		uint8 IndexSize = 0;
 
 		[[nodiscard]] uint32 MeshSize()const { return VertexCount + IndexCount; }
+
+		template<class ALLOCATOR>
+		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+		{
+			Insert(meshInfo.VertexDescriptor, buffer);
+			Insert(meshInfo.VertexCount, buffer);
+			Insert(meshInfo.IndexCount, buffer);
+			Insert(meshInfo.ByteOffset, buffer);
+			Insert(meshInfo.IndexSize, buffer);
+		}
 		
-		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer& buffer);
-		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer& buffer);
+		template<class ALLOCATOR>
+		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+		{
+			Extract(meshInfo.VertexDescriptor, buffer);
+			Extract(meshInfo.VertexCount, buffer);
+			Extract(meshInfo.IndexCount, buffer);
+			Extract(meshInfo.ByteOffset, buffer);
+			Extract(meshInfo.IndexSize, buffer);
+		}
 	};
 	
 private:
@@ -77,5 +94,5 @@ private:
 	
 	GTSL::FlatHashMap<MeshInfo, BE::PersistentAllocatorReference> meshInfos;
 
-	static void loadMesh(const GTSL::Buffer& sourceBuffer, MeshInfo& meshInfo, GTSL::Buffer& mesh);
+	static void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, MeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& mesh);
 };

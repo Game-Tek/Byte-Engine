@@ -2,7 +2,7 @@
 
 #include <GAL/RenderCore.h>
 #include <GTSL/Array.hpp>
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/SparseVector.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/StaticMap.hpp>
@@ -218,7 +218,10 @@ public:
 	}
 
 	void TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
+	void Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
 
+	uint32 CreateComputePipeline(Id materialName, MaterialResourceManager* materialResourceManager, GameInstance* gameInstance);
+	
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
 
 	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
@@ -486,6 +489,16 @@ private:
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
 	
 	void onTextureProcessed(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
+
+	struct ShaderLoadInfo
+	{
+		ShaderLoadInfo() = default;
+		ShaderLoadInfo(ShaderLoadInfo&& other) noexcept : Buffer(GTSL::MoveRef(other.Buffer)), Component(other.Component) {}
+		GTSL::Buffer<BE::PAR> Buffer; uint32 Component;
+	};
+	
+	void onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo);
+	void onShadersLoaded(TaskInfo taskInfo, ::MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 	
 	struct TextureComponent
 	{
@@ -507,37 +520,17 @@ private:
 	
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer&& buffer, uint32 index, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), TextureResourceManager(tRM)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), TextureResourceManager(tRM)
 		{
 
 		}
 
 		RenderSystem* RenderSystem = nullptr;
-		GTSL::Buffer Buffer;
+		GTSL::Buffer<BE::PAR> Buffer;
 		uint32 Component;
 		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
-	
-	template<typename C, typename C2>
-	void genShaderStages(RenderDevice* renderDevice, C& container, C2& shaderInfos, const MaterialResourceManager::OnMaterialLoadInfo& onMaterialLoadInfo)
-	{
-		uint32 offset = 0;
-		
-		for (uint32 i = 0; i < onMaterialLoadInfo.ShaderTypes.GetLength(); ++i)
-		{
-			Shader::CreateInfo create_info;
-			create_info.RenderDevice = renderDevice;
-			create_info.ShaderData = GTSL::Range<const byte*>(onMaterialLoadInfo.ShaderSizes[i], onMaterialLoadInfo.DataBuffer.begin() + offset);
-			container.EmplaceBack(create_info);
-			offset += onMaterialLoadInfo.ShaderSizes[i];
-		}
-
-		for (uint32 i = 0; i < container.GetLength(); ++i)
-		{
-			shaderInfos.PushBack({ ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]), container[i] });
-		}
-	}
 
 	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
 	

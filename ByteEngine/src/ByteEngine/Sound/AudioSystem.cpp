@@ -1,11 +1,8 @@
 #include "AudioSystem.h"
 
-
 #include <GTSL/Algorithm.h>
 #include <GTSL/DataSizes.h>
 #include <GTSL/Math/Math.hpp>
-
-
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Application/Application.h"
@@ -38,8 +35,6 @@ void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 	audioDevice.Stop();
 	audioDevice.Destroy();
-	
-	audioBuffer.Free(32, GetPersistentAllocator());
 }
 
 AudioListenerHandle AudioSystem::CreateAudioListener()

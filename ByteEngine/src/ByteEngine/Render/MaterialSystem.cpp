@@ -8,6 +8,8 @@
 
 #include "RenderOrchestrator.h"
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/Application.h"
 
 const char* BindingTypeString(const BindingType binding)
 {
@@ -205,26 +207,21 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups(16, GetTransientAllocator());
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
-		GTSL::Vector<Shader, BE::TAR> shaders(16, GetTransientAllocator());
+		GTSL::Vector<GTSL::Buffer<BE::TAR>, BE::TAR> shaderBuffers(16, GetTransientAllocator());
 
 		for (uint32 i = 0; i < materialResorceManager->GetRayTraceShaderCount(); ++i)
 		{
 			uint32 bufferSize = 0;
 			bufferSize = materialResorceManager->GetRayTraceShaderSize(materialResorceManager->GetRayTraceShaderHandle(i));
-			GTSL::Buffer shaderBuffer; shaderBuffer.Allocate(bufferSize, 8, GetTransientAllocator());
+			shaderBuffers.EmplaceBack();
+			shaderBuffers[i].Allocate(bufferSize, 8, GetTransientAllocator());
 
 			shaderGroupsByName.Emplace(materialResorceManager->GetRayTraceShaderHandle(i)(), i);
 			
-			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffer.GetCapacity(), shaderBuffer.GetData())); //TODO: VIRTUAL BUFFER INTERFACE
-
-			Shader::CreateInfo createInfo;
-			createInfo.RenderDevice = renderSystem->GetRenderDevice();
-			createInfo.ShaderData = GTSL::Range<const byte*>(material.BinarySize, shaderBuffer.GetData());
-
-			shaders.EmplaceBack(createInfo);
+			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffers[i].GetCapacity(), shaderBuffers[i].GetData())); //TODO: VIRTUAL BUFFER INTERFACE
 			
 			Pipeline::ShaderInfo shaderInfo;
-			shaderInfo.Shader = shaders[i];
+			shaderInfo.Blob = GTSL::Range<const byte*>(material.BinarySize, shaderBuffers[i].GetData());
 			shaderInfo.Type = ConvertShaderType(material.ShaderType);
 			shaderInfos.EmplaceBack(shaderInfo);
 
@@ -279,10 +276,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			}
 
 			groups.EmplaceBack(group);
-
-			shaderBuffer.Free(8, GetTransientAllocator());
 		}
-
+		
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) {
@@ -299,21 +294,19 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		createInfo.Groups = groups;
 		rayTracingPipeline.Initialize(createInfo);
-
-		for (auto& s : shaders) { s.Destroy(renderSystem->GetRenderDevice()); }
 		
 		auto handleSize = renderSystem->GetShaderGroupHandleSize();
 		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
-		GTSL::SmartBuffer<BE::TAR> handlesBuffer(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
 
-		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer->GetCapacity(), handlesBuffer->GetData()));
+		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer.GetCapacity(), handlesBuffer.GetData()));
 
 		auto* sbt = reinterpret_cast<byte*>(shaderBindingTableAllocation.Data);
 
 		for (uint32 h = 0; h < groups.GetLength(); ++h)
 		{
-			GTSL::MemCopy(handleSize, handlesBuffer->GetData() + h * handleSize, sbt + alignedHandleSize * h);
+			GTSL::MemCopy(handleSize, handlesBuffer.GetData() + h * handleSize, sbt + alignedHandleSize * h);
 		}
 
 		for(auto& e : descriptorsUpdates)
@@ -485,7 +478,7 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 
 	auto materialIndex = materials.Emplace();
 	
-	GTSL::Buffer material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
+	GTSL::Buffer<BE::PAR> material_buffer; material_buffer.Allocate(material_size, 32, GetPersistentAllocator());
 	
 	const auto acts_on = GTSL::Array<TaskDependency, 16>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
 	MaterialResourceManager::MaterialLoadInfo material_load_info;
@@ -633,6 +626,34 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 	commandBuffer->TraceRays(traceRaysInfo);
 }
 
+void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
+{
+	CommandBuffer::BindPipelineInfo bindPipelineInfo;
+	bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
+	bindPipelineInfo.PipelineType = PipelineType::COMPUTE;
+	bindPipelineInfo.Pipeline = Pipeline();
+	commandBuffer->BindPipeline(bindPipelineInfo);
+
+	CommandBuffer::DispatchInfo dispatchInfo; dispatchInfo.RenderDevice = renderSystem->GetRenderDevice();
+	dispatchInfo.WorkGroups = workGroups;
+	commandBuffer->Dispatch(dispatchInfo);
+}
+
+uint32 MaterialSystem::CreateComputePipeline(Id shaderName, MaterialResourceManager* materialResourceManager, GameInstance* gameInstance)
+{
+	ShaderLoadInfo shaderLoadInfo; shaderLoadInfo.Component = 0;
+	
+	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "MaterialSystem", AccessType::READ } };
+	auto taskHandle = gameInstance->StoreDynamicTask("onShaderInfosLoaded",
+		Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShaderInfosLoaded>(this),
+		taskDependencies);
+	
+	GTSL::Array<Id, 8> shaderNames; shaderNames.EmplaceBack(shaderName);
+	materialResourceManager->LoadShaderInfos(gameInstance, shaderNames, taskHandle, GTSL::MoveRef(shaderLoadInfo));
+
+	return 0;
+}
+
 void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -680,7 +701,6 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			descriptorsUpdates[f].AddBufferUpdate(indexBuffersSubSetHandle, e, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
 			*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = renderSystem->GetMeshMaterialHandle(e).Element;
-			//TODO: CORRECTLY UPDATE MESH DESCRIPTOR BY INDEX
 		}
 	}
 
@@ -713,7 +733,6 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 				bindingsUpdateInfo.BindingsUpdateInfos = bindingsUpdateInfos;
 				sets[set.First].BindingsSet[frame].Update(bindingsUpdateInfo, GetTransientAllocator());
 			}
-
 		}
 		
 		descriptorsUpdate.Reset();
@@ -859,11 +878,27 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			setInfo.Structs = GTSL::Array<StructInfo, 1>();
 			setHandle = AddSet(renderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
 		}
-		
+
+		GTSL::Array<Pipeline::ShaderInfo, 8> shaderInfos;
+
+		for(auto e : onMaterialLoadInfo.ShaderTypes)
 		{
-			GTSL::Array<Shader, 10> shaders; GTSL::Array<Pipeline::ShaderInfo, 16> shaderInfos;
-			genShaderStages(loadInfo->RenderSystem->GetRenderDevice(), shaders, shaderInfos, onMaterialLoadInfo);
+			Pipeline::ShaderInfo shaderInfo;
+			shaderInfo.Type = ConvertShaderType(e);
+			shaderInfos.EmplaceBack(shaderInfo);
+		}
+
+		{
+			uint32 offset = 0;
 			
+			for (uint8 i = 0; i < shaderInfos.GetLength(); ++i)
+			{
+				shaderInfos[i].Blob = GTSL::Range<const byte*>(onMaterialLoadInfo.ShaderSizes[i], loadInfo->Buffer.GetData() + offset);
+				offset += onMaterialLoadInfo.ShaderSizes[i];
+			}
+		}
+		
+		{			
 			createInfo.Stages = shaderInfos;
 
 			auto* renderOrchestrator = taskInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
@@ -916,8 +951,10 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 				addPendingMaterialToTexture(textureComp, matHandle);
 
-				*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, 0) = textureComp;
-				*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, 1) = textureComp;
+				for (uint8 f = 0; f < queuedFrames; ++f) {
+					*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = textureComp;
+				}
+				
 				UpdateIteratorMemberIndex(bufferIterator, i);
 				
 				++material.Target; ++i;
@@ -929,7 +966,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		}
 	}
 
-	loadInfo->Buffer.Free(32, GetPersistentAllocator());
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
 
@@ -1326,4 +1362,33 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 	latestLoadedTextures.EmplaceBack(loadInfo->Component);
 	
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
+}
+
+void MaterialSystem::onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager* materialResourceManager, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo)
+{	
+	uint32 totalSize = 0;
+
+	for (auto e : shaderInfos) { totalSize += e.Size; }
+	
+	shaderLoadInfo.Buffer.Allocate(totalSize, 8, GetPersistentAllocator());
+	
+	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShadersLoaded>(this), taskDependencies);
+	
+	materialResourceManager->LoadShaders(taskInfo.GameInstance, shaderInfos, taskHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
+}
+
+void MaterialSystem::onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
+{
+	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	
+	shaderLoadInfo.Component;
+
+	ComputePipeline pipeline;
+	ComputePipeline::CreateInfo createInfo;
+	createInfo.RenderDevice = renderSystem->GetRenderDevice();
+	createInfo.PipelineLayout;
+	createInfo.ShaderInfo.Blob = GTSL::Range<const byte*>(shaders[0].Size, shaderLoadInfo.Buffer.GetData());
+	createInfo.ShaderInfo.Type = ShaderType::COMPUTE;
+	pipeline.Initialize(createInfo);
 }

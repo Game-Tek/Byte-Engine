@@ -26,7 +26,7 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Math/Vector2.h>
 
@@ -398,9 +398,9 @@ FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const U
 	GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
 	GTSL::File fontFile; fontFile.OpenFile(path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
-	GTSL::Buffer fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
 
-	fontFile.ReadFile(fileBuffer);
+	fontFile.ReadFile(fontFile.GetFileSize(), fileBuffer.GetBufferInterface());
 	
 	Font fontData;
 	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
@@ -429,9 +429,6 @@ FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const U
 	//		}
 	//	}
 	//}
-	
-	fileBuffer.Free(8, GetTransientAllocator());
-	fontFile.CloseFile();
 	
 	return fontData;
 }

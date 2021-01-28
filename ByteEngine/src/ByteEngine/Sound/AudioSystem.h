@@ -5,7 +5,7 @@
 #include "ByteEngine/Game/System.h"
 #include <AAL/Platform/Windows/WindowsAudioDevice.h>
 #include <GTSL/Array.hpp>
-#include <GTSL/Buffer.h>
+#include <GTSL/Buffer.hpp>
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Game/Tasks.h"
 
@@ -42,7 +42,7 @@ private:
 
 	GTSL::Array<Id, 8> lastRequestedAudios;
 
-	GTSL::Buffer audioBuffer;
+	GTSL::Buffer<BE::PAR> audioBuffer;
 	
 	void requestAudioStreams();
 	void render(TaskInfo);

@@ -470,6 +470,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				break;
 			}
 
+			case PassType::COMPUTE:
 			case PassType::RAY_TRACING:
 			{
 				doRender();
@@ -896,6 +897,31 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 			break;
 		}
 		case PassType::COMPUTE:
+		{
+			renderPasses.EmplaceBack(passesData[passIndex].Name);
+			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name());
+
+			renderPass.PassType = PassType::COMPUTE;
+			renderPass.PipelineStages = PipelineStage::COMPUTE_SHADER;
+
+			for (auto& e : passesData[passIndex].WriteAttachments) {
+				AttachmentData attachmentData;
+				attachmentData.Name = e.Name;
+				attachmentData.Layout = TextureLayout::GENERAL;
+				attachmentData.ConsumingStages = PipelineStage::COMPUTE_SHADER;
+				renderPass.WriteAttachments.EmplaceBack(attachmentData);
+			}
+
+			for (auto& e : passesData[passIndex].ReadAttachments) {
+				AttachmentData attachmentData;
+				attachmentData.Name = e.Name;
+				attachmentData.Layout = TextureLayout::SHADER_READ_ONLY;
+				attachmentData.ConsumingStages = PipelineStage::COMPUTE_SHADER;
+				renderPass.ReadAttachments.EmplaceBack(attachmentData);
+			}
+
+			break;
+		}
 		case PassType::RAY_TRACING:
 		{
 			renderPasses.EmplaceBack(passesData[passIndex].Name);
@@ -1122,8 +1148,13 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 }
 
 void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
-{	
+{
 	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
+}
+
+void RenderOrchestrator::dispatch(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
+{	
+	materialSystem->Dispatch(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
 }
 
 void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId)

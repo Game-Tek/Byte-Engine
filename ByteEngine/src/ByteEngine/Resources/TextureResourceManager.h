@@ -8,69 +8,90 @@
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
 
+#include "ByteEngine/Game/GameInstance.h"
+
 class TextureResourceManager final : public ResourceManager
 {
 public:
 	TextureResourceManager();
 	~TextureResourceManager();
 	
-	struct TextureInfo
+	struct TextureData
 	{
-		uint32 ByteOffset = 0;
 		uint32 ImageSize = 0;
 		GAL::Dimension Dimensions;
 		GTSL::Extent3D Extent;
-		uint8 Format = 0;
+		GAL::TextureFormat Format;
+	};
+
+	struct TextureInfoSerialize : TextureData
+	{
+		uint32 ByteOffset = 0;
+
+		template<class ALLOCATOR>
+		friend void Insert(const TextureInfoSerialize& textureInfoSerialize, GTSL::Buffer<ALLOCATOR>& buffer)
+		{
+			Insert(textureInfoSerialize.ByteOffset, buffer);
+			Insert(textureInfoSerialize.ImageSize, buffer);
+			Insert(textureInfoSerialize.Dimensions, buffer);
+			Insert(textureInfoSerialize.Extent, buffer);
+			Insert(textureInfoSerialize.Format, buffer);
+		}
+
+		template<class ALLOCATOR>
+		friend void Extract(TextureInfoSerialize& textureInfoSerialize, GTSL::Buffer<ALLOCATOR>& buffer)
+		{
+			Extract(textureInfoSerialize.ByteOffset, buffer);
+			Extract(textureInfoSerialize.ImageSize, buffer);
+			Extract(textureInfoSerialize.Dimensions, buffer);
+			Extract(textureInfoSerialize.Extent, buffer);
+			Extract(textureInfoSerialize.Format, buffer);
+		}
+	};
+
+	struct TextureInfo : TextureInfoSerialize
+	{
+		TextureInfo() = default;
+		TextureInfo(const TextureInfoSerialize& textureInfoSerialize) : TextureInfoSerialize(textureInfoSerialize) {}
+		
+		Id Name;
 	};
 	
-	struct OnTextureLoadInfo : OnResourceLoad
+	template<typename... ARGS>
+	void LoadTextureInfo(GameInstance* gameInstance, Id textureName, DynamicTaskHandle<TextureResourceManager*, TextureInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
-		GAL::TextureFormat TextureFormat;
-		GTSL::Extent3D Extent;
-		GAL::Dimension Dimensions;
-		float32 LODPercentage{ 0.0f };
-	};
-	
-	void GetTextureSizeFormatExtent(const GTSL::Id64 name, uint32* size, GAL::TextureFormat* format, GTSL::Extent3D* extent)
-	{
-		auto& e = textureInfos.At(name);
-		*size = e.ImageSize;
-		*format = static_cast<GAL::TextureFormat>(e.Format);
-		*extent = e.Extent;
+		auto loadTextureInfo = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, Id textureName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
+		{
+			auto textureInfoSerialize = resourceManager->textureInfos.At(textureName());
+
+			TextureInfo textureInfo(textureInfoSerialize);
+			textureInfo.Name = textureName;
+			
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
+		};
+		
+		gameInstance->AddDynamicTask("loadTextureInfo", Task<TextureResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadTextureInfo), {}, this, GTSL::MoveRef(textureName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
+
+	using Texture = TextureInfo;
 	
-	struct TextureLoadInfo : ResourceLoadInfo
+	template<typename... ARGS>
+	void LoadTexture(GameInstance* gameInstance, TextureInfo textureInfo, GTSL::Range<byte*> buffer, DynamicTaskHandle<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
-		GTSL::Delegate<void(TaskInfo, OnTextureLoadInfo)> OnTextureLoadInfo;
-		GTSL::Extent3D TextureExtent;
-		float32 LODPercentage{ 0.0f };
-	};
-	void LoadTexture(const TextureLoadInfo& textureLoadInfo);
+		auto loadTexture = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureInfo textureInfo, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
+		{
+			resourceManager->packageFile.SetPointer(textureInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+			resourceManager->packageFile.ReadFromFile(GTSL::Range<byte*>(textureInfo.ImageSize, buffer.begin()));
+			
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+		};
+		
+		gameInstance->AddDynamicTask("loadTexture", Task<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadTexture), {}, this, GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	}
+
 
 private:
 	GTSL::File packageFile, indexFile;
-	GTSL::FlatHashMap<TextureInfo, BE::PersistentAllocatorReference> textureInfos;
+	GTSL::FlatHashMap<TextureInfoSerialize, BE::PersistentAllocatorReference> textureInfos;
 	GTSL::Mutex fileLock;
-	
-	void loadTextureImplementation(TaskInfo taskInfo, TextureLoadInfo loadInfo);
 };
-
-template<class ALLOCATOR>
-void Insert(const TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer<ALLOCATOR>& buffer)
-{
-	Insert(textureInfo.ByteOffset, buffer);
-	Insert(textureInfo.ImageSize, buffer);
-	Insert(textureInfo.Format, buffer);
-	Insert(textureInfo.Dimensions, buffer);
-	Insert(textureInfo.Extent, buffer);
-}
-
-template<class ALLOCATOR>
-void Extract(TextureResourceManager::TextureInfo& textureInfo, GTSL::Buffer<ALLOCATOR>& buffer)
-{
-	Extract(textureInfo.ByteOffset, buffer);
-	Extract(textureInfo.ImageSize, buffer);
-	Extract(textureInfo.Format, buffer);
-	Extract(textureInfo.Dimensions, buffer);
-	Extract(textureInfo.Extent, buffer);
-}

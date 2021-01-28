@@ -306,11 +306,6 @@ public:
 		
 		friend class MaterialResourceManager;
 	};
-	
-	struct Shader
-	{
-		Id Name; uint32 Size;
-	};
 
 	template<typename... ARGS>
 	void LoadShaderInfos(GameInstance* gameInstance, GTSL::Range<const Id*> shaderNames, DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<ShaderInfo, 8>, ARGS...> dynamicTaskHandle, ARGS&&... args)
@@ -334,12 +329,10 @@ public:
 	}
 
 	template<typename... ARGS>
-	void LoadShaders(GameInstance* gameInstance, GTSL::Range<const ShaderInfo*> shaderInfos, DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<Shader, 8>, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args)
+	void LoadShaders(GameInstance* gameInstance, GTSL::Range<const ShaderInfo*> shaderInfos, DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<ShaderInfo, 8>, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args)
 	{
 		auto loadShaders = [](TaskInfo taskInfo, MaterialResourceManager* materialResourceManager, GTSL::Array<ShaderInfo, 8> shaderInfos, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			GTSL::Array<Shader, 8> shaders;
-
 			uint32 offset = 0;
 
 			for (auto e : shaderInfos)
@@ -353,7 +346,7 @@ public:
 				offset += e.Size;
 			}
 
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shaders), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shaderInfos), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
 		gameInstance->AddDynamicTask("loadShadersFromDisk", Task<MaterialResourceManager*, GTSL::Array<ShaderInfo, 8>, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaders), GTSL::Range<TaskDependency*>(), this, GTSL::Array<ShaderInfo, 8>(shaderInfos), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);

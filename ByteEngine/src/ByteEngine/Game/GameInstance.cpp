@@ -16,7 +16,7 @@ recurringTasksPerStage(16, GetPersistentAllocator()), stagesNames(8, GetPersiste
 dynamicTasksPerStage(32, GetPersistentAllocator()),
 taskSorter(64, GetPersistentAllocator()),
 recurringTasksInfo(32, GetPersistentAllocator()),
-asyncTasks(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator())
+asyncTasks(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()), storedDynamicTasks(16, GetPersistentAllocator())
 {
 }
 

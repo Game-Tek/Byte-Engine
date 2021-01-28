@@ -528,70 +528,21 @@ void MaterialSystem::SetMaterialParameter(const MaterialHandle material, GAL::Sh
 
 ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 {
-	TextureResourceManager::TextureLoadInfo textureLoadInfo;
-	textureLoadInfo.GameInstance = info.GameInstance;
-	textureLoadInfo.Name = info.TextureName;
-
-	textureLoadInfo.OnTextureLoadInfo = GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onTextureLoad>(this);
-
 	//const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
 	const GTSL::Array<const TaskDependency, 6> loadTaskDependencies;
 
-	textureLoadInfo.ActsOn = loadTaskDependencies;
-
 	auto component = textures.Emplace();
-
-	{
-		Buffer::CreateInfo scratchBufferCreateInfo;
-		scratchBufferCreateInfo.RenderDevice = info.RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += info.TextureName.GetHash();
-			scratchBufferCreateInfo.Name = name;
-		}
-
-		{
-			uint32 textureSize; GAL::TextureFormat textureFormat; GTSL::Extent3D textureExtent;
-			info.TextureResourceManager->GetTextureSizeFormatExtent(info.TextureName, &textureSize, &textureFormat, &textureExtent);
-
-			RenderDevice::FindSupportedImageFormat findFormatInfo;
-			findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;
-			findFormatInfo.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-			GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-			findFormatInfo.Candidates = candidates;
-			const auto supportedFormat = info.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
-
-			scratchBufferCreateInfo.Size = textureExtent.Width * textureExtent.Depth * textureExtent.Height * FormatSize(supportedFormat);
-		}
-
-		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
-
-		Buffer scratchBuffer;
-
-		RenderAllocation allocation;
-
-		{
-			RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
-			scratchMemoryAllocation.Buffer = &scratchBuffer;
-			scratchMemoryAllocation.CreateInfo = &scratchBufferCreateInfo;
-			scratchMemoryAllocation.Allocation = &allocation;
-			info.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
-		}
-
-		texturesRefTable.Emplace(info.TextureName(), component);
-		
-		auto* loadInfo = GTSL::New<TextureLoadInfo>(GetPersistentAllocator(), component, GTSL::MoveRef(scratchBuffer), info.RenderSystem, allocation);
-
-		textureLoadInfo.DataBuffer = GTSL::Range<byte*>(allocation.Size, static_cast<byte*>(allocation.Data));
-
-		textureLoadInfo.UserData = DYNAMIC_TYPE(TextureLoadInfo, loadInfo);
-	}
 
 	pendingMaterialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
 	pendingMaterialsPerTexture[component].Initialize(4, GetPersistentAllocator());
-	
-	info.TextureResourceManager->LoadTexture(textureLoadInfo);
+
+	texturesRefTable.Emplace(info.TextureName(), component);
+
+	auto textureLoadInfo = TextureLoadInfo(component, Buffer(), info.RenderSystem, RenderAllocation());
+
+	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	auto taskHandle = info.GameInstance->StoreDynamicTask("onTextureInfoLoad", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureInfoLoad>(this), taskDependencies);
+	info.TextureResourceManager->LoadTextureInfo(info.GameInstance, info.TextureName, taskHandle, GTSL::MoveRef(textureLoadInfo));
 
 	return ComponentReference(GetSystemId(), component);
 }
@@ -1237,81 +1188,91 @@ void MaterialSystem::resizeSet(RenderSystem* renderSystem, SetHandle setHandle)
 	//descriptorsUpdates[frame].AddBufferUpdate(setUpdateHandle, 0, 0, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 }
 
-void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
+void MaterialSystem::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
 {
-	{
-		auto* loadInfo = DYNAMIC_CAST(TextureLoadInfo, onTextureLoadInfo.UserData);
-
-		RenderDevice::FindSupportedImageFormat findFormat;
-		findFormat.TextureTiling = TextureTiling::OPTIMAL;
-		findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-		GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(onTextureLoadInfo.TextureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-		findFormat.Candidates = candidates;
-		auto supportedFormat = loadInfo->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
-
-		GAL::Texture::ConvertTextureFormat(onTextureLoadInfo.TextureFormat, GAL::TextureFormat::RGBA_I8, onTextureLoadInfo.Extent, GTSL::AlignedPointer<byte, 16>(onTextureLoadInfo.DataBuffer.begin()), 1);
-
-		{
-			const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-			
-			taskInfo.GameInstance->AddDynamicTask("onTextureProcessed", GTSL::Delegate<void(TaskInfo, TextureResourceManager::OnTextureLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onTextureProcessed>(this),
-				loadTaskDependencies, GTSL::MoveRef(onTextureLoadInfo));
-		}
+	Buffer::CreateInfo scratchBufferCreateInfo;
+	scratchBufferCreateInfo.RenderDevice = loadInfo.RenderSystem->GetRenderDevice();
+	if constexpr (_DEBUG) {
+		GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += textureInfo.Name.GetHash();
+		scratchBufferCreateInfo.Name = name;
 	}
+
+	{
+		RenderDevice::FindSupportedImageFormat findFormatInfo;
+		findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;
+		findFormatInfo.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
+		GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+		findFormatInfo.Candidates = candidates;
+		const auto supportedFormat = loadInfo.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
+
+		scratchBufferCreateInfo.Size = textureInfo.Extent.Width * textureInfo.Extent.Height * textureInfo.Extent.Depth * FormatSize(supportedFormat);
+	}
+
+	scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
+
+	{
+		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
+		scratchMemoryAllocation.Buffer = &loadInfo.Buffer;
+		scratchMemoryAllocation.CreateInfo = &scratchBufferCreateInfo;
+		scratchMemoryAllocation.Allocation = &loadInfo.RenderAllocation;
+		loadInfo.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
+	}
+
+	auto dataBuffer = GTSL::Range<byte*>(loadInfo.RenderAllocation.Size, static_cast<byte*>(loadInfo.RenderAllocation.Data));
+
+	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("loadTexture", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, GTSL::Range<byte*>, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureLoad>(this), taskDependencies);
+	resourceManager->LoadTexture(taskInfo.GameInstance, textureInfo, dataBuffer, taskHandle, GTSL::MoveRef(loadInfo));
 }
 
-void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo onTextureLoadInfo)
+void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, GTSL::Range<byte*> buffer, TextureLoadInfo loadInfo)
 {
-	auto* loadInfo = DYNAMIC_CAST(TextureLoadInfo, onTextureLoadInfo.UserData);
-
 	RenderDevice::FindSupportedImageFormat findFormat;
 	findFormat.TextureTiling = TextureTiling::OPTIMAL;
 	findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(onTextureLoadInfo.TextureFormat)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
 	findFormat.Candidates = candidates;
-	auto supportedFormat = loadInfo->RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
-	
+	auto supportedFormat = loadInfo.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
+
+	GAL::Texture::ConvertTextureFormat(textureInfo.Format, GAL::TextureFormat::RGBA_I8, textureInfo.Extent, GTSL::AlignedPointer<byte, 16>(buffer.begin()), 1);
+
 	TextureComponent textureComponent;
 
 	{
 		Texture::CreateInfo textureCreateInfo;
-		textureCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture. Texture: "); name += onTextureLoadInfo.ResourceName;
+		textureCreateInfo.RenderDevice = loadInfo.RenderSystem->GetRenderDevice();
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Texture. Texture: "); name += textureInfo.Name;
 			textureCreateInfo.Name = name;
 		}
 
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
 		textureCreateInfo.Uses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-		textureCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
+		textureCreateInfo.Dimensions = ConvertDimension(textureInfo.Dimensions);
 		textureCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
-		textureCreateInfo.Extent = onTextureLoadInfo.Extent;
+		textureCreateInfo.Extent = textureInfo.Extent;
 		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
 		textureCreateInfo.MipLevels = 1;
-		
+
 		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
 		allocationInfo.Allocation = &textureComponent.Allocation;
 		allocationInfo.CreateInfo = &textureCreateInfo;
 		allocationInfo.Texture = &textureComponent.Texture;
 
-		loadInfo->RenderSystem->AllocateLocalTextureMemory(allocationInfo);
+		loadInfo.RenderSystem->AllocateLocalTextureMemory(allocationInfo);
 	}
 
 	{
 		TextureView::CreateInfo textureViewCreateInfo;
-		textureViewCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture view. Texture: "); name += onTextureLoadInfo.ResourceName;
+		textureViewCreateInfo.RenderDevice = loadInfo.RenderSystem->GetRenderDevice();
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Texture view. Texture: "); name += textureInfo.Name;
 			textureViewCreateInfo.Name = name;
 		}
 
-		textureViewCreateInfo.Type = GAL::VulkanTextureType::COLOR;
-		textureViewCreateInfo.Dimensions = ConvertDimension(onTextureLoadInfo.Dimensions);
-		textureViewCreateInfo.Format = static_cast<GAL::VulkanTextureFormat>(supportedFormat);
+		textureViewCreateInfo.Type = TextureType::COLOR;
+		textureViewCreateInfo.Dimensions = ConvertDimension(textureInfo.Dimensions);
+		textureViewCreateInfo.Format = supportedFormat;
 		textureViewCreateInfo.Texture = textureComponent.Texture;
 		textureViewCreateInfo.MipLevels = 1;
 
@@ -1321,21 +1282,19 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 	{
 		RenderSystem::TextureCopyData textureCopyData;
 		textureCopyData.DestinationTexture = textureComponent.Texture;
-		textureCopyData.SourceBuffer = loadInfo->Buffer;
-		textureCopyData.Allocation = loadInfo->RenderAllocation;
+		textureCopyData.SourceBuffer = loadInfo.Buffer;
+		textureCopyData.Allocation = loadInfo.RenderAllocation;
 		textureCopyData.Layout = TextureLayout::TRANSFER_DST;
-		textureCopyData.Extent = onTextureLoadInfo.Extent;
+		textureCopyData.Extent = textureInfo.Extent;
 
-		loadInfo->RenderSystem->AddTextureCopy(textureCopyData);
+		loadInfo.RenderSystem->AddTextureCopy(textureCopyData);
 	}
 
 	{
 		TextureSampler::CreateInfo textureSamplerCreateInfo;
-		textureSamplerCreateInfo.RenderDevice = loadInfo->RenderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Texture sampler. Texture: "); name += onTextureLoadInfo.ResourceName;
+		textureSamplerCreateInfo.RenderDevice = loadInfo.RenderSystem->GetRenderDevice();
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Texture sampler. Texture: "); name += textureInfo.Name;
 			textureSamplerCreateInfo.Name = name;
 		}
 
@@ -1344,9 +1303,9 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
 	}
 
-	textures[loadInfo->Component] = textureComponent;
+	textures[loadInfo.Component] = textureComponent;
 
-	BE_LOG_MESSAGE("Loaded texture ", onTextureLoadInfo.ResourceName)
+	BE_LOG_MESSAGE("Loaded texture ", textureInfo.Name);
 
 	BindingsSet::TextureBindingUpdateInfo textureBindingUpdateInfo;
 
@@ -1356,12 +1315,10 @@ void MaterialSystem::onTextureProcessed(TaskInfo taskInfo, TextureResourceManage
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
 	{
-		descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, loadInfo->Component, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
+		descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, loadInfo.Component, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
 	}
-	
-	latestLoadedTextures.EmplaceBack(loadInfo->Component);
-	
-	GTSL::Delete(loadInfo, GetPersistentAllocator());
+
+	latestLoadedTextures.EmplaceBack(loadInfo.Component);
 }
 
 void MaterialSystem::onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager* materialResourceManager, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo)
@@ -1373,12 +1330,12 @@ void MaterialSystem::onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceMana
 	shaderLoadInfo.Buffer.Allocate(totalSize, 8, GetPersistentAllocator());
 	
 	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShadersLoaded>(this), taskDependencies);
+	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShadersLoaded>(this), taskDependencies);
 	
 	materialResourceManager->LoadShaders(taskInfo.GameInstance, shaderInfos, taskHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
 
-void MaterialSystem::onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
+void MaterialSystem::onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	

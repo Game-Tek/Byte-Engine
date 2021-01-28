@@ -477,6 +477,8 @@ private:
 	
 	struct TextureLoadInfo
 	{
+		TextureLoadInfo() = default;
+		
 		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
 		{
 		}
@@ -486,9 +488,8 @@ private:
 		RenderSystem* RenderSystem;
 		RenderAllocation RenderAllocation;
 	};
-	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
-	
-	void onTextureProcessed(TaskInfo taskInfo, TextureResourceManager::OnTextureLoadInfo loadInfo);
+	void onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
+	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, GTSL::Range<byte*> buffer, TextureLoadInfo loadInfo);
 
 	struct ShaderLoadInfo
 	{
@@ -498,7 +499,7 @@ private:
 	};
 	
 	void onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo);
-	void onShadersLoaded(TaskInfo taskInfo, ::MaterialResourceManager*, GTSL::Array<MaterialResourceManager::Shader, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
+	void onShadersLoaded(TaskInfo taskInfo, ::MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 	
 	struct TextureComponent
 	{

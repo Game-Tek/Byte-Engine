@@ -6,6 +6,8 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
+#include <GTSL/Math/Vector4.h>
+
 #include "ResourceManager.h"
 
 #include "ByteEngine/Game/GameInstance.h"
@@ -17,51 +19,32 @@ public:
 	~MaterialResourceManager();
 	void GetShaderSize(Id id, uint32* shaderSize);
 
-	struct Binding
+	enum class ParameterType : uint8
 	{
-		GAL::BindingType Type;
-		GAL::ShaderStage::value_type Stage;
-
-		Binding() = default;
-		Binding(const GAL::BindingType type, const GAL::ShaderStage::value_type pipelineStage) : Type(type), Stage(pipelineStage) {}
-		//Binding(const RasterMaterialInfo::Binding& other) : Type(static_cast<GAL::BindingType>(other.Type)), Stage(other.Stage) {}
-
-		template<class ALLOC>
-		friend void Insert(const Binding& materialInfo, GTSL::Buffer<ALLOC>& buffer)
-		{
-			Insert(materialInfo.Type, buffer);
-			Insert(materialInfo.Stage, buffer);
-		}
-		
-		template<class ALLOC>
-		friend void Extract(Binding& materialInfo, GTSL::Buffer<ALLOC>& buffer)
-		{
-			Extract(materialInfo.Type, buffer);
-			Extract(materialInfo.Stage, buffer);
-		}
+		UINT32, VEC4,
+		TEXTURE_REFERENCE, BUFFER_REFERENCE
 	};
-
-	struct Uniform
+	
+	struct Parameter
 	{
 		GTSL::Id64 Name;
-		GAL::ShaderDataType Type;
+		ParameterType Type;
 
-		Uniform() = default;
-		Uniform(const GTSL::Id64 name, const GAL::ShaderDataType type) : Name(name), Type(type) {}
-		//Uniform(const RasterMaterialInfo::Uniform& other) : Name(other.Name), Type(static_cast<GAL::ShaderDataType>(other.Type)) {}
+		Parameter() = default;
+		Parameter(const GTSL::Id64 name, const ParameterType type) : Name(name), Type(type) {}
 
 		template<class ALLOC>
-		friend void Insert(const Uniform& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+		friend void Insert(const Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
-			Insert(materialInfo.Name, buffer);
-			Insert(materialInfo.Type, buffer);
+			Insert(parameterInfo.Name, buffer);
+			Insert(parameterInfo.Type, buffer);
 		}
 		
 		template<class ALLOC>
-		friend void Extract(Uniform& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+		friend void Extract(Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
-			Extract(materialInfo.Name, buffer);
-			Extract(materialInfo.Type, buffer);
+			Extract(parameterInfo.Name, buffer);
+			Extract(parameterInfo.Type, buffer);
 		}
 	};
 	
@@ -99,105 +82,125 @@ public:
 			Extract(stencilState.Reference, buffer);
 		}
 	};
-
-#define MAKE_SERIALIZE_FUNCTIONS(paramType, ...)\
-	template<class ALLOCATOR>\
-	friend void Insert(const paramType& param, GTSL::Buffer<ALLOCATOR>& buffer) {\
-		Insert(param.__VA_ARGS__, buffer);\
-	}\
 	
-	
-	struct RasterMaterialInfo
+	struct MaterialInstance
 	{
-		uint32 MaterialOffset = 0;
+		MaterialInstance() = default;
+		
+		union ParameterData
+		{
+			ParameterData() = default;
+			
+			uint32 uint32 = 0;
+			GTSL::Vector4 Vector4;
+			GTSL::Id64 TextureReference;
+			uint64 BufferReference;
+
+			template<class ALLOCATOR>
+			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer) //if trivially copyable
+			{
+				buffer.CopyBytes(sizeof(ParameterData), reinterpret_cast<const byte*>(&uni));
+			}
+
+			template<class ALLOCATOR>
+			friend void Extract(ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer)
+			{
+				buffer.ReadBytes(sizeof(ParameterData), reinterpret_cast<byte*>(&uni));
+			}
+		};
+
+		GTSL::Id64 Name;
+		GTSL::Array<GTSL::Pair<GTSL::Id64, ParameterData>, 16> Parameters;
+
+		template<class ALLOC>
+		friend void Insert(const MaterialInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer)
+		{
+			Insert(materialInstance.Name, buffer);
+			Insert(materialInstance.Parameters, buffer);
+		}
+
+		template<class ALLOC>
+		friend void Extract(MaterialInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer)
+		{
+			Extract(materialInstance.Name, buffer);
+			Extract(materialInstance.Parameters, buffer);
+		}
+	};
+	
+	struct RasterMaterialData : Data
+	{
 		GTSL::Id64 RenderGroup;
 		GTSL::Array<uint32, 12> ShaderSizes;
-		GTSL::Array<uint8, 20> VertexElements;
+		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
 		bool DepthWrite; bool DepthTest; bool StencilTest;
 		GAL::CullMode CullMode;
 		GTSL::Id64 RenderPass;
 
-		GTSL::Array<Uniform, 8> MaterialParameters;
-		GTSL::Array<GTSL::Id64, 8> Textures;
-		GTSL::Array<Binding, 8> PerInstanceParameters;
+		GTSL::Array<Parameter, 16> Parameters;
 		
-		GTSL::Array<uint8, 12> ShaderTypes;
+		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
 		GAL::BlendOperation ColorBlendOperation;
 
 		StencilState Front;
 		StencilState Back;
 		bool BlendEnable = false;
 
-		//MAKE_SERIALIZE_FUNCTIONS(RasterMaterialInfo, MaterialOffset)
-		
-		template<class ALLOC>
-		friend void Insert(const RasterMaterialInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+		GTSL::Array<MaterialInstance, 16> MaterialInstances;
+	};
+
+	struct RasterMaterialDataSerialize : DataSerialize<RasterMaterialData>
+	{
+		INSERT_START(RasterMaterialDataSerialize)
 		{
-			Insert(materialInfo.MaterialOffset, buffer);
-			Insert(materialInfo.RenderGroup, buffer);
-			Insert(materialInfo.RenderPass, buffer);
-
-			Insert(materialInfo.ShaderSizes, buffer);
-			Insert(materialInfo.VertexElements, buffer);
-			Insert(materialInfo.ShaderTypes, buffer);
-
-			Insert(materialInfo.Textures, buffer);
-
-			Insert(materialInfo.DepthTest, buffer);
-			Insert(materialInfo.DepthWrite, buffer);
-			Insert(materialInfo.StencilTest, buffer);
-			Insert(materialInfo.CullMode, buffer);
-			Insert(materialInfo.ColorBlendOperation, buffer);
-			Insert(materialInfo.BlendEnable, buffer);
-
-			Insert(materialInfo.MaterialParameters, buffer);
-			Insert(materialInfo.PerInstanceParameters, buffer);
-
-			Insert(materialInfo.Front, buffer);
-			Insert(materialInfo.Back, buffer);
+			INSERT_BODY
+			Insert(insertInfo.RenderGroup, buffer);
+			Insert(insertInfo.RenderPass, buffer);
+			Insert(insertInfo.ShaderSizes, buffer);
+			Insert(insertInfo.VertexElements, buffer);
+			Insert(insertInfo.ShaderTypes, buffer);
+			Insert(insertInfo.DepthTest, buffer);
+			Insert(insertInfo.DepthWrite, buffer);
+			Insert(insertInfo.StencilTest, buffer);
+			Insert(insertInfo.CullMode, buffer);
+			Insert(insertInfo.ColorBlendOperation, buffer);
+			Insert(insertInfo.BlendEnable, buffer);
+			Insert(insertInfo.Parameters, buffer);
+			Insert(insertInfo.Front, buffer);
+			Insert(insertInfo.Back, buffer);
+			Insert(insertInfo.MaterialInstances, buffer);
 		}
-		
-		template<class ALLOC>
-		friend void Extract(RasterMaterialInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+
+		EXTRACT_START(RasterMaterialDataSerialize)
 		{
-			Extract(materialInfo.MaterialOffset, buffer);
-			Extract(materialInfo.RenderGroup, buffer);
-			Extract(materialInfo.RenderPass, buffer);
-
-			Extract(materialInfo.ShaderSizes, buffer);
-			Extract(materialInfo.VertexElements, buffer);
-			Extract(materialInfo.ShaderTypes, buffer);
-
-			Extract(materialInfo.Textures, buffer);
-
-			Extract(materialInfo.DepthTest, buffer);
-			Extract(materialInfo.DepthWrite, buffer);
-			Extract(materialInfo.StencilTest, buffer);
-			Extract(materialInfo.CullMode, buffer);
-			Extract(materialInfo.ColorBlendOperation, buffer);
-			Extract(materialInfo.BlendEnable, buffer);
-
-			Extract(materialInfo.MaterialParameters, buffer);
-			Extract(materialInfo.PerInstanceParameters, buffer);
-
-			Extract(materialInfo.Front, buffer);
-			Extract(materialInfo.Back, buffer);
+			EXTRACT_BODY
+			Extract(extractInfo.RenderGroup, buffer);
+			Extract(extractInfo.RenderPass, buffer);
+			Extract(extractInfo.ShaderSizes, buffer);
+			Extract(extractInfo.VertexElements, buffer);
+			Extract(extractInfo.ShaderTypes, buffer);
+			Extract(extractInfo.DepthTest, buffer);
+			Extract(extractInfo.DepthWrite, buffer);
+			Extract(extractInfo.StencilTest, buffer);
+			Extract(extractInfo.CullMode, buffer);
+			Extract(extractInfo.ColorBlendOperation, buffer);
+			Extract(extractInfo.BlendEnable, buffer);
+			Extract(extractInfo.Parameters, buffer);
+			Extract(extractInfo.Front, buffer);
+			Extract(extractInfo.Back, buffer);
+			Extract(extractInfo.MaterialInstances, buffer);
 		}
 	};
 	
 	struct RasterMaterialCreateInfo
-	{
+	{		
 		GTSL::StaticString<64> ShaderName;
 		GTSL::StaticString<64> RenderGroup;
 		GTSL::Id64 RenderPass;
 		GTSL::Range<const GAL::ShaderDataType*> VertexFormat;
 
-		GTSL::Array<Uniform, 8> MaterialParameters;
-		GTSL::Array<Binding, 8> PerInstanceParameters;
-
-		GTSL::Array<GTSL::Id64, 8> Textures;
+		GTSL::Array<Parameter, 16> Parameters;
+		GTSL::Array<Parameter, 8> PerInstanceParameters;
 		
-		GTSL::Range<const Binding*> Bindings;
 		GTSL::Range<const GAL::ShaderType*> ShaderTypes;
 		bool DepthWrite;
 		bool DepthTest;
@@ -208,9 +211,11 @@ public:
 		StencilState Back;
 		bool StencilTest;
 		bool BlendEnable = false;
+
+		GTSL::Array<MaterialInstance, 16> MaterialInstances;
 	};
 	void CreateRasterMaterial(const RasterMaterialCreateInfo& materialCreateInfo);
-
+	
 	struct RayTraceMaterialCreateInfo
 	{
 		GTSL::StaticString<64> ShaderName;
@@ -272,11 +277,7 @@ public:
 	{
 		GTSL::Id64 RenderGroup;
 		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
-		GTSL::Array<Uniform, 8> MaterialParameters;
-		GTSL::Array<Binding, 8> PerInstanceParameters;
 
-		GTSL::Array<Uniform, 6> Uniforms;
-		GTSL::Array<GTSL::Id64, 8> Textures;
 		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
 		GTSL::Array<uint32, 20> ShaderSizes;
 		bool DepthWrite;
@@ -289,6 +290,8 @@ public:
 		GTSL::Id64 RenderPass;
 		bool StencilTest;
 		bool BlendEnable = false;
+		GTSL::Array<Parameter, 16> Parameters;
+		GTSL::Array<MaterialInstance, 16> MaterialInstances;
 	};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo
@@ -352,8 +355,6 @@ public:
 		gameInstance->AddDynamicTask("loadShadersFromDisk", Task<MaterialResourceManager*, GTSL::Array<ShaderInfo, 8>, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaders), GTSL::Range<TaskDependency*>(), this, GTSL::Array<ShaderInfo, 8>(shaderInfos), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
-	OnMaterialLoadInfo LoadMaterialSynchronous(uint64 id, GTSL::Range<byte*> buffer);
-	
 	RayTracingShaderInfo LoadRayTraceShaderSynchronous(Id id, GTSL::Range<byte*> buffer);
 
 	uint32 GetRayTraceShaderSize(Id handle) const
@@ -368,7 +369,7 @@ public:
 private:
 	
 	GTSL::File package, index;
-	GTSL::FlatHashMap<RasterMaterialInfo, BE::PersistentAllocatorReference> rasterMaterialInfos;
+	GTSL::FlatHashMap<RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
 	GTSL::FlatHashMap<RayTraceMaterialInfo, BE::PersistentAllocatorReference> rtMaterialInfos;
 	mutable GTSL::ReadWriteMutex mutex;
 

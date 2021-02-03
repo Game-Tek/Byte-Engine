@@ -17,6 +17,9 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Debug/Logger.h"
 
+#include <GTSL/System.h>
+#include <GTSL/DataSizes.h>
+
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
 {
@@ -38,6 +41,8 @@ namespace BE
 
 	void Application::Initialize()
 	{
+		if(!checkPlatformSupport()) { return; }
+		
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 3);
 
@@ -68,7 +73,16 @@ namespace BE
 	{
 		if (closeMode != CloseMode::OK)
 		{
-			BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
+			if (closeMode == CloseMode::WARNING)
+			{
+				BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
+			}
+			
+			BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason.c_str())
+		}
+		else
+		{
+			BE_LOG_SUCCESS("Shutting down application. No reported errors.")
 		}
 
 		delete threadPool;
@@ -115,7 +129,22 @@ namespace BE
 	}
 
 	int Application::Run(int argc, char** argv)
-	{		
+	{
+		if (argc)
+		{
+			GTSL::StaticString<2048> string("Application started with parameters:\n");
+			
+			for (uint32 p = 0; p < argc; ++p) {
+				string += '	'; string += argv[p];
+			}
+
+			BE_LOG_MESSAGE(string);
+		}
+		else
+		{
+			BE_LOG_MESSAGE("Application started with no parameters.");
+		}
+		
 		while (!flaggedForClose)
 		{
 			systemApplication.Update();
@@ -342,5 +371,18 @@ namespace BE
 		}
 
 		return parseEnded;
+	}
+	
+	bool Application::checkPlatformSupport()
+	{
+		bool size_8 = sizeof(uint8) == 1; bool size_16 = sizeof(uint16) == 2; bool size_32 = sizeof(uint32) == 4; bool size_64 = sizeof(uint64) == 8;
+
+		GTSL::SystemInfo systemInfo;
+		GTSL::System::GetSystemInfo(systemInfo);
+
+		bool avx2 = systemInfo.CPU.VectorInfo.HW_AVX2;
+		bool memory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(6));
+		
+		return size_8 && size_16 && size_32 && size_64 && avx2 && memory;
 	}
 }

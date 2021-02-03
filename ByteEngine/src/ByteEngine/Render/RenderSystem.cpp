@@ -289,7 +289,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	BE_LOG_MESSAGE("Initialized successfully");
 }
 
-const PipelineCache* RenderSystem::GetPipelineCache() const { return &pipelineCaches[GTSL::Thread::ThisTreadID()]; }
+PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
 RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracingMeshInfo& info)
 {

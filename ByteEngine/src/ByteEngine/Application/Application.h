@@ -70,7 +70,7 @@ namespace BE
 
 		enum class CloseMode : uint8
 		{
-			OK, ERROR
+			OK, WARNING, ERROR
 		};
 		//Flags the application to close on the next update.
 		void Close(CloseMode closeMode, const GTSL::Range<const UTF8*> reason);
@@ -138,6 +138,11 @@ namespace BE
 		uint64 applicationTicks{ 0 };
 
 		bool parseConfig();
+		/**
+		 * \brief Checks if the platform (OS, CPU, RAM) satisfies certain requirements specified for the program.
+		 * \return Whether the current platform supports the required features.
+		 */
+		bool checkPlatformSupport();
 	private:
 		inline static Application* applicationInstance{ nullptr };
 	};

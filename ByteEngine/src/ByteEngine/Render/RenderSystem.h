@@ -197,7 +197,7 @@ public:
 		testMutex.Unlock();
 	}
 
-	[[nodiscard]] const PipelineCache* GetPipelineCache() const;
+	[[nodiscard]] PipelineCache GetPipelineCache() const;
 
 	[[nodiscard]] GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
 

@@ -4,6 +4,7 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -153,6 +154,7 @@ void GameApplication::PostInitialize()
 	
 	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
 	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
+	gameInstance->AddSystem<LightsRenderGroup>("LightsRenderGroup");
 	
 	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
 	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));

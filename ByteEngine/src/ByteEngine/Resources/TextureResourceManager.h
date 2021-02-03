@@ -16,45 +16,47 @@ public:
 	TextureResourceManager();
 	~TextureResourceManager();
 	
-	struct TextureData
+	struct TextureData : Data
 	{
-		uint32 ImageSize = 0;
 		GAL::Dimension Dimensions;
 		GTSL::Extent3D Extent;
 		GAL::TextureFormat Format;
 	};
-
-	struct TextureInfoSerialize : TextureData
+	
+	struct TextureDataSerialize : DataSerialize<TextureData>
 	{
-		uint32 ByteOffset = 0;
-
-		template<class ALLOCATOR>
-		friend void Insert(const TextureInfoSerialize& textureInfoSerialize, GTSL::Buffer<ALLOCATOR>& buffer)
+		INSERT_START(TextureDataSerialize)
 		{
-			Insert(textureInfoSerialize.ByteOffset, buffer);
-			Insert(textureInfoSerialize.ImageSize, buffer);
-			Insert(textureInfoSerialize.Dimensions, buffer);
-			Insert(textureInfoSerialize.Extent, buffer);
-			Insert(textureInfoSerialize.Format, buffer);
+			INSERT_BODY
+			Insert(insertInfo.Dimensions, buffer);
+			Insert(insertInfo.Extent, buffer);
+			Insert(insertInfo.Format, buffer);
 		}
 
-		template<class ALLOCATOR>
-		friend void Extract(TextureInfoSerialize& textureInfoSerialize, GTSL::Buffer<ALLOCATOR>& buffer)
+		EXTRACT_START(TextureDataSerialize)
 		{
-			Extract(textureInfoSerialize.ByteOffset, buffer);
-			Extract(textureInfoSerialize.ImageSize, buffer);
-			Extract(textureInfoSerialize.Dimensions, buffer);
-			Extract(textureInfoSerialize.Extent, buffer);
-			Extract(textureInfoSerialize.Format, buffer);
+			EXTRACT_BODY
+			Extract(extractInfo.Dimensions, buffer);
+			Extract(extractInfo.Extent, buffer);
+			Extract(extractInfo.Format, buffer);
 		}
 	};
 
-	struct TextureInfo : TextureInfoSerialize
+	struct TextureInfo : Info<TextureDataSerialize>
 	{
-		TextureInfo() = default;
-		TextureInfo(const TextureInfoSerialize& textureInfoSerialize) : TextureInfoSerialize(textureInfoSerialize) {}
+		DECL_INFO_CONSTRUCTOR(TextureInfo, Info<TextureDataSerialize>)
 		
-		Id Name;
+		uint32 GetTextureSize()
+		{
+			uint8 componentCount = 0, componentSize = 0;
+			
+			switch (Format)
+			{
+			case GAL::TextureFormat::RGBA_I8: componentCount = 4; componentSize = 1; break;
+			}
+
+			return componentCount * componentSize * Extent.Width * Extent.Height * Extent.Depth;
+		}
 	};
 	
 	template<typename... ARGS>
@@ -64,24 +66,21 @@ public:
 		{
 			auto textureInfoSerialize = resourceManager->textureInfos.At(textureName());
 
-			TextureInfo textureInfo(textureInfoSerialize);
-			textureInfo.Name = textureName;
+			TextureInfo textureInfo(textureName, textureInfoSerialize);
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
 		gameInstance->AddDynamicTask("loadTextureInfo", Task<TextureResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadTextureInfo), {}, this, GTSL::MoveRef(textureName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
-
-	using Texture = TextureInfo;
 	
 	template<typename... ARGS>
 	void LoadTexture(GameInstance* gameInstance, TextureInfo textureInfo, GTSL::Range<byte*> buffer, DynamicTaskHandle<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadTexture = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureInfo textureInfo, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			resourceManager->packageFile.SetPointer(textureInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-			resourceManager->packageFile.ReadFromFile(GTSL::Range<byte*>(textureInfo.ImageSize, buffer.begin()));
+			resourceManager->packageFiles[resourceManager->getThread()].SetPointer(textureInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+			resourceManager->packageFiles[resourceManager->getThread()].ReadFromFile(GTSL::Range<byte*>(textureInfo.GetTextureSize(), buffer.begin()));
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 		};
@@ -89,9 +88,8 @@ public:
 		gameInstance->AddDynamicTask("loadTexture", Task<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadTexture), {}, this, GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
-
 private:
-	GTSL::File packageFile, indexFile;
-	GTSL::FlatHashMap<TextureInfoSerialize, BE::PersistentAllocatorReference> textureInfos;
-	GTSL::Mutex fileLock;
+	GTSL::File indexFile;
+	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
+	GTSL::FlatHashMap<TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
 };

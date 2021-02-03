@@ -48,8 +48,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	latestLoadedTextures.Initialize(8, GetPersistentAllocator());
 	pendingMaterialsPerTexture.Initialize(16, GetPersistentAllocator());
 
-	materials.Initialize(16, GetPersistentAllocator());
-	readyMaterialsMap.Initialize(32, GetPersistentAllocator());
+	materials.Initialize(16, GetPersistentAllocator()); materialInstances.Initialize(32, GetPersistentAllocator());
+	readyMaterialsMap.Initialize(32, GetPersistentAllocator()); materialInstancesMap.Initialize(32, GetPersistentAllocator());
 	readyMaterialHandles.Initialize(16, GetPersistentAllocator());
 
 	setHandlesByName.Initialize(16, GetPersistentAllocator());
@@ -58,7 +58,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	readyMaterialsPerRenderGroup.Initialize(8, GetPersistentAllocator());
 
 	shaderGroupsByName.Initialize(16, GetPersistentAllocator());
-
+	
 	sets.Initialize(16, GetPersistentAllocator());
 	
 	for (uint32 i = 0; i < queuedFrames; ++i)
@@ -102,7 +102,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			SubSetInfo subSetInfo;
 			subSetInfo.Type = SubSetType::BUFFER;
 			subSetInfo.Handle = &instanceDataSubsetHandle;
-			subSetInfo.Count = 16;
+			subSetInfo.Count = 1;
 			subSetInfos.EmplaceBack(subSetInfo);
 		}
 
@@ -138,26 +138,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		AddSetX(renderSystem, "GlobalData", Id(), setInfo);
 
 		{
-			GTSL::Array<MemberInfo, 1> materialDataStructContents;
-
-			MemberInfo textureHandles;
-			textureHandles.Handle = &materialTextureHandles;
-			textureHandles.Type = Member::DataType::UINT32;
-			textureHandles.Count = 8;
-			materialDataStructContents.EmplaceBack(textureHandles);
-
-			GTSL::Array<MemberInfo, 1> materialDataStruct;
-			MemberInfo structHandle;
-			structHandle.Handle = &materialDataStructHandle;
-			structHandle.Type = Member::DataType::STRUCT;
-			structHandle.Count = 16;
-			structHandle.MemberInfos = materialDataStructContents;
-			materialDataStruct.EmplaceBack(structHandle);
-
-			createBuffer(renderSystem, materialsDataSubSetHandle, materialDataStruct);
-		}
-
-		{
 			GTSL::Array<MemberInfo, 1> instanceDataStructContents;
 
 			MemberInfo textureHandles;
@@ -174,7 +154,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			structHandle.MemberInfos = instanceDataStructContents;
 			instanceDataStruct.EmplaceBack(structHandle);
 
-			createBuffer(renderSystem, instanceDataSubsetHandle, instanceDataStruct);
+			createBuffer(renderSystem, instanceDataSubsetHandle, 0, instanceDataStruct);
 		}
 
 		{
@@ -186,7 +166,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			memberInfo.Count = 4;
 			members.EmplaceBack(memberInfo);
 
-			createBuffer(renderSystem, cameraDataSubSetHandle, members);
+			createBuffer(renderSystem, cameraDataSubSetHandle, 0, members);
 		}
 	}
 
@@ -361,7 +341,7 @@ bool MaterialSystem::BindMaterial(RenderSystem* renderSystem, CommandBuffer comm
 		CommandBuffer::BindPipelineInfo bindPipelineInfo;
 		bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
 		bindPipelineInfo.PipelineType = PipelineType::RASTER;
-		bindPipelineInfo.Pipeline = materials[set.Element].Pipeline;
+		bindPipelineInfo.Pipeline = materials[materialInstances[materialInstancesMap.At(set.MaterialType())].Material].Pipeline;
 		commandBuffer.BindPipeline(bindPipelineInfo);
 		
 		//BindSet(renderSystem, commandBuffer, set.MaterialType, set.MaterialInstance);
@@ -380,8 +360,6 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 	GTSL::Array<SubSetInfo, 8> subSetInfos;
 
 	SubSetHandle dummy;
-
-	//TODO: UPDATE BUFFER ALLOCATION
 	
 	for(auto& e : setInfo.Structs)
 	{
@@ -398,7 +376,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id pare
 
 	if (setInfo.Structs.ElementCount())
 	{
-		createBuffer(renderSystem, dummy, setInfo.Structs[0].Members);
+		createBuffer(renderSystem, dummy, 0/*TODO: SEE HOW TO HANDLE*/, setInfo.Structs[0].Members);
 	}
 	
 	return setHandle;
@@ -455,7 +433,6 @@ SetHandle MaterialSystem::AddSetX(RenderSystem* renderSystem, Id setName, Id par
 
 void MaterialSystem::UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count)
 {
-	//auto& renderGroupData = renderGroupsData.At(renderGroup);
 	auto& set = sets[memberHandle().SubSet.SetHandle()];
 	auto& subSet = set.SubSets[memberHandle().SubSet.Subset];
 
@@ -486,12 +463,12 @@ MaterialHandle MaterialSystem::CreateMaterial(const CreateMaterialInfo& info)
 	material_load_info.GameInstance = info.GameInstance;
 	material_load_info.Name = info.MaterialName;
 	material_load_info.DataBuffer = GTSL::Range<byte*>(material_buffer.GetCapacity(), material_buffer.GetData());
-	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), materialIndex, info.TextureResourceManager);
+	auto* matLoadInfo = GTSL::New<MaterialLoadInfo>(GetPersistentAllocator(), info.RenderSystem, MoveRef(material_buffer), materialIndex, 0, info.TextureResourceManager);
 	material_load_info.UserData = DYNAMIC_TYPE(MaterialLoadInfo, matLoadInfo);
 	material_load_info.OnMaterialLoad = GTSL::Delegate<void(TaskInfo, MaterialResourceManager::OnMaterialLoadInfo)>::Create<MaterialSystem, &MaterialSystem::onMaterialLoaded>(this);
 	info.MaterialResourceManager->LoadMaterial(material_load_info);
 
-	return MaterialHandle{ info.MaterialName, 0/*materials[comp].MaterialInstances*//*TODO: WHAT*/, materialIndex };
+	return MaterialHandle{ info.MaterialName, 0, materialIndex };
 }
 
 MaterialHandle MaterialSystem::CreateRayTracingMaterial(const CreateMaterialInfo& info)
@@ -528,9 +505,6 @@ void MaterialSystem::SetMaterialParameter(const MaterialHandle material, GAL::Sh
 
 ComponentReference MaterialSystem::createTexture(const CreateTextureInfo& info)
 {
-	//const GTSL::Array<TaskDependency, 6> loadTaskDependencies{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	const GTSL::Array<const TaskDependency, 6> loadTaskDependencies;
-
 	auto component = textures.Emplace();
 
 	pendingMaterialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
@@ -621,7 +595,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 	for (auto e : latestLoadedTextures) {
 		for (auto b : pendingMaterialsPerTexture[e]) {
-			if (++materials[b.Element].Counter == materials[b.Element].Target) {
+			if (++materialInstances[b.MaterialInstance].Counter == materialInstances[b.MaterialInstance].Target) {
 				setMaterialAsLoaded(b);
 			}
 		}
@@ -695,7 +669,7 @@ void MaterialSystem::updateCounter(TaskInfo taskInfo)
 	frame = (frame + 1) % queuedFrames;
 }
 
-void MaterialSystem::createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, GTSL::Range<MemberInfo*> members)
+void MaterialSystem::createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, uint32 binding, GTSL::Range<MemberInfo*> members)
 {
 	uint32 structSize = 0;
 	
@@ -754,26 +728,39 @@ void MaterialSystem::createBuffer(RenderSystem* renderSystem, SubSetHandle subSe
 			createInfo.Name = name;
 		}
 
-		//createInfo.Size = GTSL::Math::RoundUpByPowerOf2(structSize, renderSystem->GetBufferSubDataAlignment()) * instanceCount;
-		createInfo.Size = structSize * instanceCount;
+		createInfo.Size = structSize;
+		//createInfo.Size = structSize * instanceCount;
 		createInfo.BufferType = BufferType::ADDRESS; createInfo.BufferType |= BufferType::STORAGE;
 
+		auto bufferIndex = subSet.Buffers.EmplaceBack();
+		
 		for (uint8 f = 0; f < queuedFrames; ++f) {
 			RenderSystem::BufferScratchMemoryAllocationInfo allocationInfo;
 			allocationInfo.CreateInfo = &createInfo;
-			allocationInfo.Allocation = &subSet.Allocations[f];
-			allocationInfo.Buffer = &subSet.Buffers[f];
+			allocationInfo.Allocation = &subSet.Buffers[bufferIndex].Allocations[f];
+			allocationInfo.Buffer = &subSet.Buffers[bufferIndex].Buffers[f];
 			renderSystem->AllocateScratchBufferMemory(allocationInfo);
-
+		
 			BindingsSet::BufferBindingUpdateInfo bufferBindingUpdate;
-			bufferBindingUpdate.Buffer = subSet.Buffers[f];
+			bufferBindingUpdate.Buffer = subSet.Buffers[bufferIndex].Buffers[f];
 			bufferBindingUpdate.Offset = 0;
-			bufferBindingUpdate.Range = instanceCount * structSize;
-			descriptorsUpdates[f].AddBufferUpdate(subSetHandle, 0, BUFFER_BINDING_TYPE, bufferBindingUpdate);
-			
-			//for (uint32 i = 0; i < subSet.AllocatedBindings; ++i) {
-			//}
+			bufferBindingUpdate.Range = structSize;
+			descriptorsUpdates[f].AddBufferUpdate(subSetHandle, binding, BUFFER_BINDING_TYPE, bufferBindingUpdate); //TODO: Don't allocate so many up front as it puts a lot of
+			//pressure in the descriptors update structure, update bindings as new instances are needed, maybe can coordinate with bindings allocation
 		}
+	}
+}
+
+void MaterialSystem::updateSubBindingsCount(SubSetHandle subSetHandle, uint32 newCount)
+{
+	auto& set = sets[subSetHandle().SetHandle()];
+	auto& subSet = set.SubSets[subSetHandle().Subset];
+
+	if (subSet.AllocatedBindings < newCount)
+	{
+		BE_ASSERT(false, "OOOO");
+
+		//queuedSetUpdates.EmplaceBack(setHandle); //Defer resizing
 	}
 }
 
@@ -786,9 +773,10 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	
 	auto* renderSystem = loadInfo->RenderSystem;
 
-	material.Counter = 0;
-	material.Target = 0;
+	material.MaterialInstances.Initialize(8, GetPersistentAllocator());
+	
 	material.RenderGroup = onMaterialLoadInfo.RenderGroup;
+	material.Parameters = onMaterialLoadInfo.Parameters;
 
 	{
 		RasterizationPipeline::CreateInfo createInfo;
@@ -801,10 +789,6 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		GTSL::Array<ShaderDataType, 10> vertexDescriptor;
 		for (auto e : onMaterialLoadInfo.VertexElements) { vertexDescriptor.EmplaceBack(ConvertShaderDataType(e)); }
 		createInfo.VertexDescriptor = vertexDescriptor;
-
-		MemberHandle textureHandle;
-
-		UpdateObjectCount(renderSystem, materialDataStructHandle, materialIndex); //Add current material to set
 		
 		createInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable; createInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
 		createInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest; createInfo.PipelineDescriptor.DepthWrite = onMaterialLoadInfo.DepthWrite;
@@ -822,101 +806,113 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 
 		createInfo.SurfaceExtent = { 1, 1 }; // Will be updated dynamically on render time
 
-		SetHandle setHandle;
-		
-		{
-			SetInfo setInfo;
-			setInfo.Structs = GTSL::Array<StructInfo, 1>();
-			setHandle = AddSet(renderSystem, onMaterialLoadInfo.ResourceName, onMaterialLoadInfo.RenderGroup, setInfo);
-		}
-
 		GTSL::Array<Pipeline::ShaderInfo, 8> shaderInfos;
-
-		for(auto e : onMaterialLoadInfo.ShaderTypes)
-		{
-			Pipeline::ShaderInfo shaderInfo;
-			shaderInfo.Type = ConvertShaderType(e);
-			shaderInfos.EmplaceBack(shaderInfo);
-		}
 
 		{
 			uint32 offset = 0;
 			
-			for (uint8 i = 0; i < shaderInfos.GetLength(); ++i)
-			{
-				shaderInfos[i].Blob = GTSL::Range<const byte*>(onMaterialLoadInfo.ShaderSizes[i], loadInfo->Buffer.GetData() + offset);
+			for (uint8 i = 0; i < onMaterialLoadInfo.ShaderSizes.GetLength(); ++i) {
+				Pipeline::ShaderInfo shaderInfo;
+				shaderInfo.Type = ConvertShaderType(onMaterialLoadInfo.ShaderTypes[i]);
+				shaderInfo.Blob = GTSL::Range<const byte*>(onMaterialLoadInfo.ShaderSizes[i], loadInfo->Buffer.GetData() + offset);
+				shaderInfos.EmplaceBack(shaderInfo);
+				
 				offset += onMaterialLoadInfo.ShaderSizes[i];
 			}
+			
+			createInfo.Stages = shaderInfos;
 		}
 		
-		{			
-			createInfo.Stages = shaderInfos;
-
+		{
 			auto* renderOrchestrator = taskInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 
 			createInfo.RenderPass = renderOrchestrator->getAPIRenderPass(onMaterialLoadInfo.RenderPass);
 			createInfo.SubPass = renderOrchestrator->getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
 			createInfo.AttachmentCount = renderOrchestrator->GetRenderPassColorWriteAttachmentCount(onMaterialLoadInfo.RenderPass);
-			createInfo.PipelineLayout = sets[setHandle()].PipelineLayout;
-			
-			createInfo.PipelineCache = *renderSystem->GetPipelineCache();
-			material.Pipeline = RasterizationPipeline(createInfo);
 		}
+
+		createInfo.PipelineLayout = declareSetHull(renderSystem, onMaterialLoadInfo.RenderGroup, {});
+		createInfo.PipelineCache = renderSystem->GetPipelineCache();
+		material.Pipeline = RasterizationPipeline(createInfo);
 	}
 
-	auto matHandle = MaterialHandle{ onMaterialLoadInfo.ResourceName, 0/*TODO*/, materialIndex };
-	
+	for(auto& e : onMaterialLoadInfo.MaterialInstances)
 	{
-		uint32 targetValue = 0;
+		++material.InstanceCount;
+		//UpdateObjectCount(renderSystem, material., material.InstanceCount); //assuming every material uses the same set instance, not index
+		material.MaterialInstances.Emplace();
 
-		BufferIterator bufferIterator;
-		UpdateIteratorMember(bufferIterator, materialDataStructHandle);
-		UpdateIteratorMemberIndex(bufferIterator, loadInfo->Component);
-		UpdateIteratorMember(bufferIterator, materialTextureHandles);
+		auto materialInstanceIndex = materialInstances.Emplace();
+		materialInstancesMap.Emplace(e.Name, materialInstanceIndex);
+		auto& materialInstance = materialInstances[materialInstanceIndex];
+		materialInstance.Material = materialIndex;
 
-		material.RenderGroup = onMaterialLoadInfo.RenderGroup;
+		auto instanceMaterialHandle = MaterialHandle{ onMaterialLoadInfo.ResourceName, materialInstanceIndex, loadInfo->Component };
 		
-		if (onMaterialLoadInfo.Textures.GetLength())
-		{
-			uint32 i = 0;
-			for (auto& e : onMaterialLoadInfo.Textures)
+		GTSL::Array<MemberInfo, 16> memberInfos;
+
+		for (auto& e : material.Parameters) {
+			materialInstance.Parameters.Emplace(e.Name);
+			Member::DataType memberType;
+
+			switch (e.Type)
 			{
-				uint32 textureComp;
+			case MaterialResourceManager::ParameterType::UINT32: memberType = Member::DataType::UINT32; break;
+			case MaterialResourceManager::ParameterType::VEC4: memberType = Member::DataType::FVEC4; break;
+			case MaterialResourceManager::ParameterType::TEXTURE_REFERENCE: memberType = Member::DataType::UINT32; break;
+			case MaterialResourceManager::ParameterType::BUFFER_REFERENCE: memberType = Member::DataType::UINT64; break;
+			default:;
+			}
 
-				uint32* textureComponent;
+			memberInfos.EmplaceBack(MemberInfo{ 1, memberType, &materialInstance.Parameters.At(e.Name) });
+		}
 
-				if (!texturesRefTable.Find(e, textureComponent))
+		updateSubBindingsCount(materialsDataSubSetHandle, materialInstanceIndex);
+		createBuffer(renderSystem, materialsDataSubSetHandle, materialInstanceIndex, memberInfos);
+
+		for(auto& f : e.Parameters)
+		{
+			auto result = material.Parameters.LookFor([&](const MaterialResourceManager::Parameter& parameter) { return parameter.Name == f.First; }); //get parameter description from name
+
+			BE_ASSERT(result.State(), "No parameter by that name found. Data must be invalid");
+			
+			if (material.Parameters[result.Get()].Type == MaterialResourceManager::ParameterType::TEXTURE_REFERENCE) //if parameter is texture reference load texture
+			{				
+				uint32 textureComponent; uint32* textureComponentPointer;
+
+				if (!texturesRefTable.Find(f.Second.TextureReference, textureComponentPointer))
 				{
 					CreateTextureInfo createTextureInfo;
 					createTextureInfo.RenderSystem = renderSystem;
 					createTextureInfo.GameInstance = taskInfo.GameInstance;
 					createTextureInfo.TextureResourceManager = loadInfo->TextureResourceManager;
-					createTextureInfo.TextureName = e;
-					createTextureInfo.MaterialHandle = matHandle;
-					textureComp = createTexture(createTextureInfo).Component;
+					createTextureInfo.TextureName = f.Second.TextureReference;
+					createTextureInfo.MaterialHandle = instanceMaterialHandle;
+					textureComponent = createTexture(createTextureInfo).Component;
+					
+					addPendingMaterialToTexture(textureComponent, instanceMaterialHandle);
 				}
 				else
 				{
-					textureComp = *textureComponent;
+					textureComponent = *textureComponentPointer;
+					++materialInstance.Counter; //since we up the target for every texture, up the counter for every already existing texture
 				}
 
-				addPendingMaterialToTexture(textureComp, matHandle);
+				++materialInstance.Target;
+
+				auto memberHandle = materialInstance.Parameters.At(material.Parameters[result.Get()].Name);
+
+				BufferIterator bufferIterator;
+				UpdateIteratorMember(bufferIterator, memberHandle);
 
 				for (uint8 f = 0; f < queuedFrames; ++f) {
-					*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = textureComp;
+					*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = textureComponent;
 				}
-				
-				UpdateIteratorMemberIndex(bufferIterator, i);
-				
-				++material.Target; ++i;
 			}
-		}
-		else
-		{
-			setMaterialAsLoaded(matHandle);
 		}
 	}
 
+	//BE_LOG_WARNING("No ", paramName.GetString(), " parameter found on material ", materialHandle.MaterialType.GetString(), " for ", textureName.GetString(), " found. Skipping update.")
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
 
@@ -1205,7 +1201,7 @@ void MaterialSystem::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager
 		findFormatInfo.Candidates = candidates;
 		const auto supportedFormat = loadInfo.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
 
-		scratchBufferCreateInfo.Size = textureInfo.Extent.Width * textureInfo.Extent.Height * textureInfo.Extent.Depth * FormatSize(supportedFormat);
+		scratchBufferCreateInfo.Size = textureInfo.GetTextureSize();
 	}
 
 	scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;

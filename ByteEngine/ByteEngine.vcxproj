@@ -279,6 +279,7 @@
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\SIMDMath.ixx" />

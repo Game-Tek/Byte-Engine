@@ -181,5 +181,6 @@
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
     <ClCompile Include="src\ByteEngine\SIMDMath.ixx" />
+    <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
   </ItemGroup>
 </Project>

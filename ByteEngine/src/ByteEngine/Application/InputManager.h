@@ -13,6 +13,7 @@
 
 #include "ByteEngine/Id.h"
 
+#include "ByteEngine/Debug/Logger.h"
 
 namespace GTSL {
 	class Window;
@@ -45,20 +46,117 @@ public:
 	InputManager();
 	~InputManager();
 	
-	void RegisterActionInputSource(GTSL::Id64 inputSourceName);
-	void RegisterCharacterInputSource(GTSL::Id64 inputSourceName);
-	void RegisterLinearInputSource(GTSL::Id64 inputSourceName);
-	void Register2DInputSource(GTSL::Id64 inputSourceName);
+	void RegisterActionInputSource(GTSL::Id64 inputSourceName)
+	{
+		if constexpr (_DEBUG) {
+			if (actionInputSourcesToActionInputEvents.Find(inputSourceName))
+			{
+				BE_LOG_ERROR("Tried to register action input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+				return;
+			}
+		}
 
-	void RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function);
-	void RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function);
-	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function);
-	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function);
+		actionInputSourcesToActionInputEvents.Emplace(inputSourceName, ActionInputSourceData());
+	}
 	
-	void RecordActionInputSource(GTSL::Id64 inputSourceName, ActionInputEvent::type newValue);
-	void RecordCharacterInputSource(GTSL::Id64 inputSourceName, CharacterInputEvent::type newValue);
-	void RecordLinearInputSource(GTSL::Id64 inputSourceName, LinearInputEvent::type newValue);
-	void Record2DInputSource(GTSL::Id64 inputSourceName, Vector2DInputEvent::type newValue);
+	void RegisterCharacterInputSource(GTSL::Id64 inputSourceName)
+	{
+		if constexpr (_DEBUG) {
+			if (characterInputSourcesToCharacterInputEvents.Find(inputSourceName))
+			{
+				BE_LOG_ERROR("Tried to register character input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+				return;
+			}
+		}
+
+		characterInputSourcesToCharacterInputEvents.Emplace(inputSourceName, CharacterInputSourceData());
+	}
+	
+	void RegisterLinearInputSource(GTSL::Id64 inputSourceName)
+	{
+		if constexpr (_DEBUG) {
+			if (linearInputSourcesToLinearInputEvents.Find(inputSourceName))
+			{
+				BE_LOG_ERROR("Tried to register linear input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+				return;
+			}
+		}
+
+		linearInputSourcesToLinearInputEvents.Emplace(inputSourceName, LinearInputSourceData());
+	}
+	
+	void Register2DInputSource(GTSL::Id64 inputSourceName)
+	{
+		if constexpr (_DEBUG) {
+			if (vector2dInputSourceEventsToVector2DInputEvents.Find(inputSourceName))
+			{
+				BE_LOG_ERROR("Tried to register 2D input source ", inputSourceName, " but it was already registered.", BE::FIX_OR_CRASH_STRING);
+				return;
+			}
+		}
+
+		vector2dInputSourceEventsToVector2DInputEvents.Emplace(inputSourceName, Vector2DInputSourceData());
+	}
+
+	void RegisterActionInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function)
+	{
+#ifdef BE_DEBUG
+		//for (auto& e : inputSourceNames) { BE_ASSERT(actionInputSourcesToActionInputEvents.At(e) != actionInputSourcesToActionInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
+#endif
+
+		for (const GTSL::Id64& e : inputSourceNames) { actionInputSourcesToActionInputEvents.At(e) = ActionInputSourceData(function, {}, {}); }
+	}
+	
+	void RegisterCharacterInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function)
+	{
+#ifdef BE_DEBUG
+		//for (auto& e : inputSourceNames) { BE_ASSERT(characterInputSourcesToCharacterInputEvents.find(e) != characterInputSourcesToCharacterInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
+#endif
+
+		for (const auto& e : inputSourceNames) { characterInputSourcesToCharacterInputEvents.At(e) = CharacterInputSourceData(function, {}, {}); }
+	}
+	
+	void RegisterLinearInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function)
+	{
+#ifdef BE_DEBUG
+		//for (auto& e : inputSourceNames) { BE_ASSERT(linearInputSourcesToLinearInputEvents.find(e) != linearInputSourcesToLinearInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
+#endif
+
+		for (const auto& e : inputSourceNames) { linearInputSourcesToLinearInputEvents.At(e) = LinearInputSourceData(function, {}, {}); }
+	}
+	
+	void Register2DInputEvent(GTSL::Id64 actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function)
+	{
+#ifdef BE_DEBUG
+		//for (auto& e : inputSourceNames) { BE_ASSERT(vector2dInputSourceEventsToVector2DInputEvents.find(e) != vector2dInputSourceEventsToVector2DInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
+#endif
+
+		for (const auto& e : inputSourceNames) { vector2dInputSourceEventsToVector2DInputEvents.At(e) = Vector2DInputSourceData(function, {}, {}); }
+	}
+	
+	void RecordActionInputSource(Id inputSourceName, ActionInputEvent::type newValue)
+	{
+		if (!actionInputSourcesToActionInputEvents.Find(inputSourceName())) { BE_LOG_WARNING("Tried to record ", inputSourceName, " which is not registered as an action input source."); return; }
+		actionInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	}
+	
+	void RecordCharacterInputSource(Id inputSourceName, CharacterInputEvent::type newValue)
+	{
+		if (!characterInputSourcesToCharacterInputEvents.Find(inputSourceName())) { BE_LOG_WARNING("Tried to record ", inputSourceName, " which is not registered as a character input source."); return; }
+		characterInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	}
+	
+	void RecordLinearInputSource(Id inputSourceName, LinearInputEvent::type newValue)
+	{
+		if (!linearInputSourcesToLinearInputEvents.Find(inputSourceName())) { BE_LOG_WARNING("Tried to record ", inputSourceName, " which is not registered as a linear input source."); return; }
+		linearInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	}
+	
+	void Record2DInputSource(Id inputSourceName, Vector2DInputEvent::type newValue)
+	{
+		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(inputSourceName())) { BE_LOG_WARNING("Tried to record ", inputSourceName, " which is not registered as a vector 2d input source."); return; }
+		vector2DInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+	}
 
 	void Update();	
 	
@@ -94,8 +192,6 @@ protected:
 
 	using QuaternionInputSourceData = InputSourceData<QuaternionInputEvent>;
 	GTSL::FlatHashMap<QuaternionInputSourceData, BE::PersistentAllocatorReference> quaternionInputSourcesToQuaternionInputEvents;
-
-	Id lastInputDevice;
 	
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.

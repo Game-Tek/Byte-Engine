@@ -12,10 +12,6 @@ static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
 
 static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs", ".rgs", ".ahs", ".chs", ".ms", ".is", ".cs" };
 
-using VertexElementsType = GTSL::UnderlyingType<GAL::ShaderDataType>;
-using ShaderTypeType = GTSL::UnderlyingType<GAL::ShaderType>;
-using BindingTypeType = GTSL::UnderlyingType<GAL::BindingType>;
-
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
 rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAllocator())
 {
@@ -25,12 +21,12 @@ rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAlloca
 	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
 
 	resources_path += "Materials.bepkg";
-	package.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ | (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
+	package.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 
 	resources_path.Drop(resources_path.FindLast('/') + 1);
 	resources_path += "Materials.beidx";
 
-	index.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ | (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::LEAVE_CONTENTS);
+	index.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 	index.ReadFile(rasterFileBuffer.GetBufferInterface());
 
 	if (rasterFileBuffer.GetLength())
@@ -60,24 +56,24 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
 		
-		RasterMaterialInfo materialInfo;
+		RasterMaterialDataSerialize materialInfo;
 		
 		GTSL::StaticString<256> resources_path;
 		resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
 
 		GTSL::File shader;
 
-		materialInfo.MaterialOffset = package.GetFileSize();
+		materialInfo.ByteOffset = package.GetFileSize();
 		
 		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.ElementCount(); ++i)
 		{
 			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.ShaderTypes[i])];
 
-			shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
+			shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 			shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
 			auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
-			const auto comp_res = GAL::CompileShader(f, resources_path, static_cast<GAL::ShaderType>(materialCreateInfo.ShaderTypes[i]), GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
+			const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 			if(comp_res == false)
 			{
@@ -95,10 +91,11 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			shader_buffer.Resize(0);
 		}
 
-		materialInfo.VertexElements = GTSL::Range<const VertexElementsType*>(materialCreateInfo.VertexFormat.ElementCount(), reinterpret_cast<const VertexElementsType*>(materialCreateInfo.VertexFormat.begin()));
-		materialInfo.ShaderTypes = GTSL::Range<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.ElementCount(), reinterpret_cast<const ShaderTypeType*>(materialCreateInfo.ShaderTypes.begin()));
+		materialInfo.VertexElements = materialCreateInfo.VertexFormat;
+		materialInfo.ShaderTypes = materialCreateInfo.ShaderTypes;
 		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
-		
+
+		materialInfo.Parameters = materialCreateInfo.Parameters;
 		materialInfo.RenderPass = materialCreateInfo.RenderPass;
 		
 		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
@@ -111,9 +108,9 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		materialInfo.Front = materialCreateInfo.Front;
 		materialInfo.Back = materialCreateInfo.Back;
 
-		materialInfo.MaterialParameters = materialCreateInfo.MaterialParameters;
-		materialInfo.Textures = materialCreateInfo.Textures;
-		materialInfo.PerInstanceParameters = materialCreateInfo.PerInstanceParameters;
+		materialInfo.Parameters = materialCreateInfo.Parameters;
+
+		materialInfo.MaterialInstances = materialCreateInfo.MaterialInstances;
 		
 		rasterMaterialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
@@ -145,7 +142,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 
 		resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.Type)];
 
-		shader.OpenFile(resources_path, (uint8)GTSL::File::AccessMode::READ, GTSL::File::OpenMode::LEAVE_CONTENTS);
+		shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 		shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
 		auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
@@ -192,9 +189,9 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	for (auto e : materialInfo.ShaderSizes) { mat_size += e; }
 	BE_ASSERT(mat_size <= loadInfo.DataBuffer.Bytes(), "Buffer can't hold required data!");
 
-	BE_ASSERT(materialInfo.MaterialOffset != materialInfo.ShaderSizes[0], ":|");
+	BE_ASSERT(materialInfo.ByteOffset != materialInfo.ShaderSizes[0], ":|");
 	
-	package.SetPointer(materialInfo.MaterialOffset, GTSL::File::MoveFrom::BEGIN);
+	package.SetPointer(materialInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 
 	[[maybe_unused]] const auto read = package.ReadFromFile(loadInfo.DataBuffer);
 	BE_ASSERT(read != 0, "Read 0 bytes!");
@@ -203,16 +200,12 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.ResourceName = loadInfo.Name;
 	onMaterialLoadInfo.UserData = loadInfo.UserData;
 	onMaterialLoadInfo.DataBuffer = loadInfo.DataBuffer;
-	onMaterialLoadInfo.ShaderTypes = GTSL::Range<GAL::ShaderType*>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
+	onMaterialLoadInfo.ShaderTypes = materialInfo.ShaderTypes;
 	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
-	
+	onMaterialLoadInfo.VertexElements = materialInfo.VertexElements;
 	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
-
-	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
-	onMaterialLoadInfo.Textures = materialInfo.Textures;
-	onMaterialLoadInfo.PerInstanceParameters = materialInfo.PerInstanceParameters;
-	
+	onMaterialLoadInfo.Parameters = materialInfo.Parameters;
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
 	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
 	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
@@ -221,53 +214,10 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.BlendEnable = materialInfo.BlendEnable;
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
-	
-	onMaterialLoadInfo.VertexElements = GTSL::Range<GAL::ShaderDataType*>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
+	onMaterialLoadInfo.MaterialInstances = materialInfo.MaterialInstances;
 	
 	auto functionName = GTSL::StaticString<64>("Load Material: "); functionName += loadInfo.Name;
 	loadInfo.GameInstance->AddDynamicTask(Id(functionName.begin()), loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
-}
-
-MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMaterialSynchronous(uint64 id, GTSL::Range<byte*> buffer)
-{
-	auto materialInfo = rasterMaterialInfos.At(id);
-
-	uint32 mat_size = 0;
-	for (auto e : materialInfo.ShaderSizes) { mat_size += e; }
-	BE_ASSERT(mat_size <= buffer.Bytes(), "Buffer can't hold required data!");
-
-	BE_ASSERT(materialInfo.MaterialOffset != materialInfo.ShaderSizes[0], ":|");
-
-	package.SetPointer(materialInfo.MaterialOffset, GTSL::File::MoveFrom::BEGIN);
-
-	[[maybe_unused]] const auto read = package.ReadFromFile(buffer);
-	BE_ASSERT(read != 0, "Read 0 bytes!");
-
-	OnMaterialLoadInfo onMaterialLoadInfo;
-	onMaterialLoadInfo.ResourceName = GTSL::Id64();
-	onMaterialLoadInfo.DataBuffer = buffer;
-	onMaterialLoadInfo.ShaderTypes = GTSL::Range<GAL::ShaderType*>(materialInfo.ShaderTypes.GetLength(), reinterpret_cast<GAL::ShaderType*>(materialInfo.ShaderTypes.begin()));
-	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
-	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
-
-	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
-
-	onMaterialLoadInfo.MaterialParameters = materialInfo.MaterialParameters;
-	onMaterialLoadInfo.Textures = materialInfo.Textures;
-	onMaterialLoadInfo.PerInstanceParameters = materialInfo.PerInstanceParameters;
-
-	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;
-	onMaterialLoadInfo.DepthTest = materialInfo.DepthTest;
-	onMaterialLoadInfo.DepthWrite = materialInfo.DepthWrite;
-	onMaterialLoadInfo.StencilTest = materialInfo.StencilTest;
-	onMaterialLoadInfo.CullMode = materialInfo.CullMode;
-	onMaterialLoadInfo.BlendEnable = materialInfo.BlendEnable;
-	onMaterialLoadInfo.Front = materialInfo.Front;
-	onMaterialLoadInfo.Back = materialInfo.Back;
-
-	onMaterialLoadInfo.VertexElements = GTSL::Range<GAL::ShaderDataType*>(materialInfo.VertexElements.GetLength(), reinterpret_cast<GAL::ShaderDataType*>(materialInfo.VertexElements.begin()));
-
-	return onMaterialLoadInfo;
 }
 
 MaterialResourceManager::RayTracingShaderInfo MaterialResourceManager::LoadRayTraceShaderSynchronous(Id id, GTSL::Range<byte*> buffer)

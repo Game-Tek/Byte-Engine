@@ -78,19 +78,34 @@ void Game::Initialize()
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
 		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-		GTSL::Array<MaterialResourceManager::Binding, 8> binding_sets;
-		binding_sets.EmplaceBack(GAL::BindingType::UNIFORM_BUFFER_DYNAMIC, GAL::ShaderStage::FRAGMENT);
 		materialCreateInfo.VertexFormat = format;
 		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-		materialCreateInfo.Textures.EmplaceBack("hydrant_Albedo");
-		//materialCreateInfo.erInstanceParameters.EmplaceBack("Color", GAL::ShaderDataType::FLOAT4);
-		materialCreateInfo.Bindings = binding_sets;
+		
+		materialCreateInfo.Parameters.EmplaceBack("albedo", MaterialResourceManager::ParameterType::TEXTURE_REFERENCE);
+		
 		materialCreateInfo.DepthWrite = true;
 		materialCreateInfo.DepthTest = true;
 		materialCreateInfo.StencilTest = false;
 		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
 		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+
+		{
+			materialCreateInfo.MaterialInstances.EmplaceBack();
+			materialCreateInfo.MaterialInstances.back().Name = "hydrantMat";
+			materialCreateInfo.MaterialInstances.back().Parameters.EmplaceBack();
+			materialCreateInfo.MaterialInstances.back().Parameters.back().First = "albedo";
+			materialCreateInfo.MaterialInstances.back().Parameters.back().Second.TextureReference = "hydrant_Albedo";
+		}
+
+		{
+			materialCreateInfo.MaterialInstances.EmplaceBack();
+			materialCreateInfo.MaterialInstances.back().Name = "tvMat";
+			materialCreateInfo.MaterialInstances.back().Parameters.EmplaceBack();
+			materialCreateInfo.MaterialInstances.back().Parameters.back().First = "albedo";
+			materialCreateInfo.MaterialInstances.back().Parameters.back().Second.TextureReference = "TV_Albedo";
+		}
+		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
 
@@ -226,16 +241,29 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialName = "UIMat";
 	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
 	//}
+
+	auto hydrantMaterialInstance = material_system->GetMaterialHandle("hydrantMat");
+	auto tvMaterialInstance = material_system->GetMaterialHandle("tvMat");
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 		addStaticMeshInfo.MeshName = "hydrant";
-		addStaticMeshInfo.Material = material;
+		addStaticMeshInfo.Material = hydrantMaterialInstance;
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		box = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));//
+		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
+	}
+
+	{
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "TV";
+		addStaticMeshInfo.Material = tvMaterialInstance;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 	
 	//{
@@ -286,39 +314,13 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
 	//}
-	//
-	//{
-	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "TV";
-	//	addStaticMeshInfo.Material = tvMat;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	//}
 	
-	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
-	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.MaterialName = "TextMaterial";
-	//	textMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
-	//}//
-	
-	//{
-	//	LightsRenderGroup::RayTracingDirectionalLightCreateInfo info;
-	//	info.Light.R() = 1.00f;
-	//	info.Light.G() = 0.98f;
-	//	info.Light.B() = 0.95f;
-	//	info.Rotation.X = -0.785398f;
-	//	info.Rotation.Y = 0;
-	//	info.Rotation.Z = 0;
-	//
-	//	auto light = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup")->CreateRayTracingDirectionalLight(info);
-	//}
-	
-	//window.ShowMouse(false);
+	{
+		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
+		auto light = lightsRenderGroup->CreateDirectionalLight();
+		lightsRenderGroup->SetLightColor(light, { 1.0f, 0.98f, 0.98f, 1.0f });
+		lightsRenderGroup->SetLightRotation(light, { -0.785398f, 0.0f, 0.0f });
+	}
 }
 
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
@@ -336,7 +338,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
-	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));//
 
 	//auto r = 1.0f;
 	//auto g = 1.0f;

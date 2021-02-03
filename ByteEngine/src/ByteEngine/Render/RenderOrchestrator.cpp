@@ -5,6 +5,8 @@
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Matrix4.h>
 
+
+#include "LightsRenderGroup.h"
 #include "RenderGroup.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Game/Tasks.h"
@@ -619,6 +621,8 @@ void RenderOrchestrator::AddAttachment(Id name, uint8 bitDepth, uint8 componentC
 	attachment.Name = name;
 	attachment.Type = type;
 	attachment.Uses = 0;
+
+	auto formatFlag = MAKE_FORMAT_FLAG(componentCount, (int)compType, bitDepth, 0, 1, 2, 3);
 	
 	TextureFormat format;
 	
@@ -1149,7 +1153,13 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 
 void RenderOrchestrator::renderRays(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {
-	materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
+	auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
+	
+	for(auto& e : lightsRenderGroup->GetDirectionalLights()) //do a directional lights pass for every directional light
+	{
+		//todo: setup light data
+		materialSystem->TraceRays(renderSystem->GetRenderExtent(), &commandBuffer, renderSystem);
+	}
 }
 
 void RenderOrchestrator::dispatch(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)

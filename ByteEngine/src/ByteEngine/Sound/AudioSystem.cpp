@@ -19,16 +19,24 @@ AudioSystem::~AudioSystem()
 
 void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 {
-	AudioDevice::CreateInfo create_info;
-	create_info.ShareMode = AAL::StreamShareMode::SHARED;
-	create_info.BitDepth = 32;
-	create_info.Frequency = 48000;
-	audioDevice.Initialize(create_info);
-	audioDevice.Start();
-
-	audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 32, GetPersistentAllocator());
-
-	initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessType::READ_WRITE } }, "RenderDo", "RenderEnd");
+	AudioDevice::CreateInfo createInfo;
+	audioDevice.Initialize(createInfo);
+	
+	mixFormat.BitsPerSample = 32;
+	mixFormat.NumberOfChannels = 2;
+	mixFormat.SamplesPerSecond = 48000;
+	
+	if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
+	{
+		audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat);
+		audioDevice.Start();
+		audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
+		initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessType::READ_WRITE } }, "RenderDo", "RenderEnd");
+	}
+	else
+	{
+		BE_LOG_WARNING("Unable to start audio device with requested parameters:\n	Stream share mode: Shared\n	Bits per sample: ", mixFormat.BitsPerSample, "\n	Number of channels: ", mixFormat.NumberOfChannels, "\n	Samples per second: ", mixFormat.SamplesPerSecond);
+	}
 }
 
 void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -77,11 +85,6 @@ void AudioSystem::render(TaskInfo)
 	GTSL::Array<Id, 16> samplesToRemoveFromPlaying;
 	
 	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
-
-	auto framesToBytes = [](uint32 samples, AAL::AudioChannelCount audioChannelCount, AAL::AudioBitDepth audioBits)
-	{
-		return samples * static_cast<GTSL::UnderlyingType<AAL::AudioSampleRate>>(audioChannelCount) * (static_cast<GTSL::UnderlyingType<AAL::AudioBitDepth>>(audioBits) / 8u); //TODO: chek
-	};
 	
 	uint32 availableAudioFrames = 0;
 	audioDevice.GetAvailableBufferFrames(availableAudioFrames);
@@ -98,9 +101,9 @@ void AudioSystem::render(TaskInfo)
 		auto remainingFrames = audioFrames - playingAudioFilesPlayedFrames[i];
 		auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
 		
-		audio += framesToBytes(playingAudioFilesPlayedFrames[i], AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32);
+		audio += mixFormat.GetFrameSize() * playingAudioFilesPlayedFrames[i];
 
-		GTSL::MemCopy(framesToBytes(clampedFrames, AAL::AudioChannelCount::CHANNELS_STEREO, AAL::AudioBitDepth::BIT_DEPTH_32) , audio, buffer);
+		GTSL::MemCopy(mixFormat.GetFrameSize() * clampedFrames, audio, buffer);
 
 		if((playingAudioFilesPlayedFrames[i] += clampedFrames) == audioFrames)
 		{
@@ -109,7 +112,7 @@ void AudioSystem::render(TaskInfo)
 		}
 	}
 
-	audioDevice.PushAudioData(audioBuffer.GetData(), availableAudioFrames);
+	audioDevice.PushAudioData([&](uint32 size, void* to) { GTSL::MemCopy(size, audioBuffer.GetData(), to); }, availableAudioFrames);
 
 	for (uint32 i = 0; i < soundsToRemoveFromPlaying.GetLength(); ++i)
 	{

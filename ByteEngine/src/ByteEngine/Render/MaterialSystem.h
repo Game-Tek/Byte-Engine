@@ -40,6 +40,7 @@ struct MemberDescription
 {
 	SubSetDescription SubSet;
 	uint32 MemberIndirectionIndex = 0;
+	uint32 Buffer = 0;
 };
 
 MAKE_HANDLE(MemberDescription, Member)
@@ -64,7 +65,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
-	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0; MemberHandle Member; };
+	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0, Buffer = 0; MemberHandle Member; };
 	
 	template<typename T>
 	T* GetMemberPointer(BufferIterator iterator);
@@ -125,19 +126,6 @@ public:
 			descriptorsUpdates[f].AddTextureUpdate(setHandle, index, bindingType, info);
 		}
 	}
-
-	//void WriteSetTexture(SetHandle setHandle, uint32 index, Texture texture, TextureView textureView, TextureSampler textureSampler)
-	//{		
-	//	for(uint8 f = 0; f < queuedFrames; ++f)
-	//	{
-	//		BindingsSet::TextureBindingUpdateInfo info;
-	//		info.TextureView = textureView;
-	//		info.Sampler = textureSampler;
-	//		info.TextureLayout = TextureLayout::GENERAL;
-	//		
-	//		descriptorsUpdates[f].AddTextureUpdate(index, 1, BindingType::STORAGE_IMAGE, info);
-	//	}
-	//}
 	
 	struct MemberInfo : Member
 	{
@@ -200,6 +188,30 @@ public:
 	[[nodiscard]] MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
 	[[nodiscard]] MaterialHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
+	MaterialHandle GetMaterialHandle(Id name)
+	{
+		//if constexpr (_DEBUG)
+		//{
+		//	if(materialInstancesMap.Find(name()))
+		//	{
+		//		auto materialInstanceIndex = materialInstancesMap.At(name());
+		//		return MaterialHandle{ 0, materialInstanceIndex, materialInstances[materialInstanceIndex].Material };
+		//	}
+		//	else
+		//	{
+		//		BE_LOG_ERROR("No material instance with that name found! ", BE::FIX_OR_CRASH_STRING);
+		//		return MaterialHandle{ 0, 0, 0 };
+		//	}
+		//}
+		//else
+		//{
+		//	auto materialInstanceIndex = materialInstancesMap.At(name());
+		//	return MaterialHandle{ 0, materialInstanceIndex, materialInstances[materialInstanceIndex].Material };
+		//}
+
+		return MaterialHandle{ name, 0, 0 };
+	}
+	
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 
@@ -226,6 +238,11 @@ public:
 
 	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
 	
+	/**
+	 * \brief Updates the iterator hierarchy level to index the specified member.
+	 * \param iterator BufferIterator object to update.
+	 * \param member MemberHandle that refers to the struct that we want the iterator to point to.
+	 */
 	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle member)
 	{
 		auto& set = sets[member().SubSet.SetHandle()]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
@@ -234,8 +251,14 @@ public:
 		iterator.ByteOffset += memberData.ByteOffsetIntoStruct;
 		iterator.Member = member;
 		iterator.MemberIndex = 0;
+		iterator.Buffer = member().Buffer;
 	}
 	
+	/**
+	 * \brief Updates the iterator to reference the previously indicated member, at index.
+	 * \param iterator BufferIterator object to update.
+	 * \param index Index of the member we want to address.
+	 */
 	void UpdateIteratorMemberIndex(BufferIterator& iterator, uint32 index)
 	{
 		auto& set = sets[iterator.Set]; auto& memberData = set.MemberData[iterator.Member().MemberIndirectionIndex];
@@ -277,7 +300,7 @@ private:
 		//BE_ASSERT(index < s., "Requested sub set buffer member index greater than allocated instances count.")
 
 		//												//BUFFER							//OFFSET TO STRUCT
-		return reinterpret_cast<T*>(static_cast<byte*>(subSet.Allocations[frameToUpdate].Data) + iterator.ByteOffset);
+		return reinterpret_cast<T*>(static_cast<byte*>(subSet.Buffers[iterator.Buffer].Allocations[frameToUpdate].Data) + iterator.ByteOffset);
 	}
 	
 	Id rayGenMaterial;
@@ -303,7 +326,8 @@ private:
 
 	uint32 shaderCounts[4]{ 0 };
 
-	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, GTSL::Range<MemberInfo*> members);
+	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, uint32 binding, GTSL::Range<MemberInfo*> members);
+	void updateSubBindingsCount(SubSetHandle subSetHandle, uint32 newCount);
 	
 	RayTracingPipeline rayTracingPipeline;
 	Buffer shaderBindingTableBuffer;
@@ -311,22 +335,26 @@ private:
 
 	struct MaterialData
 	{
-		struct MaterialInstanceData
-		{
-			
-		};
-		
-		GTSL::KeepVector<MaterialInstanceData, BE::PAR> MaterialInstances;
+		GTSL::KeepVector<uint32, BE::PAR> MaterialInstances;
 
-		SetHandle Set;
 		RasterizationPipeline Pipeline;
-		MemberHandle TextureHandles;
-		uint32 Counter = 0, Target = 0;
 		Id RenderGroup;
+		uint32 InstanceCount = 0;
+
+		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
+	struct MaterialInstanceData
+	{
+		uint32 Material = 0;
+		uint8 Counter = 0, Target = 0;
+		GTSL::StaticMap<MemberHandle, 16> Parameters;
+	};
+	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
+
 	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
+	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesMap;
 	GTSL::FlatHashMap<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
 	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
 	
@@ -395,7 +423,7 @@ private:
 					subSet.First = bindingType;
 
 					auto& bindings = subSet.Second;
-					bindings.Initialize(8, sets.GetAllocator());
+					bindings.Initialize(32, sets.GetAllocator());
 					bindings.EmplaceAt(binding, update);
 				}
 			}
@@ -407,7 +435,7 @@ private:
 				subSet.First = bindingType;
 				
 				auto& bindings = subSet.Second;
-				bindings.Initialize(8, sets.GetAllocator());
+				bindings.Initialize(32, sets.GetAllocator()); //TODO: RIGHT NOW WE NEED MORE BINDINGS SINCE GROUPS ARE NOT DYNAMICALLY RESIZED, MAY NOT NEED TO ALLOCATE MUCH LATER DOWN THE ROAD
 				bindings.EmplaceAt(binding, update);
 			}
 		}
@@ -421,16 +449,6 @@ private:
 	};
 	GTSL::FlatHashMap<RenderGroupData, BE::PAR> renderGroupsData;
 
-	struct Struct
-	{
-		GTSL::Array<Member, 8> Members;
-	};
-
-	struct StructData : Struct
-	{
-		
-	};
-	
 	/**
 	 * \brief Stores all data per binding set.
 	 */
@@ -449,13 +467,15 @@ private:
 		 * Each struct instance is pointed to by one binding. But a big per sub set buffer is used to store all instances.
 		 */
 		struct SubSetData
-		{
-			RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
-			Buffer Buffers[MAX_CONCURRENT_FRAMES];
-						
+		{				
 			uint32 AllocatedBindings = 0;
 
-			//GTSL::Array<StructData, 16> DefinedStructs;
+			struct BufferAllocations
+			{
+				RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
+				Buffer Buffers[MAX_CONCURRENT_FRAMES];
+			};
+			GTSL::Array<BufferAllocations, 32> Buffers;
 		};
 		GTSL::Array<SubSetData, 16> SubSets;
 		
@@ -521,14 +541,14 @@ private:
 	
 	struct MaterialLoadInfo
 	{
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), TextureResourceManager(tRM)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, uint32 instanceIndex, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), InstanceIndex(instanceIndex), TextureResourceManager(tRM)
 		{
 
 		}
 
 		RenderSystem* RenderSystem = nullptr;
 		GTSL::Buffer<BE::PAR> Buffer;
-		uint32 Component;
+		uint32 Component, InstanceIndex;
 		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);

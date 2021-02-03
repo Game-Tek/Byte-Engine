@@ -32,6 +32,7 @@ private:
 	using AudioDevice = AAL::WindowsAudioDevice;
 	
 	AudioDevice audioDevice;
+	AudioDevice::MixFormat mixFormat;
 
 	GTSL::Array<uint8, 8> audioListeners;
 	GTSL::Array<uint8, 8> audioEmitters;

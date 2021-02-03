@@ -431,6 +431,13 @@ public:
 	template<typename T>
 	T* AddSystem(const Id systemName)
 	{
+		if constexpr (_DEBUG) {
+			if (systemsMap.Find(systemName())) {
+				BE_LOG_ERROR("System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
+				return reinterpret_cast<T*>(systemsMap.At(systemName()));
+			}
+		}
+		
 		System* system;
 
 		uint32 l;
@@ -448,6 +455,6 @@ public:
 
 		taskSorter.AddSystem(systemName);
 		
-		return static_cast<T*>(system);
+		return reinterpret_cast<T*>(system);
 	}
 };

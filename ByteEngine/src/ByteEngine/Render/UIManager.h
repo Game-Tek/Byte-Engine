@@ -14,6 +14,10 @@
 #include "RenderGroup.h"
 #include "ByteEngine/Id.h"
 
+#include "ByteEngine/Handle.hpp"
+
+MAKE_HANDLE(uint32, Canvas);
+
 enum class Alignment : uint8
 {
 			TOP,
@@ -72,21 +76,21 @@ private:
 	float32 rotation = 0.0f;
 };
 
-class TexturePrimitive : public Primitive
-{
-public:
-	TexturePrimitive() = default;
-
-	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
-	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
-	
-	void SetTexture(const ComponentReference newTexture) { textureHandle = newTexture; }
-	
-private:
-	GTSL::RGBA color;
-
-	ComponentReference textureHandle;
-};
+//class TexturePrimitive : public Primitive
+//{
+//public:
+//	TexturePrimitive() = default;
+//
+//	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
+//	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
+//	
+//	void SetTexture(const ComponentReference newTexture) { textureHandle = newTexture; }
+//	
+//private:
+//	GTSL::RGBA color;
+//
+//	ComponentReference textureHandle;
+//};
 
 class TextPrimitive : public Primitive
 {
@@ -162,7 +166,7 @@ public:
 			const auto top = (primitives[e].AspectRatio * 0.5f) + primitives[e].RelativeLocation;
 			const auto bottom = primitives[e].RelativeLocation - (primitives[e].AspectRatio * 0.5f);
 			
-			if(point.X <= top.X && point.X >= bottom.X && point.Y <= top.Y && point.Y >= bottom.Y) { return true; }
+			if(point.X() <= top.X() && point.X() >= bottom.X() && point.Y() <= top.Y() && point.Y() >= bottom.Y()) { return true; }
 
 			++i;
 		}
@@ -176,7 +180,7 @@ public:
 	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
 	void SetSquarePosition(uint16 square, GTSL::Vector2 pos)
 	{
-		BE_ASSERT(pos.X >= -1.f && pos.X <= 1.0f && pos.Y >= -1.0f && pos.Y <= 1.0f);
+		BE_ASSERT(pos.X() >= -1.f && pos.X() <= 1.0f && pos.Y() >= -1.0f && pos.Y() <= 1.0f);
 		primitives[squares[square].PrimitiveIndex].RelativeLocation = pos;
 	}
 
@@ -277,16 +281,14 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
-	ComponentReference CreateCanvas(const Id name)
+	CanvasHandle CreateCanvas(const Id name)
 	{
-		return ComponentReference(GetSystemId(), canvases.Emplace());
+		return CanvasHandle(canvases.Emplace());
 	}
 
-	Canvas& GetCanvas(const ComponentReference componentReference)
-	{
-		assertComponentReference(componentReference);
-		
-		return canvases[componentReference.Component];
+	Canvas& GetCanvas(const CanvasHandle componentReference)
+	{		
+		return canvases[componentReference()];
 	}
 	
 	void SignalHit(const GTSL::Vector2 pos)
@@ -304,7 +306,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
-	void AddCanvas(const ComponentReference system)
+	void AddCanvas(const CanvasHandle system)
 	{
 		canvases.Emplace(system);
 	}
@@ -315,6 +317,6 @@ public:
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color()); }
 
 private:
-	GTSL::KeepVector<ComponentReference, BE::PersistentAllocatorReference> canvases;
+	GTSL::KeepVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::FlatHashMap<GTSL::RGBA, BE::PAR> colors;
 };

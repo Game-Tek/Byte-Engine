@@ -77,8 +77,6 @@ namespace BE
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 
-		void Shutdown() const;
-
 		template<typename... ARGS>
 		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args)
 		{

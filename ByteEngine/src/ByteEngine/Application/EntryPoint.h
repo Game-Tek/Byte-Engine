@@ -35,11 +35,16 @@ int main(int argc, char** argv)
 
 	application->SetSystemAllocator(&system_allocator);
 
-	application->Initialize();
-	application->PostInitialize();
-	//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
-	const auto exit_code = application->Run(argc, argv);
+	int32 exitCode = 0;
+	
+	if (application->Initialize())
+	{
+		application->PostInitialize();
+		//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
+		exitCode = application->Run(argc, argv);
+	}
+	
 	application->Shutdown();
 
-	return exit_code; //Return and exit.
+	return exitCode; //Return and exit.
 }

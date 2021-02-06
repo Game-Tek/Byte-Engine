@@ -14,6 +14,8 @@
 #include "RenderTypes.h"
 #include "ByteEngine/Game/Tasks.h"
 
+class RenderOrchestrator;
+class RenderState;
 class MaterialSystem;
 class RenderSystem;
 class RenderGroup;
@@ -29,14 +31,11 @@ public:
 		GameInstance* GameInstance;
 		RenderSystem* RenderSystem;
 		MaterialSystem* MaterialSystem;
+		//RenderState* RenderState;
 		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
+		RenderOrchestrator* RenderOrchestrator;
 	};
 	virtual void Setup(const SetupInfo& info) = 0;
-
-
-	
-protected:
-	GTSL::Vector<MaterialHandle, BE::PAR> materials;
 };
 
 class StaticMeshRenderManager : public RenderManager
@@ -168,10 +167,40 @@ public:
 			renderPassesMap.At(renderPass()).RenderGroups.EmplaceBack(renderGroup);
 		}
 	}
+
+	void AddMaterial(MaterialHandle materialHandle)
+	{
+		meshesPerMaterial.Emplace(materialHandle()).Initialize(32, GetPersistentAllocator());
+	}
+
+	void RemoveMaterial(MaterialHandle materialHandle)
+	{
+		
+	}
+
+	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialHandle materialHandle)
+	{
+		auto result = meshesPerMaterial.TryEmplace(materialHandle());
+
+		if (result.State()) { //if material is registered 
+			result.Get().EmplaceBack(meshHandle);
+		}
+		else [[likely]] { //if material doesn't exist
+			auto & meshList = meshesPerMaterial.Emplace(materialHandle());
+			meshList.Initialize(32, GetPersistentAllocator());
+			meshList.EmplaceBack(meshHandle);
+		}
+	}
+
+	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
+	                     meshHandle, MaterialHandle materialHandle);
+
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
+
+	GTSL::FlatHashMap<GTSL::Vector<RenderSystem::MeshHandle, BE::PAR>, BE::PAR> meshesPerMaterial;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;

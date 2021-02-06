@@ -29,7 +29,7 @@ struct CubicBezier
 	GTSL::Vector2 Points[3];
 };
 
-inline float det(GTSL::Vector2 a, GTSL::Vector2 b) { return a.X * b.Y - b.X * a.Y; }
+inline float det(GTSL::Vector2 a, GTSL::Vector2 b) { return a.X() * b.Y() - b.X() * a.Y(); }
 // Find vector vi given pixel p=(0,0) and Bézier points b0, b1, b2
 GTSL::Vector2 get_distance_vector(GTSL::Vector2 b0, GTSL::Vector2 b1, GTSL::Vector2 b2) {
 	float a = det(b0, b2), b = 2 * det(b1, b0), d = 2 * det(b2, b1); // ab,c(p)
@@ -38,7 +38,7 @@ GTSL::Vector2 get_distance_vector(GTSL::Vector2 b0, GTSL::Vector2 b1, GTSL::Vect
 	GTSL::Vector2 d21 = b2 - b1, d10 = b1 - b0, d20 = b2 - b0;
 	
 	GTSL::Vector2 gf = (d21 * b + d10 * d + d20 * a) * 2.0f;
-	gf = GTSL::Vector2(gf.Y, -gf.X); // delta f(p)
+	gf = GTSL::Vector2(gf.Y(), -gf.X()); // delta f(p)
 	GTSL::Vector2 pp = gf * -f / GTSL::Math::DotProduct(gf, gf); // p'
 	GTSL::Vector2 d0p = b0 - pp; // p' to origin
 	float ap = det(d0p, d20), bp = 2 * det(d10, d0p); // a,b(p')
@@ -149,8 +149,8 @@ struct FaceTree : public Object
 			//	max += height;
 			//}
 			
-			from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
-			to   = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y() * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			to   = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y() * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
 		};
 		
 		auto GetBandsForCubic = [&](const CubicBezier& cubicBezier, uint16& from, uint16& to) -> void
@@ -174,8 +174,8 @@ struct FaceTree : public Object
 			//	max += height;
 			//}
 			
-			from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
-			to   = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y() * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
+			to   = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y() * static_cast<float32>(BANDS)), uint16(0), uint16(BANDS - 1));
 		};
 		
 		for(uint16 l = 0; l < face.LinearBeziers.GetLength(); ++l)
@@ -199,7 +199,7 @@ struct FaceTree : public Object
 
 		auto getBandIndex = [](const GTSL::Vector2 pos)
 		{
-			return GTSL::Math::Clamp(static_cast<uint16>(pos.Y * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
+			return GTSL::Math::Clamp(static_cast<uint16>(pos.Y() * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
 		};
 		
 		auto& face = Faces[0];

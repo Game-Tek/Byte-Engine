@@ -648,8 +648,8 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		get2b(&currentGlyph.BoundingBox[3], data + currentOffset); currentOffset += sizeof(int16); //yMax
 
 		GTSL::Vector2 glyphCenter;
-		glyphCenter.X = (currentGlyph.BoundingBox[0] + currentGlyph.BoundingBox[2]) / 2.0f;
-		glyphCenter.Y = (currentGlyph.BoundingBox[1] + currentGlyph.BoundingBox[3]) / 2.0f;
+		glyphCenter.X() = (currentGlyph.BoundingBox[0] + currentGlyph.BoundingBox[2]) / 2.0f;
+		glyphCenter.Y() = (currentGlyph.BoundingBox[1] + currentGlyph.BoundingBox[3]) / 2.0f;
 
 		currentGlyph.Center = glyphCenter;
 		
@@ -936,12 +936,12 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					auto transformCurve = [&compositeGlyphElementTransformation](Segment& curve) -> Segment
 					{
 						Segment out;
-						out.Points[0].X = curve.Points[0].X * compositeGlyphElementTransformation[0] + curve.Points[0].X * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
-						out.Points[0].Y = curve.Points[0].Y * compositeGlyphElementTransformation[2] + curve.Points[0].Y * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
-						out.Points[1].X = curve.Points[1].X * compositeGlyphElementTransformation[0] + curve.Points[1].Y * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
-						out.Points[1].Y = curve.Points[1].X * compositeGlyphElementTransformation[2] + curve.Points[1].Y * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
-						out.Points[2].X = curve.Points[2].X * compositeGlyphElementTransformation[0] + curve.Points[2].Y * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
-						out.Points[2].Y = curve.Points[2].X * compositeGlyphElementTransformation[2] + curve.Points[2].Y * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
+						out.Points[0].X() = curve.Points[0].X() * compositeGlyphElementTransformation[0] + curve.Points[0].X() * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
+						out.Points[0].Y() = curve.Points[0].Y() * compositeGlyphElementTransformation[2] + curve.Points[0].Y() * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
+						out.Points[1].X() = curve.Points[1].X() * compositeGlyphElementTransformation[0] + curve.Points[1].Y() * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
+						out.Points[1].Y() = curve.Points[1].X() * compositeGlyphElementTransformation[2] + curve.Points[1].Y() * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
+						out.Points[2].X() = curve.Points[2].X() * compositeGlyphElementTransformation[0] + curve.Points[2].Y() * compositeGlyphElementTransformation[1] + compositeGlyphElementTransformation[4];
+						out.Points[2].Y() = curve.Points[2].X() * compositeGlyphElementTransformation[2] + curve.Points[2].Y() * compositeGlyphElementTransformation[3] + compositeGlyphElementTransformation[5];
 						return out;
 					};
 

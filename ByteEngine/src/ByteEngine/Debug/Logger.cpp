@@ -22,14 +22,6 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), log
 	logFile.OpenFile(path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
 }
 
-void Logger::Shutdown() const
-{
-	//logMutex.Lock();
-	//auto range = GTSL::Range<const byte>(reinterpret_cast<byte*>(data) + buffersInBuffer * subBufferIndex, reinterpret_cast<byte*>(data) + posInBuffer + buffersInBuffer * subBufferIndex);
-	//logFile.WriteToFile(range);
-	//logMutex.Unlock();
-}
-
 void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GTSL::UTF8*> text) const
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();

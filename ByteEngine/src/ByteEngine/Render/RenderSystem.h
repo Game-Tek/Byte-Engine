@@ -212,12 +212,11 @@ public:
 	};
 	MeshHandle CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
-	MeshHandle CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
-	MeshHandle CreateGPUMesh(MeshHandle sharedMeshHandle);
+	MeshHandle CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialHandle materialHandle);
 
-	void UpdateMesh(MeshHandle meshHandle);
+	MeshHandle UpdateMesh(MeshHandle meshHandle);
 	
-	void RenderMesh(MeshHandle handle, uint32 instanceCount = 1);
+	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
 
 	byte* GetMeshPointer(MeshHandle sharedMesh) const
 	{
@@ -230,24 +229,6 @@ public:
 	{
 		const auto& mesh = meshes[meshHandle()];
 		return GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()) + mesh.IndexSize * mesh.IndicesCount;
-	}
-	
-	void RenderAllMeshesForMaterial(Id material, MaterialSystem* materialSystem);
-
-	void AddMeshToMaterial(MeshHandle meshHandle, MaterialHandle materialHandle)
-	{
-		auto& mesh = meshes[meshHandle()]; mesh.MaterialHandle = materialHandle;
-		
-		if(meshesByMaterial.Find(materialHandle.MaterialType())) //TODO: ADD MATERIALS DON'T QUERY FOR EACH MESH
-		{
-			meshesByMaterial.At(materialHandle.MaterialType()).EmplaceBack(meshHandle());
-		}
-		else
-		{
-			auto& e = meshesByMaterial.Emplace(materialHandle.MaterialType());
-			e.Initialize(8, GetPersistentAllocator());
-			e.EmplaceBack(meshHandle());
-		}
 	}
 	
 	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
@@ -264,13 +245,14 @@ public:
 
 	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
 
-	MaterialHandle GetMeshMaterialHandle(const uint32 mesh) const { return meshes[mesh].MaterialHandle; }
 	Buffer GetMeshVertexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
 	uint32 GetMeshVertexBufferSize(const uint32 mesh) const { return meshes[mesh].VertexSize * meshes[mesh].VertexCount; }
 	uint32 GetMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
 	Buffer GetMeshIndexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
 	uint32 GetMeshIndexBufferSize(const uint32 mesh) const { return meshes[mesh].IndexSize * meshes[mesh].IndicesCount; }
 	uint32 GetMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(meshes[mesh].VertexSize * meshes[mesh].VertexCount, GetBufferSubDataAlignment()); }
+	uint32 GetMeshIndex(MeshHandle meshHandle) { return meshHandle(); }
+	MaterialHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
 
 	auto GetAddedMeshes() const { return addedMeshes.GetRange(); }
 	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
@@ -326,8 +308,8 @@ private:
 		uint32 IndicesCount;
 		uint8 VertexSize;
 		uint32 VertexCount;
-		RenderAllocation MeshAllocation;
 		MaterialHandle MaterialHandle;
+		RenderAllocation MeshAllocation;
 		
 		uint32 DerivedTypeIndex;
 	};
@@ -405,8 +387,6 @@ private:
 	LocalMemoryAllocator localMemoryAllocator;
 
 	Vector<PipelineCache> pipelineCaches;
-
-	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PAR> meshesByMaterial;
 
 	uint32 shaderGroupAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;

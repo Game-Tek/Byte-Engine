@@ -14,6 +14,8 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+	meshes.Initialize(32, GetPersistentAllocator());
+	addedMeshes.Initialize(2, 16, GetPersistentAllocator());
 	
 	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
 }
@@ -22,12 +24,12 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 }
 
-ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
+StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
 	addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
+	auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize, addStaticMeshInfo.Material);
 
 	uint32 index = positions.Emplace();
 	
@@ -49,10 +51,10 @@ ComponentReference StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo&
 
 	++staticMeshCount;
 	
-	return ComponentReference(GetSystemId(), index);
+	return StaticMeshHandle(index);
 }
 
-ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
+StaticMeshHandle StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 index = 0;
 	if (BE::Application::Get()->GetOption("rayTracing"))
@@ -60,7 +62,7 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 		uint32 vertexCount = 0, vertexSize = 0, indexCount = 0, indexSize = 0;
 		addStaticMeshInfo.StaticMeshResourceManager->GetMeshSize(addStaticMeshInfo.MeshName, &vertexCount, &vertexSize, &indexCount, &indexSize);
 
-		auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateSharedMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize);
+		auto sharedMesh = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, vertexCount, vertexSize, indexCount, indexSize, addStaticMeshInfo.Material);
 
 		index = positions.Emplace();
 
@@ -81,16 +83,17 @@ ComponentReference StaticMeshRenderGroup::AddRayTracedStaticMesh(const AddRayTra
 		addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMesh(load_static_meshInfo);
 	}
 
-	return ComponentReference(GetSystemId(), index);
+	return StaticMeshHandle(index);
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad)
 {
 	MeshLoadInfo* loadInfo = DYNAMIC_CAST(MeshLoadInfo, onStaticMeshLoad.UserData);
 
-	auto meshRef = loadInfo->RenderSystem->CreateGPUMesh(loadInfo->MeshHandle);
-	loadInfo->RenderSystem->AddMeshToMaterial(meshRef, loadInfo->Material);
-
+	auto meshHandle = loadInfo->RenderSystem->UpdateMesh(loadInfo->MeshHandle);
+	meshes.EmplaceAt(loadInfo->InstanceId, meshHandle);
+	addedMeshes.EmplaceBack(meshHandle);
+	
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
 
@@ -108,7 +111,6 @@ void StaticMeshRenderGroup::onRayTracedStaticMeshLoaded(TaskInfo taskInfo, Stati
 	GTSL::Matrix3x4 matrix(1.0f);
 	meshInfo.Matrix = &matrix;
 	auto meshHandle = loadInfo->RenderSystem->CreateRayTracedMesh(meshInfo);
-	loadInfo->RenderSystem->AddMeshToMaterial(meshHandle, loadInfo->Material);
 
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }

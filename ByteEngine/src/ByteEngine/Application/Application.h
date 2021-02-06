@@ -7,6 +7,8 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/String.hpp>
 
+
+#include "Clock.h"
 #include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
@@ -45,7 +47,7 @@ namespace BE
 
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
-		virtual void Initialize() = 0;
+		virtual bool Initialize() = 0;
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
 		uint8 GetNumberOfThreads();
@@ -81,9 +83,9 @@ namespace BE
 			path.Drop(path.FindLast('/')); return path;
 		}
 		
-		[[nodiscard]] const Clock* GetClock() const { return clockInstance; }
-		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance; }
-		[[nodiscard]] Logger* GetLogger() const { return logger; }
+		[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }
+		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
+		[[nodiscard]] Logger* GetLogger() const { return logger.GetData(); }
 		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
 		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }
 
@@ -125,9 +127,11 @@ namespace BE
 
 		GTSL::Application systemApplication;
 
-		Clock* clockInstance{ nullptr };
-		InputManager* inputManagerInstance{ nullptr };
-		ThreadPool* threadPool = nullptr;
+		bool initialized = false;
+		
+		Clock clockInstance;
+		GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference> inputManagerInstance;
+		GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference> threadPool;
 
 		UpdateContext updateContext{ UpdateContext::NORMAL };
 

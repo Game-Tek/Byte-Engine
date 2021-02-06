@@ -140,6 +140,7 @@
     <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
     <ClInclude Include="src\ByteEngine\Handle.hpp" />
     <ClInclude Include="src\ByteEngine\Resources\AnimationResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Render\RenderState.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />
@@ -182,5 +183,6 @@
     <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
     <ClCompile Include="src\ByteEngine\SIMDMath.ixx" />
     <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Network\ConnectionHandler.ixx" />
   </ItemGroup>
 </Project>

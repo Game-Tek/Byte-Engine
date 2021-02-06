@@ -394,10 +394,11 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 	return meshHandle;
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize)
+RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialHandle materialHandle)
 {
 	Mesh mesh;
 
+	mesh.MaterialHandle = materialHandle;
 	mesh.VertexSize = vertexSize; mesh.VertexCount = vertexCount; mesh.IndexSize = indexSize; mesh.IndicesCount = indexCount;
 
 	auto verticesSize = vertexCount * vertexSize; auto indecesSize = indexCount * indexSize;
@@ -417,41 +418,40 @@ RenderSystem::MeshHandle RenderSystem::CreateSharedMesh(Id name, uint32 vertexCo
 	return addMesh(mesh);
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateGPUMesh(MeshHandle sharedMeshHandle)
-{
-	auto& sharedMesh = meshes[sharedMeshHandle()];
-	//TODO: keep mesh index, don't create another one, and simply queue the copy on another list, to avoid moving so much data aound.
-	// Remember material system also has to update buffers and descriptor in consequence
-	Mesh mesh; mesh.VertexSize = sharedMesh.VertexSize; mesh.VertexCount = sharedMesh.VertexCount; mesh.IndexSize = sharedMesh.IndexSize; mesh.IndicesCount = sharedMesh.IndicesCount;
-
-	auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
-	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
-	
-	Buffer::CreateInfo createInfo;
-	createInfo.RenderDevice = GetRenderDevice();
-	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION | BufferType::STORAGE;
-	createInfo.Size = meshSize;
-	
-	BufferLocalMemoryAllocationInfo bufferLocal;
-	bufferLocal.CreateInfo = &createInfo;
-	bufferLocal.Allocation = &mesh.MeshAllocation;
-	bufferLocal.Buffer = &mesh.Buffer;
-	AllocateLocalBufferMemory(bufferLocal);
-
-	BufferCopyData bufferCopyData;
-	bufferCopyData.Size = meshSize;
-	bufferCopyData.DestinationBuffer = mesh.Buffer;
-	bufferCopyData.DestinationOffset = 0;
-	bufferCopyData.SourceBuffer = sharedMesh.Buffer;
-	bufferCopyData.SourceOffset = 0;
-	AddBufferCopy(bufferCopyData);
-	
-	return MeshHandle(addMesh(mesh));
-}
-
-void RenderSystem::UpdateMesh(MeshHandle meshHandle)
+RenderSystem::MeshHandle RenderSystem::UpdateMesh(MeshHandle meshHandle)
 {
 	if(needsStagingBuffer)
+	{
+		auto& sharedMesh = meshes[meshHandle()];
+		//TODO: keep mesh index, don't create another one, and simply queue the copy on another list, to avoid moving so much data aound.
+		// Remember material system also has to update buffers and descriptor in consequence
+		Mesh mesh; mesh.VertexSize = sharedMesh.VertexSize; mesh.VertexCount = sharedMesh.VertexCount; mesh.IndexSize = sharedMesh.IndexSize; mesh.IndicesCount = sharedMesh.IndicesCount;
+
+		auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
+		auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
+
+		Buffer::CreateInfo createInfo;
+		createInfo.RenderDevice = GetRenderDevice();
+		createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_DESTINATION | BufferType::STORAGE;
+		createInfo.Size = meshSize;
+
+		BufferLocalMemoryAllocationInfo bufferLocal;
+		bufferLocal.CreateInfo = &createInfo;
+		bufferLocal.Allocation = &mesh.MeshAllocation;
+		bufferLocal.Buffer = &mesh.Buffer;
+		AllocateLocalBufferMemory(bufferLocal);
+
+		BufferCopyData bufferCopyData;
+		bufferCopyData.Size = meshSize;
+		bufferCopyData.DestinationBuffer = mesh.Buffer;
+		bufferCopyData.DestinationOffset = 0;
+		bufferCopyData.SourceBuffer = sharedMesh.Buffer;
+		bufferCopyData.SourceOffset = 0;
+		AddBufferCopy(bufferCopyData);
+
+		return addMesh(mesh);
+	}
+	else //doesn't need staging buffer, has resizable BAR, is integrated graphics, etc
 	{
 		
 	}
@@ -483,47 +483,6 @@ void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
 	drawIndexedInfo.InstanceCount = instanceCount;
 	drawIndexedInfo.IndexCount = mesh.IndicesCount;
 	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
-}
-
-void RenderSystem::RenderAllMeshesForMaterial(Id material, MaterialSystem* materialSystem)
-{
-	if (meshesByMaterial.Find(material())) //so it doesn't blow up, TODO: FIX
-	{
-		auto range = meshesByMaterial.At(material()).GetRange(); //DECLARE MATS FROM MAT SYSTEM, THEN ADD MESHES OR ELSE IT BLOWS UP BECAUSE NO MATERIALS ARE AVAILABLE
-
-		for (auto e : range)
-		{
-			const auto& mesh = meshes[e];
-
-			CommandBuffer::BindVertexBufferInfo bindVertexBufferInfo;
-			bindVertexBufferInfo.RenderDevice = GetRenderDevice();
-			bindVertexBufferInfo.Buffer = mesh.Buffer;
-			bindVertexBufferInfo.Offset = 0;
-			graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindVertexBufferInfo);
-
-			CommandBuffer::BindIndexBufferInfo bindIndexBufferInfo;
-			bindIndexBufferInfo.RenderDevice = GetRenderDevice();
-			bindIndexBufferInfo.Buffer = mesh.Buffer;
-			bindIndexBufferInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
-			bindIndexBufferInfo.IndexType = SelectIndexType(mesh.IndexSize);
-			graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindIndexBufferInfo);
-
-			CommandBuffer::UpdatePushConstantsInfo updatePush;
-			updatePush.RenderDevice = GetRenderDevice();
-			updatePush.Size = 4;
-			updatePush.Offset = 0;
-			updatePush.Data = reinterpret_cast<byte*>(&e);
-			updatePush.PipelineLayout = materialSystem->getmaterialPipelineLayout(material);
-			updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
-			graphicsCommandBuffers[GetCurrentFrame()].UpdatePushConstant(updatePush);
-
-			CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-			drawIndexedInfo.RenderDevice = GetRenderDevice();
-			drawIndexedInfo.InstanceCount = 1;
-			drawIndexedInfo.IndexCount = mesh.IndicesCount;
-			graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
-		}
-	}
 }
 
 void RenderSystem::SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix4& matrix)
@@ -618,8 +577,6 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
 	}
-
-	meshesByMaterial.Initialize(32, GetPersistentAllocator());
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)

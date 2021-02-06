@@ -31,9 +31,9 @@
 
 class RenderOrchestrator;
 
-void GameApplication::Initialize()
+bool GameApplication::Initialize()
 {
-	Application::Initialize();
+	if(!Application::Initialize()) { return false; } 
 
 	window.SetOnWindowResizeDelegate(GTSL::Delegate<void(const GTSL::Extent2D&)>::Create<GameApplication, &GameApplication::onWindowResize>(this));
 
@@ -188,9 +188,7 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 }
 
 void GameApplication::Shutdown()
-{
-	gameInstance->GetSystem<RenderSystem>("RenderSystem")->Wait();
-	
+{	
 	Application::Shutdown();
 }
 

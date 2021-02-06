@@ -39,9 +39,11 @@ namespace BE
 	{
 	}
 
-	void Application::Initialize()
+	bool Application::Initialize()
 	{
-		if(!checkPlatformSupport()) { return; }
+		if (!checkPlatformSupport()) {
+			return false;
+		}
 		
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 3);
@@ -58,51 +60,44 @@ namespace BE
 		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger_create_info);
 		
-		clockInstance = new Clock();
-		inputManagerInstance = new InputManager();
-		threadPool = new ThreadPool();
+		inputManagerInstance = GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference>::Create<InputManager>(systemAllocatorReference);
+		threadPool = GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference>::Create<ThreadPool>(systemAllocatorReference);
 
 		settings.Initialize(64, GetPersistentAllocator());
 
 		if (!parseConfig()) { Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file")); }
 		
 		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
+		
+		initialized = true;
 	}
 
 	void Application::Shutdown()
 	{
-		if (closeMode != CloseMode::OK)
+		if (initialized)
 		{
-			if (closeMode == CloseMode::WARNING)
+			if (closeMode != CloseMode::OK)
 			{
-				BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
+				if (closeMode == CloseMode::WARNING)
+				{
+					BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
+				}
+
+				BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason.c_str())
 			}
-			
-			BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason.c_str())
+			else
+			{
+				BE_LOG_SUCCESS("Shutting down application. No reported errors.")
+			}
+
+			transientAllocator.LockedClear();
+			transientAllocator.Free();
+			StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
+			transientAllocator.GetDebugData(stack_allocator_debug_data);
+			BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
+
+			poolAllocator.Free();
 		}
-		else
-		{
-			BE_LOG_SUCCESS("Shutting down application. No reported errors.")
-		}
-
-		delete threadPool;
-
-		settings.Free();
-		
-		delete clockInstance;
-		delete inputManagerInstance;
-
-		gameInstance.Free();
-		
-		transientAllocator.LockedClear();
-		transientAllocator.Free();
-		StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
-		transientAllocator.GetDebugData(stack_allocator_debug_data);
-		BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
-
-		poolAllocator.Free();
-		
-		logger->Shutdown();
 	}
 
 	uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
@@ -149,7 +144,7 @@ namespace BE
 		{
 			systemApplication.Update();
 			
-			clockInstance->OnUpdate();
+			clockInstance.OnUpdate();
 			
 			OnUpdateInfo update_info{};
 			update_info.UpdateContext = updateContext;
@@ -383,6 +378,6 @@ namespace BE
 		bool avx2 = systemInfo.CPU.VectorInfo.HW_AVX2;
 		bool memory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(6));
 		
-		return size_8 && size_16 && size_32 && size_64 && avx2 && memory;
+		return size_8 && size_16 && size_32 && size_64 && avx2;
 	}
 }

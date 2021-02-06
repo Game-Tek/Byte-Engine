@@ -92,7 +92,7 @@ void Canvas::updateBranch(uint32 organizer)
 		{
 		case SizingPolicy::KEEP_CHILDREN_ASPECT_RATIO:
 		{
-			const auto minDimension = GTSL::Math::Min(orgAR.X, orgAR.Y);
+			const auto minDimension = GTSL::Math::Min(orgAR.X(), orgAR.Y());
 			perPrimitiveInOrganizerAspectRatio = { minDimension, minDimension };
 
 			break;
@@ -103,14 +103,14 @@ void Canvas::updateBranch(uint32 organizer)
 			{
 				case Alignment::LEFT:
 				case Alignment::RIGHT:
-					perPrimitiveInOrganizerAspectRatio.X = orgAR.X / organizersPrimitives[organizer].GetLength();
-					perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y;
+					perPrimitiveInOrganizerAspectRatio.X() = orgAR.X() / organizersPrimitives[organizer].GetLength();
+					perPrimitiveInOrganizerAspectRatio.Y() = orgAR.Y();
 					break;
 
 				case Alignment::TOP:
 				case Alignment::BOTTOM:
-					perPrimitiveInOrganizerAspectRatio.X = orgAR.X;
-					perPrimitiveInOrganizerAspectRatio.Y = orgAR.Y / organizersPrimitives[organizer].GetLength();
+					perPrimitiveInOrganizerAspectRatio.X() = orgAR.X();
+					perPrimitiveInOrganizerAspectRatio.Y() = orgAR.Y() / organizersPrimitives[organizer].GetLength();
 					break;				
 				
 				case Alignment::CENTER:
@@ -121,7 +121,7 @@ void Canvas::updateBranch(uint32 organizer)
 			
 		case SizingPolicy::SET_ASPECT_RATIO:
 		{
-			const auto minDimension = GTSL::Math::Min(orgAR.X, orgAR.Y);
+			const auto minDimension = GTSL::Math::Min(orgAR.X(), orgAR.Y());
 			perPrimitiveInOrganizerAspectRatio = { minDimension, minDimension };
 
 			break;
@@ -136,20 +136,20 @@ void Canvas::updateBranch(uint32 organizer)
 		{
 		case SpacingPolicy::PACK:
 		{
-			startPos = { ((orgAR.X * 0.5f * way) + (perPrimitiveInOrganizerAspectRatio.X * 0.5f * (-way))), orgLoc.Y };
+			startPos = { ((orgAR.X() * 0.5f * way) + (perPrimitiveInOrganizerAspectRatio.X() * 0.5f * (-way))), orgLoc.Y() };
 			increment = perPrimitiveInOrganizerAspectRatio * (-way);
-			increment.Y = 0;
+			increment.Y() = 0;
 				
 			break;
 		}
 		case SpacingPolicy::DISTRIBUTE:
 		{
 			auto primCount1 = primCount + 1.0f;
-			auto freeArea = GTSL::Vector2(orgAR.X - (perPrimitiveInOrganizerAspectRatio.X * primCount), orgAR.Y - (perPrimitiveInOrganizerAspectRatio.Y * primCount));
+			auto freeArea = GTSL::Vector2(orgAR.X() - (perPrimitiveInOrganizerAspectRatio.X() * primCount), orgAR.Y() - (perPrimitiveInOrganizerAspectRatio.Y() * primCount));
 			auto freeAreaPerPrim = freeArea / primCount1;
-			startPos = { (orgAR.X * 0.5f * way) + ((freeAreaPerPrim.X + perPrimitiveInOrganizerAspectRatio.X * 0.5f) * (-way)), orgLoc.Y };
+			startPos = { (orgAR.X() * 0.5f * way) + ((freeAreaPerPrim.X() + perPrimitiveInOrganizerAspectRatio.X() * 0.5f) * (-way)), orgLoc.Y() };
 			increment = (perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim) * (-way);
-			increment.Y = 0;
+			increment.Y() = 0;
 				
 			break;
 		}

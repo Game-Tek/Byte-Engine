@@ -7,6 +7,10 @@
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
+#include "ByteEngine/Handle.hpp"
+
+MAKE_HANDLE(uint32, StaticMesh)
+
 class StaticMeshRenderGroup final : public RenderGroup
 {
 public:
@@ -23,7 +27,7 @@ public:
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
 		MaterialHandle Material;
 	};
-	ComponentReference AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
+	StaticMeshHandle AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
 	struct AddRayTracedStaticMeshInfo
 	{
@@ -33,14 +37,21 @@ public:
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
 		MaterialHandle Material;
 	};
-	ComponentReference AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo);
+	StaticMeshHandle AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo);
 
 	[[nodiscard]] auto GetPositions() const { return positions.GetRange(); }
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
-	void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
+	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) { positions[staticMeshHandle()] = vector3; }
 	//void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
-	uint32 GetStaticMeshes() const { return staticMeshCount; }
+	uint32 GetStaticMesheCount() const { return staticMeshCount; }
+
+	auto GetAddedMeshes()
+	{
+		return addedMeshes.GetReference();
+	}
+
+	void ClearAddedMeshes() { addedMeshes.Clear(); }
 private:
 	struct MeshLoadInfo
 	{
@@ -61,4 +72,6 @@ private:
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	uint32 staticMeshCount = 0;
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
+	GTSL::PagedVector<RenderSystem::MeshHandle, BE::PAR> addedMeshes;
 };

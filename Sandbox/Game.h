@@ -5,8 +5,10 @@
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"
+#include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/MaterialSystem.h"
+#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
 class Game final : public GameApplication
 {
@@ -18,12 +20,11 @@ class Game final : public GameApplication
 	GTSL::Vector3 moveDir;
 	float32 fov = 45.0f;
 	
-	ComponentReference camera;
-	ComponentReference hydrant;
-	ComponentReference tv;
+	CameraSystem::CameraHandle camera;
+	StaticMeshHandle hydrant;
+	StaticMeshHandle tv;
 	MaterialHandle material;
 	MaterialHandle textMaterial;
-	ComponentReference texture;
 	MaterialHandle tvMat;
 	MaterialHandle buttonMaterial;
 	void moveLeft(InputManager::ActionInputEvent data);
@@ -37,7 +38,7 @@ public:
 	{
 	}
 
-	void Initialize() override;
+	bool Initialize() override;
 	void PostInitialize() override;
 
 	void OnUpdate(const OnUpdateInfo& onUpdate) override;

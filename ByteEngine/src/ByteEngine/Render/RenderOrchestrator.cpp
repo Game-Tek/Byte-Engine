@@ -12,6 +12,7 @@
 #include "ByteEngine/Game/Tasks.h"
 
 #include "MaterialSystem.h"
+#include "RenderState.h"
 #include "StaticMeshRenderGroup.h"
 #include "UIManager.h"
 #include "ByteEngine/Application/Application.h"
@@ -55,8 +56,18 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
 	
-	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMeshes());
+	//info.RenderOrchestrator->AddMesh(0, {});
+	
+	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMesheCount());
 
+	for (uint32 p = 0; p < renderGroup->GetAddedMeshes().GetPageCount(); ++p)
+	{
+		for(auto e : renderGroup->GetAddedMeshes().GetPage(p))
+		{
+			info.RenderOrchestrator->AddMesh(e, info.RenderSystem->GetMeshMaterialHandle(e()));
+		}
+	}
+	
 	MaterialSystem::BufferIterator bufferIterator;
 	info.MaterialSystem->UpdateIteratorMember(bufferIterator, matrixUniformBufferMemberHandle);
 	
@@ -87,14 +98,14 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	
-	auto mesh = renderSystem->CreateSharedMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2);
+	auto mesh = renderSystem->CreateMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2, materialSystem->GetMaterialHandle("UIMat"));
 	
 	auto* meshPointer = renderSystem->GetMeshPointer(mesh);
 	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
 	meshPointer += 4 * 2 * 4;
 	GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
 	
-	square = renderSystem->CreateGPUMesh(mesh);
+	square = renderSystem->UpdateMesh(mesh);
 	
 	//MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//createMaterialInfo.RenderSystem = renderSystem;
@@ -103,8 +114,6 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	//createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//uiMaterial = materialSystem->CreateRasterMaterial(createMaterialInfo);
-	
-	renderSystem->AddMeshToMaterial(square, uiMaterial);
 
 	MaterialSystem::SetInfo setInfo;
 
@@ -178,8 +187,8 @@ void UIRenderManager::Setup(const SetupInfo& info)
 			auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
 			auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
 			//
-			GTSL::Math::Translate(trans, GTSL::Vector3(location.X, -location.Y, 0));
-			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X, scale.Y, 1));
+			GTSL::Math::Translate(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
+			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X(), scale.Y(), 1));
 			//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
 			//
 			
@@ -294,6 +303,8 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderPassesFunctions.Emplace(Id("SceneRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
 	renderPassesFunctions.Emplace(Id("UIRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
 	renderPassesFunctions.Emplace(Id("SceneRTRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
+
+	meshesPerMaterial.Initialize(32, GetPersistentAllocator());
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -316,13 +327,16 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 
 	auto viewMatrix = rotationMatrices[0] * cameraPosition;
 	auto matrix = projectionMatrix * viewMatrix;
+
+	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	
 	RenderManager::SetupInfo setupInfo;
 	setupInfo.GameInstance = taskInfo.GameInstance;
 	setupInfo.RenderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	setupInfo.MaterialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	setupInfo.MaterialSystem = materialSystem;
 	setupInfo.ProjectionMatrix = projectionMatrix;
 	setupInfo.ViewMatrix = viewMatrix;
+	setupInfo.RenderOrchestrator = this;
 	GTSL::ForEach(renderManagers, [&](uint16 renderManager) { taskInfo.GameInstance->GetSystem<RenderManager>(renderManager)->Setup(setupInfo); });
 }
 
@@ -1077,13 +1091,26 @@ void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 	renderPass.Enabled = enable;
 }
 
-#define TRANSLATE_MASK(fromVal, toVal, toVar, store) GTSL::SetBitAs(GTSL::FindFirstSetBit(fromVal), toVar & (toVal), store)
+void RenderOrchestrator::UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle meshHandle, MaterialHandle materialHandle)
+{
+	uint32 index = renderSystem->GetMeshIndex(meshHandle);
+	
+	CommandBuffer::UpdatePushConstantsInfo updatePush;
+	updatePush.RenderDevice = renderSystem->GetRenderDevice();
+	updatePush.Size = 4;
+	updatePush.Offset = 0;
+	updatePush.Data = reinterpret_cast<byte*>(&index);
+	updatePush.PipelineLayout = materialSystem->GetMaterialPipelineLayout(materialHandle);
+	updatePush.ShaderStages = ShaderStage::VERTEX | ShaderStage::FRAGMENT;
+	commandBuffer.UpdatePushConstant(updatePush);
+}
 
 AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(PipelineStage::value_type stage, bool writeAccess)
 {
 	AccessFlags::value_type accessFlags = 0; //TODO: SWITCH FLAGS BY ATTACHMENT TYPE. E.J: COLOR, DEPTH, etc
 	accessFlags |= stage & PipelineStage::COLOR_ATTACHMENT_OUTPUT ? writeAccess ? AccessFlags::COLOR_ATTACHMENT_WRITE : AccessFlags::COLOR_ATTACHMENT_READ : 0;
 	accessFlags |= stage & PipelineStage::EARLY_FRAGMENT_TESTS ? writeAccess ? AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE : AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ : 0;
+	accessFlags |= stage & PipelineStage::LATE_FRAGMENT_TESTS ? writeAccess ? AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE : AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ : 0;
 	accessFlags |= stage & (PipelineStage::RAY_TRACING_SHADER | PipelineStage::COMPUTE_SHADER) ? writeAccess ? AccessFlags::SHADER_WRITE : AccessFlags::SHADER_READ : 0;
 	accessFlags |= stage & PipelineStage::TRANSFER ? writeAccess ? AccessFlags::TRANSFER_WRITE : AccessFlags::TRANSFER_READ : 0;
 	return accessFlags;
@@ -1091,22 +1118,25 @@ AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(Pi
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
-	for (auto e : renderPassesMap.At(rp()).RenderGroups)
+	for (auto rg : renderPassesMap.At(rp()).RenderGroups)
 	{
-		auto mats = materialSystem->GetMaterialHandlesForRenderGroup(e);
+		auto mats = materialSystem->GetMaterialHandlesForRenderGroup(rg);
 
-		materialSystem->BindSet(renderSystem, commandBuffer, e);
+		materialSystem->BindSet(renderSystem, commandBuffer, rg);
 		
-		uint32 meshIndex = 0;
-		for (auto m : mats)
+		for (auto materialHandle : mats)
 		{
-			if (materialSystem->BindMaterial(renderSystem, commandBuffer, m))
+			materialSystem->BindMaterial(renderSystem, commandBuffer, materialHandle);
+
+			//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
+
+			auto& meshes = meshesPerMaterial.At(materialHandle());
+
+			for(auto meshHandle : meshes)
 			{
-				//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
-				renderSystem->RenderAllMeshesForMaterial(m.MaterialType, materialSystem);
+				UpdateMeshIndex(commandBuffer, renderSystem, materialSystem, meshHandle, materialHandle);
+				renderSystem->RenderMesh(meshHandle);
 			}
-			
-			++meshIndex;
 		}
 	}
 }

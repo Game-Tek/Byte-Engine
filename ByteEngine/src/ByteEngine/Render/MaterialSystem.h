@@ -20,12 +20,7 @@ class TextureResourceManager;
 struct TaskInfo;
 class RenderSystem;
 
-struct MaterialHandle
-{
-	Id MaterialType;
-	uint32 MaterialInstance = 0;
-	uint32 Element = 0;
-};
+using MaterialHandle = Id;
 
 MAKE_HANDLE(uint32, Set)
 
@@ -51,6 +46,8 @@ public:
 	MaterialSystem() : System("MaterialSystem")
 	{}
 
+	MAKE_HANDLE(uint32, Texture);
+	
 	struct Member
 	{
 		enum class DataType : uint8
@@ -106,7 +103,7 @@ public:
 	}
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
 	
-	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle set);
+	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
 
@@ -188,34 +185,13 @@ public:
 	[[nodiscard]] MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
 	[[nodiscard]] MaterialHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
-	MaterialHandle GetMaterialHandle(Id name)
-	{
-		//if constexpr (_DEBUG)
-		//{
-		//	if(materialInstancesMap.Find(name()))
-		//	{
-		//		auto materialInstanceIndex = materialInstancesMap.At(name());
-		//		return MaterialHandle{ 0, materialInstanceIndex, materialInstances[materialInstanceIndex].Material };
-		//	}
-		//	else
-		//	{
-		//		BE_LOG_ERROR("No material instance with that name found! ", BE::FIX_OR_CRASH_STRING);
-		//		return MaterialHandle{ 0, 0, 0 };
-		//	}
-		//}
-		//else
-		//{
-		//	auto materialInstanceIndex = materialInstancesMap.At(name());
-		//	return MaterialHandle{ 0, materialInstanceIndex, materialInstances[materialInstanceIndex].Material };
-		//}
-
-		return MaterialHandle{ name, 0, 0 };
-	}
+	MaterialHandle GetMaterialHandle(Id name) { return name; }
 	
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 
 	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
+	[[nodiscard]] auto GetPrivateMaterialHandles() const { return readyMaterialHandles.GetRange(); }
 
 	auto GetMaterialHandlesForRenderGroup(Id renderGroup) const
 	{
@@ -269,11 +245,18 @@ public:
 		iterator.MemberIndex = index;
 	}
 
-private:
-	PipelineLayout getmaterialPipelineLayout(const Id id)
+	struct PrivateMaterialHandle
 	{
-		return sets[GetSetHandleByName("GlobalData")()].PipelineLayout;
+		uint32 MaterialInstance = 0;
+		uint32 MaterialIndex = 0;
+	};
+	
+	PipelineLayout GetMaterialPipelineLayout(const Id id)
+	{
+		return sets[id()].PipelineLayout;
 	}
+
+private:
 	
 	uint32 dataTypeSize(MaterialSystem::Member::DataType data)
 	{
@@ -348,17 +331,21 @@ private:
 	struct MaterialInstanceData
 	{
 		uint32 Material = 0;
-		uint8 Counter = 0, Target = 0;
 		GTSL::StaticMap<MemberHandle, 16> Parameters;
+		MaterialHandle MaterialHandle;
+		uint8 Counter = 0, Target = 0;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
 
 	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
 	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesMap;
 	GTSL::FlatHashMap<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
-	GTSL::Vector<MaterialHandle, BE::PAR> readyMaterialHandles;
+	GTSL::Vector<PrivateMaterialHandle, BE::PAR> readyMaterialHandles;
+
+	GTSL::FlatHashMap<PrivateMaterialHandle, BE::PAR> privateMaterialHandlesByName;
+	PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
 	
-	void setMaterialAsLoaded(const MaterialHandle matIndex);
+	void setMaterialAsLoaded(const MaterialHandle matIndex, const PrivateMaterialHandle privateMaterialHandle);
 
 	struct CreateTextureInfo
 	{
@@ -366,9 +353,9 @@ private:
 		GameInstance* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager = nullptr;
-		MaterialHandle MaterialHandle;
+		PrivateMaterialHandle MaterialHandle;
 	};
-	ComponentReference createTexture(const CreateTextureInfo& createTextureInfo);
+	TextureHandle createTexture(const CreateTextureInfo& createTextureInfo);
 
 	struct DescriptorsUpdate
 	{
@@ -532,9 +519,9 @@ private:
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
 	
 	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
-	GTSL::KeepVector<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
+	GTSL::KeepVector<GTSL::Vector<PrivateMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
 	
-	void addPendingMaterialToTexture(uint32 texture, MaterialHandle material)
+	void addPendingMaterialToTexture(uint32 texture, PrivateMaterialHandle material)
 	{
 		pendingMaterialsPerTexture[texture].EmplaceBack(material);
 	}

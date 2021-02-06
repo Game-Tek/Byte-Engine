@@ -21,22 +21,22 @@ class TestSystem;
 
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
-	moveDir.X = -data.Value;
+	moveDir.X() = -data.Value;
 }
 
 void Game::moveForward(InputManager::ActionInputEvent data)
 {
-	moveDir.Z = data.Value;
+	moveDir.Z() = data.Value;
 }
 
 void Game::moveBackwards(InputManager::ActionInputEvent data)
 {
-	moveDir.Z = -data.Value;
+	moveDir.Z() = -data.Value;
 }
 
 void Game::moveRight(InputManager::ActionInputEvent data)
 {
-	moveDir.X = data.Value;
+	moveDir.X() = data.Value;
 }
 
 void Game::zoom(InputManager::LinearInputEvent data)
@@ -44,9 +44,9 @@ void Game::zoom(InputManager::LinearInputEvent data)
 	fov += -(data.Value / 75);
 }
 
-void Game::Initialize()
+bool Game::Initialize()
 {
-	GameApplication::Initialize();
+	if (!GameApplication::Initialize()) { return false; }
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
@@ -338,7 +338,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
-	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));//
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
 	//auto r = 1.0f;
 	//auto g = 1.0f;
@@ -357,8 +357,8 @@ void Game::move(InputManager::Vector2DInputEvent data)
 {
 	posDelta += (data.Value - data.LastValue) * 2;
 
-	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X));
-	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y));
+	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
+	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y()));
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetCameraRotation(camera, rot);
 }
 

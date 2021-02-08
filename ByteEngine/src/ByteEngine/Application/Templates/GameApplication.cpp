@@ -87,26 +87,29 @@ void GameApplication::PostInitialize()
 	gameInstance->AddStage("FrameEnd");
 	
 	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
+
+	RenderSystem::InitializeRendererInfo initialize_renderer_info;
+	initialize_renderer_info.PipelineCacheResourceManager = GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
+	renderSystem->InitializeRenderer(initialize_renderer_info);
+	
+	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+
+	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	gameInstance->AddSystem<AudioSystem>("AudioSystem");
 
 	GTSL::Window::WindowCreateInfo create_window_info;
 	create_window_info.Application = &systemApplication;
 	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
 	create_window_info.Extent = { 1280, 720 };
 	create_window_info.Type = GTSL::Window::WindowType::OS_WINDOW;
-	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator as window creation may call ResizeDelegate which
+	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
 	//queues a function that depends on these elements existing
 
-	RenderSystem::InitializeRendererInfo initialize_renderer_info;
-	initialize_renderer_info.Window = &window;
-	initialize_renderer_info.PipelineCacheResourceManager = GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
-	renderSystem->InitializeRenderer(initialize_renderer_info);
+	renderSystem->SetWindow(&window);
 
-	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
-
-	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	gameInstance->AddSystem<AudioSystem>("AudioSystem");
-
+	window.ShowWindow();
+	
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	
 	{
@@ -158,8 +161,6 @@ void GameApplication::PostInitialize()
 	
 	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
 	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));
-	
-	window.ShowWindow();
 }
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

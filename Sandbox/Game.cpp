@@ -198,6 +198,8 @@ bool Game::Initialize()
 
 void Game::PostInitialize()
 {
+	BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
+	
 	GameApplication::PostInitialize();
 
 	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
@@ -303,7 +305,7 @@ void Game::PostInitialize()
 	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
 	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
 	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-	//}//
+	//}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -312,7 +314,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
-	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
+	//	tvMat = material_system->CreateMaterial(createMaterialInfo);//
 	//}
 	
 	{

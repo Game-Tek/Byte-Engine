@@ -31,7 +31,6 @@ public:
 
 	struct InitializeRendererInfo
 	{
-		GTSL::Window* Window{ 0 };
 		class PipelineCacheResourceManager* PipelineCacheResourceManager;
 	};
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
@@ -258,7 +257,12 @@ public:
 	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
-private:	
+
+	void SetWindow(GTSL::Window* window) { this->window = window; }
+
+private:
+	GTSL::Window* window;
+	
 	GTSL::Mutex testMutex;
 
 	bool needsStagingBuffer = true;
@@ -364,7 +368,7 @@ private:
 	
 	uint8 currentFrameIndex = 0;
 
-	PresentMode swapchainPresentMode;
+	GAL::PresentModes swapchainPresentMode;
 	TextureFormat swapchainFormat;
 	ColorSpace swapchainColorSpace;
 	

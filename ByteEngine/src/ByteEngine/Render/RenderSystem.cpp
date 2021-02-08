@@ -122,7 +122,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		}
 	}
 	
-	swapchainPresentMode = PresentMode::FIFO;
+	swapchainPresentMode = GAL::PresentModes::SWAP;
 	swapchainColorSpace = ColorSpace::NONLINEAR_SRGB;
 	swapchainFormat = TextureFormat::BGRA_I8;
 
@@ -136,17 +136,6 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			transferDoneSemaphores.EmplaceBack(semaphoreCreateInfo);
 		}
 	}
-	
-	Surface::CreateInfo surfaceCreateInfo;
-	surfaceCreateInfo.RenderDevice = &renderDevice;
-	if constexpr (_DEBUG) { surfaceCreateInfo.Name = GTSL::StaticString<32>("Surface"); }
-	GTSL::Window::Win32NativeHandles handles;
-	initializeRenderer.Window->GetNativeHandles(&handles);
-	GAL::WindowsWindowData windowsWindowData;
-	windowsWindowData.InstanceHandle = GetModuleHandle(nullptr);
-	windowsWindowData.WindowHandle = handles.HWND;
-	surfaceCreateInfo.SystemData = &windowsWindowData;
-	new(&surface) Surface(surfaceCreateInfo);
 	
 	for (uint32 i = 0; i < pipelinedFrames; ++i)
 	{
@@ -425,8 +414,8 @@ RenderSystem::MeshHandle RenderSystem::UpdateMesh(MeshHandle meshHandle)
 		auto& sharedMesh = meshes[meshHandle()];
 		//TODO: keep mesh index, don't create another one, and simply queue the copy on another list, to avoid moving so much data aound.
 		// Remember material system also has to update buffers and descriptor in consequence
-		Mesh mesh; mesh.VertexSize = sharedMesh.VertexSize; mesh.VertexCount = sharedMesh.VertexCount; mesh.IndexSize = sharedMesh.IndexSize; mesh.IndicesCount = sharedMesh.IndicesCount;
-
+		Mesh mesh(sharedMesh);		
+		
 		auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
 		auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 
@@ -496,6 +485,25 @@ void RenderSystem::OnResize(const GTSL::Extent2D extent)
 {
 	graphicsQueue.Wait(GetRenderDevice());
 
+	if (!surface.GetHandle())
+	{
+		Surface::CreateInfo surfaceCreateInfo;
+		surfaceCreateInfo.RenderDevice = &renderDevice;
+		if constexpr (_DEBUG) { surfaceCreateInfo.Name = GTSL::StaticString<32>("Surface"); }
+
+		if constexpr (_WIN64) {
+			GTSL::Window::Win32NativeHandles handles;
+			window->GetNativeHandles(&handles);
+			surfaceCreateInfo.SystemData.InstanceHandle = GetModuleHandle(nullptr);
+			surfaceCreateInfo.SystemData.WindowHandle = handles.HWND;
+		}
+
+#if __linux__
+#endif
+		
+		surface.Initialize(surfaceCreateInfo);
+	}
+	
 	Surface::SurfaceCapabilities surfaceCapabilities;
 	auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
 	

@@ -8,7 +8,10 @@
 #include "ByteEngine/Core.h"
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Time.h>
+#include <GTSL/FlatHashMap.h>
 
+
+#include "ByteEngine/Id.h"
 #include "ByteEngine/Object.h"
 
 class FunctionTimer;
@@ -57,6 +60,8 @@ namespace BE
 		static constexpr uint32 defaultBufferLength{ bytesToDumpOn };
 
 		mutable std::atomic<uint32> posInBuffer{ 0 };
+
+		mutable GTSL::FlatHashMap<Id, BE::SystemAllocatorReference> allowedLoggers;
 		
 		mutable UTF8* data{ nullptr };
 

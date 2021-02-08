@@ -47,6 +47,7 @@ namespace BE
 
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
+		bool BaseInitialize(int argc, UTF8* argv[]);
 		virtual bool Initialize() = 0;
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
@@ -137,7 +138,7 @@ namespace BE
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
-		BE_DEBUG_ONLY(GTSL::String<SystemAllocatorReference> closeReason);
+		BE_DEBUG_ONLY(GTSL::StaticString<1024> closeReason);
 
 		uint64 applicationTicks{ 0 };
 

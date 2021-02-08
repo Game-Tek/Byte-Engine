@@ -251,9 +251,9 @@ public:
 		uint32 MaterialIndex = 0;
 	};
 	
-	PipelineLayout GetMaterialPipelineLayout(const Id id)
+	PipelineLayout GetMaterialPipelineLayout(const MaterialHandle materialHandle)
 	{
-		return sets[id()].PipelineLayout;
+		return sets[readyMaterialsMap.At(materialHandle())].PipelineLayout;
 	}
 
 private:

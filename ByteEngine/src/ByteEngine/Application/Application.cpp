@@ -39,19 +39,20 @@ namespace BE
 	{
 	}
 
-	bool Application::Initialize()
+	bool Application::BaseInitialize(int argc, UTF8* argv[])
 	{
 		if (!checkPlatformSupport()) {
+			Close(CloseMode::ERROR, GTSL::StaticString<128>("No platform support."));
 			return false;
 		}
-		
+
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
 		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 3);
 
 		GTSL::Thread::SetThreadId(0);
-		
+
 		resourceManagers.Initialize(8, systemAllocatorReference);
-		
+
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
 		Logger::LoggerCreateInfo logger_create_info;
@@ -59,17 +60,35 @@ namespace BE
 		path.Drop(path.FindLast('/'));
 		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger_create_info);
-		
+
 		inputManagerInstance = GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference>::Create<InputManager>(systemAllocatorReference);
 		threadPool = GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference>::Create<ThreadPool>(systemAllocatorReference);
 
 		settings.Initialize(64, GetPersistentAllocator());
 
 		if (!parseConfig()) { Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file")); }
-		
-		BE_DEBUG_ONLY(closeReason = GTSL::String(255, systemAllocatorReference));
-		
+
 		initialized = true;
+
+		if (argc)
+		{
+			GTSL::StaticString<2048> string("Application started with parameters:\n");
+
+			for (uint32 p = 0; p < argc; ++p) {
+				string += '	'; string += argv[p];
+			}
+
+			BE_LOG_MESSAGE(string);
+		}
+		else
+		{
+			BE_LOG_MESSAGE("Application started with no parameters.");
+		}
+	}
+
+	bool Application::Initialize()
+	{
+		return true;
 	}
 
 	void Application::Shutdown()
@@ -80,10 +99,10 @@ namespace BE
 			{
 				if (closeMode == CloseMode::WARNING)
 				{
-					BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason.c_str())
+					BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason)
 				}
 
-				BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason.c_str())
+				BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason)
 			}
 			else
 			{
@@ -125,21 +144,6 @@ namespace BE
 
 	int Application::Run(int argc, char** argv)
 	{
-		if (argc)
-		{
-			GTSL::StaticString<2048> string("Application started with parameters:\n");
-			
-			for (uint32 p = 0; p < argc; ++p) {
-				string += '	'; string += argv[p];
-			}
-
-			BE_LOG_MESSAGE(string);
-		}
-		else
-		{
-			BE_LOG_MESSAGE("Application started with no parameters.");
-		}
-		
 		while (!flaggedForClose)
 		{
 			systemApplication.Update();
@@ -165,7 +169,7 @@ namespace BE
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const UTF8*> reason)
 	{
-		closeReason.Append(reason);
+		closeReason += reason;
 		flaggedForClose = true;
 		this->closeMode = closeMode;
 	}

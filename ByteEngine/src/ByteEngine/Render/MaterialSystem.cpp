@@ -37,6 +37,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		initializeInfo.GameInstance->AddTask("updateCounter", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateCounter>(this), taskDependencies, "RenderEnd", "FrameEnd");
 	}
 
+	initializeInfo.GameInstance->AddEvent<Id>("MaterialSystem", "OnMaterialLoad");
+	
 	queuedFrames = BE::Application::Get()->GetOption("buffer");
 	queuedFrames = GTSL::Math::Clamp(queuedFrames, (uint8)2, (uint8)3);
 	
@@ -629,6 +631,21 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 			bufferBindingUpdate.Offset = renderSystem->GetMeshIndexBufferOffset(e);
 			descriptorsUpdates[f].AddBufferUpdate(indexBuffersSubSetHandle, e, BUFFER_BINDING_TYPE, bufferBindingUpdate);
 
+			//TODO: DEFER SETUP FOR MESHES WHOSE MATERIAL WAS NOT LOADED YET
+			
+			//auto materialHandle = renderSystem->GetMeshMaterialHandle(e);
+			//
+			//if(!materialInstancesMap.Find(materialHandle()))
+			//{
+			//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+			//	createMaterialInfo.GameInstance = taskInfo.GameInstance;
+			//	createMaterialInfo.RenderSystem = renderSystem;
+			//	createMaterialInfo.MaterialResourceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+			//	createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
+			//	createMaterialInfo.MaterialName = materialHandle;
+			//	CreateMaterial(createMaterialInfo);
+			//}
+			
 			*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = publicMaterialHandleToPrivateMaterialHandle(renderSystem->GetMeshMaterialHandle(e)).MaterialIndex;
 		}
 	}
@@ -772,6 +789,8 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 {
 	auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
 
+	taskInfo.GameInstance->DispatchEvent("GameInstance", "OnMaterialLoad", Id(onMaterialLoadInfo.ResourceName));
+	
 	auto materialIndex = loadInfo->Component;
 	auto& material = materials[materialIndex];
 	

@@ -41,10 +41,12 @@ inline const char* AccessTypeToString(const AccessType access)
 template<typename... ARGS>
 struct DynamicTaskHandle
 {
-	DynamicTaskHandle(uint32 reference) : Reference(reference) {}
+	DynamicTaskHandle(uint32 reference, bool pop) : Reference(reference), Pop(pop) {}
 	
-	uint32 Reference;
+	uint32 Reference; bool Pop = true;
 };
+
+MAKE_HANDLE(uint32, System)
 
 class GameInstance : public Object
 {
@@ -78,16 +80,16 @@ public:
 	}
 	
 	template<class T>
-	T* GetSystem(const uint16 systemReference)
+	T* GetSystem(const SystemHandle systemReference)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return static_cast<T*>(systems[systemReference].GetData());
+		return static_cast<T*>(systems[systemReference()].GetData());
 	}
 	
-	uint16 GetSystemReference(const Id systemName)
+	SystemHandle GetSystemReference(const Id systemName)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return static_cast<uint16>(systemsIndirectionTable.At(systemName()));
+		return SystemHandle(systemsIndirectionTable.At(systemName()));
 	}
 
 	template<typename... ARGS>
@@ -239,7 +241,7 @@ public:
 			index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ name, objects, accesses, FunctionType::Create(task), static_cast<void*>(taskInfo) });
 		}
 
-		return DynamicTaskHandle<ARGS...>(index);
+		return DynamicTaskHandle<ARGS...>(index, true);
 	}
 	
 	template<typename... ARGS>
@@ -250,7 +252,9 @@ public:
 		{
 			GTSL::WriteLock lock(storedDynamicTasksMutex);
 			storedDynamicTask = storedDynamicTasks[taskHandle.Reference];
-			storedDynamicTasks.Pop(taskHandle.Reference);
+			if (taskHandle.Pop) {
+				storedDynamicTasks.Pop(taskHandle.Reference);
+			}
 		}
 
 		DispatchTaskInfo<TaskInfo, ARGS...>* data = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(storedDynamicTask.Data);
@@ -262,6 +266,28 @@ public:
 		}
 	}
 
+	template<typename... ARGS>
+	void AddEvent(const Id caller, const Id name)
+	{
+		GTSL::WriteLock lock(eventsMutex);
+		events.Emplace(name()).Initialize(8, GetPersistentAllocator());
+	}
+
+	template<typename... ARGS>
+	void SubscribeToEvent(const Id caller, const Id name, DynamicTaskHandle<ARGS...> taskHandle)
+	{
+		auto& vector = events.At(name());
+		vector.EmplaceBack(taskHandle.Reference);
+	}
+	
+	template<typename... ARGS>
+	void DispatchEvent(const Id caller, const Id name, ARGS&&... args)
+	{
+		auto& functionList = events.At(name());
+
+		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e, false), GTSL::ForwardRef<ARGS>(args)...); }
+	}
+	
 	void AddStage(Id name);
 
 private:
@@ -295,6 +321,9 @@ private:
 		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType Function; void* Data;
 	};
 	GTSL::KeepVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
+
+	mutable GTSL::ReadWriteMutex eventsMutex;
+	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
 
 	mutable GTSL::ReadWriteMutex recurringTasksMutex;
 	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;

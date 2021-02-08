@@ -85,8 +85,8 @@ public:
 	void Setup(TaskInfo taskInfo);
 	void Render(TaskInfo taskInfo);
 
-	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
-	void RemoveRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference);
+	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const SystemHandle systemReference);
+	void RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const SystemHandle systemReference);
 	
 	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
 	{
@@ -182,14 +182,11 @@ public:
 	{
 		auto result = meshesPerMaterial.TryEmplace(materialHandle());
 
-		if (result.State()) { //if material is registered 
-			result.Get().EmplaceBack(meshHandle);
+		if (result.State()) [[likely]] { //if material didn't exist
+			result.Get().Initialize(32, GetPersistentAllocator());
 		}
-		else [[likely]] { //if material doesn't exist
-			auto & meshList = meshesPerMaterial.Emplace(materialHandle());
-			meshList.Initialize(32, GetPersistentAllocator());
-			meshList.EmplaceBack(meshHandle);
-		}
+		
+		result.Get().EmplaceBack(meshHandle);
 	}
 
 	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
@@ -205,11 +202,12 @@ private:
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
 	
-	GTSL::FlatHashMap<uint16, BE::PersistentAllocatorReference> renderManagers;
+	GTSL::FlatHashMap<SystemHandle, BE::PersistentAllocatorReference> renderManagers;
 
 	Id finalAttachment;
 	
 	GTSL::Array<Id, 8> renderPasses;
+	GTSL::Vector<Id, BE::PAR> readyMaterials;
 
 	struct AttachmentData
 	{
@@ -249,6 +247,8 @@ private:
 
 	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId);
 
+	void onMaterialLoad(TaskInfo taskInfo, Id materialName);
+	
 	struct APIRenderPassData
 	{
 		Id Name;

@@ -67,6 +67,8 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			info.RenderOrchestrator->AddMesh(e, info.RenderSystem->GetMeshMaterialHandle(e()));
 		}
 	}
+
+	renderGroup->ClearAddedMeshes();
 	
 	MaterialSystem::BufferIterator bufferIterator;
 	info.MaterialSystem->UpdateIteratorMember(bufferIterator, matrixUniformBufferMemberHandle);
@@ -98,14 +100,14 @@ void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	
-	auto mesh = renderSystem->CreateMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2, materialSystem->GetMaterialHandle("UIMat"));
-	
-	auto* meshPointer = renderSystem->GetMeshPointer(mesh);
-	GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
-	meshPointer += 4 * 2 * 4;
-	GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
-	
-	square = renderSystem->UpdateMesh(mesh);
+	//auto mesh = renderSystem->CreateMesh("BE_UI_SQUARE", 4, 4 * 2, 6, 2, materialSystem->GetMaterialHandle("UIMat"));
+	//
+	//auto* meshPointer = renderSystem->GetMeshPointer(mesh);
+	//GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
+	//meshPointer += 4 * 2 * 4;
+	//GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
+	//
+	//square = renderSystem->UpdateMesh(mesh);
 	
 	//MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//createMaterialInfo.RenderSystem = renderSystem;
@@ -305,6 +307,10 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderPassesFunctions.Emplace(Id("SceneRTRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 
 	meshesPerMaterial.Initialize(32, GetPersistentAllocator());
+	readyMaterials.Initialize(32, GetPersistentAllocator());
+
+	auto onMaterialLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialLoad", Task<Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessType::READ_WRITE } });
+	initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", "OnMaterialLoad", onMaterialLoadHandle);
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -337,7 +343,7 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 	setupInfo.ProjectionMatrix = projectionMatrix;
 	setupInfo.ViewMatrix = viewMatrix;
 	setupInfo.RenderOrchestrator = this;
-	GTSL::ForEach(renderManagers, [&](uint16 renderManager) { taskInfo.GameInstance->GetSystem<RenderManager>(renderManager)->Setup(setupInfo); });
+	GTSL::ForEach(renderManagers, [&](SystemHandle renderManager) { taskInfo.GameInstance->GetSystem<RenderManager>(renderManager)->Setup(setupInfo); });
 }
 
 void RenderOrchestrator::Render(TaskInfo taskInfo)
@@ -381,7 +387,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 3);
 		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix); //inv view
 	}
-		
+
+	if (renderSystem->GetRenderExtent() == 0) { return; }
+	
 	for (uint8 renderPassIndex = 0; renderPassIndex < renderPasses.GetLength();)
 	{
 		Id renderPassId;
@@ -563,7 +571,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	commandBuffer.EndRegion(endRegionInfo);
 }
 
-void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id renderManager, const uint16 systemReference)
+void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id renderManager, const SystemHandle systemReference)
 {
 	systems.EmplaceBack(renderManager);
 	
@@ -602,7 +610,7 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 	renderManagers.Emplace(renderManager(), systemReference);
 }
 
-void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const uint16 systemReference)
+void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const SystemHandle systemReference)
 {
 	const auto element = systems.Find(renderGroupName);
 	BE_ASSERT(element != systems.end())
@@ -797,6 +805,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(contiguousRasterPassCount);
 			GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(contiguousRasterPassCount);
 
+			AccessFlags::value_type sourceAccessFlags = 0, destinationAccessFlags = 0;
+			PipelineStage::value_type sourcePipelineStages = PipelineStage::TOP_OF_PIPE, destinationPipelineStages = PipelineStage::TOP_OF_PIPE;
+				
 			subPasses.EmplaceBack();
 
 			for (uint32 s = 0; s < contiguousRasterPassCount; ++s, ++passIndex)
@@ -815,6 +826,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 					auto res = renderPassUsedAttachments.Find(name); return res.State() ? res.Get() : GAL::ATTACHMENT_UNUSED;
 				};
 
+				subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_ATTACHMENT;
+				subPassDescriptor.DepthAttachmentReference.Index = GAL::ATTACHMENT_UNUSED;
+				
 				for (auto& e : passesData[passIndex].ReadAttachments)
 				{
 					if (attachments.At(e.Name()).Type & TextureType::COLOR)
@@ -826,6 +840,17 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 						readAttachmentReferences[s].EmplaceBack(attachmentReference);
 
 						renderPass.ReadAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::SHADER_READ_ONLY, PipelineStage::TOP_OF_PIPE });
+						destinationAccessFlags |= AccessFlags::COLOR_ATTACHMENT_READ;
+						destinationPipelineStages |= PipelineStage::COLOR_ATTACHMENT_OUTPUT;
+					}
+					else
+					{
+						destinationAccessFlags |= AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ;
+						destinationPipelineStages |= PipelineStage::EARLY_FRAGMENT_TESTS | PipelineStage::LATE_FRAGMENT_TESTS;
+						
+						subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+						subPassDescriptor.DepthAttachmentReference.Index = getAttachmentIndex(e.Name);
+						renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::DEPTH_STENCIL_ATTACHMENT, PipelineStage::EARLY_FRAGMENT_TESTS });
 					}
 				}
 
@@ -842,28 +867,22 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 						writeAttachmentReferences[s].EmplaceBack(attachmentReference);
 
 						renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::COLOR_ATTACHMENT, PipelineStage::COLOR_ATTACHMENT_OUTPUT });
+						destinationAccessFlags |= AccessFlags::COLOR_ATTACHMENT_WRITE;
+						destinationPipelineStages |= PipelineStage::COLOR_ATTACHMENT_OUTPUT;
+					}
+					else
+					{
+
+						destinationAccessFlags |= AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+						destinationPipelineStages |= PipelineStage::EARLY_FRAGMENT_TESTS | PipelineStage::LATE_FRAGMENT_TESTS;
+						
+						subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
+						subPassDescriptor.DepthAttachmentReference.Index = getAttachmentIndex(e.Name);
+						renderPass.WriteAttachments.EmplaceBack(AttachmentData{ e.Name, TextureLayout::DEPTH_STENCIL_ATTACHMENT, PipelineStage::EARLY_FRAGMENT_TESTS });
 					}
 				}
 
 				subPassDescriptor.WriteColorAttachments = writeAttachmentReferences[s];
-
-				{ //depth
-					Id depthAttachment;
-
-					for (const auto& e : passesData[passIndex].WriteAttachments) { if (attachments.At(e.Name()).Type & TextureType::DEPTH) { depthAttachment = e.Name; } }
-
-					if (depthAttachment())
-					{
-						subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_STENCIL_ATTACHMENT;
-						subPassDescriptor.DepthAttachmentReference.Index = getAttachmentIndex(depthAttachment);
-						renderPass.WriteAttachments.EmplaceBack(AttachmentData{ depthAttachment, TextureLayout::DEPTH_STENCIL_ATTACHMENT, PipelineStage::EARLY_FRAGMENT_TESTS });
-					}
-					else
-					{
-						subPassDescriptor.DepthAttachmentReference.Layout = TextureLayout::DEPTH_ATTACHMENT;
-						subPassDescriptor.DepthAttachmentReference.Index = GAL::ATTACHMENT_UNUSED;
-					}
-				}
 
 				{
 					for (auto b : renderPassUsedAttachments)
@@ -885,6 +904,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 				subPasses.back().EmplaceBack();
 				auto& newSubPass = subPasses.back().back();
 				newSubPass.Name = passesData[passIndex].Name;
+
+				sourceAccessFlags = destinationAccessFlags;
+				sourcePipelineStages = destinationPipelineStages;
 			}
 
 			--passIndex;
@@ -896,13 +918,14 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 			for (uint8 i = 0; i < subPasses.back().GetLength() / 2; ++i)
 			{
 				RenderPass::SubPassDependency e;
+				e.SourcePipelineStage = sourcePipelineStages;
+				e.DestinationPipelineStage = destinationPipelineStages;
+				
 				e.SourceSubPass = i;
 				e.DestinationSubPass = i + 1;
-				e.SourceAccessFlags = AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-				e.DestinationAccessFlags = 0;
+				e.SourceAccessFlags = sourceAccessFlags;
+				e.DestinationAccessFlags = destinationAccessFlags;
 
-				e.SourcePipelineStage = PipelineStage::ALL_GRAPHICS;
-				e.DestinationPipelineStage = PipelineStage::BOTTOM_OF_PIPE;
 				subPassDependencies.EmplaceBack(e);
 			}
 
@@ -1233,4 +1256,9 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	pipelineBarrierInfo.FinalStage = renderPass.PipelineStages;
 	
 	commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+}
+
+void RenderOrchestrator::onMaterialLoad(TaskInfo taskInfo, Id materialName)
+{
+	readyMaterials.EmplaceBack(materialName);
 }

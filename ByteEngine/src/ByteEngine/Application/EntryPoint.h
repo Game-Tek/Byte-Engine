@@ -36,12 +36,15 @@ int main(int argc, char** argv)
 	application->SetSystemAllocator(&system_allocator);
 
 	int32 exitCode = 0;
-	
-	if (application->Initialize())
+
+	if (application->BaseInitialize(argc, argv)) //call BE::Application initialize, which does basic universal startup
 	{
-		application->PostInitialize();
-		//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
-		exitCode = application->Run(argc, argv);
+		if (application->Initialize()) //call BE::Application virtual initialize which will call the chain of initialize's
+		{
+			application->PostInitialize();
+			//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
+			exitCode = application->Run(argc, argv);
+		}
 	}
 	
 	application->Shutdown();

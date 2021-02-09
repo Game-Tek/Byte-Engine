@@ -306,11 +306,14 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderPassesFunctions.Emplace(Id("UIRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
 	renderPassesFunctions.Emplace(Id("SceneRTRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 
-	meshesPerMaterial.Initialize(32, GetPersistentAllocator());
+	loadedMaterialInstances.Initialize(32, GetPersistentAllocator()); awaitingMaterialInstances.Initialize(8, GetPersistentAllocator());
 	readyMaterials.Initialize(32, GetPersistentAllocator());
 
 	auto onMaterialLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialLoad", Task<Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessType::READ_WRITE } });
-	initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", "OnMaterialLoad", onMaterialLoadHandle);
+	initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", MaterialSystem::GetOnMaterialLoadEventHandle(), onMaterialLoadHandle);
+
+	auto onMaterialInstanceLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialInstanceLoad", Task<Id, Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialInstanceLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessType::READ_WRITE } });
+	initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", MaterialSystem::GetOnMaterialInstanceLoadEventHandle(), onMaterialInstanceLoadHandle);
 }
 
 void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -1141,27 +1144,27 @@ AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(Pi
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
-	for (auto rg : renderPassesMap.At(rp()).RenderGroups)
-	{
-		auto mats = materialSystem->GetMaterialHandlesForRenderGroup(rg);
-
-		materialSystem->BindSet(renderSystem, commandBuffer, rg);
-		
-		for (auto materialHandle : mats)
-		{
-			materialSystem->BindMaterial(renderSystem, commandBuffer, materialHandle);
-
-			//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
-
-			auto& meshes = meshesPerMaterial.At(materialHandle());
-
-			for(auto meshHandle : meshes)
-			{
-				UpdateMeshIndex(commandBuffer, renderSystem, materialSystem, meshHandle, materialHandle);
-				renderSystem->RenderMesh(meshHandle);
-			}
-		}
-	}
+	//for (auto rg : renderPassesMap.At(rp()).RenderGroups)
+	//{
+	//	//auto mats = materialSystem->GetMaterialHandlesForRenderGroup(rg);
+	//
+	//	materialSystem->BindSet(renderSystem, commandBuffer, rg);
+	//	
+	//	for (auto materialHandle : mats)
+	//	{
+	//		materialSystem->BindMaterial(renderSystem, commandBuffer, materialHandle);
+	//
+	//		//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
+	//
+	//		auto& meshes = loadedMaterialInstances[materialHandle()].Meshes;
+	//
+	//		for(auto meshHandle : meshes)
+	//		{
+	//			UpdateMeshIndex(commandBuffer, renderSystem, materialSystem, meshHandle, materialHandle);
+	//			renderSystem->RenderMesh(meshHandle);
+	//		}
+	//	}
+	//}
 }
 
 void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
@@ -1260,5 +1263,33 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 
 void RenderOrchestrator::onMaterialLoad(TaskInfo taskInfo, Id materialName)
 {
-	readyMaterials.EmplaceBack(materialName);
+	auto& material = readyMaterials.Emplace(materialName());
+	material.MaterialInstances.Initialize(8, GetPersistentAllocator());
+}
+
+void RenderOrchestrator::onMaterialInstanceLoad(TaskInfo taskInfo, Id materialName, Id materialInstanceName)
+{
+	GTSL_ASSERT(readyMaterials.Find(materialName()), "No material by that name. Functions were called in the wromg order. OnMaterialInstanceLoad is guaranteed to be called for a material instance only after it's corresponding material has be loaded.");
+
+	if (!loadedMaterialInstances.Find(materialInstanceName()))
+	{
+		auto& material = readyMaterials[materialName()];
+		material.MaterialInstances.EmplaceBack(materialInstanceName);
+
+		auto& materialInstance = loadedMaterialInstances.Emplace(materialInstanceName());
+		materialInstance.Meshes.Initialize(32, GetPersistentAllocator());
+
+		{
+			auto result = awaitingMaterialInstances.TryGet(materialInstanceName());
+
+			if (result.State()) {
+				materialInstance.Meshes.PushBack(result.Get().Meshes);
+			}
+		}
+	}
+	else
+	{
+		uint32 t = 0;
+		++t;
+	}
 }

@@ -46,6 +46,13 @@ struct DynamicTaskHandle
 	uint32 Reference; bool Pop = true;
 };
 
+template<typename... ARGS>
+struct EventHandle
+{
+	EventHandle(const Id name) : Name(name) {}
+	Id Name;
+};
+
 MAKE_HANDLE(uint32, System)
 
 class GameInstance : public Object
@@ -229,8 +236,6 @@ public:
 
 		uint32 index;
 
-		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function);
-
 		{
 			GTSL::ReadLock lock(stagesNamesMutex);
 			decomposeTaskDescriptor(dependencies, objects, accesses);
@@ -238,7 +243,7 @@ public:
 		
 		{
 			GTSL::WriteLock lock(storedDynamicTasksMutex);
-			index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ name, objects, accesses, FunctionType::Create(task), static_cast<void*>(taskInfo) });
+			index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ name, objects, accesses, FunctionType::Create(task), function });
 		}
 
 		return DynamicTaskHandle<ARGS...>(index, true);
@@ -257,34 +262,37 @@ public:
 			}
 		}
 
-		DispatchTaskInfo<TaskInfo, ARGS...>* data = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(storedDynamicTask.Data);
-		::new(&data->Arguments) GTSL::Tuple<TaskInfo, ARGS...>(TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), GTSL::Delegate<void(TaskInfo, ARGS...)>(storedDynamicTask.AnonymousFunction), TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
-			asyncTasks.AddTask(storedDynamicTask.Name, storedDynamicTask.Function, storedDynamicTask.Objects, storedDynamicTask.Access, 0xFFFFFFFF, storedDynamicTask.Data, GetPersistentAllocator());
+			asyncTasks.AddTask(storedDynamicTask.Name, storedDynamicTask.GameInstanceFunction, storedDynamicTask.Objects, storedDynamicTask.Access, 0xFFFFFFFF, (void*)taskInfo, GetPersistentAllocator());
 		}
 	}
 
 	template<typename... ARGS>
-	void AddEvent(const Id caller, const Id name)
+	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle)
 	{
+		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name())) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
+		
 		GTSL::WriteLock lock(eventsMutex);
-		events.Emplace(name()).Initialize(8, GetPersistentAllocator());
+		events.Emplace(eventHandle.Name()).Initialize(8, GetPersistentAllocator());
 	}
 
 	template<typename... ARGS>
-	void SubscribeToEvent(const Id caller, const Id name, DynamicTaskHandle<ARGS...> taskHandle)
+	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle)
 	{
-		auto& vector = events.At(name());
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
+		auto& vector = events.At(eventHandle.Name());
 		vector.EmplaceBack(taskHandle.Reference);
 	}
 	
 	template<typename... ARGS>
-	void DispatchEvent(const Id caller, const Id name, ARGS&&... args)
+	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args)
 	{
-		auto& functionList = events.At(name());
-
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
+		
+		auto& functionList = events.At(eventHandle.Name());
 		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e, false), GTSL::ForwardRef<ARGS>(args)...); }
 	}
 	
@@ -318,7 +326,7 @@ private:
 	mutable GTSL::ReadWriteMutex storedDynamicTasksMutex;
 	struct StoredDynamicTaskData
 	{
-		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType Function; void* Data;
+		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType GameInstanceFunction; GTSL::Delegate<void()> AnonymousFunction;
 	};
 	GTSL::KeepVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 

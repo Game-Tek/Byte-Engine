@@ -37,7 +37,8 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 		initializeInfo.GameInstance->AddTask("updateCounter", GTSL::Delegate<void(TaskInfo)>::Create<MaterialSystem, &MaterialSystem::updateCounter>(this), taskDependencies, "RenderEnd", "FrameEnd");
 	}
 
-	initializeInfo.GameInstance->AddEvent<Id>("MaterialSystem", "OnMaterialLoad");
+	initializeInfo.GameInstance->AddEvent("MaterialSystem", GetOnMaterialLoadEventHandle());
+	initializeInfo.GameInstance->AddEvent("MaterialSystem", GetOnMaterialInstanceLoadEventHandle());
 	
 	queuedFrames = BE::Application::Get()->GetOption("buffer");
 	queuedFrames = GTSL::Math::Clamp(queuedFrames, (uint8)2, (uint8)3);
@@ -601,8 +602,11 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 
 	for (auto e : latestLoadedTextures) {
 		for (auto b : pendingMaterialsPerTexture[e]) {
-			if (++materialInstances[b.MaterialInstance].Counter == materialInstances[b.MaterialInstance].Target) {
-				setMaterialAsLoaded({}, b);
+			auto& material = materials[b.MaterialIndex];
+			auto& materialInstance = materialInstances[b.MaterialInstance];
+			if (++materialInstance.Counter == materialInstance.Target) {
+				setMaterialAsLoaded(b);
+				taskInfo.GameInstance->DispatchEvent("MaterialSystem", GetOnMaterialInstanceLoadEventHandle(), GTSL::MoveRef(material.Name), GTSL::MoveRef(materialInstance.Name));
 			}
 		}
 	}
@@ -789,7 +793,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 {
 	auto loadInfo = DYNAMIC_CAST(MaterialLoadInfo, onMaterialLoadInfo.UserData);
 
-	taskInfo.GameInstance->DispatchEvent("GameInstance", "OnMaterialLoad", Id(onMaterialLoadInfo.ResourceName));
+	taskInfo.GameInstance->DispatchEvent("GameInstance", GetOnMaterialLoadEventHandle(), Id(onMaterialLoadInfo.ResourceName));
 	
 	auto materialIndex = loadInfo->Component;
 	auto& material = materials[materialIndex];
@@ -800,6 +804,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	
 	material.RenderGroup = onMaterialLoadInfo.RenderGroup;
 	material.Parameters = onMaterialLoadInfo.Parameters;
+	material.Name = onMaterialLoadInfo.ResourceName;
 
 	{
 		RasterizationPipeline::CreateInfo createInfo;
@@ -868,11 +873,11 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 		auto materialInstanceIndex = materialInstances.Emplace();
 		materialInstancesMap.Emplace(e.Name, materialInstanceIndex);
 		
-		auto instanceMaterialHandle = PrivateMaterialHandle{ materialInstanceIndex, loadInfo->Component };
+		auto instanceMaterialHandle = PrivateMaterialHandle{ loadInfo->Component, materialInstanceIndex };
 		
 		auto& materialInstance = materialInstances[materialInstanceIndex];
 		materialInstance.Material = materialIndex;
-		materialInstance.MaterialHandle = MaterialHandle(e.Name);
+		materialInstance.Name = e.Name;
 
 		privateMaterialHandlesByName.Emplace(e.Name, instanceMaterialHandle);
 		
@@ -904,7 +909,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 			
 			if (material.Parameters[result.Get()].Type == MaterialResourceManager::ParameterType::TEXTURE_REFERENCE) //if parameter is texture reference, load texture
 			{				
-				uint32 textureComponent;
+				uint32 textureComponentIndex;
 
 				auto textureRefernce = texturesRefTable.TryGet(f.Second.TextureReference);
 				
@@ -916,13 +921,15 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 					createTextureInfo.TextureResourceManager = loadInfo->TextureResourceManager;
 					createTextureInfo.TextureName = f.Second.TextureReference;
 					createTextureInfo.MaterialHandle = instanceMaterialHandle;
-					textureComponent = createTexture(createTextureInfo)();
+					auto textureComponent = createTexture(createTextureInfo);
 					
 					addPendingMaterialToTexture(textureComponent, instanceMaterialHandle);
+
+					textureComponentIndex = textureComponent();
 				}
 				else
 				{
-					textureComponent = textureRefernce.Get();
+					textureComponentIndex = textureRefernce.Get();
 					++materialInstance.Counter; //since we up the target for every texture, up the counter for every already existing texture
 				}
 
@@ -934,7 +941,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 				UpdateIteratorMember(bufferIterator, memberHandle);
 
 				for (uint8 f = 0; f < queuedFrames; ++f) {
-					*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = textureComponent;
+					*getSetMemberPointer<uint32, Member::DataType::UINT32>(bufferIterator, f) = textureComponentIndex;
 				}
 			}
 		}
@@ -944,7 +951,7 @@ void MaterialSystem::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
 
-void MaterialSystem::setMaterialAsLoaded(const MaterialHandle materialHandle, const MaterialSystem::PrivateMaterialHandle privateMaterialHandle)
+void MaterialSystem::setMaterialAsLoaded(const MaterialSystem::PrivateMaterialHandle privateMaterialHandle)
 {
 	readyMaterialHandles.EmplaceBack(privateMaterialHandle);
 
@@ -957,11 +964,11 @@ void MaterialSystem::setMaterialAsLoaded(const MaterialHandle materialHandle, co
 	{
 		auto& collection = readyMaterialsPerRenderGroup.Emplace(material.RenderGroup());
 		collection.Initialize(8, GetPersistentAllocator());
-		collection.EmplaceBack(materialInstance.MaterialHandle);
+		collection.EmplaceBack(materialInstance.Name);
 	}
 	else
 	{
-		materialsPerRenderGroup.Get().EmplaceBack(materialInstance.MaterialHandle);
+		materialsPerRenderGroup.Get().EmplaceBack(materialInstance.Name);
 	}
 }
 

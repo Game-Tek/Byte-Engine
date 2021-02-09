@@ -95,6 +95,11 @@ namespace BE
 	{
 		if (initialized)
 		{
+			gameInstance.Free();
+			
+			threadPool.Free(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
+			inputManagerInstance.Free();
+			
 			if (closeMode != CloseMode::OK)
 			{
 				if (closeMode == CloseMode::WARNING)
@@ -109,12 +114,17 @@ namespace BE
 				BE_LOG_SUCCESS("Shutting down application. No reported errors.")
 			}
 
+			settings.Free();
+			resourceManagers.Free();
+			
 			transientAllocator.LockedClear();
 			transientAllocator.Free();
 			StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
 			transientAllocator.GetDebugData(stack_allocator_debug_data);
 			BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
 
+			logger.Free();
+			
 			poolAllocator.Free();
 		}
 	}

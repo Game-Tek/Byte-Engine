@@ -168,25 +168,23 @@ public:
 		}
 	}
 
-	void AddMaterial(MaterialHandle materialHandle)
-	{
-		meshesPerMaterial.Emplace(materialHandle()).Initialize(32, GetPersistentAllocator());
-	}
-
-	void RemoveMaterial(MaterialHandle materialHandle)
-	{
-		
-	}
-
 	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialHandle materialHandle)
 	{
-		auto result = meshesPerMaterial.TryEmplace(materialHandle());
+		auto result = loadedMaterialInstances.TryGet(materialHandle());
 
-		if (result.State()) [[likely]] { //if material didn't exist
-			result.Get().Initialize(32, GetPersistentAllocator());
+		if (result.State()) [[likely]] {
+			result.Get().Meshes.EmplaceBack(meshHandle);
 		}
-		
-		result.Get().EmplaceBack(meshHandle);
+		else
+		{
+			auto awaitingResult = awaitingMaterialInstances.TryEmplace(materialHandle());
+
+			if (awaitingResult.State()) {
+				awaitingResult.Get().Meshes.Initialize(8, GetPersistentAllocator());
+			}
+			
+			awaitingResult.Get().Meshes.EmplaceBack(meshHandle);
+		}
 	}
 
 	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
@@ -197,7 +195,6 @@ private:
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
-	GTSL::FlatHashMap<GTSL::Vector<RenderSystem::MeshHandle, BE::PAR>, BE::PAR> meshesPerMaterial;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
@@ -207,7 +204,18 @@ private:
 	Id finalAttachment;
 	
 	GTSL::Array<Id, 8> renderPasses;
-	GTSL::Vector<Id, BE::PAR> readyMaterials;
+
+	struct MaterialData
+	{
+		GTSL::Vector<Id, BE::PAR> MaterialInstances;
+	};
+	GTSL::FlatHashMap<MaterialData, BE::PAR> readyMaterials;
+
+	struct MaterialInstanceData
+	{
+		GTSL::Vector<RenderSystem::MeshHandle, BE::PAR> Meshes;
+	};
+	GTSL::FlatHashMap<MaterialInstanceData, BE::PAR> loadedMaterialInstances, awaitingMaterialInstances;
 
 	struct AttachmentData
 	{
@@ -248,6 +256,7 @@ private:
 	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId);
 
 	void onMaterialLoad(TaskInfo taskInfo, Id materialName);
+	void onMaterialInstanceLoad(TaskInfo taskInfo, Id materialName, Id materialInstanceName);
 	
 	struct APIRenderPassData
 	{

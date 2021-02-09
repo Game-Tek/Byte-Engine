@@ -47,11 +47,11 @@ void GameInstance::OnUpdate(BE::Application* application)
 
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localRecurringTasksPerStage(64, GetTransientAllocator());
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localDynamicTasksPerStage(64, GetTransientAllocator());
-
-	asyncTasksMutex.ReadLock();
+	
+	asyncTasksMutex.WriteLock();
 	Stage<FunctionType, BE::TAR> localAsyncTasks(asyncTasks, GetTransientAllocator());
 	asyncTasks.Clear();
-	asyncTasksMutex.ReadUnlock();
+	asyncTasksMutex.WriteUnlock();
 	
 	uint32 stageCount;
 	
@@ -112,7 +112,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 		uint16 recurringTasksIndex = localRecurringTasksPerStage[stageIndex].GetNumberOfTasks();
 
 		{
-			GTSL::ReadLock lock(dynamicTasksPerStageMutex);
+			GTSL::WriteLock lock(dynamicTasksPerStageMutex);
 			localDynamicTasksPerStage.EmplaceBack(dynamicTasksPerStage[stageIndex], GetTransientAllocator());
 			dynamicTasksPerStage[stageIndex].Clear();
 		}

@@ -186,6 +186,9 @@ public:
 	[[nodiscard]] MaterialHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
 	MaterialHandle GetMaterialHandle(Id name) { return name; }
+
+	static EventHandle<Id> GetOnMaterialLoadEventHandle() { return EventHandle<Id>("OnMaterialLoad"); }
+	static EventHandle<Id, Id> GetOnMaterialInstanceLoadEventHandle() { return EventHandle<Id, Id>("OnMaterialInstanceLoad"); }
 	
 	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
@@ -247,8 +250,7 @@ public:
 
 	struct PrivateMaterialHandle
 	{
-		uint32 MaterialInstance = 0;
-		uint32 MaterialIndex = 0;
+		uint32 MaterialIndex = 0, MaterialInstance = 0;
 	};
 	
 	PipelineLayout GetMaterialPipelineLayout(const MaterialHandle materialHandle)
@@ -325,6 +327,7 @@ private:
 		uint32 InstanceCount = 0;
 
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
+		Id Name;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
@@ -332,7 +335,7 @@ private:
 	{
 		uint32 Material = 0;
 		GTSL::StaticMap<MemberHandle, 16> Parameters;
-		MaterialHandle MaterialHandle;
+		Id Name;
 		uint8 Counter = 0, Target = 0;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
@@ -345,7 +348,7 @@ private:
 	GTSL::FlatHashMap<PrivateMaterialHandle, BE::PAR> privateMaterialHandlesByName;
 	PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
 	
-	void setMaterialAsLoaded(const MaterialHandle matIndex, const PrivateMaterialHandle privateMaterialHandle);
+	void setMaterialAsLoaded(const PrivateMaterialHandle privateMaterialHandle);
 
 	struct CreateTextureInfo
 	{
@@ -521,9 +524,9 @@ private:
 	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
 	GTSL::KeepVector<GTSL::Vector<PrivateMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
 	
-	void addPendingMaterialToTexture(uint32 texture, PrivateMaterialHandle material)
+	void addPendingMaterialToTexture(TextureHandle texture, PrivateMaterialHandle material)
 	{
-		pendingMaterialsPerTexture[texture].EmplaceBack(material);
+		pendingMaterialsPerTexture[texture()].EmplaceBack(material);
 	}
 	
 	struct MaterialLoadInfo

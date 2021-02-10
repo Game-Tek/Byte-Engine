@@ -55,7 +55,7 @@ struct PrimitiveData
 	GTSL::Vector2 AspectRatio;
 	Alignment Alignment;
 	SizingPolicy SizingPolicy;
-	MaterialHandle Material;
+	MaterialInstanceHandle Material;
 };
 
 struct Primitive
@@ -136,7 +136,7 @@ public:
 		squares[square].SetColor(color);
 	}
 
-	void SetSquareMaterial(const uint16 square, const MaterialHandle material)
+	void SetSquareMaterial(const uint16 square, const MaterialInstanceHandle material)
 	{
 		primitives[squares[square].PrimitiveIndex].Material = material;
 	}

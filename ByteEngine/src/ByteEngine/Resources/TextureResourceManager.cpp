@@ -25,11 +25,11 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 	indexFile.OpenFile(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
 	
-	GTSL::Buffer<BE::TAR> file_buffer; file_buffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
 
-	if (indexFile.ReadFile(file_buffer.GetBufferInterface()))
+	if (indexFile.ReadFile(indexFileBuffer.GetBufferInterface()))
 	{
-		GTSL::Extract(textureInfos, file_buffer);
+		GTSL::Extract(textureInfos, indexFileBuffer);
 	}
 	else
 	{
@@ -45,14 +45,14 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			if (!textureInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
-				query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
+				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ); GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
 
-				query_file.ReadFile(file_buffer.GetBufferInterface());
+				query_file.ReadFile(textureBuffer.GetBufferInterface());
 
 				int32 x, y, channel_count = 0;
-				stbi_info_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count);
+				stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
 				auto finalChannelCount = GTSL::NextPowerOfTwo(static_cast<uint32>(channel_count));
-				auto* const data = stbi_load_from_memory(file_buffer.GetData(), file_buffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
+				auto* const data = stbi_load_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
 
 				TextureInfo texture_info;
 
@@ -83,9 +83,9 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 		GTSL::FileQuery file_query(query_path);
 		GTSL::ForEach(file_query, load);
 
-		file_buffer.Resize(0);
-		Insert(textureInfos, file_buffer);
-		indexFile.WriteToFile(file_buffer);
+		indexFileBuffer.Resize(0);
+		Insert(textureInfos, indexFileBuffer);
+		indexFile.WriteToFile(indexFileBuffer);
 	}
 		
 	for(uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)

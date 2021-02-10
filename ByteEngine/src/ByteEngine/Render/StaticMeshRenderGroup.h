@@ -25,7 +25,7 @@ public:
 		RenderSystem* RenderSystem = nullptr;
 		class GameInstance* GameInstance = nullptr;
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
-		MaterialHandle Material;
+		MaterialInstanceHandle Material;
 	};
 	StaticMeshHandle AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
@@ -35,7 +35,7 @@ public:
 		RenderSystem* RenderSystem = nullptr;
 		class GameInstance* GameInstance = nullptr;
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
-		MaterialHandle Material;
+		MaterialInstanceHandle Material;
 	};
 	StaticMeshHandle AddRayTracedStaticMesh(const AddRayTracedStaticMeshInfo& addStaticMeshInfo);
 
@@ -55,7 +55,7 @@ public:
 private:
 	struct MeshLoadInfo
 	{
-		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::MeshHandle meshHandle, uint32 instance, MaterialHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
+		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::MeshHandle meshHandle, uint32 instance, MaterialInstanceHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
 		InstanceId(instance), Material(material)
 		{
 		}
@@ -63,7 +63,7 @@ private:
 		RenderSystem* RenderSystem;
 		RenderSystem::MeshHandle MeshHandle;
 		uint32 InstanceId;
-		MaterialHandle Material;
+		MaterialInstanceHandle Material;
 	};
 	
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);

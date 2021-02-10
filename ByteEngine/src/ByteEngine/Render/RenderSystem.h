@@ -211,7 +211,7 @@ public:
 	};
 	MeshHandle CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
-	MeshHandle CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialHandle materialHandle);
+	MeshHandle CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
 	MeshHandle UpdateMesh(MeshHandle meshHandle);
 	
@@ -251,7 +251,7 @@ public:
 	uint32 GetMeshIndexBufferSize(const uint32 mesh) const { return meshes[mesh].IndexSize * meshes[mesh].IndicesCount; }
 	uint32 GetMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(meshes[mesh].VertexSize * meshes[mesh].VertexCount, GetBufferSubDataAlignment()); }
 	uint32 GetMeshIndex(MeshHandle meshHandle) { return meshHandle(); }
-	MaterialHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
+	MaterialInstanceHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
 
 	auto GetAddedMeshes() const { return addedMeshes.GetRange(); }
 	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
@@ -312,7 +312,7 @@ private:
 		uint32 IndicesCount;
 		uint8 VertexSize;
 		uint32 VertexCount;
-		MaterialHandle MaterialHandle;
+		MaterialInstanceHandle MaterialHandle;
 		RenderAllocation MeshAllocation;
 		
 		uint32 DerivedTypeIndex;

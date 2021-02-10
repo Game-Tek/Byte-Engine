@@ -63,7 +63,7 @@ public:
 
 	void Setup(const SetupInfo& info) override;
 	RenderSystem::MeshHandle GetSquareMesh() const { return square; }
-	MaterialHandle GetUIMaterial() const { return uiMaterial; }
+	MaterialInstanceHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
 	RenderSystem::MeshHandle square;
@@ -73,7 +73,7 @@ private:
 	SetHandle dataSet;
 
 	uint8 comps = 2;
-	MaterialHandle uiMaterial;
+	MaterialInstanceHandle uiMaterial;
 };
 
 class RenderOrchestrator : public System
@@ -168,7 +168,7 @@ public:
 		}
 	}
 
-	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialHandle materialHandle)
+	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle)
 	{
 		auto result = loadedMaterialInstances.TryGet(materialHandle());
 
@@ -188,7 +188,7 @@ public:
 	}
 
 	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
-	                     meshHandle, MaterialHandle materialHandle);
+	                     meshHandle, MaterialInstanceHandle materialHandle);
 
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
@@ -207,6 +207,7 @@ private:
 
 	struct MaterialData
 	{
+		Id MaterialName;
 		GTSL::Vector<Id, BE::PAR> MaterialInstances;
 	};
 	GTSL::FlatHashMap<MaterialData, BE::PAR> readyMaterials;

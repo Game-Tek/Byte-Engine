@@ -11,18 +11,18 @@ class RenderState : public Object
 public:
 	RenderState() : Object("RenderState") { availableMaterials.Initialize(32, GetPersistentAllocator()); meshesPerMaterial.Initialize(32, GetPersistentAllocator()); }
 
-	void AddMaterial(MaterialHandle materialHandle)
+	void AddMaterial(MaterialInstanceHandle materialHandle)
 	{
 		availableMaterials.Emplace(materialHandle(), materialHandle);
 		meshesPerMaterial.Emplace(materialHandle()).Initialize(32, GetPersistentAllocator());
 	}
 	
-	void RemoveMaterial(MaterialHandle materialHandle)
+	void RemoveMaterial(MaterialInstanceHandle materialHandle)
 	{
 		availableMaterials.Remove(materialHandle());
 	}
 
-	void AddMesh(const MeshHandle meshHandle, const MaterialHandle materialHandle)
+	void AddMesh(const MeshHandle meshHandle, const MaterialInstanceHandle materialHandle)
 	{
 		auto result = meshesPerMaterial.TryEmplace(materialHandle());
 		
@@ -37,6 +37,6 @@ public:
 	}
 
 private:
-	GTSL::FlatHashMap<MaterialHandle, BE::PAR> availableMaterials;
+	GTSL::FlatHashMap<MaterialInstanceHandle, BE::PAR> availableMaterials;
 	GTSL::FlatHashMap<GTSL::Vector<MeshHandle, BE::PAR>, BE::PAR> meshesPerMaterial;
 };

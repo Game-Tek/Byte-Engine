@@ -23,10 +23,10 @@ class Game final : public GameApplication
 	CameraSystem::CameraHandle camera;
 	StaticMeshHandle hydrant;
 	StaticMeshHandle tv;
-	MaterialHandle material;
-	MaterialHandle textMaterial;
-	MaterialHandle tvMat;
-	MaterialHandle buttonMaterial;
+	MaterialInstanceHandle material;
+	MaterialInstanceHandle textMaterial;
+	MaterialInstanceHandle tvMat;
+	MaterialInstanceHandle buttonMaterial;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

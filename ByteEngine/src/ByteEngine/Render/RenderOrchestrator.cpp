@@ -1144,27 +1144,33 @@ AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(Pi
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
-	//for (auto rg : renderPassesMap.At(rp()).RenderGroups)
-	//{
-	//	//auto mats = materialSystem->GetMaterialHandlesForRenderGroup(rg);
-	//
-	//	materialSystem->BindSet(renderSystem, commandBuffer, rg);
-	//	
-	//	for (auto materialHandle : mats)
-	//	{
-	//		materialSystem->BindMaterial(renderSystem, commandBuffer, materialHandle);
-	//
-	//		//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
-	//
-	//		auto& meshes = loadedMaterialInstances[materialHandle()].Meshes;
-	//
-	//		for(auto meshHandle : meshes)
-	//		{
-	//			UpdateMeshIndex(commandBuffer, renderSystem, materialSystem, meshHandle, materialHandle);
-	//			renderSystem->RenderMesh(meshHandle);
-	//		}
-	//	}
-	//}
+	for (auto rg : renderPassesMap.At(rp()).RenderGroups)
+	{
+		//auto mats = materialSystem->GetMaterialHandlesForRenderGroup(rg);
+	
+		materialSystem->BindSet(renderSystem, commandBuffer, rg);
+
+		auto forEachMaterial = [&](const MaterialData& materialData)
+		{
+			materialSystem->BindMaterial(renderSystem, commandBuffer, materialData.MaterialName);
+
+			for (auto b : materialData.MaterialInstances)
+			{
+				auto& materialInstance = loadedMaterialInstances.At(b());
+
+				//materialSystem->BindSet(renderSystem, commandBuffer, e, meshIndex);
+
+				const auto& meshes = loadedMaterialInstances[b()].Meshes;
+
+				for (auto meshHandle : meshes)
+				{
+					UpdateMeshIndex(commandBuffer, renderSystem, materialSystem, meshHandle, materialData.MaterialName);
+					renderSystem->RenderMesh(meshHandle);
+				}
+			}
+		};
+		GTSL::ForEach(readyMaterials, forEachMaterial);
+	}
 }
 
 void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
@@ -1261,13 +1267,14 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 }
 
-void RenderOrchestrator::onMaterialLoad(TaskInfo taskInfo, Id materialName)
+void RenderOrchestrator::onMaterialLoad(TaskInfo taskInfo, MaterialHandle materialName)
 {
 	auto& material = readyMaterials.Emplace(materialName());
+	material.MaterialName = materialName;
 	material.MaterialInstances.Initialize(8, GetPersistentAllocator());
 }
 
-void RenderOrchestrator::onMaterialInstanceLoad(TaskInfo taskInfo, Id materialName, Id materialInstanceName)
+void RenderOrchestrator::onMaterialInstanceLoad(TaskInfo taskInfo, MaterialHandle materialName, MaterialInstanceHandle materialInstanceName)
 {
 	GTSL_ASSERT(readyMaterials.Find(materialName()), "No material by that name. Functions were called in the wromg order. OnMaterialInstanceLoad is guaranteed to be called for a material instance only after it's corresponding material has be loaded.");
 

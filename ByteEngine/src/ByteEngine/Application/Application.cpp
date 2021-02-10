@@ -66,7 +66,9 @@ namespace BE
 
 		settings.Initialize(64, GetPersistentAllocator());
 
-		if (!parseConfig()) { Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file")); }
+		if (!parseConfig())	{
+			Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file"));
+		}
 
 		initialized = true;
 

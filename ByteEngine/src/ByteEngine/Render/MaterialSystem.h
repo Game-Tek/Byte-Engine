@@ -20,6 +20,7 @@ class TextureResourceManager;
 struct TaskInfo;
 class RenderSystem;
 
+using MaterialInstanceHandle = Id;
 using MaterialHandle = Id;
 
 MAKE_HANDLE(uint32, Set)
@@ -182,16 +183,16 @@ public:
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager;
 	};
-	[[nodiscard]] MaterialHandle CreateMaterial(const CreateMaterialInfo& info);
-	[[nodiscard]] MaterialHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
+	[[nodiscard]] MaterialInstanceHandle CreateMaterial(const CreateMaterialInfo& info);
+	[[nodiscard]] MaterialInstanceHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
-	MaterialHandle GetMaterialHandle(Id name) { return name; }
+	MaterialInstanceHandle GetMaterialHandle(Id name) { return name; }
 
-	static EventHandle<Id> GetOnMaterialLoadEventHandle() { return EventHandle<Id>("OnMaterialLoad"); }
-	static EventHandle<Id, Id> GetOnMaterialInstanceLoadEventHandle() { return EventHandle<Id, Id>("OnMaterialInstanceLoad"); }
+	static auto GetOnMaterialLoadEventHandle() { return EventHandle<MaterialHandle>("OnMaterialLoad"); }
+	static auto GetOnMaterialInstanceLoadEventHandle() { return EventHandle<MaterialHandle, MaterialInstanceHandle>("OnMaterialInstanceLoad"); }
 	
-	void SetDynamicMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
-	void SetMaterialParameter(const MaterialHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
+	void SetDynamicMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
+	void SetMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
 
 	[[nodiscard]] auto GetMaterialHandles() const { return readyMaterialHandles.GetRange(); }
 	[[nodiscard]] auto GetPrivateMaterialHandles() const { return readyMaterialHandles.GetRange(); }
@@ -204,7 +205,7 @@ public:
 		}
 		else
 		{
-			return GTSL::Range<const MaterialHandle*>();
+			return GTSL::Range<const MaterialInstanceHandle*>();
 		}
 	}
 
@@ -245,6 +246,7 @@ public:
 		BE_ASSERT(index < memberData.Count, "Advanced more elements than there are in this member!");
 		int32 shiftedElements = index - iterator.MemberIndex;
 		iterator.ByteOffset += shiftedElements * memberData.Size;
+		BE_ASSERT(iterator.ByteOffset < set.SubSets[iterator.SubSet].Buffers[iterator.Buffer].Allocations[0].Size, "");
 		iterator.MemberIndex = index;
 	}
 
@@ -255,7 +257,7 @@ public:
 	
 	PipelineLayout GetMaterialPipelineLayout(const MaterialHandle materialHandle)
 	{
-		return sets[readyMaterialsMap.At(materialHandle())].PipelineLayout;
+		return sets[loadedMaterialsMap[materialHandle()]].PipelineLayout;
 	}
 
 private:
@@ -320,6 +322,8 @@ private:
 
 	struct MaterialData
 	{
+		MaterialHandle Name;
+		
 		GTSL::KeepVector<uint32, BE::PAR> MaterialInstances;
 
 		RasterizationPipeline Pipeline;
@@ -327,26 +331,26 @@ private:
 		uint32 InstanceCount = 0;
 
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
-		Id Name;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
 	struct MaterialInstanceData
 	{
+		MaterialInstanceHandle Name;
+		
 		uint32 Material = 0;
 		GTSL::StaticMap<MemberHandle, 16> Parameters;
-		Id Name;
 		uint8 Counter = 0, Target = 0;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
 
-	GTSL::FlatHashMap<uint32, BE::PAR> readyMaterialsMap;
+	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterialsMap;
 	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesMap;
-	GTSL::FlatHashMap<GTSL::Vector<MaterialHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
+	GTSL::FlatHashMap<GTSL::Vector<MaterialInstanceHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
 	GTSL::Vector<PrivateMaterialHandle, BE::PAR> readyMaterialHandles;
 
 	GTSL::FlatHashMap<PrivateMaterialHandle, BE::PAR> privateMaterialHandlesByName;
-	PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
+	PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialInstanceHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
 	
 	void setMaterialAsLoaded(const PrivateMaterialHandle privateMaterialHandle);
 

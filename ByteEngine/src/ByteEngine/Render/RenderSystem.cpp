@@ -383,7 +383,7 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 	return meshHandle;
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialHandle materialHandle)
+RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
 {
 	Mesh mesh;
 

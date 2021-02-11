@@ -9,3 +9,10 @@ GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const
 	path += "/resources/"; path += fileName;
 	return path;
 }
+
+void ResourceManager::initializePackageFiles(GTSL::Range<const UTF8*> path)
+{
+	for(uint32 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
+		packageFiles[packageFiles.EmplaceBack()].OpenFile(path, GTSL::File::AccessMode::READ);
+	}
+}

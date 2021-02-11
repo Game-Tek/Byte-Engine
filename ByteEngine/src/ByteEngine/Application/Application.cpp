@@ -19,6 +19,7 @@
 
 #include <GTSL/System.h>
 #include <GTSL/DataSizes.h>
+#include <GTSL/Math/Math.hpp>
 
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
@@ -74,6 +75,8 @@ namespace BE
 
 		if (argc)
 		{
+			BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!")
+			
 			GTSL::StaticString<2048> string("Application started with parameters:\n");
 
 			for (uint32 p = 0; p < argc; ++p) {
@@ -97,10 +100,10 @@ namespace BE
 	{
 		if (initialized)
 		{
-			gameInstance.Free();
+			gameInstance.TryFree();
 			
-			threadPool.Free(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
-			inputManagerInstance.Free();
+			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
+			inputManagerInstance.TryFree();
 			
 			if (closeMode != CloseMode::OK)
 			{
@@ -125,7 +128,7 @@ namespace BE
 			transientAllocator.GetDebugData(stack_allocator_debug_data);
 			BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
 
-			logger.Free();
+			logger.TryFree();
 			
 			poolAllocator.Free();
 		}
@@ -156,6 +159,8 @@ namespace BE
 
 	int Application::Run(int argc, char** argv)
 	{
+		gameInstance->AddEvent("Application", EventHandle<>("OnPromptClose"));
+		
 		while (!flaggedForClose)
 		{
 			systemApplication.Update();
@@ -176,7 +181,7 @@ namespace BE
 
 	void Application::PromptClose()
 	{
-		//CloseDelegate.Dispatch();
+		gameInstance->DispatchEvent("Application", EventHandle<>("OnPromptClose"));
 	}
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const UTF8*> reason)
@@ -188,14 +193,12 @@ namespace BE
 
 	bool Application::parseConfig()
 	{
-		GTSL::File settingsFile;
+		GTSL::File settingsFile; settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
 
-		settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
-
-		//don't try parsing if file is empty or it's impractically large
-		if(settingsFile.GetFileSize() == 0 || settingsFile.GetFileSize() > GTSL::Byte(GTSL::KiloByte(512))) { return false; }
+		//don't try parsing if file is empty
+		if(settingsFile.GetFileSize() == 0) { return false; }
 		
-		GTSL::Buffer<PAR> fileBuffer; fileBuffer.Allocate(1024, 8, GetPersistentAllocator());
+		GTSL::Buffer<TAR> fileBuffer; fileBuffer.Allocate(GTSL::Math::Limit(settingsFile.GetFileSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
 
 		settingsFile.ReadFile(fileBuffer.GetBufferInterface());
 		

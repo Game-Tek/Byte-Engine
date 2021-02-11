@@ -21,7 +21,7 @@ public:
 	ResourceManager() = default;
 
 	ResourceManager(const UTF8* name) : Object(name) {}
-
+	
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const UTF8*> fileName);
 	
 	struct ResourceLoadInfo
@@ -126,4 +126,11 @@ public:
 	};
 
 	static constexpr uint8 MAX_THREADS = 32;
+
+
+protected:
+	GTSL::File& getFile() { return packageFiles[getThread()]; }
+	void initializePackageFiles(GTSL::Range<const UTF8*> path);
+	
+	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 };

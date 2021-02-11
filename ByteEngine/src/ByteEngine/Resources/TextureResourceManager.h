@@ -90,6 +90,5 @@ public:
 
 private:
 	GTSL::File indexFile;
-	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 	GTSL::FlatHashMap<TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
 };

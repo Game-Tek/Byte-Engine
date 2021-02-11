@@ -88,11 +88,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 		indexFile.WriteToFile(indexFileBuffer);
 	}
 		
-	for(uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
-	{
-		packageFiles.EmplaceBack();
-		packageFiles[i].OpenFile(package_path, GTSL::File::AccessMode::READ);
-	}
+	initializePackageFiles(package_path);
 }
 
 TextureResourceManager::~TextureResourceManager()

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <GTSL/Array.hpp>
+#include <GTSL/Buffer.hpp>
+
 
 #include "ResourceManager.h"
 
@@ -8,6 +10,10 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
+#include <GTSL/Math/Math.hpp>
+
+
+#include "ByteEngine/Game/GameInstance.h"
 
 namespace GAL {
 	enum class ShaderDataType : unsigned char;
@@ -22,19 +28,19 @@ class StaticMeshResourceManager final : public ResourceManager
 public:
 	StaticMeshResourceManager();
 	~StaticMeshResourceManager();
-	
-	struct OnStaticMeshLoad : OnResourceLoad
+
+	struct StaticMeshData : Data
 	{
 		/**
-		 * \brief Number of vertices the loaded mesh contains.
-		 */
+		* \brief Number of vertices the loaded mesh contains.
+		*/
 		uint32 VertexCount;
-		
+
 		/**
 		 * \brief Number of indeces the loaded mesh contains. Every face can only have three indeces.
 		 */
 		uint16 IndexCount;
-		
+
 		/**
 		 * \brief Size of a single vertex.
 		 */
@@ -47,52 +53,79 @@ public:
 
 		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
-
-	struct LoadStaticMeshInfo : ResourceLoadInfo
+	
+	struct StaticMeshDataSerialize : DataSerialize<StaticMeshData>
 	{
-		GTSL::Delegate<void(TaskInfo, OnStaticMeshLoad)> OnStaticMeshLoad;
-		uint32 IndicesAlignment = 0;
-	};
-	void LoadStaticMesh(const LoadStaticMeshInfo& loadStaticMeshInfo);
-
-	void GetMeshSize(const GTSL::Id64 name, uint32* vertexCount, uint32* vertexSize, uint32* indexCount, uint32* indexSize);
-
-	struct MeshInfo
-	{
-		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
-		uint32 VertexCount = 0;
-		uint32 IndexCount = 0;
-		uint32 ByteOffset = 0;
-		uint8 IndexSize = 0;
-
-		[[nodiscard]] uint32 MeshSize()const { return VertexCount + IndexCount; }
-
-		template<class ALLOCATOR>
-		friend void Insert(const MeshInfo& meshInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+		INSERT_START(StaticMeshDataSerialize)
 		{
-			Insert(meshInfo.VertexDescriptor, buffer);
-			Insert(meshInfo.VertexCount, buffer);
-			Insert(meshInfo.IndexCount, buffer);
-			Insert(meshInfo.ByteOffset, buffer);
-			Insert(meshInfo.IndexSize, buffer);
+			INSERT_BODY;
+			Insert(insertInfo.VertexSize, buffer);
+			Insert(insertInfo.VertexCount, buffer);
+			Insert(insertInfo.IndexSize, buffer);
+			Insert(insertInfo.IndexCount, buffer);
+			Insert(insertInfo.VertexDescriptor, buffer);
 		}
-		
-		template<class ALLOCATOR>
-		friend void Extract(MeshInfo& meshInfo, GTSL::Buffer<ALLOCATOR>& buffer)
+
+		EXTRACT_START(StaticMeshDataSerialize)
 		{
-			Extract(meshInfo.VertexDescriptor, buffer);
-			Extract(meshInfo.VertexCount, buffer);
-			Extract(meshInfo.IndexCount, buffer);
-			Extract(meshInfo.ByteOffset, buffer);
-			Extract(meshInfo.IndexSize, buffer);
+			EXTRACT_BODY;
+			Extract(extractInfo.VertexSize, buffer);
+			Extract(extractInfo.VertexCount, buffer);
+			Extract(extractInfo.IndexSize, buffer);
+			Extract(extractInfo.IndexCount, buffer);
+			Extract(extractInfo.VertexDescriptor, buffer);
 		}
 	};
+
+	struct StaticMeshInfo : Info<StaticMeshDataSerialize>
+	{
+		DECL_INFO_CONSTRUCTOR(StaticMeshInfo, Info<StaticMeshDataSerialize>);
+
+		uint32 GetVerticesSize() const { return VertexSize * VertexCount; }
+		uint32 GetIndicesSize() const { return IndexSize * IndexCount; }
+	};
+
+	template<typename... ARGS>
+	void LoadStaticMeshInfo(GameInstance* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	{
+		auto loadStaticMeshInfo = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, Id meshName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
+		{
+			auto staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName());
+
+			StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
+			
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+		};
+
+		gameInstance->AddDynamicTask("loadstaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	}
+
+	template<typename... ARGS>
+	void LoadStaticMesh(GameInstance* gameInstance, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	{
+		auto loadMesh = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
+		{
+			auto verticesSize = staticMeshInfo.GetVerticesSize(); auto indicesSize = staticMeshInfo.GetIndicesSize();
+
+			{
+				byte* vertices = buffer.begin();
+				byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
+
+				resourceManager->getFile().SetPointer(staticMeshInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+				resourceManager->getFile().ReadFromFile(GTSL::Range<byte*>(verticesSize, vertices));
+				resourceManager->getFile().ReadFromFile(GTSL::Range<byte*>(indicesSize, indices));
+			}
+			
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+		};
+
+		gameInstance->AddDynamicTask("loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	}
 	
 private:
-	GTSL::FlatHashMap<OnStaticMeshLoad, BE::PersistentAllocatorReference> resources;
-	GTSL::File staticMeshPackage, indexFile;
+	GTSL::File indexFile;
 	
-	GTSL::FlatHashMap<MeshInfo, BE::PersistentAllocatorReference> meshInfos;
+	GTSL::FlatHashMap<StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 
-	static void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, MeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& mesh);
+	static void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

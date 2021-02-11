@@ -198,7 +198,7 @@ bool Game::Initialize()
 
 void Game::PostInitialize()
 {
-	BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
+	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
 	
 	GameApplication::PostInitialize();
 
@@ -339,7 +339,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
+	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));//
 	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
 	//auto r = 1.0f;

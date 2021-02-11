@@ -55,8 +55,7 @@ public:
 private:
 	struct MeshLoadInfo
 	{
-		MeshLoadInfo(RenderSystem* renderDevice, RenderSystem::MeshHandle meshHandle, uint32 instance, MaterialInstanceHandle material) : RenderSystem(renderDevice), MeshHandle(meshHandle),
-		InstanceId(instance), Material(material)
+		MeshLoadInfo(RenderSystem* renderDevice, uint32 instance, MaterialInstanceHandle material) : RenderSystem(renderDevice), InstanceId(instance), Material(material)
 		{
 		}
 		
@@ -66,8 +65,11 @@ private:
 		MaterialInstanceHandle Material;
 	};
 	
-	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
-	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::OnStaticMeshLoad onStaticMeshLoad);
+	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad);
+	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
+	
+	void onRayTracedStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
+	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	uint32 staticMeshCount = 0;

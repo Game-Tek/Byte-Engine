@@ -261,6 +261,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\ByteEngine\Network\ConnectionHandler.ixx" />
+    <ClCompile Include="src\ByteEngine\Physics\PhysicsWorld.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderOrchestrator.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Application\PoolAllocator.cpp" />

@@ -15,7 +15,7 @@ class Object
 public:
 	Object() = default;
 	
-	Object(const UTF8* objectName) : name(objectName) {}
+	Object(const utf8* objectName) : name(objectName) {}
 	
 	~Object() = default;
 
@@ -36,7 +36,7 @@ protected:
 	uint8 getThread() const;
 	
 private:
-	const UTF8* name = "Object";
+	const utf8* name = "Object";
 
 };
 

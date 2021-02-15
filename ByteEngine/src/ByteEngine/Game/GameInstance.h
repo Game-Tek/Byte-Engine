@@ -41,9 +41,10 @@ inline const char* AccessTypeToString(const AccessType access)
 template<typename... ARGS>
 struct DynamicTaskHandle
 {
-	DynamicTaskHandle(uint32 reference, bool pop) : Reference(reference), Pop(pop) {}
+	DynamicTaskHandle() = default;
+	DynamicTaskHandle(uint32 reference) : Reference(reference) {}
 	
-	uint32 Reference; bool Pop = true;
+	uint32 Reference = 0;
 };
 
 template<typename... ARGS>
@@ -246,7 +247,7 @@ public:
 			index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ name, objects, accesses, FunctionType::Create(task), function });
 		}
 
-		return DynamicTaskHandle<ARGS...>(index, true);
+		return DynamicTaskHandle<ARGS...>(index);
 	}
 	
 	template<typename... ARGS>
@@ -257,9 +258,6 @@ public:
 		{
 			GTSL::WriteLock lock(storedDynamicTasksMutex);
 			storedDynamicTask = storedDynamicTasks[taskHandle.Reference];
-			if (taskHandle.Pop) {
-				storedDynamicTasks.Pop(taskHandle.Reference);
-			}
 		}
 
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), GTSL::Delegate<void(TaskInfo, ARGS...)>(storedDynamicTask.AnonymousFunction), TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
@@ -293,7 +291,7 @@ public:
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 		
 		auto& functionList = events.At(eventHandle.Name());
-		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e, false), GTSL::ForwardRef<ARGS>(args)...); }
+		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e), GTSL::ForwardRef<ARGS>(args)...); }
 	}
 	
 	void AddStage(Id name);

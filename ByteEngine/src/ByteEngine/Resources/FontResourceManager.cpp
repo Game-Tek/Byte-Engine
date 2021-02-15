@@ -288,8 +288,8 @@ struct NameTable
 			if (NameRecords[i].nameID > maxNumberOfNames) { continue; }
 			
 			offset = NameRecords[i].Parse(data, offset);
-			UTF8* newNameString = new UTF8[NameRecords[i].length];
-			memcpy(newNameString, data + offset_start + stringOffset + NameRecords[i].offset_value, sizeof(UTF8) * NameRecords[i].length);
+			utf8* newNameString = new utf8[NameRecords[i].length];
+			memcpy(newNameString, data + offset_start + stringOffset + NameRecords[i].offset_value, sizeof(utf8) * NameRecords[i].length);
 			uint16 string_length = NameRecords[i].length;
 			
 			if (newNameString[0] == 0)
@@ -393,7 +393,7 @@ int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, 
 	return (kern_data == font_data->KerningTable.end()) ? 0 : kern_data->second;
 }
 
-FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const UTF8*> fontName)
+FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const utf8*> fontName)
 {
 	GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 

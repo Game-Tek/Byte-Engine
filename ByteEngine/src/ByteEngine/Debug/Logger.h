@@ -63,7 +63,7 @@ namespace BE
 
 		mutable GTSL::FlatHashMap<Id, BE::SystemAllocatorReference> allowedLoggers;
 		
-		mutable UTF8* data{ nullptr };
+		mutable utf8* data{ nullptr };
 
 		mutable std::atomic<uint32> counter{ 0 };
 		
@@ -78,7 +78,7 @@ namespace BE
 
 		struct LoggerCreateInfo
 		{
-			GTSL::Range<const UTF8*> AbsolutePathToLogDirectory;
+			GTSL::Range<const utf8*> AbsolutePathToLogDirectory;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 

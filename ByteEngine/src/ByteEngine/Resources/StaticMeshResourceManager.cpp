@@ -65,14 +65,6 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 				loadMesh(meshFileBuffer, meshInfo, meshDataBuffer);
 
-				getLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, "reading after build ", name);
-
-				for (uint32 v = 0; v < meshInfo.VertexCount; ++v)
-				{
-					GTSL::Vector3* vertexPosition = reinterpret_cast<GTSL::Vector3*>(meshDataBuffer.GetData() + (v * meshInfo.VertexSize));
-					getLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, vertexPosition->X(), " ", vertexPosition->Y(), " ", vertexPosition->Z());
-				}
-
 				meshInfo.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
 
 				staticMeshPackage.WriteToFile(meshDataBuffer.GetBufferInterface());
@@ -146,11 +138,18 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mColors[colors]), 16, 16);
 	}
+
+	meshInfo.BoundingBox = GTSL::Vector3(); meshInfo.BoundingRadius = 0.0f;
 	
 	for(uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex)
-	{		
-		for(auto e : vertexElements)
-		{
+	{
+		auto vertexPosition = GTSL::Vector3(inMesh->mVertices[vertex].x, inMesh->mVertices[vertex].y, inMesh->mVertices[vertex].z);
+		
+		meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(vertexPosition));
+
+		meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(vertexPosition));
+		
+		for(auto e : vertexElements) {
 			meshDataBuffer.CopyBytes(e.ElementSize, e.Array + vertex * e.JumpSize);
 		}
 	}

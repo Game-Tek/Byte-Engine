@@ -100,7 +100,7 @@ public:
 	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
 	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
 	
-	void SetString(const GTSL::Range<const UTF8*> newText) { rawString = newText; }
+	void SetString(const GTSL::Range<const utf8*> newText) { rawString = newText; }
 	
 private:	
 	GTSL::RGBA color;

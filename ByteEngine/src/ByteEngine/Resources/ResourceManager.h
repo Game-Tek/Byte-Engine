@@ -20,9 +20,9 @@ class ResourceManager : public Object
 public:
 	ResourceManager() = default;
 
-	ResourceManager(const UTF8* name) : Object(name) {}
+	ResourceManager(const utf8* name) : Object(name) {}
 	
-	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const UTF8*> fileName);
+	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName);
 	
 	struct ResourceLoadInfo
 	{
@@ -130,7 +130,7 @@ public:
 
 protected:
 	GTSL::File& getFile() { return packageFiles[getThread()]; }
-	void initializePackageFiles(GTSL::Range<const UTF8*> path);
+	void initializePackageFiles(GTSL::Range<const utf8*> path);
 	
 	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 };

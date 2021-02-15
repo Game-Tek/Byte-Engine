@@ -12,7 +12,7 @@ using int32 = int;
 using uint64 = unsigned long long;
 using int64 = long long;
 
-using UTF8 = char;
+using utf8 = char;
 
 using float32 = float;
 using float64 = double;

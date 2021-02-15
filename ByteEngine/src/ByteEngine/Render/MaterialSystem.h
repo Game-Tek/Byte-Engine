@@ -557,5 +557,10 @@ private:
 	
 	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
 
+	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
+	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoad;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, MaterialSystem::TextureLoadInfo> onTextureInfoLoadHandle;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, GTSL::Range<unsigned char*>, ::MaterialSystem::TextureLoadInfo> onTextureLoadHandle;
+	
 	friend class RenderSystem;
 };

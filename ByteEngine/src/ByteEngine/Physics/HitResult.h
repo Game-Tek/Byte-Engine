@@ -1,8 +1,9 @@
 #pragma once
-#include "Math/Vector3.h"
-#include "Containers/Pair.h"
 
-struct HitData
+#include <GTSL/Math/Vector3.h>
+#include <ByteEngine/Core.h>
+
+struct HitResult
 {
 	/**
 	 * \brief Defines whether there was hit or not.\n
@@ -14,20 +15,15 @@ struct HitData
 	/**
 	 * \brief Defines the position (in world space) of the hit.
 	 */
-	Vector3 HitPosition;
+	GTSL::Vector3 HitPosition;
 
 	/**
 	 * \brief Defines the normal (in world space) of the hit.
 	 */
-	Vector3 HitNormal;
+	GTSL::Vector3 HitNormal;
 
 	/**
 	 * \brief Defines the penetration distance of the two colliding bodies. This is along the HitNormal.
 	 */
-	float PenetrationDistance = 0;
-
-	/**
-	 * \brief Defines a pair of pointers to the two colliding bodies.
-	 */
-	Pair<void*, void*> HitObjects;
+	float32 T = 0;
 };

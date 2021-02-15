@@ -164,8 +164,8 @@ bool Game::Initialize()
 	//	materialCreateInfo.BlendEnable = false;
 	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	//}
-
+	//}//
+	
 	{
 		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
 		materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
@@ -212,7 +212,7 @@ void Game::PostInitialize()
 
 	//FaceTree faceTree(GetPersistentAllocator());
 	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
-	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());//
+	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
 
 	{
 		StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;

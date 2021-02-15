@@ -76,4 +76,5 @@ private:
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
 	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
 	GTSL::PagedVector<RenderSystem::MeshHandle, BE::PAR> addedMeshes;
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;
 };

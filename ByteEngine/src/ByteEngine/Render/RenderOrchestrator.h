@@ -21,6 +21,8 @@ class RenderSystem;
 class RenderGroup;
 struct TaskInfo;
 
+MAKE_HANDLE(uint32, RenderObject)
+
 class RenderManager : public System
 {
 public:
@@ -190,18 +192,31 @@ public:
 	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
 	                     meshHandle, MaterialInstanceHandle materialHandle);
 
+	RenderObjectHandle GetRenderObjectHandle()
+	{
+		return RenderObjectHandle(renderObjectId++);
+	}
+
+	void ReturnRenderObjectHandle(const RenderObjectHandle renderObjectHandle) {}
+
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
+	GTSL::Atomic<uint32> renderObjectId{ 0 };
+
+	struct RenderState
+	{
+		GTSL::Vector<RenderObjectHandle, BE::PAR> ObjectsToRender;
+	} renderState;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
 	
 	GTSL::FlatHashMap<SystemHandle, BE::PersistentAllocatorReference> renderManagers;
 
-	Id finalAttachment;
+	Id resultAttachment;
 	
 	GTSL::Array<Id, 8> renderPasses;
 

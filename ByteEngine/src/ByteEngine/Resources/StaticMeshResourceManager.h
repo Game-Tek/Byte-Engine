@@ -3,14 +3,13 @@
 #include <GTSL/Array.hpp>
 #include <GTSL/Buffer.hpp>
 
-
 #include "ResourceManager.h"
 
 #include <GTSL/Delegate.hpp>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Math/Math.hpp>
+#include <GTSL/Math/Vector3.h>
 
 
 #include "ByteEngine/Game/GameInstance.h"
@@ -51,6 +50,8 @@ public:
 		 */
 		uint8 IndexSize;
 
+		GTSL::Vector3 BoundingBox; float32 BoundingRadius;
+		
 		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 	
@@ -63,6 +64,8 @@ public:
 			Insert(insertInfo.VertexCount, buffer);
 			Insert(insertInfo.IndexSize, buffer);
 			Insert(insertInfo.IndexCount, buffer);
+			Insert(insertInfo.BoundingBox, buffer);
+			Insert(insertInfo.BoundingRadius, buffer);
 			Insert(insertInfo.VertexDescriptor, buffer);
 		}
 
@@ -73,6 +76,8 @@ public:
 			Extract(extractInfo.VertexCount, buffer);
 			Extract(extractInfo.IndexSize, buffer);
 			Extract(extractInfo.IndexCount, buffer);
+			Extract(extractInfo.BoundingBox, buffer);
+			Extract(extractInfo.BoundingRadius, buffer);
 			Extract(extractInfo.VertexDescriptor, buffer);
 		}
 	};

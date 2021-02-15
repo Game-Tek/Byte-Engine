@@ -75,6 +75,27 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	frame = 0;
 
 	{
+		const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+		onTextureInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onTextureInfoLoad", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureInfoLoad>(this), taskDependencies);
+	}
+
+	{
+
+		const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+		onTextureLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("loadTexture", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, GTSL::Range<byte*>, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureLoad>(this), taskDependencies);
+	}
+
+	{
+		const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "MaterialSystem", AccessType::READ } };
+		onShaderInfosLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onShaderInfosLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShaderInfosLoaded>(this), taskDependencies);
+	}
+	
+	{
+		const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
+		onShadersLoad = initializeInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShadersLoaded>(this), taskDependencies);
+	}
+	
+	{
 		SetXInfo setInfo;
 		
 		GTSL::Array<SubSetInfo, 10> subSetInfos;
@@ -513,9 +534,7 @@ MaterialSystem::TextureHandle MaterialSystem::createTexture(const CreateTextureI
 
 	auto textureLoadInfo = TextureLoadInfo(component, Buffer(), info.RenderSystem, RenderAllocation());
 
-	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	auto taskHandle = info.GameInstance->StoreDynamicTask("onTextureInfoLoad", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureInfoLoad>(this), taskDependencies);
-	info.TextureResourceManager->LoadTextureInfo(info.GameInstance, info.TextureName, taskHandle, GTSL::MoveRef(textureLoadInfo));
+	info.TextureResourceManager->LoadTextureInfo(info.GameInstance, info.TextureName, onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
 
 	return TextureHandle(component);
 }
@@ -567,13 +586,8 @@ uint32 MaterialSystem::CreateComputePipeline(Id shaderName, MaterialResourceMana
 {
 	ShaderLoadInfo shaderLoadInfo; shaderLoadInfo.Component = 0;
 	
-	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "MaterialSystem", AccessType::READ } };
-	auto taskHandle = gameInstance->StoreDynamicTask("onShaderInfosLoaded",
-		Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShaderInfosLoaded>(this),
-		taskDependencies);
-	
 	GTSL::Array<Id, 8> shaderNames; shaderNames.EmplaceBack(shaderName);
-	materialResourceManager->LoadShaderInfos(gameInstance, shaderNames, taskHandle, GTSL::MoveRef(shaderLoadInfo));
+	materialResourceManager->LoadShaderInfos(gameInstance, shaderNames, onShaderInfosLoadHandle, GTSL::MoveRef(shaderLoadInfo));
 
 	return 0;
 }
@@ -1221,9 +1235,7 @@ void MaterialSystem::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager
 
 	auto dataBuffer = GTSL::Range<byte*>(loadInfo.RenderAllocation.Size, static_cast<byte*>(loadInfo.RenderAllocation.Data));
 
-	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("loadTexture", Task<TextureResourceManager*, TextureResourceManager::TextureInfo, GTSL::Range<byte*>, TextureLoadInfo>::Create<MaterialSystem, &MaterialSystem::onTextureLoad>(this), taskDependencies);
-	resourceManager->LoadTexture(taskInfo.GameInstance, textureInfo, dataBuffer, taskHandle, GTSL::MoveRef(loadInfo));
+	resourceManager->LoadTexture(taskInfo.GameInstance, textureInfo, dataBuffer, onTextureLoadHandle, GTSL::MoveRef(loadInfo));
 }
 
 void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, GTSL::Range<byte*> buffer, TextureLoadInfo loadInfo)
@@ -1330,10 +1342,7 @@ void MaterialSystem::onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceMana
 	
 	shaderLoadInfo.Buffer.Allocate(totalSize, 8, GetPersistentAllocator());
 	
-	const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessType::READ_WRITE }, { "MaterialSystem", AccessType::READ_WRITE } };
-	auto taskHandle = taskInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<MaterialSystem, &MaterialSystem::onShadersLoaded>(this), taskDependencies);
-	
-	materialResourceManager->LoadShaders(taskInfo.GameInstance, shaderInfos, taskHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
+	materialResourceManager->LoadShaders(taskInfo.GameInstance, shaderInfos, onShadersLoad, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
 
 void MaterialSystem::onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)

@@ -40,7 +40,7 @@ namespace BE
 	{
 	}
 
-	bool Application::BaseInitialize(int argc, UTF8* argv[])
+	bool Application::BaseInitialize(int argc, utf8* argv[])
 	{
 		if (!checkPlatformSupport()) {
 			Close(CloseMode::ERROR, GTSL::StaticString<128>("No platform support."));
@@ -184,7 +184,7 @@ namespace BE
 		gameInstance->DispatchEvent("Application", EventHandle<>("OnPromptClose"));
 	}
 
-	void Application::Close(const CloseMode closeMode, const GTSL::Range<const UTF8*> reason)
+	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)
 	{
 		closeReason += reason;
 		flaggedForClose = true;
@@ -246,7 +246,7 @@ namespace BE
 		
 		while (i < fileBuffer.GetLength())
 		{			
-			switch (static_cast<UTF8>(fileBuffer.GetData()[i]))
+			switch (static_cast<utf8>(fileBuffer.GetData()[i]))
 			{
 			case '[':
 				{
@@ -346,7 +346,7 @@ namespace BE
 			default:
 				{
 					if (text.GetLength() == 128) { return false; }
-					text += static_cast<UTF8>(fileBuffer.GetData()[i]);
+					text += static_cast<utf8>(fileBuffer.GetData()[i]);
 				}
 			}
 

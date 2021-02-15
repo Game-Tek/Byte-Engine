@@ -526,7 +526,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 
 		{
-			auto& attachment = attachments.At(finalAttachment());
+			auto& attachment = attachments.At(resultAttachment());
 			
 			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
 			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
@@ -546,7 +546,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 		CommandBuffer::CopyTextureToTextureInfo copyTexture;
 		copyTexture.RenderDevice = renderSystem->GetRenderDevice();
-		copyTexture.SourceTexture = GetAttachmentTexture(finalAttachment);
+		copyTexture.SourceTexture = GetAttachmentTexture(resultAttachment);
 		copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
 		copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
 		copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
@@ -722,7 +722,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 		for(auto e : passesData[passIndex].ReadAttachments) { addIfNotUsed(e.Name); }
 		for(auto e : passesData[passIndex].WriteAttachments) { addIfNotUsed(e.Name); }
 
-		finalAttachment = passesData[passIndex].ResultAttachment;
+		resultAttachment = passesData[passIndex].ResultAttachment;
 	}
 
 	for (uint8 passIndex = 0; passIndex < passesData.ElementCount(); ++passIndex) {
@@ -737,7 +737,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 			attachmentReadsPerPass[passIndex].Emplace(e(), pass);
 		}
 		
-		attachmentReadsPerPass[passIndex].At(finalAttachment()) = 0xFFFFFFFF; //set result attachment last read as "infinte" so it will always be stored
+		attachmentReadsPerPass[passIndex].At(resultAttachment()) = 0xFFFFFFFF; //set result attachment last read as "infinte" so it will always be stored
 	}
 	
 	for (uint8 passIndex = 0; passIndex < passesData.ElementCount(); ++passIndex)

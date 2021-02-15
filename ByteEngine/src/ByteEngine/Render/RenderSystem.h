@@ -5,7 +5,6 @@
 #include <GTSL/Pair.h>
 #include <GTSL/FunctionPointer.hpp>
 
-
 #include "MaterialSystem.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -14,6 +13,8 @@
 #include "RenderTypes.h"
 
 #include "ByteEngine/Handle.hpp"
+
+#include "ByteEngine/Render/MaterialSystem.h"
 
 namespace GTSL {
 	class Window;

@@ -23,7 +23,7 @@ class System : public Object
 public:
 	System() = default;
 	
-	System(const UTF8* name) : Object(name)
+	System(const utf8* name) : Object(name)
 	{
 	}
 

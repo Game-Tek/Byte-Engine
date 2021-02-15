@@ -40,7 +40,7 @@ bool GameApplication::Initialize()
 	auto window_close = []()
 	{
 		Get()->PromptClose();
-		Get()->Close(CloseMode::OK, GTSL::Range<const UTF8*>());
+		Get()->Close(CloseMode::OK, GTSL::Range<const utf8*>());
 	};
 	window.SetOnCloseDelegate(GTSL::Delegate<void()>::Create(window_close));
 

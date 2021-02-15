@@ -38,7 +38,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GT
 
 	const uint32 text_chars_to_write = text.Bytes() + 2 > string.GetCapacity() - string.GetLength() ? string.GetLength() - 1 : text.Bytes();
 
-	string += GTSL::Range<const UTF8*>(text_chars_to_write, text.begin()); string += '\n';
+	string += GTSL::Range<const utf8*>(text_chars_to_write, text.begin()); string += '\n';
 	
 	if(verbosityLevel >= minLogLevel)
 	{

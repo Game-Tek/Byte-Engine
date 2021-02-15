@@ -47,7 +47,7 @@ namespace BE
 
 		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
-		bool BaseInitialize(int argc, UTF8* argv[]);
+		bool BaseInitialize(int argc, utf8* argv[]);
 		virtual bool Initialize() = 0;
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
@@ -76,7 +76,7 @@ namespace BE
 			OK, WARNING, ERROR
 		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, const GTSL::Range<const UTF8*> reason);
+		void Close(CloseMode closeMode, const GTSL::Range<const utf8*> reason);
 
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
 		{

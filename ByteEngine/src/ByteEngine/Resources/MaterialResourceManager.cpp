@@ -72,7 +72,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 			shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
-			auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
+			auto f = GTSL::Range<const utf8*>(shader_source_buffer.GetLength(), reinterpret_cast<const utf8*>(shader_source_buffer.GetData()));
 			const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 			if(comp_res == false)
@@ -145,7 +145,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 		shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
-		auto f = GTSL::Range<const UTF8*>(shader_source_buffer.GetLength(), reinterpret_cast<const UTF8*>(shader_source_buffer.GetData()));
+		auto f = GTSL::Range<const utf8*>(shader_source_buffer.GetLength(), reinterpret_cast<const utf8*>(shader_source_buffer.GetData()));
 		const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.Type, GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 		*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
 		if (comp_res == false)

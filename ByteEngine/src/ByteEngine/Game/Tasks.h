@@ -13,14 +13,13 @@
 
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
-struct AccessType : GTSL::Flags<uint8>
+using AccessType = GTSL::Flags<uint8>;
+
+namespace AccessTypes
 {
-	AccessType() = default;
-	AccessType(const value_type val) : Flags<uint8>(val) {}
-	
-	static constexpr value_type READ = 1;
-	static constexpr value_type READ_WRITE = 4;
-};
+	static constexpr AccessType READ = 1;
+	static constexpr AccessType READ_WRITE = 4;
+}
 
 struct TaskInfo
 {
@@ -193,8 +192,8 @@ struct TaskSorter
 			
 			for (uint32 i = 0; i < elementCount; ++i)
 			{
-				if (currentObjectAccessState[objects[i]] == AccessType::READ_WRITE) { return false; }
-				if (currentObjectAccessState[objects[i]] == AccessType::READ && accesses[i] == AccessType::READ_WRITE) { return false; }
+				if (currentObjectAccessState[objects[i]] == AccessTypes::READ_WRITE) { return false; }
+				if (currentObjectAccessState[objects[i]] == AccessTypes::READ && accesses[i] == AccessTypes::READ_WRITE) { return false; }
 			}
 		}
 
@@ -228,7 +227,7 @@ struct TaskSorter
 		for (uint32 i = 0; i < count; ++i)
 		{
 			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
-			BE_ASSERT(accesses[i] == AccessType::READ || accesses[i] == AccessType::READ_WRITE, "Unexpected value");
+			BE_ASSERT(accesses[i] == AccessTypes::READ || accesses[i] == AccessTypes::READ_WRITE, "Unexpected value");
 			if (--currentObjectAccessCount[objects[i]] == 0) //if task is done
 			{
 				currentObjectAccessState[objects[i]] = 0;
@@ -249,7 +248,7 @@ struct TaskSorter
 	}
 
 private:
-	GTSL::KeepVector<AccessType::value_type, ALLOCATOR> currentObjectAccessState;
+	GTSL::KeepVector<AccessType, ALLOCATOR> currentObjectAccessState;
 	GTSL::KeepVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
 	GTSL::KeepVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;

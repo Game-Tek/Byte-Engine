@@ -168,7 +168,7 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 	if constexpr (BE_DEBUG)
 	{
 		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
-		perNameData.try_emplace(GTSL::Id64(name)).first->second.Name = name;
+		perNameData.try_emplace(GTSL::Id64(name)()).first->second.Name = name;
 	}
 
 	stacksMutexes[i].Lock();
@@ -182,8 +182,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 			if constexpr (BE_DEBUG)
 			{
 				GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
-				perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size;
-				perNameData[GTSL::Id64(name)].AllocationCount += 1;
+				perNameData[GTSL::Id64(name)()].BytesAllocated += allocated_size;
+				perNameData[GTSL::Id64(name)()].AllocationCount += 1;
 				bytesAllocated += allocated_size;
 				totalBytesAllocated += allocated_size;
 				++allocationsCount;
@@ -211,8 +211,8 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 	if constexpr (BE_DEBUG)
 	{
 		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
-		perNameData[GTSL::Id64(name)].BytesAllocated += allocated_size;
-		perNameData[GTSL::Id64(name)].AllocationCount += 1;
+		perNameData[GTSL::Id64(name)()].BytesAllocated += allocated_size;
+		perNameData[GTSL::Id64(name)()].AllocationCount += 1;
 		bytesAllocated += allocated_size;
 		totalBytesAllocated += allocated_size;
 		allocatorAllocatedBytes += allocated_size;
@@ -234,8 +234,8 @@ void StackAllocator::Deallocate(const uint64 size, const uint64 alignment, void*
 		const auto bytes_deallocated{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
 
 		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
-		perNameData[GTSL::Id64(name)].BytesDeallocated += bytes_deallocated;
-		perNameData[GTSL::Id64(name)].DeallocationCount += 1;
+		perNameData[GTSL::Id64(name)()].BytesDeallocated += bytes_deallocated;
+		perNameData[GTSL::Id64(name)()].DeallocationCount += 1;
 		bytesDeallocated += bytes_deallocated;
 		totalBytesDeallocated += bytes_deallocated;
 		++deallocationsCount;

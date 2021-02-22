@@ -34,12 +34,13 @@ MAKE_HANDLE(SubSetDescription, SubSet)
 
 struct MemberDescription
 {
-	SubSetDescription SubSet;
+	uint32 BufferIndex = 0;
 	uint32 MemberIndirectionIndex = 0;
-	uint32 Buffer = 0;
 };
 
 MAKE_HANDLE(MemberDescription, Member)
+
+MAKE_HANDLE(uint32, Buffer)
 
 class MaterialSystem : public System
 {	
@@ -62,8 +63,11 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	Buffer GetBuffer(Id bufferName) const { return buffers[buffersByName[bufferName()]].Buffers[frame]; }
+	Buffer GetBuffer(BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame]; }
+	Texture GetTexture(TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
 
-	struct BufferIterator { uint32 Set = 0, SubSet = 0, Level = 0, ByteOffset = 0, MemberIndex = 0, Buffer = 0; MemberHandle Member; };
+	struct BufferIterator { uint32 Level = 0, ByteOffset = 0, MemberIndex = 0; MemberHandle Member; };
 	
 	template<typename T>
 	T* GetMemberPointer(BufferIterator iterator);
@@ -98,11 +102,11 @@ public:
 		return getSetMemberPointer<uint64, Member::DataType::UINT64>(iterator, frame);
 	}
 
-	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, uint32 index = 0)
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, PipelineType pipelineType)
 	{
-		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), index);
+		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), pipelineType);
 	}
-	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, uint32 index = 0);
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, PipelineType pipelineType);
 	
 	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
@@ -133,20 +137,16 @@ public:
 
 	enum class SubSetType : uint8
 	{
-		BUFFER, TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE
+		BUFFER, READ_TEXTURES, WRITE_TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE
 	};
-	
-	struct StructInfo
+
+	struct SubSetDescriptor
 	{
-		GTSL::Range<MemberInfo*> Members;
+		SubSetType SubSetType; uint32 BindingsCount;
 	};
 	
-	struct SetInfo
-	{
-		GTSL::Range<StructInfo*> Structs;
-	};
-	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id parent, const SetInfo& setInfo);
-	
+	void AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id parentName, const GTSL::Range<SubSetDescriptor*> subsets);
+
 	struct SubSetInfo
 	{
 		SubSetType Type;
@@ -154,11 +154,24 @@ public:
 		uint32 Count;
 	};
 	
-	struct SetXInfo
+	void AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id parentName, const GTSL::Range<SubSetInfo*> subsets)
 	{
-		GTSL::Range<SubSetInfo*> SubSets;
-	};
-	[[nodiscard]] SetHandle AddSetX(RenderSystem* renderSystem, Id setName, Id parent, const SetXInfo& setInfo);
+		GTSL::Array<SubSetDescriptor, 16> subSetInfos;
+		for (auto e : subsets) { subSetInfos.EmplaceBack(e.Type, e.Count); }
+		AddSetLayout(renderSystem, layoutName, parentName, subSetInfos);
+	}
+		
+	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id setLayoutName, const GTSL::Range<SubSetInfo*> setInfo);
+
+	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members);
+	[[nodiscard]] TextureHandle CreateTexture(RenderSystem* renderSystem, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses);
+
+	void RecreateTexture(const TextureHandle textureHandle, RenderSystem* renderSystem, GTSL::Extent3D newExtent);
+	
+	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
+	uint32 GetTextureReference(const TextureHandle textureHandle) const { return textureHandle(); }
+	
+	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name(), bufferHandle()); }
 	
 	/**
 	 * \brief Update the member instance count to be able to fit at least count requested elements.
@@ -215,8 +228,6 @@ public:
 	uint32 CreateComputePipeline(Id materialName, MaterialResourceManager* materialResourceManager, GameInstance* gameInstance);
 	
 	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
-
-	auto GetCameraMatricesHandle() const { return cameraMatricesHandle; }
 	
 	/**
 	 * \brief Updates the iterator hierarchy level to index the specified member.
@@ -225,13 +236,11 @@ public:
 	 */
 	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle member)
 	{
-		auto& set = sets[member().SubSet.SetHandle()]; auto& memberData = set.MemberData[member().MemberIndirectionIndex];
-		iterator.Set = member().SubSet.SetHandle(); iterator.SubSet = member().SubSet.Subset;
+		auto& bufferData = buffers[member().BufferIndex]; auto& memberData = bufferData.MemberData[member().MemberIndirectionIndex];
 		iterator.Level = memberData.Level;
 		iterator.ByteOffset += memberData.ByteOffsetIntoStruct;
 		iterator.Member = member;
 		iterator.MemberIndex = 0;
-		iterator.Buffer = member().Buffer;
 	}
 	
 	/**
@@ -241,12 +250,12 @@ public:
 	 */
 	void UpdateIteratorMemberIndex(BufferIterator& iterator, uint32 index)
 	{
-		auto& set = sets[iterator.Set]; auto& memberData = set.MemberData[iterator.Member().MemberIndirectionIndex];
+		auto& bufferData = buffers[iterator.Member().BufferIndex]; auto& memberData = bufferData.MemberData[iterator.Member().MemberIndirectionIndex];
 		BE_ASSERT(memberData.Level == iterator.Level, "Not expected structure");
 		BE_ASSERT(index < memberData.Count, "Advanced more elements than there are in this member!");
 		int32 shiftedElements = index - iterator.MemberIndex;
 		iterator.ByteOffset += shiftedElements * memberData.Size;
-		BE_ASSERT(iterator.ByteOffset < set.SubSets[iterator.SubSet].Buffers[iterator.Buffer].Allocations[0].Size, "");
+		BE_ASSERT(iterator.ByteOffset < bufferData.RenderAllocations[0].Size, "");
 		iterator.MemberIndex = index;
 	}
 
@@ -258,6 +267,11 @@ public:
 	PipelineLayout GetMaterialPipelineLayout(const MaterialHandle materialHandle)
 	{
 		return sets[loadedMaterialsMap[materialHandle()]].PipelineLayout;
+	}
+
+	PipelineLayout GetSetLayoutPipelineLayout(const Id setLayoutName) const
+	{
+		return setLayoutDatas[setLayoutName()].PipelineLayout;
 	}
 
 private:
@@ -280,46 +294,53 @@ private:
 	template<typename T, Member::DataType DT>
 	T* getSetMemberPointer(BufferIterator iterator, uint8 frameToUpdate)
 	{
-		auto& set = sets[iterator.Set];
-		auto& subSet = set.SubSets[iterator.SubSet];
+		auto& bufferData = buffers[iterator.Member().BufferIndex];
 
-		BE_ASSERT(DT == set.MemberData[iterator.Member().MemberIndirectionIndex].Type, "Type mismatch")
+		BE_ASSERT(DT == bufferData.MemberData[iterator.Member().MemberIndirectionIndex].Type, "Type mismatch")
 		//BE_ASSERT(index < s., "Requested sub set buffer member index greater than allocated instances count.")
 
 		//												//BUFFER							//OFFSET TO STRUCT
-		return reinterpret_cast<T*>(static_cast<byte*>(subSet.Buffers[iterator.Buffer].Allocations[frameToUpdate].Data) + iterator.ByteOffset);
+		return reinterpret_cast<T*>(static_cast<byte*>(bufferData.RenderAllocations[frameToUpdate].Data) + iterator.ByteOffset);
 	}
 	
 	Id rayGenMaterial;
-	SubSetHandle cameraDataSubSetHandle;
-	MemberHandle cameraMatricesHandle;
-	MemberHandle materialTextureHandles;
-	SubSetHandle materialsDataSubSetHandle;
-	MemberHandle materialDataStructHandle;
-	SubSetHandle instanceDataSubsetHandle;
-	MemberHandle instanceMaterialReferenceHandle;
-	MemberHandle instanceDataStructHandle;
+	SubSetHandle topLevelAsHandle;
+
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
 	static constexpr BindingType BUFFER_BINDING_TYPE = BindingType::STORAGE_BUFFER;
 	
 	SubSetHandle textureSubsetsHandle;
-	SubSetHandle topLevelAsHandle;
-	SubSetHandle vertexBuffersSubSetHandle;
-	SubSetHandle indexBuffersSubSetHandle;
 	
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
 
 	uint32 shaderCounts[4]{ 0 };
 
-	void createBuffer(RenderSystem* renderSystem, SubSetHandle subSetHandle, uint32 binding, GTSL::Range<MemberInfo*> members);
 	void updateSubBindingsCount(SubSetHandle subSetHandle, uint32 newCount);
 	
 	RayTracingPipeline rayTracingPipeline;
 	Buffer shaderBindingTableBuffer;
 	RenderAllocation shaderBindingTableAllocation;
 
+	struct BufferData
+	{
+		RenderAllocation RenderAllocations[MAX_CONCURRENT_FRAMES];
+		Buffer Buffers[MAX_CONCURRENT_FRAMES];
+
+		struct MemberData
+		{
+			uint16 ByteOffsetIntoStruct;
+			uint16 Count = 0;
+			uint8 Level = 0;
+			Member::DataType Type;
+			uint16 Size;
+		};
+		GTSL::Array<MemberData, 16> MemberData;
+	};
+	GTSL::KeepVector<BufferData, BE::PAR> buffers;
+	GTSL::FlatHashMap<uint32, BE::PAR> buffersByName;
+	
 	struct MaterialData
 	{
 		MaterialHandle Name;
@@ -330,7 +351,10 @@ private:
 		Id RenderGroup;
 		uint32 InstanceCount = 0;
 
+		GTSL::StaticMap<MemberHandle, 16> ParametersHandles;
+		
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
+		MemberHandle MaterialInstancesMemberHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 
@@ -339,11 +363,19 @@ private:
 		MaterialInstanceHandle Name;
 		
 		uint32 Material = 0;
-		GTSL::StaticMap<MemberHandle, 16> Parameters;
 		uint8 Counter = 0, Target = 0;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
 
+	struct SetLayoutData
+	{
+		uint8 Level = 0;
+
+		Id Parent;
+		BindingsSetLayout BindingsSetLayout;
+		PipelineLayout PipelineLayout;
+	};
+	GTSL::FlatHashMap<SetLayoutData, BE::PAR> setLayoutDatas;
 	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterialsMap;
 	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesMap;
 	GTSL::FlatHashMap<GTSL::Vector<MaterialInstanceHandle, BE::PAR>, BE::PAR> readyMaterialsPerRenderGroup;
@@ -449,7 +481,7 @@ private:
 	struct SetData
 	{
 		Id Name;
-		SetHandle Parent;
+		//SetHandle Parent;
 		uint32 Level = 0;
 		PipelineLayout PipelineLayout;
 		BindingsSetLayout BindingsSetLayout;
@@ -463,25 +495,8 @@ private:
 		struct SubSetData
 		{				
 			uint32 AllocatedBindings = 0;
-
-			struct BufferAllocations
-			{
-				RenderAllocation Allocations[MAX_CONCURRENT_FRAMES];
-				Buffer Buffers[MAX_CONCURRENT_FRAMES];
-			};
-			GTSL::Array<BufferAllocations, 32> Buffers;
 		};
 		GTSL::Array<SubSetData, 16> SubSets;
-		
-		struct MemberData
-		{
-			uint16 ByteOffsetIntoStruct;
-			uint16 Count = 0;
-			uint8 Level = 0;
-			Member::DataType Type;
-			uint16 Size;
-		};
-		GTSL::Array<MemberData, 16> MemberData;
 	};
 	
 	GTSL::FlatHashMap<SetHandle, BE::PAR> setHandlesByName;
@@ -503,7 +518,7 @@ private:
 		RenderAllocation RenderAllocation;
 	};
 	void onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
-	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, GTSL::Range<byte*> buffer, TextureLoadInfo loadInfo);
+	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
 
 	struct ShaderLoadInfo
 	{
@@ -521,6 +536,9 @@ private:
 		TextureView TextureView;
 		TextureSampler TextureSampler;
 		RenderAllocation Allocation;
+		
+		GAL::FormatDescriptor FormatDescriptor;
+		
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
@@ -552,15 +570,14 @@ private:
 	uint8 frame;
 	uint8 queuedFrames = 2;
 
-	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
-	PipelineLayout declareSetHull(RenderSystem* renderSystem, Id parent, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
+	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id setLayoutName, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
 
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoad;
 	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, MaterialSystem::TextureLoadInfo> onTextureInfoLoadHandle;
-	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, GTSL::Range<unsigned char*>, ::MaterialSystem::TextureLoadInfo> onTextureLoadHandle;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, MaterialSystem::TextureLoadInfo> onTextureLoadHandle;
 	
 	friend class RenderSystem;
 };

@@ -255,18 +255,18 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
+		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));//
 	}
 
-	{
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "TV";
-		addStaticMeshInfo.Material = tvMaterialInstance;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	}
+	//{
+	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+	//	addStaticMeshInfo.MeshName = "TV";
+	//	addStaticMeshInfo.Material = tvMaterialInstance;
+	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.RenderSystem = renderSystem;
+	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//	tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	//}
 	
 	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
@@ -315,7 +315,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}
+	//}//
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -339,7 +339,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));//
+	//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
 	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
 	//auto r = 1.0f;

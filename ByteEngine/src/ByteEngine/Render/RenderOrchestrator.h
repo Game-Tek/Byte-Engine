@@ -21,8 +21,6 @@ class RenderSystem;
 class RenderGroup;
 struct TaskInfo;
 
-MAKE_HANDLE(uint32, RenderObject)
-
 class RenderManager : public System
 {
 public:
@@ -102,11 +100,17 @@ public:
 		return count;
 	}
 
+	void AddSetToRenderGroup(Id renderGroupName, Id setName)
+	{
+		renderGroups.At(renderGroupName()).Sets.EmplaceBack(setName);
+	}
+
 	enum class TextureComponentType
 	{
 		FLOAT, INT
 	};
-	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, TextureComponentType compType, TextureType::value_type type, GTSL::RGBA clearColor);
+	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, TextureType::value_type type, GTSL::RGBA
+	                   clearColor);
 
 	enum class PassType : uint8
 	{
@@ -175,7 +179,7 @@ public:
 		auto result = loadedMaterialInstances.TryGet(materialHandle());
 
 		if (result.State()) [[likely]] {
-			result.Get().Meshes.EmplaceBack(meshHandle);
+			result.Get().Meshes.EmplaceBack(meshHandle, 1);
 		}
 		else
 		{
@@ -185,30 +189,49 @@ public:
 				awaitingResult.Get().Meshes.Initialize(8, GetPersistentAllocator());
 			}
 			
-			awaitingResult.Get().Meshes.EmplaceBack(meshHandle);
+			awaitingResult.Get().Meshes.EmplaceBack(meshHandle, 1);
 		}
 	}
 
-	void UpdateMeshIndex(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, RenderSystem::MeshHandle
-	                     meshHandle, MaterialInstanceHandle materialHandle);
+	void AddIndexStream() { renderState.IndexStreams.EmplaceBack(0); }
+	void UpdateIndexStream(uint8 indexStream, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+	void PopIndexStream() { renderState.IndexStreams.PopBack(); }
 
-	RenderObjectHandle GetRenderObjectHandle()
-	{
-		return RenderObjectHandle(renderObjectId++);
-	}
+	SubSetHandle renderGroupsSubSet;
+	SubSetHandle renderPassesSubSet;
 
-	void ReturnRenderObjectHandle(const RenderObjectHandle renderObjectHandle) {}
+	uint32 renderGroupsCount = 0;
+	MemberHandle cameraMatricesHandle;
+	BufferHandle cameraDataBuffer;
+	BufferHandle globalDataBuffer;
+	MemberHandle globalDataHandle;
+
+	void BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer);
+
+	void PopData() { renderState.Offset -= 4; }
 
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
-	GTSL::Atomic<uint32> renderObjectId{ 0 };
-
+	struct RenderGroupData
+	{
+		uint32 Index;
+		GTSL::Array<uint8, 8> IndexStreams;
+		GTSL::Array<Id, 8> Sets;
+	};
+	GTSL::StaticMap<RenderGroupData, 16> renderGroups;
+	
 	struct RenderState
 	{
-		GTSL::Vector<RenderObjectHandle, BE::PAR> ObjectsToRender;
+		Id BoundRenderGroup;
+		GTSL::Array<uint8, 8> IndexStreams;
+		//PipelineLayout PipelineLayout;
+		PipelineType PipelineType;
+		ShaderStage::value_type ShaderStages = ShaderStage::ALL;
+		uint8 Offset = 0;
+		PipelineLayout PipelineLayout;
 	} renderState;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
@@ -216,6 +239,19 @@ private:
 	
 	GTSL::FlatHashMap<SystemHandle, BE::PersistentAllocatorReference> renderManagers;
 
+	struct ExecuteCommand
+	{
+		union
+		{
+			GTSL::Extent3D LaunchMatrix;
+
+			union
+			{
+				RenderSystem::MeshHandle MeshHandle; uint32 InstanceCount;
+			};
+		};
+	};
+	
 	Id resultAttachment;
 	
 	GTSL::Array<Id, 8> renderPasses;
@@ -229,7 +265,7 @@ private:
 
 	struct MaterialInstanceData
 	{
-		GTSL::Vector<RenderSystem::MeshHandle, BE::PAR> Meshes;
+		GTSL::Vector<GTSL::Pair<RenderSystem::MeshHandle, uint16>, BE::PAR> Meshes;
 	};
 	GTSL::FlatHashMap<MaterialInstanceData, BE::PAR> loadedMaterialInstances, awaitingMaterialInstances;
 
@@ -242,17 +278,17 @@ private:
 	
 	struct RenderPassData
 	{
+		bool Enabled = false;
+		uint8 APIRenderPass = 0;
+		
 		GTSL::Array<Id, 8> RenderGroups;
 		PassType PassType;
-
-		SubSetHandle WriteAttachmentsHandle, ReadAttachmentsHandle;
 		GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
-
-		bool Enabled = false;
 		
-		uint8 APIRenderPass = 0;
 		PipelineStage::value_type PipelineStages;
 		SetHandle AttachmentsSetHandle;
+		MemberHandle AttachmentsIndicesHandle;
+		BufferHandle BufferHandle;
 	};
 	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
@@ -269,7 +305,7 @@ private:
 	void dispatch(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem,
 	              CommandBuffer commandBuffer, Id rp);
 
-	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, Id renderPassId);
+	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, Id renderPassId);
 
 	void onMaterialLoad(TaskInfo taskInfo, Id materialName);
 	void onMaterialInstanceLoad(TaskInfo taskInfo, Id materialName, Id materialInstanceName);
@@ -292,20 +328,16 @@ private:
 
 	struct Attachment
 	{
-		TextureFormat Format;
-		Texture Texture;
-		TextureView TextureView;
-		TextureSampler TextureSampler;
-
-		RenderAllocation Allocation;
+		MaterialSystem::TextureHandle TextureHandle;
 
 		Id Name;
 		TextureType::value_type Type;
-		TextureUses::value_type Uses;
+		TextureUses Uses;
 		TextureLayout Layout;
 		PipelineStage::value_type ConsumingStages;
 		bool WriteAccess = false;
 		GTSL::RGBA ClearColor;
+		GAL::FormatDescriptor FormatDescriptor;
 	};
 	GTSL::StaticMap<Attachment, 32> attachments;
 
@@ -313,9 +345,4 @@ private:
 	{
 		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.WriteAccess = writeAccess;
 	}
-
-public:
-	Texture GetAttachmentTexture(const Id attachment) const { return attachments.At(attachment()).Texture; }
-	TextureView GetAttachmentTextureView(const Id attachment) const { return attachments.At(attachment()).TextureView; }
-	TextureSampler GetAttachmentTextureSampler(const Id attachment) const { return attachments.At(attachment()).TextureSampler; }
 };

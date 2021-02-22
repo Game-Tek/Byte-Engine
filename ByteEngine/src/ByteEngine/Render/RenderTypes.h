@@ -97,6 +97,7 @@ using BufferType = GAL::VulkanBufferType;
 using MemoryType = GAL::VulkanMemoryType;
 using ShaderType = GAL::VulkanShaderType;
 using TextureUses = GAL::VulkanTextureUses;
+namespace TextureUse = GAL::VulkanTextureUse;
 using ShaderStage = GAL::VulkanShaderStage;
 using BindingType = GAL::VulkanBindingType;
 using AccessFlags = GAL::VulkanAccessFlags;

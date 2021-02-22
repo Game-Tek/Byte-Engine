@@ -75,14 +75,14 @@ public:
 	}
 	
 	template<typename... ARGS>
-	void LoadTexture(GameInstance* gameInstance, TextureInfo textureInfo, GTSL::Range<byte*> buffer, DynamicTaskHandle<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadTexture(GameInstance* gameInstance, TextureInfo textureInfo, GTSL::Range<byte*> buffer, DynamicTaskHandle<TextureResourceManager*, TextureInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadTexture = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureInfo textureInfo, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
 			resourceManager->packageFiles[resourceManager->getThread()].SetPointer(textureInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 			resourceManager->packageFiles[resourceManager->getThread()].ReadFromFile(GTSL::Range<byte*>(textureInfo.GetTextureSize(), buffer.begin()));
 			
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
 		gameInstance->AddDynamicTask("loadTexture", Task<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadTexture), {}, this, GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);

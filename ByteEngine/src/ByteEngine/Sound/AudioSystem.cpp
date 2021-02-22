@@ -25,13 +25,15 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 	mixFormat.BitsPerSample = 32;
 	mixFormat.NumberOfChannels = 2;
 	mixFormat.SamplesPerSecond = 48000;
+
+	onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
 	
 	if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
 	{
 		audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat);
 		audioDevice.Start();
 		audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
-		initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessType::READ_WRITE } }, "RenderDo", "RenderEnd");
+		initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessTypes::READ_WRITE } }, "RenderDo", "RenderEnd");
 	}
 	else
 	{
@@ -67,13 +69,7 @@ void AudioSystem::requestAudioStreams()
 
 	for(uint8 i = 0; i < lastRequestedAudios.GetLength(); ++i)
 	{
-		AudioResourceManager::LoadAudioAssetInfo loadAudioAssetInfo;
-		loadAudioAssetInfo.GameInstance;
-		loadAudioAssetInfo.ActsOn;
-		loadAudioAssetInfo.DataBuffer;
-		loadAudioAssetInfo.Name = lastRequestedAudios[i];
-		loadAudioAssetInfo.UserData;
-		audioResourceManager->LoadAudioAsset(loadAudioAssetInfo);
+		audioResourceManager->LoadAudioInfo(BE::Application::Get()->GetGameInstance(), lastRequestedAudios[i], onAudioInfoLoadHandle);
 	}
 
 	lastRequestedAudios.Resize(0);
@@ -119,4 +115,8 @@ void AudioSystem::render(TaskInfo)
 		removePlayingSound(soundsToRemoveFromPlaying[i]);
 		audioResourceManager->ReleaseAudioAsset(samplesToRemoveFromPlaying[i]);
 	}
+}
+
+void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo)
+{
 }

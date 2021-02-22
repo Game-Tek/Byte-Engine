@@ -94,13 +94,13 @@ namespace BE
 		RM* CreateResourceManager()
 		{
 			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>::Create<RM>(systemAllocatorReference);
-			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MoveRef(resource_manager)).operator ResourceManager*());
+			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName())(), MoveRef(resource_manager)).GetData());
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		
 		template<class T>
-		T* GetResourceManager(const GTSL::Id64 name) { return static_cast<T*>(resourceManagers.At(name).GetData()); }
+		T* GetResourceManager(const Id name) { return static_cast<T*>(resourceManagers.At(name()).GetData()); }
 		
 		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		

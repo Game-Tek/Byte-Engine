@@ -530,7 +530,7 @@ void RenderSystem::OnResize(const GTSL::Extent2D extent)
 	recreate.Format = swapchainFormat;
 	recreate.PresentMode = swapchainPresentMode;
 	recreate.Surface = &surface;
-	recreate.TextureUses = TextureUses::STORAGE | TextureUses::TRANSFER_DESTINATION;
+	recreate.TextureUses = TextureUse::STORAGE | TextureUse::TRANSFER_DESTINATION;
 	recreate.Queue = &graphicsQueue;
 	renderContext.Recreate(recreate);
 	
@@ -569,20 +569,20 @@ void RenderSystem::OnResize(const GTSL::Extent2D extent)
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {	
 	{
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessTypes::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, "FrameStart", "RenderStart");
 
 		initializeInfo.GameInstance->AddTask("executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
 	}
 
 	{
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessTypes::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, "RenderStart", "RenderStartSetup");
 		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, "RenderEndSetup", "RenderDo");
 	}
 
 	{
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessType::READ_WRITE } };
+		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessTypes::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
 	}
 }
@@ -912,7 +912,7 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 	{
 	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
-	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message) break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); /*GAL_DEBUG_BREAK*/; break;
 	default: break;
 	}
 }

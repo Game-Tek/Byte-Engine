@@ -31,10 +31,10 @@ using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
 
 inline const char* AccessTypeToString(const AccessType access)
 {
-	switch (access)
+	switch ((uint8)access)
 	{
-	case AccessType::READ: return "READ";
-	case AccessType::READ_WRITE: return "READ_WRITE";
+	case (uint8)AccessTypes::READ: return "READ";
+	case (uint8)AccessTypes::READ_WRITE: return "READ_WRITE";
 	}
 }
 
@@ -271,15 +271,15 @@ public:
 	template<typename... ARGS>
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle)
 	{
-		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name())) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
-		
 		GTSL::WriteLock lock(eventsMutex);
+		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name())) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		events.Emplace(eventHandle.Name()).Initialize(8, GetPersistentAllocator());
 	}
 
 	template<typename... ARGS>
 	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle)
 	{
+		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name());
 		vector.EmplaceBack(taskHandle.Reference);
@@ -288,6 +288,7 @@ public:
 	template<typename... ARGS>
 	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args)
 	{
+		GTSL::ReadLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 		
 		auto& functionList = events.At(eventHandle.Name());

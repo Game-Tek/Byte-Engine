@@ -239,7 +239,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	create_info.RenderDevice = &renderDevice;
 	create_info.Extent = { 1280, 720, 1 };
 	create_info.Dimensions = Dimensions::SQUARE;
-	create_info.Uses = TextureUses::TRANSFER_DESTINATION;
+	create_info.Uses = TextureUse::TRANSFER_DESTINATION;
 	create_info.InitialLayout = TextureLayout::UNDEFINED;
 	create_info.Format = TextureFormat::RGBA_I8;
 	create_info.Tiling = TextureTiling::OPTIMAL;

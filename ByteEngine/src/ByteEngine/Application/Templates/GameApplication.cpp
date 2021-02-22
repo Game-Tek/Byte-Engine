@@ -113,10 +113,10 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	
 	{
-		renderOrchestrator->AddAttachment("Color", 8, 4, RenderOrchestrator::TextureComponentType::INT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Position", 16, 4, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Normal", 16, 4, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, RenderOrchestrator::TextureComponentType::FLOAT, TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Color", 8, 4, GAL::ComponentType::INT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Position", 16, 4, GAL::ComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Normal", 16, 4, GAL::ComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, GAL::ComponentType::FLOAT, TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
 
 		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;
@@ -494,8 +494,8 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessType::READ_WRITE }, { "RenderOrchestrator", AccessType::READ_WRITE },
-	{ "MaterialSystem", AccessType::READ_WRITE } };
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE }, { "RenderOrchestrator", AccessTypes::READ_WRITE },
+	{ "MaterialSystem", AccessTypes::READ_WRITE } };
 
 	auto ext = extent;
 

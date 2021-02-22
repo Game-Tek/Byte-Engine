@@ -224,7 +224,7 @@ public:
 	};
 	void CreateRayTraceMaterial(const RayTraceMaterialCreateInfo& materialCreateInfo);
 
-	void GetMaterialSize(GTSL::Id64 name, uint32& size);
+	void GetMaterialSize(const Id name, uint32& size);
 
 	struct RayTracingShaderInfo
 	{

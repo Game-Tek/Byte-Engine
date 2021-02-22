@@ -8,6 +8,7 @@
 #include <GTSL/Buffer.hpp>
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Game/Tasks.h"
+#include "ByteEngine/Resources/AudioResourceManager.h"
 
 class Sound;
 
@@ -44,7 +45,8 @@ private:
 	GTSL::Array<Id, 8> lastRequestedAudios;
 
 	GTSL::Buffer<BE::PAR> audioBuffer;
-	
+	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
+
 	void requestAudioStreams();
 	void render(TaskInfo);
 
@@ -52,4 +54,7 @@ private:
 	{
 		playingEmitters.Pop(i); playingAudioFilesPlayedFrames.Pop(i); playingAudioFiles.Pop(i);
 	}
+
+	void onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo);
+	void onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer);
 };

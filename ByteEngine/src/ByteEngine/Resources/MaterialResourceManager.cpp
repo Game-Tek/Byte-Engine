@@ -49,7 +49,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 {
 	const auto hashed_name = GTSL::Id64(materialCreateInfo.ShaderName);
 	
-	if (!rasterMaterialInfos.Find(hashed_name))
+	if (!rasterMaterialInfos.Find(hashed_name()))
 	{
 		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
@@ -112,7 +112,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 
 		materialInfo.MaterialInstances = materialCreateInfo.MaterialInstances;
 		
-		rasterMaterialInfos.Emplace(hashed_name, materialInfo);
+		rasterMaterialInfos.Emplace(hashed_name(), materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(rasterMaterialInfos, index_buffer);
 		Insert(rtMaterialInfos, index_buffer);
@@ -124,7 +124,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 {
 	const auto hashed_name = GTSL::Id64(materialCreateInfo.ShaderName);
 
-	if (!rtMaterialInfos.Find(hashed_name))
+	if (!rtMaterialInfos.Find(hashed_name()))
 	{
 		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
 		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
@@ -165,7 +165,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		shader_error_buffer.Resize(0);
 		shader_buffer.Resize(0);
 
-		rtMaterialInfos.Emplace(hashed_name, materialInfo);
+		rtMaterialInfos.Emplace(hashed_name(), materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(rasterMaterialInfos, index_buffer);
 		Insert(rtMaterialInfos, index_buffer);
@@ -175,15 +175,15 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 	rtHandles.EmplaceBack(hashed_name);
 }
 
-void MaterialResourceManager::GetMaterialSize(const GTSL::Id64 name, uint32& size)
+void MaterialResourceManager::GetMaterialSize(const Id name, uint32& size)
 {
 	GTSL::ReadLock lock(mutex);
-	for(auto& e : rasterMaterialInfos.At(name).ShaderSizes) { size += e; }
+	for(auto& e : rasterMaterialInfos.At(name()).ShaderSizes) { size += e; }
 }
 
 void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 {
-	auto materialInfo = rasterMaterialInfos.At(loadInfo.Name);
+	auto materialInfo = rasterMaterialInfos.At(loadInfo.Name());
 
 	uint32 mat_size = 0;
 	for (auto e : materialInfo.ShaderSizes) { mat_size += e; }
@@ -216,7 +216,7 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.Back = materialInfo.Back;
 	onMaterialLoadInfo.MaterialInstances = materialInfo.MaterialInstances;
 	
-	auto functionName = GTSL::StaticString<64>("Load Material: "); functionName += loadInfo.Name;
+	auto functionName = GTSL::StaticString<64>("Load Material: "); functionName += loadInfo.Name();
 	loadInfo.GameInstance->AddDynamicTask(Id(functionName.begin()), loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
 }
 

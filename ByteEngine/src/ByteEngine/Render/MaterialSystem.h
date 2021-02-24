@@ -27,7 +27,7 @@ MAKE_HANDLE(uint32, Set)
 
 struct SubSetDescription
 {
-	SetHandle SetHandle; uint32 Subset;
+	SetHandle SetHandle; uint32 Subset; BindingType Type;
 };
 
 MAKE_HANDLE(SubSetDescription, SubSet)
@@ -102,6 +102,13 @@ public:
 		return getSetMemberPointer<uint64, Member::DataType::UINT64>(iterator, frame);
 	}
 
+	void WriteMultiBuffer(BufferIterator iterator, uint32* data)
+	{
+		for(uint8 f = 0; f < queuedFrames; ++f) {
+			*getSetMemberPointer<uint32, Member::DataType::UINT32>(iterator, f) = *data;
+		}
+	}
+	
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, PipelineType pipelineType)
 	{
 		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), pipelineType);
@@ -125,7 +132,7 @@ public:
 			info.Sampler = textureSampler;
 			info.TextureLayout = layout;
 			
-			descriptorsUpdates[f].AddTextureUpdate(setHandle, index, bindingType, info);
+			descriptorsUpdates[f].AddTextureUpdate(setHandle, index, info);
 		}
 	}
 	
@@ -305,6 +312,7 @@ private:
 	
 	Id rayGenMaterial;
 	SubSetHandle topLevelAsHandle;
+	SubSetHandle imagesSubsetHandle;
 
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -405,19 +413,19 @@ private:
 			sets.Initialize(16, allocator);
 		}
 
-		void AddBufferUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::BufferBindingUpdateInfo update)
+		void AddBufferUpdate(SubSetHandle subSetHandle, uint32 binding, BindingsSet::BufferBindingUpdateInfo update)
 		{
-			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
+			addUpdate(subSetHandle, binding, subSetHandle().Type, BindingsSet::BindingUpdateInfo(update));
 		}
 
-		void AddTextureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::TextureBindingUpdateInfo update)
+		void AddTextureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingsSet::TextureBindingUpdateInfo update)
 		{
-			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
+			addUpdate(subSetHandle, binding, subSetHandle().Type, BindingsSet::BindingUpdateInfo(update));
 		}
 
-		void AddAccelerationStructureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::AccelerationStructureBindingUpdateInfo update)
+		void AddAccelerationStructureUpdate(SubSetHandle subSetHandle, uint32 binding, BindingsSet::AccelerationStructureBindingUpdateInfo update)
 		{
-			addUpdate(subSetHandle, binding, bindingType, BindingsSet::BindingUpdateInfo(update));
+			addUpdate(subSetHandle, binding, subSetHandle().Type, BindingsSet::BindingUpdateInfo(update));
 		}
 		
 		void Reset()
@@ -538,7 +546,7 @@ private:
 		RenderAllocation Allocation;
 		
 		GAL::FormatDescriptor FormatDescriptor;
-		
+		TextureUses Uses;
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;

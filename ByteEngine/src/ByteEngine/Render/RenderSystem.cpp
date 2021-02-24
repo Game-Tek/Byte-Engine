@@ -53,12 +53,13 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		
 		createInfo.Extensions = extensions;
 		createInfo.PerformanceValidation = true;
+		createInfo.SynchronizationValidation = true;
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void*(void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
 		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void*(void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
-		::new(&renderDevice) RenderDevice(createInfo);
+		renderDevice.Initialize(createInfo);
 
 		scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
@@ -438,6 +439,8 @@ RenderSystem::MeshHandle RenderSystem::UpdateMesh(MeshHandle meshHandle)
 		bufferCopyData.SourceOffset = 0;
 		AddBufferCopy(bufferCopyData);
 
+		//TODO: QUEUE STAGING BUFFER AND MEMORY DELETION
+		
 		return addMesh(mesh);
 	}
 	else //doesn't need staging buffer, has resizable BAR, is integrated graphics, etc

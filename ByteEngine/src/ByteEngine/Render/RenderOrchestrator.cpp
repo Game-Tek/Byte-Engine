@@ -88,9 +88,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			
 			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = info.ProjectionMatrix * info.ViewMatrix * pos;
 			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = pos;
-			info.MaterialSystem->UpdateIteratorMemberIndex(bufferIterator, index);
-
-			++index;
+			info.MaterialSystem->UpdateIteratorMemberIndex(bufferIterator, ++index);
 		}
 	}
 
@@ -764,6 +762,12 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 		
 		attachmentReadsPerPass[passIndex].At(resultAttachment()) = 0xFFFFFFFF; //set result attachment last read as "infinte" so it will always be stored
 	}
+
+	{
+		auto& finalAttachment = attachments.At(resultAttachment());
+
+		finalAttachment.FormatDescriptor = GAL::FORMATS::BGRA_I8;
+	}
 	
 	for (uint8 passIndex = 0; passIndex < passesData.ElementCount(); ++passIndex)
 	{		
@@ -1094,9 +1098,10 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			auto& attachment = attachments.At(renderPass.ReadAttachments[r].Name());
 			auto name = attachment.Name;
 
-			*materialSystem->GetMemberPointer<uint32>(bufferIterator) = materialSystem->GetTextureReference(attachment.TextureHandle);
+			auto textureReference = materialSystem->GetTextureReference(attachment.TextureHandle);
+			materialSystem->WriteMultiBuffer(bufferIterator, &textureReference);
 			
-			materialSystem->UpdateIteratorMemberIndex(bufferIterator, attachmentIndex); ++attachmentIndex;
+			materialSystem->UpdateIteratorMemberIndex(bufferIterator, ++attachmentIndex);
 		}
 		
 		for (uint8 w = 0; w < renderPass.WriteAttachments.GetLength(); ++w)
@@ -1105,8 +1110,9 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			auto name = attachment.Name;
 
 			if (attachment.Type & TextureType::COLOR) {
-				*materialSystem->GetMemberPointer<uint32>(bufferIterator) = materialSystem->GetTextureReference(attachment.TextureHandle);
-				materialSystem->UpdateIteratorMemberIndex(bufferIterator, attachmentIndex); ++attachmentIndex;
+				auto textureReference = materialSystem->GetTextureReference(attachment.TextureHandle);
+				materialSystem->WriteMultiBuffer(bufferIterator, &textureReference);
+				materialSystem->UpdateIteratorMemberIndex(bufferIterator, ++attachmentIndex);
 			}
 		}
 	}
@@ -1126,18 +1132,18 @@ void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 	renderPass.Enabled = enable;
 }
 
-void RenderOrchestrator::UpdateIndexStream(uint8 indexStream, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
+void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
 {
 	CommandBuffer::UpdatePushConstantsInfo updatePush;
 	updatePush.RenderDevice = renderSystem->GetRenderDevice();
 	updatePush.Size = 4;
-	updatePush.Offset = 64 + (indexStream * 4);
-	updatePush.Data = reinterpret_cast<byte*>(&renderState.IndexStreams[indexStream]);
+	updatePush.Offset = 64ull + (indexStreamHandle() * 4);
+	updatePush.Data = reinterpret_cast<byte*>(&renderState.IndexStreams[indexStreamHandle()]);
 	updatePush.PipelineLayout = renderState.PipelineLayout;
 	updatePush.ShaderStages = ShaderStage::ALL;
 	commandBuffer.UpdatePushConstant(updatePush);
 
-	++renderState.IndexStreams[indexStream];
+	++renderState.IndexStreams[indexStreamHandle()];
 }
 
 void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer)
@@ -1179,35 +1185,35 @@ void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, 
 {	
 	for (auto rg : renderPassesMap.At(rp()).RenderGroups)
 	{
-		AddIndexStream();
+		auto renderGroupIndexStream = AddIndexStream();
 		BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(rg));
 
 		auto forEachMaterial = [&](const MaterialData& materialData)
 		{
 			materialSystem->BindMaterial(renderSystem, commandBuffer, materialData.MaterialName);
 			BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(materialData.MaterialName));
-			AddIndexStream();
+			auto materialInstanceIndexStream = AddIndexStream();
 
 			for (auto b : materialData.MaterialInstances)
 			{
 				//auto& materialInstance = loadedMaterialInstances[b()];
 				const auto& meshes = loadedMaterialInstances[b()].Meshes;
-				UpdateIndexStream(1, commandBuffer, renderSystem, materialSystem);
+				UpdateIndexStream(materialInstanceIndexStream, commandBuffer, renderSystem, materialSystem);
 
 				for (auto meshHandle : meshes)
 				{
-					UpdateIndexStream(0, commandBuffer, renderSystem, materialSystem);
+					UpdateIndexStream(renderGroupIndexStream, commandBuffer, renderSystem, materialSystem);
 					renderSystem->RenderMesh(meshHandle.First, meshHandle.Second);
 				}
 			}
 
-			PopIndexStream();
+			PopIndexStream(materialInstanceIndexStream);
 			PopData();
 		};
 		GTSL::ForEach(readyMaterials, forEachMaterial);
 
 		PopData();
-		PopIndexStream();
+		PopIndexStream(renderGroupIndexStream);
 	}
 }
 

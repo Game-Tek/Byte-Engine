@@ -193,9 +193,11 @@ public:
 		}
 	}
 
-	void AddIndexStream() { renderState.IndexStreams.EmplaceBack(0); }
-	void UpdateIndexStream(uint8 indexStream, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
-	void PopIndexStream() { renderState.IndexStreams.PopBack(); }
+	MAKE_HANDLE(uint8, IndexStream)
+	
+	IndexStreamHandle AddIndexStream() { return IndexStreamHandle(renderState.IndexStreams.EmplaceBack(0)); }
+	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+	void PopIndexStream(IndexStreamHandle indexStreamHandle) { renderState.IndexStreams[indexStreamHandle()] = 0; renderState.IndexStreams.PopBack(); }
 
 	SubSetHandle renderGroupsSubSet;
 	SubSetHandle renderPassesSubSet;
@@ -226,7 +228,7 @@ private:
 	struct RenderState
 	{
 		Id BoundRenderGroup;
-		GTSL::Array<uint8, 8> IndexStreams;
+		GTSL::Array<uint32, 8> IndexStreams; // MUST be 4 bytes or push constant reads will be messed up
 		//PipelineLayout PipelineLayout;
 		PipelineType PipelineType;
 		ShaderStage::value_type ShaderStages = ShaderStage::ALL;

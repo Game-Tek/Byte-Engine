@@ -43,7 +43,6 @@ public:
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) { positions[staticMeshHandle()] = vector3; }
-	//void SetPosition(ComponentReference component, GTSL::Vector3 vector3) { positions[component.Component] = vector3; }
 	uint32 GetStaticMesheCount() const { return staticMeshCount; }
 
 	auto GetAddedMeshes()
@@ -68,8 +67,10 @@ private:
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad);
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
 	
-	void onRayTracedStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
-	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
+	void onRayTracedStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo
+	                                     staticMeshInfo, MeshLoadInfo meshLoadInfo);
+	void onRayTracedStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo
+	                                 staticMeshInfo, MeshLoadInfo meshLoadInfo);
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	uint32 staticMeshCount = 0;
@@ -77,4 +78,7 @@ private:
 	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
 	GTSL::PagedVector<RenderSystem::MeshHandle, BE::PAR> addedMeshes;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshInfoLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onRayTracedMeshLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onRayTracedMeshInfoLoadHandle;
 };

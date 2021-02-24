@@ -101,11 +101,19 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	{		
 		GTSL::Array<SubSetInfo, 10> subSetInfos;
 
-		{ //TEXTURES
+		{ // TEXTURES
 			SubSetInfo subSetInfo;
 			subSetInfo.Type = SubSetType::READ_TEXTURES;
 			subSetInfo.Count = 16;
 			subSetInfo.Handle = &textureSubsetsHandle;
+			subSetInfos.EmplaceBack(subSetInfo);
+		}
+
+		{ // IMAGES
+			SubSetInfo subSetInfo;
+			subSetInfo.Type = SubSetType::WRITE_TEXTURES;
+			subSetInfo.Count = 16;
+			subSetInfo.Handle = &imagesSubsetHandle;
 			subSetInfos.EmplaceBack(subSetInfo);
 		}
 		
@@ -242,7 +250,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		for(auto& e : descriptorsUpdates)
 		{
-			e.AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingType::ACCELERATION_STRUCTURE, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
+			e.AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
 		}
 	}
 }
@@ -422,7 +430,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id setL
 	
 	for (auto& ss : setInfo)
 	{
-		*ss.Handle = SubSetHandle({ setHandle, i });
+		*ss.Handle = SubSetHandle({ setHandle, i, bindingDescriptors[i].BindingType });
 		++i;
 	}
 
@@ -509,6 +517,9 @@ MaterialSystem::TextureHandle MaterialSystem::CreateTexture(RenderSystem* render
 	auto format = static_cast<TextureFormat>(GAL::FormatToVkFomat(GAL::MakeFormatFromFormatDescriptor(formatDescriptor)));
 
 	auto textureDimensions = GAL::VulkanDimensionsFromExtent(extent);
+
+	textureComponent.Uses = textureUses | TextureUse::SAMPLE;
+	if (formatDescriptor.Type == GAL::TextureType::COLOR) { textureComponent.Uses |= TextureUse::STORAGE; }
 	
 	{
 		Texture::CreateInfo textureCreateInfo;
@@ -519,7 +530,7 @@ MaterialSystem::TextureHandle MaterialSystem::CreateTexture(RenderSystem* render
 		}
 
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.Uses = textureUses | TextureUse::SAMPLE;
+		textureCreateInfo.Uses = textureComponent.Uses;
 		textureCreateInfo.Dimensions = textureDimensions;
 		textureCreateInfo.Format = format;
 		textureCreateInfo.Extent = extent;
@@ -569,12 +580,15 @@ MaterialSystem::TextureHandle MaterialSystem::CreateTexture(RenderSystem* render
 
 	textureBindingUpdateInfo.TextureView = textureComponent.TextureView;
 	textureBindingUpdateInfo.Sampler = textureComponent.TextureSampler;
-	textureBindingUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
+	textureBindingUpdateInfo.TextureLayout = TextureLayout::GENERAL;
 
-	//for (uint8 f = 0; f < queuedFrames; ++f)
-	//{
-	//	descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, textureIndex, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
-	//}
+	if (formatDescriptor.Type == GAL::TextureType::COLOR)
+	{
+		for (uint8 f = 0; f < queuedFrames; ++f)
+		{
+			descriptorsUpdates[f].AddTextureUpdate(imagesSubsetHandle, textureIndex, textureBindingUpdateInfo);
+		}
+	}
 
 	//latestLoadedTextures.EmplaceBack(textureIndex);
 
@@ -596,7 +610,7 @@ void MaterialSystem::RecreateTexture(const TextureHandle textureHandle, RenderSy
 		}
 
 		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.Uses = TextureUse::SAMPLE | TextureUse::TRANSFER_DESTINATION;
+		textureCreateInfo.Uses = textureComponent.Uses;
 		textureCreateInfo.Dimensions = Dimensions::SQUARE;
 		textureCreateInfo.Format = format;
 		textureCreateInfo.Extent = newExtent;
@@ -649,12 +663,15 @@ void MaterialSystem::RecreateTexture(const TextureHandle textureHandle, RenderSy
 
 	textureBindingUpdateInfo.TextureView = textureComponent.TextureView;
 	textureBindingUpdateInfo.Sampler = textureComponent.TextureSampler;
-	textureBindingUpdateInfo.TextureLayout = TextureLayout::SHADER_READ_ONLY;
+	textureBindingUpdateInfo.TextureLayout = TextureLayout::GENERAL;
 
-	//for (uint8 f = 0; f < queuedFrames; ++f)
-	//{
-	//	descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, textureHandle(), BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
-	//}
+	if (textureComponent.FormatDescriptor.Type == GAL::TextureType::COLOR)
+	{
+		for (uint8 f = 0; f < queuedFrames; ++f)
+		{
+			descriptorsUpdates[f].AddTextureUpdate(imagesSubsetHandle, textureHandle(), textureBindingUpdateInfo);
+		}
+	}
 }
 
 void MaterialSystem::UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count)
@@ -1374,7 +1391,7 @@ void MaterialSystem::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* re
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
 	{
-		descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, loadInfo.Component, BindingType::COMBINED_IMAGE_SAMPLER, textureBindingUpdateInfo);
+		descriptorsUpdates[f].AddTextureUpdate(textureSubsetsHandle, loadInfo.Component, textureBindingUpdateInfo);
 	}
 
 	latestLoadedTextures.EmplaceBack(loadInfo.Component);

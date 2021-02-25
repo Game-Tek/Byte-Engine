@@ -213,16 +213,6 @@ void Game::PostInitialize()
 	//FaceTree faceTree(GetPersistentAllocator());
 	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
 	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
-
-	//{
-	//	StaticMeshRenderGroup::AddRayTracedStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "hydrant";
-	//	addStaticMeshInfo.Material = material;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	const auto component = staticMeshRenderer->AddRayTracedStaticMesh(addStaticMeshInfo);
-	//}//
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -255,7 +245,7 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));
+		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));//
 	}
 
 	{
@@ -328,6 +318,7 @@ void Game::PostInitialize()
 void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	
 	GameApplication::OnUpdate(onUpdate);
 
@@ -339,9 +330,14 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	staticMeshRenderer->SetPosition(hydrant, GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250));
+
+	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250);
+	
+	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
+	renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
+	
 	//auto r = 1.0f;
 	//auto g = 1.0f;
 	//auto b = 1.0f;

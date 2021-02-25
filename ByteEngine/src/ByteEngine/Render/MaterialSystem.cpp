@@ -248,9 +248,9 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 			GTSL::MemCopy(handleSize, handlesBuffer.GetData() + h * handleSize, sbt + alignedHandleSize * h);
 		}
 
-		for(auto& e : descriptorsUpdates)
+		for(uint8 f = 0; f < queuedFrames; ++f)
 		{
-			e.AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure() });
+			descriptorsUpdates[f].AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure(f) });
 		}
 	}
 }

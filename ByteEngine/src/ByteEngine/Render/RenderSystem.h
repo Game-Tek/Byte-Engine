@@ -29,6 +29,12 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	void Wait();
+	
+	void UpdateInstanceTransform(const uint32 i, const GTSL::Matrix4& matrix4)
+	{
+		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[GetCurrentFrame()].Data) + i);
+		instance.Transform = GTSL::Matrix3x4(matrix4);
+	}
 
 	struct InitializeRendererInfo
 	{
@@ -243,7 +249,7 @@ public:
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
 	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
 
-	AccelerationStructure GetTopLevelAccelerationStructure() const { return topLevelAccelerationStructure; }
+	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
 
 	Buffer GetMeshVertexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
 	uint32 GetMeshVertexBufferSize(const uint32 mesh) const { return meshes[mesh].VertexSize * meshes[mesh].VertexCount; }
@@ -347,9 +353,9 @@ private:
 	RenderAllocation scratchBufferAllocation;
 	Buffer accelerationStructureScratchBuffer;
 
-	AccelerationStructure topLevelAccelerationStructure;
-	RenderAllocation topLevelAccelerationStructureAllocation;
-	Buffer topLevelAccelerationStructureBuffer;
+	AccelerationStructure topLevelAccelerationStructure[MAX_CONCURRENT_FRAMES];
+	RenderAllocation topLevelAccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
+	Buffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
 

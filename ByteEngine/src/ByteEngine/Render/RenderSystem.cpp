@@ -48,6 +48,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.Queues = queues;
 
 		GTSL::Array<GTSL::Pair<RenderDevice::Extension, void*>, 8> extensions{ { RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC, nullptr } };
+		extensions.EmplaceBack(RenderDevice::Extension::SWAPCHAIN_RENDERING, nullptr);
 		extensions.EmplaceBack(RenderDevice::Extension::SCALAR_LAYOUT, nullptr);
 		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING, &rayTracingCapabilities); }
 		
@@ -77,12 +78,12 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 			accelerationStructureCreateInfo.RenderDevice = GetRenderDevice();
 			accelerationStructureCreateInfo.Geometries = GTSL::Range<const AccelerationStructure::Geometry*>(1, &geometry);
 
-			AllocateAccelerationStructureMemory(&topLevelAccelerationStructure, &topLevelAccelerationStructureBuffer,
-				GTSL::Range<const AccelerationStructure::Geometry*>(1, &geometry), &accelerationStructureCreateInfo, &topLevelAccelerationStructureAllocation,
-				BuildType::GPU_LOCAL, &topLevelStructureScratchSize);
-
 			for (uint32 i = 0; i < pipelinedFrames; ++i)
 			{
+				AllocateAccelerationStructureMemory(&topLevelAccelerationStructure[i], &topLevelAccelerationStructureBuffer[i],
+					GTSL::Range<const AccelerationStructure::Geometry*>(1, &geometry), &accelerationStructureCreateInfo, &topLevelAccelerationStructureAllocation[i],
+					BuildType::GPU_LOCAL, &topLevelStructureScratchSize);
+				
 				Buffer::CreateInfo buffer;
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
@@ -365,21 +366,23 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 
 	mesh.DerivedTypeIndex = rayTracingMeshes.Emplace(rayTracingMesh);
 	auto meshHandle = addMesh(mesh);
+
+	auto accelerationStructureAddress = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
 	
+	for(uint8 f = 0; f < pipelinedFrames; ++f)
 	{
-		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[GetCurrentFrame()].Data) + mesh.DerivedTypeIndex);
+		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[f].Data) + mesh.DerivedTypeIndex);
 		
 		instance.Flags = GeometryInstanceFlags::OPAQUE;// | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
-		instance.AccelerationStructureReference = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
+		instance.AccelerationStructureAddress = accelerationStructureAddress;
 		instance.Mask = 0xFF;
-		instance.InstanceCustomIndex = meshHandle();
+		instance.InstanceIndex = meshHandle();
 		instance.InstanceShaderBindingTableRecordOffset = 0;
 		instance.Transform = *info.Matrix;
-
-		++rayTracingInstancesCount;
-		
-		BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
 	}
+	
+	BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
+	++rayTracingInstancesCount;
 	
 	return meshHandle;
 }
@@ -727,11 +730,6 @@ void RenderSystem::renderBegin(TaskInfo taskInfo)
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	commandBuffer.BeginRecording({});
-}
-
-void RenderSystem::renderFinish(TaskInfo taskInfo)
-{
-	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 
 	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
@@ -744,13 +742,17 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 
 		AccelerationStructureBuildData buildData;
 		buildData.BuildFlags = 0;
-		buildData.Destination = topLevelAccelerationStructure;
+		buildData.Destination = topLevelAccelerationStructure[GetCurrentFrame()];
 		buildData.ScratchBuildSize = topLevelStructureScratchSize;
 		buildDatas.EmplaceBack(buildData);
-		
+
 		buildAccelerationStructures(this, commandBuffer);
 	}
-		
+}
+
+void RenderSystem::renderFinish(TaskInfo taskInfo)
+{
+	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
 	
 	commandBuffer.EndRecording({});
 	
@@ -763,7 +765,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	
 	Queue::SubmitInfo submitInfo;
 	submitInfo.RenderDevice = &renderDevice;
-	submitInfo.Fence = &graphicsFences[currentFrameIndex];
+	submitInfo.Fence = graphicsFences[currentFrameIndex];
 	submitInfo.WaitSemaphores = GTSL::Array<Semaphore, 2>{ imageAvailableSemaphore[currentFrameIndex], transferDoneSemaphores[GetCurrentFrame()] };
 	submitInfo.SignalSemaphores = GTSL::Range<const Semaphore*>(1, &renderFinishedSemaphore[currentFrameIndex]);
 	submitInfo.CommandBuffers = GTSL::Range<const CommandBuffer*>(1, &commandBuffer);
@@ -901,7 +903,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	//{
 		Queue::SubmitInfo submit_info;
 		submit_info.RenderDevice = &renderDevice;
-		submit_info.Fence = &transferFences[currentFrameIndex];
+		submit_info.Fence = transferFences[currentFrameIndex];
 		submit_info.CommandBuffers = GTSL::Range<const CommandBuffer*>(1, &commandBuffer);
 		submit_info.WaitPipelineStages = GTSL::Array<uint32, 2>{ PipelineStage::TRANSFER };
 		submit_info.SignalSemaphores = GTSL::Array<Semaphore, 1>{ transferDoneSemaphores[GetCurrentFrame()] };

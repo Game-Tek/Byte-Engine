@@ -63,13 +63,13 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				BE_ASSERT(riff[0] != 'r' || riff[1] != 'i' || riff[2] != 'f' || riff[3] != 'f', "No RIFF");
 
 				Extract(overall_size, file_buffer);
-				file_buffer.ReadBytes(4, wave);
-				file_buffer.ReadBytes(4, fmt_chunk_marker);
-				Extract(length_of_fmt, file_buffer);
-				Extract(format_type, file_buffer);
+				file_buffer.ReadBytes(4, wave); BE_ASSERT(wave[0] == 'W' && wave[1] == 'A' && wave[2] == 'V' && wave[3] == 'E', "No WAVE");
+				file_buffer.ReadBytes(4, fmt_chunk_marker); BE_ASSERT(fmt_chunk_marker[0] == 'f' && fmt_chunk_marker[1] == 'm' && fmt_chunk_marker[2] == 't' && fmt_chunk_marker[3] == 32, "No fmt");
+				Extract(length_of_fmt, file_buffer); BE_ASSERT(length_of_fmt == 16, "Unsupported");
+				Extract(format_type, file_buffer); BE_ASSERT(format_type == 1, "Format is not PCM, unsupported!");
 				Extract(channels, file_buffer);
 				Extract(sample_rate, file_buffer);
-				Extract(byte_rate, file_buffer);
+				Extract(byte_rate, file_buffer); //(Sample Rate * BitsPerSample * Channels) / 8.
 				Extract(block_align, file_buffer);
 				Extract(bits_per_sample, file_buffer);
 
@@ -77,7 +77,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				data.SampleRate = sample_rate;
 				data.BitDepth = bits_per_sample;
 
-				file_buffer.ReadBytes(4, data_chunk_header);
+				file_buffer.ReadBytes(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
 				Extract(data_size, file_buffer);
 
 				data.Frames = data_size / channels / (bits_per_sample / 8);

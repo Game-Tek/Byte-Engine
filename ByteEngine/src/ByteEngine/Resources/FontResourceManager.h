@@ -8,6 +8,7 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/Extent.h>
 #include <GTSL/FlatHashMap.h>
+#include <GTSL/Serialize.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vector2.h>
 
@@ -38,8 +39,8 @@ struct ShortVector
 class FontResourceManager : public ResourceManager
 {
 public:
-	FontResourceManager() : ResourceManager("FontResourceManager"), fonts(4, GetPersistentAllocator()) {}
-	
+	FontResourceManager();
+
 	struct Segment
 	{
 		//0 is on curve
@@ -59,12 +60,9 @@ public:
 		int16 Descender;
 		int16 LineGap;
 	};
-	
-	struct Path
-	{
-		GTSL::Vector<Segment, BE::PersistentAllocatorReference> Segments;
-	};
 
+	using Path = GTSL::Vector<Segment, BE::PersistentAllocatorReference>;
+	
 	struct Glyph
 	{
 		uint32 Character;
@@ -83,7 +81,7 @@ public:
 		uint32 FileNameHash;
 		std::string FullFontName;
 		std::string NameTable[25];
-		std::unordered_map<uint32, int16_t> KerningTable;
+		std::unordered_map<uint32, int16> KerningTable;
 		std::unordered_map<uint16, Glyph> Glyphs;
 		std::map<uint32, uint16> GlyphMap;
 		FontMetaData Metadata;
@@ -97,26 +95,32 @@ public:
 		GTSL::Extent2D Position;
 		uint32 Advance;    // Offset to advance to next glyph
 	};
-	
-	struct ImageFont
-	{
-		std::map<char, Character> Characters;
-		GTSL::Buffer<BE::PAR> ImageData;
-		GTSL::Extent2D Extent;
-	};
-	
-	Font GetFont(const GTSL::Range<const utf8*> fontName);
 
-	struct OnFontLoadInfo : OnResourceLoad
+	struct FontData : Data
 	{
-		ImageFont* Font;
-		GAL::TextureFormat TextureFormat;
-		GTSL::Extent3D Extent;
+		GTSL::FlatHashMap<Character, BE::PAR> Characters;
+	};
+
+	struct FontDataSerialize : DataSerialize<FontData>
+	{
+		INSERT_START(FontDataSerialize)
+		{
+			INSERT_BODY;
+			GTSL::Insert(insertInfo.Characters, buffer);
+		}
+
+		EXTRACT_START(FontDataSerialize)
+		{
+			EXTRACT_BODY;
+			GTSL::Extract(extractInfo.Characters, buffer);
+		}
+	};
+
+	struct FontInfo : Info<FontDataSerialize>
+	{
+		//DECL_INFO_CONSTRUCTOR(FontInfo, Info<FontDataSerialize>);
 	};
 	
 private:
 	int8 parseData(const char* data, Font* fontData);
-
-	
-	GTSL::FlatHashMap<ImageFont, BE::PersistentAllocatorReference> fonts;
 };

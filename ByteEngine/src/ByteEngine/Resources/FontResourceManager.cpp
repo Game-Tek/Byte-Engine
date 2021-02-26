@@ -28,8 +28,11 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
+#include <GTSL/Serialize.h>
 #include <GTSL/Math/Vector2.h>
 
+
+#include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -393,44 +396,55 @@ int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, 
 	return (kern_data == font_data->KerningTable.end()) ? 0 : kern_data->second;
 }
 
-FontResourceManager::Font FontResourceManager::GetFont(const GTSL::Range<const utf8*> fontName)
+FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager")
 {
-	GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
+	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"));
+	
+	GTSL::File beFontFile; beFontFile.OpenFile(path, GTSL::File::AccessMode::WRITE);
 
-	GTSL::File fontFile; fontFile.OpenFile(path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
-	GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+	auto GetFont = [&](const GTSL::Range<const utf8*> fontName)
+	{
+		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
-	fontFile.ReadFile(fontFile.GetFileSize(), fileBuffer.GetBufferInterface());
+		GTSL::File fontFile; fontFile.OpenFile(path, GTSL::File::AccessMode::READ);
+		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+
+		fontFile.ReadFile(fontFile.GetFileSize(), fileBuffer.GetBufferInterface());
+
+		Font fontData;
+		const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
+		BE_ASSERT(result > -1, "Failed to parse!");
+
+		return fontData;
+	};
 	
-	Font fontData;
-	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
-	BE_ASSERT(result > -1, "Failed to parse!")
-	
-	//for(auto& e : fontData.Glyphs[fontData.GlyphMap['A']].Paths)
-	//{
-	//	BE_LOG_MESSAGE("Path")
-	//
-	//	for(auto& j : e.Segments)
-	//	{			
-	//		if(j.IsBezierCurve())
-	//		{			
-	//			BE_LOG_MESSAGE("Curve")
-	//			
-	//			BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
-	//			BE_LOG_MESSAGE("CP: ", j.Points[1].X, " ", j.Points[1].Y)
-	//			BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
-	//		}
-	//		else
-	//		{
-	//			BE_LOG_MESSAGE("Line")
-	//
-	//			BE_LOG_MESSAGE("P0: ", j.Points[0].X, " ", j.Points[0].Y)
-	//			BE_LOG_MESSAGE("P1: ", j.Points[2].X, " ", j.Points[2].Y)
-	//		}
-	//	}
-	//}
-	
-	return fontData;
+	auto font = GetFont(GTSL::StaticString<64>("FTLTLT"));
+
+	GTSL::Buffer<BE::TAR> data;
+
+	for(auto& e : font.Glyphs)
+	{
+		Face face;
+		MakeFromPaths(e.second, face, 4, GetPersistentAllocator());
+
+		for(auto f : face.LinearBeziers) {
+			GTSL::Insert(f.Points[0], data); GTSL::Insert(f.Points[1], data);
+		}
+
+		for(auto f : face.CubicBeziers) {
+			GTSL::Insert(f.Points[0], data); GTSL::Insert(f.Points[1], data); GTSL::Insert(f.Points[2], data);
+		}
+
+		for(auto f : face.Bands) {
+			for (auto l : f.Lines) {
+				GTSL::Insert(l, data);
+			}
+
+			for (auto c : f.Curves) {
+				GTSL::Insert(c, data);
+			}
+		}
+	}
 }
 
 GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y); }
@@ -772,7 +786,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; ++contourIndex)
 			{
 				currentGlyph.Paths.EmplaceBack();
-				currentGlyph.Paths[contourIndex].Segments.Initialize(64, GetPersistentAllocator());
+				currentGlyph.Paths[contourIndex].Initialize(64, GetPersistentAllocator());
 				
 				const uint16 numPointsInContour = pointsInContour[contourIndex];
 
@@ -805,7 +819,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							auto newPoint = (thisPoint + currentCurve.Points[1]) * 0.5f;
 							currentCurve.Points[2] = newPoint;
 							currentCurve.IsCurve = true;
-							currentGlyph.Paths[contourIndex].Segments.EmplaceBack(currentCurve);
+							currentGlyph.Paths[contourIndex].EmplaceBack(currentCurve);
 
 							currentCurve.Points[0] = newPoint;
 							
@@ -823,7 +837,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							auto thisPoint = toVector(glyphPoints[safeIndexToData]);
 							currentCurve.Points[2] = thisPoint;
 							currentCurve.IsCurve = true;
-							currentGlyph.Paths[contourIndex].Segments.EmplaceBack(currentCurve);
+							currentGlyph.Paths[contourIndex].EmplaceBack(currentCurve);
 
 							currentCurve.Points[0] = thisPoint;
 						}
@@ -833,7 +847,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							currentCurve.Points[1] = GTSL::Vector2(0, 0);
 							currentCurve.Points[2] = thisPoint;
 							currentCurve.IsCurve = false;
-							currentGlyph.Paths[contourIndex].Segments.EmplaceBack(currentCurve);
+							currentGlyph.Paths[contourIndex].EmplaceBack(currentCurve);
 
 							currentCurve.Points[0] = thisPoint;
 						}
@@ -948,18 +962,18 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					uint32 compositeGlyphPathCount = compositeGlyphElement.Paths.GetLength();
 					for (uint32 glyphPointIndex = 0; glyphPointIndex < compositeGlyphPathCount; glyphPointIndex++)
 					{
-						GTSL::Vector<Segment, BE::PersistentAllocatorReference>& currentCurvesList = compositeGlyphElement.Paths[glyphPointIndex].Segments;
+						auto& currentCurvesList = compositeGlyphElement.Paths[glyphPointIndex];
 
 						uint32 compositeGlyphPathCurvesCount = currentCurvesList.GetLength();
 
 						Path newPath;
 						if (matched_points == false)
 						{
-							newPath.Segments.Initialize(compositeGlyphPathCurvesCount, GetPersistentAllocator());
+							newPath.Initialize(compositeGlyphPathCurvesCount, GetPersistentAllocator());
 
 							for (uint32 glyphCurvesPointIndex = 0; glyphCurvesPointIndex < compositeGlyphPathCurvesCount; glyphCurvesPointIndex++)
 							{
-								newPath.Segments.EmplaceBack(transformCurve(currentCurvesList[glyphCurvesPointIndex]));
+								newPath.EmplaceBack(transformCurve(currentCurvesList[glyphCurvesPointIndex]));
 							}
 						}
 						else

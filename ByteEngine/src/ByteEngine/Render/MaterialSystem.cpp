@@ -136,17 +136,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	{		
 		auto* materialResorceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 
-		Buffer::CreateInfo sbtCreateInfo;
-		sbtCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) { sbtCreateInfo.Name = GTSL::StaticString<32>("SBT Buffer. Material System"); }
-		sbtCreateInfo.Size = materialResorceManager->GetRayTraceShaderCount() * renderSystem->GetShaderGroupHandleSize();
-		sbtCreateInfo.BufferType = BufferType::SHADER_BINDING_TABLE | BufferType::ADDRESS;
-		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryInfo;
-		scratchMemoryInfo.Buffer = &shaderBindingTableBuffer;
-		scratchMemoryInfo.CreateInfo = &sbtCreateInfo;
-		scratchMemoryInfo.Allocation = &shaderBindingTableAllocation;
-		renderSystem->AllocateScratchBufferMemory(scratchMemoryInfo);
-
 		GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups(16, GetTransientAllocator());
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
 		GTSL::Vector<GTSL::Buffer<BE::TAR>, BE::TAR> shaderBuffers(16, GetTransientAllocator());
@@ -233,21 +222,48 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		createInfo.Groups = groups;
 		rayTracingPipeline.Initialize(createInfo);
-		
+
 		auto handleSize = renderSystem->GetShaderGroupHandleSize();
 		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
+		
+		{
+			GTSL::Array<MemberInfo, 32> memberInfos;
+			memberInfos.PushBack(MemberInfo{ alignedHandleSize / 4/*uint32*/, Member::DataType::UINT32, &sbtMemberHandle, {} }); //shader handle
+			memberInfos.PushBack(MemberInfo{ 1, Member::DataType::UINT32, &sbtMemberHandle, {} }); //render group buffer
+			memberInfos.PushBack(MemberInfo{ 1, Member::DataType::UINT32, &sbtMemberHandle, {} }); //material buffer
+			
+			CreateBuffer(renderSystem, memberInfos);
+		}
 
 		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
 
+		entrySizes[GAL::RAY_GEN_TABLE_INDEX] = alignedHandleSize;
+		entrySizes[GAL::HIT_TABLE_INDEX] = alignedHandleSize + 128;
+		entrySizes[GAL::MISS_TABLE_INDEX] = alignedHandleSize;
+		entrySizes[GAL::CALLABLE_TABLE_INDEX] = alignedHandleSize;
+		
 		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer.GetCapacity(), handlesBuffer.GetData()));
 
-		auto* sbt = reinterpret_cast<byte*>(shaderBindingTableAllocation.Data);
-
+		BufferIterator iterator;
+		UpdateIteratorMember(iterator, sbtMemberHandle);
+		
 		for (uint32 h = 0; h < groups.GetLength(); ++h)
 		{
-			GTSL::MemCopy(handleSize, handlesBuffer.GetData() + h * handleSize, sbt + alignedHandleSize * h);
+			for (uint8 t = 0; t < alignedHandleSize / 4; ++t) {
+				UpdateIteratorMemberIndex(iterator, t);
+				WriteMultiBuffer(iterator, reinterpret_cast<uint32*>(handlesBuffer.GetData() + h * handleSize) + t);
+			}
 		}
 
+		{
+			GTSL::Array<MemberInfo, 1> instanceData;
+			instanceData.PushBack(MemberInfo{ 4, Member::DataType::UINT32, &instanceElementsHandle, {} }); //vertex buffer, index buffer, material instance, render group index
+			GTSL::Array<MemberInfo, 1> instanceDataStruct;
+			instanceDataStruct.PushBack(MemberInfo{ 16, Member::DataType::STRUCT, &instanceDataHandle, instanceData });
+
+			instancesBuffer = CreateBuffer(renderSystem, instanceDataStruct); //instances data
+		}
+		
 		for(uint8 f = 0; f < queuedFrames; ++f)
 		{
 			descriptorsUpdates[f].AddAccelerationStructureUpdate(topLevelAsHandle, 0, BindingsSet::AccelerationStructureBindingUpdateInfo{ renderSystem->GetTopLevelAccelerationStructure(f) });
@@ -772,23 +788,30 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 	auto handleSize = renderSystem->GetShaderGroupHandleSize();
 	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
-	auto bufferAddress = shaderBindingTableBuffer.GetAddress(renderSystem->GetRenderDevice());
+	auto alignedSize = GTSL::Math::RoundUpByPowerOf2(handleSize + 128, renderSystem->GetShaderGroupBaseAlignment());
+	
+	BufferIterator iterator;
+	UpdateIteratorMember(iterator, sbtMemberHandle);
+	
+	auto bufferAddress = reinterpret_cast<uint64>(GetMemberPointer<uint32>(iterator));
 	
 	uint32 offset = 0;
-	
-	CommandBuffer::TraceRaysInfo traceRaysInfo;
-	traceRaysInfo.RenderDevice = renderSystem->GetRenderDevice();
-	traceRaysInfo.DispatchSize = GTSL::Extent3D(rayGrid);
 
+	GTSL::Array<CommandBuffer::ShaderTableDescriptor, 4> shaderTableDescriptors;
+	
 	for(uint8 i = 0; i < 4; ++i)
 	{
-		traceRaysInfo.ShaderTableDescriptors[i].Size = shaderCounts[i] * alignedHandleSize;
-		traceRaysInfo.ShaderTableDescriptors[i].Address = bufferAddress + offset;
-		traceRaysInfo.ShaderTableDescriptors[i].Stride = alignedHandleSize;
-		offset += traceRaysInfo.ShaderTableDescriptors[i].Size;
+		CommandBuffer::ShaderTableDescriptor shaderTableDescriptor;
+		
+		shaderTableDescriptor.Entries = shaderCounts[i];
+		shaderTableDescriptor.EntrySize = entrySizes[i];
+		shaderTableDescriptor.Address = bufferAddress + offset;
+		offset += shaderTableDescriptor.Entries * shaderTableDescriptor.EntrySize;
+
+		shaderTableDescriptors.EmplaceBack(shaderTableDescriptor);
 	}
 
-	commandBuffer->TraceRays(traceRaysInfo);
+	commandBuffer->TraceRays(renderSystem->GetRenderDevice(), shaderTableDescriptors, GTSL::Extent3D(rayGrid));
 }
 
 void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
@@ -798,10 +821,8 @@ void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandB
 	bindPipelineInfo.PipelineType = PipelineType::COMPUTE;
 	bindPipelineInfo.Pipeline = Pipeline();
 	commandBuffer->BindPipeline(bindPipelineInfo);
-
-	CommandBuffer::DispatchInfo dispatchInfo; dispatchInfo.RenderDevice = renderSystem->GetRenderDevice();
-	dispatchInfo.WorkGroups = workGroups;
-	commandBuffer->Dispatch(dispatchInfo);
+	
+	commandBuffer->Dispatch(renderSystem->GetRenderDevice(), GTSL::Extent3D(workGroups));
 }
 
 uint32 MaterialSystem::CreateComputePipeline(Id shaderName, MaterialResourceManager* materialResourceManager, GameInstance* gameInstance)

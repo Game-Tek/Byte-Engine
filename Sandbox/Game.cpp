@@ -14,7 +14,7 @@
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/UIManager.h"
-#include "ByteEngine/Resources/TextRendering.h"
+#include "ByteEngine/Sound/AudioSystem.h"
 
 class UIManager;
 class TestSystem;
@@ -207,23 +207,21 @@ void Game::PostInitialize()
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	
-	auto* fontResourceManager = GetResourceManager<FontResourceManager>("FontResourceManager");
-
-	//FaceTree faceTree(GetPersistentAllocator());
-	//faceTree.MakeFromPaths(fontResourceManager->GetFont(GTSL::StaticString<32>("FTLTLT")), GetPersistentAllocator());
-	//faceTree.RenderChar({ 256, 256 }, 65, GetPersistentAllocator());
+	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 	
 	{
 		MaterialSystem::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+		createMaterialInfo.RenderSystem = renderSystem;
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
 		material = material_system->CreateMaterial(createMaterialInfo);
 	}
 
+	auto audioEmitter = audioSystem->CreateAudioEmitter();
+	audioSystem->PlayAudio(audioEmitter, "dance");
+	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
@@ -232,7 +230,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "UIMat";
 	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
-	//}
+	//}//
 
 	auto hydrantMaterialInstance = material_system->GetMaterialHandle("hydrantMat");
 	auto tvMaterialInstance = material_system->GetMaterialHandle("tvMat");
@@ -245,7 +243,6 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-		//staticMeshRenderer->SetPosition(box, GTSL::Vector3(0, 0, 250));//
 	}
 
 	{
@@ -304,8 +301,8 @@ void Game::PostInitialize()
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
-	//	tvMat = material_system->CreateMaterial(createMaterialInfo);//
-	//}
+	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
+	//}//
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -336,7 +333,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
 
-	renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
+	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
 	
 	//auto r = 1.0f;
 	//auto g = 1.0f;

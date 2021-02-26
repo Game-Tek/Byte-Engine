@@ -22,7 +22,7 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 	AudioDevice::CreateInfo createInfo;
 	audioDevice.Initialize(createInfo);
 	
-	mixFormat.BitsPerSample = 32;
+	mixFormat.BitsPerSample = 16;
 	mixFormat.NumberOfChannels = 2;
 	mixFormat.SamplesPerSecond = 48000;
 
@@ -77,6 +77,8 @@ void AudioSystem::requestAudioStreams()
 
 void AudioSystem::render(TaskInfo)
 {
+	requestAudioStreams();
+	
 	GTSL::Array<uint32, 16> soundsToRemoveFromPlaying;
 	GTSL::Array<Id, 16> samplesToRemoveFromPlaying;
 	
@@ -119,4 +121,5 @@ void AudioSystem::render(TaskInfo)
 
 void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo)
 {
+	uint32 a = 0;
 }

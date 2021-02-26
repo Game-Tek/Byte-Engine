@@ -102,7 +102,7 @@ public:
 		return getSetMemberPointer<uint64, Member::DataType::UINT64>(iterator, frame);
 	}
 
-	void WriteMultiBuffer(BufferIterator iterator, uint32* data)
+	void WriteMultiBuffer(BufferIterator iterator, const uint32* data)
 	{
 		for(uint8 f = 0; f < queuedFrames; ++f) {
 			*getSetMemberPointer<uint32, Member::DataType::UINT32>(iterator, f) = *data;
@@ -113,6 +113,7 @@ public:
 	{
 		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), pipelineType);
 	}
+	
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, PipelineType pipelineType);
 	
 	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
@@ -281,6 +282,21 @@ public:
 		return setLayoutDatas[setLayoutName()].PipelineLayout;
 	}
 
+	void WriteInstance(const uint32 instanceIndex, const uint32 vertexBuffer, const uint32 indexBuffer, const uint32 materialInstance, const uint32 renderGroupIndex)
+	{
+		BufferIterator iterator;
+		UpdateIteratorMember(iterator, instanceDataHandle);
+		UpdateIteratorMemberIndex(iterator, instanceIndex);
+		UpdateIteratorMember(iterator, instanceElementsHandle);
+		WriteMultiBuffer(iterator, &vertexBuffer);
+		UpdateIteratorMemberIndex(iterator, 1);
+		WriteMultiBuffer(iterator, &indexBuffer);
+		UpdateIteratorMemberIndex(iterator, 2);
+		WriteMultiBuffer(iterator, &materialInstance);
+		UpdateIteratorMemberIndex(iterator, 3);
+		WriteMultiBuffer(iterator, &renderGroupIndex);
+	}
+
 private:
 	
 	uint32 dataTypeSize(MaterialSystem::Member::DataType data)
@@ -313,6 +329,10 @@ private:
 	Id rayGenMaterial;
 	SubSetHandle topLevelAsHandle;
 	SubSetHandle imagesSubsetHandle;
+	MemberHandle sbtMemberHandle;
+	MemberHandle instanceDataHandle;
+	MemberHandle instanceElementsHandle;
+	BufferHandle instancesBuffer;
 
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -324,12 +344,11 @@ private:
 	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
 
 	uint32 shaderCounts[4]{ 0 };
+	uint32 entrySizes[4]{ 0 };
 
 	void updateSubBindingsCount(SubSetHandle subSetHandle, uint32 newCount);
 	
 	RayTracingPipeline rayTracingPipeline;
-	Buffer shaderBindingTableBuffer;
-	RenderAllocation shaderBindingTableAllocation;
 
 	struct BufferData
 	{

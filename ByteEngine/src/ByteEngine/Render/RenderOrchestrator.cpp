@@ -387,10 +387,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 	{
-		CommandBuffer::BeginRegionInfo beginRegionInfo;
-		beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
-		beginRegionInfo.Name = GTSL::StaticString<64>("Render");
-		commandBuffer.BeginRegion(beginRegionInfo);
+		commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), GTSL::StaticString<64>("Render"));
 	}
 
 	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RASTER);
@@ -435,11 +432,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		{
 			if constexpr (_DEBUG)
 			{
-				CommandBuffer::BeginRegionInfo beginRegionInfo;
-				beginRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
 				GTSL::StaticString<64> name("Render Pass: "); name += renderPassId.GetString();
-				beginRegionInfo.Name = name;
-				commandBuffer.BeginRegion(beginRegionInfo);
+				commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), name);
 			}
 			
 			switch(renderPass->PassType)
@@ -496,9 +490,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			
 			if constexpr (_DEBUG)
 			{
-				CommandBuffer::EndRegionInfo endRegionInfo;
-				endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
-				commandBuffer.EndRegion(endRegionInfo);
+				commandBuffer.EndRegion(renderSystem->GetRenderDevice());
 			}
 		};
 		
@@ -618,10 +610,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
 		}
 	}
-
-	CommandBuffer::EndRegionInfo endRegionInfo;
-	endRegionInfo.RenderDevice = renderSystem->GetRenderDevice();
-	commandBuffer.EndRegion(endRegionInfo);
+	
+	commandBuffer.EndRegion(renderSystem->GetRenderDevice());
 
 	PopData();
 	PopData();

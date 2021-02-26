@@ -373,7 +373,7 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 	{
 		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[f].Data) + mesh.DerivedTypeIndex);
 		
-		instance.Flags = GeometryInstanceFlags::OPAQUE;// | GeometryInstanceFlags::FRONT_COUNTERCLOCKWISE;
+		instance.Flags = GeometryInstanceFlags::OPAQUE;
 		instance.AccelerationStructureAddress = accelerationStructureAddress;
 		instance.Mask = 0xFF;
 		instance.InstanceIndex = meshHandle();
@@ -456,28 +456,9 @@ void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
 {
 	auto& mesh = meshes[handle()];
 
-	{
-		CommandBuffer::BindVertexBufferInfo bindInfo;
-		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = mesh.Buffer;
-		bindInfo.Offset = 0;
-		graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(bindInfo);
-	}
-
-	{
-		CommandBuffer::BindIndexBufferInfo bindInfo;
-		bindInfo.RenderDevice = GetRenderDevice();
-		bindInfo.Buffer = mesh.Buffer;
-		bindInfo.Offset = GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment());
-		bindInfo.IndexType = SelectIndexType(mesh.IndexSize);
-		graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(bindInfo);
-	}
-	
-	CommandBuffer::DrawIndexedInfo drawIndexedInfo;
-	drawIndexedInfo.RenderDevice = GetRenderDevice();
-	drawIndexedInfo.InstanceCount = instanceCount;
-	drawIndexedInfo.IndexCount = mesh.IndicesCount;
-	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(drawIndexedInfo);
+	graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(GetRenderDevice(), mesh.Buffer, 0);
+	graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(GetRenderDevice(), mesh.Buffer, GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()), SelectIndexType(mesh.IndexSize));
+	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(GetRenderDevice(), mesh.IndicesCount, instanceCount);
 }
 
 void RenderSystem::SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix4& matrix)

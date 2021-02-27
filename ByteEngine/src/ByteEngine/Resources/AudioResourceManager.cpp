@@ -9,7 +9,7 @@
 
 #include "ByteEngine/Application/Application.h"
 
-AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator())
+AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator()), audioBytes(8, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication(); query_path += "/resources/"; query_path += "*.wav";
@@ -41,7 +41,9 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				GTSL::File query_file;
 				query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
 
-				query_file.ReadFile(file_buffer.GetBufferInterface());
+				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
+				
+				query_file.ReadFile(wavBuffer.GetBufferInterface());
 
 				AudioDataSerialize data;
 
@@ -59,32 +61,32 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				uint8 data_chunk_header[4];        // DATA string or FLLR string
 				uint32 data_size = 0;                     // NumSamples * NumChannels * BitsPerSample/8 - size of the next chunk that will be read
 
-				file_buffer.ReadBytes(4, riff);
-				BE_ASSERT(riff[0] != 'r' || riff[1] != 'i' || riff[2] != 'f' || riff[3] != 'f', "No RIFF");
+				wavBuffer.ReadBytes(4, riff);
+				BE_ASSERT(riff[0] == 'R' && riff[1] == 'I' && riff[2] == 'F' && riff[3] == 'F', "No RIFF");
 
-				Extract(overall_size, file_buffer);
-				file_buffer.ReadBytes(4, wave); BE_ASSERT(wave[0] == 'W' && wave[1] == 'A' && wave[2] == 'V' && wave[3] == 'E', "No WAVE");
-				file_buffer.ReadBytes(4, fmt_chunk_marker); BE_ASSERT(fmt_chunk_marker[0] == 'f' && fmt_chunk_marker[1] == 'm' && fmt_chunk_marker[2] == 't' && fmt_chunk_marker[3] == 32, "No fmt");
-				Extract(length_of_fmt, file_buffer); BE_ASSERT(length_of_fmt == 16, "Unsupported");
-				Extract(format_type, file_buffer); BE_ASSERT(format_type == 1, "Format is not PCM, unsupported!");
-				Extract(channels, file_buffer);
-				Extract(sample_rate, file_buffer);
-				Extract(byte_rate, file_buffer); //(Sample Rate * BitsPerSample * Channels) / 8.
-				Extract(block_align, file_buffer);
-				Extract(bits_per_sample, file_buffer);
+				Extract(overall_size, wavBuffer);
+				wavBuffer.ReadBytes(4, wave); BE_ASSERT(wave[0] == 'W' && wave[1] == 'A' && wave[2] == 'V' && wave[3] == 'E', "No WAVE");
+				wavBuffer.ReadBytes(4, fmt_chunk_marker); BE_ASSERT(fmt_chunk_marker[0] == 'f' && fmt_chunk_marker[1] == 'm' && fmt_chunk_marker[2] == 't' && fmt_chunk_marker[3] == 32, "No fmt");
+				Extract(length_of_fmt, wavBuffer); BE_ASSERT(length_of_fmt == 16, "Unsupported");
+				Extract(format_type, wavBuffer); BE_ASSERT(format_type == 1, "Format is not PCM, unsupported!");
+				Extract(channels, wavBuffer);
+				Extract(sample_rate, wavBuffer);
+				Extract(byte_rate, wavBuffer); //(Sample Rate * BitsPerSample * Channels) / 8.
+				Extract(block_align, wavBuffer);
+				Extract(bits_per_sample, wavBuffer);
 
 				data.ChannelCount = channels;
 				data.SampleRate = sample_rate;
 				data.BitDepth = bits_per_sample;
 
-				file_buffer.ReadBytes(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
-				Extract(data_size, file_buffer);
+				wavBuffer.ReadBytes(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
+				Extract(data_size, wavBuffer);
 
 				data.Frames = data_size / channels / (bits_per_sample / 8);
 
 				data.ByteOffset = (uint32)packageFile.GetFileSize();
 
-				packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, file_buffer.GetData() + file_buffer.GetReadPosition()));
+				packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, wavBuffer.GetData() + wavBuffer.GetReadPosition()));
 
 				audioResourceInfos.Emplace(hashed_name(), data);
 			}

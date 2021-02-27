@@ -116,7 +116,7 @@ public:
 	
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, PipelineType pipelineType);
 	
-	bool BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
+	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
 

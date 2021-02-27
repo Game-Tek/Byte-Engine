@@ -201,9 +201,9 @@ void StackAllocator::Allocate(const uint64 size, const uint64 alignment, void** 
 		}
 	}
 
-	const auto last_block = stacks[i].EmplaceBack();
-	stacks[i][last_block].AllocateBlock(blockSize, allocatorReference, allocated_size);
-	stacks[i][last_block].AllocateInBlock(size, alignment, memory, allocated_size);
+	auto& lastBlock = stacks[i].EmplaceBack();
+	lastBlock.AllocateBlock(blockSize, allocatorReference, allocated_size);
+	lastBlock.AllocateInBlock(size, alignment, memory, allocated_size);
 	stacksMutexes[i].Unlock();
 	
 	*allocatedSize = allocated_size;

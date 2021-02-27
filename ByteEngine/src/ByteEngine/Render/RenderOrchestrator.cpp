@@ -531,10 +531,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
 					if (canBeginRenderPass()) { beginRenderPass(); doRaster(); endRenderPass(); }
 				}
-
-				CommandBuffer::EndRenderPassInfo endRenderPassInfo;
-				endRenderPassInfo.RenderDevice = renderSystem->GetRenderDevice();
-				commandBuffer.EndRenderPass(endRenderPassInfo);
+				
+				commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
 
 				break;
 			}
@@ -553,61 +551,36 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	{
 		{
-			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
-			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-			pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-			pipelineBarrierInfo.TextureBarriers = textureBarriers;
-			pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-			textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
-			textureBarriers[0].CurrentLayout = TextureLayout::UNDEFINED;
-			textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_DST;
-			textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
-			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
-			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
+			barriers[0].SetTextureBarrier({ renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
 		}
 
 		{
 			auto& attachment = attachments.At(resultAttachment());
-			
-			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
-			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-			pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-			pipelineBarrierInfo.TextureBarriers = textureBarriers;
-			pipelineBarrierInfo.InitialStage = attachment.ConsumingStages;
-			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-			textureBarriers[0].Texture = materialSystem->GetTexture(attachment.TextureHandle);
-			textureBarriers[0].CurrentLayout = attachment.Layout;
-			textureBarriers[0].TargetLayout = TextureLayout::TRANSFER_SRC;
-			textureBarriers[0].SourceAccessFlags = accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess);
-			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_READ;
-			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+
+			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
+			barriers[0].SetTextureBarrier({ materialSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, attachment.ConsumingStages, PipelineStage::TRANSFER, GetTransientAllocator());
 
 			updateImage(attachment, TextureLayout::TRANSFER_SRC, PipelineStage::TRANSFER, false);
 		}
 
-		CommandBuffer::CopyTextureToTextureInfo copyTexture;
-		copyTexture.RenderDevice = renderSystem->GetRenderDevice();
-		copyTexture.SourceTexture = materialSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle);
-		copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
-		copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
-		copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
-		copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
-		commandBuffer.CopyTextureToTexture(copyTexture);
+		{
+			CommandBuffer::CopyTextureToTextureInfo copyTexture;
+			copyTexture.RenderDevice = renderSystem->GetRenderDevice();
+			copyTexture.SourceTexture = materialSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle);
+			copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
+			copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
+			copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
+			copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
+			commandBuffer.CopyTextureToTexture(copyTexture);
+		}
 
 		{
-			GTSL::Array<CommandBuffer::TextureBarrier, 2> textureBarriers(1);
-			CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-			pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-			pipelineBarrierInfo.TextureBarriers = textureBarriers;
-			pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-			pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-			textureBarriers[0].Texture = renderSystem->GetSwapchainTextures()[currentFrame];
-			textureBarriers[0].CurrentLayout = TextureLayout::TRANSFER_DST;
-			textureBarriers[0].TargetLayout = TextureLayout::PRESENTATION;
-			textureBarriers[0].SourceAccessFlags = AccessFlags::TRANSFER_READ;
-			textureBarriers[0].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
-			commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+			GTSL::Array<CommandBuffer::BarrierData, 2> barriers;
+			barriers.EmplaceBack(CommandBuffer::TextureBarrier{ renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_DST, TextureLayout::PRESENTATION, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
 		}
 	}
 	
@@ -1124,14 +1097,8 @@ void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 
 void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
 {
-	CommandBuffer::UpdatePushConstantsInfo updatePush;
-	updatePush.RenderDevice = renderSystem->GetRenderDevice();
-	updatePush.Size = 4;
-	updatePush.Offset = 64ull + (indexStreamHandle() * 4);
-	updatePush.Data = reinterpret_cast<byte*>(&renderState.IndexStreams[indexStreamHandle()]);
-	updatePush.PipelineLayout = renderState.PipelineLayout;
-	updatePush.ShaderStages = ShaderStage::ALL;
-	commandBuffer.UpdatePushConstant(updatePush);
+	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), renderState.PipelineLayout, 64ull + (indexStreamHandle() * 4),
+		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&renderState.IndexStreams[indexStreamHandle()])), ShaderStage::ALL);
 
 	++renderState.IndexStreams[indexStreamHandle()];
 }
@@ -1147,15 +1114,9 @@ void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const Materi
 	uint32 dividedBufferAddress = bufferAddress / 16;
 
 	renderState.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout("GlobalData");
-	
-	CommandBuffer::UpdatePushConstantsInfo updatePush;
-	updatePush.RenderDevice = renderSystem->GetRenderDevice();
-	updatePush.Size = 4;
-	updatePush.Offset = renderState.Offset;
-	updatePush.Data = reinterpret_cast<byte*>(&dividedBufferAddress);
-	updatePush.PipelineLayout = renderState.PipelineLayout;
-	updatePush.ShaderStages = ShaderStage::ALL;
-	commandBuffer.UpdatePushConstant(updatePush);
+
+	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), renderState.PipelineLayout, renderState.Offset,
+		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&dividedBufferAddress)), ShaderStage::ALL);
 
 	renderState.Offset += 4;
 }
@@ -1235,7 +1196,8 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 		{
 			auto mat = primitives.begin()[e.PrimitiveIndex].Material;
 
-			if (materialSystem->BindMaterial(renderSystem, commandBuffer, mat))
+			materialSystem->BindMaterial(renderSystem, commandBuffer, mat);
+			
 			{
 				//materialSystem->BindSet(renderSystem, commandBuffer, Id("UIRenderGroup"), squareIndex);
 
@@ -1265,7 +1227,7 @@ void RenderOrchestrator::dispatch(GameInstance* gameInstance, RenderSystem* rend
 
 void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, Id renderPassId)
 {
-	GTSL::Array<CommandBuffer::TextureBarrier, 16> textureBarriers;
+	GTSL::Array<CommandBuffer::BarrierData, 16> barriers;
 	
 	auto& renderPass = renderPassesMap.At(renderPassId());
 
@@ -1282,7 +1244,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 		textureBarrier.TargetLayout = attachmentData.Layout;
 		textureBarrier.SourceAccessFlags = accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess);
 		textureBarrier.DestinationAccessFlags = accessFlagsFromStageAndAccessType(attachmentStages, writeAccess);
-		textureBarriers.EmplaceBack(textureBarrier);
+		barriers.EmplaceBack(textureBarrier);
 
 		initialStage |= attachment.ConsumingStages;
 		
@@ -1291,14 +1253,8 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	
 	for (auto& e : renderPass.ReadAttachments) { buildTextureBarrier(e, e.ConsumingStages, false); }
 	for (auto& e : renderPass.WriteAttachments) { buildTextureBarrier(e, e.ConsumingStages, true); }
-
-	CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-	pipelineBarrierInfo.RenderDevice = renderSystem->GetRenderDevice();
-	pipelineBarrierInfo.TextureBarriers = textureBarriers;
-	pipelineBarrierInfo.InitialStage = initialStage;
-	pipelineBarrierInfo.FinalStage = renderPass.PipelineStages;
 	
-	commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, initialStage, renderPass.PipelineStages, GetTransientAllocator());
 }
 
 void RenderOrchestrator::onMaterialLoad(TaskInfo taskInfo, MaterialHandle materialName)

@@ -96,7 +96,7 @@ inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, c
 	face.Bands.Initialize(bands, allocator);
 
 	for (uint16 i = 0; i < bands; ++i) {
-		auto& e = face.Bands[face.Bands.EmplaceBack()];
+		auto& e = face.Bands.EmplaceBack();
 		e.Lines.Initialize(8, allocator); e.Curves.Initialize(8, allocator);
 	}
 

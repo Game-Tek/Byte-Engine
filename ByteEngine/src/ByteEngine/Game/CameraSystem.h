@@ -31,7 +31,9 @@ public:
 	{
 		rotationMatrices.EmplaceBack(1);
 		fovs.EmplaceBack(45.0f);
-		return CameraHandle(positionMatrices.EmplaceBack(GTSL::Math::Translation(pos)));
+		auto index = positionMatrices.GetLength();
+		positionMatrices.EmplaceBack(GTSL::Math::Translation(pos));
+		return CameraHandle(index);
 	}
 	
 	//ComponentReference AddCamera(const GTSL::Matrix4& matrix)

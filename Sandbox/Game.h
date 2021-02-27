@@ -9,6 +9,7 @@
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Sound/AudioSystem.h"
 
 class Game final : public GameApplication
 {
@@ -27,6 +28,7 @@ class Game final : public GameApplication
 	MaterialInstanceHandle textMaterial;
 	MaterialInstanceHandle tvMat;
 	MaterialInstanceHandle buttonMaterial;
+	AudioEmitterHandle audioEmitter;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

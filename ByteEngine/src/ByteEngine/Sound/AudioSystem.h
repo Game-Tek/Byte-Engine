@@ -46,6 +46,7 @@ private:
 
 	GTSL::Buffer<BE::PAR> audioBuffer;
 	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
+	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
 
 	void requestAudioStreams();
 	void render(TaskInfo);

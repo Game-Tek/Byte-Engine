@@ -690,16 +690,10 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuf
 		
 		commandBuffer.BuildAccelerationStructure(build);
 		
-		CommandBuffer::AddPipelineBarrierInfo addPipelineBarrierInfo;
-		addPipelineBarrierInfo.InitialStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
-		addPipelineBarrierInfo.FinalStage = PipelineStage::ACCELERATION_STRUCTURE_BUILD;
+		GTSL::Array<CommandBuffer::BarrierData, 1> barriers;
+		barriers.EmplaceBack(CommandBuffer::MemoryBarrier{ AccessFlags::ACCELERATION_STRUCTURE_WRITE, AccessFlags::ACCELERATION_STRUCTURE_READ });
 		
-		GTSL::Array<CommandBuffer::MemoryBarrier, 1> memoryBarriers(1);
-		memoryBarriers[0].SourceAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_WRITE;
-		memoryBarriers[0].DestinationAccessFlags = AccessFlags::ACCELERATION_STRUCTURE_READ;
-		
-		addPipelineBarrierInfo.MemoryBarriers = memoryBarriers;
-		commandBuffer.AddPipelineBarrier(addPipelineBarrierInfo);
+		commandBuffer.AddPipelineBarrier(GetRenderDevice(), barriers, PipelineStage::ACCELERATION_STRUCTURE_BUILD, PipelineStage::ACCELERATION_STRUCTURE_BUILD, GetTransientAllocator());
 	}
 	
 	buildDatas.ResizeDown(0);
@@ -828,34 +822,17 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	{
 		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 		
-		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
-		GTSL::Vector<CommandBuffer::TextureBarrier, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
+		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
+		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
 		{
-			sourceTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
-			sourceTextureBarriers[i].SourceAccessFlags = 0;
-			sourceTextureBarriers[i].DestinationAccessFlags = AccessFlags::TRANSFER_WRITE;
-			sourceTextureBarriers[i].CurrentLayout = TextureLayout::UNDEFINED;
-			sourceTextureBarriers[i].TargetLayout = TextureLayout::TRANSFER_DST;
-			sourceTextureBarriers[i].TextureType = TextureType::COLOR;
-
-			destinationTextureBarriers[i].Texture = textureCopyData[i].DestinationTexture;
-			destinationTextureBarriers[i].SourceAccessFlags = AccessFlags::TRANSFER_WRITE;
-			destinationTextureBarriers[i].DestinationAccessFlags = AccessFlags::SHADER_READ;
-			destinationTextureBarriers[i].CurrentLayout = TextureLayout::TRANSFER_DST;
-			destinationTextureBarriers[i].TargetLayout = TextureLayout::SHADER_READ_ONLY;
-			destinationTextureBarriers[i].TextureType = TextureType::COLOR;
+			sourceTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, 0, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			destinationTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::TRANSFER_DST, TextureLayout::SHADER_READ_ONLY, AccessFlags::TRANSFER_WRITE, AccessFlags::SHADER_READ, TextureType::COLOR });
 		}
 
-
-		CommandBuffer::AddPipelineBarrierInfo pipelineBarrierInfo;
-		pipelineBarrierInfo.RenderDevice = GetRenderDevice();
-		pipelineBarrierInfo.TextureBarriers = sourceTextureBarriers;
-		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::TRANSFER;
-		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
-
+		commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
+		
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
 		{
 			CommandBuffer::CopyBufferToTextureInfo copyBufferToImageInfo;
@@ -867,11 +844,8 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			copyBufferToImageInfo.TextureLayout = textureCopyData[i].Layout;
 			commandBuffer.CopyBufferToTexture(copyBufferToImageInfo);
 		}
-			
-		pipelineBarrierInfo.TextureBarriers = destinationTextureBarriers;
-		pipelineBarrierInfo.InitialStage = PipelineStage::TRANSFER;
-		pipelineBarrierInfo.FinalStage = PipelineStage::FRAGMENT_SHADER | PipelineStage::RAY_TRACING_SHADER;
-		commandBuffer.AddPipelineBarrier(pipelineBarrierInfo);
+		
+		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, PipelineStage::TRANSFER, PipelineStage::FRAGMENT_SHADER | PipelineStage::RAY_TRACING_SHADER, GetTransientAllocator());
 
 		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
@@ -898,7 +872,7 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 	{
 	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
-	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); /*GAL_DEBUG_BREAK*/; break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); GAL_DEBUG_BREAK; break;
 	default: break;
 	}
 }

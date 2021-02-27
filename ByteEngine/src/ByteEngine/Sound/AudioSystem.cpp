@@ -27,6 +27,7 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 	mixFormat.SamplesPerSecond = 48000;
 
 	onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
+	onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 	
 	if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
 	{
@@ -91,7 +92,7 @@ void AudioSystem::render(TaskInfo)
 
 	GTSL::SetMemory(audioBuffer.GetCapacity(), audioBuffer.GetData(), 0);
 	
-	for(uint32 i = 0; i < playingEmitters.GetLength(); ++i)
+	for(uint32 i = 0; i < playingAudioFiles.GetLength(); ++i)
 	{
 		byte* audio = audioResourceManager->GetAssetPointer(playingAudioFiles[i]);
 
@@ -114,12 +115,21 @@ void AudioSystem::render(TaskInfo)
 
 	for (uint32 i = 0; i < soundsToRemoveFromPlaying.GetLength(); ++i)
 	{
-		removePlayingSound(soundsToRemoveFromPlaying[i]);
+		//removePlayingSound(soundsToRemoveFromPlaying[i]);
+		playingAudioFiles.Pop(soundsToRemoveFromPlaying[i]);
+		playingAudioFilesPlayedFrames.Pop(soundsToRemoveFromPlaying[i]);
 		audioResourceManager->ReleaseAudioAsset(samplesToRemoveFromPlaying[i]);
 	}
 }
 
-void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo)
+void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audioResourceManager, AudioResourceManager::AudioInfo audioInfo)
 {
 	uint32 a = 0;
+	audioResourceManager->LoadAudio(taskInfo.GameInstance, audioInfo, onAudioLoadHandle);
+}
+
+void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer)
+{
+	playingAudioFiles.EmplaceBack(audioInfo.Name);
+	playingAudioFilesPlayedFrames.EmplaceBack(0);
 }

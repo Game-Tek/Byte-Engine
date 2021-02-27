@@ -301,15 +301,9 @@ void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBu
 	}
 }
 
-bool MaterialSystem::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle)
-{	
-	CommandBuffer::BindPipelineInfo bindPipelineInfo;
-	bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-	bindPipelineInfo.PipelineType = PipelineType::RASTER;
-	bindPipelineInfo.Pipeline = materials[loadedMaterialsMap[materialHandle()]].Pipeline;
-	commandBuffer.BindPipeline(bindPipelineInfo);
-		
-	return true;
+void MaterialSystem::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle)
+{
+	commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), materials[loadedMaterialsMap[materialHandle()]].Pipeline, PipelineType::RASTER);
 }
 
 void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id parentName, const GTSL::Range<SubSetDescriptor*> members)
@@ -779,11 +773,7 @@ MaterialSystem::TextureHandle MaterialSystem::createTexture(const CreateTextureI
 
 void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
 {
-	CommandBuffer::BindPipelineInfo bindPipelineInfo;
-	bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-	bindPipelineInfo.PipelineType = PipelineType::RAY_TRACING;
-	bindPipelineInfo.Pipeline = rayTracingPipeline;
-	commandBuffer->BindPipeline(bindPipelineInfo);
+	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), rayTracingPipeline, PipelineType::RAY_TRACING);
 
 	auto handleSize = renderSystem->GetShaderGroupHandleSize();
 	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
@@ -816,12 +806,7 @@ void MaterialSystem::TraceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuf
 
 void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
 {
-	CommandBuffer::BindPipelineInfo bindPipelineInfo;
-	bindPipelineInfo.RenderDevice = renderSystem->GetRenderDevice();
-	bindPipelineInfo.PipelineType = PipelineType::COMPUTE;
-	bindPipelineInfo.Pipeline = Pipeline();
-	commandBuffer->BindPipeline(bindPipelineInfo);
-	
+	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), Pipeline(), PipelineType::COMPUTE);
 	commandBuffer->Dispatch(renderSystem->GetRenderDevice(), GTSL::Extent3D(workGroups));
 }
 

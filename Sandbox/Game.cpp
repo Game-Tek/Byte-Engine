@@ -220,7 +220,7 @@ void Game::PostInitialize()
 	}
 
 	audioEmitter = audioSystem->CreateAudioEmitter();
-	audioSystem->PlayAudio(audioEmitter, "dance");//
+	audioSystem->PlayAudio(audioEmitter, "dance");
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;

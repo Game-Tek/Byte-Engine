@@ -288,16 +288,9 @@ void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBu
 	if (set.BindingsSet[frame].GetHandle())
 	{
 		//FUTURE: if we ever support buffer dynamic offset intead of indexing remember to implement switch for descriptors and here to supply offsets
-
-		CommandBuffer::BindBindingsSetInfo bindBindingsSetInfo;
-		bindBindingsSetInfo.RenderDevice = renderSystem->GetRenderDevice();
-		bindBindingsSetInfo.FirstSet = set.Level;
-		bindBindingsSetInfo.BoundSets = 1;
-		bindBindingsSetInfo.BindingsSets = GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]);
-		bindBindingsSetInfo.PipelineLayout = set.PipelineLayout;
-		bindBindingsSetInfo.PipelineType = pipelineType;
-		bindBindingsSetInfo.Offsets = GTSL::Range<const uint32*>();
-		commandBuffer.BindBindingsSets(bindBindingsSetInfo);
+	
+		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), pipelineType, GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]),
+			GTSL::Range<const uint32*>(), set.PipelineLayout, set.Level);
 	}
 }
 

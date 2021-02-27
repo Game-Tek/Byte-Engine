@@ -278,6 +278,7 @@
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Render\StaticMeshRenderGroup.cpp" />
     <ClCompile Include="src\ByteEngine\Render\UIManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\AnimationResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />

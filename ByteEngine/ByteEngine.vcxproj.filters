@@ -185,5 +185,6 @@
     <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Network\ConnectionHandler.ixx" />
     <ClCompile Include="src\ByteEngine\Physics\PhysicsWorld.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\AnimationResourceManager.cpp" />
   </ItemGroup>
 </Project>

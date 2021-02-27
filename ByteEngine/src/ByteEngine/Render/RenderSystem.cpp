@@ -683,12 +683,8 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuf
 			
 			offset += GTSL::Math::RoundUpByPowerOf2(buildDatas[i].ScratchBuildSize, scratchBufferOffsetAlignment);
 		}
-
-		GAL::BuildAccelerationStructuresInfo build;
-		build.RenderDevice = GetRenderDevice();
-		build.BuildAccelerationStructureInfos = accelerationStructureBuildInfos;
 		
-		commandBuffer.BuildAccelerationStructure(build);
+		commandBuffer.BuildAccelerationStructure(GetRenderDevice(), accelerationStructureBuildInfos, GetTransientAllocator());
 		
 		GTSL::Array<CommandBuffer::BarrierData, 1> barriers;
 		barriers.EmplaceBack(CommandBuffer::MemoryBarrier{ AccessFlags::ACCELERATION_STRUCTURE_WRITE, AccessFlags::ACCELERATION_STRUCTURE_READ });

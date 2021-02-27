@@ -566,16 +566,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			updateImage(attachment, TextureLayout::TRANSFER_SRC, PipelineStage::TRANSFER, false);
 		}
 
-		{
-			CommandBuffer::CopyTextureToTextureInfo copyTexture;
-			copyTexture.RenderDevice = renderSystem->GetRenderDevice();
-			copyTexture.SourceTexture = materialSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle);
-			copyTexture.DestinationTexture = renderSystem->GetSwapchainTextures()[currentFrame];
-			copyTexture.Extent = { renderSystem->GetRenderExtent().Width, renderSystem->GetRenderExtent().Height, 1 };
-			copyTexture.SourceLayout = TextureLayout::TRANSFER_SRC;
-			copyTexture.DestinationLayout = TextureLayout::TRANSFER_DST;
-			commandBuffer.CopyTextureToTexture(copyTexture);
-		}
+			
+		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), materialSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle),
+		renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_SRC, TextureLayout::TRANSFER_DST,
+			GTSL::Extent3D(renderSystem->GetRenderExtent()));
 
 		{
 			GTSL::Array<CommandBuffer::BarrierData, 2> barriers;

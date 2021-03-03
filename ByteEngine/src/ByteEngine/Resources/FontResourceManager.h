@@ -81,9 +81,9 @@ public:
 		uint32 FileNameHash;
 		std::string FullFontName;
 		std::string NameTable[25];
-		std::unordered_map<uint32, int16> KerningTable;
-		std::unordered_map<uint16, Glyph> Glyphs;
-		std::map<uint32, uint16> GlyphMap;
+		GTSL::FlatHashMap<int16, BE::PAR> KerningTable;
+		GTSL::FlatHashMap<Glyph, BE::PAR> Glyphs;
+		GTSL::FlatHashMap<uint16, BE::PAR> GlyphMap;
 		FontMetaData Metadata;
 		uint64 LastUsed;
 	};

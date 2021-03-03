@@ -20,7 +20,7 @@ public:
 	{
 		GAL::Dimension Dimensions;
 		GTSL::Extent3D Extent;
-		GAL::TextureFormat Format;
+		GAL::FormatDescriptor Format;
 	};
 	
 	struct TextureDataSerialize : DataSerialize<TextureData>
@@ -48,14 +48,7 @@ public:
 		
 		uint32 GetTextureSize()
 		{
-			uint8 componentCount = 0, componentSize = 0;
-			
-			switch (Format)
-			{
-			case GAL::TextureFormat::RGBA_I8: componentCount = 4; componentSize = 1; break;
-			}
-
-			return componentCount * componentSize * Extent.Width * Extent.Height * Extent.Depth;
+			return Format.BitDepth * Format.ComponentCount * Extent.Width * Extent.Height * Extent.Depth;
 		}
 	};
 	

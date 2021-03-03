@@ -1,9 +1,5 @@
 #include "FontResourceManager.h"
 
-//#undef INFINITE
-//#include "msdfgen-master/msdfgen.h"
-//#include "msdfgen-ext.h"
-
 /*
 * ttf-parser
 *  A single header ttf parser
@@ -18,11 +14,9 @@
 *  https://github.com/kv01/ttf-parser
 */
 
-#include <cstdint>
 #include <map>
 #include <unordered_map>
 #include <vector>
-#include <fstream>
 
 #include "ByteEngine/Core.h"
 
@@ -31,12 +25,10 @@
 #include <GTSL/Serialize.h>
 #include <GTSL/Math/Vector2.h>
 
-
 #include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Game/GameInstance.h"
-
 
 void get8b(void* dst, const char* src)
 {
@@ -101,6 +93,34 @@ void get1b(void* dst, const char* src)
 	static_cast<uint8_t*>(dst)[0] = src[0];
 }
 
+void get8b(void* dst, const char* src, uint32& offset)
+{
+	offset += 8;
+	
+	get8b(dst, src);
+}
+
+void get4b(void* dst, const char* src, uint32& offset)
+{
+	offset += 4;
+	
+	get4b(dst, src);
+}
+
+void get2b(void* dst, const char* src, uint32& offset)
+{
+	offset += 2;
+	
+	get2b(dst, src);
+}
+
+void get1b(void* dst, const char* src, uint32& offset)
+{
+	++offset;
+	
+	get1b(dst, src);
+}
+
 float32 to_2_14_float(const int16 value)
 {
 	return static_cast<float32>(value & 0x3fff) / static_cast<float32>(1 << 14) + (-2 * ((value >> 15) & 0x1) + ((value >> 14) & 0x1));
@@ -108,12 +128,12 @@ float32 to_2_14_float(const int16 value)
 
 struct Flags
 {
-	bool xDual;
-	bool yDual;
-	bool xShort;
-	bool yShort;
-	bool repeat;
-	bool isControlPoint;
+	bool xDual : 1;
+	bool yDual : 1;
+	bool xShort : 1;
+	bool yShort : 1;
+	bool repeat : 1;
+	bool isControlPoint : 1;
 };
 
 enum COMPOUND_GLYPH_FLAGS
@@ -392,8 +412,8 @@ struct FontPositioningOptions
 
 int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, uint16 right_glyph)
 {
-	auto kern_data = font_data->KerningTable.find((left_glyph << 16) | right_glyph);
-	return (kern_data == font_data->KerningTable.end()) ? 0 : kern_data->second;
+	auto kern_data = font_data->KerningTable.TryGet((left_glyph << 16) | right_glyph);
+	return kern_data.State() ? kern_data.Get() : 0;
 }
 
 FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager")
@@ -420,12 +440,12 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 	
 	auto font = GetFont(GTSL::StaticString<64>("FTLTLT"));
 
-	GTSL::Buffer<BE::TAR> data;
+	GTSL::Buffer<BE::TAR> data; data.Allocate(1000000, 8, GetTransientAllocator());
 
 	for(auto& e : font.Glyphs)
 	{
 		Face face;
-		MakeFromPaths(e.second, face, 4, GetPersistentAllocator());
+		MakeFromPaths(e, face, 4, GetPersistentAllocator());
 
 		for(auto f : face.LinearBeziers) {
 			GTSL::Insert(f.Points[0], data); GTSL::Insert(f.Points[1], data);
@@ -452,8 +472,10 @@ GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y);
 int8 FontResourceManager::parseData(const char* data, Font* fontData)
 {
 	uint32 ptr = 0;
+	
 	TTFHeader header;
 	ptr = header.Parse(data, ptr);
+	
 	std::unordered_map<std::string, TableEntry> tables;
 	for (uint16 i = 0; i < header.NumberOfTables; i++)
 	{
@@ -462,60 +484,61 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		tables[te.tagstr] = te;
 	}
 
-	auto head_table_entry = tables.find("head");
-	if (head_table_entry == tables.end()) { return -2; }
-
+	auto headTableEntry = tables.find("head");
+	if (headTableEntry == tables.end()) { return -2; }
 	HeadTable headTable;
-	ptr = headTable.Parse(data, head_table_entry->second.offsetPos);
-	auto maxp_table_entry = tables.find("maxp");
-	if (maxp_table_entry == tables.end()) { return -2; }
-
-	MaximumProfile max_profile;
-	max_profile.Parse(data, maxp_table_entry->second.offsetPos);
-	auto name_table_entry = tables.find("name");
-	if (name_table_entry == tables.end()) { return -2; }
-
-	NameTable name_table;
-	name_table.Parse(data, name_table_entry->second.offsetPos, fontData->NameTable);
+	ptr = headTable.Parse(data, headTableEntry->second.offsetPos);
+	
+	auto maxpTableEntry = tables.find("maxp");
+	if (maxpTableEntry == tables.end()) { return -2; }
+	MaximumProfile maximumProfile;
+	maximumProfile.Parse(data, maxpTableEntry->second.offsetPos);
+	
+	auto nameTableEntry = tables.find("name");
+	if (nameTableEntry == tables.end()) { return -2; }
+	NameTable nameTable;
+	nameTable.Parse(data, nameTableEntry->second.offsetPos, fontData->NameTable);
 
 	fontData->FullFontName = fontData->NameTable[1] + " " + fontData->NameTable[2];
 
-	auto loca_table_entry = tables.find("loca");
-	if (loca_table_entry == tables.end()) { return -2; }
+	auto locaTableEntry = tables.find("loca");
+	if (locaTableEntry == tables.end()) { return -2; }
 
-	std::vector<uint32> glyph_index(max_profile.numGlyphs);
+	if (!maximumProfile.numGlyphs) { return -1; }
+	
+	std::vector<uint32> glyphIndices(maximumProfile.numGlyphs);
 
-	uint32 end_of_glyf = 0;
+	uint32 endOfGlyf = 0;
 
 	if (headTable.indexToLocFormat == 0)
 	{
-		uint32 byte_offset = loca_table_entry->second.offsetPos;
+		uint32 byte_offset = locaTableEntry->second.offsetPos;
 
-		for (uint16 i = 0; i < max_profile.numGlyphs; i++, byte_offset += sizeof(uint16))
+		for (uint16 i = 0; i < maximumProfile.numGlyphs; i++)
 		{
-			get2b(&glyph_index[i], data + byte_offset);
-			glyph_index[i] = glyph_index[i] << 1;
+			get2b(&glyphIndices[i], data + byte_offset, byte_offset);
+			glyphIndices[i] = glyphIndices[i] << 1;
 		}
 
-		get2b(&end_of_glyf, data + byte_offset);
-		end_of_glyf = end_of_glyf << 1;
+		get2b(&endOfGlyf, data + byte_offset, byte_offset);
+		endOfGlyf = endOfGlyf << 1;
 	}
 	else
 	{
-		uint32 byte_offset = loca_table_entry->second.offsetPos;
-		for (uint16 i = 0; i < max_profile.numGlyphs; i++, byte_offset += sizeof(uint32))
+		uint32 byte_offset = locaTableEntry->second.offsetPos;
+		for (uint16 i = 0; i < maximumProfile.numGlyphs; i++)
 		{
-			get4b(&glyph_index[i], data + byte_offset);
+			get4b(&glyphIndices[i], data + byte_offset, byte_offset);
 		}
-		get4b(&end_of_glyf, data + byte_offset);
+		get4b(&endOfGlyf, data + byte_offset, byte_offset);
 	}
 
-	auto cmap_table_entry = tables.find("cmap");
-	if (cmap_table_entry == tables.end()) { return -2; }
+	auto cmapTableEntry = tables.find("cmap");
+	if (cmapTableEntry == tables.end()) { return -2; }
 
-	uint32 cmap_offset = cmap_table_entry->second.offsetPos + sizeof(uint16); //Skip version
+	uint32 cmap_offset = cmapTableEntry->second.offsetPos + sizeof(uint16); //Skip version
 	uint16 cmap_num_tables;
-	get2b(&cmap_num_tables, data + cmap_offset); cmap_offset += sizeof(uint16);
+	get2b(&cmap_num_tables, data + cmap_offset, cmap_offset);
 
 	std::map<uint16, uint32> glyphReverseMap;
 
@@ -526,22 +549,22 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		
 		uint16 platformID, encodingID;
 		uint32 cmap_subtable_offset;
-		get2b(&platformID, data + cmap_offset); cmap_offset += sizeof(uint16);
-		get2b(&encodingID, data + cmap_offset); cmap_offset += sizeof(uint16);
-		get4b(&cmap_subtable_offset, data + cmap_offset); cmap_offset += sizeof(uint32);
+		get2b(&platformID, data + cmap_offset, cmap_offset);
+		get2b(&encodingID, data + cmap_offset, cmap_offset);
+		get4b(&cmap_subtable_offset, data + cmap_offset, cmap_offset);
 
 		if (!((platformID == UNICODE_PLATFORM_INDEX && encodingID == 3/*\(··)/*/) || (platformID == WIN32_PLATFORM_INDEX && encodingID == WIN32_UNICODE_ENCODING))) { continue; }
 
-		cmap_subtable_offset += cmap_table_entry->second.offsetPos;
+		cmap_subtable_offset += cmapTableEntry->second.offsetPos;
 		uint16 format, length;
-		get2b(&format, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
-		get2b(&length, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
+		get2b(&format, data + cmap_subtable_offset, cmap_subtable_offset);
+		get2b(&length, data + cmap_subtable_offset, cmap_subtable_offset);
 
 		if (format != 4) { continue; }
 
 		uint16 language, segCountX2;// , searchRange, entrySelector, rangeShift;
-		get2b(&language, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
-		get2b(&segCountX2, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
+		get2b(&language, data + cmap_subtable_offset, cmap_subtable_offset);
+		get2b(&segCountX2, data + cmap_subtable_offset, cmap_subtable_offset);
 		//get2b(&searchRange, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
 		//get2b(&entrySelector, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
 		//get2b(&rangeShift, data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
@@ -552,11 +575,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		std::vector<int16> idDelta(segCount);
 		for (uint16 j = 0; j < segCount; j++)
 		{
-			get2b(&endCount[j], data + cmap_subtable_offset); cmap_subtable_offset += sizeof(uint16);
+			get2b(&endCount[j], data + cmap_subtable_offset, cmap_subtable_offset);
 		}
 
 		cmap_subtable_offset += sizeof(uint16);
-
+		
+		fontData->GlyphMap.Initialize(maximumProfile.numGlyphs, GetPersistentAllocator());
+		
 		for (uint16 j = 0; j < segCount; j++)
 		{
 			get2b(&startCount[j], data + cmap_subtable_offset);
@@ -566,7 +591,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			{
 				for (uint32 k = startCount[j]; k <= endCount[j]; k++)
 				{
-					fontData->GlyphMap[k] = k + idDelta[j];
+					fontData->GlyphMap.Emplace(k, k + idDelta[j]);
 					glyphReverseMap[k + idDelta[j]] = k;
 				}
 			}
@@ -589,77 +614,71 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		valid_cmap_table = true;
 		break;
 	}
-	if (!valid_cmap_table) { BE_ASSERT(false); }
+	if (!valid_cmap_table) { return -1; }
 
+	auto hheaTableEntry = tables.find("hhea");
+	if (hheaTableEntry == tables.end()) { return -2; }
 	HHEATable hheaTable;
-	auto hhea_table_entry = tables.find("hhea");
-	if (hhea_table_entry == tables.end()) { return -2; }
-	uint32 hhea_offset = hheaTable.Parse(data, hhea_table_entry->second.offsetPos);
+	uint32 hhea_offset = hheaTable.Parse(data, hheaTableEntry->second.offsetPos);
 
-	auto glyf_table_entry = tables.find("glyf");
-	{
-		if (glyf_table_entry == tables.end()) { return -2; }
-	}
-	uint32 glyf_offset = glyf_table_entry->second.offsetPos;
+	auto glyfTableEntry = tables.find("glyf");
+	if (glyfTableEntry == tables.end()) { return -2; }
+	uint32 glyf_offset = glyfTableEntry->second.offsetPos;
 
-	auto kern_table_entry = tables.find("kern");
+	auto kernTableEntry = tables.find("kern");
 	uint32 kernOffset = 0;
-	if (kern_table_entry != tables.end())
+	if (kernTableEntry != tables.end())
 	{
-		kernOffset = kern_table_entry->second.offsetPos;
+		kernOffset = kernTableEntry->second.offsetPos;
 	}
 
-	auto hmtx_table_entry = tables.find("hmtx");
-	if (hmtx_table_entry == tables.end())
-	{
-		return -2;
-	}
-	uint32 hmtx_offset = hmtx_table_entry->second.offsetPos;
+	auto hmtxTableEntry = tables.find("hmtx");
+	if (hmtxTableEntry == tables.end()) { return -2; }
+	uint32 hmtx_offset = hmtxTableEntry->second.offsetPos;
 	uint16 last_glyph_advance_width = 0;
 
-	std::vector<std::vector<uint16>> pointsPerContour((max_profile.maxContours < 4096) ? max_profile.maxContours : 4096);
-	std::vector<uint16> pointsInContour((max_profile.maxContours < 4096) ? max_profile.maxContours : 4096);
+	std::vector<std::vector<uint16>> pointsPerContour((maximumProfile.maxContours < 4096) ? maximumProfile.maxContours : 4096);
+	std::vector<uint16> pointsInContour((maximumProfile.maxContours < 4096) ? maximumProfile.maxContours : 4096);
 
-	if (!max_profile.numGlyphs) { return -1; }
-
-	GTSL::Vector<bool, BE::TAR> glyphLoaded(max_profile.numGlyphs, max_profile.numGlyphs, GetTransientAllocator());
+	fontData->Glyphs.Initialize(maximumProfile.numGlyphs, GetPersistentAllocator());
+	
+	GTSL::Vector<bool, BE::TAR> glyphLoaded(maximumProfile.numGlyphs, maximumProfile.numGlyphs, GetTransientAllocator());
 	for (auto& e : glyphLoaded) { e = false; }
 	
-	auto parseGlyph = [&](uint32 i, auto&& self) -> int8
+	auto parseGlyph = [&](uint32 glyphIndex, auto&& self) -> int8
 	{
-		if (glyphLoaded[i] == true) { return 1; }
+		if (glyphLoaded[glyphIndex]) { return 1; }
 
-		Glyph& currentGlyph = fontData->Glyphs[i]; //when replacing for own map remember to emplace first, std []operator try_emplaces
-		currentGlyph.Paths.Initialize(3, GetPersistentAllocator());
-		currentGlyph.GlyphIndex = static_cast<int16>(i);
-		currentGlyph.Character = glyphReverseMap[static_cast<int16>(i)];
+		Glyph& currentGlyph = fontData->Glyphs.Emplace(glyphIndex);
+		currentGlyph.GlyphIndex = static_cast<int16>(glyphIndex);
+		currentGlyph.Character = glyphReverseMap[static_cast<int16>(glyphIndex)];
 
-		if (i < hheaTable.numberOfHMetrics)
+		if (glyphIndex < hheaTable.numberOfHMetrics)
 		{
-			get2b(&currentGlyph.AdvanceWidth, data + hmtx_offset + i * sizeof(uint32));
+			get2b(&currentGlyph.AdvanceWidth, data + hmtx_offset + glyphIndex * sizeof(uint32));
 			last_glyph_advance_width = currentGlyph.AdvanceWidth;
-			get2b(&currentGlyph.LeftSideBearing, data + hmtx_offset + i * sizeof(uint32) + sizeof(uint16));
+			get2b(&currentGlyph.LeftSideBearing, data + hmtx_offset + glyphIndex * sizeof(uint32) + sizeof(uint16));
 		}
 		else
 		{
 			currentGlyph.AdvanceWidth = last_glyph_advance_width;
 		}
 
-		if (i != max_profile.numGlyphs - 1 && glyph_index[i] == glyph_index[i + 1])
+		if (glyphIndex != maximumProfile.numGlyphs - 1 && glyphIndices[glyphIndex] == glyphIndices[glyphIndex + 1])
 		{
-			glyphLoaded[i] = true;
+			glyphLoaded[glyphIndex] = true;
 			return -1;
 		}
 
-		if (glyph_index[i] >= end_of_glyf) { return -1; }
+		if (glyphIndices[glyphIndex] >= endOfGlyf) { return -1; }
 
-		uint32 currentOffset = glyf_offset + glyph_index[i];
+		uint32 currentOffset = glyf_offset + glyphIndices[glyphIndex];
 
-		get2b(&currentGlyph.NumContours, data + currentOffset); currentOffset += sizeof(int16);
-		get2b(&currentGlyph.BoundingBox[0], data + currentOffset); currentOffset += sizeof(int16); //xMin
-		get2b(&currentGlyph.BoundingBox[1], data + currentOffset); currentOffset += sizeof(int16); //yMin
-		get2b(&currentGlyph.BoundingBox[2], data + currentOffset); currentOffset += sizeof(int16); //xMax
-		get2b(&currentGlyph.BoundingBox[3], data + currentOffset); currentOffset += sizeof(int16); //yMax
+		get2b(&currentGlyph.NumContours, data + currentOffset, currentOffset);
+		get2b(&currentGlyph.BoundingBox[0], data + currentOffset, currentOffset); //xMin
+		get2b(&currentGlyph.BoundingBox[1], data + currentOffset, currentOffset); //yMin
+		get2b(&currentGlyph.BoundingBox[2], data + currentOffset, currentOffset); //xMax
+		get2b(&currentGlyph.BoundingBox[3], data + currentOffset, currentOffset); //yMax
 
 		GTSL::Vector2 glyphCenter;
 		glyphCenter.X() = (currentGlyph.BoundingBox[0] + currentGlyph.BoundingBox[2]) / 2.0f;
@@ -667,16 +686,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 		currentGlyph.Center = glyphCenter;
 		
-		if (currentGlyph.NumContours > 0)
-		{ //Simple glyph
+		if (currentGlyph.NumContours > 0) //simple glyph
+		{
+			currentGlyph.Paths.Initialize(currentGlyph.NumContours, GetPersistentAllocator());
+			
 			std::vector<uint16> contourEnd(currentGlyph.NumContours);
 			
-			//currentGlyph.PathList.Resize(currentGlyph.NumContours);
-			//don't resize
-			//code expects resize to leave valid elements which our vector doesn't
-			//emplace elements as needed later to ensure valid elements
-			
-			for (uint16 j = 0; j < currentGlyph.NumContours; j++) { get2b(&contourEnd[j], data + currentOffset); currentOffset += sizeof(uint16); }
+			for (uint16 j = 0; j < currentGlyph.NumContours; j++) { get2b(&contourEnd[j], data + currentOffset, currentOffset); }
 			
 			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; contourIndex++)
 			{
@@ -707,9 +723,9 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			{
 				if (repeat == 0)
 				{
-					get1b(&flags[j], data + currentOffset); currentOffset += sizeof(uint8_t);
+					get1b(&flags[j], data + currentOffset, currentOffset);
 					
-					if (flags[j] & 0x8) { get1b(&repeat, data + currentOffset); currentOffset += sizeof(uint8_t); }
+					if (flags[j] & 0x8) { get1b(&repeat, data + currentOffset, currentOffset); }
 				}
 				else
 				{
@@ -746,11 +762,11 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				{
 					if (flagsEnum[j].xShort)
 					{
-						get1b(&glyphPoints[j].X, data + currentOffset); currentOffset += 1;
+						get1b(&glyphPoints[j].X, data + currentOffset, currentOffset);
 					}
 					else
 					{
-						get2b(&glyphPoints[j].X, data + currentOffset); currentOffset += 2;
+						get2b(&glyphPoints[j].X, data + currentOffset, currentOffset);
 					}
 
 					if (flagsEnum[j].xShort && !flagsEnum[j].xDual) { glyphPoints[j].X *= -1; }
@@ -769,11 +785,11 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				{
 					if (flagsEnum[j].yShort)
 					{
-						get1b(&glyphPoints[j].Y, data + currentOffset); currentOffset += 1;
+						get1b(&glyphPoints[j].Y, data + currentOffset, currentOffset);
 					}
 					else
 					{
-						get2b(&glyphPoints[j].Y, data + currentOffset); currentOffset += 2;
+						get2b(&glyphPoints[j].Y, data + currentOffset, currentOffset);
 					}
 					
 					if (flagsEnum[j].yShort && !flagsEnum[j].yDual) { glyphPoints[j].Y *= -1; }
@@ -786,7 +802,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; ++contourIndex)
 			{
 				currentGlyph.Paths.EmplaceBack();
-				currentGlyph.Paths[contourIndex].Initialize(64, GetPersistentAllocator());
+				currentGlyph.Paths[contourIndex].Initialize(pointsInContour[contourIndex], GetPersistentAllocator());
 				
 				const uint16 numPointsInContour = pointsInContour[contourIndex];
 
@@ -797,8 +813,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				//If the first point is control point
 				while(contourPointsFlags[pointsPerContour[contourIndex][pointInIndices]].isControlPoint) { ++pointInIndices; }
 				
-				bool lastPointWasControlPoint = false;
-				bool thisPointIsControlPoint = false;
+				bool lastPointWasControlPoint = false, thisPointIsControlPoint = false;
 
 				Segment currentCurve;
 				currentCurve.Points[0] = toVector(glyphPoints[pointsPerContour[contourIndex][pointInIndices]]); //what if no more points
@@ -988,23 +1003,20 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			}
 		}
 
-		glyphLoaded[i] = true;
+		glyphLoaded[glyphIndex] = true;
 
 		return 0;
 	};
 
-	for (uint16 i = 0; i < max_profile.numGlyphs; i++)
-	{
-		parseGlyph(i, parseGlyph);
-	}
+	for (uint16 i = 0; i < maximumProfile.numGlyphs; i++) { parseGlyph(i, parseGlyph); }
 
 	//Kerning table
 	if (kernOffset)
 	{
 		uint32 currentOffset = kernOffset;
 		uint16 kern_table_version, num_kern_subtables;
-		get2b(&kern_table_version, data + currentOffset); currentOffset += sizeof(uint16);
-		get2b(&num_kern_subtables, data + currentOffset); currentOffset += sizeof(uint16);
+		get2b(&kern_table_version, data + currentOffset, currentOffset);
+		get2b(&num_kern_subtables, data + currentOffset, currentOffset);
 		uint16 kern_length = 0;
 		uint32 kernStartOffset = currentOffset;
 
@@ -1013,27 +1025,27 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			uint16 kerningVersion, kerningCoverage;
 			currentOffset = kernStartOffset + kern_length;
 			kernStartOffset = currentOffset;
-			get2b(&kerningVersion, data + currentOffset); currentOffset += sizeof(uint16);
-			get2b(&kern_length, data + currentOffset); currentOffset += sizeof(uint16);
+			get2b(&kerningVersion, data + currentOffset, currentOffset);
+			get2b(&kern_length, data + currentOffset, currentOffset);
 			if (kerningVersion != 0)
 			{
 				currentOffset += kern_length - sizeof(uint16) * 3;
 				continue;
 			}
-			get2b(&kerningCoverage, data + currentOffset); currentOffset += sizeof(uint16);
+			get2b(&kerningCoverage, data + currentOffset, currentOffset);
 
 			uint16 num_kern_pairs;
-			get2b(&num_kern_pairs, data + currentOffset); currentOffset += sizeof(uint16);
+			get2b(&num_kern_pairs, data + currentOffset, currentOffset);
 			currentOffset += sizeof(uint16) * 3;
 			for (uint16 kern_index = 0; kern_index < num_kern_pairs; kern_index++)
 			{
 				uint16 kern_left, kern_right;
 				int16 kern_value;
-				get2b(&kern_left, data + currentOffset); currentOffset += sizeof(uint16);
-				get2b(&kern_right, data + currentOffset); currentOffset += sizeof(uint16);
-				get2b(&kern_value, data + currentOffset); currentOffset += sizeof(int16);
+				get2b(&kern_left, data + currentOffset, currentOffset);
+				get2b(&kern_right, data + currentOffset, currentOffset);
+				get2b(&kern_value, data + currentOffset, currentOffset);
 
-				fontData->KerningTable[(kern_left << 16) | kern_right] = kern_value;
+				fontData->KerningTable.Emplace((kern_left << 16) | kern_right, kern_value);
 			}
 		}
 	}

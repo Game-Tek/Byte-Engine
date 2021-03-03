@@ -12,6 +12,7 @@
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/MaterialSystem.h"
+#include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/UIManager.h"
 #include "ByteEngine/Sound/AudioSystem.h"
@@ -205,18 +206,18 @@ void Game::PostInitialize()
 	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
+	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 	
 	{
-		MaterialSystem::CreateMaterialInfo createMaterialInfo;
+		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
 		createMaterialInfo.RenderSystem = renderSystem;
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
-		material = material_system->CreateMaterial(createMaterialInfo);
+		material = renderOrchestrator->CreateMaterial(createMaterialInfo);
 	}
 
 	audioEmitter = audioSystem->CreateAudioEmitter();
@@ -232,8 +233,8 @@ void Game::PostInitialize()
 	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
 	//}//
 
-	auto hydrantMaterialInstance = material_system->GetMaterialHandle("hydrantMat");
-	auto tvMaterialInstance = material_system->GetMaterialHandle("tvMat");
+	auto hydrantMaterialInstance = renderOrchestrator->GetMaterialHandle("hydrantMat");
+	auto tvMaterialInstance = renderOrchestrator->GetMaterialHandle("tvMat");
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -255,7 +256,7 @@ void Game::PostInitialize()
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 	
-	//{
+	//{//
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });

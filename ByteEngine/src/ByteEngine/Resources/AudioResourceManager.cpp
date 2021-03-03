@@ -39,7 +39,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			if (!audioResourceInfos.Find(hashed_name()))
 			{
 				GTSL::File query_file;
-				query_file.OpenFile(file_path, static_cast<uint8>(GTSL::File::AccessMode::READ), GTSL::File::OpenMode::LEAVE_CONTENTS);
+				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ);
 
 				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
 				

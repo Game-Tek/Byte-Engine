@@ -179,11 +179,11 @@ inline IndexType SelectIndexType(const uint64 indexSize)
 	}
 }
 
-inline TextureFormat ConvertFormat(const GAL::TextureFormat format)
+inline TextureFormat ConvertFormat(const GAL::Format format)
 {
 	if constexpr (API == GAL::RenderAPI::VULKAN)
 	{
-		return GAL::TextureFormatToVulkanTextureFormat(format);
+		return GAL::FormatToVulkanTextureFormat(format);
 	}
 }
 

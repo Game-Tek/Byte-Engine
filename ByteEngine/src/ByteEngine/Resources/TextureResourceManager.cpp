@@ -56,14 +56,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 				TextureInfo texture_info;
 
-				switch (finalChannelCount)
-				{
-				case 1: texture_info.Format = GAL::TextureFormat::R_I8; break;
-				case 2: texture_info.Format = GAL::TextureFormat::RG_I8; break;
-				case 3: texture_info.Format = GAL::TextureFormat::RGB_I8; break;
-				case 4: texture_info.Format = GAL::TextureFormat::RGBA_I8; break;
-				default: BE_ASSERT(false, "Non valid texture format count!");
-				}
+				texture_info.Format = GAL::FormatDescriptor(GAL::ComponentType::INT, finalChannelCount, 8, GAL::TextureType::COLOR, 0, 1, 2, 3);
 
 				texture_info.ByteOffset = static_cast<uint32>(packageFile.GetFileSize());
 

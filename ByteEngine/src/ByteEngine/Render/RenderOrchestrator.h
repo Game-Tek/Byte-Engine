@@ -87,6 +87,19 @@ public:
 
 	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const SystemHandle systemReference);
 	void RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const SystemHandle systemReference);
+
+	struct CreateMaterialInfo
+	{
+		Id MaterialName;
+		MaterialResourceManager* MaterialResourceManager = nullptr;
+		GameInstance* GameInstance = nullptr;
+		RenderSystem* RenderSystem = nullptr;
+		TextureResourceManager* TextureResourceManager;
+	};
+	[[nodiscard]] MaterialInstanceHandle CreateMaterial(const CreateMaterialInfo& info);
+	[[nodiscard]] MaterialInstanceHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
+
+	MaterialInstanceHandle GetMaterialHandle(Id name) { return name; }
 	
 	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
 	{
@@ -166,38 +179,26 @@ public:
 	 */
 	void ToggleRenderPass(Id renderPassName, bool enable);
 
-	void AddToRenderPass(Id renderPass, Id renderGroup)
-	{
-		if(renderPassesMap.Find(renderPass()))
-		{
-			renderPassesMap.At(renderPass()).RenderGroups.EmplaceBack(renderGroup);
-		}
-	}
+	void AddToRenderPass(Id renderPass, Id renderGroup);
 
-	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle)
-	{
-		auto result = loadedMaterialInstances.TryGet(materialHandle());
-
-		if (result.State()) [[likely]] {
-			result.Get().Meshes.EmplaceBack(meshHandle, 1);
-		}
-		else
-		{
-			auto awaitingResult = awaitingMaterialInstances.TryEmplace(materialHandle());
-
-			if (awaitingResult.State()) {
-				awaitingResult.Get().Meshes.Initialize(8, GetPersistentAllocator());
-			}
-			
-			awaitingResult.Get().Meshes.EmplaceBack(meshHandle, 1);
-		}
-	}
+	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle);
 
 	MAKE_HANDLE(uint8, IndexStream)
 	
 	IndexStreamHandle AddIndexStream() { return IndexStreamHandle(renderState.IndexStreams.EmplaceBack(0)); }
 	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
 	void PopIndexStream(IndexStreamHandle indexStreamHandle) { renderState.IndexStreams[indexStreamHandle()] = 0; renderState.IndexStreams.PopBack(); }
+
+	void BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer);
+
+	void PopData() { renderState.Offset -= 4; }
+
+	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
+
+private:
+	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
+	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
+	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
 	SubSetHandle renderGroupsSubSet;
 	SubSetHandle renderPassesSubSet;
@@ -207,15 +208,13 @@ public:
 	BufferHandle cameraDataBuffer;
 	BufferHandle globalDataBuffer;
 	MemberHandle globalDataHandle;
+	SubSetHandle textureSubsetsHandle;
+	SubSetHandle imagesSubsetHandle;
+	SubSetHandle topLevelAsHandle;
 
-	void BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer);
 
-	void PopData() { renderState.Offset -= 4; }
-
-private:
-	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
-	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
-	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
+	RayTracingPipeline rayTracingPipeline;
+	MemberHandle sbtMemberHandle;
 
 	struct RenderGroupData
 	{
@@ -258,19 +257,6 @@ private:
 	
 	GTSL::Array<Id, 8> renderPasses;
 
-	struct MaterialData
-	{
-		Id MaterialName;
-		GTSL::Vector<Id, BE::PAR> MaterialInstances;
-	};
-	GTSL::FlatHashMap<MaterialData, BE::PAR> readyMaterials;
-
-	struct MaterialInstanceData
-	{
-		GTSL::Vector<GTSL::Pair<RenderSystem::MeshHandle, uint16>, BE::PAR> Meshes;
-	};
-	GTSL::FlatHashMap<MaterialInstanceData, BE::PAR> loadedMaterialInstances, awaitingMaterialInstances;
-
 	struct AttachmentData
 	{
 		Id Name;
@@ -309,8 +295,123 @@ private:
 
 	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, Id renderPassId);
 
-	void onMaterialLoad(TaskInfo taskInfo, Id materialName);
-	void onMaterialInstanceLoad(TaskInfo taskInfo, Id materialName, Id materialInstanceName);
+	struct ShaderLoadInfo
+	{
+		ShaderLoadInfo() = default;
+		ShaderLoadInfo(ShaderLoadInfo&& other) noexcept : Buffer(GTSL::MoveRef(other.Buffer)), Component(other.Component) {}
+		GTSL::Buffer<BE::PAR> Buffer; uint32 Component;
+	};
+
+	void onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo);
+	void onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
+
+	void traceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+	
+	//MATERIAL STUFF
+
+	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
+
+	uint32 shaderCounts[4]{ 0 };
+	uint32 entrySizes[4]{ 0 };
+	
+	struct PrivateMaterialHandle
+	{
+		uint32 MaterialIndex = 0, MaterialInstance = 0;
+	};
+
+	uint32 textureIndex = 0;
+	
+	struct CreateTextureInfo
+	{
+		Id TextureName;
+		GameInstance* GameInstance = nullptr;
+		RenderSystem* RenderSystem = nullptr;
+		TextureResourceManager* TextureResourceManager = nullptr;
+		PrivateMaterialHandle MaterialHandle;
+	};
+	uint32 createTexture(const CreateTextureInfo& createTextureInfo);
+	
+	struct MaterialLoadInfo
+	{
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, uint32 instanceIndex, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), InstanceIndex(instanceIndex), TextureResourceManager(tRM)
+		{
+
+		}
+
+		RenderSystem* RenderSystem = nullptr;
+		GTSL::Buffer<BE::PAR> Buffer;
+		uint32 Component, InstanceIndex;
+		TextureResourceManager* TextureResourceManager;
+	};
+	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
+
+	//struct MaterialInstanceData
+	//{
+	//	
+	//};
+	
+	struct MaterialData
+	{
+		MaterialHandle Name;
+
+		GTSL::KeepVector<uint32, BE::PAR> MaterialInstances;
+
+		RasterizationPipeline Pipeline;
+		Id RenderGroup;
+		uint32 InstanceCount = 0;
+
+		GTSL::StaticMap<MemberHandle, 16> ParametersHandles;
+
+		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
+		MemberHandle MaterialInstancesMemberHandle;
+	};
+	GTSL::KeepVector<MaterialData, BE::PAR> materials;
+	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterials;
+
+	struct MaterialInstanceData
+	{
+		MaterialInstanceHandle Name;
+
+		uint32 Material = 0;
+		uint8 Counter = 0, Target = 0;
+		GTSL::Vector<GTSL::Pair<RenderSystem::MeshHandle, uint16>, BE::PAR> Meshes;
+	};
+	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
+	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterialInstances;
+	GTSL::FlatHashMap<MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
+	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesByName;
+
+	//PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialInstanceHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
+
+	struct TextureLoadInfo
+	{
+		TextureLoadInfo() = default;
+
+		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
+		{
+		}
+
+		uint32 Component;
+		Buffer Buffer;
+		RenderSystem* RenderSystem;
+		RenderAllocation RenderAllocation;
+	};
+	void onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
+	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
+	
+	//MATERIAL STUFF
+
+	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
+
+	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
+	GTSL::KeepVector<GTSL::Vector<PrivateMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
+
+	void setMaterialInstanceAsLoaded(const PrivateMaterialHandle privateMaterialHandle, const MaterialInstanceHandle materialInstanceHandle);
+	
+	void addPendingMaterialToTexture(uint32 texture, PrivateMaterialHandle material)
+	{
+		pendingMaterialsPerTexture[texture].EmplaceBack(material);
+	}
 	
 	struct APIRenderPassData
 	{
@@ -340,6 +441,7 @@ private:
 		bool WriteAccess = false;
 		GTSL::RGBA ClearColor;
 		GAL::FormatDescriptor FormatDescriptor;
+		uint32 ImageIndex;
 	};
 	GTSL::StaticMap<Attachment, 32> attachments;
 
@@ -347,4 +449,9 @@ private:
 	{
 		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.WriteAccess = writeAccess;
 	}
+
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, ::RenderOrchestrator::TextureLoadInfo> onTextureInfoLoadHandle;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, ::RenderOrchestrator::TextureLoadInfo> onTextureLoadHandle;
+	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
+	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoadHandle;
 };

@@ -9,6 +9,7 @@
 #include <GTSL/PagedVector.h>
 #include <GTSL/Tree.hpp>
 
+#include "RenderSystem.h"
 #include "RenderTypes.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Resources/MaterialResourceManager.h"
@@ -18,7 +19,6 @@
 
 class TextureResourceManager;
 struct TaskInfo;
-class RenderSystem;
 
 using MaterialInstanceHandle = Id;
 using MaterialHandle = Id;
@@ -47,8 +47,6 @@ class MaterialSystem : public System
 public:
 	MaterialSystem() : System("MaterialSystem")
 	{}
-
-	MAKE_HANDLE(uint32, Texture);
 	
 	struct Member
 	{
@@ -128,25 +126,8 @@ public:
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
 
-	void WriteSetTexture(SubSetHandle setHandle, TextureHandle textureHandle, uint32 bindingIndex)
-	{
-		TextureLayout layout; BindingType bindingType;
-		if (true) { layout = TextureLayout::GENERAL; bindingType = BindingType::STORAGE_IMAGE;  }
-		else { layout = TextureLayout::SHADER_READ_ONLY; bindingType = BindingType::COMBINED_IMAGE_SAMPLER; }
+	void WriteSetTexture(const RenderSystem* renderSystem, SubSetHandle setHandle, RenderSystem::TextureHandle textureHandle, uint32 bindingIndex);
 
-		auto& texture = textures[textureHandle()];
-		
-		for(uint8 f = 0; f < queuedFrames; ++f)
-		{
-			BindingsSet::TextureBindingUpdateInfo info;
-			info.TextureView = texture.TextureView;
-			info.Sampler = texture.TextureSampler;
-			info.TextureLayout = layout;
-			
-			descriptorsUpdates[f].AddTextureUpdate(setHandle, bindingIndex, info);
-		}
-	}
-	
 	struct MemberInfo : Member
 	{
 		MemberHandle* Handle;
@@ -181,12 +162,6 @@ public:
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id setLayoutName, const GTSL::Range<SubSetInfo*> setInfo);
 
 	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members);
-	[[nodiscard]] TextureHandle CreateTexture(RenderSystem* renderSystem, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses);
-
-	void RecreateTexture(const TextureHandle textureHandle, RenderSystem* renderSystem, GTSL::Extent3D newExtent);
-	
-	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
-	Texture GetTexture(const TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
 	
 	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name(), bufferHandle()); }
 	
@@ -431,18 +406,6 @@ private:
 	GTSL::FlatHashMap<SetLayoutData, BE::PAR> setLayoutDatas;
 	
 	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
-
-	struct TextureComponent
-	{
-		Texture Texture;
-		TextureView TextureView;
-		TextureSampler TextureSampler;
-		RenderAllocation Allocation;
-
-		GAL::FormatDescriptor FormatDescriptor;
-		TextureUses Uses;
-	};
-	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 	
 	uint8 frame;
 	uint8 queuedFrames = 2;
@@ -450,6 +413,4 @@ private:
 	SetHandle makeSetEx(RenderSystem* renderSystem, Id setName, Id setLayoutName, GTSL::Range<BindingsSetLayout::BindingDescriptor*> bindingDescriptors);
 	
 	void resizeSet(RenderSystem* renderSystem, SetHandle setHandle);
-	
-	friend class RenderSystem;
 };

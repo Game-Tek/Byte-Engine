@@ -5,7 +5,6 @@
 #include <GTSL/Pair.h>
 #include <GTSL/FunctionPointer.hpp>
 
-#include "MaterialSystem.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -14,11 +13,11 @@
 
 #include "ByteEngine/Handle.hpp"
 
-#include "ByteEngine/Render/MaterialSystem.h"
-
 namespace GTSL {
 	class Window;
 }
+
+using MaterialInstanceHandle = Id;
 
 class RenderSystem : public System
 {
@@ -29,6 +28,8 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	void Wait();
+
+	MAKE_HANDLE(uint32, Texture);
 	
 	void UpdateInstanceTransform(const uint32 i, const GTSL::Matrix4& matrix4)
 	{
@@ -42,28 +43,22 @@ public:
 	};
 	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
-	struct AllocateLocalTextureMemoryInfo
-	{
-		Texture* Texture;
-		Texture::CreateInfo* CreateInfo;
-		RenderAllocation* Allocation;
-	};
-	void AllocateLocalTextureMemory(AllocateLocalTextureMemoryInfo& allocationInfo)
-	{		
+	void AllocateLocalTextureMemory(uint32 size, Texture* texture, Texture::CreateInfo& createInfo, RenderAllocation* allocation)
+	{	
 		Texture::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = allocationInfo.CreateInfo;
-		allocationInfo.Texture->GetMemoryRequirements(&memoryRequirements);
+		memoryRequirements.CreateInfo = &createInfo;
+		texture->GetMemoryRequirements(&memoryRequirements);
 		
-		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
+		allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &createInfo.Memory, allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
-		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
+		createInfo.Offset = allocation->Offset;
 		
-		allocationInfo.Texture->Initialize(*allocationInfo.CreateInfo);
+		texture->Initialize(createInfo);
 	}
 	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
 	{
@@ -108,13 +103,6 @@ public:
 
 		*scratchSize = memoryScratchSize;
 	}
-	
-	struct BufferScratchMemoryAllocationInfo
-	{
-		Buffer* Buffer;
-		Buffer::CreateInfo* CreateInfo;
-		RenderAllocation* Allocation = nullptr;
-	};
 
 	struct BufferLocalMemoryAllocationInfo
 	{
@@ -123,22 +111,24 @@ public:
 		RenderAllocation* Allocation;
 	};
 	
-	void AllocateScratchBufferMemory(BufferScratchMemoryAllocationInfo& allocationInfo)
+	void AllocateScratchBufferMemory(uint32 size, Buffer* buffer, Buffer::CreateInfo& createInfo, RenderAllocation* allocation)
 	{
+		createInfo.Size = size;
+		
 		Buffer::GetMemoryRequirementsInfo memoryRequirements;
 		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = allocationInfo.CreateInfo;
-		allocationInfo.Buffer->GetMemoryRequirements(&memoryRequirements);
+		memoryRequirements.CreateInfo = &createInfo;
+		buffer->GetMemoryRequirements(&memoryRequirements);
 		
-		allocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
+		allocation->Size = memoryRequirements.MemoryRequirements.Size;
 		
 		testMutex.Lock();
-		scratchMemoryAllocator.AllocateLinearMemory(renderDevice,	&allocationInfo.CreateInfo->Memory, allocationInfo.Allocation, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateLinearMemory(renderDevice, &createInfo.Memory, allocation, GetPersistentAllocator());
 		testMutex.Unlock();
 
-		allocationInfo.CreateInfo->Offset = allocationInfo.Allocation->Offset;
+		createInfo.Offset = allocation->Offset;
 		
-		allocationInfo.Buffer->Initialize(*allocationInfo.CreateInfo);
+		buffer->Initialize(createInfo);
 	}
 	
 	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
@@ -184,6 +174,8 @@ public:
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
 
+
+	
 	struct TextureCopyData
 	{
 		Buffer SourceBuffer;
@@ -267,6 +259,15 @@ public:
 
 	void SetWindow(GTSL::Window* window) { this->window = window; }
 
+	[[nodiscard]] TextureHandle CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses, bool updatable);
+	void UpdateTexture(const TextureHandle textureHandle);
+	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle) { return GTSL::Range<byte*>(textures[textureHandle()].ScratchAllocation.Size, static_cast<byte*>(textures[textureHandle()].ScratchAllocation.Data)); }
+	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const { return GTSL::Range<const byte*>(textures[textureHandle()].ScratchAllocation.Size, static_cast<const byte*>(textures[textureHandle()].ScratchAllocation.Data)); }
+
+	Texture GetTexture(const TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
+	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
+	TextureSampler GetTextureSampler(const TextureHandle handle) const { return textures[handle()].TextureSampler; }
+
 private:
 	GTSL::Window* window;
 	
@@ -285,7 +286,7 @@ private:
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
 	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
-	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
+	//GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 	
 	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
 	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
@@ -401,4 +402,19 @@ private:
 
 	uint32 shaderGroupAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;
+
+	struct TextureComponent
+	{
+		Texture Texture;
+		TextureView TextureView;
+		TextureSampler TextureSampler;
+		RenderAllocation Allocation, ScratchAllocation;
+
+		GAL::FormatDescriptor FormatDescriptor;
+		TextureUses Uses;
+		Buffer ScratchBuffer;
+		TextureLayout Layout;
+		GTSL::Extent3D Extent;
+	};
+	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 };

@@ -329,9 +329,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	
 	texturesRefTable.Initialize(32, GetPersistentAllocator());
 	pendingMaterialsPerTexture.Initialize(8, GetPersistentAllocator());
-	
-	//materialInstancesMap.Initialize(32, GetPersistentAllocator());
-	//privateMaterialHandlesByName.Initialize(32, GetPersistentAllocator());
+	latestLoadedTextures.Initialize(8, GetPersistentAllocator());
 	 
 	// MATERIALS
 	
@@ -772,14 +770,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			auto& attachment = attachments.At(resultAttachment());
 
 			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
-			barriers[0].SetTextureBarrier({ materialSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
+			barriers[0].SetTextureBarrier({ renderSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, attachment.ConsumingStages, PipelineStage::TRANSFER, GetTransientAllocator());
 
 			updateImage(attachment, TextureLayout::TRANSFER_SRC, PipelineStage::TRANSFER, false);
 		}
 
 			
-		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), materialSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle),
+		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), renderSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle),
 		renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_SRC, TextureLayout::TRANSFER_DST,
 			GTSL::Extent3D(renderSystem->GetRenderExtent()));
 
@@ -1244,13 +1242,17 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 	auto resize = [&](Attachment& attachment) -> void
 	{
 		if(attachment.TextureHandle) {
-			materialSystem->RecreateTexture(attachment.TextureHandle, renderSystem, newSize);			
+			attachment.TextureHandle = renderSystem->CreateTexture(attachment.FormatDescriptor, newSize, attachment.Uses, false);
 		}
 		else {
-			attachment.TextureHandle = materialSystem->CreateTexture(renderSystem, attachment.FormatDescriptor, newSize, attachment.Uses);
-			attachment.ImageIndex = textureIndex++;
+			attachment.TextureHandle = renderSystem->CreateTexture(attachment.FormatDescriptor, newSize, attachment.Uses, false);
+			attachment.ImageIndex = imageIndex++;
 		}
-		
+
+		if(attachment.FormatDescriptor.Type == GAL::TextureType::COLOR)
+		{
+			materialSystem->WriteSetTexture(renderSystem, imagesSubsetHandle, attachment.TextureHandle, attachment.ImageIndex);
+		}
 	};
 
 	renderSystem->Wait();
@@ -1269,7 +1271,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 		if constexpr (_DEBUG) { framebufferCreateInfo.Name = GTSL::StaticString<32>("FrameBuffer"); }
 
 		GTSL::Array<TextureView, 16> textureViews;
-		for (auto e : apiRenderPassData.UsedAttachments) { textureViews.EmplaceBack(materialSystem->GetTextureView(attachments.At(e()).TextureHandle)); }
+		for (auto e : apiRenderPassData.UsedAttachments) { textureViews.EmplaceBack(renderSystem->GetTextureView(attachments.At(e()).TextureHandle)); }
 
 		framebufferCreateInfo.TextureViews = textureViews;
 		framebufferCreateInfo.RenderPass = &apiRenderPassData.RenderPass;
@@ -1503,7 +1505,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 		auto& attachment = attachments.At(attachmentData.Name());
 
 		CommandBuffer::TextureBarrier textureBarrier;
-		textureBarrier.Texture = materialSystem->GetTexture(attachment.TextureHandle);
+		textureBarrier.Texture = renderSystem->GetTexture(attachment.TextureHandle);
 		textureBarrier.CurrentLayout = attachment.Layout;
 		textureBarrier.TextureType = attachment.Type;
 		textureBarrier.TargetLayout = attachmentData.Layout;
@@ -1707,7 +1709,6 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 	{
 		++material.InstanceCount;
 		//UpdateObjectCount(renderSystem, material., material.InstanceCount); //assuming every material uses the same set instance, not index
-		material.MaterialInstances.Emplace();
 
 		auto materialInstanceIndex = materialInstances.Emplace();
 		materialInstancesByName.Emplace(resourceMaterialInstance.Name(), materialInstanceIndex);
@@ -1776,35 +1777,9 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager,
 	TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
 {
-	Buffer::CreateInfo scratchBufferCreateInfo;
-	scratchBufferCreateInfo.RenderDevice = loadInfo.RenderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) {
-		GTSL::StaticString<64> name("Scratch Buffer. Texture: "); name += textureInfo.Name;
-		scratchBufferCreateInfo.Name = name;
-	}
+	loadInfo.TextureHandle = loadInfo.RenderSystem->CreateTexture(textureInfo.Format, textureInfo.Extent, TextureUse::SAMPLE | TextureUse::COLOR_ATTACHMENT, true);
 
-	//{
-	//	RenderDevice::FindSupportedImageFormat findFormatInfo;
-	//	findFormatInfo.TextureTiling = TextureTiling::OPTIMAL;
-	//	findFormatInfo.TextureUses = TextureUse::TRANSFER_DESTINATION | TextureUse::SAMPLE;
-	//	GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-	//	findFormatInfo.Candidates = candidates;
-	//	const auto supportedFormat = loadInfo.RenderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormatInfo);
-	//
-	//	scratchBufferCreateInfo.Size = textureInfo.GetTextureSize();
-	//}
-
-	scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
-
-	{
-		RenderSystem::BufferScratchMemoryAllocationInfo scratchMemoryAllocation;
-		scratchMemoryAllocation.Buffer = &loadInfo.Buffer;
-		scratchMemoryAllocation.CreateInfo = &scratchBufferCreateInfo;
-		scratchMemoryAllocation.Allocation = &loadInfo.RenderAllocation;
-		loadInfo.RenderSystem->AllocateScratchBufferMemory(scratchMemoryAllocation);
-	}
-
-	auto dataBuffer = GTSL::Range<byte*>(loadInfo.RenderAllocation.Size, static_cast<byte*>(loadInfo.RenderAllocation.Data));
+	auto dataBuffer = loadInfo.RenderSystem->GetTextureRange(loadInfo.TextureHandle);
 
 	resourceManager->LoadTexture(taskInfo.GameInstance, textureInfo, dataBuffer, onTextureLoadHandle, GTSL::MoveRef(loadInfo));
 }
@@ -1814,9 +1789,9 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 {
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	
-	auto textureHandle = materialSystem->CreateTexture(loadInfo.RenderSystem, textureInfo.Format, textureInfo.Extent, TextureUse::COLOR_ATTACHMENT);
+	loadInfo.RenderSystem->UpdateTexture(loadInfo.TextureHandle);
 
-	materialSystem->WriteSetTexture(imagesSubsetHandle, textureHandle, textureIndex++);
+	materialSystem->WriteSetTexture(loadInfo.RenderSystem, textureSubsetsHandle, loadInfo.TextureHandle, loadInfo.Component);
 	
 	latestLoadedTextures.EmplaceBack(loadInfo.Component);
 }
@@ -1825,8 +1800,8 @@ void RenderOrchestrator::setMaterialInstanceAsLoaded(const PrivateMaterialHandle
 {
 	//readyMaterials.EmplaceBack(privateMaterialHandle.MaterialInstance);
 
-	auto& material = materials[privateMaterialHandle.MaterialInstance];
-	material.MaterialInstances.Emplace(privateMaterialHandle.MaterialInstance);
+	auto& material = materials[privateMaterialHandle.MaterialIndex];
+	material.MaterialInstances.EmplaceBack(privateMaterialHandle.MaterialInstance);
 	
 	{
 		auto result = awaitingMaterialInstances.TryGet(materialInstanceHandle());

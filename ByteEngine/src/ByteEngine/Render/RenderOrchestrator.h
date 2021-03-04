@@ -319,7 +319,7 @@ private:
 		uint32 MaterialIndex = 0, MaterialInstance = 0;
 	};
 
-	uint32 textureIndex = 0;
+	uint32 textureIndex = 0, imageIndex = 0;
 	
 	struct CreateTextureInfo
 	{
@@ -354,7 +354,7 @@ private:
 	{
 		MaterialHandle Name;
 
-		GTSL::KeepVector<uint32, BE::PAR> MaterialInstances;
+		GTSL::Vector<uint32, BE::PAR> MaterialInstances;
 
 		RasterizationPipeline Pipeline;
 		Id RenderGroup;
@@ -395,6 +395,7 @@ private:
 		Buffer Buffer;
 		RenderSystem* RenderSystem;
 		RenderAllocation RenderAllocation;
+		RenderSystem::TextureHandle TextureHandle;
 	};
 	void onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
 	void onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
@@ -431,7 +432,7 @@ private:
 
 	struct Attachment
 	{
-		MaterialSystem::TextureHandle TextureHandle;
+		RenderSystem::TextureHandle TextureHandle;
 
 		Id Name;
 		TextureType::value_type Type;

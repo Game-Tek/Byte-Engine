@@ -48,7 +48,7 @@ public:
 		
 		uint32 GetTextureSize()
 		{
-			return Format.BitDepth * Format.ComponentCount * Extent.Width * Extent.Height * Extent.Depth;
+			return Format.GetSize() * Extent.Width * Extent.Height * Extent.Depth;
 		}
 	};
 	

@@ -22,6 +22,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	geometries.Initialize(32, GetPersistentAllocator());
 	meshes.Initialize(32, GetPersistentAllocator());
 	addedMeshes.Initialize(32, GetPersistentAllocator());
+
+	textures.Initialize(32, GetPersistentAllocator());
 	
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
@@ -88,12 +90,8 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 				buffer.RenderDevice = GetRenderDevice();
 				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
 				buffer.BufferType = BufferType::ADDRESS;
-
-				BufferScratchMemoryAllocationInfo allocationInfo;
-				allocationInfo.Allocation = &instancesAllocation[i];
-				allocationInfo.Buffer = &instancesBuffer[i];
-				allocationInfo.CreateInfo = &buffer;
-				AllocateScratchBufferMemory(allocationInfo);
+				
+				AllocateScratchBufferMemory(MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance), &instancesBuffer[i], buffer, &topLevelAccelerationStructureAllocation[i]);
 			}
 
 			{				
@@ -141,7 +139,7 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 	
 	for (uint32 i = 0; i < pipelinedFrames; ++i)
 	{
-		processedTextureCopies.EmplaceBack(0);
+		//processedTextureCopies.EmplaceBack(0);
 		processedBufferCopies.EmplaceBack(0);
 		
 		Semaphore::CreateInfo semaphoreCreateInfo;
@@ -401,12 +399,8 @@ RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 vertexCount, u
 	createInfo.RenderDevice = GetRenderDevice();
 	createInfo.BufferType = BufferType::VERTEX | BufferType::INDEX | BufferType::ADDRESS | BufferType::TRANSFER_SOURCE | BufferType::BUILD_INPUT_READ_ONLY | BufferType::STORAGE;
 	createInfo.Size = meshSize;
-
-	BufferScratchMemoryAllocationInfo bufferLocal;
-	bufferLocal.CreateInfo = &createInfo;
-	bufferLocal.Allocation = &mesh.MeshAllocation;
-	bufferLocal.Buffer = &mesh.Buffer;
-	AllocateScratchBufferMemory(bufferLocal);
+	
+	AllocateScratchBufferMemory(meshSize, &mesh.Buffer, createInfo, &mesh.MeshAllocation);
 
 	return addMesh(mesh);
 }
@@ -769,14 +763,14 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 		//	DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
 		//}
 
-		for(uint32 i = 0; i < processedTextureCopies[GetCurrentFrame()]; ++i)
-		{
-			textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
-			DeallocateScratchBufferMemory(textureCopyData[i].Allocation);
-		}
+		//for(uint32 i = 0; i < processedTextureCopies[GetCurrentFrame()]; ++i)
+		//{
+		//	textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
+		//	DeallocateScratchBufferMemory(textureCopyData[i].Allocation);
+		//}
 		
 		bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
-		textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
+		//textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
 		//triangleDatas.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
 
 		Fence::ResetFencesInfo reset_fences_info;
@@ -817,34 +811,40 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	
 	{
 		auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
-		
-		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
-		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
-		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+		if (textureCopyData.GetLength())
 		{
-			sourceTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, 0, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
-			destinationTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::TRANSFER_DST, TextureLayout::SHADER_READ_ONLY, AccessFlags::TRANSFER_WRITE, AccessFlags::SHADER_READ, TextureType::COLOR });
-		}
 
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
-		
-		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
-		{
-			CommandBuffer::CopyBufferToTextureInfo copyBufferToImageInfo;
-			copyBufferToImageInfo.RenderDevice = GetRenderDevice();
-			copyBufferToImageInfo.DestinationTexture = textureCopyData[i].DestinationTexture;
-			copyBufferToImageInfo.Offset = { 0, 0, 0 };
-			copyBufferToImageInfo.Extent = textureCopyData[i].Extent;
-			copyBufferToImageInfo.SourceBuffer = textureCopyData[i].SourceBuffer;
-			copyBufferToImageInfo.TextureLayout = textureCopyData[i].Layout;
-			commandBuffer.CopyBufferToTexture(copyBufferToImageInfo);
-		}
-		
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, PipelineStage::TRANSFER, PipelineStage::FRAGMENT_SHADER | PipelineStage::RAY_TRACING_SHADER, GetTransientAllocator());
+			GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
+			GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
-		processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
+			for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+			{
+				sourceTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, 0, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+				destinationTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ textureCopyData[i].DestinationTexture, TextureLayout::TRANSFER_DST, TextureLayout::SHADER_READ_ONLY, AccessFlags::TRANSFER_WRITE, AccessFlags::SHADER_READ, TextureType::COLOR });
+			}
+
+			commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
+
+			for (uint32 i = 0; i < textureCopyData.GetLength(); ++i)
+			{
+				CommandBuffer::CopyBufferToTextureInfo copyBufferToImageInfo;
+				copyBufferToImageInfo.RenderDevice = GetRenderDevice();
+				copyBufferToImageInfo.DestinationTexture = textureCopyData[i].DestinationTexture;
+				copyBufferToImageInfo.Offset = { 0, 0, 0 };
+				copyBufferToImageInfo.Extent = textureCopyData[i].Extent;
+				copyBufferToImageInfo.SourceBuffer = textureCopyData[i].SourceBuffer;
+				copyBufferToImageInfo.TextureLayout = TextureLayout::TRANSFER_DST;// textureCopyData[i].Layout;
+				commandBuffer.CopyBufferToTexture(copyBufferToImageInfo);
+			}
+
+			commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, PipelineStage::TRANSFER, PipelineStage::ALL_GRAPHICS, GetTransientAllocator());
+			textureCopyDatas[GetCurrentFrame()].ResizeDown(0);
+		}
+			
+		//processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
 	}
+
 	
 	CommandBuffer::EndRecordingInfo endRecordingInfo;
 	endRecordingInfo.RenderDevice = &renderDevice;
@@ -860,6 +860,106 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		submit_info.SignalSemaphores = GTSL::Array<Semaphore, 1>{ transferDoneSemaphores[GetCurrentFrame()] };
 		transferQueue.Submit(submit_info);
 	//}
+}
+
+RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses, bool updatable)
+{
+	//RenderDevice::FindSupportedImageFormat findFormat;
+	//findFormat.TextureTiling = TextureTiling::OPTIMAL;
+	//findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
+	//GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+	//findFormat.Candidates = candidates;
+	//auto supportedFormat = renderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
+
+	//GAL::Texture::ConvertTextureFormat(textureInfo.Format, GAL::TextureFormat::RGBA_I8, textureInfo.Extent, GTSL::AlignedPointer<byte, 16>(buffer.begin()), 1);
+
+	TextureComponent textureComponent;
+
+	textureComponent.Extent = extent;
+	
+	textureComponent.FormatDescriptor = formatDescriptor;
+	auto format = static_cast<TextureFormat>(GAL::FormatToVkFomat(GAL::MakeFormatFromFormatDescriptor(formatDescriptor)));
+
+	auto textureDimensions = GAL::VulkanDimensionsFromExtent(extent);
+
+	textureComponent.Uses = textureUses;
+	if (updatable) { textureComponent.Uses |= TextureUse::TRANSFER_DESTINATION; }
+	
+	Texture::CreateInfo textureCreateInfo;
+	textureCreateInfo.RenderDevice = GetRenderDevice();
+	if constexpr (_DEBUG) {
+		GTSL::StaticString<64> name("Texture.");
+		textureCreateInfo.Name = name;
+	}
+
+	textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
+	textureCreateInfo.Uses = textureComponent.Uses;
+	textureCreateInfo.Dimensions = textureDimensions;
+	textureCreateInfo.Format = format;
+	textureCreateInfo.Extent = extent;
+	textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
+	textureCreateInfo.MipLevels = 1;
+
+	textureComponent.Layout = TextureLayout::UNDEFINED;
+
+	auto textureSize = extent.Width * extent.Height * extent.Depth * formatDescriptor.GetSize();
+	
+	if (updatable && needsStagingBuffer)
+	{
+		Buffer::CreateInfo scratchBufferCreateInfo;
+		scratchBufferCreateInfo.RenderDevice = GetRenderDevice();
+		scratchBufferCreateInfo.BufferType = BufferType::TRANSFER_SOURCE;
+		
+		AllocateScratchBufferMemory(textureSize, &textureComponent.ScratchBuffer, scratchBufferCreateInfo, &textureComponent.ScratchAllocation);
+	}
+	
+	AllocateLocalTextureMemory(textureSize, &textureComponent.Texture, textureCreateInfo, &textureComponent.Allocation);
+	
+	TextureView::CreateInfo textureViewCreateInfo;
+	textureViewCreateInfo.RenderDevice = GetRenderDevice();
+	if constexpr (_DEBUG) {
+		GTSL::StaticString<64> name("Texture view.");
+		textureViewCreateInfo.Name = name;
+	}
+
+	textureViewCreateInfo.Type = TextureAspectToVkImageAspectFlags(formatDescriptor.Type);
+	textureViewCreateInfo.Dimensions = textureDimensions;
+	textureViewCreateInfo.Format = format;
+	textureViewCreateInfo.Texture = textureComponent.Texture;
+	textureViewCreateInfo.MipLevels = 1;
+
+	textureComponent.TextureView = TextureView(textureViewCreateInfo);
+	
+	TextureSampler::CreateInfo textureSamplerCreateInfo;
+	textureSamplerCreateInfo.RenderDevice = GetRenderDevice();
+	if constexpr (_DEBUG) {
+		GTSL::StaticString<64> name("Texture sampler.");
+		textureSamplerCreateInfo.Name = name;
+	}
+
+	textureSamplerCreateInfo.Anisotropy = 0;
+
+	textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
+	
+	auto textureIndex = textures.Emplace(textureComponent);
+
+	return TextureHandle(textureIndex);
+}
+
+void RenderSystem::UpdateTexture(const TextureHandle textureHandle)
+{
+	const auto& texture = textures[textureHandle()];
+
+	TextureCopyData textureCopyData;
+	textureCopyData.Layout = texture.Layout;
+	textureCopyData.Extent = texture.Extent;
+	textureCopyData.Allocation = texture.Allocation;
+	textureCopyData.DestinationTexture = texture.Texture;
+	textureCopyData.SourceOffset = 0;
+	textureCopyData.SourceBuffer = texture.ScratchBuffer;
+	AddTextureCopy(textureCopyData);
+	
+	//TODO: QUEUE BUFFER DELETION
 }
 
 void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const

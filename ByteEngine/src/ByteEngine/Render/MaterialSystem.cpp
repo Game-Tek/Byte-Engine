@@ -49,8 +49,6 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	
 	setHandlesByName.Initialize(16, GetPersistentAllocator());
 	setLayoutDatas.Initialize(16, GetPersistentAllocator());
-
-	textures.Initialize(32, GetPersistentAllocator());
 	
 	sets.Initialize(16, GetPersistentAllocator());
 	
@@ -83,6 +81,32 @@ void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBu
 	
 		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), pipelineType, GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]),
 			GTSL::Range<const uint32*>(), set.PipelineLayout, set.Level);
+	}
+}
+
+void MaterialSystem::WriteSetTexture(const RenderSystem* renderSystem, SubSetHandle setHandle, RenderSystem::TextureHandle textureHandle, uint32 bindingIndex)
+{
+	TextureLayout layout;
+	BindingType bindingType;
+	if (true)
+	{
+		layout = TextureLayout::GENERAL;
+		bindingType = BindingType::STORAGE_IMAGE;
+	}
+	else
+	{
+		layout = TextureLayout::SHADER_READ_ONLY;
+		bindingType = BindingType::COMBINED_IMAGE_SAMPLER;
+	}
+
+	for (uint8 f = 0; f < queuedFrames; ++f)
+	{
+		BindingsSet::TextureBindingUpdateInfo info;
+		info.TextureView = renderSystem->GetTextureView(textureHandle);
+		info.Sampler = renderSystem->GetTextureSampler(textureHandle);
+		info.TextureLayout = layout;
+
+		descriptorsUpdates[f].AddTextureUpdate(setHandle, bindingIndex, info);
 	}
 }
 
@@ -279,161 +303,11 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 		createInfo.BufferType = BufferType::ADDRESS; createInfo.BufferType |= BufferType::STORAGE;
 
 		for (uint8 f = 0; f < queuedFrames; ++f) {
-			RenderSystem::BufferScratchMemoryAllocationInfo allocationInfo;
-			allocationInfo.CreateInfo = &createInfo;
-			allocationInfo.Allocation = &bufferData.RenderAllocations[f];
-			allocationInfo.Buffer = &bufferData.Buffers[f];
-			renderSystem->AllocateScratchBufferMemory(allocationInfo);
+			renderSystem->AllocateScratchBufferMemory(structSize, &bufferData.Buffers[f], createInfo, &bufferData.RenderAllocations[f]);
 		}
 	}
 
 	return BufferHandle(bufferIndex);
-}
-
-MaterialSystem::TextureHandle MaterialSystem::CreateTexture(RenderSystem* renderSystem, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses)
-{
-	//RenderDevice::FindSupportedImageFormat findFormat;
-	//findFormat.TextureTiling = TextureTiling::OPTIMAL;
-	//findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	//GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-	//findFormat.Candidates = candidates;
-	//auto supportedFormat = renderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
-
-	//GAL::Texture::ConvertTextureFormat(textureInfo.Format, GAL::TextureFormat::RGBA_I8, textureInfo.Extent, GTSL::AlignedPointer<byte, 16>(buffer.begin()), 1);
-
-	TextureComponent textureComponent;
-
-	textureComponent.FormatDescriptor = formatDescriptor;
-	auto format = static_cast<TextureFormat>(GAL::FormatToVkFomat(GAL::MakeFormatFromFormatDescriptor(formatDescriptor)));
-
-	auto textureDimensions = GAL::VulkanDimensionsFromExtent(extent);
-
-	textureComponent.Uses = textureUses | TextureUse::SAMPLE;
-	if (formatDescriptor.Type == GAL::TextureType::COLOR) { textureComponent.Uses |= TextureUse::STORAGE; }
-	
-	{
-		Texture::CreateInfo textureCreateInfo;
-		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture.");
-			textureCreateInfo.Name = name;
-		}
-
-		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.Uses = textureComponent.Uses;
-		textureCreateInfo.Dimensions = textureDimensions;
-		textureCreateInfo.Format = format;
-		textureCreateInfo.Extent = extent;
-		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
-		textureCreateInfo.MipLevels = 1;
-
-		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
-		allocationInfo.Allocation = &textureComponent.Allocation;
-		allocationInfo.CreateInfo = &textureCreateInfo;
-		allocationInfo.Texture = &textureComponent.Texture;
-		renderSystem->AllocateLocalTextureMemory(allocationInfo);
-	}
-
-	{
-		TextureView::CreateInfo textureViewCreateInfo;
-		textureViewCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture view.");
-			textureViewCreateInfo.Name = name;
-		}
-
-		textureViewCreateInfo.Type = TextureAspectToVkImageAspectFlags(formatDescriptor.Type);
-		textureViewCreateInfo.Dimensions = textureDimensions;
-		textureViewCreateInfo.Format = format;
-		textureViewCreateInfo.Texture = textureComponent.Texture;
-		textureViewCreateInfo.MipLevels = 1;
-
-		textureComponent.TextureView = TextureView(textureViewCreateInfo);
-	}
-
-	{
-		TextureSampler::CreateInfo textureSamplerCreateInfo;
-		textureSamplerCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture sampler.");
-			textureSamplerCreateInfo.Name = name;
-		}
-
-		textureSamplerCreateInfo.Anisotropy = 0;
-
-		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
-	}
-
-	auto textureIndex = textures.Emplace(textureComponent);
-
-	//latestLoadedTextures.EmplaceBack(textureIndex);
-
-	return TextureHandle(textureIndex);
-}
-
-void MaterialSystem::RecreateTexture(const TextureHandle textureHandle, RenderSystem* renderSystem,	GTSL::Extent3D newExtent)
-{
-	auto& textureComponent = textures[textureHandle()];
-
-	auto format = static_cast<TextureFormat>(GAL::FormatToVkFomat(GAL::MakeFormatFromFormatDescriptor(textureComponent.FormatDescriptor)));
-	
-	{
-		Texture::CreateInfo textureCreateInfo;
-		textureCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture.");
-			textureCreateInfo.Name = name;
-		}
-
-		textureCreateInfo.Tiling = TextureTiling::OPTIMAL;
-		textureCreateInfo.Uses = textureComponent.Uses;
-		textureCreateInfo.Dimensions = Dimensions::SQUARE;
-		textureCreateInfo.Format = format;
-		textureCreateInfo.Extent = newExtent;
-		textureCreateInfo.InitialLayout = TextureLayout::UNDEFINED;
-		textureCreateInfo.MipLevels = 1;
-
-		if(textureComponent.Allocation.Size)
-		{
-			renderSystem->DeallocateLocalTextureMemory(textureComponent.Allocation);
-		}
-		
-		RenderSystem::AllocateLocalTextureMemoryInfo allocationInfo;
-		allocationInfo.Allocation = &textureComponent.Allocation;
-		allocationInfo.CreateInfo = &textureCreateInfo;
-		allocationInfo.Texture = &textureComponent.Texture;
-		renderSystem->AllocateLocalTextureMemory(allocationInfo);
-	}
-
-	{
-		TextureView::CreateInfo textureViewCreateInfo;
-		textureViewCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture view.");
-			textureViewCreateInfo.Name = name;
-		}
-
-		textureViewCreateInfo.Type = GAL::TextureAspectToVkImageAspectFlags(textureComponent.FormatDescriptor.Type);
-		textureViewCreateInfo.Dimensions = Dimensions::SQUARE;
-		textureViewCreateInfo.Format = format;
-		textureViewCreateInfo.Texture = textureComponent.Texture;
-		textureViewCreateInfo.MipLevels = 1;
-
-		textureComponent.TextureView = TextureView(textureViewCreateInfo);
-	}
-
-	{
-		TextureSampler::CreateInfo textureSamplerCreateInfo;
-		textureSamplerCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name("Texture sampler.");
-			textureSamplerCreateInfo.Name = name;
-		}
-
-		textureSamplerCreateInfo.Anisotropy = 0;
-
-		textureComponent.TextureSampler = TextureSampler(textureSamplerCreateInfo);
-	}
 }
 
 void MaterialSystem::UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count)

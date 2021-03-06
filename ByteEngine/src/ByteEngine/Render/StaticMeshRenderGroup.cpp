@@ -71,5 +71,5 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	}
 	
 	meshes.EmplaceAt(meshLoadInfo.InstanceId, meshHandle);
-	addedMeshes.EmplaceBack(meshHandle);
+	addedMeshes.EmplaceBack(meshHandle, meshLoadInfo.InstanceId);
 }

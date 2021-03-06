@@ -61,7 +61,7 @@ private:
 	uint32 staticMeshCount = 0;
 	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
 	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
-	GTSL::PagedVector<RenderSystem::MeshHandle, BE::PAR> addedMeshes;
+	GTSL::PagedVector<GTSL::Pair<RenderSystem::MeshHandle, uint32>, BE::PAR> addedMeshes;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshInfoLoadHandle;
 };

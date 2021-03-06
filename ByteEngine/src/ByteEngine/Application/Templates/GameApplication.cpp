@@ -1,5 +1,8 @@
 #include "GameApplication.h"
 
+#include <iostream>
+
+
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
@@ -21,13 +24,6 @@
 #include "ByteEngine/Sound/AudioSystem.h"
 
 #pragma comment(lib, "XInput.lib")
-
-#ifndef HID_USAGE_PAGE_GENERIC
-#define HID_USAGE_PAGE_GENERIC ((unsigned short) 0x01)
-#endif
-#ifndef HID_USAGE_GENERIC_MOUSE
-#define HID_USAGE_GENERIC_MOUSE ((unsigned short) 0x02)
-#endif
 
 class RenderOrchestrator;
 
@@ -106,6 +102,8 @@ void GameApplication::PostInitialize()
 	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
 	//queues a function that depends on these elements existing
 
+	window.AddDevice(GTSL::Window::DeviceType::MOUSE);
+	
 	renderSystem->SetWindow(&window);
 
 	window.ShowWindow();
@@ -201,7 +199,7 @@ void GameApplication::SetupInputSources()
 }
 
 void GameApplication::RegisterMouse()
-{
+{	
 	inputManagerInstance->Register2DInputSource("MouseMove");
 
 	auto mouse_move = [](const GTSL::Vector2 a)

@@ -28,6 +28,7 @@ public:
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	void Wait();
+	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 
 	MAKE_HANDLE(uint32, Texture);
 	

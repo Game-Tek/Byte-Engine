@@ -181,12 +181,13 @@ public:
 
 	void AddToRenderPass(Id renderPass, Id renderGroup);
 
-	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle);
+	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex);
 
 	MAKE_HANDLE(uint8, IndexStream)
 	
 	IndexStreamHandle AddIndexStream() { return IndexStreamHandle(renderState.IndexStreams.EmplaceBack(0)); }
 	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 value);
 	void PopIndexStream(IndexStreamHandle indexStreamHandle) { renderState.IndexStreams[indexStreamHandle()] = 0; renderState.IndexStreams.PopBack(); }
 
 	void BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer);
@@ -215,6 +216,8 @@ private:
 
 	RayTracingPipeline rayTracingPipeline;
 	MemberHandle sbtMemberHandle;
+	MemberHandle renderGroupPointerHandle;
+	MemberHandle materialDataPointerHandle;
 
 	struct RenderGroupData
 	{
@@ -316,7 +319,7 @@ private:
 	
 	struct PrivateMaterialHandle
 	{
-		uint32 MaterialIndex = 0, MaterialInstance = 0;
+		uint32 MaterialIndex = 0, MaterialInstance = 0, SubMaterialIndex = 0;
 	};
 
 	uint32 textureIndex = 0, imageIndex = 0;
@@ -354,7 +357,7 @@ private:
 	{
 		MaterialHandle Name;
 
-		GTSL::Vector<uint32, BE::PAR> MaterialInstances;
+		GTSL::Vector<GTSL::Pair<uint32, uint32>, BE::PAR> MaterialInstances;
 
 		RasterizationPipeline Pipeline;
 		Id RenderGroup;
@@ -374,7 +377,14 @@ private:
 
 		uint32 Material = 0;
 		uint8 Counter = 0, Target = 0;
-		GTSL::Vector<GTSL::Pair<RenderSystem::MeshHandle, uint16>, BE::PAR> Meshes;
+
+		struct MeshData
+		{
+			RenderSystem::MeshHandle Handle;
+			uint32 InstanceCount = 0, InstanceIndex = 0;
+		};
+		
+		GTSL::Vector<MeshData, BE::PAR> Meshes;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
 	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterialInstances;
@@ -387,12 +397,11 @@ private:
 	{
 		TextureLoadInfo() = default;
 
-		TextureLoadInfo(uint32 component, Buffer buffer, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), Buffer(buffer), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
+		TextureLoadInfo(uint32 component, RenderSystem* renderSystem, RenderAllocation renderAllocation) : Component(component), RenderSystem(renderSystem), RenderAllocation(renderAllocation)
 		{
 		}
 
 		uint32 Component;
-		Buffer Buffer;
 		RenderSystem* RenderSystem;
 		RenderAllocation RenderAllocation;
 		RenderSystem::TextureHandle TextureHandle;

@@ -69,7 +69,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	{
 		for(auto e : renderGroup->GetAddedMeshes().GetPage(p))
 		{
-			info.RenderOrchestrator->AddMesh(e, info.RenderSystem->GetMeshMaterialHandle(e()));
+			info.RenderOrchestrator->AddMesh(e.First, info.RenderSystem->GetMeshMaterialHandle(e.First()), e.Second);
 		}
 	}
 
@@ -511,8 +511,8 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		{
 			GTSL::Array<MaterialSystem::MemberInfo, 32> memberInfos;
 			memberInfos.PushBack(MaterialSystem::MemberInfo{ alignedHandleSize / 4/*uint32*/, MaterialSystem::Member::DataType::UINT32, &sbtMemberHandle, {} }); //shader handle
-			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &sbtMemberHandle, {} }); //raytracing render group buffer
-			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &sbtMemberHandle, {} }); //material buffer
+			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &renderGroupPointerHandle, {} }); //raytracing render group buffer
+			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &materialDataPointerHandle, {} }); //material buffer
 
 			materialSystem->CreateBuffer(renderSystem, memberInfos);
 		}
@@ -537,7 +537,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			}
 		}
 
-		for (uint8 f = 0; f < 2; ++f) {
+		for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 			materialSystem->UpdateSet2(topLevelAsHandle, 0, renderSystem->GetTopLevelAccelerationStructure(f), f);
 		}
 	}
@@ -1333,13 +1333,13 @@ void RenderOrchestrator::AddToRenderPass(Id renderPass, Id renderGroup)
 	}
 }
 
-void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle)
+void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex)
 {
 	auto result = loadedMaterialInstances.TryGet(materialHandle());
 
 	if (result.State()) [[likely]]
 	{
-		materialInstances[result.Get()].Meshes.EmplaceBack(meshHandle, 1);
+		materialInstances[result.Get()].Meshes.EmplaceBack(meshHandle, 1, instanceIndex);
 	}
 	else
 	{
@@ -1350,7 +1350,7 @@ void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, cons
 			awaitingResult.Get().Meshes.Initialize(8, GetPersistentAllocator());
 		}
 
-		awaitingResult.Get().Meshes.EmplaceBack(meshHandle, 1);
+		awaitingResult.Get().Meshes.EmplaceBack(meshHandle, 1, instanceIndex);
 	}
 }
 
@@ -1360,6 +1360,14 @@ void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, 
 		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&renderState.IndexStreams[indexStreamHandle()])), ShaderStage::ALL);
 
 	++renderState.IndexStreams[indexStreamHandle()];
+}
+
+void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 value)
+{
+	renderState.IndexStreams[indexStreamHandle()] = value;
+	
+	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), renderState.PipelineLayout, 64ull + (indexStreamHandle() * 4),
+		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&renderState.IndexStreams[indexStreamHandle()])), ShaderStage::ALL);
 }
 
 void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer)
@@ -1415,13 +1423,13 @@ void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, 
 			for (auto b : materialData.MaterialInstances)
 			{
 				//auto& materialInstance = loadedMaterialInstances[b()];
-				const auto& meshes = materialInstances[b].Meshes;
-				UpdateIndexStream(materialInstanceIndexStream, commandBuffer, renderSystem, materialSystem);
+				const auto& meshes = materialInstances[b.First].Meshes;
+				UpdateIndexStream(materialInstanceIndexStream, commandBuffer, renderSystem, materialSystem, b.Second);
 
 				for (auto meshHandle : meshes)
 				{
-					UpdateIndexStream(renderGroupIndexStream, commandBuffer, renderSystem, materialSystem);
-					renderSystem->RenderMesh(meshHandle.First, meshHandle.Second);
+					UpdateIndexStream(renderGroupIndexStream, commandBuffer, renderSystem, materialSystem, meshHandle.InstanceIndex);
+					renderSystem->RenderMesh(meshHandle.Handle, meshHandle.InstanceCount);
 				}
 			}
 
@@ -1595,7 +1603,7 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 
 	texturesRefTable.Emplace(createTextureInfo.TextureName(), component);
 
-	auto textureLoadInfo = TextureLoadInfo(component, Buffer(), createTextureInfo.RenderSystem, RenderAllocation());
+	auto textureLoadInfo = TextureLoadInfo(component, createTextureInfo.RenderSystem, RenderAllocation());
 
 	createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, createTextureInfo.TextureName, onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
 
@@ -1713,7 +1721,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		auto materialInstanceIndex = materialInstances.Emplace();
 		materialInstancesByName.Emplace(resourceMaterialInstance.Name(), materialInstanceIndex);
 
-		auto instanceMaterialHandle = PrivateMaterialHandle{ loadInfo->Component, materialInstanceIndex };
+		auto instanceMaterialHandle = PrivateMaterialHandle{ loadInfo->Component, materialInstanceIndex, i };
 
 		auto& materialInstance = materialInstances[materialInstanceIndex];
 		materialInstance.Material = materialIndex;
@@ -1801,7 +1809,7 @@ void RenderOrchestrator::setMaterialInstanceAsLoaded(const PrivateMaterialHandle
 	//readyMaterials.EmplaceBack(privateMaterialHandle.MaterialInstance);
 
 	auto& material = materials[privateMaterialHandle.MaterialIndex];
-	material.MaterialInstances.EmplaceBack(privateMaterialHandle.MaterialInstance);
+	material.MaterialInstances.EmplaceBack(privateMaterialHandle.MaterialInstance, privateMaterialHandle.SubMaterialIndex);
 	
 	{
 		auto result = awaitingMaterialInstances.TryGet(materialInstanceHandle());

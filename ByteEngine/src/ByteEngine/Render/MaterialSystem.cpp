@@ -88,7 +88,7 @@ void MaterialSystem::WriteSetTexture(const RenderSystem* renderSystem, SubSetHan
 {
 	TextureLayout layout;
 	BindingType bindingType;
-	if (true)
+	if (setHandle().Type == BindingType::STORAGE_IMAGE)
 	{
 		layout = TextureLayout::GENERAL;
 		bindingType = BindingType::STORAGE_IMAGE;

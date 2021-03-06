@@ -42,7 +42,7 @@ void Game::moveRight(InputManager::ActionInputEvent data)
 
 void Game::zoom(InputManager::LinearInputEvent data)
 {
-	fov += -(data.Value / 75);
+	fov += -data.Value;
 }
 
 bool Game::Initialize()
@@ -110,7 +110,7 @@ bool Game::Initialize()
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
 
-	//{
+	//{//
 	//	MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
 	//	materialCreateInfo.ShaderName = "TvMat";
 	//	materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
@@ -167,29 +167,29 @@ bool Game::Initialize()
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	//}//
 	
-	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
-		materialCreateInfo.ShaderName = "RayGen";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	}
-
-	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
-		materialCreateInfo.ShaderName = "ClosestHit";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	}
-
-	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::MISS;
-		materialCreateInfo.ShaderName = "Miss";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	}
+	//{
+	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+	//	materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
+	//	materialCreateInfo.ShaderName = "RayGen";
+	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	//}
+	//
+	//{
+	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+	//	materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
+	//	materialCreateInfo.ShaderName = "ClosestHit";
+	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	//}
+	//
+	//{
+	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+	//	materialCreateInfo.Type = GAL::ShaderType::MISS;
+	//	materialCreateInfo.ShaderName = "Miss";
+	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	//}//
 	
 	//show loading screen
 	//load menu
@@ -221,7 +221,7 @@ void Game::PostInitialize()
 	}
 
 	audioEmitter = audioSystem->CreateAudioEmitter();
-	audioSystem->PlayAudio(audioEmitter, "dance");
+	//audioSystem->PlayAudio(audioEmitter, "dance");
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -231,7 +231,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "UIMat";
 	//	buttonMaterial = material_system->CreateRasterMaterial(createMaterialInfo);
-	//}//
+	//}
 
 	auto hydrantMaterialInstance = renderOrchestrator->GetMaterialHandle("hydrantMat");
 	auto tvMaterialInstance = renderOrchestrator->GetMaterialHandle("tvMat");
@@ -256,7 +256,7 @@ void Game::PostInitialize()
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 	
-	//{//
+	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
@@ -266,7 +266,7 @@ void Game::PostInitialize()
 	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
 	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
 	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
-	//	canvasRef.SetExtent({ 1280, 720 });//
+	//	canvasRef.SetExtent({ 1280, 720 });
 	//
 	//	uiManager->AddCanvas(canvas);
 	//
@@ -303,7 +303,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}//
+	//}
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -320,28 +320,21 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	
 	GameApplication::OnUpdate(onUpdate);
 
-	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, GTSL::Vector3(moveDir * 10));
+	auto local = GTSL::Math::Translation(moveDir);
+	auto rotationMatrix = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
+	auto dir = rotationMatrix * (moveDir * 10);
+	
+	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, dir);
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(fov));
-
-	auto r = GTSL::Math::Sine(GetClock()->GetElapsedTime() / 1000000.0f);
-	auto g = GTSL::Math::Sine(90.f + GetClock()->GetElapsedTime() / 1000000.0f);
-	auto b = GTSL::Math::Sine(180.f + GetClock()->GetElapsedTime() / 1000000.0f);
 
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
-	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 25, 250);
+	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.00001f) * 25, 250);
 	
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() / 100000.0f) * 20 + 200, 0, 250));
+	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.00001f) * 20 + 200, 0, 250));
 
 	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
-	
-	//auto r = 1.0f;
-	//auto g = 1.0f;
-	//auto b = 1.0f;
-	
-	GTSL::RGBA color(r, g, b, 1.0);
-	material_system->SetDynamicMaterialParameter(material, GAL::ShaderDataType::FLOAT4, "Color", &color);
 }
 
 void Game::Shutdown()
@@ -351,7 +344,9 @@ void Game::Shutdown()
 
 void Game::move(InputManager::Vector2DInputEvent data)
 {
-	posDelta += (data.Value - data.LastValue) * 2;
+	//posDelta += (data.Value - data.LastValue) * 2;
+	posDelta += data.Value * 0.005f;
+	GTSL::Math::Modulo(posDelta, GTSL::Math::PI * 2.0f);
 
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y()));

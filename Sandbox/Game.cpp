@@ -42,7 +42,7 @@ void Game::moveRight(InputManager::ActionInputEvent data)
 
 void Game::zoom(InputManager::LinearInputEvent data)
 {
-	fov += -data.Value;
+	fov += data.Value * 3;
 }
 
 bool Game::Initialize()
@@ -203,7 +203,12 @@ void Game::PostInitialize()
 	
 	GameApplication::PostInitialize();
 
-	camera = gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCamera(GTSL::Vector3(0, 0, -250));
+	{
+		auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+
+		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0, -250));
+		fov = cameraSystem->GetFieldOfView(camera);
+	}
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
@@ -221,9 +226,11 @@ void Game::PostInitialize()
 	}
 
 	audioEmitter = audioSystem->CreateAudioEmitter();
-	//audioSystem->PlayAudio(audioEmitter, "dance");
+	audioListener = audioSystem->CreateAudioListener();
+	audioSystem->SetAudioListener(audioListener);
+	audioSystem->PlayAudio(audioEmitter, "dance");
 	
-	//{
+	//{//
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -317,22 +324,27 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 {
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 	
 	GameApplication::OnUpdate(onUpdate);
 
-	auto local = GTSL::Math::Translation(moveDir);
-	auto rotationMatrix = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
-	auto dir = rotationMatrix * (moveDir * 10);
-	
-	gameInstance->GetSystem<CameraSystem>("CameraSystem")->AddCameraPosition(camera, dir);
-	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(fov));
+	auto rotationMatrix = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
+	auto dir = rotationMatrix * (moveDir * 50);
 
+	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+	
+	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+	audioSystem->SetPosition(audioListener, cameraSystem->GetCameraPosition(camera) + dir);
+	audioSystem->SetOrientation(audioListener, rotationMatrix);
+	cameraSystem->SetCameraPosition(camera, GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 10));
+	cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
+	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
-	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.00001f) * 25, 250);
+	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::fast_sine(GetClock()->GetElapsedTime() * 0.000009f) * 25, 250);
 	
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.00001f) * 20 + 200, 0, 250));
+	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
 
 	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
 }
@@ -346,7 +358,7 @@ void Game::move(InputManager::Vector2DInputEvent data)
 {
 	//posDelta += (data.Value - data.LastValue) * 2;
 	posDelta += data.Value * 0.005f;
-	GTSL::Math::Modulo(posDelta, GTSL::Math::PI * 2.0f);
+	posDelta = GTSL::Math::Modulo(posDelta, GTSL::Math::PI * 2.0f);
 
 	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(rot.GetXBasisVector(), -posDelta.Y()));

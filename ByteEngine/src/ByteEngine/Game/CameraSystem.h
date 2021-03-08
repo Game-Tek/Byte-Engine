@@ -32,7 +32,7 @@ public:
 		rotationMatrices.EmplaceBack(1);
 		fovs.EmplaceBack(45.0f);
 		auto index = positionMatrices.GetLength();
-		positionMatrices.EmplaceBack(GTSL::Math::Translation(pos));
+		positionMatrices.EmplaceBack(pos);
 		return CameraHandle(index);
 	}
 	
@@ -55,7 +55,7 @@ public:
 	
 	void SetCameraPosition(const CameraHandle reference, const GTSL::Vector3 pos)
 	{
-		positionMatrices[reference()] = GTSL::Math::Translation(pos);
+		positionMatrices[reference()] = GTSL::Matrix4(pos);
 	}
 
 	void AddCameraPosition(const CameraHandle reference, GTSL::Vector3 pos)
@@ -77,6 +77,8 @@ public:
 	[[nodiscard]] GTSL::Range<const GTSL::Matrix4*> GetRotationMatrices() const { return rotationMatrices; }
 	[[nodiscard]] GTSL::Range<const float32*> GetFieldOfViews() const { return fovs; }
 	void SetFieldOfView(const CameraHandle componentReference, const float32 fov) { fovs[componentReference()] = fov; }
+	float32 GetFieldOfView(const CameraHandle componentReference) const { return fovs[componentReference()]; }
+	GTSL::Vector3 GetCameraPosition(CameraHandle cameraHandle) const { return GTSL::Math::GetTranslation(positionMatrices[cameraHandle()]); }
 
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;

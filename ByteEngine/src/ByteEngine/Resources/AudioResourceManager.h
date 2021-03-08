@@ -65,7 +65,7 @@ public:
 	~AudioResourceManager();
 
 	template<typename... ARGS>
-	void LoadAudioInfo(GameInstance* gameInstance, Id textureName, DynamicTaskHandle<AudioResourceManager*, AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadAudioInfo(GameInstance* gameInstance, Id audioName, DynamicTaskHandle<AudioResourceManager*, AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadAudioInfo = [](TaskInfo taskInfo, AudioResourceManager* resourceManager, Id audioName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{			
@@ -76,7 +76,7 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask("loadAudioInfo", Task<AudioResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudioInfo), {}, this, GTSL::MoveRef(textureName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask("loadAudioInfo", Task<AudioResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudioInfo), {}, this, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	//Audio data is aligned to 16 bytes

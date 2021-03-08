@@ -29,6 +29,7 @@ class Game final : public GameApplication
 	MaterialInstanceHandle tvMat;
 	MaterialInstanceHandle buttonMaterial;
 	AudioEmitterHandle audioEmitter;
+	AudioListenerHandle audioListener;
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

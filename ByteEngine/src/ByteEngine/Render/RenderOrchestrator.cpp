@@ -83,7 +83,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 
 		for (auto& e : positions)
 		{
-			auto pos = GTSL::Math::Translation(e);
+			auto pos = GTSL::Matrix4(e);
 			pos(2, 3) *= -1.f;
 			
 			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = info.ProjectionMatrix * info.ViewMatrix * pos;

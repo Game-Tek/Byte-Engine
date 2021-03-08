@@ -50,18 +50,20 @@ void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 AudioListenerHandle AudioSystem::CreateAudioListener()
 {
+	audioListenersLocation.EmplaceBack(); audioListenersOrientation.EmplaceBack();
 	return AudioListenerHandle(audioListeners.EmplaceBack());
 }
 
 AudioEmitterHandle AudioSystem::CreateAudioEmitter()
 {
-	return AudioEmitterHandle(audioEmitters.EmplaceBack());
+	return AudioEmitterHandle(audioEmittersLocation.EmplaceBack());
 }
 
 void AudioSystem::PlayAudio(AudioEmitterHandle audioEmitter, Id audioToPlay)
 {
 	//playingAudioSources.EmplaceBack(audioEmitter);
 	lastRequestedAudios.EmplaceBack(audioToPlay);
+	onHoldEmitters.EmplaceBack(audioEmitter, audioToPlay);
 }
 
 void AudioSystem::requestAudioStreams()
@@ -82,6 +84,7 @@ void AudioSystem::render(TaskInfo)
 	
 	GTSL::Array<uint32, 16> soundsToRemoveFromPlaying;
 	GTSL::Array<Id, 16> samplesToRemoveFromPlaying;
+	GTSL::Array<uint32, 16> emittersToRemoveFromPlaying;
 	
 	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
 	
@@ -90,46 +93,103 @@ void AudioSystem::render(TaskInfo)
 	
 	auto* buffer = audioBuffer.GetData();
 
-	GTSL::SetMemory(audioBuffer.GetCapacity(), audioBuffer.GetData(), 0);
-	
-	for(uint32 i = 0; i < playingAudioFiles.GetLength(); ++i)
+	GTSL::SetMemory(availableAudioFrames * mixFormat.GetFrameSize(), audioBuffer.GetData(), 0);
+
 	{
-		byte* audio = audioResourceManager->GetAssetPointer(playingAudioFiles[i]);
+		GTSL::Vector3 listenerPosition = GetPosition(activeAudioListenerHandle);
+		GTSL::Quaternion listenerRotation = GetOrientation(activeAudioListenerHandle);
+		GTSL::Vector3 listenerRightVector = listenerRotation * GTSL::Math::Right;
 
-		auto audioFrames = audioResourceManager->GetFrameCount(playingAudioFiles[i]);
-		auto remainingFrames = audioFrames - playingAudioFilesPlayedFrames[i];
-		auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
-		
-		audio += mixFormat.GetFrameSize() * playingAudioFilesPlayedFrames[i];
-
-		GTSL::MemCopy(mixFormat.GetFrameSize() * clampedFrames, audio, buffer);
-
-		if((playingAudioFilesPlayedFrames[i] += clampedFrames) == audioFrames)
+		for (uint32 pe = 0; pe < playingEmitters.GetLength(); ++pe)
 		{
-			soundsToRemoveFromPlaying.EmplaceBack(i);
-			samplesToRemoveFromPlaying.EmplaceBack(playingAudioFiles[i]);
+			GTSL::Vector3 emitterPosition = GetPosition(playingEmitters[pe]);
+
+			auto soundDirection = GTSL::Math::DotProduct(GTSL::Math::Normalized(emitterPosition - listenerPosition), listenerRightVector);
+
+			auto reMap = GTSL::Math::MapToRange(soundDirection, -1.0f, 1.0f, 0.0f, 1.0f);
+			
+			auto leftPercentange = GTSL::Math::InvertRange(reMap, 1.0);
+			auto rightPercentage = reMap;
+
+			{
+				auto distanceFactor = GTSL::Math::Length(emitterPosition, listenerPosition);
+				distanceFactor = GTSL::Math::Clamp(-(distanceFactor / 1500) + 1, 0.0f, 1.0f);
+				//auto inDistFact = GTSL::Math::InvertRange(distanceFactor, 1.0f);
+				leftPercentange *= distanceFactor; rightPercentage *= distanceFactor;
+			}
+			
+			auto sampleName = playingEmittersSample[pe]; auto sampleIndex = playingEmittersAudio[pe];
+			
+			byte* audio = audioResourceManager->GetAssetPointer(sampleName);
+
+			auto playedSamples = playingAudioFilesPlayedFrames[sampleIndex];
+			
+			auto audioFrames = audioResourceManager->GetFrameCount(sampleName);
+			auto remainingFrames = audioFrames - playedSamples;
+			auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
+			
+			for (uint32 s = 0; s < clampedFrames; ++s) //left channel
+			{
+				getIntertwinedSample<int16>(buffer, availableAudioFrames, s, API_LEFT_CHANNEL) += getSample<int16>(audio, audioFrames, s + playedSamples, 0) * leftPercentange;
+			}
+
+			for (uint32 s = 0; s < clampedFrames; ++s) //right channel
+			{
+				getIntertwinedSample<int16>(buffer, availableAudioFrames, s, API_RIGHT_CHANNEL) += getSample<int16>(audio, audioFrames, s + playedSamples, 0) * rightPercentage;
+			}
+
+			if ((playingAudioFilesPlayedFrames[sampleIndex] += clampedFrames) == audioFrames)
+			{
+				soundsToRemoveFromPlaying.EmplaceBack(sampleIndex);
+				samplesToRemoveFromPlaying.EmplaceBack(playingAudioFiles[sampleIndex]);
+				emittersToRemoveFromPlaying.EmplaceBack(pe);
+			}
 		}
 	}
 
-	audioDevice.PushAudioData([&](uint32 size, void* to) { GTSL::MemCopy(size, audioBuffer.GetData(), to); }, availableAudioFrames);
+	{
+		auto audioDataCopyFunction = [&](uint32 size, void* to)
+		{
+			GTSL::MemCopy(size, audioBuffer.GetData(), to);
+		};
+		
+		audioDevice.PushAudioData(audioDataCopyFunction, availableAudioFrames);
+	}
 
 	for (uint32 i = 0; i < soundsToRemoveFromPlaying.GetLength(); ++i)
 	{
-		//removePlayingSound(soundsToRemoveFromPlaying[i]);
-		playingAudioFiles.Pop(soundsToRemoveFromPlaying[i]);
-		playingAudioFilesPlayedFrames.Pop(soundsToRemoveFromPlaying[i]);
+		removePlayingSound(soundsToRemoveFromPlaying[i]);
 		audioResourceManager->ReleaseAudioAsset(samplesToRemoveFromPlaying[i]);
+	}
+	
+	for (uint32 i = 0; i < emittersToRemoveFromPlaying.GetLength(); ++i)
+	{
+		removePlayingEmitter(emittersToRemoveFromPlaying[i]);
 	}
 }
 
 void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audioResourceManager, AudioResourceManager::AudioInfo audioInfo)
 {
-	uint32 a = 0;
 	audioResourceManager->LoadAudio(taskInfo.GameInstance, audioInfo, onAudioLoadHandle);
 }
 
 void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer)
 {
-	playingAudioFiles.EmplaceBack(audioInfo.Name);
+	auto audioIndex = playingAudioFiles.EmplaceBack(audioInfo.Name);
 	playingAudioFilesPlayedFrames.EmplaceBack(0);
+
+	GTSL::Array<uint32, 16> toDelete;
+	
+	for(uint32 i = 0; i < onHoldEmitters.GetLength(); ++i)
+	{
+		if(onHoldEmitters[i].Second == audioInfo.Name)
+		{
+			toDelete.EmplaceBack(i);
+			playingEmitters.EmplaceBack(onHoldEmitters[i].First);
+			playingEmittersAudio.EmplaceBack(audioIndex);
+			playingEmittersSample.EmplaceBack(onHoldEmitters[i].Second);
+		}
+	}
+
+	for (auto e : toDelete) { onHoldEmitters.Pop(e); }
 }

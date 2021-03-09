@@ -229,8 +229,9 @@ void Game::PostInitialize()
 	audioListener = audioSystem->CreateAudioListener();
 	audioSystem->SetAudioListener(audioListener);
 	audioSystem->PlayAudio(audioEmitter, "dance");
+	audioSystem->SetLooping(audioEmitter, true);
 	
-	//{//
+	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -253,6 +254,9 @@ void Game::PostInitialize()
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 
+	auto floatString = GTSL::StaticString<12>("3.14159");
+	auto number = GTSL::ToNumber<float32>(floatString);
+	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 		addStaticMeshInfo.MeshName = "TV";
@@ -262,8 +266,9 @@ void Game::PostInitialize()
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
+
 	
-	//{
+	//{//
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });

@@ -56,6 +56,7 @@ AudioListenerHandle AudioSystem::CreateAudioListener()
 
 AudioEmitterHandle AudioSystem::CreateAudioEmitter()
 {
+	audioEmittersSettings.EmplaceBack();
 	return AudioEmitterHandle(audioEmittersLocation.EmplaceBack());
 }
 
@@ -140,9 +141,14 @@ void AudioSystem::render(TaskInfo)
 
 			if ((playingAudioFilesPlayedFrames[sampleIndex] += clampedFrames) == audioFrames)
 			{
-				soundsToRemoveFromPlaying.EmplaceBack(sampleIndex);
-				samplesToRemoveFromPlaying.EmplaceBack(playingAudioFiles[sampleIndex]);
-				emittersToRemoveFromPlaying.EmplaceBack(pe);
+				if (!GetLooping(playingEmitters[pe])) {
+					soundsToRemoveFromPlaying.EmplaceBack(sampleIndex);
+					samplesToRemoveFromPlaying.EmplaceBack(playingAudioFiles[sampleIndex]);
+					emittersToRemoveFromPlaying.EmplaceBack(pe);
+				}
+				else {
+					playingAudioFilesPlayedFrames[sampleIndex] = 0;
+				}
 			}
 		}
 	}

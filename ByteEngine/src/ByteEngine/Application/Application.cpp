@@ -73,10 +73,10 @@ namespace BE
 
 		initialized = true;
 
+		BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!");
+		
 		if (argc)
-		{
-			BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!")
-			
+		{	
 			GTSL::StaticString<2048> string("Application started with parameters:\n");
 
 			for (uint32 p = 0; p < argc; ++p) {
@@ -89,6 +89,8 @@ namespace BE
 		{
 			BE_LOG_MESSAGE("Application started with no parameters.");
 		}
+
+		return true;
 	}
 
 	bool Application::Initialize()
@@ -212,37 +214,6 @@ namespace BE
 		GTSL::StaticString<128> text;
 		bool parseEnded = false;
 		Id key;
-
-		auto processNumber = [&]() -> uint32
-		{
-			uint32 value = 0, mult = 1;
-
-			for (uint32 j = 0, c = text.GetLength() - 2/*one for null terminator, another for index vs length*/; j < text.GetLength() - 1; ++j, --c)
-			{
-				uint8 num;
-
-				switch (text[c])
-				{
-				case '0': num = 0; break;
-				case '1': num = 1; break;
-				case '2': num = 2; break;
-				case '3': num = 3; break;
-				case '4': num = 4; break;
-				case '5': num = 5; break;
-				case '6': num = 6; break;
-				case '7': num = 7; break;
-				case '8': num = 8; break;
-				case '9': num = 9; break;
-				default: num = 0;
-				}
-
-				value += num * mult;
-
-				mult *= 10;
-			}
-
-			return value;
-		};
 		
 		while (i < fileBuffer.GetLength())
 		{			
@@ -319,8 +290,9 @@ namespace BE
 					{
 						if(currentToken != Token::VALUE) { return false; }
 						if (text.IsEmpty()) { return false; }
-						auto value = processNumber();
-						settings.Emplace(key(), value);
+						auto value = GTSL::ToNumber<uint32>(text);
+						if (!value.State()) { return false; }
+						settings.Emplace(key(), value.Get());
 						lastParsedToken = Token::VALUE;
 						currentToken = Token::NONE;
 						parseEnded = true;
@@ -371,8 +343,9 @@ namespace BE
 			{
 				if(!text.IsEmpty())
 				{
-					auto value = processNumber();
-					settings.Emplace(key(), value);
+					auto value = GTSL::ToNumber<uint32>(text);
+					if (!value.State()) { return false; }
+					settings.Emplace(key(), value.Get());
 					parseEnded = true;
 					break;
 				}
@@ -389,14 +362,15 @@ namespace BE
 	
 	bool Application::checkPlatformSupport()
 	{
-		bool size_8 = sizeof(uint8) == 1; bool size_16 = sizeof(uint16) == 2; bool size_32 = sizeof(uint32) == 4; bool size_64 = sizeof(uint64) == 8;
+		bool sizeUTF8 = sizeof(utf8) == 1, size8 = sizeof(uint8) == 1, size16 = sizeof(uint16) == 2, size32 = sizeof(uint32) == 4, size64 = sizeof(uint64) == 8;
 
 		GTSL::SystemInfo systemInfo;
 		GTSL::System::GetSystemInfo(systemInfo);
 
 		bool avx2 = systemInfo.CPU.VectorInfo.HW_AVX2;
-		bool memory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(6));
+		bool totalMemory = systemInfo.RAM.TotalPhysicalMemory >= GTSL::Byte(GTSL::GigaByte(12));
+		bool availableMemory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(4));
 		
-		return size_8 && size_16 && size_32 && size_64 && avx2;
+		return sizeUTF8 && size8 && size16 && size32 && size64 && avx2 && totalMemory && availableMemory;
 	}
 }

@@ -42,6 +42,9 @@ public:
 	
 	void SetAudioListener(const AudioListenerHandle audioListenerHandle) { activeAudioListenerHandle = audioListenerHandle; }
 
+	void SetLooping(const AudioEmitterHandle audioEmitterHandle, bool loop) { audioEmittersSettings[audioEmitterHandle()].Loop = loop; }
+	bool GetLooping(const AudioEmitterHandle audioEmitterHandle) { return audioEmittersSettings[audioEmitterHandle()].Loop; }
+
 private:
 	using AudioDevice = AAL::WindowsAudioDevice;
 
@@ -56,6 +59,12 @@ private:
 	GTSL::Array<GTSL::Quaternion, 8> audioListenersOrientation;
 	
 	GTSL::Array<GTSL::Vector3, 8> audioEmittersLocation;
+
+	struct AudioEmitterSettings
+	{
+		bool Loop = false;
+	};
+	GTSL::Array<AudioEmitterSettings, 8> audioEmittersSettings;
 
 	GTSL::Array<GTSL::Pair<AudioEmitterHandle, Id>, 8> onHoldEmitters;
 	

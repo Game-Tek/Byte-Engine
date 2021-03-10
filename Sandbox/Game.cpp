@@ -9,6 +9,8 @@
 
 #include <GTSL/Math/AxisAngle.h>
 
+
+#include "ByteEngine/fpfParser.h"
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/MaterialSystem.h"
@@ -254,8 +256,12 @@ void Game::PostInitialize()
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 
-	auto floatString = GTSL::StaticString<12>("3.14159");
-	auto number = GTSL::ToNumber<float32>(floatString);
+	{
+		auto fpfString = GTSL::StaticString<512>("class AudioFile { uint32 FrameCount } class AudioFormat { AudioFile[] AudioFiles }");
+	
+		FileDescription<BE::SystemAllocatorReference> fileDescription;
+		auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
+	}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -268,7 +274,7 @@ void Game::PostInitialize()
 	}
 
 	
-	//{//
+	//{
 	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
 	//
 	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });

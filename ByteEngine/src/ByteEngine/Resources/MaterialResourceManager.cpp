@@ -23,7 +23,7 @@ rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAlloca
 	resources_path += "Materials.bepkg";
 	package.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 
-	resources_path.Drop(resources_path.FindLast('/') + 1);
+	resources_path.Drop(resources_path.FindLast('/').Get() + 1);
 	resources_path += "Materials.beidx";
 
 	index.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
@@ -84,7 +84,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			materialInfo.ShaderSizes.EmplaceBack(shader_buffer.GetLength());
 			package.WriteToFile(shader_buffer);
 			
-			resources_path.Drop(resources_path.FindLast('/') + 1);
+			resources_path.Drop(resources_path.FindLast('/').Get() + 1);
 
 			shader_source_buffer.Resize(0);
 			shader_error_buffer.Resize(0);
@@ -159,7 +159,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		materialInfo.ShaderInfo.ShaderType = materialCreateInfo.Type;
 		package.WriteToFile(shader_buffer);
 
-		resources_path.Drop(resources_path.FindLast('/') + 1);
+		resources_path.Drop(resources_path.FindLast('/').Get() + 1);
 
 		shader_source_buffer.Resize(0);
 		shader_error_buffer.Resize(0);

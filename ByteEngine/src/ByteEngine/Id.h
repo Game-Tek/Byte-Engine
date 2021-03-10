@@ -13,6 +13,7 @@ public:
 	constexpr Id(char const (&s)[N]) : hashedName(s) {}
 	
 	constexpr Id(const utf8* name) noexcept : hashedName(name), stringName(name) {}
+	constexpr Id(const GTSL::Range<const utf8*> name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 	explicit Id(const uint64 value) noexcept : hashedName(value) {}
 

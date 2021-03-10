@@ -47,7 +47,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 		{
 			auto file_path = resources_path;
 			file_path += queryResult.FileNameWithExtension;
-			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
+			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!meshInfos.Find(hashed_name()))

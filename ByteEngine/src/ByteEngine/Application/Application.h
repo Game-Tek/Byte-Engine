@@ -81,7 +81,7 @@ namespace BE
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
 		{
 			auto path = systemApplication.GetPathToExecutable();
-			path.Drop(path.FindLast('/')); return path;
+			path.Drop(path.FindLast('/').Get()); return path;
 		}
 		
 		[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }

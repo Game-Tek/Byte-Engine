@@ -19,7 +19,7 @@ uint16 Canvas::AddOrganizer(const Id name)
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 
-	auto node = organizerTree.GetRootNode();
+	auto* node = organizerTree[0];
 	node->Data = organizer;
 	
 	organizers.EmplaceAt(organizer, node);

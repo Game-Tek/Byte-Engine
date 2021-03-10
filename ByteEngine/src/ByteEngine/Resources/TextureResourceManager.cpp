@@ -39,7 +39,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 		{
 			auto file_path = resources_path;
 			file_path += queryResult.FileNameWithExtension;
-			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.'));
+			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!textureInfos.Find(hashed_name()))

@@ -182,7 +182,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 		auto primitives = canvas.GetPrimitives();
 		auto squares = canvas.GetSquares();
 
-		auto* parentOrganizer = organizers.GetRootNode();
+		const auto* parentOrganizer = organizers[0];
 
 		uint32 sq = 0;
 		for(auto& e : squares)
@@ -1464,7 +1464,7 @@ void RenderOrchestrator::renderUI(GameInstance* gameInstance, RenderSystem* rend
 		auto primitives = canvas.GetPrimitives();
 		auto squares = canvas.GetSquares();
 
-		auto* parentOrganizer = organizers.GetRootNode();
+		const auto* parentOrganizer = organizers[0];
 
 		uint32 squareIndex = 0;
 		for (auto& e : squares)

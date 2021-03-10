@@ -54,6 +54,8 @@ bool GameApplication::Initialize()
 	CreateResourceManager<AudioResourceManager>();
 	CreateResourceManager<PipelineCacheResourceManager>();
 	//CreateResourceManager<FontResourceManager>();
+
+	return true;
 }
 
 void GameApplication::PostInitialize()

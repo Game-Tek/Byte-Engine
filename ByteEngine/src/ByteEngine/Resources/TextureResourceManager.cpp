@@ -42,7 +42,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
-			if (!textureInfos.Find(hashed_name()))
+			if (!textureInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
 				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ); GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
@@ -67,7 +67,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 				packageFile.WriteToFile(GTSL::Range<byte*>(size, data));
 
-				textureInfos.Emplace(hashed_name(), texture_info);
+				textureInfos.Emplace(hashed_name, texture_info);
 
 				stbi_image_free(data);
 			}

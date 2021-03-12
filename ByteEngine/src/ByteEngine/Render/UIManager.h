@@ -313,10 +313,10 @@ public:
 
 	auto GetCanvases() { return canvases.GetRange(); }
 
-	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name(), color); }
-	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color()); }
+	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
+	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 private:
 	GTSL::KeepVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
-	GTSL::FlatHashMap<GTSL::RGBA, BE::PAR> colors;
+	GTSL::FlatHashMap<Id, GTSL::RGBA, BE::PAR> colors;
 };

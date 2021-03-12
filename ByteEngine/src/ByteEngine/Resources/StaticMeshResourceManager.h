@@ -95,7 +95,7 @@ public:
 	{
 		auto loadStaticMeshInfo = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, Id meshName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			auto staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName());
+			auto staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName);
 
 			StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
 			
@@ -130,7 +130,7 @@ public:
 private:
 	GTSL::File indexFile;
 	
-	GTSL::FlatHashMap<StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
+	GTSL::FlatHashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 
 	static void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

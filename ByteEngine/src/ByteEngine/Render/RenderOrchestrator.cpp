@@ -429,7 +429,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			shaderBuffers.EmplaceBack();
 			shaderBuffers[i].Allocate(bufferSize, 8, GetTransientAllocator());
 
-			shaderGroupsByName.Emplace(materialResorceManager->GetRayTraceShaderHandle(i)(), i);
+			shaderGroupsByName.Emplace(materialResorceManager->GetRayTraceShaderHandle(i), i);
 
 			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffers[i].GetCapacity(), shaderBuffers[i].GetData())); //TODO: VIRTUAL BUFFER INTERFACE
 
@@ -689,7 +689,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		auto canBeginRenderPass = [&]()
 		{
 			renderPassId = renderPasses[renderPassIndex];
-			renderPass = &renderPassesMap[renderPassId()];
+			renderPass = &renderPassesMap[renderPassId];
 			++renderPassIndex;
 			return renderPass->Enabled;
 		};
@@ -830,17 +830,17 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
-	renderManagers.Emplace(renderManager(), systemReference);
+	renderManagers.Emplace(renderManager, systemReference);
 }
 
 void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const SystemHandle systemReference)
 {
 	const auto element = systems.Find(renderGroupName);
-	BE_ASSERT(element != systems.end())
+	BE_ASSERT(element.State())
 	
-	systems.Pop(element - systems.begin());
+	systems.Pop(element.Get());
 	
-	setupSystemsAccesses.Pop(element - systems.begin());
+	setupSystemsAccesses.Pop(element.Get());
 	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
 	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 
@@ -1034,7 +1034,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 
 			for (uint32 s = 0; s < contiguousRasterPassCount; ++s, ++passIndex)
 			{
-				auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name());
+				auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name);
 				renderPasses.EmplaceBack(passesData[passIndex].Name);
 				renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
 
@@ -1162,7 +1162,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 		case PassType::COMPUTE:
 		{
 			renderPasses.EmplaceBack(passesData[passIndex].Name);
-			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name());
+			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name);
 
 			renderPass.PassType = PassType::COMPUTE;
 			renderPass.PipelineStages = PipelineStage::COMPUTE_SHADER;
@@ -1188,7 +1188,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 		case PassType::RAY_TRACING:
 		{
 			renderPasses.EmplaceBack(passesData[passIndex].Name);
-			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name());
+			auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name);
 
 			renderPass.PassType = PassType::RAY_TRACING;
 			renderPass.PipelineStages = PipelineStage::RAY_TRACING_SHADER;
@@ -1216,7 +1216,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 	
 	for (uint8 rp = 0; rp < renderPasses.GetLength(); ++rp)
 	{
-		auto& renderPass = renderPassesMap.At(renderPasses[rp]());
+		auto& renderPass = renderPassesMap.At(renderPasses[rp]);
 		
 		{
 			//GTSL::Array<MaterialSystem::SubSetInfo, 8> subSets;
@@ -1282,7 +1282,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 	for (uint8 rp = 0; rp < renderPasses.GetLength(); ++rp)
 	{
-		auto& renderPass = renderPassesMap.At(renderPasses[rp]());
+		auto& renderPass = renderPassesMap.At(renderPasses[rp]);
 
 		MaterialSystem::BufferIterator bufferIterator; uint8 attachmentIndex = 0;
 
@@ -1313,7 +1313,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 {
-	auto& renderPass = renderPassesMap[renderPassName()];
+	auto& renderPass = renderPassesMap[renderPassName];
 	switch (renderPass.PassType)
 	{
 		case PassType::RASTER: break;
@@ -1327,15 +1327,15 @@ void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 
 void RenderOrchestrator::AddToRenderPass(Id renderPass, Id renderGroup)
 {
-	if (renderPassesMap.Find(renderPass()))
+	if (renderPassesMap.Find(renderPass))
 	{
-		renderPassesMap.At(renderPass()).RenderGroups.EmplaceBack(renderGroup);
+		renderPassesMap.At(renderPass).RenderGroups.EmplaceBack(renderGroup);
 	}
 }
 
 void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex)
 {
-	auto result = loadedMaterialInstances.TryGet(materialHandle());
+	auto result = loadedMaterialInstances.TryGet(materialHandle);
 
 	if (result.State()) [[likely]]
 	{
@@ -1343,7 +1343,7 @@ void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, cons
 	}
 	else
 	{
-		auto awaitingResult = awaitingMaterialInstances.TryEmplace(materialHandle());
+		auto awaitingResult = awaitingMaterialInstances.TryEmplace(materialHandle);
 
 		if (awaitingResult.State())
 		{
@@ -1391,7 +1391,7 @@ void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const Materi
 void RenderOrchestrator::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer,
 	MaterialHandle materialHandle)
 {
-	commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), materials[loadedMaterials[materialHandle()]].Pipeline, PipelineType::RASTER);
+	commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), materials[loadedMaterials[materialHandle]].Pipeline, PipelineType::RASTER);
 }
 
 AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(PipelineStage::value_type stage, bool writeAccess)
@@ -1407,7 +1407,7 @@ AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(Pi
 
 void RenderOrchestrator::renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp)
 {	
-	for (auto rg : renderPassesMap.At(rp()).RenderGroups)
+	for (auto rg : renderPassesMap.At(rp).RenderGroups)
 	{
 		auto renderGroupIndexStream = AddIndexStream();
 		BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(rg));
@@ -1504,7 +1504,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 {
 	GTSL::Array<CommandBuffer::BarrierData, 16> barriers;
 	
-	auto& renderPass = renderPassesMap.At(renderPassId());
+	auto& renderPass = renderPassesMap.At(renderPassId);
 
 	uint32 initialStage = 0;
 	
@@ -1601,7 +1601,7 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 	pendingMaterialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
 	pendingMaterialsPerTexture[component].Initialize(4, GetPersistentAllocator());
 
-	texturesRefTable.Emplace(createTextureInfo.TextureName(), component);
+	texturesRefTable.Emplace(createTextureInfo.TextureName, component);
 
 	auto textureLoadInfo = TextureLoadInfo(component, createTextureInfo.RenderSystem, RenderAllocation());
 
@@ -1719,7 +1719,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		//UpdateObjectCount(renderSystem, material., material.InstanceCount); //assuming every material uses the same set instance, not index
 
 		auto materialInstanceIndex = materialInstances.Emplace();
-		materialInstancesByName.Emplace(resourceMaterialInstance.Name(), materialInstanceIndex);
+		materialInstancesByName.Emplace(resourceMaterialInstance.Name, materialInstanceIndex);
 
 		auto instanceMaterialHandle = PrivateMaterialHandle{ loadInfo->Component, materialInstanceIndex, i };
 
@@ -1739,7 +1739,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			{
 				uint32 textureComponentIndex;
 
-				auto textureReference = texturesRefTable.TryGet(resourceMaterialInstanceParameter.Second.TextureReference());
+				auto textureReference = texturesRefTable.TryGet(resourceMaterialInstanceParameter.Second.TextureReference);
 
 				if (!textureReference.State())
 				{
@@ -1777,7 +1777,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		++i;
 	}
 
-	loadedMaterials.Emplace(onMaterialLoadInfo.ResourceName(), materialIndex);
+	loadedMaterials.Emplace(onMaterialLoadInfo.ResourceName, materialIndex);
 	
 	GTSL::Delete(loadInfo, GetPersistentAllocator());
 }
@@ -1812,11 +1812,11 @@ void RenderOrchestrator::setMaterialInstanceAsLoaded(const PrivateMaterialHandle
 	material.MaterialInstances.EmplaceBack(privateMaterialHandle.MaterialInstance, privateMaterialHandle.SubMaterialIndex);
 	
 	{
-		auto result = awaitingMaterialInstances.TryGet(materialInstanceHandle());
+		auto result = awaitingMaterialInstances.TryGet(materialInstanceHandle);
 	
 		if (result.State()) {
 			materialInstances[privateMaterialHandle.MaterialInstance].Meshes = GTSL::MoveRef(result.Get().Meshes);
-			loadedMaterialInstances.Emplace(materialInstanceHandle(), privateMaterialHandle.MaterialInstance);
+			loadedMaterialInstances.Emplace(materialInstanceHandle, privateMaterialHandle.MaterialInstance);
 		}
 	}
 }

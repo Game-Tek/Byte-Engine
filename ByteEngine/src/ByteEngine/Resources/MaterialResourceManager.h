@@ -360,7 +360,7 @@ public:
 	uint32 GetRayTraceShaderSize(Id handle) const
 	{
 		GTSL::ReadLock lock(mutex);
-		return rtMaterialInfos.At(handle()).ShaderInfo.BinarySize;
+		return rtMaterialInfos.At(handle).ShaderInfo.BinarySize;
 	}
 	
 	uint32 GetRayTraceShaderCount() const { return rtHandles.GetLength(); }
@@ -369,8 +369,8 @@ public:
 private:
 	
 	GTSL::File package, index;
-	GTSL::FlatHashMap<RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
-	GTSL::FlatHashMap<RayTraceMaterialInfo, BE::PersistentAllocatorReference> rtMaterialInfos;
+	GTSL::FlatHashMap<Id, RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
+	GTSL::FlatHashMap<Id, RayTraceMaterialInfo, BE::PersistentAllocatorReference> rtMaterialInfos;
 	mutable GTSL::ReadWriteMutex mutex;
 
 	GTSL::Vector<Id, BE::PAR> rtHandles;

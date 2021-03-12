@@ -43,7 +43,7 @@ public:
 	struct SkeletonData : Data
 	{
 		GTSL::Vector<Bone, BE::PAR> Bones;
-		GTSL::FlatHashMap<uint32, BE::PAR> BonesMap;
+		GTSL::FlatHashMap<Id, uint32, BE::PAR> BonesMap;
 	};
 
 	struct SkeletonDataSerialize : DataSerialize<SkeletonData>

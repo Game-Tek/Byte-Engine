@@ -151,7 +151,7 @@ void GameInstance::RemoveTask(const Id name, const Id startOn)
 		GTSL::ReadLock lock(stagesNamesMutex);
 		GTSL::WriteLock lock2(recurringTasksMutex);
 		
-		if(stagesNames.Find(startOn) == stagesNames.end()) {
+		if(!stagesNames.Find(startOn).State()) {
 			BE_LOG_WARNING("Tried to remove task ", name.GetString(), " from stage ", startOn.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
@@ -181,7 +181,7 @@ void GameInstance::AddStage(Id name)
 {
 	if constexpr (_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
-		if (stagesNames.Find(name) != stagesNames.end()) {
+		if (stagesNames.Find(name).State()) {
 			BE_LOG_WARNING("Tried to add stage ", name.GetString(), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
@@ -219,7 +219,7 @@ void GameInstance::initWorld(const uint8 worldId)
 	worlds[worldId]->InitializeWorld(initializeInfo);
 }
 
-void GameInstance::initSystem(System* system, const GTSL::Id64 name, const uint16 id)
+void GameInstance::initSystem(System* system, const Id name, const uint16 id)
 {
 	System::InitializeInfo initializeInfo;
 	system->systemId = id;

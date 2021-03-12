@@ -116,7 +116,7 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 	uint32 level;
 
 	if (parentName()) {
-		auto& parentSetLayout = setLayoutDatas[parentName()];
+		auto& parentSetLayout = setLayoutDatas[parentName];
 		
 		parentHandle = parentName;
 		level = parentSetLayout.Level + 1;
@@ -126,7 +126,7 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 		level = 0;
 	}
 
-	auto& setLayoutData = setLayoutDatas.Emplace(layoutName());
+	auto& setLayoutData = setLayoutDatas.Emplace(layoutName);
 	
 	setLayoutData.Parent = parentHandle;
 	setLayoutData.Level = level;
@@ -139,8 +139,8 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 	
 		for (uint8 i = 0, l = level - 1; i < level; ++i, --l)
 		{
-			bindingsSetLayouts[l] = setLayoutDatas[lastSet()].BindingsSetLayout;
-			lastSet = setLayoutDatas[lastSet()].Parent;
+			bindingsSetLayouts[l] = setLayoutDatas[lastSet].BindingsSetLayout;
+			lastSet = setLayoutDatas[lastSet].Parent;
 		}
 	}
 
@@ -428,9 +428,9 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id s
 	auto setHandle = SetHandle(setIndex);
 	auto& set = sets[setIndex];
 	
-	setHandlesByName.Emplace(setName(), setHandle);
+	setHandlesByName.Emplace(setName, setHandle);
 
-	auto& setLayout = setLayoutDatas[setLayoutName()];
+	auto& setLayout = setLayoutDatas[setLayoutName];
 
 	set.Level = setLayout.Level;
 

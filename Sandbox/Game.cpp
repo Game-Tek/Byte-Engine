@@ -234,7 +234,7 @@ void Game::PostInitialize()
 	audioSystem->SetLooping(audioEmitter, true);
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
@@ -255,13 +255,37 @@ void Game::PostInitialize()
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
-
-	{
-		auto fpfString = GTSL::StaticString<512>("class AudioFile { uint32 FrameCount } class AudioFormat { AudioFile[] AudioFiles }");
 	
-		FileDescription<BE::SystemAllocatorReference> fileDescription;
-		auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
-	}
+	//{
+	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
+	//		{ AudioFormat[] audioFormats { { 48000, 16, { { 1400 } } } } })");
+	//
+	//	FileDescription<BE::SystemAllocatorReference> fileDescription;
+	//	auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
+	//
+	//	ParseState<BE::SystemAllocatorReference> parseState;
+	//	StartParse(fileDescription, parseState, fpfString, systemAllocatorReference);
+	//
+	//	uint32 audioFormat = 0;
+	//	
+	//	while (GoToVariable(fileDescription, parseState, "audioFormats", audioFormat)) {
+	//		uint32 KHz, bitDepth;
+	//
+	//		GetVariable(fileDescription, parseState, "KHz", KHz);
+	//		GetVariable(fileDescription, parseState, "BitDepth", bitDepth);
+	//
+	//		uint32 audioFileIndex = 0;
+	//		
+	//		while (GoToVariable(fileDescription, parseState, "AudioFiles", audioFileIndex)) {
+	//			uint32 frameCount = 0;
+	//			GetVariable(fileDescription, parseState, "FrameCount", frameCount);
+	//
+	//			++audioFileIndex;
+	//		}
+	//		
+	//		++audioFormat;
+	//	}
+	//}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;

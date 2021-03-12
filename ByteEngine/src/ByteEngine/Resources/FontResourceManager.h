@@ -81,9 +81,9 @@ public:
 		uint32 FileNameHash;
 		std::string FullFontName;
 		std::string NameTable[25];
-		GTSL::FlatHashMap<int16, BE::PAR> KerningTable;
-		GTSL::FlatHashMap<Glyph, BE::PAR> Glyphs;
-		GTSL::FlatHashMap<uint16, BE::PAR> GlyphMap;
+		GTSL::FlatHashMap<uint32, int16, BE::PAR> KerningTable;
+		GTSL::FlatHashMap<uint32, Glyph, BE::PAR> Glyphs;
+		GTSL::FlatHashMap<uint32, uint16, BE::PAR> GlyphMap;
 		FontMetaData Metadata;
 		uint64 LastUsed;
 	};
@@ -98,7 +98,7 @@ public:
 
 	struct FontData : Data
 	{
-		GTSL::FlatHashMap<Character, BE::PAR> Characters;
+		GTSL::FlatHashMap<uint32, Character, BE::PAR> Characters;
 	};
 
 	struct FontDataSerialize : DataSerialize<FontData>

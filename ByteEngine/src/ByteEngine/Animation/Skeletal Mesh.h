@@ -27,7 +27,7 @@ struct Joint
 
 class Skeleton
 {
-	GTSL::FlatHashMap<Joint, BE::PAR> bones;
+	GTSL::FlatHashMap<Id, Joint, BE::PAR> bones;
 
 public:
 };

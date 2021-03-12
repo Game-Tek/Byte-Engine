@@ -54,11 +54,11 @@ public:
 
 	void ReleaseAudioAsset(Id asset)
 	{
-		audioBytes.Remove(asset());
+		audioBytes.Remove(asset);
 	}
 	
-	byte* GetAssetPointer(const Id id) { return audioBytes.At(id()).GetData(); }
-	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id()).Frames; }
+	byte* GetAssetPointer(const Id id) { return audioBytes.At(id).GetData(); }
+	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id).Frames; }
 
 	AudioResourceManager();
 
@@ -69,7 +69,7 @@ public:
 	{
 		auto loadAudioInfo = [](TaskInfo taskInfo, AudioResourceManager* resourceManager, Id audioName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{			
-			auto audioInfoSerialize = resourceManager->audioResourceInfos.At(audioName());
+			auto audioInfoSerialize = resourceManager->audioResourceInfos.At(audioName);
 
 			AudioInfo audioInfo(audioName, audioInfoSerialize);
 
@@ -87,7 +87,7 @@ public:
 		{
 			uint32 bytes = audioInfo.GetAudioSize(); const byte* dataPointer = nullptr;
 
-			auto searchResult = resourceManager->audioBytes.TryEmplace(audioInfo.Name());
+			auto searchResult = resourceManager->audioBytes.TryEmplace(audioInfo.Name);
 			
 			if (searchResult.State())
 			{
@@ -110,6 +110,6 @@ public:
 
 private:
 	GTSL::File indexFile;
-	GTSL::FlatHashMap<AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
-	GTSL::FlatHashMap<GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
+	GTSL::FlatHashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
+	GTSL::FlatHashMap<Id, GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
 };

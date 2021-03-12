@@ -57,7 +57,7 @@ public:
 	{
 		auto loadTextureInfo = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, Id textureName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			auto textureInfoSerialize = resourceManager->textureInfos.At(textureName());
+			auto textureInfoSerialize = resourceManager->textureInfos.At(textureName);
 
 			TextureInfo textureInfo(textureName, textureInfoSerialize);
 			
@@ -83,5 +83,5 @@ public:
 
 private:
 	GTSL::File indexFile;
-	GTSL::FlatHashMap<TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
+	GTSL::FlatHashMap<Id, TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
 };

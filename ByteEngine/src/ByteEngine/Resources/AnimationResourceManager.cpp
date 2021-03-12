@@ -23,7 +23,7 @@ void AnimationResourceManager::loadSkeleton(const GTSL::Buffer<BE::TAR>& sourceB
 	{
 		const auto& assimpBone = mesh->mBones[b];
 		
-		skeletonData.BonesMap.Emplace(assimpStringToId(assimpBone->mName)(), skeletonData.Bones.GetLength());
+		skeletonData.BonesMap.Emplace(assimpStringToId(assimpBone->mName), skeletonData.Bones.GetLength());
 		auto& bone = skeletonData.Bones.EmplaceBack();
 
 		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w)

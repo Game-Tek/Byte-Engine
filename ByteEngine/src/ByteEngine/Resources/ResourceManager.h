@@ -29,7 +29,7 @@ public:
 		/**
 		 * \brief Name of the resource to load. Must be unique and match the name used in the editor. Is case sensitive.
 		 */
-		GTSL::Id64 Name;
+		Id Name;
 		
 		/**
 		 * \brief Pointer to some data to potentially be retrieved on resource load for the client to identify the resource. Can be NULL.
@@ -122,7 +122,7 @@ public:
 		 */
 		GTSL::Range<byte*> DataBuffer;
 
-		GTSL::Id64 ResourceName;
+		Id ResourceName;
 	};
 
 	static constexpr uint8 MAX_THREADS = 32;

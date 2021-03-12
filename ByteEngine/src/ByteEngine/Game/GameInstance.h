@@ -85,7 +85,7 @@ public:
 	T* GetSystem(const Id systemName)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return static_cast<T*>(systemsMap.At(systemName()));
+		return static_cast<T*>(systemsMap.At(systemName));
 	}
 	
 	template<class T>
@@ -98,7 +98,7 @@ public:
 	SystemHandle GetSystemReference(const Id systemName)
 	{
 		GTSL::ReadLock lock(systemsMutex);
-		return SystemHandle(systemsIndirectionTable.At(systemName()));
+		return SystemHandle(systemsIndirectionTable.At(systemName));
 	}
 
 	template<typename... ARGS>
@@ -273,16 +273,16 @@ public:
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle)
 	{
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name())) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
-		events.Emplace(eventHandle.Name()).Initialize(8, GetPersistentAllocator());
+		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
+		events.Emplace(eventHandle.Name).Initialize(8, GetPersistentAllocator());
 	}
 
 	template<typename... ARGS>
 	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle)
 	{
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
-		auto& vector = events.At(eventHandle.Name());
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
+		auto& vector = events.At(eventHandle.Name);
 		vector.EmplaceBack(taskHandle.Reference);
 	}
 	
@@ -290,9 +290,9 @@ public:
 	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args)
 	{
 		GTSL::ReadLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name())) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 		
-		auto& functionList = events.At(eventHandle.Name());
+		auto& functionList = events.At(eventHandle.Name);
 		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e), GTSL::ForwardRef<ARGS>(args)...); }
 	}
 	
@@ -304,8 +304,8 @@ private:
 	mutable GTSL::ReadWriteMutex systemsMutex;
 	GTSL::KeepVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::KeepVector<Id, BE::PersistentAllocatorReference> systemNames;
-	GTSL::FlatHashMap<System*, BE::PersistentAllocatorReference> systemsMap;
-	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
+	GTSL::FlatHashMap<Id, System*, BE::PersistentAllocatorReference> systemsMap;
+	GTSL::FlatHashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	template<typename... ARGS>
 	struct DispatchTaskInfo
@@ -331,7 +331,7 @@ private:
 	GTSL::KeepVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 
 	mutable GTSL::ReadWriteMutex eventsMutex;
-	GTSL::FlatHashMap<GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
+	GTSL::FlatHashMap<Id, GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
 
 	mutable GTSL::ReadWriteMutex recurringTasksMutex;
 	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;
@@ -412,7 +412,7 @@ private:
 		
 		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
 		{
-			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject());
+			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject);
 			access[i] = (taskDependencies.begin() + i)->Access;
 		}
 	}
@@ -422,14 +422,14 @@ private:
 		{
 			GTSL::ReadLock lock(stagesNamesMutex);
 			
-			if (stagesNames.Find(startGoal) == stagesNames.end())
+			if (!stagesNames.Find(startGoal).State())
 			{
 				BE_LOG_WARNING("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 
 			//assert done for exists
-			if (stagesNames.Find(endGoal) == stagesNames.end())
+			if (!stagesNames.Find(endGoal).State())
 			{
 				BE_LOG_WARNING("Tried to add task ", name.GetString(), " ending for stage ", endGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
@@ -451,7 +451,7 @@ private:
 
 			for(auto e : dependencies)
 			{
-				if (!systemsMap.Find(e.AccessedObject())) {
+				if (!systemsMap.Find(e.AccessedObject)) {
 					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
@@ -462,16 +462,16 @@ private:
 	}
 
 	void initWorld(uint8 worldId);
-	void initSystem(System* system, GTSL::Id64 name, const uint16 id);
+	void initSystem(System* system, Id name, const uint16 id);
 	
 public:
 	template<typename T>
 	T* AddSystem(const Id systemName)
 	{
 		if constexpr (_DEBUG) {
-			if (systemsMap.Find(systemName())) {
+			if (systemsMap.Find(systemName)) {
 				BE_LOG_ERROR("System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
-				return reinterpret_cast<T*>(systemsMap.At(systemName()));
+				return reinterpret_cast<T*>(systemsMap.At(systemName));
 			}
 		}
 		
@@ -482,9 +482,9 @@ public:
 		{
 			GTSL::WriteLock lock(systemsMutex);
 			l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
-			systemsMap.Emplace(systemName(), systems[l]);
-			systemsIndirectionTable.Emplace(systemName(), l);
-			systemNames.Emplace(systemName());
+			systemsMap.Emplace(systemName, systems[l]);
+			systemsIndirectionTable.Emplace(systemName, l);
+			systemNames.Emplace(systemName);
 			system = systems[l];
 		}
 

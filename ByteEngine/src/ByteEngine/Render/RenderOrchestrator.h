@@ -103,7 +103,7 @@ public:
 	
 	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
 	{
-		auto& renderPass = renderPassesMap[renderPassName()];
+		auto& renderPass = renderPassesMap[renderPassName];
 		uint8 count = 0;
 		for(const auto& e : renderPass.WriteAttachments)
 		{
@@ -156,14 +156,14 @@ public:
 
 	void OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize);
 
-	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName()).APIRenderPass].RenderPass; }
+	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
 
-	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name()).APIRenderPass; }
+	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name).APIRenderPass; }
 	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const
 	{
 		uint8 i = 0;
 		
-		for(auto& e : subPasses[renderPassesMap.At(renderPass()).APIRenderPass]) { if (e.Name == renderPass) { return i; } } 
+		for(auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } } 
 	}
 
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
@@ -241,7 +241,7 @@ private:
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
 	
-	GTSL::FlatHashMap<SystemHandle, BE::PersistentAllocatorReference> renderManagers;
+	GTSL::FlatHashMap<Id, SystemHandle, BE::PersistentAllocatorReference> renderManagers;
 
 	struct ExecuteCommand
 	{
@@ -281,7 +281,7 @@ private:
 		MemberHandle AttachmentsIndicesHandle;
 		BufferHandle BufferHandle;
 	};
-	GTSL::FlatHashMap<RenderPassData, BE::PAR> renderPassesMap;
+	GTSL::FlatHashMap<Id, RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
 
 	AccessFlags::value_type accessFlagsFromStageAndAccessType(PipelineStage::value_type, bool writeAccess);
@@ -312,7 +312,7 @@ private:
 	
 	//MATERIAL STUFF
 
-	GTSL::FlatHashMap<uint32, BE::PAR> shaderGroupsByName;
+	GTSL::FlatHashMap<Id, uint32, BE::PAR> shaderGroupsByName;
 
 	uint32 shaderCounts[4]{ 0 };
 	uint32 entrySizes[4]{ 0 };
@@ -369,7 +369,7 @@ private:
 		MemberHandle MaterialInstancesMemberHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
-	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterials;
+	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterials;
 
 	struct MaterialInstanceData
 	{
@@ -387,9 +387,9 @@ private:
 		GTSL::Vector<MeshData, BE::PAR> Meshes;
 	};
 	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
-	GTSL::FlatHashMap<uint32, BE::PAR> loadedMaterialInstances;
-	GTSL::FlatHashMap<MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
-	GTSL::FlatHashMap<uint32, BE::PAR> materialInstancesByName;
+	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterialInstances;
+	GTSL::FlatHashMap<Id, MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
+	GTSL::FlatHashMap<Id, uint32, BE::PAR> materialInstancesByName;
 
 	//PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialInstanceHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
 
@@ -411,7 +411,7 @@ private:
 	
 	//MATERIAL STUFF
 
-	GTSL::FlatHashMap<uint32, BE::PersistentAllocatorReference> texturesRefTable;
+	GTSL::FlatHashMap<Id, uint32, BE::PersistentAllocatorReference> texturesRefTable;
 
 	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
 	GTSL::KeepVector<GTSL::Vector<PrivateMaterialHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;

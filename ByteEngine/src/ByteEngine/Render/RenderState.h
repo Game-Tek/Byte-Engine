@@ -13,30 +13,30 @@ public:
 
 	void AddMaterial(MaterialInstanceHandle materialHandle)
 	{
-		availableMaterials.Emplace(materialHandle(), materialHandle);
-		meshesPerMaterial.Emplace(materialHandle()).Initialize(32, GetPersistentAllocator());
+		availableMaterials.Emplace(materialHandle, materialHandle);
+		meshesPerMaterial.Emplace(materialHandle).Initialize(32, GetPersistentAllocator());
 	}
 	
 	void RemoveMaterial(MaterialInstanceHandle materialHandle)
 	{
-		availableMaterials.Remove(materialHandle());
+		availableMaterials.Remove(materialHandle);
 	}
 
 	void AddMesh(const MeshHandle meshHandle, const MaterialInstanceHandle materialHandle)
 	{
-		auto result = meshesPerMaterial.TryEmplace(materialHandle());
+		auto result = meshesPerMaterial.TryEmplace(materialHandle);
 		
 		if(result.State()) { //if material is registered 
 			result.Get().EmplaceBack(meshHandle);
 		}
 		else [[likely]] { //if material doesn't exist
-			auto& meshList = meshesPerMaterial.Emplace(materialHandle());
+			auto& meshList = meshesPerMaterial.Emplace(materialHandle);
 			meshList.Initialize(32, GetPersistentAllocator());
 			meshList.EmplaceBack(meshHandle);
 		}
 	}
 
 private:
-	GTSL::FlatHashMap<MaterialInstanceHandle, BE::PAR> availableMaterials;
-	GTSL::FlatHashMap<GTSL::Vector<MeshHandle, BE::PAR>, BE::PAR> meshesPerMaterial;
+	GTSL::FlatHashMap<Id, MaterialInstanceHandle, BE::PAR> availableMaterials;
+	GTSL::FlatHashMap<Id, GTSL::Vector<MeshHandle, BE::PAR>, BE::PAR> meshesPerMaterial;
 };

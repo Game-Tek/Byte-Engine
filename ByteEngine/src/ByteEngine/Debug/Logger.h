@@ -61,7 +61,7 @@ namespace BE
 
 		mutable std::atomic<uint32> posInBuffer{ 0 };
 
-		mutable GTSL::FlatHashMap<Id, BE::SystemAllocatorReference> allowedLoggers;
+		mutable GTSL::FlatHashMap<Id, Id, BE::SystemAllocatorReference> allowedLoggers;
 		
 		mutable utf8* data{ nullptr };
 

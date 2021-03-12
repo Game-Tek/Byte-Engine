@@ -108,9 +108,9 @@ struct Stage
 	void RemoveTask(const Id name)
 	{
 		auto res = taskNames.Find(name);
-		BE_ASSERT(res != taskNames.end(), "No task by that name");
+		BE_ASSERT(res.State(), "No task by that name");
 
-		uint32 i = static_cast<uint32>(res - taskNames.begin());
+		uint32 i = res.Get();
 		
 		taskAccessedObjects.Pop(i);
 		taskAccessTypes.Pop(i);
@@ -147,7 +147,7 @@ struct Stage
 		tasks.ResizeDown(0);
 	}
 
-	bool DoesTaskExist(const Id id) const { return taskNames.Find(id) != taskNames.end(); }
+	bool DoesTaskExist(const Id id) const { return taskNames.Find(id).State(); }
 	
 	void Pop(const uint32 from, const uint32 range)
 	{
@@ -192,8 +192,8 @@ struct TaskSorter
 			
 			for (uint32 i = 0; i < elementCount; ++i)
 			{
-				if (currentObjectAccessState[objects[i]] == AccessTypes::READ_WRITE) { return false; }
-				if (currentObjectAccessState[objects[i]] == AccessTypes::READ && accesses[i] == AccessTypes::READ_WRITE) { return false; }
+				if (currentObjectAccessState[objects[i]] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
+				if (currentObjectAccessState[objects[i]] == AccessTypes::READ && accesses[i] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
 			}
 		}
 
@@ -233,7 +233,7 @@ struct TaskSorter
 				currentObjectAccessState[objects[i]] = 0;
 			}
 
-			inUseSystems.Pop(inUseSystems.end() - inUseSystems.Find(objectNames[objects[i]]), 1);
+			inUseSystems.Pop(inUseSystems.Find(objectNames[objects[i]]).Get(), 1);
 		}
 		
 		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);

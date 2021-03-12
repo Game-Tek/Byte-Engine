@@ -50,7 +50,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
-			if (!meshInfos.Find(hashed_name()))
+			if (!meshInfos.Find(hashed_name))
 			{
 				GTSL::Buffer<BE::TAR> meshFileBuffer;
 
@@ -69,7 +69,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 				staticMeshPackage.WriteToFile(meshDataBuffer.GetBufferInterface());
 
-				meshInfos.Emplace(hashed_name(), meshInfo);
+				meshInfos.Emplace(hashed_name, meshInfo);
 			}
 		};
 

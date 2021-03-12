@@ -292,7 +292,7 @@ namespace BE
 						if (text.IsEmpty()) { return false; }
 						auto value = GTSL::ToNumber<uint32>(text);
 						if (!value.State()) { return false; }
-						settings.Emplace(key(), value.Get());
+						settings.Emplace(key, value.Get());
 						lastParsedToken = Token::VALUE;
 						currentToken = Token::NONE;
 						parseEnded = true;
@@ -345,7 +345,7 @@ namespace BE
 				{
 					auto value = GTSL::ToNumber<uint32>(text);
 					if (!value.State()) { return false; }
-					settings.Emplace(key(), value.Get());
+					settings.Emplace(key, value.Get());
 					parseEnded = true;
 					break;
 				}

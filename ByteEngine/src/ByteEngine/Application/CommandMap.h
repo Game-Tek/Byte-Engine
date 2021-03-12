@@ -27,5 +27,5 @@ public:
 	}
 
 private:
-	GTSL::FlatHashMap<GTSL::Delegate<void(const GTSL::String&)>> commands;
+	GTSL::FlatHashMap<Id, GTSL::Delegate<void(const GTSL::String&)>> commands;
 };

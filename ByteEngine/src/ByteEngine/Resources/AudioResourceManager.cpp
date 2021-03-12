@@ -36,7 +36,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
-			if (!audioResourceInfos.Find(hashed_name()))
+			if (!audioResourceInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
 				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ);
@@ -88,7 +88,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 				packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, wavBuffer.GetData() + wavBuffer.GetReadPosition()));
 
-				audioResourceInfos.Emplace(hashed_name(), data);
+				audioResourceInfos.Emplace(hashed_name, data);
 			}
 		};
 

@@ -61,9 +61,9 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	Buffer GetBuffer(Id bufferName) const { return buffers[buffersByName[bufferName()]].Buffers[frame]; }
+	Buffer GetBuffer(Id bufferName) const { return buffers[buffersByName[bufferName]].Buffers[frame]; }
 	Buffer GetBuffer(BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame]; }
-	PipelineLayout GetSetLayoutPipelineLayout(Id id) const { return setLayoutDatas[id()].PipelineLayout; }
+	PipelineLayout GetSetLayoutPipelineLayout(Id id) const { return setLayoutDatas[id].PipelineLayout; }
 	
 	void UpdateSet(SubSetHandle subSetHandle, uint32 bindingIndex, AccelerationStructure accelerationStructure)
 	{
@@ -119,12 +119,12 @@ public:
 	
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, PipelineType pipelineType)
 	{
-		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName()), pipelineType);
+		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName), pipelineType);
 	}
 	
 	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, PipelineType pipelineType);
 
-	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name()); }
+	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name); }
 
 	void WriteSetTexture(const RenderSystem* renderSystem, SubSetHandle setHandle, RenderSystem::TextureHandle textureHandle, uint32 bindingIndex);
 
@@ -163,7 +163,7 @@ public:
 
 	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members);
 	
-	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name(), bufferHandle()); }
+	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name, bufferHandle()); }
 	
 	/**
 	 * \brief Update the member instance count to be able to fit at least count requested elements.
@@ -291,7 +291,7 @@ private:
 		GTSL::Array<MemberData, 16> MemberData;
 	};
 	GTSL::KeepVector<BufferData, BE::PAR> buffers;
-	GTSL::FlatHashMap<uint32, BE::PAR> buffersByName;
+	GTSL::FlatHashMap<Id, uint32, BE::PAR> buffersByName;
 
 	struct DescriptorsUpdate
 	{
@@ -390,7 +390,7 @@ private:
 		GTSL::Array<SubSetData, 16> SubSets;
 	};
 	
-	GTSL::FlatHashMap<SetHandle, BE::PAR> setHandlesByName;
+	GTSL::FlatHashMap<Id, SetHandle, BE::PAR> setHandlesByName;
 	GTSL::KeepVector<SetData, BE::PAR> sets;
 
 	GTSL::PagedVector<SetHandle, BE::PAR> queuedSetUpdates;
@@ -403,7 +403,7 @@ private:
 		BindingsSetLayout BindingsSetLayout;
 		PipelineLayout PipelineLayout;
 	};
-	GTSL::FlatHashMap<SetLayoutData, BE::PAR> setLayoutDatas;
+	GTSL::FlatHashMap<Id, SetLayoutData, BE::PAR> setLayoutDatas;
 	
 	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
 	

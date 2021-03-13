@@ -171,21 +171,8 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	
 	systemApplication.UpdateWindow(&window);
 	
-	switch (updateInfo.UpdateContext)
-	{
-		case UpdateContext::NORMAL:
-		{		
-			bool connected;
-			GTSL::GamepadQuery::Update(gamepad, connected, 0);
-		} break;
-		
-		case UpdateContext::BACKGROUND:
-		{
-			
-		} break;
-		
-		default: break;
-	}
+	bool connected;
+	GTSL::GamepadQuery::Update(gamepad, connected, 0);
 }
 
 void GameApplication::Shutdown()
@@ -206,7 +193,7 @@ void GameApplication::RegisterMouse()
 
 	auto mouse_move = [](const GTSL::Vector2 a)
 	{
-		Get()->GetInputManager()->Record2DInputSource("MouseMove", a);
+		Get()->GetInputManager()->Record2DInputSource("Mouse", "MouseMove", a);
 	};
 
 	inputManagerInstance->RegisterActionInputSource("LeftMouseButton");
@@ -218,11 +205,11 @@ void GameApplication::RegisterMouse()
 		switch (button)
 		{
 		case GTSL::Window::MouseButton::LEFT_BUTTON:
-			Get()->GetInputManager()->RecordActionInputSource("LeftMouseButton", buttonState);
+			Get()->GetInputManager()->RecordActionInputSource("Mouse", "LeftMouseButton", buttonState);
 			Get()->GetGameInstance()->GetSystem<CanvasSystem>("CanvasSystem")->SignalHit(GTSL::Vector2());
 			break;
-		case GTSL::Window::MouseButton::RIGHT_BUTTON: Get()->GetInputManager()->RecordActionInputSource("RightMouseButton", buttonState); break;
-		case GTSL::Window::MouseButton::MIDDLE_BUTTON: Get()->GetInputManager()->RecordActionInputSource("MiddleMouseButton", buttonState); break;
+		case GTSL::Window::MouseButton::RIGHT_BUTTON: Get()->GetInputManager()->RecordActionInputSource("Mouse", "RightMouseButton", buttonState); break;
+		case GTSL::Window::MouseButton::MIDDLE_BUTTON: Get()->GetInputManager()->RecordActionInputSource("Mouse", "MiddleMouseButton", buttonState); break;
 		default:;
 		}
 	};
@@ -231,7 +218,7 @@ void GameApplication::RegisterMouse()
 
 	auto mouse_wheel = [](const float value)
 	{
-		Get()->GetInputManager()->RecordLinearInputSource("MouseWheel", value);
+		Get()->GetInputManager()->RecordLinearInputSource("Mouse", "MouseWheel", value);
 	};
 
 	window.SetOnMouseMoveDelegate(GTSL::Delegate<void(GTSL::Vector2)>::Create(mouse_move));
@@ -245,7 +232,7 @@ void GameApplication::RegisterKeyboard()
 	
 	auto char_event = [](const uint32 ch)
 	{
-		Get()->GetInputManager()->RecordCharacterInputSource("Keyboard", ch);
+		Get()->GetInputManager()->RecordCharacterInputSource("Keyboard", "Keyboard", ch);
 	};
 	window.SetOnCharEventDelegate(GTSL::Delegate<void(uint32)>::Create(char_event));
 
@@ -373,7 +360,7 @@ void GameApplication::RegisterKeyboard()
 
 		if(isFirstkeyOfType)
 		{
-			Get()->GetInputManager()->RecordActionInputSource(id, state);
+			Get()->GetInputManager()->RecordActionInputSource("Keyboard", id, state);
 		}
 	};
 	
@@ -411,8 +398,8 @@ void GameApplication::RegisterControllers()
 	{
 		switch(side)
 		{
-		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->Record2DInputSource("RightStick", source); break;
-		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->Record2DInputSource("LeftStick", source); break;
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->Record2DInputSource("XBoxGamePad", "RightStick", source); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->Record2DInputSource("XBoxGamePad", "LeftStick", source); break;
 		default: break;
 		}
 	};
@@ -421,8 +408,8 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordLinearInputSource("RightTrigger", source); break;
-		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordLinearInputSource("LeftTrigger", source); break;
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordLinearInputSource("XBoxGamePad", "RightTrigger", source); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordLinearInputSource("XBoxGamePad", "LeftTrigger", source); break;
 		default: break;
 		}
 	};
@@ -431,10 +418,10 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("TopDPadButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightDPadButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("BottomDPadButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftDPadButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "TopDPadButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "RightDPadButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "BottomDPadButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "LeftDPadButton", state); break;
 		default: break;
 		}
 	};
@@ -443,8 +430,8 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightHatButton", state); break;
-		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftHatButton", state); break;
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "RightHatButton", state); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "LeftHatButton", state); break;
 		default: break;
 		}
 	};
@@ -453,8 +440,8 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightMenuButton", state); break;
-		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftMenuButton", state); break;
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "RightMenuButton", state); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "LeftMenuButton", state); break;
 		default: break;
 		}
 	};
@@ -463,10 +450,10 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("TopFrontButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightFrontButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("BottomFrontButton", state); break;
-		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftFrontButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::TOP: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "TopFrontButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::RIGHT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "RightFrontButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::BOTTOM: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "BottomFrontButton", state); break;
+		case GTSL::GamepadQuery::GamepadButtonPosition::LEFT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "LeftFrontButton", state); break;
 		default: break;
 		}
 	};
@@ -475,8 +462,8 @@ void GameApplication::RegisterControllers()
 	{
 		switch (side)
 		{
-		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("RightStickButton", state); break;
-		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("LeftStickButton", state); break;
+		case GTSL::GamepadQuery::Side::RIGHT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "RightStickButton", state); break;
+		case GTSL::GamepadQuery::Side::LEFT: Get()->GetInputManager()->RecordActionInputSource("XBoxGamePad", "LeftStickButton", state); break;
 		default: break;
 		}
 	};

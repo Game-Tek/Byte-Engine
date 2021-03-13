@@ -71,7 +71,7 @@ public:
 		GTSL::Vector<Path, BE::PersistentAllocatorReference> Paths;
 		uint16 AdvanceWidth;
 		int16 LeftSideBearing;
-		int16 BoundingBox[4];
+		GTSL::Vector2 BoundingBox[2]; //min, max
 		GTSL::Vector2 Center;
 	};
 

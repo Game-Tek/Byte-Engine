@@ -30,6 +30,10 @@ class Game final : public GameApplication
 	MaterialInstanceHandle buttonMaterial;
 	AudioEmitterHandle audioEmitter;
 	AudioListenerHandle audioListener;
+
+	bool shouldFire = false;
+	
+	void leftClick(InputManager::ActionInputEvent data);
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);
 	void moveBackwards(InputManager::ActionInputEvent data);

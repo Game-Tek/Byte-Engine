@@ -2,6 +2,8 @@
 
 #include <GTSL/Math/Vector2.h>
 
+
+#include "Application.h"
 #include "ByteEngine/Debug/Logger.h"
 
 InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
@@ -22,7 +24,7 @@ InputManager::~InputManager()
 
 void InputManager::Update()
 {
-	GTSL::Microseconds current_time{ 0 };
+	GTSL::Microseconds current_time{ BE::Application::Get()->GetClock()->GetElapsedTime() };
 
 	updateInput(actionInputSourceRecords, actionInputSourcesToActionInputEvents, current_time);
 	updateInput(characterInputSourceRecords, characterInputSourcesToCharacterInputEvents, current_time);

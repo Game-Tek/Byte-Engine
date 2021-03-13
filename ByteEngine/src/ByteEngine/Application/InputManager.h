@@ -30,7 +30,7 @@ public:
 	struct InputEvent
 	{
 		using type = T;
-		Id Name;
+		Id Name, SourceDevice;
 		GTSL::Microseconds LastEventTime;
 		T Value;
 		T LastValue;
@@ -100,11 +100,16 @@ public:
 
 	void RegisterActionInputEvent(Id actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function)
 	{
-#ifdef BE_DEBUG
-		//for (auto& e : inputSourceNames) { BE_ASSERT(actionInputSourcesToActionInputEvents.At(e) != actionInputSourcesToActionInputEvents.end(), "Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event"); }
-#endif
-
-		for (const auto& e : inputSourceNames) { actionInputSourcesToActionInputEvents.At(e) = ActionInputSourceData(function, {}, {}); }
+		for (const auto& e : inputSourceNames)
+		{
+			auto res = actionInputSourcesToActionInputEvents.TryGet(e);
+			if (res.State()) {
+				res.Get() = ActionInputSourceData(function, {}, {});
+			}
+			else {
+				BE_LOG_WARNING("Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event")
+			}
+		}
 	}
 	
 	void RegisterCharacterInputEvent(Id actionName, GTSL::Range<const GTSL::Id64*> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function)
@@ -134,28 +139,28 @@ public:
 		for (const auto& e : inputSourceNames) { vector2dInputSourceEventsToVector2DInputEvents.At(e) = Vector2DInputSourceData(function, {}, {}); }
 	}
 	
-	void RecordActionInputSource(Id inputSourceName, ActionInputEvent::type newValue)
+	void RecordActionInputSource(Id sourceDevice, Id eventName, ActionInputEvent::type newValue)
 	{
-		if (!actionInputSourcesToActionInputEvents.Find(inputSourceName)) { BE_LOG_WARNING("Tried to record ", inputSourceName.GetString(), " which is not registered as an action input source."); return; }
-		actionInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+		if (!actionInputSourcesToActionInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as an action input source."); return; }
+		actionInputSourceRecords.EmplaceBack(sourceDevice, eventName, newValue);
 	}
 	
-	void RecordCharacterInputSource(Id inputSourceName, CharacterInputEvent::type newValue)
+	void RecordCharacterInputSource(Id sourceDevice, Id eventName, CharacterInputEvent::type newValue)
 	{
-		if (!characterInputSourcesToCharacterInputEvents.Find(inputSourceName)) { BE_LOG_WARNING("Tried to record ", inputSourceName.GetString(), " which is not registered as a character input source."); return; }
-		characterInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+		if (!characterInputSourcesToCharacterInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a character input source."); return; }
+		characterInputSourceRecords.EmplaceBack(sourceDevice, eventName, newValue);
 	}
 	
-	void RecordLinearInputSource(Id inputSourceName, LinearInputEvent::type newValue)
+	void RecordLinearInputSource(Id sourceDevice, Id eventName, LinearInputEvent::type newValue)
 	{
-		if (!linearInputSourcesToLinearInputEvents.Find(inputSourceName)) { BE_LOG_WARNING("Tried to record ", inputSourceName.GetString(), " which is not registered as a linear input source."); return; }
-		linearInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+		if (!linearInputSourcesToLinearInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a linear input source."); return; }
+		linearInputSourceRecords.EmplaceBack(sourceDevice, eventName, newValue);
 	}
 	
-	void Record2DInputSource(Id inputSourceName, Vector2DInputEvent::type newValue)
+	void Record2DInputSource(Id sourceDevice, Id eventName, Vector2DInputEvent::type newValue)
 	{
-		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(inputSourceName)) { BE_LOG_WARNING("Tried to record ", inputSourceName.GetString(), " which is not registered as a vector 2d input source."); return; }
-		vector2DInputSourceRecords.EmplaceBack(inputSourceName, newValue);
+		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a vector 2d input source."); return; }
+		vector2DInputSourceRecords.EmplaceBack(sourceDevice, eventName, newValue);
 	}
 
 	void Update();	
@@ -206,13 +211,13 @@ protected:
 		/**
 		 * \brief Name of the input source which caused the input source event.
 		 */
-		Id Name;
+		Id Source, Name;
 
 		typename T::type NewValue;
 
 		InputSourceRecord() = default;
 		
-		InputSourceRecord(const Id name, decltype(NewValue) newValue) : Name(name), NewValue(newValue)
+		InputSourceRecord(const Id source, const Id name, decltype(NewValue) newValue) : Source(source), Name(name), NewValue(newValue)
 		{
 		}
 	};
@@ -234,7 +239,7 @@ protected:
 		{
 			auto& inputSource = map.At(record.Name);
 
-			if (inputSource.Function) { inputSource.Function({ record.Name, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
+			if (inputSource.Function) { inputSource.Function({ record.Name, record.Source, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
 
 			inputSource.LastValue = record.NewValue;
 			inputSource.LastTime = time;

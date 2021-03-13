@@ -68,8 +68,7 @@ inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, c
 	face.LinearBeziers.Initialize(16, allocator);
 	face.CubicBeziers.Initialize(16, allocator);
 
-	auto minBBox = GTSL::Vector2(glyph.BoundingBox[0], glyph.BoundingBox[1]);
-	auto maxBBox = GTSL::Vector2(glyph.BoundingBox[2], glyph.BoundingBox[3]);
+	auto minBBox = glyph.BoundingBox[0]; auto maxBBox = glyph.BoundingBox[1];
 
 	for (const auto& path : glyph.Paths) {
 		for (const auto& segment : path) {

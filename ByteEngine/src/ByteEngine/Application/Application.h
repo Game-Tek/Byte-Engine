@@ -60,7 +60,6 @@ namespace BE
 		
 		struct OnUpdateInfo
 		{
-			UpdateContext UpdateContext;
 		};
 		virtual void OnUpdate(const OnUpdateInfo& updateInfo);
 		
@@ -133,8 +132,6 @@ namespace BE
 		Clock clockInstance;
 		GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference> inputManagerInstance;
 		GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference> threadPool;
-
-		UpdateContext updateContext{ UpdateContext::NORMAL };
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };

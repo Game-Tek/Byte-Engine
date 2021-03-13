@@ -115,7 +115,7 @@ public:
 
 	void AddSetToRenderGroup(Id renderGroupName, Id setName)
 	{
-		renderGroups.At(renderGroupName()).Sets.EmplaceBack(setName);
+		renderGroups.At(renderGroupName).Sets.EmplaceBack(setName);
 	}
 
 	enum class TextureComponentType
@@ -225,7 +225,7 @@ private:
 		GTSL::Array<uint8, 8> IndexStreams;
 		GTSL::Array<Id, 8> Sets;
 	};
-	GTSL::StaticMap<RenderGroupData, 16> renderGroups;
+	GTSL::StaticMap<Id, RenderGroupData, 16> renderGroups;
 	
 	struct RenderState
 	{
@@ -288,7 +288,7 @@ private:
 	
 	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, CommandBuffer, Id)>;
 	
-	GTSL::StaticMap<RenderPassFunctionType, 8> renderPassesFunctions;
+	GTSL::StaticMap<Id, RenderPassFunctionType, 8> renderPassesFunctions;
 
 	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
@@ -363,7 +363,7 @@ private:
 		Id RenderGroup;
 		uint32 InstanceCount = 0;
 
-		GTSL::StaticMap<MemberHandle, 16> ParametersHandles;
+		GTSL::StaticMap<Id, MemberHandle, 16> ParametersHandles;
 
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
 		MemberHandle MaterialInstancesMemberHandle;
@@ -453,7 +453,7 @@ private:
 		GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndex;
 	};
-	GTSL::StaticMap<Attachment, 32> attachments;
+	GTSL::StaticMap<Id, Attachment, 32> attachments;
 
 	void updateImage(Attachment& attachment, TextureLayout textureLayout, PipelineStage::value_type stages, bool writeAccess)
 	{

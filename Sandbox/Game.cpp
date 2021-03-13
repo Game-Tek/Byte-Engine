@@ -22,6 +22,11 @@
 class UIManager;
 class TestSystem;
 
+void Game::leftClick(InputManager::ActionInputEvent data)
+{
+	shouldFire = data.Value;
+}
+
 void Game::moveLeft(InputManager::ActionInputEvent data)
 {
 	moveDir.X() = -data.Value;
@@ -71,9 +76,12 @@ bool Game::Initialize()
 	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
 	a.PopBack(); a.EmplaceBack("LeftStick");
 	inputManagerInstance->Register2DInputEvent("View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+	
+	a.PopBack(); a.EmplaceBack("LeftMouseButton"); a.EmplaceBack("RightTrigger");
+	inputManagerInstance->RegisterActionInputEvent("Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
-	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
+	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);//
 
 	{
 		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
@@ -197,11 +205,13 @@ bool Game::Initialize()
 	//load menu
 	//show menu
 	//start game
+
+	return true;
 }
 
 void Game::PostInitialize()
 {
-	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
+	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);//
 	
 	GameApplication::PostInitialize();
 
@@ -230,8 +240,8 @@ void Game::PostInitialize()
 	audioEmitter = audioSystem->CreateAudioEmitter();
 	audioListener = audioSystem->CreateAudioListener();
 	audioSystem->SetAudioListener(audioListener);
-	audioSystem->PlayAudio(audioEmitter, "dance");
-	audioSystem->SetLooping(audioEmitter, true);
+	audioSystem->BindAudio(audioEmitter, "gunshot");
+	//audioSystem->SetLooping(audioEmitter, true);
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
@@ -256,36 +266,50 @@ void Game::PostInitialize()
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 	
-	//{
-	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
-	//		{ AudioFormat[] audioFormats { { 48000, 16, { { 1400 } } } } })");
-	//
-	//	FileDescription<BE::SystemAllocatorReference> fileDescription;
-	//	auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
-	//
-	//	ParseState<BE::SystemAllocatorReference> parseState;
-	//	StartParse(fileDescription, parseState, fpfString, systemAllocatorReference);
-	//
-	//	uint32 audioFormat = 0;
-	//	
-	//	while (GoToVariable(fileDescription, parseState, "audioFormats", audioFormat)) {
-	//		uint32 KHz, bitDepth;
-	//
-	//		GetVariable(fileDescription, parseState, "KHz", KHz);
-	//		GetVariable(fileDescription, parseState, "BitDepth", bitDepth);
-	//
-	//		uint32 audioFileIndex = 0;
-	//		
-	//		while (GoToVariable(fileDescription, parseState, "AudioFiles", audioFileIndex)) {
-	//			uint32 frameCount = 0;
-	//			GetVariable(fileDescription, parseState, "FrameCount", frameCount);
-	//
-	//			++audioFileIndex;
-	//		}
-	//		
-	//		++audioFormat;
-	//	}
-	//}
+	{
+		auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
+			{ AudioFormat[] audioFormats { { 48000, 16, { { 1400 }, { 1500 } } }, { 41000, 32, { { 1200 }, { 750 } } } } })");
+	
+		FileDescription<BE::SystemAllocatorReference> fileDescription;
+		auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
+	
+		ParseState<BE::SystemAllocatorReference> parseState;
+		StartParse(fileDescription, parseState, fpfString, systemAllocatorReference);
+	
+		struct AudioFile { uint32 FrameCount; };
+		struct AudioFormat { uint32 KHz, BitDepth; GTSL::Array<AudioFile, 8> AudioFiles; };
+	
+		GTSL::Array<AudioFormat, 8> audioFormats;
+		
+		uint32 audioFormatIndex = 0;
+	
+		GoToArray(fileDescription, parseState, "audioFormats", audioFormatIndex);
+		while (GoToIndex(fileDescription, parseState, audioFormatIndex)) {
+			AudioFormat audioFormat;
+	
+			GetVariable(fileDescription, parseState, "KHz", audioFormat.KHz);
+			GetVariable(fileDescription, parseState, "BitDepth", audioFormat.BitDepth);
+	
+			uint32 audioFileIndex = 0;
+	
+			GoToArray(fileDescription, parseState, "AudioFiles", audioFileIndex);
+			while (GoToIndex(fileDescription, parseState, audioFileIndex)) {
+				AudioFile audioFile;
+				
+				GetVariable(fileDescription, parseState, "FrameCount", audioFile.FrameCount);
+	
+				audioFormat.AudioFiles.EmplaceBack(audioFile);
+				
+				++audioFileIndex;
+			}
+			
+			audioFormats.EmplaceBack(audioFormat);
+			
+			++audioFormatIndex;
+		}
+	
+		uint32 t = 0;
+	}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -360,6 +384,12 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
+
+	if (shouldFire)
+	{
+		audioSystem->PlayAudio(audioEmitter);
+		shouldFire = false;
+	}
 	
 	GameApplication::OnUpdate(onUpdate);
 
@@ -381,7 +411,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
 
-	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
+	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));//
 }
 
 void Game::Shutdown()

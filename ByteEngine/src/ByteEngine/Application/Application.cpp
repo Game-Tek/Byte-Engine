@@ -142,21 +142,8 @@ namespace BE
 	{
 		PROFILE;
 		
-		switch(updateInfo.UpdateContext)
-		{
-		case UpdateContext::NORMAL:
-		{
-			inputManagerInstance->Update();
-			gameInstance->OnUpdate(this);
-		} break;
-		
-		case UpdateContext::BACKGROUND:
-		{
-			
-		} break;
-			
-		default: break;
-		}
+		inputManagerInstance->Update();
+		gameInstance->OnUpdate(this);
 	}
 
 	int Application::Run(int argc, char** argv)
@@ -170,7 +157,6 @@ namespace BE
 			clockInstance.OnUpdate();
 			
 			OnUpdateInfo update_info{};
-			update_info.UpdateContext = updateContext;
 			OnUpdate(update_info);
 			
 			transientAllocator.LockedClear();

@@ -305,9 +305,9 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderManagers.Initialize(16, GetPersistentAllocator());
 	setupSystemsAccesses.Initialize(16, GetPersistentAllocator());
 
-	renderPassesFunctions.Emplace(Id("SceneRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
-	renderPassesFunctions.Emplace(Id("UIRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
-	renderPassesFunctions.Emplace(Id("SceneRTRenderPass")(), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
+	renderPassesFunctions.Emplace(Id("SceneRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderScene>());
+	renderPassesFunctions.Emplace(Id("UIRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
+	renderPassesFunctions.Emplace(Id("SceneRTRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 
 	//auto onMaterialLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialLoad", Task<Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessTypes::READ_WRITE } });
 	//initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", MaterialSystem::GetOnMaterialLoadEventHandle(), onMaterialLoadHandle);
@@ -651,11 +651,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				case PassType::RASTER: // Don't transition attachments as API render pass will handle transitions
 				{
 					for (auto& e : renderPass->WriteAttachments) {
-						updateImage(attachments.At(e.Name()), e.Layout, renderPass->PipelineStages, true);
+						updateImage(attachments.At(e.Name), e.Layout, renderPass->PipelineStages, true);
 					}
 
 					for (auto& e : renderPass->ReadAttachments) {
-						updateImage(attachments.At(e.Name()), e.Layout, renderPass->PipelineStages, false);
+						updateImage(attachments.At(e.Name), e.Layout, renderPass->PipelineStages, false);
 					}
 
 					renderState.PipelineType = PipelineType::RASTER;
@@ -708,7 +708,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		{
 			beginRenderPass();
 
-			auto doRender = [&]() { if (renderPassesFunctions.Find(renderPassId())) { renderPassesFunctions.At(renderPassId())(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, renderPassId); } };
+			auto doRender = [&]() { if (renderPassesFunctions.Find(renderPassId)) { renderPassesFunctions.At(renderPassId)(this, taskInfo.GameInstance, renderSystem, materialSystem, commandBuffer, renderPassId); } };
 			
 			switch (renderPass->PassType)
 			{
@@ -722,7 +722,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					
 				GTSL::Array<GTSL::RGBA, 8> clearValues;
 				for (uint8 i = 0; i < renderPass->WriteAttachments.GetLength(); ++i) {
-					const auto& attachment = attachments.At(renderPass->WriteAttachments[i].Name());
+					const auto& attachment = attachments.At(renderPass->WriteAttachments[i].Name);
 					clearValues.EmplaceBack(attachment.ClearColor);
 				}
 					
@@ -767,7 +767,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 
 		{
-			auto& attachment = attachments.At(resultAttachment());
+			auto& attachment = attachments.At(resultAttachment);
 
 			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
 			barriers[0].SetTextureBarrier({ renderSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
@@ -777,7 +777,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 
 			
-		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), renderSystem->GetTexture(attachments.At(resultAttachment()).TextureHandle),
+		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle),
 		renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_SRC, TextureLayout::TRANSFER_DST,
 			GTSL::Extent3D(renderSystem->GetRenderExtent()));
 
@@ -915,14 +915,14 @@ void RenderOrchestrator::AddAttachment(Id name, uint8 bitDepth, uint8 componentC
 	attachment.WriteAccess = false;
 	attachment.ConsumingStages = PipelineStage::TOP_OF_PIPE;
 
-	attachments.Emplace(name(), attachment);
+	attachments.Emplace(name, attachment);
 }
 
 void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* materialSystem, GTSL::Range<const PassData*> passesData)
 {
 	GTSL::Array<Id, 16> frameUsedAttachments;
 
-	GTSL::Array<GTSL::StaticMap<uint32, 16>, 16> attachmentReadsPerPass;
+	GTSL::Array<GTSL::StaticMap<Id, uint32, 16>, 16> attachmentReadsPerPass;
 	
 	for (uint8 passIndex = 0; passIndex < passesData.ElementCount(); ++passIndex) {
 		auto addIfNotUsed = [&](const Id name) {
@@ -947,14 +947,14 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 				for (auto r : passesData[i].ReadAttachments) { if (e == r.Name) { pass = i; } }
 			}
 
-			attachmentReadsPerPass[passIndex].Emplace(e(), pass);
+			attachmentReadsPerPass[passIndex].Emplace(e, pass);
 		}
 		
-		attachmentReadsPerPass[passIndex].At(resultAttachment()) = 0xFFFFFFFF; //set result attachment last read as "infinte" so it will always be stored
+		attachmentReadsPerPass[passIndex].At(resultAttachment) = 0xFFFFFFFF; //set result attachment last read as "infinte" so it will always be stored
 	}
 
 	{
-		auto& finalAttachment = attachments.At(resultAttachment());
+		auto& finalAttachment = attachments.At(resultAttachment);
 
 		finalAttachment.FormatDescriptor = GAL::FORMATS::BGRA_I8;
 	}
@@ -1004,12 +1004,12 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 
 			for (auto e : renderPassUsedAttachments)
 			{
-				auto& attachment = attachments.At(e());
+				auto& attachment = attachments.At(e);
 
 				RenderPass::AttachmentDescriptor attachmentDescriptor;
 				attachmentDescriptor.Format = static_cast<TextureFormat>(GAL::FormatToVkFomat(GAL::MakeFormatFromFormatDescriptor(attachment.FormatDescriptor)));
 				attachmentDescriptor.LoadOperation = GAL::RenderTargetLoadOperations::CLEAR;
-				if(attachmentReadsPerPass[lastContiguousRasterPassIndex].At(e()) > lastContiguousRasterPassIndex) {
+				if(attachmentReadsPerPass[lastContiguousRasterPassIndex].At(e) > lastContiguousRasterPassIndex) {
 					attachmentDescriptor.StoreOperation = GAL::RenderTargetStoreOperations::STORE;
 				}
 				else {
@@ -1053,7 +1053,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 				
 				for (auto& e : passesData[passIndex].ReadAttachments)
 				{
-					if (attachments.At(e.Name()).Type & TextureType::COLOR)
+					if (attachments.At(e.Name).Type & TextureType::COLOR)
 					{
 						RenderPass::AttachmentReference attachmentReference;
 						attachmentReference.Layout = TextureLayout::SHADER_READ_ONLY;
@@ -1080,7 +1080,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 
 				for (auto e : passesData[passIndex].WriteAttachments)
 				{
-					if (attachments.At(e.Name()).Type & TextureType::COLOR)
+					if (attachments.At(e.Name).Type & TextureType::COLOR)
 					{
 						RenderPass::AttachmentReference attachmentReference;
 						attachmentReference.Layout = TextureLayout::COLOR_ATTACHMENT;
@@ -1111,7 +1111,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 					{
 						if (!usedAttachmentsPerSubPass[s].Find(b).State()) // If attachment is not used this sub pass
 						{
-							if (attachmentReadsPerPass[s].At(b()) > s) // And attachment is read after this pass
+							if (attachmentReadsPerPass[s].At(b) > s) // And attachment is read after this pass
 							{
 								preserveAttachmentReferences[s].EmplaceBack(getAttachmentIndex(b));
 							}
@@ -1271,7 +1271,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 		if constexpr (_DEBUG) { framebufferCreateInfo.Name = GTSL::StaticString<32>("FrameBuffer"); }
 
 		GTSL::Array<TextureView, 16> textureViews;
-		for (auto e : apiRenderPassData.UsedAttachments) { textureViews.EmplaceBack(renderSystem->GetTextureView(attachments.At(e()).TextureHandle)); }
+		for (auto e : apiRenderPassData.UsedAttachments) { textureViews.EmplaceBack(renderSystem->GetTextureView(attachments.At(e).TextureHandle)); }
 
 		framebufferCreateInfo.TextureViews = textureViews;
 		framebufferCreateInfo.RenderPass = &apiRenderPassData.RenderPass;
@@ -1290,7 +1290,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 		
 		for (uint8 r = 0; r < renderPass.ReadAttachments.GetLength(); ++r)
 		{
-			auto& attachment = attachments.At(renderPass.ReadAttachments[r].Name());
+			auto& attachment = attachments.At(renderPass.ReadAttachments[r].Name);
 			auto name = attachment.Name;
 
 			materialSystem->WriteMultiBuffer(bufferIterator, &attachment.ImageIndex);
@@ -1300,7 +1300,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 		
 		for (uint8 w = 0; w < renderPass.WriteAttachments.GetLength(); ++w)
 		{
-			auto& attachment = attachments.At(renderPass.WriteAttachments[w].Name());
+			auto& attachment = attachments.At(renderPass.WriteAttachments[w].Name);
 			auto name = attachment.Name;
 
 			if (attachment.Type & TextureType::COLOR) {
@@ -1510,7 +1510,7 @@ void RenderOrchestrator::transitionImages(CommandBuffer commandBuffer, RenderSys
 	
 	auto buildTextureBarrier = [&](const AttachmentData& attachmentData, PipelineStage::value_type attachmentStages, bool writeAccess)
 	{
-		auto& attachment = attachments.At(attachmentData.Name());
+		auto& attachment = attachments.At(attachmentData.Name);
 
 		CommandBuffer::TextureBarrier textureBarrier;
 		textureBarrier.Texture = renderSystem->GetTexture(attachment.TextureHandle);
@@ -1689,7 +1689,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		GTSL::Array<MaterialSystem::MemberInfo, 16> materialParameters;
 
 		for (auto& e : material.Parameters) {
-			material.ParametersHandles.Emplace(e.Name());
+			material.ParametersHandles.Emplace(e.Name);
 
 			MaterialSystem::Member::DataType memberType;
 
@@ -1701,7 +1701,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			case MaterialResourceManager::ParameterType::BUFFER_REFERENCE: memberType = MaterialSystem::Member::DataType::UINT64; break;
 			}
 
-			materialParameters.EmplaceBack(MaterialSystem::MemberInfo{ 1, memberType, &material.ParametersHandles.At(e.Name()) });
+			materialParameters.EmplaceBack(MaterialSystem::MemberInfo{ 1, memberType, &material.ParametersHandles.At(e.Name) });
 		}
 
 		GTSL::Array<MaterialSystem::MemberInfo, 1> materialInstanceParametersStruct;
@@ -1768,7 +1768,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 				materialSystem->UpdateIteratorMember(bufferIterator, material.MaterialInstancesMemberHandle);
 				materialSystem->UpdateIteratorMemberIndex(bufferIterator, i);
 
-				materialSystem->UpdateIteratorMember(bufferIterator, material.ParametersHandles.At(resourceMaterialInstanceParameter.First()));
+				materialSystem->UpdateIteratorMember(bufferIterator, material.ParametersHandles.At(resourceMaterialInstanceParameter.First));
 
 				materialSystem->WriteMultiBuffer(bufferIterator, &textureComponentIndex);
 			}

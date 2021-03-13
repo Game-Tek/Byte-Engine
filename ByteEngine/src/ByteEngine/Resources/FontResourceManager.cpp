@@ -442,6 +442,9 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 
 	GTSL::Buffer<BE::TAR> data; data.Allocate(1000000, 8, GetTransientAllocator());
 
+	//glyf map
+	//glyfs
+	
 	for(auto& e : font.Glyphs)
 	{
 		Face face;
@@ -675,16 +678,18 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		uint32 currentOffset = glyf_offset + glyphIndices[glyphIndex];
 
 		get2b(&currentGlyph.NumContours, data + currentOffset, currentOffset);
-		get2b(&currentGlyph.BoundingBox[0], data + currentOffset, currentOffset); //xMin
-		get2b(&currentGlyph.BoundingBox[1], data + currentOffset, currentOffset); //yMin
-		get2b(&currentGlyph.BoundingBox[2], data + currentOffset, currentOffset); //xMax
-		get2b(&currentGlyph.BoundingBox[3], data + currentOffset, currentOffset); //yMax
+		
+		{
+			int16 bbox[4];
+			get2b(&bbox[0], data + currentOffset, currentOffset); /*xMin*/ get2b(&bbox[1], data + currentOffset, currentOffset); //yMin
+			get2b(&bbox[2], data + currentOffset, currentOffset); /*xMax*/ get2b(&bbox[3], data + currentOffset, currentOffset); //yMax
 
-		GTSL::Vector2 glyphCenter;
-		glyphCenter.X() = (currentGlyph.BoundingBox[0] + currentGlyph.BoundingBox[2]) / 2.0f;
-		glyphCenter.Y() = (currentGlyph.BoundingBox[1] + currentGlyph.BoundingBox[3]) / 2.0f;
-
-		currentGlyph.Center = glyphCenter;
+			currentGlyph.BoundingBox[0].X() = bbox[0]; currentGlyph.BoundingBox[0].Y() = bbox[1];
+			currentGlyph.BoundingBox[1].X() = bbox[2]; currentGlyph.BoundingBox[1].Y() = bbox[3];
+			
+			currentGlyph.Center.X() = (currentGlyph.BoundingBox[0].X() + currentGlyph.BoundingBox[1].X()) / 2.0f;
+			currentGlyph.Center.Y() = (currentGlyph.BoundingBox[0].Y() + currentGlyph.BoundingBox[1].Y()) / 2.0f;
+		}
 		
 		if (currentGlyph.NumContours > 0) //simple glyph
 		{
@@ -698,8 +703,7 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			{
 				uint16 num_points = contourEnd[contourIndex] - (contourIndex ? contourEnd[contourIndex - 1] : -1);
 				
-				if (pointsPerContour[contourIndex].size() < num_points)
-				{
+				if (pointsPerContour[contourIndex].size() < num_points) {
 					pointsPerContour[contourIndex].resize(num_points);
 				}
 				
@@ -709,10 +713,10 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			//Skip instructions
 			uint16 num_instructions;
 			get2b(&num_instructions, data + currentOffset); currentOffset += sizeof(uint16);
-			currentOffset += sizeof(uint8_t) * num_instructions;
+			currentOffset += sizeof(uint8) * num_instructions;
 
 			uint16 numPoints = contourEnd[static_cast<int64>(currentGlyph.NumContours) - 1] + 1;
-			std::vector<uint8_t> flags(numPoints);
+			std::vector<uint8> flags(numPoints);
 			std::vector<Flags> flagsEnum(numPoints);
 			std::vector<uint16> contour_index(numPoints);
 			uint16 current_contour_index = 0;

@@ -29,7 +29,8 @@ public:
 	AudioListenerHandle CreateAudioListener();
 	AudioEmitterHandle CreateAudioEmitter();
 
-	void PlayAudio(AudioEmitterHandle audioEmitter, Id audioToPlay);
+	void BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay);
+	void PlayAudio(AudioEmitterHandle audioEmitter);
 	
 	void SetPosition(AudioEmitterHandle audioEmitterHandle, const GTSL::Vector3 position) { audioEmittersLocation[audioEmitterHandle()] = position; }
 	void SetPosition(AudioListenerHandle audioListenerHandle, const GTSL::Vector3 position) { audioListenersLocation[audioListenerHandle()] = position; }
@@ -49,7 +50,6 @@ private:
 	using AudioDevice = AAL::WindowsAudioDevice;
 
 	static constexpr uint8 WAV_RIGHT_CHANNEL = 0, WAV_LEFT_CHANNEL = 1;
-	static constexpr uint8 API_RIGHT_CHANNEL = 1, API_LEFT_CHANNEL = 0;
 	
 	AudioDevice audioDevice;
 	AudioDevice::MixFormat mixFormat;
@@ -60,28 +60,30 @@ private:
 	
 	GTSL::Array<GTSL::Vector3, 8> audioEmittersLocation;
 
+	MAKE_HANDLE(uint32, PrivateSound);
+	
 	struct AudioEmitterSettings
 	{
 		bool Loop = false;
+		//PrivateSoundHandle PrivateSoundHandle;
+		Id Name;
+		uint32 Samples = 0;
 	};
 	GTSL::Array<AudioEmitterSettings, 8> audioEmittersSettings;
-
-	GTSL::Array<GTSL::Pair<AudioEmitterHandle, Id>, 8> onHoldEmitters;
 	
-	GTSL::Array<Id, 8> playingEmittersSample;
 	GTSL::Array<AudioEmitterHandle, 8> playingEmitters;
-	GTSL::Array<uint32, 8> playingEmittersAudio;
-	
-	GTSL::Array<uint32, 8> playingAudioFilesPlayedFrames;
-	GTSL::Array<Id, 8> playingAudioFiles;
 
 	GTSL::Array<Id, 8> lastRequestedAudios;
 
+	GTSL::Array<AudioEmitterHandle, 8> onHoldEmitters;
+	
 	GTSL::Buffer<BE::PAR> audioBuffer;
 	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
 	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
 
 	AudioListenerHandle activeAudioListenerHandle;
+
+	GTSL::Vector<Id, BE::PAR> loadedSounds;
 
 	template<typename T>
 	auto getSample(byte* buffer, const uint32 availableSamples, const uint32 sample, const uint32 channel) -> T&
@@ -98,14 +100,10 @@ private:
 	void requestAudioStreams();
 	void render(TaskInfo);
 
-	void removePlayingSound(uint32 i)
-	{
-		playingAudioFilesPlayedFrames.Pop(i); playingAudioFiles.Pop(i);
-	}
-
 	void removePlayingEmitter(uint32 i)
 	{
-		playingEmitters.Pop(i); playingEmittersAudio.Pop(i); playingEmittersSample.Pop(i);
+		audioEmittersSettings[playingEmitters[i]()].Samples = 0;
+		playingEmitters.Pop(i);
 	}
 	
 	void onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo);

@@ -9,11 +9,11 @@ struct ClassDesciptor
 {
 	struct ClassMember
 	{
-		Id Name; uint32 Size, Offset;
+		GTSL::StaticString<64> Type, Name;
 	};
 	
 	GTSL::Array<ClassMember, 16> Members;
-	GTSL::StaticMap<uint32, 16> MembersByName;
+	GTSL::StaticMap<Id, uint32, 16> MembersByName;
 };
 
 template<class ALLOCATOR>
@@ -26,7 +26,7 @@ struct FileDescription
 };
 
 template<class ALLOCATOR>
-inline bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& allocator, FileDescription<ALLOCATOR>& fileDescription)
+bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& allocator, FileDescription<ALLOCATOR>& fileDescription)
 {
 	uint32 c = 0;
 	using Token = GTSL::StaticString<64>;
@@ -62,7 +62,7 @@ inline bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLO
 			auto foundIdentifier = [&]()
 			{
 				auto identifier = accumUntilSkip();
-				tokens.EmplaceBack(Id(identifier));
+				tokens.EmplaceBack(identifier);
 			};
 
 			foundIdentifier();
@@ -92,32 +92,41 @@ inline bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLO
 		auto advance = [&]() { auto oldToken = tokens[tokenIndex]; token = tokens[++tokenIndex]; return oldToken; };
 		
 		auto processClass = [&]() -> bool {
-			{
-				auto classNameToken = advance();
-				auto result = registeredTypes.TryEmplace(Id(classNameToken)(), classNameToken);
-				if (!result.State()) { return false; } //symbol with that name already existed
-			}
+			
+			auto classNameToken = advance();
+			auto hashedName = Id(classNameToken);
+			auto result = registeredTypes.TryEmplace(hashedName, classNameToken);
+			if (!result.State()) { return false; } //symbol with that name already existed
+			
 			
 			auto* classPointer = fileDescription.Classes.AddChild(nullptr);
 			if (advance() != "{") { return false; }
+			fileDescription.ClassesByName.Emplace(hashedName, &classPointer->Data);
 
 			while (token != "}") {
 				{
 					auto memberType = advance();
 
-					if (memberType.Find("[]")) {
-						/*make array*/
-						memberType.Drop(memberType.GetLength() - 3);
+					if (memberType.Find("[]")) { //register array class
+						auto hashedName = Id(memberType);
+						auto placeAttempt = registeredTypes.TryEmplace(hashedName, memberType);
+						
+						if (placeAttempt.State()) {
+							auto* node = fileDescription.Classes.AddChild(nullptr);
+							fileDescription.ClassesByName.Emplace(hashedName, &node->Data);
+							auto nonArrayType = memberType;
+							nonArrayType.Drop(nonArrayType.FindLast('[').Get());
+							node->Data.Members.EmplaceBack(nonArrayType, "arrMem");
+						}
 					}
 					
-					if (!registeredTypes.Find(Id(memberType)())) { return false; }
-					
-				}
+					{
+						//if (!registeredTypes.Find(Id(memberType))) { return false; }
 
-				{
-					auto memberName = advance(); auto hashedMeberName = Id(memberName);
-					auto memberIndex = classPointer->Data.Members.EmplaceBack(hashedMeberName);
-					classPointer->Data.MembersByName.Emplace(hashedMeberName(), memberIndex);
+						auto memberName = advance();
+						auto memberIndex = classPointer->Data.Members.EmplaceBack(memberType, memberName);
+						classPointer->Data.MembersByName.Emplace(Id(memberName), memberIndex);
+					}
 				}
 			}
 
@@ -137,35 +146,64 @@ struct ParseState
 {
 	struct StackState
 	{
-		GTSL::StaticString<32> Type; uint32 C = 0;
+		GTSL::StaticString<32> Type, Name; uint32 C = 0, Index = 0;
 	};
 	GTSL::Vector<StackState, ALLOCATOR> Stack;
 	GTSL::Range<const utf8*> Text;
 	uint32 C = 0; utf8 Character = 0;
 	GTSL::StaticString<32> LasToken;
-	uint32 Scope = 0;
-	
-	auto advance() { auto oldChar = Character; Character = Text[++C]; return oldChar; };
-	
-	auto accumUntilSkip()
+	//uint32 Scope = 0;
+
+	template<class ALLOC>
+	auto advance(FileDescription<ALLOC>& fileDescription) {
+		if (Character == '{')
+		{
+			if (Stack.GetLength())
+			{
+				auto& stackState = Stack.back();
+				auto& cl = fileDescription.ClassesByName.At(Id(stackState.Type));
+				auto& member = cl->Members[stackState.Index % cl->Members.GetLength()];
+
+				{
+					StackState stackState;
+					stackState.Type = member.Type;
+					stackState.Name = member.Name;
+					stackState.C = C; //todo
+					Stack.EmplaceBack(stackState);
+				}
+			}
+		} else if (Character == '}') {
+			Stack.PopBack();
+		} else if (Character == ',') {
+			++Stack.back().Index;
+		}
+		
+		auto oldChar = Character; Character = Text[++C];
+		
+		return oldChar;
+	}
+
+	template<class ALLOC>
+	auto accumUntilSkip(FileDescription<ALLOC>& fileDescription)
 	{
 		GTSL::StaticString<512> string;
 
-		while (GTSL::IsWhitespace(Character) || GTSL::IsSpecialCharacter(Character)) { advance(); } //skip leading whitespace
+		while (GTSL::IsWhitespace(Character) || GTSL::IsSpecialCharacter(Character)) { advance(fileDescription); } //skip leading whitespace
 		while (!GTSL::IsWhitespace(Character) && !GTSL::IsSpecialCharacter(Character)) { //collect until break
-			string += advance();
+			string += advance(fileDescription);
 		}
 
 		return string;
 	};
 
-	auto accumUntilSkipWithSymbols()
+	template<class ALLOC>
+	auto accumUntilSkipWithSymbols(FileDescription<ALLOC>& fileDescription)
 	{
 		GTSL::StaticString<512> string;
 
-		while (GTSL::IsWhitespace(Character) || GTSL::IsSpecialCharacter(Character) || GTSL::IsSymbol(Character)) { advance(); } //skip leading whitespace
+		while (GTSL::IsWhitespace(Character) || GTSL::IsSpecialCharacter(Character) || GTSL::IsSymbol(Character)) { advance(fileDescription); } //skip leading whitespace
 		while (!GTSL::IsWhitespace(Character) && !GTSL::IsSpecialCharacter(Character) && !GTSL::IsSymbol(Character)) { //collect until break
-			string += advance();
+			string += advance(fileDescription);
 		}
 
 		return string;
@@ -173,7 +211,7 @@ struct ParseState
 };
 
 template<class ALLOC1, class ALLOC2>
-inline bool StartParse(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& parseState, const GTSL::Range<const utf8*> text, const ALLOC2& allocator)
+bool StartParse(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& parseState, const GTSL::Range<const utf8*> text, const ALLOC2& allocator)
 {
 	if (fileDescription.DataStart == 0xFFFFFFFF) { return false; }
 	parseState.Stack.Initialize(16, allocator);
@@ -183,62 +221,89 @@ inline bool StartParse(FileDescription<ALLOC1>& fileDescription, ParseState<ALLO
 }
 
 template<class ALLOC1, class ALLOC2>
-inline bool GoToVariable(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& parseState, GTSL::StaticString<64> variableName, uint32 index = 0)
+bool GoToArray(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& parseState, GTSL::StaticString<64> variableName, uint32 index = 0)
 {
-	//{
-	//	auto find = parseState.Stack.Find(variableName);
-	//	if(find.State()) {
-	//		parseState.Stack.Pop(find.Get(), parseState.Stack.GetLength() - find.Get());
-	//
-	//		while (true)
-	//		{
-	//			auto parseResult = parseState.accumUntilSkip();
-	//
-	//			
-	//		}
-	//	}
-	//}
-
-	if(parseState.Scope == 0)
+	if(parseState.Stack.GetLength() == 0)
 	{
+		GTSL::StaticString<256> strings[2];
+		
 		while (true) {
-			auto parseResult = parseState.accumUntilSkipWithSymbols();
+			strings[1] = parseState.accumUntilSkip(fileDescription);
 
-			if(fileDescription.ClassesByName.Find(Id(parseResult)())) {
+			if (strings[1] == variableName) {
+				auto* node = fileDescription.Classes.AddChild(nullptr);
+				fileDescription.ClassesByName.Emplace(Id(strings[0]), &node->Data);
+				auto nonArrayType = strings[0];
+				nonArrayType.Drop(nonArrayType.FindLast('[').Get());
+				node->Data.Members.EmplaceBack(nonArrayType, "arrMem");
+
 				typename ParseState<ALLOC2>::StackState stackState;
-				stackState.Type = parseResult;
+				stackState.Type = strings[0];
+				stackState.Name = strings[1];
 				stackState.C = parseState.C; //todo
 				parseState.Stack.EmplaceBack(stackState);
+
+				parseState.C += 2;
+				parseState.Character = parseState.Text[parseState.C];
+				
+				break;
 			}
 
-			if (parseResult == "{") { ++parseState.Scope; continue; }
-			if (parseResult == "}") { --parseState.Scope; continue; }
+			strings[0] = strings[1];
 		}
 	}
 	else
 	{
-		
+		auto& e = fileDescription.ClassesByName.At(Id(parseState.Stack.back().Type));
+		uint32 memberIndex = e->MembersByName.At(Id(variableName));
+
+		while (true) { //fix
+			if (parseState.Stack.back().Index == memberIndex) { GoToIndex(fileDescription, parseState); break; }
+			parseState.advance(fileDescription);
+		}
 	}
 	
 	return true;
 }
 
-template<class ALLOCATOR, typename T>
-bool GetVariable(const FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCATOR>& parseState, GTSL::StaticString<32> objectName, T& obj);
+template<class ALLOC1, class ALLOC2>
+bool GoToIndex(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& parseState, uint32 index = 0)
+{
+	auto& stackState = parseState.Stack.back();
 
-template<class ALLOCATOR, uint32>
-bool GetVariable(const FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCATOR>& parseState, GTSL::StaticString<32> objectName, uint32& obj)
-{	
-	auto& e = fileDescription.ClassesByName.At(Id(parseState.Stack.back().Type)());
-	uint32 memberIndex = e->MembersByName.Find(Id(objectName)());
-
-	uint32 index = 0;
+	auto scope = parseState.Stack.GetLength();
 	
-	while(index != memberIndex) {
-		if (parseState.Text[parseState.C++] == ',') { ++index; }
+	while (true) { //fix
+		parseState.advance(fileDescription);
+		if (parseState.Stack.GetLength() > scope) { return true; }
+		if (parseState.Stack.GetLength() < scope)
+		{
+			auto scope = parseState.Stack.GetLength();
+			
+			while (true) {
+				parseState.advance(fileDescription);
+				if (parseState.Stack.GetLength() > scope) { return true; }
+				if (parseState.Stack.GetLength() < scope) { return false; }
+			}
+		}
 	}
+}
 
-	auto res = parseState.accumUntilSkipWithSymbols();
+//template<class ALLOCATOR, typename T>
+//bool GetVariable(const FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCATOR>& parseState, GTSL::StaticString<32> objectName, T& obj);
+
+template<class ALLOCATOR>
+bool GetVariable(FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCATOR>& parseState, GTSL::StaticString<32> objectName, uint32& obj)
+{	
+	auto& e = fileDescription.ClassesByName.At(Id(parseState.Stack.back().Type));
+	uint32 memberIndex = e->MembersByName.At(Id(objectName));
+
+	while (true) { //fix
+		if (e->Members[parseState.Stack.back().Index % e->Members.GetLength()].Name == objectName) { break; }
+		parseState.advance(fileDescription);
+	}
+	
+	auto res = parseState.accumUntilSkipWithSymbols(fileDescription);
 	auto number = GTSL::ToNumber<uint32>(res);
 	if (!number.State()) { return false; }
 	obj = number.Get();

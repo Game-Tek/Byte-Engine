@@ -244,7 +244,7 @@ void Game::PostInitialize()
 	//audioSystem->SetLooping(audioEmitter, true);
 	
 	//{
-	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;//
+	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;/
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
@@ -266,50 +266,50 @@ void Game::PostInitialize()
 		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 	
-	{
-		auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
-			{ AudioFormat[] audioFormats { { 48000, 16, { { 1400 }, { 1500 } } }, { 41000, 32, { { 1200 }, { 750 } } } } })");
-	
-		FileDescription<BE::SystemAllocatorReference> fileDescription;
-		auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
-	
-		ParseState<BE::SystemAllocatorReference> parseState;
-		StartParse(fileDescription, parseState, fpfString, systemAllocatorReference);
-	
-		struct AudioFile { uint32 FrameCount; };
-		struct AudioFormat { uint32 KHz, BitDepth; GTSL::Array<AudioFile, 8> AudioFiles; };
-	
-		GTSL::Array<AudioFormat, 8> audioFormats;
-		
-		uint32 audioFormatIndex = 0;
-	
-		GoToArray(fileDescription, parseState, "audioFormats", audioFormatIndex);
-		while (GoToIndex(fileDescription, parseState, audioFormatIndex)) {
-			AudioFormat audioFormat;
-	
-			GetVariable(fileDescription, parseState, "KHz", audioFormat.KHz);
-			GetVariable(fileDescription, parseState, "BitDepth", audioFormat.BitDepth);
-	
-			uint32 audioFileIndex = 0;
-	
-			GoToArray(fileDescription, parseState, "AudioFiles", audioFileIndex);
-			while (GoToIndex(fileDescription, parseState, audioFileIndex)) {
-				AudioFile audioFile;
-				
-				GetVariable(fileDescription, parseState, "FrameCount", audioFile.FrameCount);
-	
-				audioFormat.AudioFiles.EmplaceBack(audioFile);
-				
-				++audioFileIndex;
-			}
-			
-			audioFormats.EmplaceBack(audioFormat);
-			
-			++audioFormatIndex;
-		}
-	
-		uint32 t = 0;
-	}
+	//{
+	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
+	//		{ AudioFormat[] audioFormats { { 48000, 16, { { 1400 }, { 1500 } } }, { 41000, 32, { { 1200 }, { 750 } } } } })");
+	//
+	//	FileDescription<BE::SystemAllocatorReference> fileDescription;
+	//	auto result = BuildFileDescription(fpfString, systemAllocatorReference, fileDescription);
+	//
+	//	ParseState<BE::SystemAllocatorReference> parseState;
+	//	StartParse(fileDescription, parseState, fpfString, systemAllocatorReference);
+	//
+	//	struct AudioFile { uint32 FrameCount; };
+	//	struct AudioFormat { uint32 KHz, BitDepth; GTSL::Array<AudioFile, 8> AudioFiles; };
+	//
+	//	GTSL::Array<AudioFormat, 8> audioFormats;
+	//	
+	//	uint32 audioFormatIndex = 0;
+	//
+	//	GoToArray(fileDescription, parseState, "audioFormats", audioFormatIndex);
+	//	while (GoToIndex(fileDescription, parseState, audioFormatIndex)) {
+	//		AudioFormat audioFormat;
+	//
+	//		GetVariable(fileDescription, parseState, "KHz", audioFormat.KHz);
+	//		GetVariable(fileDescription, parseState, "BitDepth", audioFormat.BitDepth);
+	//
+	//		uint32 audioFileIndex = 0;
+	//
+	//		GoToArray(fileDescription, parseState, "AudioFiles", audioFileIndex);
+	//		while (GoToIndex(fileDescription, parseState, audioFileIndex)) {
+	//			AudioFile audioFile;
+	//			
+	//			GetVariable(fileDescription, parseState, "FrameCount", audioFile.FrameCount);
+	//
+	//			audioFormat.AudioFiles.EmplaceBack(audioFile);
+	//			
+	//			++audioFileIndex;
+	//		}
+	//		
+	//		audioFormats.EmplaceBack(audioFormat);
+	//		
+	//		++audioFormatIndex;
+	//	}
+	//
+	//	uint32 t = 0;
+	//}
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -369,7 +369,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}
+	//}//
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");

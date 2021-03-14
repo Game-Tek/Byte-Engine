@@ -48,8 +48,6 @@ public:
 
 private:
 	using AudioDevice = AAL::WindowsAudioDevice;
-
-	static constexpr uint8 WAV_RIGHT_CHANNEL = 0, WAV_LEFT_CHANNEL = 1;
 	
 	AudioDevice audioDevice;
 	AudioDevice::MixFormat mixFormat;
@@ -86,15 +84,9 @@ private:
 	GTSL::Vector<Id, BE::PAR> loadedSounds;
 
 	template<typename T>
-	auto getSample(byte* buffer, const uint32 availableSamples, const uint32 sample, const uint32 channel) -> T&
+	auto getSample(byte* buffer, const uint8 channelCount, const uint32 sample, const uint32 channel) -> T&
 	{
-		return *reinterpret_cast<T*>(buffer + (channel * availableSamples * mixFormat.GetFrameSize()) + (sample * mixFormat.GetFrameSize()));
-	};
-
-	template<typename T>
-	auto getIntertwinedSample(byte* buffer, const uint32 availableSamples, const uint32 sample, const uint32 channel) -> T&
-	{
-		return *(reinterpret_cast<T*>(buffer) + sample * 2 + channel);
+		return *(reinterpret_cast<T*>(buffer) + sample * channelCount + channel);
 	};
 	
 	void requestAudioStreams();

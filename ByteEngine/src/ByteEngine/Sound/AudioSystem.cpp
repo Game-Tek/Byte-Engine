@@ -156,17 +156,29 @@ void AudioSystem::render(TaskInfo)
 			auto audioFrames = audioResourceManager->GetFrameCount(emmitter.Name);
 			auto remainingFrames = audioFrames - playedSamples;
 			auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
-			
-			for (uint32 s = 0; s < clampedFrames; ++s) //left channel
-			{
-				getIntertwinedSample<int16>(buffer, availableAudioFrames, s, AudioDevice::LEFT_CHANNEL) += getSample<int16>(audio, audioFrames, s + playedSamples, 0) * leftPercentange;
-			}
 
-			for (uint32 s = 0; s < clampedFrames; ++s) //right channel
+			if (audioResourceManager->GetChannelCount(emmitter.Name) == 1)
 			{
-				getIntertwinedSample<int16>(buffer, availableAudioFrames, s, AudioDevice::RIGHT_CHANNEL) += getSample<int16>(audio, audioFrames, s + playedSamples, 0) * rightPercentage;
+				for (uint32 s = 0; s < clampedFrames; ++s) //left channel
+				{
+					auto sample = getSample<int16>(audio, 1, s + playedSamples, 0);
+					
+					getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += sample * leftPercentange;
+					getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += sample * rightPercentage;
+				}
 			}
+			else
+			{
+				for (uint32 s = 0; s < clampedFrames; ++s) //left channel
+				{
+					auto lSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::LEFT_CHANNEL);
+					auto rSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::RIGHT_CHANNEL);
 
+					getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += lSample * leftPercentange;
+					getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += rSample * rightPercentage;
+				}
+			}
+				
 			if ((emmitter.Samples += clampedFrames) == audioFrames)
 			{
 				if (!GetLooping(playingEmitters[pe])) {

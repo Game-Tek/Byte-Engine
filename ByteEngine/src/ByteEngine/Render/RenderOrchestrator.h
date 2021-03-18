@@ -213,12 +213,6 @@ private:
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle topLevelAsHandle;
 
-
-	RayTracingPipeline rayTracingPipeline;
-	MemberHandle sbtMemberHandle;
-	MemberHandle renderGroupPointerHandle;
-	MemberHandle materialDataPointerHandle;
-
 	struct RenderGroupData
 	{
 		uint32 Index;
@@ -311,11 +305,27 @@ private:
 	void traceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
 	
 	//MATERIAL STUFF
+	struct RayTracingPipelineData
+	{
+		struct ShaderGroupData
+		{
+			uint32 Count = 0, Size = 0;
+			GAL::VulkanDeviceAddress Address;
+			BufferHandle Buffer;
 
-	GTSL::FlatHashMap<Id, uint32, BE::PAR> shaderGroupsByName;
+			struct ShaderRegisterData
+			{
+				GTSL::Array<Id, 8> Buffers;
+				MemberHandle ShaderHandle;
+				MemberHandle BufferBufferReferencesMemberHandle;
+			};
+			
+			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
+		} ShaderGroups[4];
 
-	uint32 shaderCounts[4]{ 0 };
-	uint32 entrySizes[4]{ 0 };
+		RayTracingPipeline Pipeline;
+	};
+	GTSL::KeepVector<RayTracingPipelineData, BE::PAR> rayTracingPipelines;
 	
 	struct PrivateMaterialHandle
 	{
@@ -347,11 +357,6 @@ private:
 		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
-
-	//struct MaterialInstanceData
-	//{
-	//	
-	//};
 	
 	struct MaterialData
 	{
@@ -390,8 +395,6 @@ private:
 	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterialInstances;
 	GTSL::FlatHashMap<Id, MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
 	GTSL::FlatHashMap<Id, uint32, BE::PAR> materialInstancesByName;
-
-	//PrivateMaterialHandle publicMaterialHandleToPrivateMaterialHandle(MaterialInstanceHandle materialHandle) const { return privateMaterialHandlesByName.At(materialHandle()); }
 
 	struct TextureLoadInfo
 	{

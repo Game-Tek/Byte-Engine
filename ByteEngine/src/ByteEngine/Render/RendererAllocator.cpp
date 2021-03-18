@@ -54,9 +54,9 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 				renderAllocation->Size = alignedSize;
 				renderAllocation->AllocationId = allocationId;
 
-				BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
+				//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 
-					return;
+				return;
 			}
 
 			++allocationId.Index;
@@ -86,7 +86,7 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocationId;
 
-	BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
+	//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
 }
 
 void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::PersistentAllocatorReference& allocatorReference)
@@ -296,7 +296,7 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 				renderAllocation->Size = alignedSize;
 				renderAllocation->AllocationId = allocId;
 
-				BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
+				//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 
 				return;
 			}
@@ -322,7 +322,7 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 	renderAllocation->Size = alignedSize;
 	renderAllocation->AllocationId = allocId;
 
-	BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
+	//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 }
 
 void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference)

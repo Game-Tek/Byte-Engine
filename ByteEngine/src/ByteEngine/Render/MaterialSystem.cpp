@@ -264,25 +264,34 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 
 		for (uint8 m = 0; m < levelMembers.ElementCount(); ++m)
 		{
-			Member member;
-			member.Type = levelMembers[m].Type; member.Count = levelMembers[m].Count;
-
-			auto memberDataIndex = bufferData.MemberData.EmplaceBack();
-
-			*levelMembers[m].Handle = MemberHandle(MemberDescription{ bufferIndex, memberDataIndex });
-
-			bufferData.MemberData[memberDataIndex].ByteOffsetIntoStruct = offset;
-			bufferData.MemberData[memberDataIndex].Level = level;
-			bufferData.MemberData[memberDataIndex].Type = levelMembers[m].Type;
-			bufferData.MemberData[memberDataIndex].Count = levelMembers[m].Count;
-
-			if (levelMembers[m].Type == Member::DataType::STRUCT) { bufferData.MemberData[memberDataIndex].Size = self(self, levelMembers[m].MemberInfos, level + 1); }
+			if(levelMembers[m].Type == Member::DataType::PAD)
+			{
+				structSize += levelMembers[m].Count;
+			}
 			else
 			{
-				bufferData.MemberData[memberDataIndex].Size = dataTypeSize(levelMembers[m].Type);
-				auto size = dataTypeSize(levelMembers[m].Type) * levelMembers[m].Count;
-				offset += size;
-				structSize += size;
+				Member member;
+				member.Type = levelMembers[m].Type; member.Count = levelMembers[m].Count;
+
+				auto memberDataIndex = bufferData.MemberData.EmplaceBack();
+
+				bufferData.MemberData[memberDataIndex].ByteOffsetIntoStruct = offset;
+				bufferData.MemberData[memberDataIndex].Level = level;
+				bufferData.MemberData[memberDataIndex].Type = levelMembers[m].Type;
+				bufferData.MemberData[memberDataIndex].Count = levelMembers[m].Count;
+				*levelMembers[m].Handle = MemberHandle(MemberDescription{ bufferIndex, memberDataIndex });
+
+				if (levelMembers[m].Type == Member::DataType::STRUCT)
+				{
+					bufferData.MemberData[memberDataIndex].Size = self(self, levelMembers[m].MemberInfos, level + 1);
+				}
+				else
+				{
+					bufferData.MemberData[memberDataIndex].Size = dataTypeSize(levelMembers[m].Type);
+					auto size = dataTypeSize(levelMembers[m].Type) * levelMembers[m].Count;
+					offset += size;
+					structSize += size;
+				}
 			}
 		}
 

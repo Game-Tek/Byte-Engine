@@ -78,7 +78,7 @@ public:
 	[[nodiscard]] GTSL::Range<const float32*> GetFieldOfViews() const { return fovs; }
 	void SetFieldOfView(const CameraHandle componentReference, const float32 fov) { fovs[componentReference()] = fov; }
 	float32 GetFieldOfView(const CameraHandle componentReference) const { return fovs[componentReference()]; }
-	GTSL::Vector3 GetCameraPosition(CameraHandle cameraHandle) const { return GTSL::Math::GetTranslation(positionMatrices[cameraHandle()]); }
+	GTSL::Vector3 GetCameraPosition(CameraHandle cameraHandle) const { return GTSL::Vector3(GTSL::Math::GetTranslation(positionMatrices[cameraHandle()])); }
 
 private:
 	GTSL::Vector<GTSL::Matrix4, BE::PersistentAllocatorReference> positionMatrices;

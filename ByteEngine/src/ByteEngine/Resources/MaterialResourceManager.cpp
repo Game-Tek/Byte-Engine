@@ -157,6 +157,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 		materialInfo.ShaderInfo.BinarySize = shader_buffer.GetLength();
 		materialInfo.ShaderInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
 		materialInfo.ShaderInfo.ShaderType = materialCreateInfo.Type;
+		materialInfo.ShaderInfo.Buffers = materialCreateInfo.Buffers;
 		package.WriteToFile(shader_buffer);
 
 		resources_path.Drop(resources_path.FindLast('/').Get() + 1);

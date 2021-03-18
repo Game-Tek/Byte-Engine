@@ -52,7 +52,7 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2, STRUCT
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2, STRUCT, PAD
 		};
 
 		uint32 Count = 1;
@@ -75,6 +75,7 @@ public:
 		descriptorsUpdates[f].AddAccelerationStructureUpdate(subSetHandle, bindingIndex, { accelerationStructure });
 	}
 
+	GTSL::uint64 GetBufferAddress(RenderSystem* renderSystem, const BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame].GetAddress(renderSystem->GetRenderDevice()); }
 	struct BufferIterator { uint32 Level = 0, ByteOffset = 0, MemberIndex = 0; MemberHandle Member; };
 	
 	template<typename T>

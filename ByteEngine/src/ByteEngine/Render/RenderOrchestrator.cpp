@@ -414,7 +414,10 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
-		shaderGroupsByName.Initialize(16, GetPersistentAllocator());
+		rayTracingPipelines.Initialize(4, GetPersistentAllocator());
+
+		auto& pipelineData = rayTracingPipelines[rayTracingPipelines.Emplace()];
+		for (auto& e : pipelineData.ShaderGroups) { e.Shaders.Initialize(4, GetPersistentAllocator()); }
 		
 		auto* materialResorceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 
@@ -422,14 +425,22 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
 		GTSL::Vector<GTSL::Buffer<BE::TAR>, BE::TAR> shaderBuffers(16, GetTransientAllocator());
 
+		auto handleSize = renderSystem->GetShaderGroupHandleSize();
+		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
+
+		GTSL::Array<MaterialSystem::MemberInfo, 32> memberInfos[4];
+		GTSL::Array<uint32, 32> index[4];
+
+		uint32 unalignedSizes[4]{ 0 };
+		
 		for (uint32 i = 0; i < materialResorceManager->GetRayTraceShaderCount(); ++i)
 		{
-			uint32 bufferSize = 0;
-			bufferSize = materialResorceManager->GetRayTraceShaderSize(materialResorceManager->GetRayTraceShaderHandle(i));
-			shaderBuffers.EmplaceBack();
-			shaderBuffers[i].Allocate(bufferSize, 8, GetTransientAllocator());
-
-			shaderGroupsByName.Emplace(materialResorceManager->GetRayTraceShaderHandle(i), i);
+			{
+				uint32 bufferSize = 0;
+				bufferSize = materialResorceManager->GetRayTraceShaderSize(materialResorceManager->GetRayTraceShaderHandle(i));
+				shaderBuffers.EmplaceBack();
+				shaderBuffers[i].Allocate(bufferSize, 8, GetTransientAllocator());
+			}
 
 			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffers[i].GetCapacity(), shaderBuffers[i].GetData())); //TODO: VIRTUAL BUFFER INTERFACE
 
@@ -438,6 +449,8 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			shaderInfo.Type = ConvertShaderType(material.ShaderType);
 			shaderInfos.EmplaceBack(shaderInfo);
 
+			uint8 shaderGroup = 0xFF;
+			
 			RayTracingPipeline::Group group{};
 
 			group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
@@ -447,26 +460,26 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			{
 			case GAL::ShaderType::RAY_GEN: {
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++shaderCounts[GAL::RAY_GEN_TABLE_INDEX];
+				shaderGroup = GAL::RAY_GEN_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::MISS: {
 				//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
 				//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++shaderCounts[GAL::MISS_TABLE_INDEX];
+				shaderGroup = GAL::MISS_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::CALLABLE: {
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
-				++shaderCounts[GAL::CALLABLE_TABLE_INDEX];
+				shaderGroup = GAL::CALLABLE_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::CLOSEST_HIT: {
 				//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.ClosestHitShader = i;
-				++shaderCounts[GAL::HIT_TABLE_INDEX];
+				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::ANY_HIT: {
@@ -474,14 +487,14 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 				//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
 				//and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.AnyHitShader = i;
-				++shaderCounts[GAL::HIT_TABLE_INDEX];
+				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::INTERSECTION: {
 				//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
 				group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL; group.IntersectionShader = i;
-				++shaderCounts[GAL::HIT_TABLE_INDEX];
+				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
 
@@ -489,51 +502,61 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			}
 
 			groups.EmplaceBack(group);
+
+			{
+				//auto& shaderData = rayTracingShaders.Emplace(materialResorceManager->GetRayTraceShaderHandle(i));
+				auto& shaderData = pipelineData.ShaderGroups[shaderGroup].Shaders.EmplaceBack();
+				for (auto& s : material.Buffers) { shaderData.Buffers.EmplaceBack(Id(s)); }
+				
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ alignedHandleSize / 4/*uint32*/, MaterialSystem::Member::DataType::UINT32, &shaderData.ShaderHandle, {} }); //shader handle
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ material.Buffers.GetLength(), MaterialSystem::Member::DataType::UINT32, &shaderData.BufferBufferReferencesMemberHandle, {} }); //material buffer
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ 0, MaterialSystem::Member::DataType::PAD, nullptr, {} }); //padding
+
+				index[shaderGroup].EmplaceBack(i);
+				
+				unalignedSizes[shaderGroup] = alignedHandleSize + material.Buffers.GetLength() * 4;
+				++pipelineData.ShaderGroups[shaderGroup].Count;
+				pipelineData.ShaderGroups[shaderGroup].Size = GTSL::Math::Max(pipelineData.ShaderGroups[shaderGroup].Size, GTSL::Math::RoundUpByPowerOf2(unalignedSizes[shaderGroup], renderSystem->GetShaderGroupBaseAlignment()));
+			}
 		}
 
+		//create buffer per shader group
+		for(uint32 i = 0; i < 4; ++i)
+		{			
+			for (uint32 t = 0, v = 0; t < memberInfos[i].GetLength() / 3; ++t, v += 3) {
+				uint32 size = memberInfos[i][v].Count * 4 + memberInfos[i][v + 1].Count * 4;
+				memberInfos[i][v + 2].Count = pipelineData.ShaderGroups[i].Size - size; //pad
+			}
+			
+			pipelineData.ShaderGroups[i].Buffer = materialSystem->CreateBuffer(renderSystem, memberInfos[i]);
+		}
+		
 		RayTracingPipeline::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<32> name("Ray Tracing Pipeline: "); createInfo.Name = name;
 		}
-
 		createInfo.MaxRecursionDepth = 3;
 		createInfo.Stages = shaderInfos;
-
 		createInfo.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData"));
-
 		createInfo.Groups = groups;
-		rayTracingPipeline.Initialize(createInfo);
-
-		auto handleSize = renderSystem->GetShaderGroupHandleSize();
-		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
-
-		{
-			GTSL::Array<MaterialSystem::MemberInfo, 32> memberInfos;
-			memberInfos.PushBack(MaterialSystem::MemberInfo{ alignedHandleSize / 4/*uint32*/, MaterialSystem::Member::DataType::UINT32, &sbtMemberHandle, {} }); //shader handle
-			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &renderGroupPointerHandle, {} }); //raytracing render group buffer
-			memberInfos.PushBack(MaterialSystem::MemberInfo{ 1, MaterialSystem::Member::DataType::UINT32, &materialDataPointerHandle, {} }); //material buffer
-
-			materialSystem->CreateBuffer(renderSystem, memberInfos);
-		}
+		pipelineData.Pipeline.Initialize(createInfo);
 
 		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
 
-		entrySizes[GAL::RAY_GEN_TABLE_INDEX] = alignedHandleSize;
-		entrySizes[GAL::HIT_TABLE_INDEX] = alignedHandleSize + 128;
-		entrySizes[GAL::MISS_TABLE_INDEX] = alignedHandleSize;
-		entrySizes[GAL::CALLABLE_TABLE_INDEX] = alignedHandleSize;
+		pipelineData.Pipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer.GetCapacity(), handlesBuffer.GetData()));
 
-		rayTracingPipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer.GetCapacity(), handlesBuffer.GetData()));
-
-		MaterialSystem::BufferIterator iterator;
-		materialSystem->UpdateIteratorMember(iterator, sbtMemberHandle);
-
-		for (uint32 h = 0; h < groups.GetLength(); ++h)
-		{
-			for (uint8 t = 0; t < alignedHandleSize / 4; ++t) {
-				materialSystem->UpdateIteratorMemberIndex(iterator, t);
-				materialSystem->WriteMultiBuffer(iterator, reinterpret_cast<uint32*>(handlesBuffer.GetData() + h * handleSize) + t);
+		for (uint8 i = 0; i < 4; ++i) {
+			MaterialSystem::BufferIterator iterator;
+			
+			for (uint32 s = 0; s < pipelineData.ShaderGroups[i].Shaders.GetLength(); ++s) //make index
+			{
+				materialSystem->UpdateIteratorMember(iterator, pipelineData.ShaderGroups[i].Shaders[s].ShaderHandle);
+				
+				for (uint8 t = 0; t < alignedHandleSize / 4; ++t) { //Write shader handles to managed buffer, TODO: check size multiples
+					materialSystem->UpdateIteratorMemberIndex(iterator, t);
+					materialSystem->WriteMultiBuffer(iterator, reinterpret_cast<uint32*>(handlesBuffer.GetData() + index[i][s] * handleSize) + t);
+				}
 			}
 		}
 
@@ -1563,19 +1586,14 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, MaterialResourceMana
 
 void RenderOrchestrator::traceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
 {
-	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), rayTracingPipeline, PipelineType::RAY_TRACING);
+	const auto& pipelineData = rayTracingPipelines[0];
+	
+	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), pipelineData.Pipeline, PipelineType::RAY_TRACING);
 
 	auto handleSize = renderSystem->GetShaderGroupHandleSize();
 	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
-	auto alignedSize = GTSL::Math::RoundUpByPowerOf2(handleSize + 128, renderSystem->GetShaderGroupBaseAlignment());
-
-	MaterialSystem::BufferIterator iterator;
-	materialSystem->UpdateIteratorMember(iterator, sbtMemberHandle);
-
-	auto bufferAddress = reinterpret_cast<uint64>(materialSystem->GetMemberPointer<uint32>(iterator));
-
-	uint32 offset = 0;
+	auto alignedSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
 
 	GTSL::Array<CommandBuffer::ShaderTableDescriptor, 4> shaderTableDescriptors;
 
@@ -1583,10 +1601,9 @@ void RenderOrchestrator::traceRays(GTSL::Extent2D rayGrid, CommandBuffer* comman
 	{
 		CommandBuffer::ShaderTableDescriptor shaderTableDescriptor;
 
-		shaderTableDescriptor.Entries = shaderCounts[i];
-		shaderTableDescriptor.EntrySize = entrySizes[i];
-		shaderTableDescriptor.Address = bufferAddress + offset;
-		offset += shaderTableDescriptor.Entries * shaderTableDescriptor.EntrySize;
+		shaderTableDescriptor.Entries = pipelineData.ShaderGroups[i].Count;
+		shaderTableDescriptor.EntrySize = pipelineData.ShaderGroups[i].Size;
+		shaderTableDescriptor.Address = materialSystem->GetBufferAddress(renderSystem, pipelineData.ShaderGroups[i].Buffer);
 
 		shaderTableDescriptors.EmplaceBack(shaderTableDescriptor);
 	}

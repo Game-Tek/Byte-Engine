@@ -221,6 +221,7 @@ public:
 		GTSL::StaticString<64> ShaderName;
 		GAL::ShaderType Type;
 		GAL::BlendOperation ColorBlendOperation;
+		GTSL::Array<GTSL::ShortString<64>, 8> Buffers;
 	};
 	void CreateRayTraceMaterial(const RayTraceMaterialCreateInfo& materialCreateInfo);
 
@@ -235,6 +236,7 @@ public:
 
 		GAL::ShaderType ShaderType;
 		GAL::BlendOperation ColorBlendOperation;
+		GTSL::Array<GTSL::ShortString<64>, 8> Buffers;
 
 		template<class ALLOC>
 		friend void Insert(const MaterialResourceManager::RayTracingShaderInfo& shaderInfo, GTSL::Buffer<ALLOC>& buffer)
@@ -242,6 +244,7 @@ public:
 			Insert(shaderInfo.BinarySize, buffer);
 			Insert(shaderInfo.ShaderType, buffer);
 			Insert(shaderInfo.ColorBlendOperation, buffer);
+			Insert(shaderInfo.Buffers, buffer);
 		}
 
 		template<class ALLOC>
@@ -250,6 +253,7 @@ public:
 			Extract(shaderInfo.BinarySize, buffer);
 			Extract(shaderInfo.ShaderType, buffer);
 			Extract(shaderInfo.ColorBlendOperation, buffer);
+			Extract(shaderInfo.Buffers, buffer);
 		}
 	};
 

@@ -64,6 +64,27 @@ void RenderSystem::InitializeRenderer(const InitializeRendererInfo& initializeRe
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 		renderDevice.Initialize(createInfo);
 
+		{
+			needsStagingBuffer = true;
+			
+			auto memoryHeaps = renderDevice.GetMemoryHeaps(); GAL::VulkanRenderDevice::MemoryHeap& biggestGPUHeap = memoryHeaps[0];
+			
+			for (auto& e : memoryHeaps)
+			{
+				if (e.HeapType & GAL::MemoryType::GPU) {
+					if (e.Size > biggestGPUHeap.Size) {
+						biggestGPUHeap = e;
+
+						for (auto& mt : e.MemoryTypes) {
+							if (mt & GAL::MemoryType::GPU && mt & GAL::MemoryType::HOST_COHERENT && mt & GAL::MemoryType::HOST_VISIBLE) {
+								needsStagingBuffer = false; break;
+							}
+						}
+					}
+				}
+			}
+		}
+		
 		scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		

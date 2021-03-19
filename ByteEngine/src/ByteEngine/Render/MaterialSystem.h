@@ -32,13 +32,11 @@ struct SubSetDescription
 
 MAKE_HANDLE(SubSetDescription, SubSet)
 
-struct MemberDescription
+template<typename T>
+struct MemberHandle
 {
-	uint32 BufferIndex = 0;
-	uint32 MemberIndirectionIndex = 0;
+	uint32 BufferIndex = 0, MemberIndirectionIndex = 0;
 };
-
-MAKE_HANDLE(MemberDescription, Member)
 
 MAKE_HANDLE(uint32, Buffer)
 
@@ -52,11 +50,14 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, UINT64, MATRIX4, FVEC4, FVEC2, STRUCT, PAD
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, MATRIX4X3, FVEC4, FVEC2, STRUCT, PAD
 		};
 
+		Member() = default;
+		Member(const uint32 count, const DataType type) : Count(count), Type(type) {}
+		
 		uint32 Count = 1;
-		DataType Type;
+		DataType Type = DataType::PAD;
 	};
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
@@ -76,45 +77,30 @@ public:
 	}
 
 	GTSL::uint64 GetBufferAddress(RenderSystem* renderSystem, const BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame].GetAddress(renderSystem->GetRenderDevice()); }
-	struct BufferIterator { uint32 Level = 0, ByteOffset = 0, MemberIndex = 0; MemberHandle Member; };
-	
+	struct BufferIterator {
+		GTSL::Array<uint32, 16> Levels;
+		uint32 ByteOffset = 0; uint32 BufferIndex, MemberIndirectionIndex;
+	};
+
 	template<typename T>
-	T* GetMemberPointer(BufferIterator iterator);
-
-	template<>
-	GTSL::Matrix4* GetMemberPointer(BufferIterator iterator)
+	T* GetMemberPointer(BufferIterator& iterator, MemberHandle<T> memberHandle, uint32 i = 0)
 	{
-		return getSetMemberPointer<GTSL::Matrix4, Member::DataType::MATRIX4>(iterator, frame);
+		//static_assert(T != (void*), "Type can not be struct.");
+		
+		auto& bufferData = buffers[iterator.BufferIndex];
+		auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
+		BE_ASSERT(i < member.Count, "Requested sub set buffer member index greater than allocated instances count.")
+		
+		//												//BUFFER							//OFFSET TO STRUCT
+		return reinterpret_cast<T*>(static_cast<byte*>(bufferData.RenderAllocations[frame].Data) + iterator.ByteOffset + member.ByteOffsetIntoStruct + member.Size * i);
 	}
 
-	template<>
-	GTSL::Vector4* GetMemberPointer(BufferIterator iterator)
+	template<typename T>
+	void WriteMultiBuffer(BufferIterator& iterator, MemberHandle<T> memberHandle, T* data, uint32 i = 0)
 	{
-		return getSetMemberPointer<GTSL::Vector4, Member::DataType::FVEC4>(iterator, frame);
-	}
-	
-	template<>
-	int32* GetMemberPointer(BufferIterator iterator)
-	{
-		return getSetMemberPointer<int32, Member::DataType::INT32>(iterator, frame);
-	}
-	
-	template<>
-	uint32* GetMemberPointer(BufferIterator iterator)
-	{
-		return getSetMemberPointer<uint32, Member::DataType::UINT32>(iterator, frame);
-	}
-	
-	template<>
-	uint64* GetMemberPointer(BufferIterator iterator)
-	{
-		return getSetMemberPointer<uint64, Member::DataType::UINT64>(iterator, frame);
-	}
-
-	void WriteMultiBuffer(BufferIterator iterator, const uint32* data)
-	{
+		auto& bufferData = buffers[iterator.BufferIndex]; auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
 		for(uint8 f = 0; f < queuedFrames; ++f) {
-			*getSetMemberPointer<uint32, Member::DataType::UINT32>(iterator, f) = *data;
+			*reinterpret_cast<T*>(static_cast<byte*>(bufferData.RenderAllocations[f].Data) + iterator.ByteOffset + member.ByteOffsetIntoStruct + member.Size * i) = *data;
 		}
 	}
 	
@@ -131,7 +117,15 @@ public:
 
 	struct MemberInfo : Member
 	{
-		MemberHandle* Handle;
+		MemberInfo() = default;
+		MemberInfo(const uint32 count) : Member(count, Member::DataType::PAD) {}
+		MemberInfo(MemberHandle<uint32>* memberHandle, const uint32 count) : Member(count, Member::DataType::UINT32), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<RenderSystem::BufferAddress>* memberHandle, const uint32 count) : Member(count, Member::DataType::UINT32), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GTSL::Matrix4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX4), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX4X3), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<void*>* memberHandle, const uint32 count, GTSL::Range<MemberInfo*> memberInfos) : Member(count, Member::DataType::STRUCT), Handle(memberHandle), MemberInfos(memberInfos) {}
+		
+		void* Handle = nullptr;
 		GTSL::Range<MemberInfo*> MemberInfos;
 	};
 
@@ -145,7 +139,7 @@ public:
 		SubSetType SubSetType; uint32 BindingsCount;
 	};
 	void AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id parentName, const GTSL::Range<SubSetDescriptor*> subsets);
-
+	
 	struct SubSetInfo
 	{
 		SubSetType Type;
@@ -163,6 +157,9 @@ public:
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, Id setLayoutName, const GTSL::Range<SubSetInfo*> setInfo);
 
 	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members);
+	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, MemberInfo member) {
+		return CreateBuffer(renderSystem, GTSL::Range<MemberInfo*>(1, &member));
+	}
 	
 	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name, bufferHandle()); }
 	
@@ -172,7 +169,20 @@ public:
 	 * \param memberHandle Handle to the member whose count is going to be updated.
 	 * \param count Number to check against if enough instances are allocated. Doesn't have to be incremental, can be any index as long as it represents the new boundary of the collection(in terms of indeces) or any index inside the range.
 	 */
-	void UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count);
+	template<typename T>
+	void UpdateObjectCount(RenderSystem* renderSystem, MemberHandle<T> memberHandle, uint32 count)
+	{
+		auto& bufferData = buffers[memberHandle.BufferIndex];
+
+		if (bufferData.MemberData.GetLength()) {
+			if (count > bufferData.MemberData[0].Count) {
+				BE_ASSERT(false, "OOOO");
+				//resizeSet(renderSystem, setHandle); // Resize now
+
+				//queuedSetUpdates.EmplaceBack(setHandle); //Defer resizing
+			}
+		}
+	}
 
 	struct BindingsSetData
 	{
@@ -198,44 +208,27 @@ public:
 	 * \param iterator BufferIterator object to update.
 	 * \param member MemberHandle that refers to the struct that we want the iterator to point to.
 	 */
-	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle member)
+	template<typename T>
+	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle<T> member, const uint32 index = 0)
 	{
-		auto& bufferData = buffers[member().BufferIndex]; auto& memberData = bufferData.MemberData[member().MemberIndirectionIndex];
-		iterator.Level = memberData.Level;
-		iterator.ByteOffset += memberData.ByteOffsetIntoStruct;
-		iterator.Member = member;
-		iterator.MemberIndex = 0;
-	}
-	
-	/**
-	 * \brief Updates the iterator to reference the previously indicated member, at index.
-	 * \param iterator BufferIterator object to update.
-	 * \param index Index of the member we want to address.
-	 */
-	void UpdateIteratorMemberIndex(BufferIterator& iterator, uint32 index)
-	{
-		auto& bufferData = buffers[iterator.Member().BufferIndex]; auto& memberData = bufferData.MemberData[iterator.Member().MemberIndirectionIndex];
-		BE_ASSERT(memberData.Level == iterator.Level, "Not expected structure");
-		BE_ASSERT(index < memberData.Count, "Advanced more elements than there are in this member!");
-		int32 shiftedElements = index - iterator.MemberIndex;
-		iterator.ByteOffset += shiftedElements * memberData.Size;
-		BE_ASSERT(iterator.ByteOffset < bufferData.RenderAllocations[0].Size, "");
-		iterator.MemberIndex = index;
-	}
+		//static_assert(T == (void*), "Type can only be struct!");
+		
+		auto& bufferData = buffers[member.BufferIndex]; auto& memberData = bufferData.MemberData[member.MemberIndirectionIndex];
 
-	void WriteInstance(const uint32 instanceIndex, const uint32 vertexBuffer, const uint32 indexBuffer, const uint32 materialInstance, const uint32 renderGroupIndex)
-	{
-		//BufferIterator iterator;
-		//UpdateIteratorMember(iterator, instanceDataHandle);
-		//UpdateIteratorMemberIndex(iterator, instanceIndex);
-		//UpdateIteratorMember(iterator, instanceElementsHandle);
-		//WriteMultiBuffer(iterator, &vertexBuffer);
-		//UpdateIteratorMemberIndex(iterator, 1);
-		//WriteMultiBuffer(iterator, &indexBuffer);
-		//UpdateIteratorMemberIndex(iterator, 2);
-		//WriteMultiBuffer(iterator, &materialInstance);
-		//UpdateIteratorMemberIndex(iterator, 3);
-		//WriteMultiBuffer(iterator, &renderGroupIndex);
+		for (uint32 i = iterator.Levels.GetLength(); i < memberData.Level + 1; ++i) {
+			iterator.Levels.EmplaceBack(0);
+		}
+
+		for (uint32 i = iterator.Levels.GetLength(); i > memberData.Level + 1; --i) {
+			iterator.Levels.PopBack();
+		}
+		
+		iterator.BufferIndex = member.BufferIndex; iterator.MemberIndirectionIndex = member.MemberIndirectionIndex;
+		int32 shiftedElements = index - iterator.Levels.back();
+		
+		iterator.Levels.back() = index;
+		
+		iterator.ByteOffset += shiftedElements * memberData.Size;
 	}
 
 private:
@@ -248,23 +241,12 @@ private:
 		case MaterialSystem::Member::DataType::UINT32: return 4;
 		case MaterialSystem::Member::DataType::UINT64: return 8;
 		case MaterialSystem::Member::DataType::MATRIX4: return 4 * 4 * 4;
+		case MaterialSystem::Member::DataType::MATRIX4X3: return 4 * 3 * 4;
 		case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
 		case MaterialSystem::Member::DataType::INT32: return 4;
 		case MaterialSystem::Member::DataType::FVEC2: return 4 * 2;
 		default: BE_ASSERT(false, "Unknown value!")
 		}
-	}
-	
-	template<typename T, Member::DataType DT>
-	T* getSetMemberPointer(BufferIterator iterator, uint8 frameToUpdate)
-	{
-		auto& bufferData = buffers[iterator.Member().BufferIndex];
-
-		BE_ASSERT(DT == bufferData.MemberData[iterator.Member().MemberIndirectionIndex].Type, "Type mismatch")
-		//BE_ASSERT(index < s., "Requested sub set buffer member index greater than allocated instances count.")
-
-		//												//BUFFER							//OFFSET TO STRUCT
-		return reinterpret_cast<T*>(static_cast<byte*>(bufferData.RenderAllocations[frameToUpdate].Data) + iterator.ByteOffset);
 	}
 	
 	Id rayGenMaterial;

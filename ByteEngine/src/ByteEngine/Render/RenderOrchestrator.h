@@ -47,10 +47,10 @@ class StaticMeshRenderManager : public RenderManager
 
 	void Setup(const SetupInfo& info) override;
 
-private:
-	MemberHandle matrixUniformBufferMemberHandle;
-
-	SetHandle dataSet;
+private:	
+	MemberHandle<void*> staticMeshStruct;
+	MemberHandle<GTSL::Matrix4> matrixUniformBufferMemberHandle;
+	MemberHandle<RenderSystem::BufferAddress> vertexBufferReferenceHandle, indexBufferReferenceHandle;
 };
 
 class UIRenderManager : public RenderManager
@@ -68,9 +68,7 @@ public:
 private:
 	RenderSystem::MeshHandle square;
 
-	MemberHandle matrixUniformBufferMemberHandle, colorHandle;
-
-	SetHandle dataSet;
+	MemberHandle<GTSL::Matrix4> matrixUniformBufferMemberHandle, colorHandle;
 
 	uint8 comps = 2;
 	MaterialInstanceHandle uiMaterial;
@@ -205,10 +203,10 @@ private:
 	SubSetHandle renderPassesSubSet;
 
 	uint32 renderGroupsCount = 0;
-	MemberHandle cameraMatricesHandle;
+	MemberHandle<GTSL::Matrix4> cameraMatricesHandle;
 	BufferHandle cameraDataBuffer;
 	BufferHandle globalDataBuffer;
-	MemberHandle globalDataHandle;
+	MemberHandle<uint32> globalDataHandle;
 	SubSetHandle textureSubsetsHandle;
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle topLevelAsHandle;
@@ -272,7 +270,7 @@ private:
 		
 		PipelineStage::value_type PipelineStages;
 		SetHandle AttachmentsSetHandle;
-		MemberHandle AttachmentsIndicesHandle;
+		MemberHandle<uint32> AttachmentsIndicesHandle;
 		BufferHandle BufferHandle;
 	};
 	GTSL::FlatHashMap<Id, RenderPassData, BE::PAR> renderPassesMap;
@@ -316,8 +314,8 @@ private:
 			struct ShaderRegisterData
 			{
 				GTSL::Array<Id, 8> Buffers;
-				MemberHandle ShaderHandle;
-				MemberHandle BufferBufferReferencesMemberHandle;
+				MemberHandle<uint32> ShaderHandle;
+				MemberHandle<uint32> BufferBufferReferencesMemberHandle;
 			};
 			
 			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
@@ -368,10 +366,10 @@ private:
 		Id RenderGroup;
 		uint32 InstanceCount = 0;
 
-		GTSL::StaticMap<Id, MemberHandle, 16> ParametersHandles;
+		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
 
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
-		MemberHandle MaterialInstancesMemberHandle;
+		MemberHandle<void*> MaterialInstancesMemberHandle;
 	};
 	GTSL::KeepVector<MaterialData, BE::PAR> materials;
 	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterials;

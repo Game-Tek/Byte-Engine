@@ -167,7 +167,7 @@ bool Game::Initialize()
 	//	materialCreateInfo.BlendEnable = false;
 	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	//}//
+	//}
 	
 	//{
 	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
@@ -305,7 +305,7 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	}
+	}//
 
 	
 	//{
@@ -355,7 +355,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}//
+	//}
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -395,7 +395,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25, 250);
 	
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
 
 	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
 }

@@ -267,6 +267,7 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 			if(levelMembers[m].Type == Member::DataType::PAD)
 			{
 				structSize += levelMembers[m].Count;
+				offset += levelMembers[m].Count;
 			}
 			else
 			{
@@ -279,7 +280,7 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 				bufferData.MemberData[memberDataIndex].Level = level;
 				bufferData.MemberData[memberDataIndex].Type = levelMembers[m].Type;
 				bufferData.MemberData[memberDataIndex].Count = levelMembers[m].Count;
-				*levelMembers[m].Handle = MemberHandle(MemberDescription{ bufferIndex, memberDataIndex });
+				*reinterpret_cast<MemberHandle<byte>*>(levelMembers[m].Handle) = MemberHandle<byte>(bufferIndex, memberDataIndex);
 
 				if (levelMembers[m].Type == Member::DataType::STRUCT)
 				{
@@ -317,22 +318,6 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 	}
 
 	return BufferHandle(bufferIndex);
-}
-
-void MaterialSystem::UpdateObjectCount(RenderSystem* renderSystem, MemberHandle memberHandle, uint32 count)
-{
-	auto& bufferData = buffers[memberHandle().BufferIndex];
-
-	if (bufferData.MemberData.GetLength())
-	{
-		if (count > bufferData.MemberData[0].Count)
-		{
-			BE_ASSERT(false, "OOOO");
-			//resizeSet(renderSystem, setHandle); // Resize now
-
-			//queuedSetUpdates.EmplaceBack(setHandle); //Defer resizing
-		}
-	}
 }
 
 void MaterialSystem::SetDynamicMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data)

@@ -244,15 +244,24 @@ public:
 
 	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
 
+	struct BufferAddress
+	{
+		BufferAddress(const uint64 address) : Address(address / MULTIPLIER) {}
+		BufferAddress(const void* address) : Address(reinterpret_cast<uint64>(address) / MULTIPLIER) {}
+		uint32 Address; static constexpr uint32 MULTIPLIER = 16;
+	};
+	
 	Buffer GetMeshVertexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
 	uint32 GetMeshVertexBufferSize(const uint32 mesh) const { return meshes[mesh].VertexSize * meshes[mesh].VertexCount; }
 	uint32 GetMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
+	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(reinterpret_cast<uint64>(meshes[meshHandle()].MeshAllocation.Data)); }
 	Buffer GetMeshIndexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
 	uint32 GetMeshIndexBufferSize(const uint32 mesh) const { return meshes[mesh].IndexSize * meshes[mesh].IndicesCount; }
 	uint32 GetMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(meshes[mesh].VertexSize * meshes[mesh].VertexCount, GetBufferSubDataAlignment()); }
+	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(reinterpret_cast<uint64>(meshes[meshHandle()].MeshAllocation.Data) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
 	uint32 GetMeshIndex(MeshHandle meshHandle) { return meshHandle(); }
 	MaterialInstanceHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
-
+	
 	auto GetAddedMeshes() const { return addedMeshes.GetRange(); }
 	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
 

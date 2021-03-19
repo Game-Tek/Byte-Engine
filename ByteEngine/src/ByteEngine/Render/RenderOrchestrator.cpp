@@ -30,25 +30,16 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 
 	//MaterialSystem::SetInfo setInfo;
 	//
-	GTSL::Array<MaterialSystem::MemberInfo, 8> members(1);
-	members[0].Type = MaterialSystem::Member::DataType::MATRIX4;
-	members[0].Handle = &matrixUniformBufferMemberHandle;
-	members[0].Count = 16;
-	//
-	//setInfo.Structs = structs;
-	//
-	//dataSet = materialSystem->AddSet(renderSystem, "StaticMeshRenderGroup", "SceneRenderPass", setInfo);
-	//
-
-	//TODO: ADD DATA
+	GTSL::Array<MaterialSystem::MemberInfo, 8> members;
+	members.EmplaceBack(&matrixUniformBufferMemberHandle, 1);
+	members.EmplaceBack(&vertexBufferReferenceHandle, 1);
+	members.EmplaceBack(&indexBufferReferenceHandle, 1);
 	
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
-	auto bufferHandle = materialSystem->CreateBuffer(renderSystem, members);
+	auto bufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&staticMeshStruct, 16, members));
 	materialSystem->BindBufferToName(bufferHandle, "StaticMeshRenderGroup");
 	renderOrchestrator->AddToRenderPass("SceneRenderPass", "StaticMeshRenderGroup");
-	//renderOrchestrator->AddIndexStreamToRenderGroup("StaticMeshRenderGroup");
-	//renderOrchestrator->AddSetToRenderGroup("StaticMeshRenderGroup", "StaticMeshRenderGroup");
 }
 
 void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies)
@@ -61,34 +52,38 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
 	
-	//info.RenderOrchestrator->AddMesh(0, {});
-	
 	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMesheCount());
 
-	for (uint32 p = 0; p < renderGroup->GetAddedMeshes().GetPageCount(); ++p)
 	{
-		for(auto e : renderGroup->GetAddedMeshes().GetPage(p))
-		{
-			info.RenderOrchestrator->AddMesh(e.First, info.RenderSystem->GetMeshMaterialHandle(e.First()), e.Second);
-		}
-	}
+		MaterialSystem::BufferIterator bufferIterator;
 
-	renderGroup->ClearAddedMeshes();
-	
-	MaterialSystem::BufferIterator bufferIterator;
-	info.MaterialSystem->UpdateIteratorMember(bufferIterator, matrixUniformBufferMemberHandle);
+		for (uint32 p = 0; p < renderGroup->GetAddedMeshes().GetPageCount(); ++p)
+		{
+			for (auto e : renderGroup->GetAddedMeshes().GetPage(p))
+			{
+				info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, e.Second);
+				
+				info.RenderOrchestrator->AddMesh(e.First, info.RenderSystem->GetMeshMaterialHandle(e.First()), e.Second);
+				*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(e.First);
+				*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(e.First);
+			}
+		}
+
+		renderGroup->ClearAddedMeshes();
+	}
 	
 	{
 		uint32 index = 0;
+
+		MaterialSystem::BufferIterator bufferIterator;
 
 		for (auto& e : positions)
 		{
 			auto pos = GTSL::Matrix4(e);
 			pos(2, 3) *= -1.f;
-			
-			//*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = info.ProjectionMatrix * info.ViewMatrix * pos;
-			*info.MaterialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = pos;
-			info.MaterialSystem->UpdateIteratorMemberIndex(bufferIterator, ++index);
+
+			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, index++);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, matrixUniformBufferMemberHandle) = pos;
 		}
 	}
 
@@ -390,24 +385,14 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	
 	{
 		GTSL::Array<MaterialSystem::MemberInfo, 2> members;
-
-		MaterialSystem::MemberInfo memberInfo;
-		memberInfo.Handle = &globalDataHandle;
-		memberInfo.Type = MaterialSystem::Member::DataType::UINT32;
-		memberInfo.Count = 4;
-		members.EmplaceBack(memberInfo);
+		members.EmplaceBack(&globalDataHandle, 4);
 
 		globalDataBuffer = materialSystem->CreateBuffer(renderSystem, members);
 	}
 
 	{
 		GTSL::Array<MaterialSystem::MemberInfo, 2> members;
-
-		MaterialSystem::MemberInfo memberInfo;
-		memberInfo.Handle = &cameraMatricesHandle;
-		memberInfo.Type = MaterialSystem::Member::DataType::MATRIX4;
-		memberInfo.Count = 4;
-		members.EmplaceBack(memberInfo);
+		members.EmplaceBack(&cameraMatricesHandle, 4);
 
 		cameraDataBuffer = materialSystem->CreateBuffer(renderSystem, members);
 	}
@@ -508,9 +493,9 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 				auto& shaderData = pipelineData.ShaderGroups[shaderGroup].Shaders.EmplaceBack();
 				for (auto& s : material.Buffers) { shaderData.Buffers.EmplaceBack(Id(s)); }
 				
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ alignedHandleSize / 4/*uint32*/, MaterialSystem::Member::DataType::UINT32, &shaderData.ShaderHandle, {} }); //shader handle
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ material.Buffers.GetLength(), MaterialSystem::Member::DataType::UINT32, &shaderData.BufferBufferReferencesMemberHandle, {} }); //material buffer
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo{ 0, MaterialSystem::Member::DataType::PAD, nullptr, {} }); //padding
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.ShaderHandle, alignedHandleSize / 4)); //shader handle
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.BufferBufferReferencesMemberHandle, material.Buffers.GetLength())); //material buffer
+				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(0)); //padding
 
 				index[shaderGroup].EmplaceBack(i);
 				
@@ -554,8 +539,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 				materialSystem->UpdateIteratorMember(iterator, pipelineData.ShaderGroups[i].Shaders[s].ShaderHandle);
 				
 				for (uint8 t = 0; t < alignedHandleSize / 4; ++t) { //Write shader handles to managed buffer, TODO: check size multiples
-					materialSystem->UpdateIteratorMemberIndex(iterator, t);
-					materialSystem->WriteMultiBuffer(iterator, reinterpret_cast<uint32*>(handlesBuffer.GetData() + index[i][s] * handleSize) + t);
+					materialSystem->WriteMultiBuffer(iterator, pipelineData.ShaderGroups[i].Shaders[s].ShaderHandle, reinterpret_cast<uint32*>(handlesBuffer.GetData() + index[i][s] * handleSize) + t, t);
 				}
 			}
 		}
@@ -645,13 +629,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		MaterialSystem::BufferIterator bufferIterator;
 		materialSystem->UpdateIteratorMember(bufferIterator, cameraMatricesHandle);
 
-		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = viewMatrix;
-		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 1);
-		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = projectionMatrix;
-		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 2);
-		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(viewMatrix);
-		materialSystem->UpdateIteratorMemberIndex(bufferIterator, 3);
-		*materialSystem->GetMemberPointer<GTSL::Matrix4>(bufferIterator) = GTSL::Math::Inverse(projectionMatrix);
+		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 0) = viewMatrix;
+		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 1) = projectionMatrix;
+		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 2) = GTSL::Math::Inverse(viewMatrix);
+		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 3) = GTSL::Math::Inverse(projectionMatrix);
 	}
 
 	if (renderSystem->GetRenderExtent() == 0) { return; }
@@ -1316,9 +1297,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			auto& attachment = attachments.At(renderPass.ReadAttachments[r].Name);
 			auto name = attachment.Name;
 
-			materialSystem->WriteMultiBuffer(bufferIterator, &attachment.ImageIndex);
-			
-			materialSystem->UpdateIteratorMemberIndex(bufferIterator, ++attachmentIndex);
+			materialSystem->WriteMultiBuffer(bufferIterator, renderPass.AttachmentsIndicesHandle, &attachment.ImageIndex, attachmentIndex++);
 		}
 		
 		for (uint8 w = 0; w < renderPass.WriteAttachments.GetLength(); ++w)
@@ -1327,8 +1306,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			auto name = attachment.Name;
 
 			if (attachment.Type & TextureType::COLOR) {
-				materialSystem->WriteMultiBuffer(bufferIterator, &attachment.ImageIndex);
-				materialSystem->UpdateIteratorMemberIndex(bufferIterator, ++attachmentIndex);
+				materialSystem->WriteMultiBuffer(bufferIterator, renderPass.AttachmentsIndicesHandle, &attachment.ImageIndex, attachmentIndex++);
 			}
 		}
 	}
@@ -1397,16 +1375,16 @@ void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const Materi
 {
 	auto bufferAddress = buffer.GetAddress(renderSystem->GetRenderDevice());
 	
-	BE_ASSERT((bufferAddress % 16ull) == 0, "Non divisible");
+	BE_ASSERT((bufferAddress % RenderSystem::BufferAddress::MULTIPLIER) == 0, "Non divisible");
 
-	BE_ASSERT((bufferAddress / 16ull) < 0xFFFFFFFF, "Bigger than uint32!");
+	BE_ASSERT((bufferAddress / RenderSystem::BufferAddress::MULTIPLIER) < 0xFFFFFFFF, "Bigger than uint32!");
 	
-	uint32 dividedBufferAddress = bufferAddress / 16;
+	RenderSystem::BufferAddress dbufferAddress(bufferAddress);
 
 	renderState.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout("GlobalData");
 
 	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), renderState.PipelineLayout, renderState.Offset,
-		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&dividedBufferAddress)), ShaderStage::ALL);
+		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&dbufferAddress)), ShaderStage::ALL);
 
 	renderState.Offset += 4;
 }
@@ -1718,13 +1696,10 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			case MaterialResourceManager::ParameterType::BUFFER_REFERENCE: memberType = MaterialSystem::Member::DataType::UINT64; break;
 			}
 
-			materialParameters.EmplaceBack(MaterialSystem::MemberInfo{ 1, memberType, &material.ParametersHandles.At(e.Name) });
+			materialParameters.EmplaceBack(&material.ParametersHandles.At(e.Name), 1);
 		}
 
-		GTSL::Array<MaterialSystem::MemberInfo, 1> materialInstanceParametersStruct;
-		materialInstanceParametersStruct.EmplaceBack(MaterialSystem::MemberInfo{ 16, MaterialSystem::Member::DataType::STRUCT, &material.MaterialInstancesMemberHandle, materialParameters });
-
-		auto bufferHandle = materialSystem->CreateBuffer(renderSystem, materialInstanceParametersStruct);
+		auto bufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&material.MaterialInstancesMemberHandle, 8, materialParameters));
 		materialSystem->BindBufferToName(bufferHandle, Id(onMaterialLoadInfo.ResourceName));
 	}
 
@@ -1781,13 +1756,8 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 				++materialInstance.Target;
 
 				MaterialSystem::BufferIterator bufferIterator;
-				//UpdateIteratorMember(bufferIterator, material.MaterialInstancesMemberHandle.Parameters.At(resourceMaterialInstanceParameter.First));
-				materialSystem->UpdateIteratorMember(bufferIterator, material.MaterialInstancesMemberHandle);
-				materialSystem->UpdateIteratorMemberIndex(bufferIterator, i);
-
-				materialSystem->UpdateIteratorMember(bufferIterator, material.ParametersHandles.At(resourceMaterialInstanceParameter.First));
-
-				materialSystem->WriteMultiBuffer(bufferIterator, &textureComponentIndex);
+				materialSystem->UpdateIteratorMember(bufferIterator, material.MaterialInstancesMemberHandle, i);
+				materialSystem->WriteMultiBuffer(bufferIterator, material.ParametersHandles.At(resourceMaterialInstanceParameter.First), &textureComponentIndex);
 			}
 		}
 

@@ -3,7 +3,9 @@
 #include "ByteEngine/Application/Application.h"
 
 #include <GTSL/Window.h>
-#include <GTSL/GamepadQuery.h>
+#include <GTSL/Gamepad.h>
+
+#include "ByteEngine/Application/InputManager.h"
 
 class GameApplication : public BE::Application
 {
@@ -23,12 +25,18 @@ protected:
 	GTSL::Window window;
 	GTSL::Extent2D oldSize;
 
-	GTSL::GamepadQuery gamepad;
-	
+	GTSL::Gamepad gamepad;
+	InputDeviceHandle controller;
+	InputDeviceHandle keyboard;
+	InputDeviceHandle mouse;
+
 	void SetupInputSources();
 	void RegisterMouse();
 	void RegisterKeyboard();
 	void RegisterControllers();
 
 	void onWindowResize(const GTSL::Extent2D& extent);
+
+	void keyboardEvent(const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType);
+	void windowUpdateFunction(void* userData, GTSL::Window::WindowEvents event, void* eventData);
 };

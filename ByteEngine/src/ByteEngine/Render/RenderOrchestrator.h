@@ -103,25 +103,17 @@ public:
 	{
 		auto& renderPass = renderPassesMap[renderPassName];
 		uint8 count = 0;
-		for(const auto& e : renderPass.WriteAttachments)
-		{
+		for(const auto& e : renderPass.WriteAttachments) {
 			if (e.Layout == TextureLayout::COLOR_ATTACHMENT || e.Layout == TextureLayout::GENERAL) { ++count; }
 		}
-
 		return count;
 	}
 
-	void AddSetToRenderGroup(Id renderGroupName, Id setName)
-	{
+	void AddSetToRenderGroup(Id renderGroupName, Id setName) {
 		renderGroups.At(renderGroupName).Sets.EmplaceBack(setName);
 	}
 
-	enum class TextureComponentType
-	{
-		FLOAT, INT
-	};
-	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, TextureType::value_type type, GTSL::RGBA
-	                   clearColor);
+	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, TextureType::value_type type, GTSL::RGBA clearColor);
 
 	enum class PassType : uint8
 	{
@@ -140,8 +132,7 @@ public:
 	{
 		Id Name;
 		
-		struct AttachmentReference
-		{
+		struct AttachmentReference {
 			Id Name;
 		};
 		GTSL::Array<AttachmentReference, 8> ReadAttachments, WriteAttachments;
@@ -153,22 +144,6 @@ public:
 	void AddPass(RenderSystem* renderSystem, MaterialSystem* materialSystem, GTSL::Range<const PassData*> passesData);
 
 	void OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize);
-
-	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
-
-	uint8 GetRenderPassIndex(const Id name) const { return renderPassesMap.At(name).APIRenderPass; }
-	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const
-	{
-		uint8 i = 0;
-		
-		for(auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } } 
-	}
-
-	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
-	[[nodiscard]] uint8 getAPIRenderPassesCount() const { return apiRenderPasses.GetLength(); }
-	[[nodiscard]] uint8 GetSubPassCount(const uint8 renderPass) const { return subPasses[renderPass].GetLength(); }
-
-	Id GetSubPassName(const uint8 rp, const uint8 sp) { return subPasses[rp][sp].Name; }
 
 	/**
 	 * \brief Enables or disables the rendering of a render pass
@@ -194,15 +169,21 @@ public:
 
 	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
+	void OnRenderEnable(TaskInfo taskInfo);
+	void OnRenderDisable(TaskInfo taskInfo);
+
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
+	bool renderingEnabled = false;
+	void onRenderEnable(GameInstance* gameInstance, const GTSL::Range<TaskDependency*> dependencies);
+	void onRenderDisable(GameInstance* gameInstance);
+	
 	SubSetHandle renderGroupsSubSet;
 	SubSetHandle renderPassesSubSet;
 
-	uint32 renderGroupsCount = 0;
 	MemberHandle<GTSL::Matrix4> cameraMatricesHandle;
 	BufferHandle cameraDataBuffer;
 	BufferHandle globalDataBuffer;
@@ -419,11 +400,10 @@ private:
 
 	void setMaterialInstanceAsLoaded(const PrivateMaterialHandle privateMaterialHandle, const MaterialInstanceHandle materialInstanceHandle);
 	
-	void addPendingMaterialToTexture(uint32 texture, PrivateMaterialHandle material)
-	{
+	void addPendingMaterialToTexture(uint32 texture, PrivateMaterialHandle material) {
 		pendingMaterialsPerTexture[texture].EmplaceBack(material);
 	}
-	
+
 	struct APIRenderPassData
 	{
 		Id Name;
@@ -465,4 +445,11 @@ private:
 	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, ::RenderOrchestrator::TextureLoadInfo> onTextureLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoadHandle;
+
+	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
+	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const {
+		uint8 i = 0;
+		for (auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } }
+	}
+	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
 };

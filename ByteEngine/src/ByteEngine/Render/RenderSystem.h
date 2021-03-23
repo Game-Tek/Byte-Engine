@@ -37,12 +37,6 @@ public:
 		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[GetCurrentFrame()].Data) + i);
 		instance.Transform = GTSL::Matrix3x4(matrix4);
 	}
-
-	struct InitializeRendererInfo
-	{
-		class PipelineCacheResourceManager* PipelineCacheResourceManager;
-	};
-	void InitializeRenderer(const InitializeRendererInfo& initializeRenderer);
 	
 	void AllocateLocalTextureMemory(uint32 size, Texture* texture, Texture::CreateInfo& createInfo, RenderAllocation* allocation)
 	{	
@@ -277,6 +271,9 @@ public:
 	Texture GetTexture(const TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
 	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
 	TextureSampler GetTextureSampler(const TextureHandle handle) const { return textures[handle()].TextureSampler; }
+
+	void OnRenderEnable(TaskInfo taskInfo);
+	void OnRenderDisable(TaskInfo taskInfo);
 
 private:
 	GTSL::Window* window;

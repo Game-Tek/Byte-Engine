@@ -27,9 +27,7 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = initializeInfo.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
-
-	//MaterialSystem::SetInfo setInfo;
-	//
+	
 	GTSL::Array<MaterialSystem::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, 1);
 	members.EmplaceBack(&vertexBufferReferenceHandle, 1);
@@ -289,12 +287,6 @@ void UIRenderManager::Setup(const SetupInfo& info)
 void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 {
 	systems.Initialize(32, GetPersistentAllocator());
-	
-	{
-		const GTSL::Array<TaskDependency, 4> dependencies{ { CLASS_NAME, AccessTypes::READ_WRITE } };
-		initializeInfo.GameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-		initializeInfo.GameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
-	}
 
 	renderPassesMap.Initialize(8, GetPersistentAllocator());
 	renderManagers.Initialize(16, GetPersistentAllocator());
@@ -349,6 +341,16 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		onShadersLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onShadersLoaded", Task<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo>::Create<RenderOrchestrator, &RenderOrchestrator::onShadersLoaded>(this), taskDependencies);
 	}
 
+	{
+		GTSL::Array<TaskDependency, 1> dependencies{ { "RenderOrchestrator", AccessTypes::READ_WRITE } };
+		
+		auto renderEnableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderEnable", Task<>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderEnable>(this), dependencies);
+		initializeInfo.GameInstance->SubscribeToEvent("Application", EventHandle<>("OnFocusGain"), renderEnableHandle);
+
+		auto renderDisableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderDisable", Task<>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderDisable>(this), dependencies);
+		initializeInfo.GameInstance->SubscribeToEvent("Application", EventHandle<>("OnFocusLoss"), renderDisableHandle);
+	}
+	
 	{
 		GTSL::Array<MaterialSystem::SubSetInfo, 10> subSetInfos;
 
@@ -798,12 +800,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	PopData();
 }
 
+//TODO: FIX ACCESS TO SYSTEMS HERE
+
 void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id renderManager, const SystemHandle systemReference)
 {
 	systems.EmplaceBack(renderManager);
-	
-	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
 	{
@@ -830,10 +831,13 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 		
 		setupSystemsAccesses.PushBack(managerDependencies);
 	}
-	
 
-	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
+	if (renderingEnabled)
+	{
+		onRenderDisable(gameInstance);
+		onRenderEnable(gameInstance, dependencies);
+	}
+	
 	renderManagers.Emplace(renderManager, systemReference);
 }
 
@@ -845,23 +849,23 @@ void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const I
 	systems.Pop(element.Get());
 	
 	setupSystemsAccesses.Pop(element.Get());
-	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 
 	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
+
+	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
 	{
-		for(uint32 i = 0; i < dependencies.GetLength(); ++i)
-		{
-			dependencies[i].AccessedObject = systems[i];
-			dependencies[i].Access = AccessTypes::READ;
-		}
+		dependencies[i].AccessedObject = systems[i];
+		dependencies[i].Access = AccessTypes::READ;
 	}
 
 	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
 	dependencies.EmplaceBack("MaterialSystem", AccessTypes::READ);
-	
-	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
-	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
+
+	if (renderingEnabled)
+	{
+		onRenderDisable(gameInstance);
+		onRenderEnable(gameInstance, dependencies);
+	}
 }
 
 MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialInfo& info)
@@ -1389,10 +1393,45 @@ void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const Materi
 	renderState.Offset += 4;
 }
 
-void RenderOrchestrator::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer,
-	MaterialHandle materialHandle)
+void RenderOrchestrator::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle)
 {
 	commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), materials[loadedMaterials[materialHandle]].Pipeline, PipelineType::RASTER);
+}
+
+void RenderOrchestrator::onRenderEnable(GameInstance* gameInstance, const GTSL::Range<TaskDependency*> dependencies)
+{
+	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
+	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
+}
+
+void RenderOrchestrator::onRenderDisable(GameInstance* gameInstance)
+{
+	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderFinished");
+}
+
+void RenderOrchestrator::OnRenderEnable(TaskInfo taskInfo)
+{
+	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
+	
+	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
+	{
+		dependencies[i].AccessedObject = systems[i];
+		dependencies[i].Access = AccessTypes::READ;
+	}
+	
+	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
+	dependencies.EmplaceBack("MaterialSystem", AccessTypes::READ);
+	
+	onRenderEnable(taskInfo.GameInstance, dependencies);
+
+	renderingEnabled = true;
+}
+
+void RenderOrchestrator::OnRenderDisable(TaskInfo taskInfo)
+{
+	onRenderDisable(taskInfo.GameInstance);
+	renderingEnabled = false;
 }
 
 AccessFlags::value_type RenderOrchestrator::accessFlagsFromStageAndAccessType(PipelineStage::value_type stage, bool writeAccess)

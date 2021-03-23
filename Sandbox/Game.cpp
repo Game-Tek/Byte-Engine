@@ -72,7 +72,7 @@ bool Game::Initialize()
 	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	GTSL::Array<GTSL::Id64, 2> a({ GTSL::Id64("MouseMove") });
+	GTSL::Array<Id, 2> a({ "MouseMove" });
 	inputManagerInstance->Register2DInputEvent("Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 
 	a.PopBack(); a.EmplaceBack("W_Key");
@@ -95,7 +95,7 @@ bool Game::Initialize()
 	inputManagerInstance->RegisterActionInputEvent("Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
-	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);//
+	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	{
 		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
@@ -207,7 +207,7 @@ bool Game::Initialize()
 
 void Game::PostInitialize()
 {
-	BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
+	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
 	
 	GameApplication::PostInitialize();
 
@@ -305,7 +305,7 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	}//
+	}
 
 	
 	//{

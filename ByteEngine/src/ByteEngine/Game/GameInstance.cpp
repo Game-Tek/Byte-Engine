@@ -72,62 +72,66 @@ void GameInstance::OnUpdate(BE::Application* application)
 
 	TaskInfo task_info;
 	task_info.GameInstance = this;
-	
-	uint16 asyncTasksIndex = localAsyncTasks.GetNumberOfTasks();
 
-	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex)
+	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
 	{
-		if (taskIndex)
+		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
 		{
-			auto index = taskIndex - 1;
-			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(index), stage.GetTaskAccessTypes(index));
-			if (result.State())
-			{
-				const uint16 targetGoalIndex = stage.GetTaskGoalIndex(index);
-				application->GetThreadPool()->EnqueueTask(stage.GetTask(index), this, GTSL::MoveRef(targetGoalIndex), GTSL::MoveRef(result.Get()), stage.GetTaskInfo(index));
+			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(taskIndex), stage.GetTaskAccessTypes(taskIndex));
+			if (result.State()) {
+				const uint16 targetGoalIndex = stage.GetTaskGoalIndex(taskIndex);
+				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, GTSL::MoveRef(targetGoalIndex), GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
 				//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[stage].GetTaskName(recurringGoalTask), stagesNames[stage], localRecurringGoals[stage].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[stage].GetTaskAccessedObjects(recurringGoalTask)));
-				--taskIndex;
 				semaphores[targetGoalIndex].Add();
 			}
-		}
-	};
-
-	auto tryDispatchTask = [&](Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex)
-	{
-		if (taskIndex)
-		{
-			auto index = taskIndex - 1;
-			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(index), stage.GetTaskAccessTypes(index));
-			if (result.State())
-			{
-				application->GetThreadPool()->EnqueueTask(stage.GetTask(index), this, 0xFFFF, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(index));
-				//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[stage].GetTaskName(recurringGoalTask), stagesNames[stage], localRecurringGoals[stage].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[stage].GetTaskAccessedObjects(recurringGoalTask)));
-				--taskIndex;
+			else {
+				return;
 			}
 		}
+
+		t = true;
+	};
+
+	auto tryDispatchTask = [&](Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
+	{
+		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
+		{
+			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(taskIndex), stage.GetTaskAccessTypes(taskIndex));
+			
+			if (result.State()) {
+				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, 0xFFFF, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
+				//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[stage].GetTaskName(recurringGoalTask), stagesNames[stage], localRecurringGoals[stage].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[stage].GetTaskAccessedObjects(recurringGoalTask)));
+			}
+			else {
+				return;
+			}
+		}
+
+		t = true;
 	};
 	
+	uint16 asyncTasksIndex = 0;
+	
 	for(uint32 stageIndex = 0; stageIndex < stageCount; ++stageIndex)
-	{		
-		uint16 recurringTasksIndex = localRecurringTasksPerStage[stageIndex].GetNumberOfTasks();
-
+	{
 		{
 			GTSL::WriteLock lock(dynamicTasksPerStageMutex);
 			localDynamicTasksPerStage.EmplaceBack(dynamicTasksPerStage[stageIndex], GetTransientAllocator());
 			dynamicTasksPerStage[stageIndex].Clear();
 		}
 		
-		uint16 dynamicTasksIndex = localDynamicTasksPerStage[stageIndex].GetNumberOfTasks();
-		
-		while(recurringTasksIndex + dynamicTasksIndex + asyncTasksIndex > 0)
-		{
-			tryDispatchGoalTask(stageIndex, localRecurringTasksPerStage[stageIndex], recurringTasksIndex);
-			tryDispatchGoalTask(stageIndex, localDynamicTasksPerStage[stageIndex], dynamicTasksIndex);
-			tryDispatchTask(localAsyncTasks, asyncTasksIndex);
+		uint16 recurringTasksIndex = 0, dynamicTasksIndex = 0;
 
-			//waitWhenNoChange.Lock();
-			//resourcesUpdated.Wait(waitWhenNoChange);
+		bool r = false, d = false, a = false;
+		
+		while (!(r && d && a)) {
+			tryDispatchGoalTask(stageIndex, localRecurringTasksPerStage[stageIndex], recurringTasksIndex, r);
+			tryDispatchGoalTask(stageIndex, localDynamicTasksPerStage[stageIndex], dynamicTasksIndex, d);
+			tryDispatchTask(localAsyncTasks, asyncTasksIndex, a);
 		}
+
+		//waitWhenNoChange.Lock();
+		//resourcesUpdated.Wait(waitWhenNoChange);
 
 		semaphores[stageIndex].Wait();
 	} //goals
@@ -152,14 +156,14 @@ void GameInstance::RemoveTask(const Id name, const Id startOn)
 		GTSL::WriteLock lock2(recurringTasksMutex);
 		
 		if(!stagesNames.Find(startOn).State()) {
-			BE_LOG_WARNING("Tried to remove task ", name.GetString(), " from stage ", startOn.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to remove task ", name.GetString(), " from stage ", startOn.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 
 		i = getStageIndex(startOn);
 		
 		if(!recurringTasksPerStage[i].DoesTaskExist(name)) {
-			BE_LOG_WARNING("Tried to remove task ", name.GetString(), " which doesn't exist from stage ", startOn.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to remove task ", name.GetString(), " which doesn't exist from stage ", startOn.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
@@ -182,7 +186,7 @@ void GameInstance::AddStage(Id name)
 	if constexpr (_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
 		if (stagesNames.Find(name).State()) {
-			BE_LOG_WARNING("Tried to add stage ", name.GetString(), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to add stage ", name.GetString(), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}

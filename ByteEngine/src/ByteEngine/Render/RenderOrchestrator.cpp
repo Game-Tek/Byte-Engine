@@ -16,6 +16,7 @@
 #include "StaticMeshRenderGroup.h"
 #include "UIManager.h"
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Game/CameraSystem.h"
 
 static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -0.5f, 0.5f }, { 0.5f, 0.5f }, { 0.5f, -0.5f }, { -0.5f, -0.5f } };
@@ -344,12 +345,18 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	{
 		GTSL::Array<TaskDependency, 1> dependencies{ { "RenderOrchestrator", AccessTypes::READ_WRITE } };
 		
-		auto renderEnableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderEnable", Task<>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderEnable>(this), dependencies);
-		initializeInfo.GameInstance->SubscribeToEvent("Application", EventHandle<>("OnFocusGain"), renderEnableHandle);
+		auto renderEnableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderEnable", Task<bool>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderEnable>(this), dependencies);
+		initializeInfo.GameInstance->SubscribeToEvent("Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
 
-		auto renderDisableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderDisable", Task<>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderDisable>(this), dependencies);
-		initializeInfo.GameInstance->SubscribeToEvent("Application", EventHandle<>("OnFocusLoss"), renderDisableHandle);
+		auto renderDisableHandle = initializeInfo.GameInstance->StoreDynamicTask("RO::OnRenderDisable", Task<bool>::Create<RenderOrchestrator, &RenderOrchestrator::OnRenderDisable>(this), dependencies);
+		initializeInfo.GameInstance->SubscribeToEvent("Application", GameApplication::GetOnFocusLossEventHandle(), renderDisableHandle);
 	}
+	
+	{
+		const auto taskDependencies = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessTypes::READ_WRITE }, { "RenderOrchestrator", AccessTypes::READ_WRITE } };
+		onRenderEnable(initializeInfo.GameInstance, taskDependencies);
+	}
+
 	
 	{
 		GTSL::Array<MaterialSystem::SubSetInfo, 10> subSetInfos;
@@ -558,6 +565,8 @@ void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderOrchestrator::Setup(TaskInfo taskInfo)
 {
+	if (!renderingEnabled) { return; }
+	
 	auto positionMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
 	auto rotationMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
 	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
@@ -601,6 +610,10 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 void RenderOrchestrator::Render(TaskInfo taskInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	//renderSystem->SetHasRendered(renderingEnabled);
+	//if (!renderingEnabled) { return; }
+	if (renderSystem->GetRenderExtent() == 0) { return; }
+	
 	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
 	uint8 currentFrame = renderSystem->GetCurrentFrame();
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
@@ -611,7 +624,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RASTER);
 	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::COMPUTE);
-	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RAY_TRACING);
+	//materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RAY_TRACING);
 	
 	BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(globalDataBuffer));
 	BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(cameraDataBuffer));
@@ -636,8 +649,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 2) = GTSL::Math::Inverse(viewMatrix);
 		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 3) = GTSL::Math::Inverse(projectionMatrix);
 	}
-
-	if (renderSystem->GetRenderExtent() == 0) { return; }
 	
 	for (uint8 renderPassIndex = 0; renderPassIndex < renderPasses.GetLength();)
 	{
@@ -768,7 +779,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	{
 		{
 			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
-			barriers[0].SetTextureBarrier({ renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			barriers[0].SetTextureBarrier({ renderSystem->GetSwapchainTexture(), TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
 		}
 
@@ -784,12 +795,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 			
 		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle),
-		renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_SRC, TextureLayout::TRANSFER_DST,
+		renderSystem->GetSwapchainTexture(), TextureLayout::TRANSFER_SRC, TextureLayout::TRANSFER_DST,
 			GTSL::Extent3D(renderSystem->GetRenderExtent()));
 
 		{
 			GTSL::Array<CommandBuffer::BarrierData, 2> barriers;
-			barriers.EmplaceBack(CommandBuffer::TextureBarrier{ renderSystem->GetSwapchainTextures()[currentFrame], TextureLayout::TRANSFER_DST, TextureLayout::PRESENTATION, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			barriers.EmplaceBack(CommandBuffer::TextureBarrier{ renderSystem->GetSwapchainTexture(), TextureLayout::TRANSFER_DST, TextureLayout::PRESENTATION, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
 		}
 	}
@@ -1390,7 +1401,7 @@ void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const Materi
 	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), renderState.PipelineLayout, renderState.Offset,
 		GTSL::Range<const byte*>(4, reinterpret_cast<const byte*>(&dbufferAddress)), ShaderStage::ALL);
 
-	renderState.Offset += 4;
+	renderState.Offset += 4; BE_ASSERT(renderState.Offset % 4 == 0, "Non divisible");
 }
 
 void RenderOrchestrator::BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle)
@@ -1398,7 +1409,7 @@ void RenderOrchestrator::BindMaterial(RenderSystem* renderSystem, CommandBuffer 
 	commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), materials[loadedMaterials[materialHandle]].Pipeline, PipelineType::RASTER);
 }
 
-void RenderOrchestrator::onRenderEnable(GameInstance* gameInstance, const GTSL::Range<TaskDependency*> dependencies)
+void RenderOrchestrator::onRenderEnable(GameInstance* gameInstance, const GTSL::Range<const TaskDependency*> dependencies)
 {
 	gameInstance->AddTask(SETUP_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Setup>(this), dependencies, "GameplayEnd", "RenderStart");
 	gameInstance->AddTask(RENDER_TASK_NAME, GTSL::Delegate<void(TaskInfo)>::Create<RenderOrchestrator, &RenderOrchestrator::Render>(this), dependencies, "RenderDo", "RenderFinished");
@@ -1407,30 +1418,33 @@ void RenderOrchestrator::onRenderEnable(GameInstance* gameInstance, const GTSL::
 void RenderOrchestrator::onRenderDisable(GameInstance* gameInstance)
 {
 	gameInstance->RemoveTask(SETUP_TASK_NAME, "GameplayEnd");
-	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderFinished");
+	gameInstance->RemoveTask(RENDER_TASK_NAME, "RenderDo");
 }
 
-void RenderOrchestrator::OnRenderEnable(TaskInfo taskInfo)
+void RenderOrchestrator::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 {
-	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
-	
-	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
-	{
-		dependencies[i].AccessedObject = systems[i];
-		dependencies[i].Access = AccessTypes::READ;
-	}
-	
-	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
-	dependencies.EmplaceBack("MaterialSystem", AccessTypes::READ);
-	
-	onRenderEnable(taskInfo.GameInstance, dependencies);
+	//if (!oldFocus)
+	//{
+	//	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
+	//
+	//	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
+	//	{
+	//		dependencies[i].AccessedObject = systems[i];
+	//		dependencies[i].Access = AccessTypes::READ;
+	//	}
+	//
+	//	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
+	//	dependencies.EmplaceBack("MaterialSystem", AccessTypes::READ);
+	//
+	//	onRenderEnable(taskInfo.GameInstance, dependencies);
+	//	BE_LOG_SUCCESS("Enabled rendering")
+	//}
 
 	renderingEnabled = true;
 }
 
-void RenderOrchestrator::OnRenderDisable(TaskInfo taskInfo)
+void RenderOrchestrator::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 {
-	onRenderDisable(taskInfo.GameInstance);
 	renderingEnabled = false;
 }
 

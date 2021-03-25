@@ -6,6 +6,7 @@
 #include <GTSL/Gamepad.h>
 
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Game/GameInstance.h"
 
 class GameApplication : public BE::Application
 {
@@ -20,6 +21,10 @@ public:
 	void PostInitialize() override;
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 	void Shutdown() override;
+
+	// EVENTS
+	static EventHandle<bool> GetOnFocusGainEventHandle() { return EventHandle<bool>("OnFocusGain"); }
+	static EventHandle<bool> GetOnFocusLossEventHandle() { return EventHandle<bool>("OnFocusLoss"); }
 
 protected:
 	GTSL::Window window;

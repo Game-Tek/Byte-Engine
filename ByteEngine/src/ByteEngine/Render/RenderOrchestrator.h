@@ -77,6 +77,8 @@ private:
 class RenderOrchestrator : public System
 {
 public:
+	RenderOrchestrator() : System("RenderOrchestrator") {}
+	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
@@ -169,17 +171,18 @@ public:
 
 	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
-	void OnRenderEnable(TaskInfo taskInfo);
-	void OnRenderDisable(TaskInfo taskInfo);
+	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
+	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
 	inline static const Id SETUP_TASK_NAME{ "SetupRenderGroups" };
 	inline static const Id CLASS_NAME{ "RenderOrchestrator" };
 
-	bool renderingEnabled = false;
-	void onRenderEnable(GameInstance* gameInstance, const GTSL::Range<TaskDependency*> dependencies);
+	void onRenderEnable(GameInstance* gameInstance, const GTSL::Range<const TaskDependency*> dependencies);
 	void onRenderDisable(GameInstance* gameInstance);
+
+	bool renderingEnabled = false;
 	
 	SubSetHandle renderGroupsSubSet;
 	SubSetHandle renderPassesSubSet;

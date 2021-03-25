@@ -233,6 +233,8 @@ void GameApplication::RegisterKeyboard()
 {
 	keyboard = inputManagerInstance->RegisterInputDevice("Keyboard");
 
+	inputManagerInstance->RegisterCharacterInputSource(keyboard, "Character");
+	
 	inputManagerInstance->RegisterActionInputSource(keyboard, "Q_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "W_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, "E_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "R_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, "T_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Y_Key");
@@ -429,11 +431,11 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	case Window::WindowEvents::FOCUS:
 	{
 		auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
-		if(*focusEventData) {
-			app->gameInstance->DispatchEvent("Application", EventHandle<>("OnFocusGain"));
+		if(focusEventData->Focus) {
+			app->gameInstance->DispatchEvent("Application", EventHandle<bool>("OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		else {
-			app->gameInstance->DispatchEvent("Application", EventHandle<>("OnFocusLoss"));
+			app->gameInstance->DispatchEvent("Application", EventHandle<bool>("OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		break;
 	}

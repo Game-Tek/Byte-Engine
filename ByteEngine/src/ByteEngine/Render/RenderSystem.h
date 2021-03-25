@@ -192,7 +192,7 @@ public:
 
 	[[nodiscard]] PipelineCache GetPipelineCache() const;
 
-	[[nodiscard]] GTSL::Range<const Texture*> GetSwapchainTextures() const { return swapchainTextures; }
+	[[nodiscard]] Texture GetSwapchainTexture() const { return swapchainTextures[imageIndex]; }
 
 	MAKE_HANDLE(uint32, Mesh)
 	
@@ -272,15 +272,18 @@ public:
 	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
 	TextureSampler GetTextureSampler(const TextureHandle handle) const { return textures[handle()].TextureSampler; }
 
-	void OnRenderEnable(TaskInfo taskInfo);
-	void OnRenderDisable(TaskInfo taskInfo);
+	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
+	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
+	void SetHasRendered(const bool state) { hasRenderTasks = state; }
 private:
 	GTSL::Window* window;
 	
 	GTSL::Mutex testMutex;
 
+	bool hasRenderTasks = false;
 	bool needsStagingBuffer = true;
+	uint8 imageIndex = 0;
 
 	uint8 pipelinedFrames = 0;
 	

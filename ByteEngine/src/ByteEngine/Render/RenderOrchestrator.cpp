@@ -297,12 +297,6 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 	renderPassesFunctions.Emplace(Id("UIRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderUI>());
 	renderPassesFunctions.Emplace(Id("SceneRTRenderPass"), RenderPassFunctionType::Create<RenderOrchestrator, &RenderOrchestrator::renderRays>());
 
-	//auto onMaterialLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialLoad", Task<Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessTypes::READ_WRITE } });
-	//initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", MaterialSystem::GetOnMaterialLoadEventHandle(), onMaterialLoadHandle);
-	//
-	//auto onMaterialInstanceLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("OnMaterialInstanceLoad", Task<Id, Id>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialInstanceLoad>(this), GTSL::Array<TaskDependency, 4>{ { "RenderOrchestrator", AccessTypes::READ_WRITE } });
-	//initializeInfo.GameInstance->SubscribeToEvent("MaterialSystem", MaterialSystem::GetOnMaterialInstanceLoadEventHandle(), onMaterialInstanceLoadHandle);
-
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* materialSystem = initializeInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
@@ -500,7 +494,10 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			{
 				//auto& shaderData = rayTracingShaders.Emplace(materialResorceManager->GetRayTraceShaderHandle(i));
 				auto& shaderData = pipelineData.ShaderGroups[shaderGroup].Shaders.EmplaceBack();
-				for (auto& s : material.Buffers) { shaderData.Buffers.EmplaceBack(Id(s)); }
+				for (auto& s : material.Buffers)
+				{
+					shaderData.Buffers.EmplaceBack(Id(s), false);
+				}
 				
 				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.ShaderHandle, alignedHandleSize / 4)); //shader handle
 				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.BufferBufferReferencesMemberHandle, material.Buffers.GetLength())); //material buffer
@@ -610,13 +607,17 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 void RenderOrchestrator::Render(TaskInfo taskInfo)
 {
 	auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	//renderSystem->SetHasRendered(renderingEnabled);
 	//if (!renderingEnabled) { return; }
-	if (renderSystem->GetRenderExtent() == 0) { return; }
+	auto renderArea = renderSystem->GetRenderExtent();
+	
+	if (renderArea == 0) { return; }
+
+	if (renderSystem->AcquireImage()) { OnResize(renderSystem, materialSystem, renderArea); }
 	
 	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
 	uint8 currentFrame = renderSystem->GetCurrentFrame();
-	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 	{
 		commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), GTSL::StaticString<64>("Render"));
@@ -624,7 +625,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RASTER);
 	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::COMPUTE);
-	//materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RAY_TRACING);
+	materialSystem->BindSet(renderSystem, commandBuffer, "GlobalData", PipelineType::RAY_TRACING);
 	
 	BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(globalDataBuffer));
 	BindData(renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(cameraDataBuffer));
@@ -735,7 +736,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				beginRenderPassInfo.RenderDevice = renderSystem->GetRenderDevice();
 				beginRenderPassInfo.RenderPass = apiRenderPasses[renderPass->APIRenderPass].RenderPass;
 				beginRenderPassInfo.Framebuffer = getFrameBuffer(renderPass->APIRenderPass);
-				beginRenderPassInfo.RenderArea = renderSystem->GetRenderExtent();
+				beginRenderPassInfo.RenderArea = renderArea;
 					
 				GTSL::Array<GTSL::RGBA, 8> clearValues;
 				for (uint8 i = 0; i < renderPass->WriteAttachments.GetLength(); ++i) {
@@ -746,17 +747,13 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 				beginRenderPassInfo.ClearValues = clearValues;
 				commandBuffer.BeginRenderPass(beginRenderPassInfo);
 
-				auto doRaster = [&]() {
-					doRender();
-				};
-
-				doRaster();
+				doRender();
 
 				endRenderPass();
 					
 				for (uint8 subPassIndex = 0; subPassIndex < subPasses[renderPass->APIRenderPass].GetLength() - 1; ++subPassIndex) {
 					commandBuffer.AdvanceSubPass(CommandBuffer::AdvanceSubpassInfo{});
-					if (canBeginRenderPass()) { beginRenderPass(); doRaster(); endRenderPass(); }
+					if (canBeginRenderPass()) { beginRenderPass(); doRender(); endRenderPass(); }
 				}
 				
 				commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
@@ -1257,7 +1254,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 }
 
 void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize)
-{	
+{
+	//pendingDeleteFrames = renderSystem->GetPipelinedFrames();
+	
 	auto resize = [&](Attachment& attachment) -> void
 	{
 		if(attachment.TextureHandle) {
@@ -1268,20 +1267,16 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 			attachment.ImageIndex = imageIndex++;
 		}
 
-		if(attachment.FormatDescriptor.Type == GAL::TextureType::COLOR)
-		{
+		if(attachment.FormatDescriptor.Type == GAL::TextureType::COLOR) {
 			materialSystem->WriteSetTexture(renderSystem, imagesSubsetHandle, attachment.TextureHandle, attachment.ImageIndex);
 		}
 	};
-
-	renderSystem->Wait();
 
 	GTSL::ForEach(attachments, resize);
 
 	for (auto& apiRenderPassData : apiRenderPasses)
 	{
-		if (apiRenderPassData.FrameBuffer.GetHandle())
-		{
+		if (apiRenderPassData.FrameBuffer.GetHandle()) {
 			apiRenderPassData.FrameBuffer.Destroy(renderSystem->GetRenderDevice());
 		}
 
@@ -1294,7 +1289,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 		framebufferCreateInfo.TextureViews = textureViews;
 		framebufferCreateInfo.RenderPass = &apiRenderPassData.RenderPass;
-		framebufferCreateInfo.Extent = renderSystem->GetRenderExtent();
+		framebufferCreateInfo.Extent = newSize;
 
 		apiRenderPassData.FrameBuffer = FrameBuffer(framebufferCreateInfo);
 	}
@@ -1617,7 +1612,25 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, MaterialResourceMana
 
 void RenderOrchestrator::traceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
 {
-	const auto& pipelineData = rayTracingPipelines[0];
+	auto& pipelineData = rayTracingPipelines[0];
+
+	for(auto& sg : pipelineData.ShaderGroups) {		
+		for (auto& shader : sg.Shaders) {
+			MaterialSystem::BufferIterator iterator;
+
+			materialSystem->UpdateIteratorMember(iterator, shader.BufferBufferReferencesMemberHandle);
+			
+			for (uint32 bufferIndex = 0; bufferIndex < shader.Buffers.GetLength(); ++bufferIndex) {
+				auto& buffer = shader.Buffers[bufferIndex];
+				if (!buffer.Has) {
+					if (materialSystem->DoesBufferExist(buffer.Buffer)) {
+						*materialSystem->GetMemberPointer(iterator, shader.BufferBufferReferencesMemberHandle, bufferIndex) = materialSystem->GetBufferAddress(renderSystem, buffer.Buffer);
+						buffer.Has = true;
+					}
+				}
+			}
+		}
+	}
 	
 	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), pipelineData.Pipeline, PipelineType::RAY_TRACING);
 

@@ -75,9 +75,9 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				Extract(block_align, wavBuffer);
 				Extract(bits_per_sample, wavBuffer);
 
-				data.ChannelCount = channels;
+				data.ChannelCount = static_cast<uint8>(channels);
 				data.SampleRate = sample_rate;
-				data.BitDepth = bits_per_sample;
+				data.BitDepth = static_cast<uint8>(bits_per_sample);
 
 				wavBuffer.ReadBytes(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
 				Extract(data_size, wavBuffer);

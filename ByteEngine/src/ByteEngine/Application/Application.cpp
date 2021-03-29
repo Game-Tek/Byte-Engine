@@ -75,7 +75,7 @@ namespace BE
 
 		BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!");
 		
-		if (argc)
+		if (argc && argc >= 0)
 		{	
 			GTSL::StaticString<2048> string("Application started with parameters:\n");
 

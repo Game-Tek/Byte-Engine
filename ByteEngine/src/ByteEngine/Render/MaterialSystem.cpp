@@ -300,7 +300,8 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 	};
 
 	parseMembers(parseMembers, members, 0);
-	
+
+	if(structSize != 0)
 	{
 		Buffer::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();

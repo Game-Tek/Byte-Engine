@@ -27,7 +27,7 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
-	void Wait();
+	[[nodiscard]] uint8 GetFrameIndex(int32 frameDelta) const { return static_cast<uint8>(frameDelta % pipelinedFrames); }
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 
 	MAKE_HANDLE(uint32, Texture);
@@ -230,7 +230,7 @@ public:
 
 	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix4& matrix);
 	
-	void OnResize(GTSL::Extent2D extent);
+	void OnResize(GTSL::Extent2D extent) { renderArea = extent; }
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
@@ -275,6 +275,7 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
+	bool AcquireImage();
 	void SetHasRendered(const bool state) { hasRenderTasks = state; }
 private:
 	GTSL::Window* window;
@@ -291,7 +292,7 @@ private:
 	Surface surface;
 	RenderContext renderContext;
 	
-	GTSL::Extent2D renderArea;
+	GTSL::Extent2D renderArea, lastRenderArea;
 
 	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
 	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
@@ -389,6 +390,8 @@ private:
 	GAL::PresentModes swapchainPresentMode;
 	TextureFormat swapchainFormat;
 	ColorSpace swapchainColorSpace;
+
+	bool resize();
 	
 	void renderBegin(TaskInfo taskInfo);
 	void renderStart(TaskInfo taskInfo);

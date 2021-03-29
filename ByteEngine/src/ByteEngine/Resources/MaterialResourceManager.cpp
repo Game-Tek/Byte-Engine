@@ -7,10 +7,24 @@
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/RenderTypes.h"
 
-static_assert((uint8)GAL::ShaderType::VERTEX_SHADER == 0, "Enum changed!");
-static_assert((uint8)GAL::ShaderType::COMPUTE_SHADER == 5, "Enum changed!");
-
-static constexpr const char* TYPE_TO_EXTENSION[12] = { ".vs", ".tcs", ".tes", ".gs", ".fs", ".cs", ".rgs", ".ahs", ".chs", ".ms", ".is", ".cs" };
+constexpr const char* TYPE_TO_EXTENSION(GAL::ShaderType type)
+{
+	switch (type)
+	{
+	case GAL::ShaderType::VERTEX_SHADER: return ".vert";
+	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: return ".tesc";
+	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: return ".tese";
+	case GAL::ShaderType::GEOMETRY_SHADER: return ".geom";
+	case GAL::ShaderType::FRAGMENT_SHADER: return ".frag";
+	case GAL::ShaderType::COMPUTE_SHADER: return ".comp";
+	case GAL::ShaderType::RAY_GEN: return ".rgen";
+	case GAL::ShaderType::ANY_HIT: return ".rahit";
+	case GAL::ShaderType::CLOSEST_HIT: return ".rchit";
+	case GAL::ShaderType::MISS: return ".rmiss";
+	case GAL::ShaderType::INTERSECTION: return ".rint";
+	case GAL::ShaderType::CALLABLE: return ".rcall";
+	}
+}
 
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
 rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAllocator())
@@ -67,7 +81,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		
 		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.ElementCount(); ++i)
 		{
-			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.ShaderTypes[i])];
+			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION(materialCreateInfo.ShaderTypes[i]);
 
 			shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 			shader.ReadFile(shader_source_buffer.GetBufferInterface());
@@ -140,7 +154,7 @@ void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreat
 
 		materialInfo.OffsetToBinary = package.GetFileSize();
 
-		resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION[static_cast<uint8>(materialCreateInfo.Type)];
+		resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION(materialCreateInfo.Type);
 
 		shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
 		shader.ReadFile(shader_source_buffer.GetBufferInterface());

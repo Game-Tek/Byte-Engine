@@ -198,94 +198,6 @@ void RenderSystem::SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix
 	instance.Transform = GTSL::Matrix3x4(matrix);
 }
 
-void RenderSystem::OnResize(const GTSL::Extent2D extent)
-{
-	if(extent != 0 && extent != renderArea)
-	{
-		graphicsQueue.Wait(GetRenderDevice());
-
-		if (!surface.GetHandle())
-		{
-			Surface::CreateInfo surfaceCreateInfo;
-			surfaceCreateInfo.RenderDevice = &renderDevice;
-			if constexpr (_DEBUG) { surfaceCreateInfo.Name = GTSL::StaticString<32>("Surface"); }
-
-			if constexpr (_WIN64) {
-				GTSL::Window::Win32NativeHandles handles;
-				window->GetNativeHandles(&handles);
-				surfaceCreateInfo.SystemData.InstanceHandle = GetModuleHandle(nullptr);
-				surfaceCreateInfo.SystemData.WindowHandle = handles.HWND;
-			}
-
-#if __linux__
-#endif
-
-			surface.Initialize(surfaceCreateInfo);
-		}
-
-		Surface::SurfaceCapabilities surfaceCapabilities;
-		auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
-
-		if (!isSupported) {
-			BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>("No supported surface found!"));
-		}
-
-		auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
-		swapchainPresentMode = supportedPresentModes[0];
-
-		auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
-		swapchainColorSpace = supportedSurfaceFormats[0].First; swapchainFormat = supportedSurfaceFormats[0].Second;
-
-		RenderContext::RecreateInfo recreate;
-		recreate.RenderDevice = GetRenderDevice();
-		if constexpr (_DEBUG)
-		{
-			GTSL::StaticString<64> name("Swapchain");
-			recreate.Name = name;
-		}
-		recreate.SurfaceArea = extent;
-		recreate.ColorSpace = swapchainColorSpace;
-		recreate.DesiredFramesInFlight = pipelinedFrames;
-		recreate.Format = swapchainFormat;
-		recreate.PresentMode = swapchainPresentMode;
-		recreate.Surface = &surface;
-		recreate.TextureUses = TextureUse::STORAGE | TextureUse::TRANSFER_DESTINATION;
-		recreate.Queue = &graphicsQueue;
-		renderContext.Recreate(recreate);
-
-		for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
-
-		RenderContext::GetTexturesInfo getTexturesInfo;
-		getTexturesInfo.RenderDevice = GetRenderDevice();
-		swapchainTextures = renderContext.GetTextures(getTexturesInfo);
-
-		RenderContext::GetTextureViewsInfo getTextureViewsInfo;
-		getTextureViewsInfo.RenderDevice = &renderDevice;
-		GTSL::Array<TextureView::CreateInfo, MAX_CONCURRENT_FRAMES> textureViewCreateInfos(MAX_CONCURRENT_FRAMES);
-		{
-			for (uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
-			{
-				textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
-				if constexpr (_DEBUG)
-				{
-					GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
-					textureViewCreateInfos[i].Name = name;
-				}
-				textureViewCreateInfos[i].Format = swapchainFormat;
-			}
-		}
-		getTextureViewsInfo.TextureViewCreateInfos = textureViewCreateInfos;
-
-		{
-			swapchainTextureViews = renderContext.GetTextureViews(getTextureViewsInfo);
-		}
-
-		renderArea = extent;
-
-		BE_LOG_MESSAGE("Resized window")
-	}
-}
-
 void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	//{
@@ -403,7 +315,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 				buffer.Size = MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance);
 				buffer.BufferType = BufferType::ADDRESS;
 
-				AllocateScratchBufferMemory(MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance), &instancesBuffer[i], buffer, &topLevelAccelerationStructureAllocation[i]);
+				AllocateScratchBufferMemory(MAX_INSTANCES_COUNT * sizeof(AccelerationStructure::Instance), &instancesBuffer[i], buffer, &instancesAllocation[i]);
 			}
 
 			{
@@ -590,7 +502,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	Wait();
+	graphicsQueue.Wait(GetRenderDevice()); transferQueue.Wait(GetRenderDevice());
 	
 	for (uint32 i = 0; i < swapchainTextures.GetLength(); ++i)
 	{
@@ -641,12 +553,6 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 			pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
 		}
 	}
-}
-
-void RenderSystem::Wait()
-{
-	graphicsQueue.Wait(GetRenderDevice());
-	transferQueue.Wait(GetRenderDevice());
 }
 
 void RenderSystem::renderStart(TaskInfo taskInfo)
@@ -710,6 +616,96 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuf
 	geometries.ResizeDown(0);
 }
 
+bool RenderSystem::resize()
+{
+	if (renderArea == 0) { return false; }
+	//graphicsQueue.Wait(GetRenderDevice());
+
+	if (!surface.GetHandle())
+	{
+		Surface::CreateInfo surfaceCreateInfo;
+		surfaceCreateInfo.RenderDevice = &renderDevice;
+		if constexpr (_DEBUG) { surfaceCreateInfo.Name = GTSL::StaticString<32>("Surface"); }
+
+		if constexpr (_WIN64) {
+			GTSL::Window::Win32NativeHandles handles;
+			window->GetNativeHandles(&handles);
+			surfaceCreateInfo.SystemData.InstanceHandle = GetModuleHandle(nullptr);
+			surfaceCreateInfo.SystemData.WindowHandle = handles.HWND;
+		}
+
+#if __linux__
+#endif
+	
+		surface.Initialize(surfaceCreateInfo);
+	}
+
+	Surface::SurfaceCapabilities surfaceCapabilities;
+	auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
+
+	renderArea = surfaceCapabilities.CurrentExtent;
+	
+	if (!isSupported) {
+		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>("No supported surface found!"));
+	}
+
+	auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
+	swapchainPresentMode = supportedPresentModes[0];
+
+	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
+	swapchainColorSpace = supportedSurfaceFormats[0].First; swapchainFormat = supportedSurfaceFormats[0].Second;
+
+	RenderContext::RecreateInfo recreate;
+	recreate.RenderDevice = GetRenderDevice();
+	if constexpr (_DEBUG)
+	{
+		GTSL::StaticString<64> name("Swapchain");
+		recreate.Name = name;
+	}
+	recreate.SurfaceArea = renderArea;
+	recreate.ColorSpace = swapchainColorSpace;
+	recreate.DesiredFramesInFlight = pipelinedFrames;
+	recreate.Format = swapchainFormat;
+	recreate.PresentMode = swapchainPresentMode;
+	recreate.Surface = &surface;
+	recreate.TextureUses = TextureUse::STORAGE | TextureUse::TRANSFER_DESTINATION;
+	recreate.Queue = &graphicsQueue;
+	renderContext.Recreate(recreate);
+
+	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
+
+	//imageIndex = 0;
+
+	RenderContext::GetTexturesInfo getTexturesInfo;
+	getTexturesInfo.RenderDevice = GetRenderDevice();
+	swapchainTextures = renderContext.GetTextures(getTexturesInfo);
+
+	RenderContext::GetTextureViewsInfo getTextureViewsInfo;
+	getTextureViewsInfo.RenderDevice = &renderDevice;
+	GTSL::Array<TextureView::CreateInfo, MAX_CONCURRENT_FRAMES> textureViewCreateInfos(MAX_CONCURRENT_FRAMES);
+	{
+		for (uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
+		{
+			textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
+			if constexpr (_DEBUG)
+			{
+				GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
+				textureViewCreateInfos[i].Name = name;
+			}
+			textureViewCreateInfos[i].Format = swapchainFormat;
+		}
+	}
+	getTextureViewsInfo.TextureViewCreateInfos = textureViewCreateInfos;
+
+	{
+		swapchainTextureViews = renderContext.GetTextureViews(getTextureViewsInfo);
+	}
+
+	lastRenderArea = renderArea;
+	
+	return true;
+}
+
 void RenderSystem::renderBegin(TaskInfo taskInfo)
 {	
 	auto& commandBuffer = graphicsCommandBuffers[currentFrameIndex];
@@ -746,16 +742,9 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 
 		waitSemaphores.EmplaceBack(transferDoneSemaphores[GetCurrentFrame()]);
 		wps.EmplaceBack(PipelineStage::TRANSFER);
-
-		uint8 imgIdx = 0;
 		
 		if (surface.GetHandle())
 		{
-			RenderContext::AcquireNextImageInfo acquireNextImageInfo;
-			acquireNextImageInfo.RenderDevice = &renderDevice;
-			acquireNextImageInfo.SignalSemaphore = &imageAvailableSemaphore[currentFrameIndex];
-			imgIdx = renderContext.AcquireNextImage(acquireNextImageInfo);
-
 			waitSemaphores.EmplaceBack(imageAvailableSemaphore[currentFrameIndex]);
 			wps.EmplaceBack(PipelineStage::COLOR_ATTACHMENT_OUTPUT);
 
@@ -772,17 +761,13 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 		graphicsQueue.Submit(submitInfo);
 
 		if (surface.GetHandle())
-		{
-			BE_ASSERT(imgIdx == imageIndex, "");
-			
+		{			
 			RenderContext::PresentInfo presentInfo;
 			presentInfo.RenderDevice = &renderDevice;
 			presentInfo.Queue = &graphicsQueue;
 			presentInfo.WaitSemaphores = signalSemaphores;
-			presentInfo.ImageIndex = imgIdx;
+			presentInfo.ImageIndex = imageIndex;
 			renderContext.Present(presentInfo);
-
-			imageIndex = (imageIndex + 1) % pipelinedFrames;
 		}
 	}
 
@@ -1035,6 +1020,33 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 
 		BE_LOG_SUCCESS("Disabled rendering")
 	}
+}
+
+bool RenderSystem::AcquireImage()
+{
+	bool result = false;
+	
+	if(surface.GetHandle()) {
+		auto acquireResult = renderContext.AcquireNextImage(&renderDevice, imageAvailableSemaphore[currentFrameIndex]);
+
+		imageIndex = acquireResult.Get();
+
+		switch (acquireResult.State())
+		{
+		case GAL::VulkanRenderContext::AcquireState::OK: break;
+		case GAL::VulkanRenderContext::AcquireState::SUBOPTIMAL:
+		case GAL::VulkanRenderContext::AcquireState::BAD: resize(); result = true; break;
+		default:;
+		}
+	}
+	else
+	{
+		resize(); result = true; AcquireImage();
+	}
+
+	if (lastRenderArea != renderArea) { resize(); result = true; }
+	
+	return result;
 }
 
 void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const

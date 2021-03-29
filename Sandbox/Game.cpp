@@ -169,35 +169,35 @@ bool Game::Initialize()
 	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	//}
 	
-	//{
-	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
-	//	materialCreateInfo.ShaderName = "RayGen";
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	//materialCreateInfo.Buffers.EmplaceBack("RayGen");
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	//}
-	//
-	//{
-	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
-	//	materialCreateInfo.ShaderName = "ClosestHit";
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	materialCreateInfo.Buffers.EmplaceBack("StaticMeshRenderGroup");
-	//	materialCreateInfo.Buffers.EmplaceBack("ClosestHit");
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	//}
-	//
-	//{
-	//	MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.Type = GAL::ShaderType::MISS;
-	//	materialCreateInfo.ShaderName = "Miss";
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	materialCreateInfo.Buffers.EmplaceBack("Miss");
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	//}
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
+		materialCreateInfo.ShaderName = "RayGen";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		//materialCreateInfo.Buffers.EmplaceBack("RayGen");
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
 	
-	//show loading screen
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
+		materialCreateInfo.ShaderName = "ClosestHit";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		materialCreateInfo.Buffers.EmplaceBack("StaticMeshRenderGroup");
+		materialCreateInfo.Buffers.EmplaceBack("ClosestHit");
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
+	
+	{
+		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.Type = GAL::ShaderType::MISS;
+		materialCreateInfo.ShaderName = "Miss";
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		//materialCreateInfo.Buffers.EmplaceBack("Miss");
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+	}
+	
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game

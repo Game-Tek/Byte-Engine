@@ -50,7 +50,7 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, UINT64, MATRIX4, MATRIX4X3, FVEC4, FVEC2, STRUCT, PAD
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, MATRIX3X4, FVEC4, FVEC2, STRUCT, PAD
 		};
 
 		Member() = default;
@@ -76,10 +76,21 @@ public:
 		descriptorsUpdates[f].AddAccelerationStructureUpdate(subSetHandle, bindingIndex, { accelerationStructure });
 	}
 
-	GTSL::uint64 GetBufferAddress(RenderSystem* renderSystem, const BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame].GetAddress(renderSystem->GetRenderDevice()); }
+	GTSL::uint64 GetBufferAddress(RenderSystem* renderSystem, const BufferHandle bufferHandle) const
+	{
+		GTSL::uint64 address = 0;
+		if (buffers[bufferHandle()].Buffers[frame].GetVkBuffer()) {
+			address = buffers[bufferHandle()].Buffers[frame].GetAddress(renderSystem->GetRenderDevice());
+		}
+		return address;
+	}
+	RenderSystem::BufferAddress GetBufferAddress(RenderSystem* renderSystem, const Id bufferName) const { return RenderSystem::BufferAddress(buffers[buffersByName[bufferName]].Buffers[frame].GetAddress(renderSystem->GetRenderDevice())); }
+	
+	bool DoesBufferExist(const Id buffer) const { return buffersByName.Find(buffer); }
+
 	struct BufferIterator {
 		GTSL::Array<uint32, 16> Levels;
-		uint32 ByteOffset = 0; uint32 BufferIndex, MemberIndirectionIndex;
+		uint32 ByteOffset = 0; uint32 BufferIndex = 0, MemberIndirectionIndex = 0;
 	};
 
 	template<typename T>
@@ -122,7 +133,7 @@ public:
 		MemberInfo(MemberHandle<uint32>* memberHandle, const uint32 count) : Member(count, Member::DataType::UINT32), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<RenderSystem::BufferAddress>* memberHandle, const uint32 count) : Member(count, Member::DataType::UINT32), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<GTSL::Matrix4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX4), Handle(memberHandle) {}
-		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX4X3), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX3X4), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<void*>* memberHandle, const uint32 count, GTSL::Range<MemberInfo*> memberInfos) : Member(count, Member::DataType::STRUCT), Handle(memberHandle), MemberInfos(memberInfos) {}
 		
 		void* Handle = nullptr;
@@ -241,7 +252,7 @@ private:
 		case MaterialSystem::Member::DataType::UINT32: return 4;
 		case MaterialSystem::Member::DataType::UINT64: return 8;
 		case MaterialSystem::Member::DataType::MATRIX4: return 4 * 4 * 4;
-		case MaterialSystem::Member::DataType::MATRIX4X3: return 4 * 3 * 4;
+		case MaterialSystem::Member::DataType::MATRIX3X4: return 4 * 3 * 4;
 		case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
 		case MaterialSystem::Member::DataType::INT32: return 4;
 		case MaterialSystem::Member::DataType::FVEC2: return 4 * 2;

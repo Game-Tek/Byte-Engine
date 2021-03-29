@@ -309,26 +309,22 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE }, { "RenderOrchestrator", AccessTypes::READ_WRITE },
-	{ "MaterialSystem", AccessTypes::READ_WRITE } };
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE },	{ "MaterialSystem", AccessTypes::READ_WRITE } };
 
 	auto ext = extent;
 
 	auto resize = [](TaskInfo info, Extent2D newSize)
 	{
 		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-		auto* renderOrchestrator = info.GameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 		auto* materialSystem = info.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 		renderSystem->OnResize(newSize);
-		renderOrchestrator->OnResize(renderSystem, materialSystem, newSize);
 	};
 	
 	if (extent != 0 && extent != oldSize)
 	{
 		gameInstance->AddDynamicTask("windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
 		oldSize = extent;
-		BE_LOG_MESSAGE("Resize");
 	}
 }
 

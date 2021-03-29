@@ -18,31 +18,31 @@ MAKE_HANDLE(uint32, PhysicsObject);
 class PhysicsWorld : public System
 {
 public:
+
 	void Initialize(const InitializeInfo& initializeInfo) override
 	{
 		physicsObjects.Initialize(32, GetPersistentAllocator()); updatedObjects.Initialize(32, GetPersistentAllocator());
 		initializeInfo.GameInstance->AddTask("onUpdate", Task<>::Create<PhysicsWorld, &PhysicsWorld::onUpdate>(this), {}, "FrameUpdate", "RenderStart");
+
+		onStaticMeshInfoLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshInfoLoaded>(this), {});
+		onStaticMeshLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshLoaded>(this), {});
+
+		boundlessForces.EmplaceBack(0, -10, 0, 0);
 	}
 	
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	PhysicsObjectHandle AddPhysicsObject(GameInstance* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager);
 
-	void SetGravity(const GTSL::Vector3 newGravity) { gravity = newGravity; }
+	//void SetGravity(const GTSL::Vector3 newGravity) { gravity = newGravity; }
 	void SetDampFactor(const float32 newDampFactor) { dampFactor = newDampFactor; }
 
-	[[nodiscard]] auto GetGravity() const { return gravity; }
+	//[[nodiscard]] auto GetGravity() const { return gravity; }
 	[[nodiscard]] auto GetAirDensity() const { return dampFactor; }
 
 	HitResult TraceRay(const GTSL::Vector3 start, const GTSL::Vector3 end);
 
 private:
-	/**
-	 * \brief Specifies the gravity acceleration of this world. Is in Meters/Seconds.
-	 * Usual value will be X = 0, Y = -10, Z = 0.
-	 */
-	GTSL::Vector3 gravity{ 0, -10, 0 };
-
 	/**
 	 * \brief Specifies how much speed the to remove from entities.\n
 	 * Default value is 0.0001.
@@ -62,11 +62,18 @@ private:
 
 	void onUpdate(TaskInfo taskInfo);
 
-	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo);
+	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
+	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
 	
 	struct PhysicsObject
 	{
+		GTSL::Buffer<BE::PAR> Buffer;
 		GTSL::Vector4 Velocity, Acceleration, Position;
 	};
 	GTSL::KeepVector<PhysicsObject, BE::PAR> physicsObjects;
+
+	GTSL::Array<GTSL::Vector4, 8> boundlessForces;
+	
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
+	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;
 };

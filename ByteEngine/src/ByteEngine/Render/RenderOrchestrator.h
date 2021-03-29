@@ -297,9 +297,14 @@ private:
 
 			struct ShaderRegisterData
 			{
-				GTSL::Array<Id, 8> Buffers;
+				struct BufferPatchData {
+					Id Buffer;
+					bool Has = false;
+				};
+				GTSL::Array<BufferPatchData, 8> Buffers;
+				
 				MemberHandle<uint32> ShaderHandle;
-				MemberHandle<uint32> BufferBufferReferencesMemberHandle;
+				MemberHandle<RenderSystem::BufferAddress> BufferBufferReferencesMemberHandle;
 			};
 			
 			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;

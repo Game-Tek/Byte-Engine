@@ -219,7 +219,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies)
+	[[nodiscard]] DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies)
 	{
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 

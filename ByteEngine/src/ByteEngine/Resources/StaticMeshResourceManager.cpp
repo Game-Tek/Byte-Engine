@@ -29,7 +29,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	index_path += "/resources/StaticMesh.beidx";
 	resources_path += "/resources/";
 
-	auto package_path = GetResourcePath(GTSL::ShortString<32>("StaticMesh.bepkg"));
+	auto package_path = GetResourcePath(GTSL::ShortString<32>("StaticMesh"), GTSL::ShortString<32>("bepkg"));
 
 	indexFile.OpenFile(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
 	

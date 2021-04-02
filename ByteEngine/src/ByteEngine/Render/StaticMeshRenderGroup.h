@@ -33,8 +33,10 @@ public:
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
 	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) { positions[staticMeshHandle()] = vector3; }
-	uint32 GetStaticMesheCount() const { return staticMeshCount; }
+	uint32 GetStaticMeshCount() const { return staticMeshCount; }
 
+	auto GetMeshHandles() const { return meshes.GetRange(); }
+	
 	auto GetAddedMeshes()
 	{
 		return addedMeshes.GetReference();

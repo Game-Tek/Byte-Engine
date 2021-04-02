@@ -253,7 +253,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id setL
 
 BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members)
 {
-	uint32 structSize = 0;
+	uint32 bufferFlags = 0, notBufferFlags = 0;
 
 	auto bufferIndex = buffers.Emplace(); //this also essentially referes to the binding wince there's only a buffer per binding
 	auto& bufferData = buffers[bufferIndex];
@@ -266,42 +266,45 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 		{
 			if(levelMembers[m].Type == Member::DataType::PAD)
 			{
-				structSize += levelMembers[m].Count;
 				offset += levelMembers[m].Count;
 			}
 			else
 			{
-				Member member;
-				member.Type = levelMembers[m].Type; member.Count = levelMembers[m].Count;
+				auto memberDataIndex = bufferData.MemberData.GetLength();
+				auto& member = bufferData.MemberData.EmplaceBack();
 
-				auto memberDataIndex = bufferData.MemberData.EmplaceBack();
-
-				bufferData.MemberData[memberDataIndex].ByteOffsetIntoStruct = offset;
-				bufferData.MemberData[memberDataIndex].Level = level;
-				bufferData.MemberData[memberDataIndex].Type = levelMembers[m].Type;
-				bufferData.MemberData[memberDataIndex].Count = levelMembers[m].Count;
+				member.ByteOffsetIntoStruct = offset;
+				member.Level = level;
+				member.Type = levelMembers[m].Type;
+				member.Count = levelMembers[m].Count;
+				
 				*reinterpret_cast<MemberHandle<byte>*>(levelMembers[m].Handle) = MemberHandle<byte>(bufferIndex, memberDataIndex);
 
 				if (levelMembers[m].Type == Member::DataType::STRUCT)
 				{
-					bufferData.MemberData[memberDataIndex].Size = self(self, levelMembers[m].MemberInfos, level + 1);
+					member.Size = self(self, levelMembers[m].MemberInfos, level + 1);
 				}
 				else
 				{
-					bufferData.MemberData[memberDataIndex].Size = dataTypeSize(levelMembers[m].Type);
-					auto size = dataTypeSize(levelMembers[m].Type) * levelMembers[m].Count;
-					offset += size;
-					structSize += size;
+					if (levelMembers[m].Type == Member::DataType::SHADER_HANDLE)
+					{
+						bufferFlags |= BufferType::SHADER_BINDING_TABLE;
+						notBufferFlags |= BufferType::ACCELERATION_STRUCTURE; notBufferFlags |= BufferType::STORAGE;
+					}
+					
+					member.Size = dataTypeSize(levelMembers[m].Type);
 				}
+
+				offset += member.Size * member.Count;
 			}
 		}
 
 		return offset;
 	};
 
-	parseMembers(parseMembers, members, 0);
+	uint32 bufferSize = parseMembers(parseMembers, members, 0);
 
-	if(structSize != 0)
+	if(bufferSize != 0)
 	{
 		Buffer::CreateInfo createInfo;
 		createInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -310,11 +313,12 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 			createInfo.Name = name;
 		}
 
-		createInfo.Size = structSize;
-		createInfo.BufferType = BufferType::ADDRESS; createInfo.BufferType |= BufferType::STORAGE;
+		createInfo.Size = bufferSize;
+		bufferFlags |= BufferType::ADDRESS; bufferFlags |= BufferType::STORAGE;
+		createInfo.BufferType = bufferFlags & ~notBufferFlags;
 
 		for (uint8 f = 0; f < queuedFrames; ++f) {
-			renderSystem->AllocateScratchBufferMemory(structSize, &bufferData.Buffers[f], createInfo, &bufferData.RenderAllocations[f]);
+			renderSystem->AllocateScratchBufferMemory(bufferSize, &bufferData.Buffers[f], createInfo, &bufferData.RenderAllocations[f]);
 		}
 	}
 

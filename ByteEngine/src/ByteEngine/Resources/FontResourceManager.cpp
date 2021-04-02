@@ -418,7 +418,7 @@ int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, 
 
 FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager")
 {
-	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"));
+	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"), GTSL::ShortString<32>("bepkg"));
 	
 	GTSL::File beFontFile; beFontFile.OpenFile(path, GTSL::File::AccessMode::WRITE);
 

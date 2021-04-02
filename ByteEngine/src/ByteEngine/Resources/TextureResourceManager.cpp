@@ -20,8 +20,8 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	resources_path += BE::Application::Get()->GetPathToApplication();
 	resources_path += "/resources/";
 	query_path += "/resources/*.png";
-	auto index_path = GetResourcePath(GTSL::ShortString<32>("Textures.beidx"));
-	auto package_path = GetResourcePath(GTSL::ShortString<32>("Textures.bepkg"));
+	auto index_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("beidx"));
+	auto package_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("bepkg"));
 
 	indexFile.OpenFile(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
 	

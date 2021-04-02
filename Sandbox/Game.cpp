@@ -170,36 +170,43 @@ bool Game::Initialize()
 	//}
 	
 	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::RAY_GEN;
-		materialCreateInfo.ShaderName = "RayGen";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		//materialCreateInfo.Buffers.EmplaceBack("RayGen");
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
+		MaterialResourceManager::RayTracePipelineCreateInfo pipelineCreateInfo;
+		pipelineCreateInfo.RecursionDepth = 3;
+		pipelineCreateInfo.Payload.EmplaceBack(MaterialResourceManager::ParameterType::FVEC4);
+		pipelineCreateInfo.PipelineName = "ScenePipeline";
+
+		{
+			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
+			shader.ShaderName = "RayGen";
+			shader.Type = GAL::ShaderType::RAY_GEN;
+			shader.MaterialInstances.EmplaceBack();
+		}
+
+		{
+			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
+			shader.ShaderName = "ClosestHit";
+			shader.Type = GAL::ShaderType::CLOSEST_HIT;
+			auto& hydrantInstance = shader.MaterialInstances.EmplaceBack();
+			hydrantInstance.EmplaceBack("StaticMeshRenderGroup");
+			hydrantInstance.EmplaceBack("HydrantMat");
+			auto& tvInstance = shader.MaterialInstances.EmplaceBack();
+			tvInstance.EmplaceBack("StaticMeshRenderGroup");
+			tvInstance.EmplaceBack("HydrantMat");
+		}
+
+		{
+			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
+			shader.ShaderName = "Miss";
+			shader.Type = GAL::ShaderType::MISS;
+			shader.MaterialInstances.EmplaceBack();
+		}
+		
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTracePipeline(pipelineCreateInfo);
 	}
 	
-	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::CLOSEST_HIT;
-		materialCreateInfo.ShaderName = "ClosestHit";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		materialCreateInfo.Buffers.EmplaceBack("StaticMeshRenderGroup");
-		materialCreateInfo.Buffers.EmplaceBack("ClosestHit");
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	}
-	
-	{
-		MaterialResourceManager::RayTraceMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.Type = GAL::ShaderType::MISS;
-		materialCreateInfo.ShaderName = "Miss";
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-		//materialCreateInfo.Buffers.EmplaceBack("Miss");
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTraceMaterial(materialCreateInfo);
-	}
-	
-	//show loading screen//
+	//show loading screen
 	//load menu
-	//show menu
+	//show menu//
 	//start game
 
 	return true;
@@ -297,15 +304,15 @@ void Game::PostInitialize()
 	//	uint32 t = 0;
 	//}
 	
-	{
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "TV";
-		addStaticMeshInfo.Material = tvMaterialInstance;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	}
+	//{
+	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+	//	addStaticMeshInfo.MeshName = "TV";
+	//	addStaticMeshInfo.Material = tvMaterialInstance;
+	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.RenderSystem = renderSystem;
+	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+	//	tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	//}
 
 	
 	//{
@@ -397,7 +404,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
 
-	//renderSystem->UpdateInstanceTransform(0, GTSL::Math::Translation(hydrantPos));
+	renderSystem->UpdateInstanceTransform(0, GTSL::Matrix4(hydrantPos));
 }
 
 void Game::Shutdown()

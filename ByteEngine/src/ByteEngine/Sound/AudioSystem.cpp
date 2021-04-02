@@ -60,8 +60,10 @@ AudioListenerHandle AudioSystem::CreateAudioListener()
 
 AudioEmitterHandle AudioSystem::CreateAudioEmitter()
 {
+	auto index = audioEmittersSettings.GetLength();
 	audioEmittersSettings.EmplaceBack();
-	return AudioEmitterHandle(audioEmittersLocation.EmplaceBack());
+	audioEmittersLocation.EmplaceBack();
+	return AudioEmitterHandle(index);
 }
 
 void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay)

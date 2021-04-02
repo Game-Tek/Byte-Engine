@@ -47,7 +47,7 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 
 void StaticMeshRenderGroup::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad)
 {
-	meshLoad.MeshHandle = meshLoad.RenderSystem->CreateMesh(staticMeshInfo.Name, staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize, meshLoad.Material);
+	meshLoad.MeshHandle = meshLoad.RenderSystem->CreateMesh(staticMeshInfo.Name, meshLoad.InstanceId, staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize, meshLoad.Material);
 
 	staticMeshResourceManager->LoadStaticMesh(taskInfo.GameInstance, staticMeshInfo, meshLoad.RenderSystem->GetBufferSubDataAlignment(), GTSL::Range<byte*>(meshLoad.RenderSystem->GetMeshSize(meshLoad.MeshHandle), meshLoad.RenderSystem->GetMeshPointer(meshLoad.MeshHandle)), onStaticMeshLoadHandle, GTSL::MoveRef(meshLoad));
 }
@@ -64,8 +64,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 		meshInfo.VertexSize = staticMeshInfo.VertexSize;
 		meshInfo.IndexCount = staticMeshInfo.IndexCount;
 		meshInfo.IndexSize = staticMeshInfo.IndexSize;
-		GTSL::Matrix3x4 matrix(1.0f);
-		meshInfo.Matrix = &matrix;
+		meshInfo.Matrix = GTSL::Matrix3x4(1.0f);
 
 		auto meshHandle = meshLoadInfo.RenderSystem->CreateRayTracedMesh(meshInfo);
 	}

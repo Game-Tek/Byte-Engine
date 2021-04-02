@@ -6,28 +6,29 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/RenderTypes.h"
+#include "ByteEngine/Render/ShaderGenerator.h"
 
-constexpr const char* TYPE_TO_EXTENSION(GAL::ShaderType type)
+constexpr GTSL::ShortString<12> ShaderTypeToFileExtension(GAL::ShaderType type)
 {
 	switch (type)
 	{
-	case GAL::ShaderType::VERTEX_SHADER: return ".vert";
-	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: return ".tesc";
-	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: return ".tese";
-	case GAL::ShaderType::GEOMETRY_SHADER: return ".geom";
-	case GAL::ShaderType::FRAGMENT_SHADER: return ".frag";
-	case GAL::ShaderType::COMPUTE_SHADER: return ".comp";
-	case GAL::ShaderType::RAY_GEN: return ".rgen";
-	case GAL::ShaderType::ANY_HIT: return ".rahit";
-	case GAL::ShaderType::CLOSEST_HIT: return ".rchit";
-	case GAL::ShaderType::MISS: return ".rmiss";
-	case GAL::ShaderType::INTERSECTION: return ".rint";
-	case GAL::ShaderType::CALLABLE: return ".rcall";
+	case GAL::ShaderType::VERTEX_SHADER: return "vert";
+	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: return "tesc";
+	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: return "tese";
+	case GAL::ShaderType::GEOMETRY_SHADER: return "geom";
+	case GAL::ShaderType::FRAGMENT_SHADER: return "frag";
+	case GAL::ShaderType::COMPUTE_SHADER: return "comp";
+	case GAL::ShaderType::RAY_GEN: return "rgen";
+	case GAL::ShaderType::ANY_HIT: return "rahit";
+	case GAL::ShaderType::CLOSEST_HIT: return "rchit";
+	case GAL::ShaderType::MISS: return "rmiss";
+	case GAL::ShaderType::INTERSECTION: return "rint";
+	case GAL::ShaderType::CALLABLE: return "rcall";
 	}
 }
 
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
-rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAllocator())
+rtPipelineInfos(8, GetPersistentAllocator())
 {
 	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 	
@@ -46,12 +47,12 @@ rtMaterialInfos(16, GetPersistentAllocator()), rtHandles(16, GetPersistentAlloca
 	if (rasterFileBuffer.GetLength())
 	{
 		Extract(rasterMaterialInfos, rasterFileBuffer);
-		Extract(rtMaterialInfos, rasterFileBuffer);
+		Extract(rtPipelineInfos, rasterFileBuffer);
 	}
 	else
 	{
 		Insert(rasterMaterialInfos, rasterFileBuffer);
-		Insert(rtMaterialInfos, rasterFileBuffer);
+		Insert(rtPipelineInfos, rasterFileBuffer);
 	}
 }
 
@@ -65,15 +66,12 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 	
 	if (!rasterMaterialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
 		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(128)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(4)), 8, GetTransientAllocator());
 		
 		RasterMaterialDataSerialize materialInfo;
-		
-		GTSL::StaticString<256> resources_path;
-		resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
 
 		GTSL::File shader;
 
@@ -81,24 +79,24 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		
 		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.ElementCount(); ++i)
 		{
-			resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION(materialCreateInfo.ShaderTypes[i]);
+			shader.OpenFile(GetResourcePath(materialCreateInfo.ShaderName, ShaderTypeToFileExtension(materialCreateInfo.ShaderTypes[i])), GTSL::File::AccessMode::READ);
 
-			shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
+			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
+			GenerateShader(string, materialCreateInfo.ShaderTypes[i]);
+			shader_source_buffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
 			shader.ReadFile(shader_source_buffer.GetBufferInterface());
 
 			auto f = GTSL::Range<const utf8*>(shader_source_buffer.GetLength(), reinterpret_cast<const utf8*>(shader_source_buffer.GetData()));
-			const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
+			const auto compilationResult = GAL::CompileShader(f, materialCreateInfo.ShaderName, materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
 			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
-			if(comp_res == false)
-			{
+			
+			if(!compilationResult) {
 				BE_LOG_ERROR(reinterpret_cast<const char*>(shader_error_buffer.GetData()));
+				BE_ASSERT(false, shader_error_buffer.GetData());
 			}
-			BE_ASSERT(comp_res != false, shader_error_buffer.GetData());
 
 			materialInfo.ShaderSizes.EmplaceBack(shader_buffer.GetLength());
 			package.WriteToFile(shader_buffer);
-			
-			resources_path.Drop(resources_path.FindLast('/').Get() + 1);
 
 			shader_source_buffer.Resize(0);
 			shader_error_buffer.Resize(0);
@@ -129,65 +127,64 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		rasterMaterialInfos.Emplace(hashed_name, materialInfo);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
 		Insert(rasterMaterialInfos, index_buffer);
-		Insert(rtMaterialInfos, index_buffer);
+		Insert(rtPipelineInfos, index_buffer);
 		index.WriteToFile(index_buffer);
 	}
 }
 
-void MaterialResourceManager::CreateRayTraceMaterial(const RayTraceMaterialCreateInfo& materialCreateInfo)
+void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreateInfo& pipelineCreateInfo)
 {
-	const auto hashed_name = GTSL::Id64(materialCreateInfo.ShaderName);
-
-	if (!rtMaterialInfos.Find(hashed_name))
-	{
-		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
-
-		RayTraceMaterialInfo materialInfo;
-		
-		GTSL::StaticString<256> resources_path;
-		resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
-
-		GTSL::File shader;
-
-		materialInfo.OffsetToBinary = package.GetFileSize();
-
-		resources_path += materialCreateInfo.ShaderName; resources_path += TYPE_TO_EXTENSION(materialCreateInfo.Type);
-
-		shader.OpenFile(resources_path, GTSL::File::AccessMode::READ);
-		shader.ReadFile(shader_source_buffer.GetBufferInterface());
-
-		auto f = GTSL::Range<const utf8*>(shader_source_buffer.GetLength(), reinterpret_cast<const utf8*>(shader_source_buffer.GetData()));
-		const auto comp_res = GAL::CompileShader(f, resources_path, materialCreateInfo.Type, GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
-		*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
-		if (comp_res == false)
-		{
-			BE_LOG_ERROR(reinterpret_cast<const char*>(shader_error_buffer.GetData()));
-		}
-		BE_ASSERT(comp_res != false, shader_error_buffer.GetData());
-
-		materialInfo.ShaderInfo.BinarySize = shader_buffer.GetLength();
-		materialInfo.ShaderInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
-		materialInfo.ShaderInfo.ShaderType = materialCreateInfo.Type;
-		materialInfo.ShaderInfo.Buffers = materialCreateInfo.Buffers;
-		package.WriteToFile(shader_buffer);
-
-		resources_path.Drop(resources_path.FindLast('/').Get() + 1);
-
-		shader_source_buffer.Resize(0);
-		shader_error_buffer.Resize(0);
-		shader_buffer.Resize(0);
-
-		rtMaterialInfos.Emplace(hashed_name, materialInfo);
-		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
-		Insert(rasterMaterialInfos, index_buffer);
-		Insert(rtMaterialInfos, index_buffer);
-		index.WriteToFile(index_buffer);
-	}
+	auto searchResult = rtPipelineInfos.TryEmplace(Id(pipelineCreateInfo.PipelineName));
+	if(!searchResult.State()) { return; }
 	
-	rtHandles.EmplaceBack(hashed_name);
+	auto& pipeline = searchResult.Get();
+
+	pipeline.OffsetToBinary = package.GetFileSize();
+	
+	for(uint32 i = 0; i < pipelineCreateInfo.Shaders.GetLength(); ++i)
+	{
+		const auto& shaderInfo = pipelineCreateInfo.Shaders[i];
+		auto& shader = pipeline.Shaders.EmplaceBack();
+
+		shader.ShaderName = shaderInfo.ShaderName;
+		shader.ShaderType = shaderInfo.Type;
+		shader.MaterialInstances = shaderInfo.MaterialInstances;
+
+		{
+			GTSL::Buffer<BE::TAR> shaderBuffer; shaderBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(128)), 8, GetTransientAllocator());
+			GTSL::Buffer<BE::TAR> shaderSourceBuffer; shaderSourceBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
+			GTSL::Buffer<BE::TAR> shaderErrorBuffer; shaderErrorBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(4)), 8, GetTransientAllocator());
+
+			GTSL::File shaderFile;
+
+			shaderFile.OpenFile(GetResourcePath(shaderInfo.ShaderName, ShaderTypeToFileExtension(shaderInfo.Type)), GTSL::File::AccessMode::READ);
+
+			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
+			GenerateShader(string, shaderInfo.Type);
+			shaderSourceBuffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
+			shaderFile.ReadFile(shaderSourceBuffer.GetBufferInterface());
+
+			auto f = GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
+			const auto compilationResult = GAL::CompileShader(f, shaderInfo.ShaderName, shaderInfo.Type, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
+		
+			if (!compilationResult) {
+				BE_LOG_ERROR(reinterpret_cast<const char*>(shaderErrorBuffer.GetData()));
+				BE_ASSERT(false, shaderErrorBuffer.GetData());
+			}
+
+			shader.BinarySize = shaderBuffer.GetLength();
+			
+			package.WriteToFile(shaderBuffer);
+		}
+	}
+
+	{
+		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
+		GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
+		Insert(rasterMaterialInfos, indexFileBuffer);
+		Insert(rtPipelineInfos, indexFileBuffer);
+		index.WriteToFile(indexFileBuffer);
+	}
 }
 
 void MaterialResourceManager::GetMaterialSize(const Id name, uint32& size)
@@ -235,17 +232,18 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	loadInfo.GameInstance->AddDynamicTask(Id(functionName.begin()), loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
 }
 
-MaterialResourceManager::RayTracingShaderInfo MaterialResourceManager::LoadRayTraceShaderSynchronous(Id id, GTSL::Range<byte*> buffer)
+void MaterialResourceManager::LoadRayTraceShadersForPipeline(const RayTracePipelineInfo& info, GTSL::Range<byte*> buffer)
 {
-	auto materialInfo = rtMaterialInfos.At(id);
+	uint32 pipelineSize = 0;
 
-	uint32 mat_size = materialInfo.ShaderInfo.BinarySize;
-	BE_ASSERT(mat_size <= buffer.Bytes(), "Buffer can't hold required data!");
+	for (uint32 s = 0; s < info.Shaders.GetLength(); ++s) {
+		pipelineSize += info.Shaders[s].BinarySize;
+	}
 
-	package.SetPointer(materialInfo.OffsetToBinary, GTSL::File::MoveFrom::BEGIN);
+	BE_ASSERT(pipelineSize <= buffer.Bytes(), "Buffer can't hold required data!");
+
+	package.SetPointer(info.OffsetToBinary, GTSL::File::MoveFrom::BEGIN);
 
 	[[maybe_unused]] const auto read = package.ReadFromFile(buffer);
 	BE_ASSERT(read != 0, "Read 0 bytes!");
-
-	return materialInfo.ShaderInfo;
 }

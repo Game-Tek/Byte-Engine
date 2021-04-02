@@ -51,11 +51,11 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	auto positions = renderGroup->GetPositions();
 	
-	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, matrixUniformBufferMemberHandle, renderGroup->GetStaticMesheCount());
+	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, staticMeshStruct, renderGroup->GetStaticMeshCount());
 
 	{
 		MaterialSystem::BufferIterator bufferIterator;
-
+	
 		for (uint32 p = 0; p < renderGroup->GetAddedMeshes().GetPageCount(); ++p)
 		{
 			for (auto e : renderGroup->GetAddedMeshes().GetPage(p))
@@ -63,11 +63,13 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 				info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, e.Second);
 				
 				info.RenderOrchestrator->AddMesh(e.First, info.RenderSystem->GetMeshMaterialHandle(e.First()), e.Second);
-				*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(e.First);
-				*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(e.First);
+	
+				//auto vertexBuffer = info.RenderSystem->GetVertexBufferAddress(e.First), indexBuffer = info.RenderSystem->GetIndexBufferAddress(e.First);
+				////info.MaterialSystem->WriteMultiBuffer(bufferIterator, vertexBufferReferenceHandle, &vertexBuffer);
+				////info.MaterialSystem->WriteMultiBuffer(bufferIterator, indexBufferReferenceHandle, &indexBuffer);
 			}
 		}
-
+	
 		renderGroup->ClearAddedMeshes();
 	}
 	
@@ -83,6 +85,19 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 
 			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, index++);
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, matrixUniformBufferMemberHandle) = pos;
+		}
+	}
+
+	{
+		uint32 index = 0;
+	
+		MaterialSystem::BufferIterator bufferIterator;
+	
+		for (auto& e : renderGroup->GetMeshHandles())
+		{
+			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, index++);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(e);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(e);
 		}
 	}
 
@@ -411,31 +426,39 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 		GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups(16, GetTransientAllocator());
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
-		GTSL::Vector<GTSL::Buffer<BE::TAR>, BE::TAR> shaderBuffers(16, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shadersBuffer;
 
 		auto handleSize = renderSystem->GetShaderGroupHandleSize();
-		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
+		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupHandleAlignment());
 
 		GTSL::Array<MaterialSystem::MemberInfo, 32> memberInfos[4];
 		GTSL::Array<uint32, 32> index[4];
 
-		uint32 unalignedSizes[4]{ 0 };
-		
-		for (uint32 i = 0; i < materialResorceManager->GetRayTraceShaderCount(); ++i)
-		{
-			{
-				uint32 bufferSize = 0;
-				bufferSize = materialResorceManager->GetRayTraceShaderSize(materialResorceManager->GetRayTraceShaderHandle(i));
-				shaderBuffers.EmplaceBack();
-				shaderBuffers[i].Allocate(bufferSize, 8, GetTransientAllocator());
-			}
+		auto pipelineInfo = materialResorceManager->GetRayTracePipelineInfo();
 
-			auto material = materialResorceManager->LoadRayTraceShaderSynchronous(materialResorceManager->GetRayTraceShaderHandle(i), GTSL::Range<byte*>(shaderBuffers[i].GetCapacity(), shaderBuffers[i].GetData())); //TODO: VIRTUAL BUFFER INTERFACE
+		{
+			auto pipelineSize = 0u;
+
+			for (auto& shader : pipelineInfo.Shaders)
+				pipelineSize += shader.BinarySize;
+
+			shadersBuffer.Allocate(pipelineSize, 32, GetTransientAllocator());
+
+			materialResorceManager->LoadRayTraceShadersForPipeline(pipelineInfo, GTSL::Range<byte*>(pipelineSize, shadersBuffer.GetData())); //TODO: VIRTUAL BUFFER INTERFACE
+		}
+		
+		uint32 offset = 0;
+		
+		for (uint32 i = 0; i < pipelineInfo.Shaders.GetLength(); ++i)
+		{
+			auto& shader = pipelineInfo.Shaders[i];
 
 			Pipeline::ShaderInfo shaderInfo;
-			shaderInfo.Blob = GTSL::Range<const byte*>(material.BinarySize, shaderBuffers[i].GetData());
-			shaderInfo.Type = ConvertShaderType(material.ShaderType);
+			shaderInfo.Blob = GTSL::Range<const byte*>(shader.BinarySize, shadersBuffer.GetData() + offset);
+			shaderInfo.Type = ConvertShaderType(shader.ShaderType);
 			shaderInfos.EmplaceBack(shaderInfo);
+
+			offset += shader.BinarySize;
 
 			uint8 shaderGroup = 0xFF;
 			
@@ -444,7 +467,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
 			group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED; group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
 
-			switch (material.ShaderType)
+			switch (shader.ShaderType)
 			{
 			case GAL::ShaderType::RAY_GEN: {
 				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
@@ -492,34 +515,37 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			groups.EmplaceBack(group);
 
 			{
-				//auto& shaderData = rayTracingShaders.Emplace(materialResorceManager->GetRayTraceShaderHandle(i));
 				auto& shaderData = pipelineData.ShaderGroups[shaderGroup].Shaders.EmplaceBack();
-				for (auto& s : material.Buffers)
-				{
-					shaderData.Buffers.EmplaceBack(Id(s), false);
-				}
-				
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.ShaderHandle, alignedHandleSize / 4)); //shader handle
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&shaderData.BufferBufferReferencesMemberHandle, material.Buffers.GetLength())); //material buffer
-				memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(0)); //padding
-
 				index[shaderGroup].EmplaceBack(i);
 				
-				unalignedSizes[shaderGroup] = alignedHandleSize + material.Buffers.GetLength() * 4;
-				++pipelineData.ShaderGroups[shaderGroup].Count;
-				pipelineData.ShaderGroups[shaderGroup].Size = GTSL::Math::Max(pipelineData.ShaderGroups[shaderGroup].Size, GTSL::Math::RoundUpByPowerOf2(unalignedSizes[shaderGroup], renderSystem->GetShaderGroupBaseAlignment()));
+				for (auto& s : shader.MaterialInstances)
+				{
+					auto& instanceData = shaderData.EmplaceBack();
+					
+					for (auto& b : s) {
+						instanceData.Buffers.EmplaceBack(Id(b), false);
+					}
+					
+					memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&instanceData.ShaderHandle, 1)); //shader handle
+					memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(&instanceData.BufferBufferReferencesMemberHandle, s.GetLength())); //material buffer
+					memberInfos[shaderGroup].PushBack(MaterialSystem::MemberInfo(0)); //padding
+					
+					pipelineData.ShaderGroups[shaderGroup].RoundedEntrySize = GTSL::Math::Max(alignedHandleSize + s.GetLength() * 4, pipelineData.ShaderGroups[shaderGroup].RoundedEntrySize);
+				}
 			}
 		}
 
 		//create buffer per shader group
-		for(uint32 i = 0; i < 4; ++i)
+		for(uint32 shaderGroupIndex = 0; shaderGroupIndex < 4; ++shaderGroupIndex)
 		{			
-			for (uint32 t = 0, v = 0; t < memberInfos[i].GetLength() / 3; ++t, v += 3) {
-				uint32 size = memberInfos[i][v].Count * 4 + memberInfos[i][v + 1].Count * 4;
-				memberInfos[i][v + 2].Count = pipelineData.ShaderGroups[i].Size - size; //pad
+			for (uint32 t = 0; t < pipelineData.ShaderGroups[shaderGroupIndex].Shaders.GetLength(); ++t) {
+				uint32 size = pipelineData.ShaderGroups[shaderGroupIndex].RoundedEntrySize;
+				uint32 alignedSize = GTSL::Math::RoundUpByPowerOf2(size, renderSystem->GetShaderGroupBaseAlignment());
+				memberInfos[shaderGroupIndex][t + 2].Count = alignedSize - size; //pad
+				pipelineData.ShaderGroups[shaderGroupIndex].RoundedEntrySize = alignedSize;
 			}
 			
-			pipelineData.ShaderGroups[i].Buffer = materialSystem->CreateBuffer(renderSystem, memberInfos[i]);
+			pipelineData.ShaderGroups[shaderGroupIndex].Buffer = materialSystem->CreateBuffer(renderSystem, memberInfos[shaderGroupIndex]);
 		}
 		
 		RayTracingPipeline::CreateInfo createInfo;
@@ -527,25 +553,32 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<32> name("Ray Tracing Pipeline: "); createInfo.Name = name;
 		}
-		createInfo.MaxRecursionDepth = 3;
+		createInfo.MaxRecursionDepth = pipelineInfo.RecursionDepth;
 		createInfo.Stages = shaderInfos;
 		createInfo.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData"));
 		createInfo.Groups = groups;
 		pipelineData.Pipeline.Initialize(createInfo);
 
-		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, renderSystem->GetShaderGroupBaseAlignment(), GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, 16, GetTransientAllocator());
 
 		pipelineData.Pipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), GTSL::Range<byte*>(handlesBuffer.GetCapacity(), handlesBuffer.GetData()));
 
-		for (uint8 i = 0; i < 4; ++i) {
+		//buffer contains aligned handles
+		
+		for (uint8 shaderGroupIndex = 0; shaderGroupIndex < 4; ++shaderGroupIndex) {
+			auto& shaderGroup = pipelineData.ShaderGroups[shaderGroupIndex];
+			
 			MaterialSystem::BufferIterator iterator;
 			
-			for (uint32 s = 0; s < pipelineData.ShaderGroups[i].Shaders.GetLength(); ++s) //make index
+			for (uint32 s = 0; s < shaderGroup.Shaders.GetLength(); ++s) //make index
 			{
-				materialSystem->UpdateIteratorMember(iterator, pipelineData.ShaderGroups[i].Shaders[s].ShaderHandle);
+				auto& shader = shaderGroup.Shaders[s];
 				
-				for (uint8 t = 0; t < alignedHandleSize / 4; ++t) { //Write shader handles to managed buffer, TODO: check size multiples
-					materialSystem->WriteMultiBuffer(iterator, pipelineData.ShaderGroups[i].Shaders[s].ShaderHandle, reinterpret_cast<uint32*>(handlesBuffer.GetData() + index[i][s] * handleSize) + t, t);
+				for (uint32 i = 0; i < shader.GetLength(); ++i) {
+					auto& instance = shader[i];
+					
+					GAL::ShaderHandle shaderHandle(handlesBuffer.GetData() + index[shaderGroupIndex][s] * alignedHandleSize, handleSize, alignedHandleSize);
+					materialSystem->WriteMultiBuffer(iterator, instance.ShaderHandle, &shaderHandle, 0);
 				}
 			}
 		}
@@ -562,7 +595,7 @@ void RenderOrchestrator::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderOrchestrator::Setup(TaskInfo taskInfo)
 {
-	if (!renderingEnabled) { return; }
+	//if (!renderingEnabled) { return; }
 	
 	auto positionMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
 	auto rotationMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
@@ -639,11 +672,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		auto positionMatrix = cameraSystem->GetPositionMatrices()[0];
 		positionMatrix(0, 3) *= -1;
 		positionMatrix(1, 3) *= -1;
+		//positionMatrix(2, 3) *= -1;
 
 		auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * positionMatrix;
 
 		MaterialSystem::BufferIterator bufferIterator;
-		materialSystem->UpdateIteratorMember(bufferIterator, cameraMatricesHandle);
 
 		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 0) = viewMatrix;
 		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 1) = projectionMatrix;
@@ -988,7 +1021,7 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 				
 			uint32 lastContiguousRasterPassIndex = contiguousRasterPassCount - 1;
 				
-			auto& apiRenderPassData = apiRenderPasses[apiRenderPasses.EmplaceBack()];
+			auto& apiRenderPassData = apiRenderPasses.EmplaceBack();
 				
 			RenderPass::CreateInfo renderPassCreateInfo;
 			renderPassCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
@@ -1300,7 +1333,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 		MaterialSystem::BufferIterator bufferIterator; uint8 attachmentIndex = 0;
 
-		materialSystem->UpdateIteratorMember(bufferIterator, renderPass.AttachmentsIndicesHandle);
+		//materialSystem->UpdateIteratorMember(bufferIterator, renderPass.AttachmentsIndicesHandle);
 		
 		for (uint8 r = 0; r < renderPass.ReadAttachments.GetLength(); ++r)
 		{
@@ -1618,14 +1651,15 @@ void RenderOrchestrator::traceRays(GTSL::Extent2D rayGrid, CommandBuffer* comman
 		for (auto& shader : sg.Shaders) {
 			MaterialSystem::BufferIterator iterator;
 
-			materialSystem->UpdateIteratorMember(iterator, shader.BufferBufferReferencesMemberHandle);
-			
-			for (uint32 bufferIndex = 0; bufferIndex < shader.Buffers.GetLength(); ++bufferIndex) {
-				auto& buffer = shader.Buffers[bufferIndex];
-				if (!buffer.Has) {
-					if (materialSystem->DoesBufferExist(buffer.Buffer)) {
-						*materialSystem->GetMemberPointer(iterator, shader.BufferBufferReferencesMemberHandle, bufferIndex) = materialSystem->GetBufferAddress(renderSystem, buffer.Buffer);
-						buffer.Has = true;
+			for (auto& instance : shader) {
+				for (uint32 bufferIndex = 0; bufferIndex < instance.Buffers.GetLength(); ++bufferIndex) {
+					auto& buffer = instance.Buffers[bufferIndex];
+					if (!buffer.Has) {
+						if (materialSystem->DoesBufferExist(buffer.Buffer)) {
+							auto address = materialSystem->GetBufferAddress(renderSystem, buffer.Buffer);
+							materialSystem->WriteMultiBuffer(iterator, instance.BufferBufferReferencesMemberHandle, &address, bufferIndex);
+							buffer.Has = true;
+						}
 					}
 				}
 			}
@@ -1634,19 +1668,14 @@ void RenderOrchestrator::traceRays(GTSL::Extent2D rayGrid, CommandBuffer* comman
 	
 	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), pipelineData.Pipeline, PipelineType::RAY_TRACING);
 
-	auto handleSize = renderSystem->GetShaderGroupHandleSize();
-	auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
-
-	auto alignedSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupBaseAlignment());
-
 	GTSL::Array<CommandBuffer::ShaderTableDescriptor, 4> shaderTableDescriptors;
 
 	for (uint8 i = 0; i < 4; ++i)
 	{
 		CommandBuffer::ShaderTableDescriptor shaderTableDescriptor;
 
-		shaderTableDescriptor.Entries = pipelineData.ShaderGroups[i].Count;
-		shaderTableDescriptor.EntrySize = pipelineData.ShaderGroups[i].Size;
+		shaderTableDescriptor.Entries = pipelineData.ShaderGroups[i].Shaders.GetLength();
+		shaderTableDescriptor.EntrySize = pipelineData.ShaderGroups[i].RoundedEntrySize;
 		shaderTableDescriptor.Address = materialSystem->GetBufferAddress(renderSystem, pipelineData.ShaderGroups[i].Buffer);
 
 		shaderTableDescriptors.EmplaceBack(shaderTableDescriptor);
@@ -1757,7 +1786,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			switch (e.Type)
 			{
 			case MaterialResourceManager::ParameterType::UINT32: memberType = MaterialSystem::Member::DataType::UINT32; break;
-			case MaterialResourceManager::ParameterType::VEC4: memberType = MaterialSystem::Member::DataType::FVEC4; break;
+			case MaterialResourceManager::ParameterType::FVEC4: memberType = MaterialSystem::Member::DataType::FVEC4; break;
 			case MaterialResourceManager::ParameterType::TEXTURE_REFERENCE: memberType = MaterialSystem::Member::DataType::UINT32; break;
 			case MaterialResourceManager::ParameterType::BUFFER_REFERENCE: memberType = MaterialSystem::Member::DataType::UINT64; break;
 			}

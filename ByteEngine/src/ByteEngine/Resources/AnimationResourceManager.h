@@ -16,7 +16,7 @@ class AnimationResourceManager : ResourceManager
 public:
 	AnimationResourceManager() : ResourceManager("AnimationResourceManager")
 	{
-		initializePackageFiles(GetResourcePath(GTSL::StaticString<32>("Animations")));
+		initializePackageFiles(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("bepkg")));
 	}
 
 	struct Bone

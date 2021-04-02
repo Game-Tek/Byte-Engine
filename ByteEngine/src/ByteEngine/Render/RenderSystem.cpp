@@ -24,7 +24,7 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 
 	Mesh mesh; RayTracingMesh rayTracingMesh;
-	
+	mesh.CustomMeshIndex = localMesh.CustomMeshIndex;
 	mesh.VertexSize = info.VertexSize; mesh.VertexCount = info.VertexCount;	mesh.IndexSize = info.IndexSize; mesh.IndicesCount = info.IndexCount;
 	
 	{
@@ -110,9 +110,9 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 		instance.Flags = GeometryInstanceFlags::OPAQUE;
 		instance.AccelerationStructureAddress = accelerationStructureAddress;
 		instance.Mask = 0xFF;
-		instance.InstanceIndex = meshHandle();
+		instance.InstanceIndex = mesh.CustomMeshIndex;
 		instance.InstanceShaderBindingTableRecordOffset = 0;
-		instance.Transform = *info.Matrix;
+		instance.Transform = info.Matrix;
 	}
 	
 	BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
@@ -121,10 +121,10 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 	return meshHandle;
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
+RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
 {
 	Mesh mesh;
-
+	mesh.CustomMeshIndex = customIndex;
 	mesh.MaterialHandle = materialHandle;
 	mesh.VertexSize = vertexSize; mesh.VertexCount = vertexCount; mesh.IndexSize = indexSize; mesh.IndicesCount = indexCount;
 
@@ -233,7 +233,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
 	pipelinedFrames = BE::Application::Get()->GetOption("buffer");
-	pipelinedFrames = GTSL::Math::Clamp(pipelinedFrames, (uint8)2, (uint8)3);
+	pipelinedFrames = GTSL::Math::Clamp(pipelinedFrames, static_cast<uint8>(2), static_cast<uint8>(3));
 	bool rayTracing = BE::Application::Get()->GetOption("rayTracing");
 
 	{
@@ -331,7 +331,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 				AllocateLocalBufferMemory(allocationInfo);
 			}
 
-			shaderGroupAlignment = rayTracingCapabilities.ShaderGroupAlignment;
+			shaderGroupHandleAlignment = rayTracingCapabilities.ShaderGroupHandleAlignment;
 			shaderGroupHandleSize = rayTracingCapabilities.ShaderGroupHandleSize;
 			scratchBufferOffsetAlignment = rayTracingCapabilities.ScratchBuildOffsetAlignment;
 			shaderGroupBaseAlignment = rayTracingCapabilities.ShaderGroupBaseAlignment;
@@ -557,19 +557,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 
 void RenderSystem::renderStart(TaskInfo taskInfo)
 {
-	//Fence::WaitForFencesInfo waitForFencesInfo;
-	//waitForFencesInfo.RenderDevice = &renderDevice;
-	//waitForFencesInfo.Timeout = ~0ULL;
-	//waitForFencesInfo.WaitForAll = true;
-	//waitForFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
-	//Fence::WaitForFences(waitForFencesInfo);
-
 	graphicsFences[currentFrameIndex].Wait(GetRenderDevice());
-
-	//Fence::ResetFencesInfo resetFencesInfo;
-	//resetFencesInfo.RenderDevice = &renderDevice;
-	//resetFencesInfo.Fences = GTSL::Range<const Fence*>(1, &graphicsFences[currentFrameIndex]);
-	//Fence::ResetFences(resetFencesInfo);
 	
 	graphicsFences[currentFrameIndex].Reset(GetRenderDevice());
 	

@@ -168,8 +168,6 @@ public:
 		RenderAllocation Allocation;
 	};
 	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
-
-
 	
 	struct TextureCopyData
 	{
@@ -200,12 +198,12 @@ public:
 	{
 		uint32 VertexCount, VertexSize;
 		uint32 IndexCount, IndexSize;
-		GTSL::Matrix3x4* Matrix;
+		GTSL::Matrix3x4 Matrix;
 		MeshHandle SharedMesh;
 	};
 	MeshHandle CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
 	
-	MeshHandle CreateMesh(Id name, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
+	MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
 	MeshHandle UpdateMesh(MeshHandle meshHandle);
 	
@@ -234,25 +232,25 @@ public:
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
-	uint32 GetShaderGroupAlignment() const { return shaderGroupAlignment; }
+	uint32 GetShaderGroupHandleAlignment() const { return shaderGroupHandleAlignment; }
 
 	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
 
 	struct BufferAddress
 	{
-		BufferAddress(const uint64 address) : Address(address / MULTIPLIER) {}
-		BufferAddress(const void* address) : Address(reinterpret_cast<uint64>(address) / MULTIPLIER) {}
+		BufferAddress(const uint64 address) : Address(address / MULTIPLIER)
+		{
+			BE_ASSERT(address < 0xFFFFFFFF, ""); BE_ASSERT(address % MULTIPLIER == 0, "");
+		}
+		
+		BufferAddress(const void* address) : BufferAddress(reinterpret_cast<uint64>(address)) {}
+		
 		uint32 Address; static constexpr uint32 MULTIPLIER = 16;
 	};
 	
-	Buffer GetMeshVertexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
-	uint32 GetMeshVertexBufferSize(const uint32 mesh) const { return meshes[mesh].VertexSize * meshes[mesh].VertexCount; }
-	uint32 GetMeshVertexBufferOffset(const uint32 mesh) const { return 0; }
-	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(reinterpret_cast<uint64>(meshes[meshHandle()].MeshAllocation.Data)); }
-	Buffer GetMeshIndexBuffer(const uint32 mesh) const { return meshes[mesh].Buffer; }
-	uint32 GetMeshIndexBufferSize(const uint32 mesh) const { return meshes[mesh].IndexSize * meshes[mesh].IndicesCount; }
-	uint32 GetMeshIndexBufferOffset(const uint32 mesh) const { return GTSL::Math::RoundUpByPowerOf2(meshes[mesh].VertexSize * meshes[mesh].VertexCount, GetBufferSubDataAlignment()); }
-	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(reinterpret_cast<uint64>(meshes[meshHandle()].MeshAllocation.Data) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
+	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice())); }
+	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
+	
 	uint32 GetMeshIndex(MeshHandle meshHandle) { return meshHandle(); }
 	MaterialInstanceHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
 	
@@ -327,14 +325,12 @@ private:
 	{
 		Buffer Buffer;
 
-		uint8 IndexSize;
-		uint32 IndicesCount;
-		uint8 VertexSize;
-		uint32 VertexCount;
+		uint32 IndicesCount, VertexCount;
 		MaterialInstanceHandle MaterialHandle;
 		RenderAllocation MeshAllocation;
 		
-		uint32 DerivedTypeIndex;
+		uint32 DerivedTypeIndex, CustomMeshIndex;
+		uint8 IndexSize, VertexSize;
 	};
 	
 	struct RayTracingMesh
@@ -413,7 +409,7 @@ private:
 
 	Vector<PipelineCache> pipelineCaches;
 
-	uint32 shaderGroupAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
+	uint32 shaderGroupHandleAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;
 
 	struct TextureComponent

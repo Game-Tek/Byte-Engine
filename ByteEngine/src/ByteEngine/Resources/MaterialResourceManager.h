@@ -21,7 +21,7 @@ public:
 
 	enum class ParameterType : uint8
 	{
-		UINT32, VEC4,
+		UINT32, FVEC4,
 		TEXTURE_REFERENCE, BUFFER_REFERENCE
 	};
 	
@@ -215,16 +215,25 @@ public:
 		GTSL::Array<MaterialInstance, 16> MaterialInstances;
 	};
 	void CreateRasterMaterial(const RasterMaterialCreateInfo& materialCreateInfo);
-	
-	struct RayTraceMaterialCreateInfo
-	{
-		GTSL::StaticString<64> ShaderName;
-		GAL::ShaderType Type;
-		GAL::BlendOperation ColorBlendOperation;
-		GTSL::Array<GTSL::ShortString<64>, 8> Buffers;
-	};
-	void CreateRayTraceMaterial(const RayTraceMaterialCreateInfo& materialCreateInfo);
 
+	struct RayTracePipelineCreateInfo
+	{
+		struct ShaderCreateInfo
+		{
+			GTSL::ShortString<64> ShaderName;
+			GAL::ShaderType Type;
+			
+			GTSL::Array<GTSL::Array<GTSL::ShortString<64>, 8>, 16> MaterialInstances;
+		};
+
+		GTSL::Array<ShaderCreateInfo, 8> Shaders;
+
+		GTSL::Array<ParameterType, 8> Payload;
+		uint8 RecursionDepth;
+		GTSL::ShortString<64> PipelineName;
+	};
+	void CreateRayTracePipeline(const RayTracePipelineCreateInfo& pipelineCreateInfo);
+	
 	void GetMaterialSize(const Id name, uint32& size);
 
 	struct RayTracingShaderInfo
@@ -234,46 +243,49 @@ public:
 		 */
 		uint32 BinarySize;
 
+		GTSL::ShortString<64> ShaderName;
 		GAL::ShaderType ShaderType;
-		GAL::BlendOperation ColorBlendOperation;
-		GTSL::Array<GTSL::ShortString<64>, 8> Buffers;
+		GTSL::Array<GTSL::Array<GTSL::ShortString<64>, 8>, 8> MaterialInstances;
 
 		template<class ALLOC>
 		friend void Insert(const MaterialResourceManager::RayTracingShaderInfo& shaderInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
 			Insert(shaderInfo.BinarySize, buffer);
+			Insert(shaderInfo.ShaderName, buffer);
 			Insert(shaderInfo.ShaderType, buffer);
-			Insert(shaderInfo.ColorBlendOperation, buffer);
-			Insert(shaderInfo.Buffers, buffer);
+			Insert(shaderInfo.MaterialInstances, buffer);
 		}
 
 		template<class ALLOC>
 		friend void Extract(MaterialResourceManager::RayTracingShaderInfo& shaderInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
 			Extract(shaderInfo.BinarySize, buffer);
+			Extract(shaderInfo.ShaderName, buffer);
 			Extract(shaderInfo.ShaderType, buffer);
-			Extract(shaderInfo.ColorBlendOperation, buffer);
-			Extract(shaderInfo.Buffers, buffer);
+			Extract(shaderInfo.MaterialInstances, buffer);
 		}
 	};
 
-	struct RayTraceMaterialInfo
+	struct RayTracePipelineInfo
 	{
 		uint32 OffsetToBinary;
-		RayTracingShaderInfo ShaderInfo;
+		GTSL::Array<RayTracingShaderInfo, 8> Shaders;
+		uint8 RecursionDepth;
 
 		template<class ALLOC>
-		friend void Insert(const MaterialResourceManager::RayTraceMaterialInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+		friend void Insert(const MaterialResourceManager::RayTracePipelineInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
 			Insert(materialInfo.OffsetToBinary, buffer);
-			Insert(materialInfo.ShaderInfo, buffer);
+			Insert(materialInfo.Shaders, buffer);
+			Insert(materialInfo.RecursionDepth, buffer);
 		}
 
 		template<class ALLOC>
-		friend void Extract(MaterialResourceManager::RayTraceMaterialInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
+		friend void Extract(MaterialResourceManager::RayTracePipelineInfo& materialInfo, GTSL::Buffer<ALLOC>& buffer)
 		{
 			Extract(materialInfo.OffsetToBinary, buffer);
-			Extract(materialInfo.ShaderInfo, buffer);
+			Extract(materialInfo.Shaders, buffer);
+			Extract(materialInfo.RecursionDepth, buffer);
 		}
 	};
 	
@@ -358,24 +370,13 @@ public:
 		
 		gameInstance->AddDynamicTask("loadShadersFromDisk", Task<MaterialResourceManager*, GTSL::Array<ShaderInfo, 8>, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaders), GTSL::Range<TaskDependency*>(), this, GTSL::Array<ShaderInfo, 8>(shaderInfos), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
-	
-	RayTracingShaderInfo LoadRayTraceShaderSynchronous(Id id, GTSL::Range<byte*> buffer);
 
-	uint32 GetRayTraceShaderSize(Id handle) const
-	{
-		GTSL::ReadLock lock(mutex);
-		return rtMaterialInfos.At(handle).ShaderInfo.BinarySize;
-	}
-	
-	uint32 GetRayTraceShaderCount() const { return rtHandles.GetLength(); }
-	Id GetRayTraceShaderHandle(const uint32 handle) const { return rtHandles[handle]; }
+	RayTracePipelineInfo GetRayTracePipelineInfo() { return rtPipelineInfos.At("ScenePipeline"); }
+	void LoadRayTraceShadersForPipeline(const RayTracePipelineInfo& info, GTSL::Range<byte*> buffer);
 
 private:
-	
 	GTSL::File package, index;
 	GTSL::FlatHashMap<Id, RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
-	GTSL::FlatHashMap<Id, RayTraceMaterialInfo, BE::PersistentAllocatorReference> rtMaterialInfos;
+	GTSL::FlatHashMap<Id, RayTracePipelineInfo, BE::PersistentAllocatorReference> rtPipelineInfos;
 	mutable GTSL::ReadWriteMutex mutex;
-
-	GTSL::Vector<Id, BE::PAR> rtHandles;
 };

@@ -92,21 +92,21 @@ private:
 //	ComponentReference textureHandle;
 //};
 
-class TextPrimitive : public Primitive
-{
-public:
-	TextPrimitive() = default;
-
-	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
-	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
-	
-	void SetString(const GTSL::Range<const utf8*> newText) { rawString = newText; }
-	
-private:	
-	GTSL::RGBA color;
-	
-	GTSL::String<BE::PAR> rawString;
-};
+//class TextPrimitive : public Primitive
+//{
+//public:
+//	TextPrimitive() = default;
+//
+//	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
+//	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
+//	
+//	void SetString(const GTSL::Range<const utf8*> newText) { rawString = newText; }
+//	
+//private:	
+//	GTSL::RGBA color;
+//	
+//	GTSL::String<BE::PAR> rawString;
+//};
 
 class Canvas : public Object
 {

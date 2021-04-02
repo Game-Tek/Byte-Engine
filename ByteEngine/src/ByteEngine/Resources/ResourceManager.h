@@ -22,7 +22,7 @@ public:
 
 	ResourceManager(const utf8* name) : Object(name) {}
 	
-	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName);
+	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	
 	struct ResourceLoadInfo
 	{

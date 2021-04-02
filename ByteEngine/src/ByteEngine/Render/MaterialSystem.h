@@ -34,7 +34,7 @@ MAKE_HANDLE(SubSetDescription, SubSet)
 
 template<typename T>
 struct MemberHandle
-{
+{	
 	uint32 BufferIndex = 0, MemberIndirectionIndex = 0;
 };
 
@@ -50,7 +50,8 @@ public:
 	{
 		enum class DataType : uint8
 		{
-			FLOAT32, INT32, UINT32, UINT64, MATRIX4, MATRIX3X4, FVEC4, FVEC2, STRUCT, PAD
+			FLOAT32, INT32, UINT32, UINT64, MATRIX4, MATRIX3X4, FVEC4, FVEC2, STRUCT, PAD,
+			SHADER_HANDLE
 		};
 
 		Member() = default;
@@ -89,8 +90,13 @@ public:
 	bool DoesBufferExist(const Id buffer) const { return buffersByName.Find(buffer); }
 
 	struct BufferIterator {
+		BufferIterator()
+		{
+			Levels.EmplaceBack(0);
+		}
+		
 		GTSL::Array<uint32, 16> Levels;
-		uint32 ByteOffset = 0; uint32 BufferIndex = 0, MemberIndirectionIndex = 0;
+		uint32 ByteOffset = 0;
 	};
 
 	template<typename T>
@@ -98,7 +104,7 @@ public:
 	{
 		//static_assert(T != (void*), "Type can not be struct.");
 		
-		auto& bufferData = buffers[iterator.BufferIndex];
+		auto& bufferData = buffers[memberHandle.BufferIndex];
 		auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
 		BE_ASSERT(i < member.Count, "Requested sub set buffer member index greater than allocated instances count.")
 		
@@ -109,9 +115,20 @@ public:
 	template<typename T>
 	void WriteMultiBuffer(BufferIterator& iterator, MemberHandle<T> memberHandle, T* data, uint32 i = 0)
 	{
-		auto& bufferData = buffers[iterator.BufferIndex]; auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
+		auto& bufferData = buffers[memberHandle.BufferIndex]; auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
 		for(uint8 f = 0; f < queuedFrames; ++f) {
 			*reinterpret_cast<T*>(static_cast<byte*>(bufferData.RenderAllocations[f].Data) + iterator.ByteOffset + member.ByteOffsetIntoStruct + member.Size * i) = *data;
+		}
+	}
+
+	template<>
+	void WriteMultiBuffer(BufferIterator& iterator, MemberHandle<GAL::ShaderHandle> memberHandle, GAL::ShaderHandle* data, uint32 i)
+	{
+		auto& bufferData = buffers[memberHandle.BufferIndex]; auto& member = bufferData.MemberData[memberHandle.MemberIndirectionIndex];
+		for(uint8 f = 0; f < queuedFrames; ++f) {
+			for (uint8 t = 0; t < data->AlignedSize / 4; ++t) {
+				reinterpret_cast<uint32*>(static_cast<byte*>(bufferData.RenderAllocations[f].Data) + iterator.ByteOffset + member.ByteOffsetIntoStruct)[t] = static_cast<uint32*>(data->Data)[t];
+			}
 		}
 	}
 	
@@ -134,6 +151,7 @@ public:
 		MemberInfo(MemberHandle<RenderSystem::BufferAddress>* memberHandle, const uint32 count) : Member(count, Member::DataType::UINT32), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<GTSL::Matrix4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX4), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count) : Member(count, Member::DataType::MATRIX3X4), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GAL::ShaderHandle>* memberHandle, const uint32 count) : Member(count, Member::DataType::SHADER_HANDLE), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<void*>* memberHandle, const uint32 count, GTSL::Range<MemberInfo*> memberInfos) : Member(count, Member::DataType::STRUCT), Handle(memberHandle), MemberInfos(memberInfos) {}
 		
 		void* Handle = nullptr;
@@ -219,8 +237,7 @@ public:
 	 * \param iterator BufferIterator object to update.
 	 * \param member MemberHandle that refers to the struct that we want the iterator to point to.
 	 */
-	template<typename T>
-	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle<T> member, const uint32 index = 0)
+	void UpdateIteratorMember(BufferIterator& iterator, MemberHandle<void*> member, const uint32 index = 0)
 	{
 		//static_assert(T == (void*), "Type can only be struct!");
 		
@@ -234,7 +251,6 @@ public:
 			iterator.Levels.PopBack();
 		}
 		
-		iterator.BufferIndex = member.BufferIndex; iterator.MemberIndirectionIndex = member.MemberIndirectionIndex;
 		int32 shiftedElements = index - iterator.Levels.back();
 		
 		iterator.Levels.back() = index;
@@ -256,6 +272,10 @@ private:
 		case MaterialSystem::Member::DataType::FVEC4: return 4 * 4;
 		case MaterialSystem::Member::DataType::INT32: return 4;
 		case MaterialSystem::Member::DataType::FVEC2: return 4 * 2;
+		case MaterialSystem::Member::DataType::SHADER_HANDLE:
+		{
+			if constexpr (API == GAL::RenderAPI::VULKAN) { return 32; } //aligned size
+		}
 		default: BE_ASSERT(false, "Unknown value!")
 		}
 	}

@@ -291,8 +291,7 @@ private:
 	{
 		struct ShaderGroupData
 		{
-			uint32 Count = 0, Size = 0;
-			GAL::VulkanDeviceAddress Address;
+			uint32 RoundedEntrySize = 0;
 			BufferHandle Buffer;
 
 			struct ShaderRegisterData
@@ -303,11 +302,11 @@ private:
 				};
 				GTSL::Array<BufferPatchData, 8> Buffers;
 				
-				MemberHandle<uint32> ShaderHandle;
+				MemberHandle<GAL::ShaderHandle> ShaderHandle;
 				MemberHandle<RenderSystem::BufferAddress> BufferBufferReferencesMemberHandle;
 			};
 			
-			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
+			GTSL::Vector<GTSL::Array<ShaderRegisterData, 8>, BE::PAR> Shaders;
 		} ShaderGroups[4];
 
 		RayTracingPipeline Pipeline;

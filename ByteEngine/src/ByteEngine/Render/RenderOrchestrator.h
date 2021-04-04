@@ -99,7 +99,17 @@ public:
 	[[nodiscard]] MaterialInstanceHandle CreateMaterial(const CreateMaterialInfo& info);
 	[[nodiscard]] MaterialInstanceHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 
-	MaterialInstanceHandle GetMaterialHandle(Id name) { return name; }
+	MaterialInstanceHandle GetMaterialHandle(Id name)
+	{
+		auto searchResult = materialsByName.TryEmplace(name);
+
+		if (searchResult.State()) {
+			return {};
+		}
+		else {
+			return searchResult.Get();
+		}
+	}
 	
 	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
 	{
@@ -160,7 +170,12 @@ public:
 
 	MAKE_HANDLE(uint8, IndexStream)
 	
-	IndexStreamHandle AddIndexStream() { return IndexStreamHandle(renderState.IndexStreams.EmplaceBack(0)); }
+	IndexStreamHandle AddIndexStream()
+	{
+		auto index = renderState.IndexStreams.GetLength();
+		renderState.IndexStreams.EmplaceBack(0);
+		return IndexStreamHandle(index);
+	}
 	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
 	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 value);
 	void PopIndexStream(IndexStreamHandle indexStreamHandle) { renderState.IndexStreams[indexStreamHandle()] = 0; renderState.IndexStreams.PopBack(); }
@@ -168,8 +183,6 @@ public:
 	void BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer);
 
 	void PopData() { renderState.Offset -= 4; }
-
-	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialHandle materialHandle);
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
@@ -294,19 +307,24 @@ private:
 			uint32 RoundedEntrySize = 0;
 			BufferHandle Buffer;
 
+			MemberHandle<void*> EntryHandle;
+			MemberHandle<GAL::ShaderHandle> ShaderHandle;
+			MemberHandle<RenderSystem::BufferAddress> BufferBufferReferencesMemberHandle;
+			
 			struct ShaderRegisterData
 			{
-				struct BufferPatchData {
-					Id Buffer;
-					bool Has = false;
+				struct Instance {
+					struct BufferPatchData {
+						Id Buffer;
+						bool Has = false;
+					};
+					GTSL::Array<BufferPatchData, 8> Buffers;
 				};
-				GTSL::Array<BufferPatchData, 8> Buffers;
-				
-				MemberHandle<GAL::ShaderHandle> ShaderHandle;
-				MemberHandle<RenderSystem::BufferAddress> BufferBufferReferencesMemberHandle;
+
+				GTSL::Array<Instance, 8> Instances;
 			};
 			
-			GTSL::Vector<GTSL::Array<ShaderRegisterData, 8>, BE::PAR> Shaders;
+			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
 		} ShaderGroups[4];
 
 		RayTracingPipeline Pipeline;
@@ -343,29 +361,9 @@ private:
 		TextureResourceManager* TextureResourceManager;
 	};
 	void onMaterialLoaded(TaskInfo taskInfo, MaterialResourceManager::OnMaterialLoadInfo onMaterialLoadInfo);
-	
-	struct MaterialData
-	{
-		MaterialHandle Name;
-
-		GTSL::Vector<GTSL::Pair<uint32, uint32>, BE::PAR> MaterialInstances;
-
-		RasterizationPipeline Pipeline;
-		Id RenderGroup;
-		uint32 InstanceCount = 0;
-
-		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
-
-		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
-		MemberHandle<void*> MaterialInstancesMemberHandle;
-	};
-	GTSL::KeepVector<MaterialData, BE::PAR> materials;
-	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterials;
 
 	struct MaterialInstanceData
 	{
-		MaterialInstanceHandle Name;
-
 		uint32 Material = 0;
 		uint8 Counter = 0, Target = 0;
 
@@ -374,13 +372,33 @@ private:
 			RenderSystem::MeshHandle Handle;
 			uint32 InstanceCount = 0, InstanceIndex = 0;
 		};
-		
+
 		GTSL::Vector<MeshData, BE::PAR> Meshes;
 	};
-	GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
-	GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterialInstances;
-	GTSL::FlatHashMap<Id, MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
-	GTSL::FlatHashMap<Id, uint32, BE::PAR> materialInstancesByName;
+	
+	struct MaterialData
+	{
+		Id Name;
+		
+		GTSL::Vector<MaterialInstanceData, BE::PAR> MaterialInstances;
+
+		RasterizationPipeline Pipeline;
+		Id RenderGroup;
+
+		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
+
+		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
+		MemberHandle<void*> MaterialInstancesMemberHandle;
+		BufferHandle BufferHandle;
+	};
+	GTSL::KeepVector<MaterialData, BE::PAR> materials;
+	GTSL::FlatHashMap<Id, MaterialInstanceHandle, BE::PAR> materialsByName;
+	
+	//GTSL::KeepVector<MaterialInstanceData, BE::PAR> materialInstances;
+	//GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterials;
+	//GTSL::FlatHashMap<Id, uint32, BE::PAR> loadedMaterialInstances;
+	//GTSL::FlatHashMap<Id, MaterialInstanceData, BE::PAR> awaitingMaterialInstances;
+	//GTSL::FlatHashMap<Id, uint32, BE::PAR> materialInstancesByName;
 
 	struct TextureLoadInfo
 	{
@@ -459,4 +477,6 @@ private:
 		for (auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } }
 	}
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
+
+	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialData& materialHandle);
 };

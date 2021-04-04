@@ -206,7 +206,7 @@ bool Game::Initialize()
 	
 	//show loading screen
 	//load menu
-	//show menu//
+	//show menu/
 	//start game
 
 	return true;
@@ -300,19 +300,21 @@ void Game::PostInitialize()
 	//		
 	//		++audioFormatIndex;
 	//	}
-	//
+	////
 	//	uint32 t = 0;
 	//}
 	
-	//{
-	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "TV";
-	//	addStaticMeshInfo.Material = tvMaterialInstance;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	//}
+	{
+		tvMaterialInstance.MaterialInstanceIndex = 1;
+		
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "TV";
+		addStaticMeshInfo.Material = tvMaterialInstance;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	}
 
 	
 	//{
@@ -354,7 +356,7 @@ void Game::PostInitialize()
 	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
 	//}
 	
-	//{
+	//{//
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -403,8 +405,6 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
-
-	renderSystem->UpdateInstanceTransform(0, GTSL::Matrix4(hydrantPos));
 }
 
 void Game::Shutdown()

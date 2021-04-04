@@ -139,7 +139,6 @@
     <ClInclude Include="src\ByteEngine\Render\UIManager.h" />
     <ClInclude Include="src\ByteEngine\Handle.hpp" />
     <ClInclude Include="src\ByteEngine\Resources\AnimationResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Render\RenderState.h" />
     <ClInclude Include="src\ByteEngine\Render\Culling.h" />
     <ClInclude Include="src\ByteEngine\fpfParser.h" />
     <ClInclude Include="src\ByteEngine\Animation\AnimationSystem.h" />

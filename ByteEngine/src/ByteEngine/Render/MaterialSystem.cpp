@@ -325,31 +325,6 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 	return BufferHandle(bufferIndex);
 }
 
-void MaterialSystem::SetDynamicMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
-{
-	//auto& mat = materials[material.MaterialInstance];
-	//
-	//auto* matData = static_cast<byte*>(setsBufferData[mat.Set()].Allocations[frame].Data) + mat.DataSize * material.MaterialInstance;
-	//
-	////TODO: DEFER WRITING TO NOT OVERWRITE RUNNING FRAME
-	//byte* FILL = matData + mat.DynamicParameters.At(parameterName);
-	//GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
-	//FILL += GTSL::Math::RoundUpByPowerOf2(mat.DataSize, static_cast<uint32>(minUniformBufferOffset));
-	//GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
-}
-
-void MaterialSystem::SetMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data)
-{
-	//auto& mat = materials[material.MaterialInstance];
-	//
-	//auto* matData = static_cast<byte*>(mat.Allocation.Data) + mat.TextureParametersBindings.DataSize * material.MaterialInstance;
-	//
-	//byte* FILL = matData + mat.Parameters.At(parameterName);
-	//GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
-	//FILL += GTSL::Math::RoundUpByPowerOf2(mat.TextureParametersBindings.DataSize, static_cast<uint32>(minUniformBufferOffset));
-	//GTSL::MemCopy(ShaderDataTypesSize(type), data, FILL);
-}
-
 void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
 {
 	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), Pipeline(), PipelineType::COMPUTE);

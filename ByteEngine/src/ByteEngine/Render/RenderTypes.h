@@ -18,6 +18,10 @@
 #include <GAL/Vulkan/VulkanSynchronization.h>
 #include <GAL/Vulkan/VulkanAccelerationStructures.h>
 
+struct MaterialInstanceHandle {
+	uint32 MaterialIndex, MaterialInstanceIndex;
+};
+
 /**
  * \brief Defines the maximum number of frames that can be processed concurrently in the CPU and GPU.
  * This might be used to define the number of resources to allocate for those resources that don't allow concurrent use.

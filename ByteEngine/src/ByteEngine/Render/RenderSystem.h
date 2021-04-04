@@ -17,8 +17,6 @@ namespace GTSL {
 	class Window;
 }
 
-using MaterialInstanceHandle = Id;
-
 class RenderSystem : public System
 {
 public:

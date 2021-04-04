@@ -111,7 +111,7 @@ RenderSystem::MeshHandle RenderSystem::CreateRayTracedMesh(const CreateRayTracin
 		instance.AccelerationStructureAddress = accelerationStructureAddress;
 		instance.Mask = 0xFF;
 		instance.InstanceIndex = mesh.CustomMeshIndex;
-		instance.InstanceShaderBindingTableRecordOffset = 0;
+		instance.InstanceShaderBindingTableRecordOffset = (shaderGroupHandleAlignment + 8) * mesh.MaterialHandle.MaterialInstanceIndex;
 		instance.Transform = info.Matrix;
 	}
 	
@@ -1043,7 +1043,7 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 	{
 	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
-	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); GAL_DEBUG_BREAK; break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); /*GAL_DEBUG_BREAK;*/ break;
 	default: break;
 	}
 }

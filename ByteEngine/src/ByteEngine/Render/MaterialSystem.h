@@ -20,9 +20,6 @@
 class TextureResourceManager;
 struct TaskInfo;
 
-using MaterialInstanceHandle = Id;
-using MaterialHandle = Id;
-
 MAKE_HANDLE(uint32, Set)
 
 struct SubSetDescription
@@ -220,17 +217,9 @@ public:
 		uint32 DataSize = 0;
 	};
 
-	static auto GetOnMaterialLoadEventHandle() { return EventHandle<MaterialHandle>("OnMaterialLoad"); }
-	static auto GetOnMaterialInstanceLoadEventHandle() { return EventHandle<MaterialHandle, MaterialInstanceHandle>("OnMaterialInstanceLoad"); }
-	
-	void SetDynamicMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
-	void SetMaterialParameter(const MaterialInstanceHandle material, GAL::ShaderDataType type, Id parameterName, void* data);
-
 	void Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem);
 
 	uint32 CreateComputePipeline(Id materialName, MaterialResourceManager* materialResourceManager, GameInstance* gameInstance);
-	
-	void SetRayGenMaterial(Id rayGen) { rayGenMaterial = rayGen; }
 	
 	/**
 	 * \brief Updates the iterator hierarchy level to index the specified member.
@@ -279,8 +268,6 @@ private:
 		default: BE_ASSERT(false, "Unknown value!")
 		}
 	}
-	
-	Id rayGenMaterial;
 
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
@@ -418,8 +405,6 @@ private:
 		PipelineLayout PipelineLayout;
 	};
 	GTSL::FlatHashMap<Id, SetLayoutData, BE::PAR> setLayoutDatas;
-	
-	void createBuffers(RenderSystem* renderSystem, const uint32 bufferSet);
 	
 	uint8 frame;
 	uint8 queuedFrames = 2;

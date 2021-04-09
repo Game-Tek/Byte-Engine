@@ -314,7 +314,7 @@ public:
 	{
 		GTSL::Delegate<void(TaskInfo, OnMaterialLoadInfo)> OnMaterialLoad;
 	};
-	void LoadMaterial(const MaterialLoadInfo& loadInfo);
+	OnMaterialLoadInfo LoadMaterial(const MaterialLoadInfo& loadInfo);
 
 	struct ShaderInfo
 	{

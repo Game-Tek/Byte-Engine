@@ -38,37 +38,37 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 {
 	uint32 index = positions.Emplace();
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
-	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, addStaticMeshInfo.Material));
 
+	auto meshHandle = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, index, addStaticMeshInfo.Material);
+
+	if (BE::Application::Get()->GetOption("rayTracing"))
+	{
+		addStaticMeshInfo.RenderSystem->CreateRayTracedMesh(meshHandle);
+	}
+	
 	++staticMeshCount;
+	
+	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, meshHandle));
 	
 	return StaticMeshHandle(index);
 }
 
 void StaticMeshRenderGroup::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad)
 {
-	meshLoad.MeshHandle = meshLoad.RenderSystem->CreateMesh(staticMeshInfo.Name, meshLoad.InstanceId, staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize, meshLoad.Material);
+	meshLoad.RenderSystem->UpdateMesh(meshLoad.MeshHandle, staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize);
 
 	staticMeshResourceManager->LoadStaticMesh(taskInfo.GameInstance, staticMeshInfo, meshLoad.RenderSystem->GetBufferSubDataAlignment(), GTSL::Range<byte*>(meshLoad.RenderSystem->GetMeshSize(meshLoad.MeshHandle), meshLoad.RenderSystem->GetMeshPointer(meshLoad.MeshHandle)), onStaticMeshLoadHandle, GTSL::MoveRef(meshLoad));
 }
 
 void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo)
 {
-	auto meshHandle = meshLoadInfo.RenderSystem->UpdateMesh(meshLoadInfo.MeshHandle);
+	meshLoadInfo.RenderSystem->UpdateMesh(meshLoadInfo.MeshHandle);
 
-	if(BE::Application::Get()->GetOption("rayTracing"))
+	if (BE::Application::Get()->GetOption("rayTracing"))
 	{
-		RenderSystem::CreateRayTracingMeshInfo meshInfo;
-		meshInfo.SharedMesh = meshLoadInfo.MeshHandle;
-		meshInfo.VertexCount = staticMeshInfo.VertexCount;
-		meshInfo.VertexSize = staticMeshInfo.VertexSize;
-		meshInfo.IndexCount = staticMeshInfo.IndexCount;
-		meshInfo.IndexSize = staticMeshInfo.IndexSize;
-		meshInfo.Matrix = GTSL::Matrix3x4(1.0f);
-
-		auto meshHandle = meshLoadInfo.RenderSystem->CreateRayTracedMesh(meshInfo);
+		meshLoadInfo.RenderSystem->UpdateRayTraceMesh(meshLoadInfo.MeshHandle);
 	}
-	
-	meshes.EmplaceAt(meshLoadInfo.InstanceId, meshHandle);
-	addedMeshes.EmplaceBack(meshHandle, meshLoadInfo.InstanceId);
+
+	meshes.EmplaceAt(meshLoadInfo.InstanceId, meshLoadInfo.MeshHandle);
+	addedMeshes.EmplaceBack(meshLoadInfo.MeshHandle, meshLoadInfo.InstanceId);
 }

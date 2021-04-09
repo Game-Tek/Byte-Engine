@@ -8,6 +8,7 @@
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/MaterialSystem.h"
+#include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Sound/AudioSystem.h"
 
@@ -24,7 +25,6 @@ class Game final : public GameApplication
 	CameraSystem::CameraHandle camera;
 	StaticMeshHandle hydrant;
 	StaticMeshHandle tv;
-	MaterialInstanceHandle material;
 	MaterialInstanceHandle textMaterial;
 	MaterialInstanceHandle tvMat;
 	MaterialInstanceHandle buttonMaterial;
@@ -32,7 +32,9 @@ class Game final : public GameApplication
 	AudioListenerHandle audioListener;
 
 	bool shouldFire = false;
-	
+	MaterialInstanceHandle hydrantMaterialInstance;
+	MaterialInstanceHandle tvMaterialInstance;
+
 	void leftClick(InputManager::ActionInputEvent data);
 	void moveLeft(InputManager::ActionInputEvent data);
 	void moveForward(InputManager::ActionInputEvent data);

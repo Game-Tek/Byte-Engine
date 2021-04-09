@@ -30,12 +30,6 @@ public:
 
 	MAKE_HANDLE(uint32, Texture);
 	
-	void UpdateInstanceTransform(const uint32 i, const GTSL::Matrix4& matrix4)
-	{
-		auto& instance = *(static_cast<AccelerationStructure::Instance*>(instancesAllocation[GetCurrentFrame()].Data) + i);
-		instance.Transform = GTSL::Matrix3x4(matrix4);
-	}
-	
 	void AllocateLocalTextureMemory(uint32 size, Texture* texture, Texture::CreateInfo& createInfo, RenderAllocation* allocation)
 	{	
 		Texture::GetMemoryRequirementsInfo memoryRequirements;
@@ -192,26 +186,27 @@ public:
 
 	MAKE_HANDLE(uint32, Mesh)
 	
-	struct CreateRayTracingMeshInfo
-	{
-		uint32 VertexCount, VertexSize;
-		uint32 IndexCount, IndexSize;
-		GTSL::Matrix3x4 Matrix;
-		MeshHandle SharedMesh;
-	};
-	MeshHandle CreateRayTracedMesh(const CreateRayTracingMeshInfo& info);
+	void CreateRayTracedMesh(const MeshHandle meshHandle);
 	
+	MeshHandle CreateMesh(Id name, uint32 customIndex, const MaterialInstanceHandle materialInstanceHandle);
 	MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
-	MeshHandle UpdateMesh(MeshHandle meshHandle);
+	void UpdateRayTraceMesh(const MeshHandle meshHandle);
+	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
+	void UpdateMesh(MeshHandle meshHandle);
 	
 	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
 
 	byte* GetMeshPointer(MeshHandle sharedMesh) const
 	{
 		const auto& mesh = meshes[sharedMesh()];
-		BE_ASSERT(mesh.MeshAllocation.Data, "This mesh has no CPU accessible data!");
-		return static_cast<byte*>(mesh.MeshAllocation.Data);
+
+		if (needsStagingBuffer) {
+			return static_cast<byte*>(mesh.StagingAllocation.Data);
+		}
+		else {
+			return static_cast<byte*>(mesh.Allocation.Data);
+		}
 	}
 
 	uint32 GetMeshSize(MeshHandle meshHandle) const
@@ -224,7 +219,8 @@ public:
 	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
-	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix4& matrix);
+	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix3x4& matrix);
+	void SetMeshOffset(const MeshHandle meshHandle, const uint32 offset);
 	
 	void OnResize(GTSL::Extent2D extent) { renderArea = extent; }
 
@@ -249,11 +245,7 @@ public:
 	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice())); }
 	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
 	
-	uint32 GetMeshIndex(MeshHandle meshHandle) { return meshHandle(); }
-	MaterialInstanceHandle GetMeshMaterialHandle(uint32 meshHandle) { return meshes[meshHandle].MaterialHandle; }
-	
-	auto GetAddedMeshes() const { return addedMeshes.GetRange(); }
-	void ClearAddedMeshes() { return addedMeshes.ResizeDown(0); }
+	MaterialInstanceHandle GetMeshMaterialHandle(MeshHandle meshHandle) { return meshes[meshHandle()].MaterialHandle; }
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 
@@ -311,8 +303,6 @@ private:
 	 */
 	uint32 rayTracingInstancesCount = 0;
 	
-	GTSL::Vector<uint32, BE::PAR> addedMeshes;
-	
 	Queue graphicsQueue;
 	Queue transferQueue;
 	
@@ -321,11 +311,11 @@ private:
 
 	struct Mesh
 	{
-		Buffer Buffer;
+		Buffer Buffer, StagingBuffer;
 
 		uint32 IndicesCount, VertexCount;
 		MaterialInstanceHandle MaterialHandle;
-		RenderAllocation MeshAllocation;
+		RenderAllocation Allocation, StagingAllocation;
 		
 		uint32 DerivedTypeIndex, CustomMeshIndex;
 		uint8 IndexSize, VertexSize;
@@ -341,11 +331,11 @@ private:
 	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	MeshHandle addMesh(Mesh mesh)
-	{
-		MeshHandle meshHandle{ meshes.Emplace(mesh) }; addedMeshes.EmplaceBack(meshHandle());
-		return meshHandle;
-	}
+	//MeshHandle addMesh(Mesh mesh)
+	//{
+	//	MeshHandle meshHandle{ meshes.Emplace(mesh) };
+	//	return meshHandle;
+	//}
 	
 	struct AccelerationStructureBuildData
 	{
@@ -353,11 +343,11 @@ private:
 		AccelerationStructure Destination;
 		uint32 BuildFlags = 0;
 	};
-	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas;
-	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries;
+	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas[MAX_CONCURRENT_FRAMES];
+	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
 
-	RenderAllocation scratchBufferAllocation;
-	Buffer accelerationStructureScratchBuffer;
+	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
+	Buffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
 
 	AccelerationStructure topLevelAccelerationStructure[MAX_CONCURRENT_FRAMES];
 	RenderAllocation topLevelAccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];

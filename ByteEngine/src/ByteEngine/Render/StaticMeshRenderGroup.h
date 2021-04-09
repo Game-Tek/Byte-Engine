@@ -18,6 +18,7 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	GTSL::Matrix4 GetMeshTransform(uint32 index) { return GTSL::Matrix4(positions[index]); }
 
 	struct AddStaticMeshInfo
 	{
@@ -46,14 +47,13 @@ public:
 private:
 	struct MeshLoadInfo
 	{
-		MeshLoadInfo(RenderSystem* renderDevice, uint32 instance, MaterialInstanceHandle material) : RenderSystem(renderDevice), InstanceId(instance), Material(material)
+		MeshLoadInfo(RenderSystem* renderDevice, uint32 instance, RenderSystem::MeshHandle meshHandle) : RenderSystem(renderDevice), InstanceId(instance), MeshHandle(meshHandle)
 		{
 		}
 		
 		RenderSystem* RenderSystem;
 		RenderSystem::MeshHandle MeshHandle;
 		uint32 InstanceId;
-		MaterialInstanceHandle Material;
 	};
 	
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad);

@@ -45,5 +45,4 @@ private:
 };
 
 #define MAKE_HANDLE(type, name)\
-	struct name##_tag{};\
-	using name##Handle = Handle<type, name##_tag>;
+	using name##Handle = Handle<type, struct name##_tag>;

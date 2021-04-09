@@ -193,7 +193,7 @@ void MaterialResourceManager::GetMaterialSize(const Id name, uint32& size)
 	for(auto& e : rasterMaterialInfos.At(name).ShaderSizes) { size += e; }
 }
 
-void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
+MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 {
 	auto materialInfo = rasterMaterialInfos.At(loadInfo.Name);
 
@@ -227,9 +227,13 @@ void MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
 	onMaterialLoadInfo.MaterialInstances = materialInfo.MaterialInstances;
+
+	auto tt = onMaterialLoadInfo; //copy because MoveRef into dynamic task removes contents
 	
 	auto functionName = GTSL::StaticString<64>("Load Material: "); functionName += loadInfo.Name();
 	loadInfo.GameInstance->AddDynamicTask(Id(functionName.begin()), loadInfo.OnMaterialLoad, loadInfo.ActsOn, GTSL::MoveRef(onMaterialLoadInfo));
+
+	return tt;
 }
 
 void MaterialResourceManager::LoadRayTraceShadersForPipeline(const RayTracePipelineInfo& info, GTSL::Range<byte*> buffer)

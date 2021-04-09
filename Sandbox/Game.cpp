@@ -237,7 +237,19 @@ void Game::PostInitialize()
 		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 		createMaterialInfo.MaterialName = "HydrantMat";
-		material = renderOrchestrator->CreateMaterial(createMaterialInfo);
+		createMaterialInfo.InstanceName = "hydrantMat";
+		hydrantMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
+	}
+
+	{
+		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = renderSystem;
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "HydrantMat";
+		createMaterialInfo.InstanceName = "tvMat";
+		tvMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
 	}
 
 	audioEmitter = audioSystem->CreateAudioEmitter();
@@ -245,9 +257,6 @@ void Game::PostInitialize()
 	audioSystem->SetAudioListener(audioListener);
 	audioSystem->BindAudio(audioEmitter, "gunshot");
 	//audioSystem->SetLooping(audioEmitter, true);
-
-	auto hydrantMaterialInstance = renderOrchestrator->GetMaterialHandle("hydrantMat");
-	auto tvMaterialInstance = renderOrchestrator->GetMaterialHandle("tvMat");
 	
 	{
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -300,13 +309,11 @@ void Game::PostInitialize()
 	//		
 	//		++audioFormatIndex;
 	//	}
-	////
+	//
 	//	uint32 t = 0;
 	//}
 	
-	{
-		tvMaterialInstance.MaterialInstanceIndex = 1;
-		
+	{		
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 		addStaticMeshInfo.MeshName = "TV";
 		addStaticMeshInfo.Material = tvMaterialInstance;
@@ -356,7 +363,7 @@ void Game::PostInitialize()
 	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
 	//}
 	
-	//{//
+	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
@@ -404,7 +411,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25, 250);
 	
 	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
+	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
 }
 
 void Game::Shutdown()

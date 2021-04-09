@@ -147,20 +147,28 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 	{
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> subSetDescriptors;
 
+		
 		for (auto e : members)
 		{
+			uint32 shaderStage = ShaderStage::ALL, bindingFlags = 0;
+			
 			BindingType bindingType;
 
+			if (e.BindingsCount != 1) { bindingFlags = BindingFlags::PARTIALLY_BOUND; }
+			
 			switch (e.SubSetType)
 			{
 			case SubSetType::BUFFER: bindingType = BindingType::STORAGE_BUFFER; break;
 			case SubSetType::READ_TEXTURES: bindingType = BindingType::COMBINED_IMAGE_SAMPLER; break;
 			case SubSetType::WRITE_TEXTURES: bindingType = BindingType::STORAGE_IMAGE; break;
 			case SubSetType::RENDER_ATTACHMENT: bindingType = BindingType::INPUT_ATTACHMENT; break;
-			case SubSetType::ACCELERATION_STRUCTURE: bindingType = BindingType::ACCELERATION_STRUCTURE; break;
+			case SubSetType::ACCELERATION_STRUCTURE: 
+				bindingType = BindingType::ACCELERATION_STRUCTURE;
+				shaderStage = ShaderStage::RAY_GEN;
+				break;
 			}
 
-			subSetDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, ShaderStage::ALL, e.BindingsCount, BindingFlags::PARTIALLY_BOUND });
+			subSetDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, shaderStage, e.BindingsCount, bindingFlags });
 		}
 		
 		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;

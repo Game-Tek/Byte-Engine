@@ -15,56 +15,51 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	bufferMemoryBlocks.EmplaceBack();
 	//textureMemoryBlocks.EmplaceBack();
 
-	Buffer::CreateInfo buffer_create_info;
-	buffer_create_info.RenderDevice = &renderDevice;
-	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE;
-	Buffer scratch_buffer;
+	Buffer scratchBuffer;
+	
+	GAL::MemoryRequirements memory_requirements;
+	scratchBuffer.GetMemoryRequirements(&renderDevice, 1024,
+		BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE,
+		&memory_requirements);
 
-	Buffer::GetMemoryRequirementsInfo memory_requirements;
-	memory_requirements.CreateInfo = &buffer_create_info;
-	memory_requirements.RenderDevice = &renderDevice;
-	scratch_buffer.GetMemoryRequirements(&memory_requirements);
-
-	bufferMemoryType = memory_requirements.MemoryRequirements.MemoryTypes;
+	bufferMemoryType = memory_requirements.MemoryTypes;
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT, allocatorReference);
 
-	bufferMemoryAlignment = memory_requirements.MemoryRequirements.Alignment;
+	bufferMemoryAlignment = memory_requirements.Alignment;
 	
-	scratch_buffer.Destroy(&renderDevice);
+	scratchBuffer.Destroy(&renderDevice);
 
 	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
 
-void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
+void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
 {
-	BE_ASSERT(renderAllocation->Size > 0 && renderAllocation->Size <= ALLOCATION_SIZE, "Invalid size!")
+	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE, "Invalid size!")
 	
-	AllocID allocationId;
-	
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size/* + ((!SINGLE_ALLOC) * 1000000)*/, granularity);
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
 
+	renderAllocation->AllocationId = allocations.GetLength();
+	auto& allocation = allocations.EmplaceBack();
+	
 	if constexpr (!SINGLE_ALLOC)
 	{
 		for (auto& e : bufferMemoryBlocks)
 		{
-			if (e.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo))
+			if (e.TryAllocate(deviceMemory, alignedSize, allocation, &renderAllocation->Data))
 			{
-				renderAllocation->Size = alignedSize;
-				renderAllocation->AllocationId = allocationId;
-
+				allocation.Size = alignedSize;
+				*offset = allocation.Offset;
 				//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
-
 				return;
 			}
 
-			++allocationId.Index;
+			++allocation.BlockIndex;
 		}
 
 		bufferMemoryBlocks.EmplaceBack();
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT, allocatorReference);
-		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, &renderAllocation->Data, allocationId.BlockInfo);
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &renderAllocation->Data);
 	}
 	else
 	{
@@ -83,8 +78,7 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 		renderAllocation->Data = deviceMemory->Map(map_info);
 	}
 	
-	renderAllocation->Size = alignedSize;
-	renderAllocation->AllocationId = allocationId;
+	allocation.Size = alignedSize;
 
 	//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset)
 }
@@ -129,7 +123,7 @@ void MemoryBlock::Free(const RenderDevice& renderDevice, const BE::PersistentAll
 	deviceMemory.Destroy(&renderDevice);
 }
 
-bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
+bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, AllocationInfo& allocationInfo, void** data)
 {
 	uint32 i = 0;
 	
@@ -138,7 +132,7 @@ bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uin
 		if (e.Size >= size)
 		{
 			*data = static_cast<byte*>(mappedMemory) + e.Offset;
-			*offset = e.Offset;
+			allocationInfo.Offset = e.Offset;
 			*deviceMemory = this->deviceMemory;
 			
 			if (e.Size == size)
@@ -159,17 +153,17 @@ bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, uin
 	return false;
 }
 
-void MemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, uint32* offset, void** data, uint32& id)
+void MemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, AllocationInfo& allocationInfo, void** data)
 {
 	*data = static_cast<byte*>(mappedMemory) + freeSpaces[0].Offset;
-	*offset = freeSpaces[0].Offset;
+	allocationInfo.Offset = freeSpaces[0].Offset;
 	*deviceMemory = this->deviceMemory;
 
 	freeSpaces[0].Size -= size;
 	freeSpaces[0].Offset += size;
 }
 
-void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
+void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, AllocationInfo id)
 {
 	uint8 info = 0; uint32 i = 0;
 
@@ -182,7 +176,7 @@ void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
 			return;
 		}
 
-		freeSpaces.Insert(i, FreeSpace(size, offset));
+		freeSpaces.Insert(i, Space(size, offset));
 		return;
 	}
 
@@ -202,7 +196,7 @@ void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, uint32 id)
 	switch (info)
 	{
 	case ALLOC_IS_ISOLATED:
-		freeSpaces.Insert(i, FreeSpace(size, offset));
+		freeSpaces.Insert(i, Space(size, offset));
 		return;
 		
 	case IS_PRE_BLOCK_CONTIGUOUS:
@@ -228,35 +222,22 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 {
 	bufferMemoryBlocks.EmplaceBack();
 	textureMemoryBlocks.EmplaceBack();
-
-	Buffer::CreateInfo buffer_create_info;
-	buffer_create_info.RenderDevice = &renderDevice;
-	buffer_create_info.Size = 1024;
-	buffer_create_info.BufferType = BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE | BufferType::ACCELERATION_STRUCTURE | BufferType::BUILD_INPUT_READ_ONLY;
-	Buffer dummyBuffer;
-
-	Texture::CreateInfo create_info;
-	create_info.RenderDevice = &renderDevice;
-	create_info.Extent = { 1280, 720, 1 };
-	create_info.Dimensions = Dimensions::SQUARE;
-	create_info.Uses = TextureUse::TRANSFER_DESTINATION;
-	create_info.InitialLayout = TextureLayout::UNDEFINED;
-	create_info.Format = TextureFormat::RGBA_I8;
-	create_info.Tiling = TextureTiling::OPTIMAL;
+	
 	Texture dummyTexture;
 
-	Texture::GetMemoryRequirementsInfo imageMemoryRequirements;
-	imageMemoryRequirements.RenderDevice = &renderDevice;
-	imageMemoryRequirements.CreateInfo = &create_info;
-	dummyTexture.GetMemoryRequirements(&imageMemoryRequirements);
+	GAL::MemoryRequirements imageMemoryRequirements;
+	dummyTexture.GetMemoryRequirements(&renderDevice, &imageMemoryRequirements, TextureLayout::UNDEFINED, TextureUse::TRANSFER_DESTINATION, TextureFormat::RGBA_I8,
+		{ 1280, 720, 1 }, TextureTiling::OPTIMAL, 1);
 
-	Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
-	bufferMemoryRequirements.CreateInfo = &buffer_create_info;
-	bufferMemoryRequirements.RenderDevice = &renderDevice;
-	dummyBuffer.GetMemoryRequirements(&bufferMemoryRequirements);
+	Buffer dummyBuffer;
+	
+	GAL::MemoryRequirements bufferMemoryRequirements;
+	dummyBuffer.GetMemoryRequirements(&renderDevice, 1024,
+		BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE | BufferType::ACCELERATION_STRUCTURE | BufferType::BUILD_INPUT_READ_ONLY,
+		&bufferMemoryRequirements);
 
-	bufferMemoryType = bufferMemoryRequirements.MemoryRequirements.MemoryTypes;
-	textureMemoryType = imageMemoryRequirements.MemoryRequirements.MemoryTypes;
+	bufferMemoryType = bufferMemoryRequirements.MemoryTypes;
+	textureMemoryType = imageMemoryRequirements.MemoryTypes;
 
 	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::GPU, allocatorReference);
 	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, MemoryType::GPU, allocatorReference);
@@ -264,8 +245,8 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	dummyBuffer.Destroy(&renderDevice);
 	dummyTexture.Destroy(&renderDevice);
 
-	bufferMemoryAlignment = bufferMemoryRequirements.MemoryRequirements.Alignment;
-	textureMemoryAlignment = imageMemoryRequirements.MemoryRequirements.Alignment;
+	bufferMemoryAlignment = bufferMemoryRequirements.Alignment;
+	textureMemoryAlignment = imageMemoryRequirements.Alignment;
 
 	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
@@ -276,14 +257,15 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 	for(auto& e : textureMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference)
+void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
 {
-	BE_ASSERT(renderAllocation->Size > 0 && renderAllocation->Size <= ALLOCATION_SIZE, "Invalid size!")
+	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE, "Invalid size!")
+
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
+
+	renderAllocation->AllocationId = allocations.GetLength();
+	auto& allocation = allocations.EmplaceBack();
 	
-	AllocID allocId;
-
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, granularity);
-
 	void* dummy;
 	
 	if constexpr (!SINGLE_ALLOC)
@@ -291,22 +273,22 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 		for (auto& block : bufferMemoryBlocks)
 		{
 			//TODO: GET BLOCK INFO
-			if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &dummy, allocId.BlockInfo))
+			if (block.TryAllocate(deviceMemory, alignedSize, allocation, &dummy))
 			{
-				renderAllocation->Size = alignedSize;
-				renderAllocation->AllocationId = allocId;
-
+				allocation.Size = alignedSize;
+				*offset = allocation.Offset;
+				
 				//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 
 				return;
 			}
 
-			++allocId.Index;
+			++allocation.BlockIndex;
 		}
 
 		bufferMemoryBlocks.EmplaceBack();
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::GPU, allocatorReference);
-		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, &dummy, allocId.BlockInfo);
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::GPU, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 	}
 	else
 	{
@@ -319,36 +301,37 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 		deviceMemory->Initialize(memory_create_info);
 	}
 	
-	renderAllocation->Size = alignedSize;
-	renderAllocation->AllocationId = allocId;
+	allocation.Size = alignedSize;
+	*offset = allocation.Offset;
 
 	//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 }
 
-void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference)
+void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
 {
-	AllocID allocId;
+	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
 
-	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(renderAllocation->Size, granularity);
-
+	renderAllocation->AllocationId = allocations.GetLength();
+	auto& allocation = allocations.EmplaceBack();
+	
 	void* dummy;
 	
 	for (auto& block : textureMemoryBlocks)
 	{
 		//TODO: GET BLOCK INFO
-		if (block.TryAllocate(deviceMemory, alignedSize, &renderAllocation->Offset, &dummy, allocId.BlockInfo))
+		if (block.TryAllocate(deviceMemory, alignedSize, allocation, &dummy))
 		{
-			renderAllocation->Size = alignedSize;
-			renderAllocation->AllocationId = allocId;
+			allocation.Size = alignedSize;
+			*offset = allocation.Offset;
 			return;
 		}
 	
-		++allocId.Index;
+		++allocation.BlockIndex;
 	}
 	
 	textureMemoryBlocks.EmplaceBack();
-	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, MemoryType::GPU, persistentAllocatorReference);
-	textureMemoryBlocks.back().Allocate(deviceMemory, alignedSize, &renderAllocation->Offset, &dummy, allocId.BlockInfo);
+	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, MemoryType::GPU, GetPersistentAllocator());
+	textureMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 
 	//{
 	//	DeviceMemory::CreateInfo memory_create_info;
@@ -359,7 +342,7 @@ void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDev
 	//	*deviceMemory = DeviceMemory(memory_create_info);
 	//}
 	
-	renderAllocation->Size = alignedSize;
-	renderAllocation->AllocationId = allocId;
+	allocation.Size = alignedSize;
+	*offset = allocation.Offset;
 }
 

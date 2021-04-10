@@ -33,29 +33,14 @@ struct MaterialInstanceHandle {
 static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
 
 /**
- * \brief Typedef for opaque GPU allocator ID. Refer to RenderAllocation::AllocationId for more details.
- */
-using AllocationId = uint64;
-
-/**
  * \brief Handle to a GPU allocation. This handle refers to a GPU local allocation.
  */
 struct RenderAllocation
-{
-	/**
-	 * \brief Size of the allocation. In bytes.
-	 */
-	uint32 Size = 0;
-	/**
-	 * \brief Offset of the allocation in bytes to the start of a device memory allocation. One will not normally access this value,
-	 * it's just here for the allocator.
-	 */
-	uint32 Offset = 0;
-	
+{	
 	/**
 	 * \brief An opaque ID which MIGHT be used to keep track of some allocator internal data.
 	 */
-	AllocationId AllocationId = 0;
+	uint64 AllocationId = 0;
 
 	/**
 	* \brief Pointer to a mapped memory section.

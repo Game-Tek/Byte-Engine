@@ -162,7 +162,7 @@ struct ParseState
 			{
 				auto& stackState = Stack.back();
 				auto& cl = fileDescription.ClassesByName.At(Id(stackState.Type));
-				auto& member = cl->Members[stackState.Index % cl->Members.GetLength()];
+				auto& member = cl->Members[stackState.BlockIndex % cl->Members.GetLength()];
 
 				{
 					StackState stackState;
@@ -175,7 +175,7 @@ struct ParseState
 		} else if (Character == '}') {
 			Stack.PopBack();
 		} else if (Character == ',') {
-			++Stack.back().Index;
+			++Stack.back().BlockIndex;
 		}
 		
 		auto oldChar = Character; Character = Text[++C];
@@ -258,7 +258,7 @@ bool GoToArray(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& par
 		uint32 memberIndex = e->MembersByName.At(Id(variableName));
 
 		while (true) { //fix
-			if (parseState.Stack.back().Index == memberIndex) { GoToIndex(fileDescription, parseState); break; }
+			if (parseState.Stack.back().BlockIndex == memberIndex) { GoToIndex(fileDescription, parseState); break; }
 			parseState.advance(fileDescription);
 		}
 	}
@@ -299,7 +299,7 @@ bool GetVariable(FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCAT
 	uint32 memberIndex = e->MembersByName.At(Id(objectName));
 
 	while (true) { //fix
-		if (e->Members[parseState.Stack.back().Index % e->Members.GetLength()].Name == objectName) { break; }
+		if (e->Members[parseState.Stack.back().BlockIndex % e->Members.GetLength()].Name == objectName) { break; }
 		parseState.advance(fileDescription);
 	}
 	

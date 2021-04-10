@@ -74,31 +74,36 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 	}
 
 	{
-		uint32 index = 0; 	auto handleSize = GTSL::Math::RoundUpByPowerOf2(info.RenderSystem->GetShaderGroupHandleSize(), info.RenderSystem->GetShaderGroupHandleAlignment());
+		auto handleSize = GTSL::Math::RoundUpByPowerOf2(info.RenderSystem->GetShaderGroupHandleSize(), info.RenderSystem->GetShaderGroupHandleAlignment());
 	
 		MaterialSystem::BufferIterator bufferIterator;
-	
-		for (auto& e : renderGroup->GetMeshHandles())
+
+		GTSL::MultiFor([&](uint32 i, const RenderSystem::MeshHandle& meshHandle)
 		{
-			auto pos = renderGroup->GetMeshTransform(index);
+			auto pos = renderGroup->GetMeshTransform(i);
 			pos(2, 3) *= -1.f;
-			
-			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, index);
+
+			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, i);
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, matrixUniformBufferMemberHandle) = pos;
-			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(e);
-			*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(e);
-			auto materialHandle = info.RenderSystem->GetMeshMaterialHandle(e);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(meshHandle);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(meshHandle);
+			auto materialHandle = info.RenderSystem->GetMeshMaterialHandle(meshHandle);
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, materialInstance) = materialHandle.MaterialInstanceIndex;
 
-			
+
 			if (BE::Application::Get()->GetOption("rayTracing")) {
-				info.RenderSystem->SetMeshMatrix(RenderSystem::MeshHandle(index), GTSL::Matrix3x4(pos)); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
+				info.RenderSystem->SetMeshMatrix(RenderSystem::MeshHandle(i), GTSL::Matrix3x4(pos)); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
 				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index * 96); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
 				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
 			}
-
-			++index;
-		}
+		}, renderGroup->GetStaticMeshCount(), renderGroup->GetMeshHandles());
+		
+		//for (auto& e : renderGroup->GetMeshHandles())
+		//{
+		//
+		//
+		//	++index;
+		//}
 	}
 
 	//if ray tracing
@@ -1406,16 +1411,26 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, MaterialSystem* ma
 
 void RenderOrchestrator::ToggleRenderPass(Id renderPassName, bool enable)
 {
-	auto& renderPass = renderPassesMap[renderPassName];
-	switch (renderPass.PassType)
-	{
+	auto renderPassSearch = renderPassesMap.TryGet(renderPassName);
+
+	if (renderPassSearch.State()) {
+
+		auto& renderPass = renderPassSearch.Get();
+		
+		switch (renderPass.PassType)
+		{
 		case PassType::RASTER: break;
 		case PassType::COMPUTE: break;
 		case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetOption("rayTracing"); break; // Enable render pass only if function is enaled in settings
 		default: break;
+		}
+
+		renderPass.Enabled = enable;
 	}
-	
-	renderPass.Enabled = enable;
+	else
+	{
+		BE_LOG_WARNING("Tried to ", enable ? "enable" : "disable", " render pass ", renderPassName.GetString(), " which does not exist.");
+	}
 }
 
 void RenderOrchestrator::AddToRenderPass(Id renderPass, Id renderGroup)

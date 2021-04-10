@@ -17,6 +17,8 @@ namespace GTSL {
 	class Window;
 }
 
+MAKE_HANDLE(uint32, Buffer)
+
 class RenderSystem : public System
 {
 public:
@@ -30,29 +32,26 @@ public:
 
 	MAKE_HANDLE(uint32, Texture);
 	
-	void AllocateLocalTextureMemory(uint32 size, Texture* texture, Texture::CreateInfo& createInfo, RenderAllocation* allocation)
-	{	
-		Texture::GetMemoryRequirementsInfo memoryRequirements;
-		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = &createInfo;
-		texture->GetMemoryRequirements(&memoryRequirements);
-		
-		allocation->Size = memoryRequirements.MemoryRequirements.Size;
+	void AllocateLocalTextureMemory(uint32 size, Texture* texture, TextureLayout initialLayout, TextureUses uses,
+		TextureFormat format, GTSL::Extent3D extent, TextureTiling tiling, GTSL::uint8 mipLevels, RenderAllocation* allocation)
+	{
+		GAL::MemoryRequirements memoryRequirements;
+		texture->GetMemoryRequirements(GetRenderDevice(), &memoryRequirements, initialLayout, uses, format, extent, tiling, mipLevels);
+
+		DeviceMemory memory;  uint32 offset = 0;
 		
 		testMutex.Lock();
-		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &createInfo.Memory, allocation, GetPersistentAllocator());
+		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
 		testMutex.Unlock();
-
-		createInfo.Offset = allocation->Offset;
 		
-		texture->Initialize(createInfo);
+		texture->Initialize(GetRenderDevice(), memory, offset);
 	}
 	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
 	{
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, uint32* scratchSize)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, ::Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, uint32* scratchSize)
 	{
 		uint32 bufferSize, memoryScratchSize;
 		
@@ -63,24 +62,7 @@ public:
 		memoryRequirements.Geometries = geometries;
 		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &memoryScratchSize);
 		
-		renderAllocation->Size = bufferSize;
-		
-		Buffer::CreateInfo bufferCreateInfo;
-		bufferCreateInfo.RenderDevice = GetRenderDevice();
-		bufferCreateInfo.BufferType = BufferType::ACCELERATION_STRUCTURE;
-		bufferCreateInfo.Size = bufferSize;
-
-		testMutex.Lock();
-		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &bufferCreateInfo.Memory, renderAllocation, GetPersistentAllocator());
-		testMutex.Unlock();
-
-		Buffer::GetMemoryRequirementsInfo bufferMemoryRequirements;
-		bufferMemoryRequirements.RenderDevice = GetRenderDevice();
-		bufferMemoryRequirements.CreateInfo = &bufferCreateInfo;
-		buffer->GetMemoryRequirements(&bufferMemoryRequirements);
-
-		bufferCreateInfo.Offset = renderAllocation->Offset;
-		buffer->Initialize(bufferCreateInfo);
+		AllocateScratchBufferMemory(bufferSize, BufferType::ACCELERATION_STRUCTURE, buffer, renderAllocation);
 
 		createInfo->Buffer = *buffer;
 
@@ -90,32 +72,19 @@ public:
 
 		*scratchSize = memoryScratchSize;
 	}
-
-	struct BufferLocalMemoryAllocationInfo
-	{
-		Buffer* Buffer;
-		Buffer::CreateInfo* CreateInfo;
-		RenderAllocation* Allocation;
-	};
 	
-	void AllocateScratchBufferMemory(uint32 size, Buffer* buffer, Buffer::CreateInfo& createInfo, RenderAllocation* allocation)
-	{
-		createInfo.Size = size;
-		
-		Buffer::GetMemoryRequirementsInfo memoryRequirements;
-		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = &createInfo;
-		buffer->GetMemoryRequirements(&memoryRequirements);
-		
-		allocation->Size = memoryRequirements.MemoryRequirements.Size;
+	void AllocateScratchBufferMemory(uint32 size, BufferType::value_type flags, ::Buffer* buffer, RenderAllocation* allocation)
+	{		
+		GAL::MemoryRequirements memoryRequirements;
+		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
+
+		DeviceMemory memory; uint32 offset = 0;
 		
 		testMutex.Lock();
-		scratchMemoryAllocator.AllocateLinearMemory(renderDevice, &createInfo.Memory, allocation, GetPersistentAllocator());
+		scratchMemoryAllocator.AllocateLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
 		testMutex.Unlock();
-
-		createInfo.Offset = allocation->Offset;
 		
-		buffer->Initialize(createInfo);
+		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
 	
 	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
@@ -123,22 +92,18 @@ public:
 		scratchMemoryAllocator.DeallocateLinearMemory(renderDevice, allocation);
 	}
 	
-	void AllocateLocalBufferMemory(BufferLocalMemoryAllocationInfo& memoryAllocationInfo)
+	void AllocateLocalBufferMemory(uint32 size, BufferType::value_type flags, ::Buffer* buffer, RenderAllocation* allocation)
 	{
-		Buffer::GetMemoryRequirementsInfo memoryRequirements;
-		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.CreateInfo = memoryAllocationInfo.CreateInfo;
-		memoryAllocationInfo.Buffer->GetMemoryRequirements(&memoryRequirements);
+		GAL::MemoryRequirements memoryRequirements;
+		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
 
-		memoryAllocationInfo.Allocation->Size = memoryRequirements.MemoryRequirements.Size;
-
-		testMutex.Lock();
-		localMemoryAllocator.AllocateLinearMemory(renderDevice, &memoryAllocationInfo.CreateInfo->Memory, memoryAllocationInfo.Allocation, GetPersistentAllocator());
-		testMutex.Unlock();
-
-		memoryAllocationInfo.CreateInfo->Offset = memoryAllocationInfo.Allocation->Offset;
+		DeviceMemory memory; uint32 offset = 0;
 		
-		memoryAllocationInfo.Buffer->Initialize(*memoryAllocationInfo.CreateInfo);
+		testMutex.Lock();
+		localMemoryAllocator.AllocateLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
+		testMutex.Unlock();
+		
+		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
 
 	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)
@@ -152,18 +117,20 @@ public:
 
 	struct BufferCopyData
 	{
-		Buffer SourceBuffer, DestinationBuffer;
+		BufferHandle Buffer;
 		/* Offset from start of buffer.
 		 */
-		uint32 SourceOffset = 0, DestinationOffset = 0;
-		uint32 Size = 0;
-		RenderAllocation Allocation;
+		uint32 Offset = 0;
 	};
-	void AddBufferCopy(const BufferCopyData& bufferCopyData) { bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData); }
+	void AddBufferUpdate(const BufferCopyData& bufferCopyData)
+	{
+		if(needsStagingBuffer)
+			bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData);
+	}
 	
 	struct TextureCopyData
 	{
-		Buffer SourceBuffer;
+		::Buffer SourceBuffer;
 		Texture DestinationTexture;
 		
 		uint32 SourceOffset = 0;
@@ -194,18 +161,61 @@ public:
 	void UpdateRayTraceMesh(const MeshHandle meshHandle);
 	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
 	void UpdateMesh(MeshHandle meshHandle);
+	void SetWillWriteMesh(MeshHandle meshHandle, bool willUpdate) {
+		SetBufferWillWriteFromHost(meshes[meshHandle()].Buffer, willUpdate);
+	}
 	
 	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
+	
+	void DestroyBuffer(const BufferHandle handle)
+	{
+		auto& buffer = buffers[handle()];
 
+		auto destroyBuffer = [&](BufferHandle bufferHandle)
+		{
+			auto& buffer = buffers[bufferHandle()];
+			buffer.Buffer.Destroy(GetRenderDevice());
+			DeallocateLocalBufferMemory(buffer.Allocation);
+
+			if (buffer.Staging != BufferHandle()) {
+				auto& stagingBuffer = buffers[buffer.Staging()];
+				stagingBuffer.Buffer.Destroy(GetRenderDevice());
+				DeallocateScratchBufferMemory(stagingBuffer.Allocation);
+				buffers.Pop(buffer.Staging());
+			}
+			
+			buffers.Pop(bufferHandle());
+		};
+		
+		if(buffer.Next() != 0xFFFFFFFF)
+		{
+			BufferHandle nextBufferHandle = buffer.Next;
+			
+			for (uint8 f = 1; f < pipelinedFrames; ++f) {
+				auto& otherBuffer = buffers[nextBufferHandle()];
+				auto currentHandle = nextBufferHandle;
+				nextBufferHandle = otherBuffer.Next;
+				destroyBuffer(currentHandle);
+			}
+		}
+
+		destroyBuffer(handle);
+	}
+
+	void DestroyMesh(MeshHandle meshHandle)
+	{
+		DestroyBuffer(meshes[meshHandle()].Buffer);
+	}
+	
 	byte* GetMeshPointer(MeshHandle sharedMesh) const
 	{
 		const auto& mesh = meshes[sharedMesh()];
 
 		if (needsStagingBuffer) {
-			return static_cast<byte*>(mesh.StagingAllocation.Data);
+			return static_cast<byte*>(buffers[buffers[mesh.Buffer()].Staging()].Allocation.Data);
 		}
 		else {
-			return static_cast<byte*>(mesh.Allocation.Data);
+			return static_cast<byte*>(buffers[mesh.Buffer()].Allocation.Data);
 		}
 	}
 
@@ -242,8 +252,8 @@ public:
 		uint32 Address; static constexpr uint32 MULTIPLIER = 16;
 	};
 	
-	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice())); }
-	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(meshes[meshHandle()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
+	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice())); }
+	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
 	
 	MaterialInstanceHandle GetMeshMaterialHandle(MeshHandle meshHandle) { return meshes[meshHandle()].MaterialHandle; }
 
@@ -253,8 +263,24 @@ public:
 
 	[[nodiscard]] TextureHandle CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses, bool updatable);
 	void UpdateTexture(const TextureHandle textureHandle);
-	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle) { return GTSL::Range<byte*>(textures[textureHandle()].ScratchAllocation.Size, static_cast<byte*>(textures[textureHandle()].ScratchAllocation.Data)); }
-	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const { return GTSL::Range<const byte*>(textures[textureHandle()].ScratchAllocation.Size, static_cast<const byte*>(textures[textureHandle()].ScratchAllocation.Data)); }
+
+	//TODO: SELECT DATA POINTER BASED ON STAGING BUFFER NECESSITY
+	
+	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle)
+	{
+		const auto& texture = textures[textureHandle()];
+		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
+		size *= texture.FormatDescriptor.GetSize();
+		return GTSL::Range<byte*>(size, static_cast<byte*>(texture.ScratchAllocation.Data));
+	}
+	
+	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const
+	{
+		const auto& texture = textures[textureHandle()];
+		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
+		size *= texture.FormatDescriptor.GetSize();
+		return GTSL::Range<const byte*>(size, static_cast<const byte*>(texture.ScratchAllocation.Data));
+	}
 
 	Texture GetTexture(const TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
 	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
@@ -265,6 +291,9 @@ public:
 
 	bool AcquireImage();
 	void SetHasRendered(const bool state) { hasRenderTasks = state; }
+
+	BufferHandle CreateBuffer(uint32 size, BufferType::value_type flags, bool willWriteFromHost, bool updateable);
+	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
 private:
 	GTSL::Window* window;
 	
@@ -282,21 +311,24 @@ private:
 	
 	GTSL::Extent2D renderArea, lastRenderArea;
 
-	GTSL::Array<GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> bufferCopyDatas;
-	GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedBufferCopies;
-	GTSL::Array<GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference>, MAX_CONCURRENT_FRAMES> textureCopyDatas;
+	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas[MAX_CONCURRENT_FRAMES];
+	uint32 processedBufferCopies[MAX_CONCURRENT_FRAMES];
+	GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference> textureCopyDatas[MAX_CONCURRENT_FRAMES];
 	//GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 	
-	GTSL::Array<Texture, MAX_CONCURRENT_FRAMES> swapchainTextures;
-	GTSL::Array<TextureView, MAX_CONCURRENT_FRAMES> swapchainTextureViews;
+	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
+	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
-	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> imageAvailableSemaphore;
-	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> transferDoneSemaphores;
-	GTSL::Array<Semaphore, MAX_CONCURRENT_FRAMES> renderFinishedSemaphore;
-	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> graphicsFences;
-	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> graphicsCommandBuffers;
-	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> graphicsCommandPools;
-	GTSL::Array<Fence, MAX_CONCURRENT_FRAMES> transferFences;
+	Semaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
+	Semaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
+	Semaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
+	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
+	CommandBuffer graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
+	CommandPool graphicsCommandPools[MAX_CONCURRENT_FRAMES];
+	Fence transferFences[MAX_CONCURRENT_FRAMES];
+	
+	CommandPool transferCommandPools[MAX_CONCURRENT_FRAMES];
+	CommandBuffer transferCommandBuffers[MAX_CONCURRENT_FRAMES];
 
 	/**
 	 * \brief Keeps track of created instances. Mesh / Material combo.
@@ -306,17 +338,11 @@ private:
 	Queue graphicsQueue;
 	Queue transferQueue;
 	
-	GTSL::Array<CommandPool, MAX_CONCURRENT_FRAMES> transferCommandPools;
-	GTSL::Array<CommandBuffer, MAX_CONCURRENT_FRAMES> transferCommandBuffers;
-
 	struct Mesh
 	{
-		Buffer Buffer, StagingBuffer;
-
+		BufferHandle Buffer;
 		uint32 IndicesCount, VertexCount;
 		MaterialInstanceHandle MaterialHandle;
-		RenderAllocation Allocation, StagingAllocation;
-		
 		uint32 DerivedTypeIndex, CustomMeshIndex;
 		uint8 IndexSize, VertexSize;
 	};
@@ -331,11 +357,15 @@ private:
 	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	//MeshHandle addMesh(Mesh mesh)
-	//{
-	//	MeshHandle meshHandle{ meshes.Emplace(mesh) };
-	//	return meshHandle;
-	//}
+
+	struct Buffer
+	{
+		::Buffer Buffer; uint32 Size = 0, Counter = 0;
+		BufferType::value_type Flags;
+		BufferHandle Staging, Next;
+		RenderAllocation Allocation;
+	};
+	GTSL::KeepVector<Buffer, BE::PAR> buffers;
 	
 	struct AccelerationStructureBuildData
 	{
@@ -347,18 +377,18 @@ private:
 	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
 
 	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
-	Buffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
+	::Buffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
 
 	AccelerationStructure topLevelAccelerationStructure[MAX_CONCURRENT_FRAMES];
 	RenderAllocation topLevelAccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
-	Buffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
+	::Buffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
 
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
 
 	uint32 topLevelStructureScratchSize;
 	
 	RenderAllocation instancesAllocation[MAX_CONCURRENT_FRAMES];
-	Buffer instancesBuffer[MAX_CONCURRENT_FRAMES];
+	::Buffer instancesBuffer[MAX_CONCURRENT_FRAMES];
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.
@@ -409,7 +439,7 @@ private:
 
 		GAL::FormatDescriptor FormatDescriptor;
 		TextureUses Uses;
-		Buffer ScratchBuffer;
+		::Buffer ScratchBuffer;
 		TextureLayout Layout;
 		GTSL::Extent3D Extent;
 	};

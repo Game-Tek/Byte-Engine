@@ -10,9 +10,11 @@
 
 class ScratchMemoryAllocator;
 
-struct FreeSpace
+struct Space
 {
-	FreeSpace(const uint32 size, const uint32 offset) : Size(size), Offset(offset)
+	Space() = default;
+	
+	Space(const uint32 size, const uint32 offset) : Size(size), Offset(offset)
 	{
 	}
 
@@ -20,16 +22,12 @@ struct FreeSpace
 	uint32 Offset = 0;
 };
 
-struct AllocID
+struct AllocationInfo : Space
 {
-	uint32 Index = 0;
+	uint32 BlockIndex = 0;
 	uint32 BlockInfo = 0;
 
-	AllocID() = default;
-
-	AllocID(const AllocationId& allocation) : Index(static_cast<uint32>(allocation)), BlockInfo(allocation >> 32) {}
-
-	operator AllocationId() const { return static_cast<uint64>(BlockInfo) << 32 | Index; }
+	AllocationInfo() = default;
 };
 
 struct MemoryBlock
@@ -37,15 +35,15 @@ struct MemoryBlock
 	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, MemoryType::value_type memoryType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void Allocate(DeviceMemory* deviceMemory, uint32 size, uint32* offset, void** data, uint32& id);
-	void Deallocate(uint32 size, uint32 offset, uint32 id);
+	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, AllocationInfo& allocationInfo, void** data);
+	void Allocate(DeviceMemory* deviceMemory, uint32 size, AllocationInfo& allocationInfo, void** data);
+	void Deallocate(uint32 size, uint32 offset, AllocationInfo id);
 
 private:
 	DeviceMemory deviceMemory;
 	void* mappedMemory = nullptr;
 
-	GTSL::Vector<FreeSpace, BE::PersistentAllocatorReference> freeSpaces;
+	GTSL::Vector<Space, BE::PersistentAllocatorReference> freeSpaces;
 };
 
 class LocalMemoryAllocator : public Object
@@ -57,24 +55,24 @@ public:
 	
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
-	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
+	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
 	
-	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation allocation)
+	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{
-			const auto alloc = AllocID(allocation.AllocationId);
-			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
+			auto& allocation = allocations[renderAllocation.AllocationId];
+			bufferMemoryBlocks[allocation.BlockIndex].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, allocation);
 		}
 	}
 
-	void AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& persistentAllocatorReference);
-	void DeallocateNonLinearMemory(const RenderDevice& renderDevice, const RenderAllocation allocation)
+	void AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
+	void DeallocateNonLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{
-			const auto alloc = AllocID(allocation.AllocationId);
-			textureMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
+			auto& allocation = allocations[renderAllocation.AllocationId];
+			textureMemoryBlocks[allocation.BlockIndex].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, allocation);
 		}
 	}
 
@@ -84,6 +82,9 @@ private:
 	static constexpr bool SINGLE_ALLOC = false;
 	
 	uint32 bufferMemoryType = 0, textureMemoryType = 0;
+
+	
+	GTSL::Array<AllocationInfo, 32> allocations;
 	
 	GTSL::Array<MemoryBlock, 32> bufferMemoryBlocks;
 	GTSL::Array<MemoryBlock, 32> textureMemoryBlocks;
@@ -98,13 +99,13 @@ public:
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
-	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, const BE::PersistentAllocatorReference& allocatorReference);
-	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation allocation)
+	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
+	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{
-			const auto alloc = AllocID(allocation.AllocationId);
-			bufferMemoryBlocks[alloc.Index].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, alloc.BlockInfo);
+			auto& allocation = allocations[renderAllocation.AllocationId];
+			bufferMemoryBlocks[allocation.BlockIndex].Deallocate(GTSL::Math::RoundUpByPowerOf2(allocation.Size, granularity), allocation.Offset, allocation);
 		}
 	}
 	
@@ -120,6 +121,7 @@ private:
 	uint32 bufferMemoryAlignment = 0;
 
 	GTSL::uint32 granularity;
-	
+
+	GTSL::Array<AllocationInfo, 32> allocations;
 	GTSL::Array<MemoryBlock, 32> bufferMemoryBlocks;
 };

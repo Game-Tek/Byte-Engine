@@ -314,19 +314,15 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 
 	if(bufferSize != 0)
 	{
-		Buffer::CreateInfo createInfo;
-		createInfo.RenderDevice = renderSystem->GetRenderDevice();
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<64> name("Buffer");
-			createInfo.Name = name;
+			//createInfo.Name = name;
 		}
 
-		createInfo.Size = bufferSize;
 		bufferFlags |= BufferType::ADDRESS; bufferFlags |= BufferType::STORAGE;
-		createInfo.BufferType = bufferFlags & ~notBufferFlags;
 
 		for (uint8 f = 0; f < queuedFrames; ++f) {
-			renderSystem->AllocateScratchBufferMemory(bufferSize, &bufferData.Buffers[f], createInfo, &bufferData.RenderAllocations[f]);
+			renderSystem->AllocateScratchBufferMemory(bufferSize, bufferFlags & ~notBufferFlags, &bufferData.Buffers[f], &bufferData.RenderAllocations[f]);
 		}
 	}
 

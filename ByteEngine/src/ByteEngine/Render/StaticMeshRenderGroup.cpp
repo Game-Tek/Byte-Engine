@@ -46,8 +46,6 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 		addStaticMeshInfo.RenderSystem->CreateRayTracedMesh(meshHandle);
 	}
 	
-	++staticMeshCount;
-	
 	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, meshHandle));
 	
 	return StaticMeshHandle(index);
@@ -69,6 +67,9 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 		meshLoadInfo.RenderSystem->UpdateRayTraceMesh(meshLoadInfo.MeshHandle);
 	}
 
+	//meshLoadInfo.RenderSystem->SetWillWriteMesh(meshLoadInfo.MeshHandle, false);
+	
+	++staticMeshCount;
 	meshes.EmplaceAt(meshLoadInfo.InstanceId, meshLoadInfo.MeshHandle);
 	addedMeshes.EmplaceBack(meshLoadInfo.MeshHandle, meshLoadInfo.InstanceId);
 }

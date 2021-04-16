@@ -34,17 +34,17 @@ RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, c
 	return MeshHandle(meshIndex);
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
-{
-	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
-	mesh.CustomMeshIndex = customIndex;
-	mesh.MaterialHandle = materialHandle;
-
-	auto meshHandle = MeshHandle(meshIndex);
-	
-	UpdateMesh(meshHandle, vertexCount, vertexSize, indexCount, indexSize);
-	return meshHandle;
-}
+//RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
+//{
+//	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
+//	mesh.CustomMeshIndex = customIndex;
+//	mesh.MaterialHandle = materialHandle;
+//
+//	auto meshHandle = MeshHandle(meshIndex);
+//	
+//	UpdateMesh(meshHandle, vertexCount, vertexSize, indexCount, indexSize);
+//	return meshHandle;
+//}
 
 void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 {
@@ -115,7 +115,7 @@ void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 	++rayTracingInstancesCount;
 }
 
-void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize)
+void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout)
 {
 	auto& mesh = meshes[meshHandle()];
 
@@ -124,6 +124,8 @@ void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 
 	auto verticesSize = vertexCount * vertexSize; auto indecesSize = indexCount * indexSize;
 	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
 
+	mesh.VertexDescriptor.PushBack(vertexLayout);
+	
 	mesh.Buffer = CreateBuffer(meshSize, BufferType::VERTEX | BufferType::INDEX, true, false);
 }
 

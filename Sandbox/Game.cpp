@@ -102,9 +102,6 @@ bool Game::Initialize()
 		materialCreateInfo.ShaderName = "HydrantMat";
 		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
 		materialCreateInfo.RenderPass = "SceneRenderPass";
-		GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT3, GAL::ShaderDataType::FLOAT2 };
-		materialCreateInfo.VertexFormat = format;
-		materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
 		
 		materialCreateInfo.Parameters.EmplaceBack("albedo", MaterialResourceManager::ParameterType::TEXTURE_REFERENCE);
 		
@@ -115,6 +112,18 @@ bool Game::Initialize()
 		materialCreateInfo.BlendEnable = false;
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 
+		materialCreateInfo.Permutations.EmplaceBack();
+		materialCreateInfo.Permutations.back().PushBack({ "POSITION", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "NORMAL", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "TANGENT", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "BITANGENT", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "TEXTURE_COORDINATE", 0, GAL::ShaderDataType::FLOAT3 });
+
+		materialCreateInfo.Permutations.EmplaceBack();
+		materialCreateInfo.Permutations.back().PushBack({ "POSITION", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "NORMAL", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ "TEXTURE_COORDINATE", 0, GAL::ShaderDataType::FLOAT3 });
+		
 		{
 			materialCreateInfo.MaterialInstances.EmplaceBack();
 			materialCreateInfo.MaterialInstances.back().Name = "hydrantMat";
@@ -133,41 +142,6 @@ bool Game::Initialize()
 		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
 	}
-	
-	//{
-	//	MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
-	//	materialCreateInfo.ShaderName = "TextMaterial";
-	//	materialCreateInfo.RenderGroup = "TextSystem";
-	//	materialCreateInfo.RenderPass = "MainRenderPass";
-	//	materialCreateInfo.SubPass = "Text";
-	//	GTSL::Array<GAL::ShaderDataType, 8> format;
-	//	materialCreateInfo.VertexFormat = format;
-	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	//	materialCreateInfo.DepthWrite = false;
-	//	materialCreateInfo.DepthTest = false;
-	//	materialCreateInfo.StencilTest = false;
-	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
-	//	materialCreateInfo.BlendEnable = true;
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	//}
-	
-	//{
-	//	MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo{};
-	//	materialCreateInfo.ShaderName = "UIMat";
-	//	materialCreateInfo.RenderGroup = "UIRenderGroup";
-	//	materialCreateInfo.RenderPass = "UIRenderPass";
-	//	GTSL::Array<GAL::ShaderDataType, 8> format{ GAL::ShaderDataType::FLOAT2 };
-	//	materialCreateInfo.VertexFormat = format;
-	//	materialCreateInfo.ShaderTypes = GTSL::Array<GAL::ShaderType, 12>{ GAL::ShaderType::VERTEX_SHADER, GAL::ShaderType::FRAGMENT_SHADER };
-	//	materialCreateInfo.DepthWrite = true;
-	//	materialCreateInfo.DepthTest = true;
-	//	materialCreateInfo.StencilTest = false;
-	//	materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
-	//	materialCreateInfo.BlendEnable = false;
-	//	materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-	//	GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	//}
 	
 	{
 		MaterialResourceManager::RayTracePipelineCreateInfo pipelineCreateInfo;
@@ -221,7 +195,7 @@ void Game::PostInitialize()
 	{
 		auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
 
-		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0, -250));
+		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 25, -250));
 		fov = cameraSystem->GetFieldOfView(camera);
 	}
 	
@@ -321,6 +295,16 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	}
+
+	{		
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = "plane";
+		addStaticMeshInfo.Material = tvMaterialInstance;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	}
 
 	

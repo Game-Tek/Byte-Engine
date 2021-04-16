@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GAL/Pipelines.h>
 #include <GAL/RenderCore.h>
 #include <GTSL/Algorithm.h>
 #include <GTSL/Array.hpp>
@@ -125,20 +126,36 @@ public:
 			Extract(materialInstance.Name, buffer);
 			Extract(materialInstance.Parameters, buffer);
 		}
+
+	};
+
+	struct Shader {
+		GAL::ShaderType Type; uint32 Size;
+
+		template<class ALLOC>
+		friend void Insert(const Shader& shader, GTSL::Buffer<ALLOC>& buffer)
+		{
+			Insert(shader.Type, buffer);
+			Insert(shader.Size, buffer);
+		}
+
+		template<class ALLOC>
+		friend void Extract(Shader& shader, GTSL::Buffer<ALLOC>& buffer)
+		{
+			Extract(shader.Type, buffer);
+			Extract(shader.Size, buffer);
+		}
 	};
 	
 	struct RasterMaterialData : Data
 	{
 		GTSL::Id64 RenderGroup;
-		GTSL::Array<uint32, 12> ShaderSizes;
-		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
 		bool DepthWrite; bool DepthTest; bool StencilTest;
 		GAL::CullMode CullMode;
 		GTSL::Id64 RenderPass;
 
 		GTSL::Array<Parameter, 16> Parameters;
 		
-		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
 		GAL::BlendOperation ColorBlendOperation;
 
 		StencilState Front;
@@ -146,6 +163,49 @@ public:
 		bool BlendEnable = false;
 
 		GTSL::Array<MaterialInstance, 16> MaterialInstances;
+		GTSL::Array<Shader, 16> Shaders;
+
+		struct VertexElement
+		{
+			GTSL::ShortString<32> VertexAttribute;
+			uint8 Index = 0;
+			GAL::ShaderDataType Type;
+
+			template<class ALLOC>
+			friend void Insert(const VertexElement& vertexElement, GTSL::Buffer<ALLOC>& buffer)
+			{
+				Insert(vertexElement.VertexAttribute, buffer);
+				Insert(vertexElement.Index, buffer);
+				Insert(vertexElement.Type, buffer);
+			}
+
+			template<class ALLOC>
+			friend void Extract(VertexElement& vertexElement, GTSL::Buffer<ALLOC>& buffer)
+			{
+				Extract(vertexElement.VertexAttribute, buffer);
+				Extract(vertexElement.Index, buffer);
+				Extract(vertexElement.Type, buffer);
+			}
+		};
+		
+		struct Permutation
+		{
+			GTSL::Array<VertexElement, 20> VertexElements;
+
+			template<class ALLOC>
+			friend void Insert(const Permutation& permutation, GTSL::Buffer<ALLOC>& buffer)
+			{
+				Insert(permutation.VertexElements, buffer);
+			}
+
+			template<class ALLOC>
+			friend void Extract(Permutation& permutation, GTSL::Buffer<ALLOC>& buffer)
+			{
+				Extract(permutation.VertexElements, buffer);
+			}
+		};
+
+		GTSL::Array<Permutation, 8> Permutations;
 	};
 
 	struct RasterMaterialDataSerialize : DataSerialize<RasterMaterialData>
@@ -155,9 +215,6 @@ public:
 			INSERT_BODY
 			Insert(insertInfo.RenderGroup, buffer);
 			Insert(insertInfo.RenderPass, buffer);
-			Insert(insertInfo.ShaderSizes, buffer);
-			Insert(insertInfo.VertexElements, buffer);
-			Insert(insertInfo.ShaderTypes, buffer);
 			Insert(insertInfo.DepthTest, buffer);
 			Insert(insertInfo.DepthWrite, buffer);
 			Insert(insertInfo.StencilTest, buffer);
@@ -168,6 +225,8 @@ public:
 			Insert(insertInfo.Front, buffer);
 			Insert(insertInfo.Back, buffer);
 			Insert(insertInfo.MaterialInstances, buffer);
+			Insert(insertInfo.Shaders, buffer);
+			Insert(insertInfo.Permutations, buffer);
 		}
 
 		EXTRACT_START(RasterMaterialDataSerialize)
@@ -175,9 +234,6 @@ public:
 			EXTRACT_BODY
 			Extract(extractInfo.RenderGroup, buffer);
 			Extract(extractInfo.RenderPass, buffer);
-			Extract(extractInfo.ShaderSizes, buffer);
-			Extract(extractInfo.VertexElements, buffer);
-			Extract(extractInfo.ShaderTypes, buffer);
 			Extract(extractInfo.DepthTest, buffer);
 			Extract(extractInfo.DepthWrite, buffer);
 			Extract(extractInfo.StencilTest, buffer);
@@ -188,6 +244,8 @@ public:
 			Extract(extractInfo.Front, buffer);
 			Extract(extractInfo.Back, buffer);
 			Extract(extractInfo.MaterialInstances, buffer);
+			Extract(extractInfo.Shaders, buffer);
+			Extract(extractInfo.Permutations, buffer);
 		}
 	};
 	
@@ -196,12 +254,10 @@ public:
 		GTSL::StaticString<64> ShaderName;
 		GTSL::StaticString<64> RenderGroup;
 		GTSL::Id64 RenderPass;
-		GTSL::Range<const GAL::ShaderDataType*> VertexFormat;
 
 		GTSL::Array<Parameter, 16> Parameters;
 		GTSL::Array<Parameter, 8> PerInstanceParameters;
 		
-		GTSL::Range<const GAL::ShaderType*> ShaderTypes;
 		bool DepthWrite;
 		bool DepthTest;
 		GAL::CullMode CullMode;
@@ -213,6 +269,7 @@ public:
 		bool BlendEnable = false;
 
 		GTSL::Array<MaterialInstance, 16> MaterialInstances;
+		GTSL::Array<GTSL::Array<RasterMaterialData::VertexElement, 16>, 8> Permutations;
 	};
 	void CreateRasterMaterial(const RasterMaterialCreateInfo& materialCreateInfo);
 
@@ -289,26 +346,7 @@ public:
 		}
 	};
 	
-	struct OnMaterialLoadInfo : OnResourceLoad
-	{
-		GTSL::Id64 RenderGroup;
-		GTSL::Array<GAL::ShaderDataType, 20> VertexElements;
-
-		GTSL::Array<GAL::ShaderType, 12> ShaderTypes;
-		GTSL::Array<uint32, 20> ShaderSizes;
-		bool DepthWrite;
-		bool DepthTest;
-		GAL::CullMode CullMode;
-		GAL::BlendOperation ColorBlendOperation;
-
-		StencilState Front;
-		StencilState Back;
-		GTSL::Id64 RenderPass;
-		bool StencilTest;
-		bool BlendEnable = false;
-		GTSL::Array<Parameter, 16> Parameters;
-		GTSL::Array<MaterialInstance, 16> MaterialInstances;
-	};
+	struct OnMaterialLoadInfo : RasterMaterialData, OnResourceLoad {};
 	
 	struct MaterialLoadInfo : ResourceLoadInfo
 	{

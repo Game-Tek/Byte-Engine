@@ -2,6 +2,7 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
+#include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/GameInstance.h"
@@ -31,17 +32,10 @@ MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialRe
 rtPipelineInfos(8, GetPersistentAllocator())
 {
 	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-	
-	GTSL::StaticString<256> resources_path;
-	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/";
 
-	resources_path += "Materials.bepkg";
-	package.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	package.OpenFile(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 
-	resources_path.Drop(resources_path.FindLast('/').Get() + 1);
-	resources_path += "Materials.beidx";
-
-	index.OpenFile(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	index.OpenFile(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 	index.ReadFile(rasterFileBuffer.GetBufferInterface());
 
 	if (rasterFileBuffer.GetLength())
@@ -66,69 +60,106 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 	
 	if (!rasterMaterialInfos.Find(hashed_name))
 	{
-		GTSL::Buffer<BE::TAR> shader_source_buffer; shader_source_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> index_buffer; index_buffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_buffer; shader_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(128)), 8, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> shader_error_buffer; shader_error_buffer.Allocate(GTSL::Byte(GTSL::KiloByte(4)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shaderSourceBuffer; shaderSourceBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> indexBuffer; indexBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shaderBuffer; shaderBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(128)), 8, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> shaderErrorBuffer; shaderErrorBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(4)), 8, GetTransientAllocator());
 		
-		RasterMaterialDataSerialize materialInfo;
+		RasterMaterialDataSerialize materialData;
 
-		GTSL::File shader;
+		materialData.ByteOffset = package.GetFileSize();
 
-		materialInfo.ByteOffset = package.GetFileSize();
-		
-		for (uint8 i = 0; i < materialCreateInfo.ShaderTypes.ElementCount(); ++i)
+		GTSL::FileQuery fileQuery(GetResourcePath(materialCreateInfo.ShaderName, GTSL::ShortString<2>("*")));
+
+		while(fileQuery.DoQuery())
 		{
-			shader.OpenFile(GetResourcePath(materialCreateInfo.ShaderName, ShaderTypeToFileExtension(materialCreateInfo.ShaderTypes[i])), GTSL::File::AccessMode::READ);
-
-			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
-			GenerateShader(string, materialCreateInfo.ShaderTypes[i]);
-			shader_source_buffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
-			shader.ReadFile(shader_source_buffer.GetBufferInterface());
-
-			auto f = GTSL::Range<const utf8*>(shader_source_buffer.GetLength(), reinterpret_cast<const utf8*>(shader_source_buffer.GetData()));
-			const auto compilationResult = GAL::CompileShader(f, materialCreateInfo.ShaderName, materialCreateInfo.ShaderTypes[i], GAL::ShaderLanguage::GLSL, shader_buffer.GetBufferInterface(), shader_error_buffer.GetBufferInterface());
-			*(shader_error_buffer.GetData() + (shader_error_buffer.GetLength() - 1)) = '\0';
+			auto dotSearch = fileQuery.GetFileNameWithExtension().FindLast('.');
 			
-			if(!compilationResult) {
-				BE_LOG_ERROR(reinterpret_cast<const char*>(shader_error_buffer.GetData()));
-				BE_ASSERT(false, shader_error_buffer.GetData());
+			auto extension = GTSL::Range<const utf8*>(dotSearch.Get().First, fileQuery.GetFileNameWithExtension().begin() + dotSearch.Get().Second + 1/*dot*/);
+
+			GAL::ShaderType shaderType;
+
+			switch (GTSL::Id64(extension)())
+			{
+			case GTSL::Hash("vert"): shaderType = GAL::ShaderType::VERTEX_SHADER; break;
+			case GTSL::Hash("frag"): shaderType = GAL::ShaderType::FRAGMENT_SHADER; break;
+			case GTSL::Hash("rchit"): shaderType = GAL::ShaderType::CLOSEST_HIT; break;
+			case GTSL::Hash("rgen"): shaderType = GAL::ShaderType::RAY_GEN; break;
+			case GTSL::Hash("rmiss"): shaderType = GAL::ShaderType::MISS; break;
+			default: return;
+			}
+			
+			GTSL::File shaderSourceFile;
+			shaderSourceFile.OpenFile(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::AccessMode::READ);
+			
+			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
+			GenerateShader(string, shaderType);
+
+			switch (shaderType)
+			{
+			case GAL::ShaderType::VERTEX_SHADER:
+				AddVertexShaderLayout(string);
+				break;
 			}
 
-			materialInfo.ShaderSizes.EmplaceBack(shader_buffer.GetLength());
-			package.WriteToFile(shader_buffer);
+			shaderSourceBuffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
 
-			shader_source_buffer.Resize(0);
-			shader_error_buffer.Resize(0);
-			shader_buffer.Resize(0);
+			shaderSourceFile.ReadFile(shaderSourceBuffer.GetBufferInterface());
+			
+			auto f = GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
+			const auto compilationResult = GAL::CompileShader(f, materialCreateInfo.ShaderName, shaderType, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
+
+			//BE_LOG_MESSAGE(reinterpret_cast<const char*>(shaderSourceBuffer.GetData()));
+			
+			if (!compilationResult) {
+				BE_LOG_ERROR(reinterpret_cast<const char*>(shaderErrorBuffer.GetData()));
+				BE_ASSERT(false, shaderErrorBuffer.GetData());
+			}
+
+			package.WriteToFile(shaderBuffer);
+
+			auto& shader = materialData.Shaders.EmplaceBack();
+			shader.Size = shaderBuffer.GetLength();
+			shader.Type = shaderType;
+			
+			shaderSourceBuffer.Resize(0);
+			shaderErrorBuffer.Resize(0);
+			shaderBuffer.Resize(0);
+		}
+		
+		for (uint8 i = 0; i < materialCreateInfo.MaterialInstances.GetLength(); ++i)
+		{
+			const auto& materialInstanceInfo = materialCreateInfo.MaterialInstances[i];
+
+			materialData.MaterialInstances.EmplaceBack();
+			materialData.MaterialInstances.back().Name = materialInstanceInfo.Name;
+			materialData.MaterialInstances.back().Parameters = materialInstanceInfo.Parameters;
 		}
 
-		materialInfo.VertexElements = materialCreateInfo.VertexFormat;
-		materialInfo.ShaderTypes = materialCreateInfo.ShaderTypes;
-		materialInfo.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
+		materialData.RenderGroup = GTSL::Id64(materialCreateInfo.RenderGroup);
 
-		materialInfo.Parameters = materialCreateInfo.Parameters;
-		materialInfo.RenderPass = materialCreateInfo.RenderPass;
+		materialData.Parameters = materialCreateInfo.Parameters;
+		materialData.RenderPass = materialCreateInfo.RenderPass;
 		
-		materialInfo.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
-		materialInfo.DepthTest = materialCreateInfo.DepthTest;
-		materialInfo.DepthWrite = materialCreateInfo.DepthWrite;
-		materialInfo.CullMode = materialCreateInfo.CullMode;
-		materialInfo.StencilTest = materialCreateInfo.StencilTest;
-		materialInfo.BlendEnable = materialCreateInfo.BlendEnable;
+		materialData.ColorBlendOperation = materialCreateInfo.ColorBlendOperation;
+		materialData.DepthTest = materialCreateInfo.DepthTest;
+		materialData.DepthWrite = materialCreateInfo.DepthWrite;
+		materialData.CullMode = materialCreateInfo.CullMode;
+		materialData.StencilTest = materialCreateInfo.StencilTest;
+		materialData.BlendEnable = materialCreateInfo.BlendEnable;
 
-		materialInfo.Front = materialCreateInfo.Front;
-		materialInfo.Back = materialCreateInfo.Back;
+		materialData.Front = materialCreateInfo.Front;
+		materialData.Back = materialCreateInfo.Back;
 
-		materialInfo.Parameters = materialCreateInfo.Parameters;
+		materialData.Parameters = materialCreateInfo.Parameters;
 
-		materialInfo.MaterialInstances = materialCreateInfo.MaterialInstances;
+		materialData.MaterialInstances = materialCreateInfo.MaterialInstances;
 		
-		rasterMaterialInfos.Emplace(hashed_name, materialInfo);
+		rasterMaterialInfos.Emplace(hashed_name, materialData);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
-		Insert(rasterMaterialInfos, index_buffer);
-		Insert(rtPipelineInfos, index_buffer);
-		index.WriteToFile(index_buffer);
+		Insert(rasterMaterialInfos, indexBuffer);
+		Insert(rtPipelineInfos, indexBuffer);
+		index.WriteToFile(indexBuffer);
 	}
 }
 
@@ -190,7 +221,9 @@ void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreat
 void MaterialResourceManager::GetMaterialSize(const Id name, uint32& size)
 {
 	GTSL::ReadLock lock(mutex);
-	for(auto& e : rasterMaterialInfos.At(name).ShaderSizes) { size += e; }
+	for(auto& e : rasterMaterialInfos.At(name).Shaders) {
+		size += e.Size;
+	}
 }
 
 MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMaterial(const MaterialLoadInfo& loadInfo)
@@ -198,10 +231,12 @@ MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMateria
 	auto materialInfo = rasterMaterialInfos.At(loadInfo.Name);
 
 	uint32 mat_size = 0;
-	for (auto e : materialInfo.ShaderSizes) { mat_size += e; }
+	for (auto e : materialInfo.Shaders)
+	{
+		mat_size += e.Size;
+	}
+	
 	BE_ASSERT(mat_size <= loadInfo.DataBuffer.Bytes(), "Buffer can't hold required data!");
-
-	BE_ASSERT(materialInfo.ByteOffset != materialInfo.ShaderSizes[0], ":|");
 	
 	package.SetPointer(materialInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
 
@@ -212,10 +247,7 @@ MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMateria
 	onMaterialLoadInfo.ResourceName = loadInfo.Name;
 	onMaterialLoadInfo.UserData = loadInfo.UserData;
 	onMaterialLoadInfo.DataBuffer = loadInfo.DataBuffer;
-	onMaterialLoadInfo.ShaderTypes = materialInfo.ShaderTypes;
-	onMaterialLoadInfo.ShaderSizes = materialInfo.ShaderSizes;
 	onMaterialLoadInfo.RenderGroup = materialInfo.RenderGroup;
-	onMaterialLoadInfo.VertexElements = materialInfo.VertexElements;
 	onMaterialLoadInfo.RenderPass = materialInfo.RenderPass;
 	onMaterialLoadInfo.Parameters = materialInfo.Parameters;
 	onMaterialLoadInfo.ColorBlendOperation = materialInfo.ColorBlendOperation;

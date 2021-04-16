@@ -106,7 +106,7 @@ public:
 				res.Get() = ActionInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event");
+				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " action input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input Source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
@@ -120,7 +120,7 @@ public:
 				res.Get() = CharacterInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event");
+				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " character input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
@@ -134,7 +134,7 @@ public:
 				res.Get() = LinearInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event");
+				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " linear input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
@@ -148,7 +148,7 @@ public:
 				res.Get() = Vector2DInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register InputEvent, dependent Input Source was not registered. Cannot create an Input Event which depends on a non existant Input Source, make sure the Input Source is registered before registering this Input Event");
+				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " 2D input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}

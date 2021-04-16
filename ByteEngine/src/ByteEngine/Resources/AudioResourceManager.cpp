@@ -28,12 +28,14 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 	else
 	{
 		GTSL::File packageFile; packageFile.OpenFile(package_path, GTSL::File::AccessMode::WRITE);
-		
-		auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
+
+		GTSL::FileQuery file_query(query_path);
+
+		while(file_query.DoQuery())
 		{
 			auto file_path = resources_path;
-			file_path += queryResult.FileNameWithExtension;
-			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
+			file_path += file_query.GetFileNameWithExtension();
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!audioResourceInfos.Find(hashed_name))
@@ -42,7 +44,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ);
 
 				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
-				
+
 				query_file.ReadFile(wavBuffer.GetBufferInterface());
 
 				AudioDataSerialize data;
@@ -90,10 +92,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 				audioResourceInfos.Emplace(hashed_name, data);
 			}
-		};
-
-		GTSL::FileQuery file_query(query_path);
-		GTSL::ForEach(file_query, load);
+		}
 
 		file_buffer.Resize(0);
 		GTSL::Insert(audioResourceInfos, file_buffer);

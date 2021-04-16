@@ -34,6 +34,7 @@ class Game final : public GameApplication
 	bool shouldFire = false;
 	MaterialInstanceHandle hydrantMaterialInstance;
 	MaterialInstanceHandle tvMaterialInstance;
+	StaticMeshHandle plane;
 
 	void leftClick(InputManager::ActionInputEvent data);
 	void moveLeft(InputManager::ActionInputEvent data);

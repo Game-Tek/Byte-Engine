@@ -34,5 +34,5 @@ public:
 	explicit operator uint64() const { return hashedName(); }
 private:
 	GTSL::Id64 hashedName;
-	GTSL::ShortString<24> stringName;
+	GTSL::ShortString<64> stringName;
 };

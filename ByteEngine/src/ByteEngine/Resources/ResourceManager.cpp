@@ -10,6 +10,14 @@ GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const
 	return path;
 }
 
+GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension)
+{
+	GTSL::StaticString<512> path;
+	path += BE::Application::Get()->GetPathToApplication();
+	path += "/resources/"; path += fileWithExtension;
+	return path;
+}
+
 void ResourceManager::initializePackageFiles(GTSL::Range<const utf8*> path)
 {
 	for(uint32 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {

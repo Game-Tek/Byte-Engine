@@ -58,7 +58,7 @@ namespace BE
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = systemApplication.GetPathToExecutable();
-		path.Drop(path.FindLast('/').Get());
+		path.Drop(path.FindLast('/').Get().Second);
 		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger_create_info);
 

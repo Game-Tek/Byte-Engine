@@ -23,7 +23,8 @@ inline void AddExtensions(GTSL::String<T>& string, GAL::ShaderType shaderType)
 	case GAL::ShaderType::MISS:
 	case GAL::ShaderType::INTERSECTION:
 	case GAL::ShaderType::CALLABLE:
-		string += "#extension GL_EXT_ray_tracing : enable\n"; break;
+		string += "#extension GL_EXT_ray_tracing : enable\n";
+		break;
 	default: ;
 	}
 	
@@ -70,4 +71,41 @@ inline auto GenerateShader(GTSL::String<T>& string, GAL::ShaderType shaderType)
 {
 	AddExtensions(string, shaderType);
 	AddDataTypesAndDescriptors(string, shaderType);
+}
+
+//layout(location = 0) in vec3 in_Position;
+
+template<typename T>
+inline auto AddVertexShaderLayout(GTSL::String<T>& string)
+{
+	auto addElement = [&](GTSL::ShortString<32> name, uint16 index, GAL::ShaderDataType type)
+	{
+		string += "layout(location = "; GTSL::StaticString<32> number; GTSL::ToString(index, number); string += number;
+		string += ") in ";
+
+		switch (type)
+		{
+		case GAL::ShaderDataType::FLOAT:  string += "float"; break;
+		case GAL::ShaderDataType::FLOAT2: string += "vec2"; break;
+		case GAL::ShaderDataType::FLOAT3: string += "vec3"; break;
+		case GAL::ShaderDataType::FLOAT4: string += "vec4"; break;
+		case GAL::ShaderDataType::INT: break;
+		case GAL::ShaderDataType::INT2: break;
+		case GAL::ShaderDataType::INT3: break;
+		case GAL::ShaderDataType::INT4: break;
+		case GAL::ShaderDataType::BOOL: break;
+		case GAL::ShaderDataType::MAT3: break;
+		case GAL::ShaderDataType::MAT4: break;
+		default: ;
+		}
+
+		
+		string += ' '; string += name; string += ";\n";
+	};
+	
+	addElement("in_Position", 0, GAL::ShaderDataType::FLOAT3);
+	addElement("in_Normal", 1, GAL::ShaderDataType::FLOAT3);
+	addElement("in_Tangent", 2, GAL::ShaderDataType::FLOAT3);
+	addElement("in_BiTangent", 3, GAL::ShaderDataType::FLOAT3);
+	addElement("in_TextureCoordinates", 4, GAL::ShaderDataType::FLOAT2);
 }

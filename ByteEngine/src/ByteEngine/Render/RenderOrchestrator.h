@@ -155,7 +155,7 @@ public:
 
 	void AddToRenderPass(Id renderPass, Id renderGroup);
 
-	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex);
+	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex, GTSL::Range<const GAL::ShaderDataType*> vertexDescriptor);
 
 	MAKE_HANDLE(uint8, IndexStream)
 	
@@ -354,13 +354,16 @@ private:
 		Id Name;
 		uint8 Counter = 0, Target = 0;
 
-		struct MeshData
-		{
-			RenderSystem::MeshHandle Handle;
-			uint32 InstanceCount = 0, InstanceIndex = 0;
-		};
+		struct VertexGroup {
+			struct MeshData
+			{
+				RenderSystem::MeshHandle Handle;
+				uint32 InstanceCount = 0, InstanceIndex = 0;
+			};
 
-		GTSL::Vector<MeshData, BE::PAR> Meshes;
+			GTSL::Vector<MeshData, BE::PAR> Meshes;
+		};
+		GTSL::Array<VertexGroup, 8> VertexGroups;
 	};
 	//GTSL::KeepVector<MaterialInstance, BE::PAR> materialInstances;
 	
@@ -370,11 +373,16 @@ private:
 		
 		GTSL::Vector<MaterialInstance, BE::PAR> MaterialInstances;
 
-		RasterizationPipeline Pipeline;
 		Id RenderGroup;
 
 		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
 
+		struct Permutation {
+			RasterizationPipeline Pipeline;
+		};
+		GTSL::Array<Permutation, 8> VertexGroups;
+		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 20>, 8> VertexDescriptors;
+		
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
 		MemberHandle<void*> MaterialInstancesMemberHandle;
 		BufferHandle BufferHandle;

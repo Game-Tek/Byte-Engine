@@ -35,11 +35,13 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	{
 		GTSL::File packageFile; packageFile.OpenFile(package_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
 
-		auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
+		GTSL::FileQuery file_query(query_path);
+
+		while(file_query.DoQuery())
 		{
 			auto file_path = resources_path;
-			file_path += queryResult.FileNameWithExtension;
-			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
+			file_path += file_query.GetFileNameWithExtension();
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!textureInfos.Find(hashed_name))
@@ -71,10 +73,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 				stbi_image_free(data);
 			}
-		};
-
-		GTSL::FileQuery file_query(query_path);
-		GTSL::ForEach(file_query, load);
+		}
 
 		indexFileBuffer.Resize(0);
 		Insert(textureInfos, indexFileBuffer);

@@ -151,15 +151,17 @@ public:
 
 	[[nodiscard]] Texture GetSwapchainTexture() const { return swapchainTextures[imageIndex]; }
 
-	MAKE_HANDLE(uint32, Mesh)
+	MAKE_HANDLE(uint32, Mesh);
+
+	GTSL::Range<const GAL::ShaderDataType*> GetMeshVertexLayout(const MeshHandle meshHandle) const { return meshes[meshHandle()].VertexDescriptor; }
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
 	
 	MeshHandle CreateMesh(Id name, uint32 customIndex, const MaterialInstanceHandle materialInstanceHandle);
-	MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
+	//MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
 	void UpdateRayTraceMesh(const MeshHandle meshHandle);
-	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize);
+	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout);
 	void UpdateMesh(MeshHandle meshHandle);
 	void SetWillWriteMesh(MeshHandle meshHandle, bool willUpdate) {
 		SetBufferWillWriteFromHost(meshes[meshHandle()].Buffer, willUpdate);
@@ -345,6 +347,7 @@ private:
 		MaterialInstanceHandle MaterialHandle;
 		uint32 DerivedTypeIndex, CustomMeshIndex;
 		uint8 IndexSize, VertexSize;
+		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 	
 	struct RayTracingMesh
@@ -356,7 +359,6 @@ private:
 	
 	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
-
 
 	struct Buffer
 	{
@@ -418,6 +420,8 @@ private:
 	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
 	void deallocateApiMemory(void* data, void* allocation);
 
+//	GTSL::StaticMap<uint64, GTSL::Array<GAL::ShaderDataType, 8>, 8> vertexFormats;
+	
 	//GTSL::FlatHashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
 	std::unordered_map<uint64, GTSL::Pair<uint64, uint64>> apiAllocations;
 	GTSL::Mutex allocationsMutex;

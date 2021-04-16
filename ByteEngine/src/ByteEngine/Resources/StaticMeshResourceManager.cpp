@@ -42,12 +42,13 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	else
 	{
 		GTSL::File staticMeshPackage; staticMeshPackage.OpenFile(package_path, GTSL::File::AccessMode::WRITE);
-		
-		auto load = [&](const GTSL::FileQuery::QueryResult& queryResult)
+
+		GTSL::FileQuery file_query(query_path);
+		while(file_query.DoQuery())
 		{
 			auto file_path = resources_path;
-			file_path += queryResult.FileNameWithExtension;
-			auto name = queryResult.FileNameWithExtension; name.Drop(name.FindLast('.').Get());
+			file_path += file_query.GetFileNameWithExtension();
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!meshInfos.Find(hashed_name))
@@ -71,10 +72,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 				meshInfos.Emplace(hashed_name, meshInfo);
 			}
-		};
-
-		GTSL::FileQuery file_query(query_path);
-		GTSL::ForEach(file_query, load);
+		}
 
 		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(4096, 16, GetTransientAllocator());
 		Insert(meshInfos, meshInfosFileBuffer);

@@ -132,5 +132,5 @@ private:
 	
 	GTSL::FlatHashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 
-	static void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
+	void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

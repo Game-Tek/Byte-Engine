@@ -35,6 +35,7 @@ class Game final : public GameApplication
 	MaterialInstanceHandle hydrantMaterialInstance;
 	MaterialInstanceHandle tvMaterialInstance;
 	StaticMeshHandle plane;
+	MaterialInstanceHandle plainMaterialInstance;
 
 	void leftClick(InputManager::ActionInputEvent data);
 	void moveLeft(InputManager::ActionInputEvent data);

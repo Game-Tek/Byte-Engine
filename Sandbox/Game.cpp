@@ -113,16 +113,11 @@ bool Game::Initialize()
 		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
 
 		materialCreateInfo.Permutations.EmplaceBack();
-		materialCreateInfo.Permutations.back().PushBack({ "POSITION", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "NORMAL", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "TANGENT", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "BITANGENT", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "TEXTURE_COORDINATE", 0, GAL::ShaderDataType::FLOAT3 });
-
-		materialCreateInfo.Permutations.EmplaceBack();
-		materialCreateInfo.Permutations.back().PushBack({ "POSITION", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "NORMAL", 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ "TEXTURE_COORDINATE", 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::POSITION, 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::NORMAL, 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TANGENT, 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::BITANGENT, 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TEXTURE_COORDINATES, 0, GAL::ShaderDataType::FLOAT2 });
 		
 		{
 			materialCreateInfo.MaterialInstances.EmplaceBack();
@@ -138,6 +133,31 @@ bool Game::Initialize()
 			materialCreateInfo.MaterialInstances.back().Parameters.EmplaceBack();
 			materialCreateInfo.MaterialInstances.back().Parameters.back().First = "albedo";
 			materialCreateInfo.MaterialInstances.back().Parameters.back().Second.TextureReference = "TV_Albedo";
+		}
+		
+		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
+	}
+
+	{
+		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
+		materialCreateInfo.ShaderName = "PlainMaterial";
+		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
+		materialCreateInfo.RenderPass = "SceneRenderPass";
+		
+		materialCreateInfo.DepthWrite = true;
+		materialCreateInfo.DepthTest = true;
+		materialCreateInfo.StencilTest = false;
+		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
+		materialCreateInfo.BlendEnable = false;
+		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+
+		materialCreateInfo.Permutations.EmplaceBack();
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::POSITION, 0, GAL::ShaderDataType::FLOAT3 });
+		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::NORMAL, 0, GAL::ShaderDataType::FLOAT3 });
+		
+		{
+			materialCreateInfo.MaterialInstances.EmplaceBack();
+			materialCreateInfo.MaterialInstances.back().Name = "plainMaterial";
 		}
 		
 		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
@@ -180,7 +200,7 @@ bool Game::Initialize()
 	
 	//show loading screen
 	//load menu
-	//show menu/
+	//show menu
 	//start game
 
 	return true;
@@ -195,8 +215,10 @@ void Game::PostInitialize()
 	{
 		auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
 
-		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 25, -250));
+		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0.5, -2));
 		fov = cameraSystem->GetFieldOfView(camera);
+
+		uint32 ttt = 0;
 	}
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
@@ -226,21 +248,22 @@ void Game::PostInitialize()
 		tvMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
 	}
 
+	{
+		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = renderSystem;
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
+		createMaterialInfo.MaterialName = "PlainMaterial";
+		createMaterialInfo.InstanceName = "plainMaterial";
+		plainMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
+	}
+
 	audioEmitter = audioSystem->CreateAudioEmitter();
 	audioListener = audioSystem->CreateAudioListener();
 	audioSystem->SetAudioListener(audioListener);
 	audioSystem->BindAudio(audioEmitter, "gunshot");
-	//audioSystem->SetLooping(audioEmitter, true);
-	
-	{
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "hydrant";
-		addStaticMeshInfo.Material = hydrantMaterialInstance;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		hydrant = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	}
+	//audioSystem->SetLooping(audioEmitter, true);//
 	
 	//{
 	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
@@ -295,16 +318,28 @@ void Game::PostInitialize()
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	
+		GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv), { 0, 0, 1 });
+		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(tv), GTSL::Rotator(0, GTSL::Math::PI, 0));
+		//GTSL::Math::SetScale(staticMeshRenderer->GetTransformation(tv), GTSL::Vector3(1, 1, -1));//
 	}
 
 	{		
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 		addStaticMeshInfo.MeshName = "plane";
-		addStaticMeshInfo.Material = tvMaterialInstance;
+		addStaticMeshInfo.Material = plainMaterialInstance;
 		addStaticMeshInfo.GameInstance = gameInstance;
 		addStaticMeshInfo.RenderSystem = renderSystem;
 		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 		plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+	
+		auto position = staticMeshRenderer->GetMeshPosition(plane);
+		staticMeshRenderer->SetPosition(plane, { 0, 0, 0 });
+		
+		GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Rotator(-GTSL::Math::PI / 2, 0, 0));
+		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::AxisAngle(1, 0, 0, GTSL::Math::PI / 2));
+		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Quaternion(0.707, 0, 0, 0.707));
+		GTSL::Math::AddScale(staticMeshRenderer->GetTransformation(plane), { 2, 2, 2 });
 	}
 
 	
@@ -355,7 +390,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}//
+	//}
 	
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -387,15 +422,15 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
 	audioSystem->SetPosition(audioListener, cameraSystem->GetCameraPosition(camera) + dir);
 	audioSystem->SetOrientation(audioListener, rotationMatrix);
-	cameraSystem->SetCameraPosition(camera, GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 10));
+	cameraSystem->SetCameraPosition(camera, GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 0.05));
 	cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
-	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25, 250);
+	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.0000009f) / 4, 2);
 	
-	staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	staticMeshRenderer->SetPosition(tv, GTSL::Vector3(GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.000009f) * 25 + 200, 0, 250));
+	//staticMeshRenderer->SetPosition(hydrant, hydrantPos);
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(0, 0, 0));
 }
 
 void Game::Shutdown()
@@ -408,9 +443,12 @@ void Game::move(InputManager::Vector2DInputEvent data)
 	//posDelta += (data.Value - data.LastValue) * 2;
 	posDelta += data.Value * 0.005f;
 	posDelta = GTSL::Math::Modulo(posDelta, GTSL::Math::PI * 2.0f);
+	
+	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
+	auto rot = GTSL::Matrix4(GTSL::Quaternion(GTSL::AxisAngle(0, 1, 0, -posDelta.X())));
+	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
 
-	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
-	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), -posDelta.Y()));
+	//auto rot = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, 0));
 	gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetCameraRotation(camera, rot);
 }
 

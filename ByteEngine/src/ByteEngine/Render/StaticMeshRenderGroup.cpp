@@ -13,7 +13,7 @@ StaticMeshRenderGroup::StaticMeshRenderGroup()
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
 	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-	positions.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
+	transformations.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	meshes.Initialize(32, GetPersistentAllocator());
 	addedMeshes.Initialize(2, 16, GetPersistentAllocator());
 
@@ -36,7 +36,7 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 
 StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
-	uint32 index = positions.Emplace();
+	uint32 index = transformations.Emplace();
 	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 
 	auto meshHandle = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, index, addStaticMeshInfo.Material);

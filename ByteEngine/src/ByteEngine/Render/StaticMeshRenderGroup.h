@@ -18,7 +18,9 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	GTSL::Matrix4 GetMeshTransform(uint32 index) { return GTSL::Matrix4(positions[index]); }
+	GTSL::Matrix4 GetMeshTransform(uint32 index) { return transformations[index]; }
+	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }
+	GTSL::Vector3 GetMeshPosition(StaticMeshHandle staticMeshHandle) const { return GTSL::Math::GetTranslation(transformations[staticMeshHandle()]); }
 
 	struct AddStaticMeshInfo
 	{
@@ -30,10 +32,17 @@ public:
 	};
 	StaticMeshHandle AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
-	[[nodiscard]] auto GetPositions() const { return positions.GetRange(); }
+	[[nodiscard]] auto GetTransformations() const { return transformations.GetRange(); }
 	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
 
-	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) { positions[staticMeshHandle()] = vector3; }
+	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
+		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
+	}
+
+	void SetRotation(StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
+		GTSL::Math::SetRotation(transformations[staticMeshHandle()], quaternion);
+	}
+	
 	uint32 GetStaticMeshCount() const { return staticMeshCount; }
 
 	auto GetMeshHandles() const { return meshes.GetRange(); }
@@ -61,7 +70,8 @@ private:
 
 	GTSL::Array<GTSL::Id64, 16> resourceNames;
 	uint32 staticMeshCount = 0;
-	GTSL::KeepVector<GTSL::Vector3, BE::PersistentAllocatorReference> positions;
+	
+	GTSL::KeepVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
 	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
 	GTSL::PagedVector<GTSL::Pair<RenderSystem::MeshHandle, uint32>, BE::PAR> addedMeshes;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;

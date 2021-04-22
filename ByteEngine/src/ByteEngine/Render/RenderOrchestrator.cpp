@@ -49,7 +49,6 @@ void StaticMeshRenderManager::GetSetupAccesses(GTSL::Array<TaskDependency, 16>& 
 void StaticMeshRenderManager::Setup(const SetupInfo& info)
 {
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	auto positions = renderGroup->GetPositions();
 	
 	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, staticMeshStruct, renderGroup->GetStaticMeshCount());
 
@@ -81,8 +80,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 		GTSL::MultiFor([&](uint32 i, const RenderSystem::MeshHandle& meshHandle)
 		{
 			auto pos = renderGroup->GetMeshTransform(i);
-			pos(2, 3) *= -1.f;
-
+			
 			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, i);
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, matrixUniformBufferMemberHandle) = pos;
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(meshHandle);
@@ -92,9 +90,9 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 
 
 			if (BE::Application::Get()->GetOption("rayTracing")) {
-				info.RenderSystem->SetMeshMatrix(meshHandle, GTSL::Matrix3x4(pos)); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
-				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index * 96); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
-				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index); //TODO: FIX, INDEX IS NOT CORRECT WHEN MULTIPLE R.S. INSTANCES
+				info.RenderSystem->SetMeshMatrix(meshHandle, GTSL::Matrix3x4(pos));
+				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index * 96);
+				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index);
 			}
 		}, renderGroup->GetStaticMeshCount(), renderGroup->GetMeshHandles());
 		
@@ -181,14 +179,9 @@ void UIRenderManager::Setup(const SetupInfo& info)
 		float xyRatio = static_cast<float32>(canvasSize.Width) / static_cast<float32>(canvasSize.Height);
 		float yxRatio = static_cast<float32>(canvasSize.Height) / static_cast<float32>(canvasSize.Width);
 		
-		GTSL::Matrix4 ortho(1.0f);
-		GTSL::Math::MakeOrthoMatrix(ortho, 1.0f,
-		                            -1.0f,
-		                            yxRatio,
-		                            -yxRatio, 0, 100);
-
-		//GTSL::Math::MakeOrthoMatrix(ortho, canvasSize.Width, -canvasSize.Width, canvasSize.Height, -canvasSize.Height, 0, 100);
+		GTSL::Matrix4 ortho = GTSL::Math::MakeOrthoMatrix(1.0f, -1.0f, yxRatio, -yxRatio, 0, 100);
 		
+		//GTSL::Math::MakeOrthoMatrix(ortho, canvasSize.Width, -canvasSize.Width, canvasSize.Height, -canvasSize.Height, 0, 100);
 		//GTSL::Math::MakeOrthoMatrix(ortho, 0.5f, -0.5f, 0.5f, -0.5f, 1, 100);
 		
 		auto& organizers = canvas.GetOrganizersTree();
@@ -206,7 +199,7 @@ void UIRenderManager::Setup(const SetupInfo& info)
 			auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
 			auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
 			//
-			GTSL::Math::Translate(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
+			GTSL::Math::AddTranslation(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
 			GTSL::Math::Scale(trans, GTSL::Vector3(scale.X(), scale.Y(), 1));
 			//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
 			//
@@ -609,20 +602,11 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 {
 	//if (!renderingEnabled) { return; }
 	
-	auto positionMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetPositionMatrices();
-	auto rotationMatrices = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetRotationMatrices();
 	auto fovs = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetFieldOfViews();
 
-	GTSL::Matrix4 projectionMatrix;
-	GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, fovs[0], 16.f / 9.f, 0.5f, 1000.f);
+	GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fovs[0], 16.f / 9.f, 0.01f, 1000.f);
 
-	auto cameraPosition = positionMatrices[0];
-
-	cameraPosition(0, 3) *= -1;
-	cameraPosition(1, 3) *= -1;
-
-	auto viewMatrix = rotationMatrices[0] * cameraPosition;
-	auto matrix = projectionMatrix * viewMatrix;
+	auto cameraTransform = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem")->GetCameraTransform();
 
 	auto* materialSystem = taskInfo.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	
@@ -631,7 +615,7 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo)
 	setupInfo.RenderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	setupInfo.MaterialSystem = materialSystem;
 	setupInfo.ProjectionMatrix = projectionMatrix;
-	setupInfo.ViewMatrix = viewMatrix;
+	setupInfo.ViewMatrix = cameraTransform;
 	setupInfo.RenderOrchestrator = this;
 	GTSL::ForEach(renderManagers, [&](SystemHandle renderManager) { taskInfo.GameInstance->GetSystem<RenderManager>(renderManager)->Setup(setupInfo); });
 
@@ -683,16 +667,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	{
 		auto* cameraSystem = taskInfo.GameInstance->GetSystem<CameraSystem>("CameraSystem");
 
-		GTSL::Matrix4 projectionMatrix;
-		GTSL::Math::BuildPerspectiveMatrix(projectionMatrix, cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.5f, 1000.f);
-
-		auto positionMatrix = cameraSystem->GetPositionMatrices()[0];
-		positionMatrix(0, 3) *= -1;
-		positionMatrix(1, 3) *= -1;
-		//positionMatrix(2, 3) *= -1;
-
-		auto viewMatrix = cameraSystem->GetRotationMatrices()[0] * positionMatrix;
-
+		GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.01f, 1000.f);
+		projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
+		
+		auto viewMatrix = cameraSystem->GetCameraTransform();
+		
 		MaterialSystem::BufferIterator bufferIterator;
 
 		*materialSystem->GetMemberPointer(bufferIterator, cameraMatricesHandle, 0) = viewMatrix;
@@ -967,8 +946,9 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 			material.VertexGroups.EmplaceBack();
 			auto& descriptor = material.VertexDescriptors.EmplaceBack();
 			
-			for (const auto& ve : e.VertexElements)
+			for (const auto& ve : e.VertexElements) {
 				descriptor.EmplaceBack(ve.Type);
+			}
 		}
 
 		material.MaterialInstances.Initialize(4, GetPersistentAllocator());
@@ -977,8 +957,9 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 			auto& materialInstance = material.MaterialInstances.EmplaceBack();
 			materialInstance.Name = e.Name;
 
-			for(auto& p : materialLoadInfo.Permutations)
+			for (auto& p : materialLoadInfo.Permutations) {
 				materialInstance.VertexGroups.EmplaceBack().Meshes.Initialize(2, GetPersistentAllocator());
+			}
 		}
 
 		materialInstanceIndex = index.Get();
@@ -1460,20 +1441,17 @@ void RenderOrchestrator::AddMesh(const RenderSystem::MeshHandle meshHandle, cons
 	auto& material = materials[materialHandle.MaterialIndex];
 	auto& materialInstance = material.MaterialInstances[materialHandle.MaterialInstanceIndex];
 
-	auto vD = material.VertexDescriptors.Find(vertexDescriptor);
-
+	bool found = false;
 	uint16 vertexGroupIndex = 0;
 	
-	if (!vD.State()) {
-		//materialInstance.VertexDescriptors.EmplaceBack(vertexDescriptor);
-		//vertexGroupIndex = materialInstance.VertexGroups.GetLength();
-		//auto& vertexGroup = materialInstance.VertexGroups.EmplaceBack();
-		//vertexGroup.Meshes.Initialize(2, GetPersistentAllocator());
-	} else {
-		vertexGroupIndex = vD.Get();
+	for (const auto& e : material.VertexDescriptors) {
+		if (CompareContents(GTSL::Range<const GAL::ShaderDataType*>(e.begin(), e.end()), vertexDescriptor)) { found = true; break; }
+
+		++vertexGroupIndex;
 	}
-	
-	materialInstance.VertexGroups[vertexGroupIndex].Meshes.EmplaceBack(meshHandle, 1, instanceIndex);
+
+	if(found)
+		materialInstance.VertexGroups[vertexGroupIndex].Meshes.EmplaceBack(meshHandle, 1, instanceIndex);
 }
 
 void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem)
@@ -1494,7 +1472,11 @@ void RenderOrchestrator::UpdateIndexStream(IndexStreamHandle indexStreamHandle, 
 
 void RenderOrchestrator::BindData(const RenderSystem* renderSystem, const MaterialSystem* materialSystem, CommandBuffer commandBuffer, Buffer buffer)
 {
-	auto bufferAddress = buffer.GetAddress(renderSystem->GetRenderDevice());
+	GAL::VulkanDeviceAddress bufferAddress = 0;
+
+	if (buffer.GetVkBuffer()) {
+		bufferAddress = buffer.GetAddress(renderSystem->GetRenderDevice());
+	}
 	
 	RenderSystem::BufferAddress dbufferAddress(bufferAddress);
 
@@ -1815,12 +1797,15 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		createInfo.Name = name;
 	}
 
-	createInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable; createInfo.PipelineDescriptor.CullMode = onMaterialLoadInfo.CullMode;
+	createInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable;
 	createInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest; createInfo.PipelineDescriptor.DepthWrite = onMaterialLoadInfo.DepthWrite;
-	createInfo.PipelineDescriptor.StencilTest = onMaterialLoadInfo.StencilTest; createInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
+	createInfo.PipelineDescriptor.StencilTest = onMaterialLoadInfo.StencilTest;
+	createInfo.PipelineDescriptor.CullMode = GAL::CullMode::CULL_BACK;
+	createInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
+	createInfo.PipelineDescriptor.WindingOrder = GAL::WindingOrder::CLOCKWISE;
 	createInfo.PipelineDescriptor.ColorBlendOperation = onMaterialLoadInfo.ColorBlendOperation;
 
-	auto transStencil = [](const MaterialResourceManager::StencilState& stencilState, GAL::StencilState& sS) {
+	auto transStencil = [](const MaterialResourceManager::StencilState& stencilState, GAL::StencilOperations::StencilState& sS) {
 		sS.CompareOperation = stencilState.CompareOperation; sS.CompareMask = stencilState.CompareMask;
 		sS.DepthFailOperation = stencilState.DepthFailOperation; sS.FailOperation = stencilState.FailOperation;
 		sS.PassOperation = stencilState.PassOperation; sS.Reference = stencilState.Reference; sS.WriteMask = stencilState.WriteMask;
@@ -1829,14 +1814,19 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 	transStencil(onMaterialLoadInfo.Front, createInfo.PipelineDescriptor.StencilOperations.Front);
 	transStencil(onMaterialLoadInfo.Back, createInfo.PipelineDescriptor.StencilOperations.Back);
 
-	createInfo.SurfaceExtent = { 1, 1 }; // Will be updated dynamically on render time
-
 	GTSL::Array<Pipeline::ShaderInfo, 8> shaderInfos;
 
-	for (uint8 i = 0; i < onMaterialLoadInfo.Shaders.GetLength(); ++i) {
-		auto& shaderInfo = shaderInfos.EmplaceBack();
-		shaderInfo.Type = ConvertShaderType(onMaterialLoadInfo.Shaders[i].Type);
-		shaderInfo.Shader = shaders[i];
+	{
+		uint32 offset = 0;
+		
+		for (uint8 i = 0; i < onMaterialLoadInfo.Shaders.GetLength(); ++i) {
+			auto& shaderInfo = shaderInfos.EmplaceBack();
+			shaderInfo.Type = ConvertShaderType(onMaterialLoadInfo.Shaders[i].Type);
+			shaderInfo.Shader = shaders[i];
+			shaderInfo.Blob = GTSL::Range<const byte*>(onMaterialLoadInfo.Shaders[i].Size, loadInfo->Buffer.GetData() + offset);
+
+			offset += onMaterialLoadInfo.Shaders[i].Size;
+		}
 	}
 
 	createInfo.Stages = shaderInfos;
@@ -1852,14 +1842,6 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 	{
 		const auto& permutationInfo = onMaterialLoadInfo.Permutations[permutationIndex];
 		auto& permutationData = materialData.VertexGroups[permutationIndex];
-
-		{
-			auto& vertexDescriptor = materialData.VertexDescriptors[permutationIndex];
-			
-			for(auto& e : permutationInfo.VertexElements) {
-				vertexDescriptor.EmplaceBack(e.Type);
-			}
-		}
 
 		GTSL::Array<RasterizationPipeline::VertexElement, 10> vertexDescriptor;
 

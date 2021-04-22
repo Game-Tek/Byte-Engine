@@ -98,7 +98,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			switch (shaderType)
 			{
 			case GAL::ShaderType::VERTEX_SHADER:
-				AddVertexShaderLayout(string);
+				AddVertexShaderLayout(string, materialCreateInfo.Permutations[0]);
 				break;
 			}
 
@@ -154,6 +154,12 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		materialData.Parameters = materialCreateInfo.Parameters;
 
 		materialData.MaterialInstances = materialCreateInfo.MaterialInstances;
+
+		for(const auto& p : materialCreateInfo.Permutations)
+		{
+			auto& permutation = materialData.Permutations.EmplaceBack(p);
+			//permutation.VertexElements.EmplaceBack();
+		}
 		
 		rasterMaterialInfos.Emplace(hashed_name, materialData);
 		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
@@ -259,6 +265,8 @@ MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMateria
 	onMaterialLoadInfo.Front = materialInfo.Front;
 	onMaterialLoadInfo.Back = materialInfo.Back;
 	onMaterialLoadInfo.MaterialInstances = materialInfo.MaterialInstances;
+	onMaterialLoadInfo.Permutations = materialInfo.Permutations;
+	onMaterialLoadInfo.Shaders = materialInfo.Shaders;
 
 	auto tt = onMaterialLoadInfo; //copy because MoveRef into dynamic task removes contents
 	

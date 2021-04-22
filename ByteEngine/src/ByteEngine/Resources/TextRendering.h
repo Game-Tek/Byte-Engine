@@ -30,7 +30,7 @@ struct CubicBezier
 };
 
 inline float det(GTSL::Vector2 a, GTSL::Vector2 b) { return a.X() * b.Y() - b.X() * a.Y(); }
-// Find vector vi given pixel p=(0,0) and Bézier points b0, b1, b2
+// Find vector vi given pixel p=(0,0) and Bï¿½zier points b0, b1, b2
 GTSL::Vector2 get_distance_vector(GTSL::Vector2 b0, GTSL::Vector2 b1, GTSL::Vector2 b2) {
 	float a = det(b0, b2), b = 2 * det(b1, b0), d = 2 * det(b2, b1); // ab,c(p)
 	float f = b * d - a * a; // f(p)

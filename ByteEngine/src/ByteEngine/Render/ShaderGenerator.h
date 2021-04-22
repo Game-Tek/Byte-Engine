@@ -76,7 +76,7 @@ inline auto GenerateShader(GTSL::String<T>& string, GAL::ShaderType shaderType)
 //layout(location = 0) in vec3 in_Position;
 
 template<typename T>
-inline auto AddVertexShaderLayout(GTSL::String<T>& string)
+inline auto AddVertexShaderLayout(GTSL::String<T>& string, const GTSL::Range<const MaterialResourceManager::RasterMaterialData::VertexElement*> vertexElements)
 {
 	auto addElement = [&](GTSL::ShortString<32> name, uint16 index, GAL::ShaderDataType type)
 	{
@@ -102,10 +102,18 @@ inline auto AddVertexShaderLayout(GTSL::String<T>& string)
 		
 		string += ' '; string += name; string += ";\n";
 	};
-	
-	addElement("in_Position", 0, GAL::ShaderDataType::FLOAT3);
-	addElement("in_Normal", 1, GAL::ShaderDataType::FLOAT3);
-	addElement("in_Tangent", 2, GAL::ShaderDataType::FLOAT3);
-	addElement("in_BiTangent", 3, GAL::ShaderDataType::FLOAT3);
-	addElement("in_TextureCoordinates", 4, GAL::ShaderDataType::FLOAT2);
+
+	for(uint8 i = 0; i < vertexElements.ElementCount(); ++i)
+	{
+		const auto& att = vertexElements[i];
+		
+		switch (GTSL::Id64(att.VertexAttribute)())
+		{
+		case GTSL::Hash(GAL::Pipeline::POSITION): addElement("in_Position", i, att.Type); break;
+		case GTSL::Hash(GAL::Pipeline::NORMAL): addElement("in_Normal", i, att.Type); break;
+		case GTSL::Hash(GAL::Pipeline::TANGENT): addElement("in_Tangent", i, att.Type); break;
+		case GTSL::Hash(GAL::Pipeline::BITANGENT): addElement("in_BiTangent", i, att.Type); break;
+		case GTSL::Hash(GAL::Pipeline::TEXTURE_COORDINATES): addElement("in_TextureCoordinates", i, att.Type); break;
+		}
+	}
 }

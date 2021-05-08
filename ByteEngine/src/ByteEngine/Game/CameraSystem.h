@@ -20,12 +20,6 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override {}
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
-	void AddCamera()
-	{
-		positionMatrices.EmplaceBack(); rotationMatrices.EmplaceBack();
-		fovs.EmplaceBack(45.0f);
-	}
-	
 	CameraHandle AddCamera(const GTSL::Vector3 pos)
 	{
 		rotationMatrices.EmplaceBack();
@@ -34,11 +28,6 @@ public:
 		positionMatrices.EmplaceBack(pos);
 		return CameraHandle(index);
 	}
-	
-	//ComponentReference AddCamera(const GTSL::Matrix4& matrix)
-	//{
-	//	return viewMatrices.EmplaceBack(matrix);
-	//}
 
 	void RemoveCamera(const CameraHandle reference)
 	{
@@ -61,9 +50,7 @@ public:
 		pos[1][3] *= -1;
 		pos[2][3] *= -1;
 		
-		auto rot = rotationMatrices[0];
-		//GTSL::Math::AddRotation(pos, GTSL::AxisAngle(0, 1, 0, GTSL::Math::PI));
-		return rot * pos;
+		return rotationMatrices[0] * pos;
 	}
 	
 	void SetCameraPosition(const CameraHandle reference, const GTSL::Vector3 pos) {

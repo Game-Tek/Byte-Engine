@@ -167,7 +167,7 @@ struct ParseState
 				{
 					StackState stackState;
 					stackState.Type = member.Type;
-					stackState.Name = member.Name;
+					stackState.InputSource = member.InputSource;
 					stackState.C = C; //todo
 					Stack.EmplaceBack(stackState);
 				}
@@ -239,7 +239,7 @@ bool GoToArray(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& par
 
 				typename ParseState<ALLOC2>::StackState stackState;
 				stackState.Type = strings[0];
-				stackState.Name = strings[1];
+				stackState.InputSource = strings[1];
 				stackState.C = parseState.C; //todo
 				parseState.Stack.EmplaceBack(stackState);
 
@@ -299,7 +299,7 @@ bool GetVariable(FileDescription<ALLOCATOR>& fileDescription, ParseState<ALLOCAT
 	uint32 memberIndex = e->MembersByName.At(Id(objectName));
 
 	while (true) { //fix
-		if (e->Members[parseState.Stack.back().BlockIndex % e->Members.GetLength()].Name == objectName) { break; }
+		if (e->Members[parseState.Stack.back().BlockIndex % e->Members.GetLength()].InputSource == objectName) { break; }
 		parseState.advance(fileDescription);
 	}
 	

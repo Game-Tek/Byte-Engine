@@ -2,7 +2,7 @@
 
 #include "Utility/Shapes/Box.h"
 
-#include "Math/Vector3.h"
+#include "Math/Vectors.h"
 
 class ReverbVolume
 {

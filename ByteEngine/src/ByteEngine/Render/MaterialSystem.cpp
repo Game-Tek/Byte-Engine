@@ -131,14 +131,15 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 	setLayoutData.Parent = parentHandle;
 	setLayoutData.Level = level;
 
-	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts(level); //"Pre-Allocate" _level_ elements as to be able to place them in order while traversing tree upwards
+	GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
 
 	// Traverse tree to find parent's pipeline layouts
 	{
 		auto lastSet = parentHandle;
 	
-		for (uint8 i = 0, l = level - 1; i < level; ++i, --l)
-		{
+		for (uint8 i = 0; i < level; ++i) { bindingsSetLayouts.EmplaceBack(); }
+		
+		for (uint8 i = 0, l = level - 1; i < level; ++i, --l) {
 			bindingsSetLayouts[l] = setLayoutDatas[lastSet].BindingsSetLayout;
 			lastSet = setLayoutDatas[lastSet].Parent;
 		}
@@ -465,16 +466,17 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id s
 				{
 					allocateBindings.BindingsSetLayouts = GTSL::Range<BindingsSetLayout*>(1, &setLayout.BindingsSetLayout);
 
-					GTSL::Array<GAL::VulkanCreateInfo, 1> bindingsSetsCreateInfo(1);
+					GTSL::Array<GAL::VulkanCreateInfo, 1> bindingsSetsCreateInfos;
 
 					if constexpr (_DEBUG)
 					{
 						GTSL::StaticString<64> name("BindingsSet. Set: "); name += setName.GetString();
-						bindingsSetsCreateInfo[0].RenderDevice = renderSystem->GetRenderDevice();
-						bindingsSetsCreateInfo[0].Name = name;
+						auto& bindingsSetCreateInfo = bindingsSetsCreateInfos.EmplaceBack();
+						bindingsSetCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+						bindingsSetCreateInfo.Name = name;
 					}
 
-					allocateBindings.BindingsSetCreateInfos = bindingsSetsCreateInfo;
+					allocateBindings.BindingsSetCreateInfos = bindingsSetsCreateInfos;
 
 					set.BindingsPool.AllocateBindingsSets(allocateBindings);
 				}

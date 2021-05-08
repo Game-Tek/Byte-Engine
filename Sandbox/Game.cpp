@@ -321,7 +321,7 @@ void Game::PostInitialize()
 	
 		GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv), { 0, 0, 1 });
 		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(tv), GTSL::Rotator(0, GTSL::Math::PI, 0));
-		//GTSL::Math::SetScale(staticMeshRenderer->GetTransformation(tv), GTSL::Vector3(1, 1, -1));//
+		//GTSL::Math::SetScale(staticMeshRenderer->GetTransformation(tv), GTSL::Vector3(1, 1, -1));
 	}
 
 	{		
@@ -414,15 +414,18 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	
 	GameApplication::OnUpdate(onUpdate);
 
-	auto rotationMatrix = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
-	auto dir = rotationMatrix * (moveDir * 50);
+	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+	
+	auto cameraDirection = GTSL::Quaternion(GTSL::Rotator(0, posDelta.X(), 0));
+	auto dir = cameraDirection * moveDir;
 
 	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+
+	auto camPos = GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 1);
 	
-	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
-	audioSystem->SetPosition(audioListener, cameraSystem->GetCameraPosition(camera) + dir);
-	audioSystem->SetOrientation(audioListener, rotationMatrix);
-	cameraSystem->SetCameraPosition(camera, GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 0.05));
+	audioSystem->SetPosition(audioListener, camPos);
+	audioSystem->SetOrientation(audioListener, cameraDirection);
+	cameraSystem->SetCameraPosition(camera, camPos);
 	cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
@@ -441,11 +444,11 @@ void Game::Shutdown()
 void Game::move(InputManager::Vector2DInputEvent data)
 {
 	//posDelta += (data.Value - data.LastValue) * 2;
-	posDelta += data.Value * 0.005f;
-	posDelta = GTSL::Math::Modulo(posDelta, GTSL::Math::PI * 2.0f);
+	//data.Value.X() *= -1;
+	posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI * 2.0f));
 	
-	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));
-	auto rot = GTSL::Matrix4(GTSL::Quaternion(GTSL::AxisAngle(0, 1, 0, -posDelta.X())));
+	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]//
+	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0, 1, 0, posDelta.X()));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
 
 	//auto rot = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, 0));

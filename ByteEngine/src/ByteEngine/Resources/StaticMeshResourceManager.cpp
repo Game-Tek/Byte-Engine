@@ -14,8 +14,21 @@
 #include <GTSL/Pair.h>
 #include <GTSL/Serialize.h>
 #include <GTSL/Math/Math.hpp>
+#include <GTSL/Math/Vectors.h>
 
 #include "ByteEngine/Game/GameInstance.h"
+
+static GTSL::Vector4 toAssimp(const aiColor4D assimpVector) {
+	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);
+}
+
+static GTSL::Vector3 toAssimp(const aiVector3D assimpVector) {
+	return GTSL::Vector3(assimpVector.x, assimpVector.y, assimpVector.z);
+}
+
+static GTSL::Vector2 toAssimp(const aiVector2D assimpVector) {
+	return GTSL::Vector2(assimpVector.x, assimpVector.y);
+}
 
 using ShaderDataTypeType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 
@@ -31,17 +44,32 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 	auto package_path = GetResourcePath(GTSL::ShortString<32>("StaticMesh"), GTSL::ShortString<32>("bepkg"));
 
-	indexFile.OpenFile(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
-	
-	if (indexFile.GetFileSize())
+	switch (indexFile.Open(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ))
 	{
-		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(indexFile.GetFileSize(), 16, GetTransientAllocator());
-		indexFile.ReadFile(meshInfosFileBuffer.GetBufferInterface());
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: indexFile.Create(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ); break;
+	case GTSL::File::OpenResult::ERROR: break;
+	default: ;
+	}
+	
+	if (indexFile.GetSize())
+	{
+		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(indexFile.GetSize(), 16, GetTransientAllocator());
+		indexFile.Read(meshInfosFileBuffer.GetBufferInterface());
 		GTSL::Extract(meshInfos, meshInfosFileBuffer);
 	}
 	else
 	{
-		GTSL::File staticMeshPackage; staticMeshPackage.OpenFile(package_path, GTSL::File::AccessMode::WRITE);
+		GTSL::File staticMeshPackage;
+		switch (staticMeshPackage.Open(package_path, GTSL::File::AccessMode::WRITE))
+		{
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+		case GTSL::File::OpenResult::DOES_NOT_EXIST: staticMeshPackage.Create(package_path, GTSL::File::AccessMode::WRITE); break;
+		case GTSL::File::OpenResult::ERROR: break;
+		default: ;
+		}
 
 		GTSL::FileQuery file_query(query_path);
 		while(file_query.DoQuery())
@@ -56,9 +84,9 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 				GTSL::Buffer<BE::TAR> meshFileBuffer;
 
 				GTSL::File queryFile;
-				queryFile.OpenFile(file_path, GTSL::File::AccessMode::READ);
-				meshFileBuffer.Allocate(queryFile.GetFileSize(), 32, GetTransientAllocator());
-				queryFile.ReadFile(meshFileBuffer.GetBufferInterface());
+				queryFile.Open(file_path, GTSL::File::AccessMode::READ);
+				meshFileBuffer.Allocate(queryFile.GetSize(), 32, GetTransientAllocator());
+				queryFile.Read(meshFileBuffer.GetBufferInterface());
 
 				GTSL::Buffer<BE::TAR> meshDataBuffer; meshDataBuffer.Allocate(2048 * 2048, 8, GetTransientAllocator());
 
@@ -66,9 +94,9 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 				loadMesh(meshFileBuffer, meshInfo, meshDataBuffer);
 
-				meshInfo.ByteOffset = static_cast<uint32>(staticMeshPackage.GetFileSize());
+				meshInfo.ByteOffset = static_cast<uint32>(staticMeshPackage.GetSize());
 
-				staticMeshPackage.WriteToFile(meshDataBuffer.GetBufferInterface());
+				staticMeshPackage.Write(meshDataBuffer.GetBufferInterface());
 
 				meshInfos.Emplace(hashed_name, meshInfo);
 			}
@@ -77,7 +105,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(4096, 16, GetTransientAllocator());
 		Insert(meshInfos, meshInfosFileBuffer);
 
-		indexFile.WriteToFile(meshInfosFileBuffer.GetBufferInterface());
+		indexFile.Write(meshInfosFileBuffer.GetBufferInterface());
 	}
 
 	initializePackageFiles(package_path);
@@ -92,8 +120,8 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 	Assimp::Importer importer;
 	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_FlipUVs |
 		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder);
-	
-	if(!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
+
+	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
 		BE_LOG_ERROR(importer.GetErrorString());
 		BE_ASSERT(false, "Error interpreting file!");
 	}
@@ -102,73 +130,172 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	aiMesh* inMesh = ai_scene->mMeshes[0];
 
-	struct VertexCopyData {
-		const byte* Array = nullptr; uint8 ElementSize = 0, JumpSize = 0;
-	};
-	
-	GTSL::Array<VertexCopyData, 20> vertexElements;
-	
 	meshInfo.VertexCount = inMesh->mNumVertices;
-	
+
 	//MESH ALWAYS HAS POSITIONS
 	meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
-	vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mVertices), 12, 12);
 
-	if(inMesh->HasNormals())
-	{
+	if (inMesh->HasNormals()) {
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
-		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mNormals), 12, 12);
 	}
 
-	if(inMesh->HasTangentsAndBitangents())
+	if (inMesh->HasTangentsAndBitangents())
 	{
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
-		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mTangents), 12, 12);
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
-		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mBitangents), 12, 12);
 	}
 
-	for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(inMesh->GetNumUVChannels()); ++tex_coords)
-	{
+	for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(inMesh->GetNumUVChannels()); ++tex_coords) {
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT2);
-
-		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mTextureCoords[tex_coords]), 8, 12);
 	}
 
-	for (uint8 colors = 0; colors < static_cast<uint8>(inMesh->GetNumColorChannels()); ++colors)
-	{
+	for (uint8 colors = 0; colors < static_cast<uint8>(inMesh->GetNumColorChannels()); ++colors) {
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT4);
-
-		vertexElements.EmplaceBack(reinterpret_cast<const byte*>(inMesh->mColors[colors]), 16, 16);
 	}
+
+	if (false) {
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
+		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
+	}
+
+	meshInfo.VertexSize = GAL::GraphicsPipeline::GetVertexSize(meshInfo.VertexDescriptor);
 
 	meshInfo.BoundingBox = GTSL::Vector3(); meshInfo.BoundingRadius = 0.0f;
-	
-	for(uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex)
-	{
-		auto vertexPosition = GTSL::Vector3(inMesh->mVertices[vertex].x, inMesh->mVertices[vertex].y, inMesh->mVertices[vertex].z);
-		
-		meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(vertexPosition));
 
-		meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(vertexPosition));
+	meshDataBuffer.Resize(meshInfo.VertexSize * inMesh->mNumVertices);
+
+	byte* dataPointer = meshDataBuffer.GetData(); uint32 elementIndex = 0;
+	
+	auto advanceVertexElement = [&]() {
+		return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, meshInfo.VertexDescriptor);
+	};
+
+	auto getElementPointer = [&]<typename T>(T* elementPointer, const uint32 elementIndex) -> T& {
+		return *reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * meshInfo.VertexSize));
+	};
+
+	{
+		auto* positions = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
 		
-		for(auto e : vertexElements) {
-			meshDataBuffer.CopyBytes(e.ElementSize, e.Array + vertex * e.JumpSize);
+		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex)
+		{
+			auto vertexPosition = toAssimp(inMesh->mVertices[vertex]);
+			meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(vertexPosition));
+			meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(vertexPosition));
+			getElementPointer(positions, vertex) = vertexPosition;
 		}
 	}
 
-	uint16 indexSize = 0;
-	
-	if((inMesh->mNumFaces * 3) < 0xFFFF)
-	{
-		indexSize = 2;
+	if (inMesh->HasNormals()) {
+		GTSL::Vector3* normals = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
+		
+		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+			getElementPointer(normals, vertex) = toAssimp(inMesh->mNormals[vertex]);
+		}
+	}
 
-		for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
-			for (uint32 index = 0; index < 3; ++index) {
-				uint16 idx = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
-				meshDataBuffer.CopyBytes(indexSize, reinterpret_cast<byte*>(&idx));
+	if (inMesh->HasTangentsAndBitangents()) {
+		GTSL::Vector3* tangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
+		
+		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+			getElementPointer(tangents, vertex) = toAssimp(inMesh->mTangents[vertex]);
+		}
+		
+		GTSL::Vector3* bitangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
+
+		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+			getElementPointer(bitangents, vertex) = toAssimp(inMesh->mBitangents[vertex]);
+		}
+	}
+
+	for(uint8 i = 0; i < 8; ++i) {
+		if (inMesh->HasTextureCoords(i)) {
+			GTSL::Vector2* textureCoordinates = reinterpret_cast<GTSL::Vector2*>(advanceVertexElement());
+			
+			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+				getElementPointer(textureCoordinates, vertex) = GTSL::Vector2(toAssimp(inMesh->mTextureCoords[i][vertex]));
 			}
 		}
+	}
+
+	for(uint8 i = 0; i < 8; ++i) {
+		if (inMesh->HasVertexColors(i)) {
+			GTSL::Vector4* colors = reinterpret_cast<GTSL::Vector4*>(advanceVertexElement());
+			
+			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+				getElementPointer(colors, vertex) = toAssimp(inMesh->mColors[i][vertex]);
+			}
+		}
+	}
+
+	if(false) {
+		uint32* index[4];
+		float32* weight[4];
+		index[0] = reinterpret_cast<uint32*>(advanceVertexElement());
+		weight[0] = reinterpret_cast<float32*>(advanceVertexElement());
+		
+		index[1] = reinterpret_cast<uint32*>(advanceVertexElement());
+		weight[1] = reinterpret_cast<float32*>(advanceVertexElement());
+		
+		index[2] = reinterpret_cast<uint32*>(advanceVertexElement());
+		weight[2] = reinterpret_cast<float32*>(advanceVertexElement());
+		
+		index[3] = reinterpret_cast<uint32*>(advanceVertexElement());
+		weight[3] = reinterpret_cast<float32*>(advanceVertexElement());
+
+		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+			for (uint8 i = 0; i < 4; ++i) {
+				getElementPointer(index[i], vertex) = 0xFFFFFFFF;
+				getElementPointer(weight[i], vertex) = 0.0f;
+			}
+		}
+		
+		for (uint32 b = 0; b < inMesh->mNumBones; ++b) {
+			const auto& assimpBone = inMesh->mBones[b];
+		
+			for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
+				auto vertexIndex = assimpBone->mWeights[w].mVertexId;
+				
+				for (uint8 i = 0; i < 4; ++i) {
+					if (getElementPointer(index[i], vertexIndex) == 0xFFFFFFFF) {
+						getElementPointer(index[i], vertexIndex) = b;
+						getElementPointer(weight[i], vertexIndex) = assimpBone->mWeights[w].mWeight;
+						break;
+					}
+				}
+			}
+		}
+	}
+	
+	uint16 indexSize = 0;
+	
+	if(inMesh->mNumFaces * 3 < 0xFFFF)
+	{
+		//if (inMesh->mNumFaces * 3 < 0xFF) {
+		//	indexSize = 1;
+		//
+		//	for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
+		//		for (uint32 index = 0; index < 3; ++index) {
+		//			uint8 idx = static_cast<uint8>(inMesh->mFaces[face].mIndices[index]);
+		//			meshDataBuffer.CopyBytes(indexSize, reinterpret_cast<byte*>(&idx));
+		//		}
+		//	}
+		//}
+		//else {
+			indexSize = 2;
+
+			for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
+				for (uint32 index = 0; index < 3; ++index) {
+					meshDataBuffer.CopyBytes(indexSize, reinterpret_cast<byte*>(&inMesh->mFaces[face].mIndices[index]));
+				}
+			}
+		//}
 	}
 	else
 	{
@@ -183,6 +310,4 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	meshInfo.IndexCount = inMesh->mNumFaces * 3;
 	meshInfo.IndexSize = indexSize;
-
-	meshInfo.VertexSize = GAL::GraphicsPipeline::GetVertexSize(meshInfo.VertexDescriptor);
 }

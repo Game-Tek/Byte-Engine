@@ -65,7 +65,7 @@ void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 	
 	{
 		AccelerationStructure::GeometryTriangles geometryTriangles;
-		geometryTriangles.IndexType = SelectIndexType(mesh.IndexSize);
+		geometryTriangles.IndexType = GAL::SizeToIndexType(mesh.IndexSize);
 		geometryTriangles.VertexFormat = ShaderDataType::FLOAT3;
 		geometryTriangles.MaxVertices = mesh.VertexCount;
 		geometryTriangles.TransformData = 0;
@@ -148,7 +148,7 @@ void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
 	auto& mesh = meshes[handle()]; auto buffer = buffers[mesh.Buffer()].Buffer;
 
 	graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(GetRenderDevice(), buffer, 0);
-	graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()), SelectIndexType(mesh.IndexSize));
+	graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()), GAL::SizeToIndexType(mesh.IndexSize));
 	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(GetRenderDevice(), mesh.IndicesCount, instanceCount);
 }
 
@@ -210,11 +210,19 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		createInfo.Debug = BE::Application::Get()->GetOption("debug");
 
-		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos(2);
-		queue_create_infos[0].Capabilities = QueueCapabilities::GRAPHICS;
-		queue_create_infos[0].QueuePriority = 1.0f;
-		queue_create_infos[1].Capabilities = QueueCapabilities::TRANSFER;
-		queue_create_infos[1].QueuePriority = 1.0f;
+		GTSL::Array<GAL::Queue::CreateInfo, 5> queue_create_infos;
+		{
+			auto& graphicsQueueInfo = queue_create_infos.EmplaceBack();
+			graphicsQueueInfo.Capabilities = QueueCapabilities::GRAPHICS;
+			graphicsQueueInfo.QueuePriority = 1.0f;
+		}
+
+		{
+			auto& transferQueueCreateInfo = queue_create_infos.EmplaceBack();
+			transferQueueCreateInfo.Capabilities = QueueCapabilities::TRANSFER;
+			transferQueueCreateInfo.QueuePriority = 1.0f;
+		}
+		
 		createInfo.QueueCreateInfos = queue_create_infos;
 		auto queues = GTSL::Array<Queue*, 5>{ &graphicsQueue, &transferQueue };
 		createInfo.Queues = queues;
@@ -478,7 +486,12 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	for(auto& e : graphicsFences) { e.Destroy(&renderDevice); }
 	for(auto& e : transferFences) { e.Destroy(&renderDevice); }
 
-	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
+	for (auto& e : swapchainTextureViews)
+	{
+		if (e.GetVkImageView()) {
+			e.Destroy(&renderDevice);
+		}
+	}
 
 	scratchMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
 	localMemoryAllocator.Free(renderDevice, GetPersistentAllocator());
@@ -592,7 +605,7 @@ bool RenderSystem::resize()
 	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
 	swapchainColorSpace = supportedSurfaceFormats[0].First; swapchainFormat = supportedSurfaceFormats[0].Second;
 
-	RenderContext::RecreateInfo recreate;
+	RenderContext::CreateInfo recreate;
 	recreate.RenderDevice = GetRenderDevice();
 	if constexpr (_DEBUG)
 	{
@@ -607,7 +620,7 @@ bool RenderSystem::resize()
 	recreate.Surface = &surface;
 	recreate.TextureUses = TextureUse::STORAGE | TextureUse::TRANSFER_DESTINATION;
 	recreate.Queue = &graphicsQueue;
-	renderContext.Recreate(recreate);
+	renderContext.InitializeOrRecreate(recreate);
 
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
@@ -624,17 +637,18 @@ bool RenderSystem::resize()
 
 	RenderContext::GetTextureViewsInfo getTextureViewsInfo;
 	getTextureViewsInfo.RenderDevice = &renderDevice;
-	GTSL::Array<TextureView::CreateInfo, MAX_CONCURRENT_FRAMES> textureViewCreateInfos(MAX_CONCURRENT_FRAMES);
+	GTSL::Array<TextureView::CreateInfo, MAX_CONCURRENT_FRAMES> textureViewCreateInfos;
 	{
-		for (uint8 i = 0; i < MAX_CONCURRENT_FRAMES; ++i)
+		for (uint8 i = 0; i < pipelinedFrames; ++i)
 		{
-			textureViewCreateInfos[i].RenderDevice = GetRenderDevice();
+			auto& textureViewCreateInfo = textureViewCreateInfos.EmplaceBack();
+			textureViewCreateInfo.RenderDevice = GetRenderDevice();
 			if constexpr (_DEBUG)
 			{
 				GTSL::StaticString<64> name("Swapchain texture view. Frame: "); name += static_cast<uint16>(i); //cast to not consider it a char
-				textureViewCreateInfos[i].Name = name;
+				textureViewCreateInfo.Name = name;
 			}
-			textureViewCreateInfos[i].Format = swapchainFormat;
+			textureViewCreateInfo.Format = swapchainFormat;
 		}
 	}
 	getTextureViewsInfo.TextureViewCreateInfos = textureViewCreateInfos;

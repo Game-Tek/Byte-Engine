@@ -72,8 +72,8 @@ public:
 	{
 		auto loadTexture = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureInfo textureInfo, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			resourceManager->packageFiles[resourceManager->getThread()].SetPointer(textureInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-			resourceManager->packageFiles[resourceManager->getThread()].ReadFromFile(GTSL::Range<byte*>(textureInfo.GetTextureSize(), buffer.begin()));
+			resourceManager->packageFiles[resourceManager->getThread()].SetPointer(textureInfo.ByteOffset);
+			resourceManager->packageFiles[resourceManager->getThread()].Read(GTSL::Range<byte*>(textureInfo.GetTextureSize(), buffer.begin()));
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};

@@ -7,10 +7,11 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/StaticMap.hpp>
 #include <GTSL/Time.h>
+#include <GTSL/Pair.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>
-#include <GTSL/Math/Vector2.h>
-#include <GTSL/Math/Vector3.h>
+#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.h>
 
 #include "ByteEngine/Id.h"
 
@@ -22,7 +23,10 @@ namespace GTSL {
 	class Window;
 }
 
-MAKE_HANDLE(uint8, InputDevice)
+struct InputDeviceHandle
+{
+	uint8 DeviceHandle, DeviceIndex;
+};
 
 class InputManager : public Object
 {
@@ -35,8 +39,8 @@ public:
 	struct InputEvent
 	{
 		using type = T;
-		Id Name, SourceDevice;
 		InputDeviceHandle DeviceIndex;
+		Id InputSource;
 		GTSL::Microseconds LastEventTime;
 		T Value, LastValue;
 	};
@@ -51,14 +55,18 @@ public:
 	InputManager();
 	~InputManager();
 
-	InputDeviceHandle RegisterInputDevice(Id name) {		
-		auto index = deviceProperties.Emplace(name).EmplaceBack();
-		return InputDeviceHandle(index);
+	InputDeviceHandle RegisterInputDevice(Id name) {
+		auto index = inputDevices.GetLength();
+		auto& inputDevice = inputDevices.EmplaceBack();
+		inputDevice.Name = name;
+		auto deviceIndex = inputDevice.ActiveIndeces.GetLength();
+		inputDevice.ActiveIndeces.EmplaceBack(0);
+		return InputDeviceHandle(index, deviceIndex);
 	}
 
-	void UnregisterInputDevice(Id name, InputDeviceHandle inputDeviceHandle) {
-		if (!deviceProperties.Find(name)) { BE_LOG_WARNING("Tried to unregister input source ", name.GetString(), " but it wasn't registered."); return; }
-		deviceProperties.Remove(name);
+	void UnregisterInputDevice(InputDeviceHandle inputDeviceHandle) {
+		if (inputDeviceHandle.DeviceHandle + 1 > inputDevices.GetLength()) { BE_LOG_WARNING("Tried to unregister an input source but it wasn't registered."); return; }
+		inputDevices.Pop(inputDeviceHandle.DeviceHandle);
 	}
 	
 	void RegisterActionInputSource(InputDeviceHandle, Id inputSourceName)
@@ -106,7 +114,7 @@ public:
 				res.Get() = ActionInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " action input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input Source, make sure the input source is registered before registering this input event");
+				BE_LOG_WARNING("Failed to bind action input event ", actionName.GetString(), " to ", e.GetString(), ". As that input source was not registered.");
 			}
 		}
 	}
@@ -153,33 +161,32 @@ public:
 		}
 	}
 	
-	void RecordActionInputSource(Id sourceDevice, InputDeviceHandle deviceIndex, Id eventName, ActionInputEvent::type newValue)
+	void RecordActionInputSource(InputDeviceHandle deviceIndex, Id eventName, ActionInputEvent::type newValue)
 	{
 		if (!actionInputSourcesToActionInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as an action input source."); return; }
-		actionInputSourceRecords.EmplaceBack(sourceDevice, deviceIndex, eventName, newValue);
+		actionInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void RecordCharacterInputSource(Id sourceDevice, InputDeviceHandle deviceIndex, Id eventName, CharacterInputEvent::type newValue)
+	void RecordCharacterInputSource(InputDeviceHandle deviceIndex, Id eventName, CharacterInputEvent::type newValue)
 	{
 		if (!characterInputSourcesToCharacterInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a character input source."); return; }
-		characterInputSourceRecords.EmplaceBack(sourceDevice, deviceIndex, eventName, newValue);
+		characterInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void RecordLinearInputSource(Id sourceDevice, InputDeviceHandle deviceIndex, Id eventName, LinearInputEvent::type newValue)
+	void RecordLinearInputSource(InputDeviceHandle deviceIndex, Id eventName, LinearInputEvent::type newValue)
 	{
 		if (!linearInputSourcesToLinearInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a linear input source."); return; }
-		linearInputSourceRecords.EmplaceBack(sourceDevice, deviceIndex, eventName, newValue);
+		linearInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void Record2DInputSource(Id sourceDevice, InputDeviceHandle deviceIndex, Id eventName, Vector2DInputEvent::type newValue)
+	void Record2DInputSource(InputDeviceHandle deviceIndex, Id eventName, Vector2DInputEvent::type newValue)
 	{
 		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a vector 2d input source."); return; }
-		vector2DInputSourceRecords.EmplaceBack(sourceDevice, deviceIndex, eventName, newValue);
+		vector2DInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 
-	void SetDeviceProperty(Id device, uint8 deviceIndex, float32 value)
-	{
-		deviceProperties.At(device)[deviceIndex] = value;
+	ActionInputEvent::type GetActionInputSourceValue(Id sourceDevice, InputDeviceHandle deviceHandle, Id eventName) const {
+		return actionInputSourcesToActionInputEvents[eventName].LastValue;
 	}
 	
 	void Update();	
@@ -199,7 +206,11 @@ protected:
 		}
 	};
 
-	GTSL::StaticMap<Id, GTSL::Array<float32, 8>, 8> deviceProperties;
+	struct InputDevice {
+		Id Name;
+		GTSL::Array<uint32, 8> ActiveIndeces;
+	};
+	GTSL::Array<InputDevice, 16> inputDevices;
 	
 	using ActionInputSourceData = InputSourceData<ActionInputEvent>;
 	GTSL::FlatHashMap<Id, ActionInputSourceData, BE::PersistentAllocatorReference> actionInputSourcesToActionInputEvents;
@@ -232,13 +243,13 @@ protected:
 		/**
 		 * \brief Name of the input source which caused the input source event.
 		 */
-		Id Source, Name; InputDeviceHandle DeviceIndex;
+		Id InputSource; InputDeviceHandle DeviceIndex;
 
 		typename T::type NewValue;
 
 		InputSourceRecord() = default;
 		
-		InputSourceRecord(const Id source, InputDeviceHandle deviceIndex, const Id name, decltype(NewValue) newValue) : Source(source), Name(name), DeviceIndex(deviceIndex), NewValue(newValue)
+		InputSourceRecord(InputDeviceHandle deviceIndex, const Id name, decltype(NewValue) newValue) : InputSource(name), DeviceIndex(deviceIndex), NewValue(newValue)
 		{
 		}
 	};
@@ -258,9 +269,9 @@ protected:
 	{
 		for (auto& record : records)
 		{
-			auto& inputSource = map.At(record.Name);
+			auto& inputSource = map.At(record.InputSource);
 
-			if (inputSource.Function) { inputSource.Function({ record.Name, record.Source, record.DeviceIndex, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
+			if (inputSource.Function) { inputSource.Function({ record.DeviceIndex, record.InputSource, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
 
 			inputSource.LastValue = record.NewValue;
 			inputSource.LastTime = time;

@@ -9,7 +9,7 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Math/Vector3.h>
+#include <GTSL/Math/Vectors.h>
 
 
 #include "ByteEngine/Game/GameInstance.h"
@@ -116,9 +116,9 @@ public:
 				byte* vertices = buffer.begin();
 				byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
 
-				resourceManager->getFile().SetPointer(staticMeshInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
-				resourceManager->getFile().ReadFromFile(GTSL::Range<byte*>(verticesSize, vertices));
-				resourceManager->getFile().ReadFromFile(GTSL::Range<byte*>(indicesSize, indices));
+				resourceManager->getFile().SetPointer(staticMeshInfo.ByteOffset);
+				resourceManager->getFile().Read(GTSL::Range<byte*>(verticesSize, vertices));
+				resourceManager->getFile().Read(GTSL::Range<byte*>(indicesSize, indices));
 			}
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);

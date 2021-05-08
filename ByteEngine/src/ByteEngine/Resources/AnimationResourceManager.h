@@ -1,7 +1,5 @@
 #pragma once
 
-#include <assimp/Importer.hpp>
-#include <assimp/scene.h>
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Quaternion.h>
@@ -11,13 +9,10 @@
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
 
-class AnimationResourceManager : ResourceManager
+class AnimationResourceManager : public ResourceManager
 {
 public:
-	AnimationResourceManager() : ResourceManager("AnimationResourceManager")
-	{
-		initializePackageFiles(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("bepkg")));
-	}
+	AnimationResourceManager();
 
 	struct Bone
 	{
@@ -134,30 +129,8 @@ public:
 	};
 
 private:
-	static GTSL::Matrix4 assimpMatrixToMatrix(const aiMatrix4x4 assimpMatrix)
-	{
-		return GTSL::Matrix4(
-			assimpMatrix.a1, assimpMatrix.a2, assimpMatrix.a3, assimpMatrix.a4,
-			assimpMatrix.b1, assimpMatrix.b2, assimpMatrix.b3, assimpMatrix.b4,
-			assimpMatrix.c1, assimpMatrix.c2, assimpMatrix.c3, assimpMatrix.c4,
-			assimpMatrix.d1, assimpMatrix.d2, assimpMatrix.d3, assimpMatrix.d4
-		);
-	}
-
-	static Id assimpStringToId(const aiString& aiString) {
-		return Id(GTSL::Range<const utf8*>(aiString.length, aiString.data));
-	}
-
-	static GTSL::Vector3 aiVector3DToVector(const aiVector3D assimpVector) {
-		return GTSL::Vector3(assimpVector.x, assimpVector.y, assimpVector.z);
-	}
-
-	static GTSL::Quaternion aiQuaternionToQuaternion(const aiQuaternion assimpQuaternion) {
-		return GTSL::Quaternion(assimpQuaternion.x, assimpQuaternion.y, assimpQuaternion.z, assimpQuaternion.w);
-	}
-
+	void loadSkeleton(const GTSL::Range<const byte*> sourceBuffer, SkeletonData& skeletonData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
+	void loadAnimation(const GTSL::Range<const byte*> sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 
 	
-	void loadSkeleton(const GTSL::Buffer<BE::TAR>& sourceBuffer, SkeletonData& skeletonData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
-	void loadAnimation(const GTSL::Buffer<BE::TAR>& sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

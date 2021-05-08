@@ -28,14 +28,20 @@ inline SystemAllocatorReference system_allocator_reference;
 
 extern GTSL::SmartPointer<BE::Application, SystemAllocatorReference> CreateApplication(const SystemAllocatorReference&); //Is defined in another translation unit.
 
+inline bool BasicCompatibilityTest() {
+	return sizeof(utf8) == 1 && sizeof(uint8) == 1 && sizeof(uint16) == 2 && sizeof(uint32) == 4 && sizeof(uint64) == 8;
+}
+
 int main(int argc, char** argv)
 {	
+	int exitCode = 0;
+
+	if (!BasicCompatibilityTest()) { exitCode = -1; return exitCode; }
+	
 	//When CreateApplication() is defined it must return a new object of it class, effectively letting us manage that instance from here.
 	auto application = CreateApplication(system_allocator_reference);
 
 	application->SetSystemAllocator(&system_allocator);
-
-	int32 exitCode = 0;
 
 	if (application->BaseInitialize(argc, argv)) //call BE::Application initialize, which does basic universal startup
 	{

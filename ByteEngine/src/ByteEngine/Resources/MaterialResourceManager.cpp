@@ -33,10 +33,10 @@ rtPipelineInfos(8, GetPersistentAllocator())
 {
 	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 
-	package.OpenFile(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	package.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
 
-	index.OpenFile(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
-	index.ReadFile(rasterFileBuffer.GetBufferInterface());
+	index.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	index.Read(rasterFileBuffer.GetBufferInterface());
 
 	if (rasterFileBuffer.GetLength())
 	{
@@ -67,7 +67,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		
 		RasterMaterialDataSerialize materialData;
 
-		materialData.ByteOffset = package.GetFileSize();
+		materialData.ByteOffset = package.GetSize();
 
 		GTSL::FileQuery fileQuery(GetResourcePath(materialCreateInfo.ShaderName, GTSL::ShortString<2>("*")));
 
@@ -90,7 +90,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			}
 			
 			GTSL::File shaderSourceFile;
-			shaderSourceFile.OpenFile(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::AccessMode::READ);
+			shaderSourceFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::AccessMode::READ);
 			
 			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
 			GenerateShader(string, shaderType);
@@ -104,7 +104,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 
 			shaderSourceBuffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
 
-			shaderSourceFile.ReadFile(shaderSourceBuffer.GetBufferInterface());
+			shaderSourceFile.Read(shaderSourceBuffer.GetBufferInterface());
 			
 			auto f = GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
 			const auto compilationResult = GAL::CompileShader(f, materialCreateInfo.ShaderName, shaderType, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
@@ -116,7 +116,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 				BE_ASSERT(false, shaderErrorBuffer.GetData());
 			}
 
-			package.WriteToFile(shaderBuffer);
+			package.Write(shaderBuffer);
 
 			auto& shader = materialData.Shaders.EmplaceBack();
 			shader.Size = shaderBuffer.GetLength();
@@ -162,10 +162,10 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 		}
 		
 		rasterMaterialInfos.Emplace(hashed_name, materialData);
-		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
+		index.SetPointer(0);
 		Insert(rasterMaterialInfos, indexBuffer);
 		Insert(rtPipelineInfos, indexBuffer);
-		index.WriteToFile(indexBuffer);
+		index.Write(indexBuffer);
 	}
 }
 
@@ -176,7 +176,7 @@ void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreat
 	
 	auto& pipeline = searchResult.Get();
 
-	pipeline.OffsetToBinary = package.GetFileSize();
+	pipeline.OffsetToBinary = package.GetSize();
 	
 	for(uint32 i = 0; i < pipelineCreateInfo.Shaders.GetLength(); ++i)
 	{
@@ -194,12 +194,12 @@ void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreat
 
 			GTSL::File shaderFile;
 
-			shaderFile.OpenFile(GetResourcePath(shaderInfo.ShaderName, ShaderTypeToFileExtension(shaderInfo.Type)), GTSL::File::AccessMode::READ);
+			shaderFile.Open(GetResourcePath(shaderInfo.ShaderName, ShaderTypeToFileExtension(shaderInfo.Type)), GTSL::File::AccessMode::READ);
 
 			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
 			GenerateShader(string, shaderInfo.Type);
 			shaderSourceBuffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
-			shaderFile.ReadFile(shaderSourceBuffer.GetBufferInterface());
+			shaderFile.Read(shaderSourceBuffer.GetBufferInterface());
 
 			auto f = GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
 			const auto compilationResult = GAL::CompileShader(f, shaderInfo.ShaderName, shaderInfo.Type, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
@@ -211,16 +211,16 @@ void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreat
 
 			shader.BinarySize = shaderBuffer.GetLength();
 			
-			package.WriteToFile(shaderBuffer);
+			package.Write(shaderBuffer);
 		}
 	}
 
 	{
-		index.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
+		index.SetPointer(0);
 		GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(512)), 8, GetTransientAllocator());
 		Insert(rasterMaterialInfos, indexFileBuffer);
 		Insert(rtPipelineInfos, indexFileBuffer);
-		index.WriteToFile(indexFileBuffer);
+		index.Write(indexFileBuffer);
 	}
 }
 
@@ -244,9 +244,9 @@ MaterialResourceManager::OnMaterialLoadInfo MaterialResourceManager::LoadMateria
 	
 	BE_ASSERT(mat_size <= loadInfo.DataBuffer.Bytes(), "Buffer can't hold required data!");
 	
-	package.SetPointer(materialInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+	package.SetPointer(materialInfo.ByteOffset);
 
-	[[maybe_unused]] const auto read = package.ReadFromFile(loadInfo.DataBuffer);
+	[[maybe_unused]] const auto read = package.Read(loadInfo.DataBuffer);
 	BE_ASSERT(read != 0, "Read 0 bytes!");
 	
 	OnMaterialLoadInfo onMaterialLoadInfo;
@@ -286,8 +286,8 @@ void MaterialResourceManager::LoadRayTraceShadersForPipeline(const RayTracePipel
 
 	BE_ASSERT(pipelineSize <= buffer.Bytes(), "Buffer can't hold required data!");
 
-	package.SetPointer(info.OffsetToBinary, GTSL::File::MoveFrom::BEGIN);
+	package.SetPointer(info.OffsetToBinary);
 
-	[[maybe_unused]] const auto read = package.ReadFromFile(buffer);
+	[[maybe_unused]] const auto read = package.Read(buffer);
 	BE_ASSERT(read != 0, "Read 0 bytes!");
 }

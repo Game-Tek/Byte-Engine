@@ -1,7 +1,7 @@
 #pragma once
 
-#include <GTSL/Math/Vector2.h>
-#include <GTSL/Math/Vector3.h>
+#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.h>
 #include <GTSL/Id.h>
 #include <map>
 #include <GTSL/FlatHashMap.h>

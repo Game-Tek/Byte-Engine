@@ -7,7 +7,7 @@
 #include "ByteEngine/Application/AllocatorReferences.h"
 
 #include "ByteEngine/Resources/FontResourceManager.h"
-#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vectors.h>
 
 #include "ByteEngine/Debug/Assert.h"
 

@@ -17,17 +17,17 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 	index_path += BE::Application::Get()->GetPathToApplication(); index_path += "/resources/Audio.beidx";
 	package_path += BE::Application::Get()->GetPathToApplication(); package_path += "/resources/Audio.bepkg";
 
-	indexFile.OpenFile(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
+	indexFile.Open(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
 	
 	GTSL::Buffer<BE::TAR> file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
 	
-	if(indexFile.ReadFile(file_buffer.GetBufferInterface()))
+	if(indexFile.Read(file_buffer.GetBufferInterface()))
 	{
 		GTSL::Extract(audioResourceInfos, file_buffer);
 	}
 	else
 	{
-		GTSL::File packageFile; packageFile.OpenFile(package_path, GTSL::File::AccessMode::WRITE);
+		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::AccessMode::WRITE);
 
 		GTSL::FileQuery file_query(query_path);
 
@@ -41,11 +41,11 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 			if (!audioResourceInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
-				query_file.OpenFile(file_path, GTSL::File::AccessMode::READ);
+				query_file.Open(file_path, GTSL::File::AccessMode::READ);
 
-				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetFileSize(), 8, GetTransientAllocator());
+				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
 
-				query_file.ReadFile(wavBuffer.GetBufferInterface());
+				query_file.Read(wavBuffer.GetBufferInterface());
 
 				AudioDataSerialize data;
 
@@ -86,9 +86,9 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 				data.Frames = data_size / channels / (bits_per_sample / 8);
 
-				data.ByteOffset = (uint32)packageFile.GetFileSize();
+				data.ByteOffset = (uint32)packageFile.GetSize();
 
-				packageFile.WriteToFile(GTSL::Range<const byte*>(data_size, wavBuffer.GetData() + wavBuffer.GetReadPosition()));
+				packageFile.Write(GTSL::Range<const byte*>(data_size, wavBuffer.GetData() + wavBuffer.GetReadPosition()));
 
 				audioResourceInfos.Emplace(hashed_name, data);
 			}
@@ -96,7 +96,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager("AudioResourceMan
 
 		file_buffer.Resize(0);
 		GTSL::Insert(audioResourceInfos, file_buffer);
-		indexFile.WriteToFile(file_buffer);
+		indexFile.Write(file_buffer);
 	}
 
 	initializePackageFiles(package_path);

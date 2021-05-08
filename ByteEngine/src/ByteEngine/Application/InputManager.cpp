@@ -1,6 +1,6 @@
 #include "InputManager.h"
 
-#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vectors.h>
 
 
 #include "Application.h"

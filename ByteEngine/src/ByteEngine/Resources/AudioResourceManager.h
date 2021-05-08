@@ -92,10 +92,10 @@ public:
 			
 			if (searchResult.State())
 			{
-				resourceManager->packageFiles[resourceManager->getThread()].SetPointer(audioInfo.ByteOffset, GTSL::File::MoveFrom::BEGIN);
+				resourceManager->packageFiles[resourceManager->getThread()].SetPointer(audioInfo.ByteOffset);
 				auto& buffer = searchResult.Get();
 				buffer.Allocate(bytes, 16, resourceManager->GetPersistentAllocator()); //allocate on 16 byte alignment to allow data to be loaded for SIMD with alignment
-				resourceManager->packageFiles[resourceManager->getThread()].ReadFile(bytes, buffer.GetBufferInterface());
+				resourceManager->packageFiles[resourceManager->getThread()].Read(bytes, buffer.GetBufferInterface());
 				dataPointer = buffer.GetData();
 			}
 			else

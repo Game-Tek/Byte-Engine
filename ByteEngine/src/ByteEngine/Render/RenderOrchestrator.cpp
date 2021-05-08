@@ -425,7 +425,7 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 		auto* materialResorceManager = BE::Application::Get()->GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
 
 		GTSL::Vector<GAL::VulkanShader, BE::TAR> shaders(16, GetTransientAllocator());
-		GTSL::Vector<RayTracingPipeline::Group, BE::TAR> groups(16, GetTransientAllocator());
+		GTSL::Vector<Pipeline::RayTraceGroup, BE::TAR> groups(16, GetTransientAllocator());
 		GTSL::Vector<Pipeline::ShaderInfo, BE::TAR> shaderInfos(16, GetTransientAllocator());
 		GTSL::Buffer<BE::TAR> shadersBuffer;
 
@@ -465,34 +465,34 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 
 			uint8 shaderGroup = 0xFF;
 			
-			RayTracingPipeline::Group group{};
+			Pipeline::RayTraceGroup group{};
 
-			group.GeneralShader = RayTracingPipeline::Group::SHADER_UNUSED; group.ClosestHitShader = RayTracingPipeline::Group::SHADER_UNUSED;
-			group.AnyHitShader = RayTracingPipeline::Group::SHADER_UNUSED; group.IntersectionShader = RayTracingPipeline::Group::SHADER_UNUSED;
+			group.GeneralShader = Pipeline::RayTraceGroup::SHADER_UNUSED; group.ClosestHitShader = Pipeline::RayTraceGroup::SHADER_UNUSED;
+			group.AnyHitShader = Pipeline::RayTraceGroup::SHADER_UNUSED; group.IntersectionShader = Pipeline::RayTraceGroup::SHADER_UNUSED;
 
 			switch (rayTracingShaderInfo.ShaderType)
 			{
 			case GAL::ShaderType::RAY_GEN: {
-				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::GENERAL; group.GeneralShader = i;
 				shaderGroup = GAL::RAY_GEN_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::MISS: {
 				//generalShader is the index of the ray generation,miss, or callable shader from VkRayTracingPipelineCreateInfoKHR::pStages
 				//in the group if the shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::GENERAL; group.GeneralShader = i;
 				shaderGroup = GAL::MISS_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::CALLABLE: {
-				group.ShaderGroup = GAL::VulkanShaderGroupType::GENERAL; group.GeneralShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::GENERAL; group.GeneralShader = i;
 				shaderGroup = GAL::CALLABLE_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::CLOSEST_HIT: {
 				//closestHitShader is the optional index of the closest hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.ClosestHitShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::TRIANGLES; group.ClosestHitShader = i;
 				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
@@ -500,14 +500,14 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 				//anyHitShader is the optional index of the any-hit shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the
 				//shader group has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR or VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
 				//and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::TRIANGLES; group.AnyHitShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::TRIANGLES; group.AnyHitShader = i;
 				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
 			case GAL::ShaderType::INTERSECTION: {
 				//intersectionShader is the index of the intersection shader from VkRayTracingPipelineCreateInfoKHR::pStages in the group if the shader group
 				//has type of VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR, and VK_SHADER_UNUSED_KHR otherwise.
-				group.ShaderGroup = GAL::VulkanShaderGroupType::PROCEDURAL; group.IntersectionShader = i;
+				group.ShaderGroup = GAL::ShaderGroupType::PROCEDURAL; group.IntersectionShader = i;
 				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}
@@ -548,17 +548,21 @@ void RenderOrchestrator::Initialize(const InitializeInfo& initializeInfo)
 			
 			groupData.Buffer = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&groupData.EntryHandle, groupData.Shaders.GetLength(), GTSL::Range<MaterialSystem::MemberInfo*>(3, memberInfos[shaderGroupIndex])));
 		}
-		
-		RayTracingPipeline::CreateInfo createInfo;
-		createInfo.RenderDevice = renderSystem->GetRenderDevice();
+				
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name("Ray Tracing Pipeline: "); createInfo.Name = name;
+			GTSL::StaticString<32> name("Ray Tracing Pipeline: ");// createInfo.Name = name;
 		}
-		createInfo.MaxRecursionDepth = pipelineInfo.RecursionDepth;
-		createInfo.Stages = shaderInfos;
-		createInfo.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData"));
-		createInfo.Groups = groups;
-		pipelineData.Pipeline.Initialize(createInfo);
+
+		GTSL::Array<Pipeline::PipelineStateBlock, 4> pipelineStates;
+
+		{
+			Pipeline::PipelineStateBlock::RayTracingState rtInfo;
+			rtInfo.Groups = groups;
+			rtInfo.MaxRecursionDepth = pipelineInfo.RecursionDepth;
+			pipelineStates.EmplaceBack(rtInfo);
+		}
+		
+		pipelineData.Pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData")), PipelineCache());
 
 		GTSL::Buffer<BE::TAR> handlesBuffer; handlesBuffer.Allocate(groups.GetLength() * alignedHandleSize, 16, GetTransientAllocator());
 
@@ -804,16 +808,16 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 	{
 		{
-			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
-			barriers[0].SetTextureBarrier({ renderSystem->GetSwapchainTexture(), TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
+			GTSL::Array<CommandBuffer::BarrierData, 2> barriers;
+			barriers.EmplaceBack(CommandBuffer::TextureBarrier{ renderSystem->GetSwapchainTexture(), TextureLayout::UNDEFINED, TextureLayout::TRANSFER_DST, AccessFlags::TRANSFER_READ, AccessFlags::TRANSFER_WRITE, TextureType::COLOR });
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, PipelineStage::TRANSFER, PipelineStage::TRANSFER, GetTransientAllocator());
 		}
 
 		{
 			auto& attachment = attachments.At(resultAttachment);
 
-			GTSL::Array<CommandBuffer::BarrierData, 2> barriers(1);
-			barriers[0].SetTextureBarrier({ renderSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
+			GTSL::Array<CommandBuffer::BarrierData, 2> barriers;
+			barriers.EmplaceBack(CommandBuffer::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle), attachment.Layout, TextureLayout::TRANSFER_SRC, accessFlagsFromStageAndAccessType(attachment.ConsumingStages, attachment.WriteAccess), AccessFlags::TRANSFER_READ, TextureType::COLOR });
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), barriers, attachment.ConsumingStages, PipelineStage::TRANSFER, GetTransientAllocator());
 
 			updateImage(attachment, TextureLayout::TRANSFER_SRC, PipelineStage::TRANSFER, false);
@@ -843,12 +847,12 @@ void RenderOrchestrator::AddRenderManager(GameInstance* gameInstance, const Id r
 {
 	systems.EmplaceBack(renderManager);
 
-	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
+	GTSL::Array<TaskDependency, 32> dependencies;
 	{
-		for (uint32 i = 0; i < dependencies.GetLength(); ++i)
-		{
-			dependencies[i].AccessedObject = systems[i];
-			dependencies[i].Access = AccessTypes::READ;
+		for (uint32 i = 0; i < systems.GetLength(); ++i) {
+			auto& dependency = dependencies.EmplaceBack();
+			dependency.AccessedObject = systems[i];
+			dependency.Access = AccessTypes::READ;
 		}
 	}
 
@@ -887,12 +891,13 @@ void RenderOrchestrator::RemoveRenderManager(GameInstance* gameInstance, const I
 	
 	setupSystemsAccesses.Pop(element.Get());
 
-	GTSL::Array<TaskDependency, 32> dependencies(systems.GetLength());
+	GTSL::Array<TaskDependency, 32> dependencies;
 
-	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
+	for (uint32 i = 0; i < systems.GetLength(); ++i)
 	{
-		dependencies[i].AccessedObject = systems[i];
-		dependencies[i].Access = AccessTypes::READ;
+		auto& dependency = dependencies.EmplaceBack();
+		dependency.AccessedObject = systems[i];
+		dependency.Access = AccessTypes::READ;
 	}
 
 	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
@@ -1121,9 +1126,9 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 			renderPassCreateInfo.RenderPassAttachments = attachmentDescriptors;
 
 			GTSL::Array<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
-			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> readAttachmentReferences(contiguousRasterPassCount);
-			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences(contiguousRasterPassCount);
-			GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences(contiguousRasterPassCount);
+			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> readAttachmentReferences;
+			GTSL::Array<GTSL::Array<RenderPass::AttachmentReference, 8>, 8> writeAttachmentReferences;
+			GTSL::Array<GTSL::Array<uint8, 8>, 8> preserveAttachmentReferences;
 
 			AccessFlags::value_type sourceAccessFlags = 0, destinationAccessFlags = 0;
 			PipelineStage::value_type sourcePipelineStages = PipelineStage::TOP_OF_PIPE, destinationPipelineStages = PipelineStage::TOP_OF_PIPE;
@@ -1132,6 +1137,10 @@ void RenderOrchestrator::AddPass(RenderSystem* renderSystem, MaterialSystem* mat
 
 			for (uint32 s = 0; s < contiguousRasterPassCount; ++s, ++passIndex)
 			{
+				readAttachmentReferences.EmplaceBack();
+				writeAttachmentReferences.EmplaceBack();
+				preserveAttachmentReferences.EmplaceBack();
+				
 				auto& renderPass = renderPassesMap.Emplace(passesData[passIndex].Name);
 				renderPasses.EmplaceBack(passesData[passIndex].Name);
 				renderPass.APIRenderPass = apiRenderPasses.GetLength() - 1;
@@ -1674,7 +1683,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, MaterialResourceMana
 
 	shaderLoadInfo.Component;
 
-	ComputePipeline pipeline;
+	Pipeline pipeline;
 	//ComputePipeline::CreateInfo createInfo;
 	//createInfo.RenderDevice = renderSystem->GetRenderDevice();
 	//createInfo.PipelineLayout;
@@ -1790,29 +1799,45 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		}
 	}
 
-	RasterizationPipeline::CreateInfo createInfo;
-	createInfo.RenderDevice = renderSystem->GetRenderDevice();
-	if constexpr (_DEBUG) {
-		GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName();
-		createInfo.Name = name;
+	//if constexpr (_DEBUG) {
+	//	GTSL::StaticString<64> name("Raster pipeline. Material: "); name += onMaterialLoadInfo.ResourceName();
+	//	createInfo.Name = name;
+	//}
+
+	GTSL::Array<GAL::Pipeline::PipelineStateBlock, 16> pipelineStates;
+	GTSL::Array<GAL::Pipeline::PipelineStateBlock::RenderContext::AttachmentState, 8> att;
+	
+	{
+		GAL::Pipeline::PipelineStateBlock::RenderContext context;
+
+		for (uint32 i = 0; i < GetRenderPassColorWriteAttachmentCount(onMaterialLoadInfo.RenderPass); ++i) {
+			att.EmplaceBack(false); //blend
+		}
+		
+		context.Attachments = att;
+		context.RenderPass = static_cast<const GAL::RenderPass*>(getAPIRenderPass(onMaterialLoadInfo.RenderPass));
+		context.SubPassIndex = getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
+		pipelineStates.EmplaceBack(context);
 	}
 
-	createInfo.PipelineDescriptor.BlendEnable = onMaterialLoadInfo.BlendEnable;
-	createInfo.PipelineDescriptor.DepthTest = onMaterialLoadInfo.DepthTest; createInfo.PipelineDescriptor.DepthWrite = onMaterialLoadInfo.DepthWrite;
-	createInfo.PipelineDescriptor.StencilTest = onMaterialLoadInfo.StencilTest;
-	createInfo.PipelineDescriptor.CullMode = GAL::CullMode::CULL_BACK;
-	createInfo.PipelineDescriptor.DepthCompareOperation = GAL::CompareOperation::LESS;
-	createInfo.PipelineDescriptor.WindingOrder = GAL::WindingOrder::CLOCKWISE;
-	createInfo.PipelineDescriptor.ColorBlendOperation = onMaterialLoadInfo.ColorBlendOperation;
+	{
+		GAL::Pipeline::PipelineStateBlock::DepthState depth;
+		depth.CompareOperation = GAL::CompareOperation::LESS;
+		pipelineStates.EmplaceBack(depth);
+	}
 
-	auto transStencil = [](const MaterialResourceManager::StencilState& stencilState, GAL::StencilOperations::StencilState& sS) {
-		sS.CompareOperation = stencilState.CompareOperation; sS.CompareMask = stencilState.CompareMask;
-		sS.DepthFailOperation = stencilState.DepthFailOperation; sS.FailOperation = stencilState.FailOperation;
-		sS.PassOperation = stencilState.PassOperation; sS.Reference = stencilState.Reference; sS.WriteMask = stencilState.WriteMask;
-	};
+	{
+		GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
+		rasterState.CullMode = CullMode::CULL_BACK;
+		rasterState.WindingOrder = GAL::WindingOrder::CLOCKWISE;
+		pipelineStates.EmplaceBack(rasterState);
+	}
 
-	transStencil(onMaterialLoadInfo.Front, createInfo.PipelineDescriptor.StencilOperations.Front);
-	transStencil(onMaterialLoadInfo.Back, createInfo.PipelineDescriptor.StencilOperations.Back);
+	{
+		GAL::Pipeline::PipelineStateBlock::ViewportState viewportState;
+		viewportState.ViewportCount = 1;
+		pipelineStates.EmplaceBack(viewportState);
+	}
 
 	GTSL::Array<Pipeline::ShaderInfo, 8> shaderInfos;
 
@@ -1829,21 +1854,14 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		}
 	}
 
-	createInfo.Stages = shaderInfos;
-
-	createInfo.RenderPass = getAPIRenderPass(onMaterialLoadInfo.RenderPass);
-	createInfo.SubPass = getAPISubPassIndex(onMaterialLoadInfo.RenderPass);
-	createInfo.AttachmentCount = GetRenderPassColorWriteAttachmentCount(onMaterialLoadInfo.RenderPass);
-
-	createInfo.PipelineLayout = materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData"));
-	createInfo.PipelineCache = renderSystem->GetPipelineCache();
-
+	auto& vertexState = pipelineStates.EmplaceBack(GAL::Pipeline::PipelineStateBlock::VertexState{});
+	
 	for (uint8 permutationIndex = 0; permutationIndex < onMaterialLoadInfo.Permutations.GetLength(); ++permutationIndex)
 	{
 		const auto& permutationInfo = onMaterialLoadInfo.Permutations[permutationIndex];
 		auto& permutationData = materialData.VertexGroups[permutationIndex];
 
-		GTSL::Array<RasterizationPipeline::VertexElement, 10> vertexDescriptor;
+		GTSL::Array<Pipeline::VertexElement, 10> vertexDescriptor;
 
 		vertexDescriptor.PushBack({ GAL::Pipeline::POSITION, 0, false, GAL::ShaderDataType::FLOAT3 });
 		vertexDescriptor.PushBack({ GAL::Pipeline::NORMAL, 0, false, GAL::ShaderDataType::FLOAT3 });
@@ -1853,7 +1871,7 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 
 		for (auto& e : permutationInfo.VertexElements) {
 
-			auto vertexElement = vertexDescriptor.LookFor([&](const RasterizationPipeline::VertexElement& vertexElement)
+			auto vertexElement = vertexDescriptor.LookFor([&](const Pipeline::VertexElement& vertexElement)
 				{
 					return vertexElement.Index == e.Index && vertexElement.Identifier == e.VertexAttribute;
 				});
@@ -1861,8 +1879,9 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			vertexDescriptor[vertexElement.Get()].Enabled = vertexElement.State();
 		}
 
-		createInfo.VertexDescriptor = vertexDescriptor;
-		permutationData.Pipeline.Initialize(createInfo);
+		vertexState.Block.Vertex.VertexDescriptor = vertexDescriptor;
+		
+		permutationData.Pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, materialSystem->GetSetLayoutPipelineLayout(Id("GlobalData")), renderSystem->GetPipelineCache());
 	}
 	
 	for (uint8 materialInstanceIndex = 0; materialInstanceIndex < onMaterialLoadInfo.MaterialInstances.GetLength(); ++materialInstanceIndex)

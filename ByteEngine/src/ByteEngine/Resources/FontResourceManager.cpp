@@ -23,7 +23,7 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.h>
-#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vectors.h>
 
 #include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"
@@ -420,16 +420,16 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 {
 	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"), GTSL::ShortString<32>("bepkg"));
 	
-	GTSL::File beFontFile; beFontFile.OpenFile(path, GTSL::File::AccessMode::WRITE);
+	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::AccessMode::WRITE);
 
 	auto GetFont = [&](const GTSL::Range<const utf8*> fontName)
 	{
 		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
-		GTSL::File fontFile; fontFile.OpenFile(path, GTSL::File::AccessMode::READ);
-		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetFileSize(), 8, GetTransientAllocator());
+		GTSL::File fontFile; fontFile.Open(path, GTSL::File::AccessMode::READ);
+		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetSize(), 8, GetTransientAllocator());
 
-		fontFile.ReadFile(fontFile.GetFileSize(), fileBuffer.GetBufferInterface());
+		fontFile.Read(fontFile.GetSize(), fileBuffer.GetBufferInterface());
 
 		Font fontData;
 		const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);

@@ -23,7 +23,7 @@ class ThreadPool : public Object
 	using TaskDelegate = GTSL::Delegate<void(ThreadPool*, void*)>;
 	using Tasks = GTSL::Tuple<TaskDelegate, void*>;
 public:
-	explicit ThreadPool() : Object("Thread Pool"), queues(threadCount)
+	explicit ThreadPool() : Object("Thread Pool")
 	{		
 		//lambda
 		auto workers_loop = [](ThreadPool* pool, const uint8 i)
@@ -57,6 +57,10 @@ public:
 			}
 		};
 
+		for (uint8 i = 0; i < threadCount; ++i) { //initialize all queues first, as threads try to access ALL queues on initialization
+			queues.EmplaceBack(); //don't remove we need to force initialization of blocking queues
+		}
+		
 		for (uint8 i = 0; i < threadCount; ++i)
 		{
 			//Constructing threads with function and I parameter. i + 1 is because we leave id 0 to the main thread

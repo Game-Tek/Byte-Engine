@@ -11,18 +11,17 @@ public:
 	PipelineCacheResourceManager();
 	~PipelineCacheResourceManager();
 
-	void DoesCacheExist(bool& doesExist) const { doesExist = cache.GetFileSize(); }
-	void GetCacheSize(uint32& size) const { size = static_cast<uint32>(cache.GetFileSize()); }
+	void DoesCacheExist(bool& doesExist) const { doesExist = cache.GetSize(); }
+	void GetCacheSize(uint32& size) const { size = static_cast<uint32>(cache.GetSize()); }
 	
 	template<class ALLOCTOR>
-	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { cache.ReadFile(cache.GetFileSize(), buffer.GetBufferInterface()); }
+	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { cache.Read(cache.GetSize(), buffer.GetBufferInterface()); }
 	
 	template<class ALLOCTOR>
 	void WriteCache(GTSL::Buffer<ALLOCTOR>& buffer)
 	{
-		cache.SetPointer(0, GTSL::File::MoveFrom::BEGIN);
-		cache.SetEndOfFile();
-		cache.WriteToFile(buffer.GetBufferInterface());
+		cache.SetPointer(0);
+		cache.Write(buffer.GetBufferInterface());
 	}
 private:
 	GTSL::File cache;

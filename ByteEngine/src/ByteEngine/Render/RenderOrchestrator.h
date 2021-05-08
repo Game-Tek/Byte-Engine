@@ -319,7 +319,7 @@ private:
 			GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
 		} ShaderGroups[4];
 
-		RayTracingPipeline Pipeline;
+		Pipeline Pipeline;
 	};
 	GTSL::KeepVector<RayTracingPipelineData, BE::PAR> rayTracingPipelines;
 
@@ -378,7 +378,7 @@ private:
 		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
 
 		struct Permutation {
-			RasterizationPipeline Pipeline;
+			Pipeline Pipeline;
 		};
 		GTSL::Array<Permutation, 8> VertexGroups;
 		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 20>, 8> VertexDescriptors;
@@ -467,7 +467,7 @@ private:
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoadHandle;
 
-	[[nodiscard]] RenderPass getAPIRenderPass(const Id renderPassName) const { return apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
+	[[nodiscard]] const RenderPass* getAPIRenderPass(const Id renderPassName) const { return &apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
 	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const {
 		uint8 i = 0;
 		for (auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } }

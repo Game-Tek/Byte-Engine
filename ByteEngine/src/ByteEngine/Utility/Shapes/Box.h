@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/Pair.h>
-#include <GTSL/Math/Vector3.h>
+#include <GTSL/Math/Vectors.h>
 
 class Box
 {

@@ -48,7 +48,7 @@ namespace BE
 		}
 
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
-		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 3);
+		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4);
 
 		GTSL::Thread::SetThreadId(0);
 
@@ -75,7 +75,7 @@ namespace BE
 
 		BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!");
 		
-		if (argc && argc >= 0)
+		if (argc > 0)
 		{	
 			GTSL::StaticString<2048> string("Application started with parameters:\n");
 
@@ -181,14 +181,14 @@ namespace BE
 
 	bool Application::parseConfig()
 	{
-		GTSL::File settingsFile; settingsFile.OpenFile(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
+		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
 
 		//don't try parsing if file is empty
-		if(settingsFile.GetFileSize() == 0) { return false; }
+		if(settingsFile.GetSize() == 0) { return false; }
 		
-		GTSL::Buffer<TAR> fileBuffer; fileBuffer.Allocate(GTSL::Math::Limit(settingsFile.GetFileSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
+		GTSL::Buffer<TAR> fileBuffer; fileBuffer.Allocate(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
 
-		settingsFile.ReadFile(fileBuffer.GetBufferInterface());
+		settingsFile.Read(fileBuffer.GetBufferInterface());
 		
 		uint32 i = 0;
 
@@ -348,8 +348,6 @@ namespace BE
 	
 	bool Application::checkPlatformSupport()
 	{
-		bool sizeUTF8 = sizeof(utf8) == 1, size8 = sizeof(uint8) == 1, size16 = sizeof(uint16) == 2, size32 = sizeof(uint32) == 4, size64 = sizeof(uint64) == 8;
-
 		GTSL::SystemInfo systemInfo;
 		GTSL::System::GetSystemInfo(systemInfo);
 
@@ -357,6 +355,6 @@ namespace BE
 		bool totalMemory = systemInfo.RAM.TotalPhysicalMemory >= GTSL::Byte(GTSL::GigaByte(12));
 		bool availableMemory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(2));
 		
-		return sizeUTF8 && size8 && size16 && size32 && size64 && avx2 && totalMemory && availableMemory;
+		return avx2 && totalMemory && availableMemory;
 	}
 }

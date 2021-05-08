@@ -145,9 +145,9 @@ void AudioSystem::render(TaskInfo)
 			
 			{
 				auto distanceFactor = GTSL::Math::Length(emitterPosition, listenerPosition);
-				distanceFactor = GTSL::Math::Clamp(-(distanceFactor / 1500) + 1, 0.0f, 1.0f);
-				//auto inDistFact = GTSL::Math::InvertRange(distanceFactor, 1.0f);
-				leftPercentange *= distanceFactor; rightPercentage *= distanceFactor;
+				distanceFactor = GTSL::Math::Clamp(-(distanceFactor / 15) + 1, 0.0f, 1.0f);
+				//leftPercentange = GTSL::Math::InvertRange(leftPercentange * distanceFactor, 1.0f); rightPercentage = GTSL::Math::InvertRange(rightPercentage * distanceFactor, 1.0f);
+				//leftPercentange *= distanceFactor; rightPercentage *= distanceFactor;
 			}
 			
 			auto& emmitter = audioEmittersSettings[playingEmitters[pe]()];

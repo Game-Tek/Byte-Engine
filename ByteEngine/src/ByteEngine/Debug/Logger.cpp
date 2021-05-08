@@ -15,11 +15,18 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), log
 	uint64 allocated_size{ 0 };
 	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
 	
-	GTSL::SetMemory(defaultBufferLength, data, 'o');
-	
 	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
-	logFile.OpenFile(path, (uint8)GTSL::File::AccessMode::WRITE, GTSL::File::OpenMode::CLEAR);
+	switch (logFile.Open(path, GTSL::File::AccessMode::WRITE))
+	{
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: logFile.Create(path, GTSL::File::AccessMode::WRITE);
+	case GTSL::File::OpenResult::ERROR: break;
+	default: ;
+	}
+	
+	logFile.Resize(0);
 }
 
 void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GTSL::UTF8*> text) const
@@ -47,7 +54,7 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GT
 	}
 
 	logMutex.Lock();
-	logFile.WriteToFile(GTSL::Range<const byte*>(string.GetLength() - 1, reinterpret_cast<const byte*>(string.begin())));
+	logFile.Write(GTSL::Range<const byte*>(string.GetLength() - 1, reinterpret_cast<const byte*>(string.begin())));
 	logMutex.Unlock();
 }
 

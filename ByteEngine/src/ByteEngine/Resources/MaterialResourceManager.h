@@ -7,7 +7,7 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
 #include <GTSL/FlatHashMap.h>
-#include <GTSL/Math/Vector4.h>
+#include <GTSL/Math/Vectors.h>
 
 #include "ResourceManager.h"
 
@@ -394,10 +394,10 @@ public:
 
 			for (auto e : shaderInfos)
 			{
-				materialResourceManager->package.SetPointer(e.offset, GTSL::File::MoveFrom::BEGIN);
+				materialResourceManager->package.SetPointer(e.offset);
 
 				BE_ASSERT(e.Size != 0, "0 bytes!");
-				[[maybe_unused]] const auto read = materialResourceManager->package.ReadFile(e.Size, offset, buffer);
+				[[maybe_unused]] const auto read = materialResourceManager->package.Read(e.Size, offset, buffer);
 				BE_ASSERT(read != 0, "Read 0 bytes!");
 
 				offset += e.Size;

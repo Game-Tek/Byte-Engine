@@ -71,11 +71,8 @@ using RenderContext = GAL::VulkanRenderContext;
 using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
 using PipelineLayout = GAL::VulkanPipelineLayout;
-using ComputePipeline = GAL::VulkanComputePipeline;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
-using RayTracingPipeline = GAL::VulkanRayTracingPipeline;
 using AccelerationStructure = GAL::VulkanAccelerationStructure;
-using RasterizationPipeline = GAL::VulkanRasterizationPipeline;
 
 using CullMode = GAL::CullMode;
 using QueryType = GAL::VulkanQueryType;
@@ -156,15 +153,6 @@ inline Dimensions ConvertDimension(const GAL::Dimension dimension)
 	if constexpr (API == GAL::RenderAPI::VULKAN)
 	{
 		return GAL::DimensionsToVulkanDimension(dimension);
-	}
-}
-
-inline IndexType SelectIndexType(const uint64 indexSize)
-{
-	if constexpr (API == GAL::RenderAPI::VULKAN)
-	{
-		BE_ASSERT(indexSize == 2 || indexSize == 4, "Unexpected size");
-		return indexSize == 2 ? IndexType::UINT16 : IndexType::UINT32;
 	}
 }
 

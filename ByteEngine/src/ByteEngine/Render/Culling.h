@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/Math/Math.hpp>
-#include <GTSL/Math/Vector3.h>
+#include <GTSL/Math/Vectors.h>
 
 #include "ByteEngine/Core.h"
 #include "Math/SIMD/float4.h"

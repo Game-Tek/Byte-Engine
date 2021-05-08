@@ -10,7 +10,7 @@
 #include <GTSL/FlatHashMap.h>
 #include <GTSL/Serialize.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vectors.h>
 
 
 #include "ResourceManager.h"

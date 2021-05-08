@@ -7,7 +7,7 @@
 #include <GTSL/KeepVector.h>
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
-#include <GTSL/Math/Vector2.h>
+#include <GTSL/Math/Vectors.h>
 #include <GTSL/Tree.hpp>
 
 #include "MaterialSystem.h"

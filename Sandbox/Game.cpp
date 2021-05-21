@@ -118,14 +118,6 @@ bool Game::Initialize()
 		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TANGENT, 0, GAL::ShaderDataType::FLOAT3 });
 		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::BITANGENT, 0, GAL::ShaderDataType::FLOAT3 });
 		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TEXTURE_COORDINATES, 0, GAL::ShaderDataType::FLOAT2 });
-		
-		{
-			materialCreateInfo.MaterialInstances.EmplaceBack();
-			materialCreateInfo.MaterialInstances.back().Name = "hydrantMat";
-			materialCreateInfo.MaterialInstances.back().Parameters.EmplaceBack();
-			materialCreateInfo.MaterialInstances.back().Parameters.back().First = "albedo";
-			materialCreateInfo.MaterialInstances.back().Parameters.back().Second.TextureReference = "hydrant_Albedo";
-		}
 
 		{
 			materialCreateInfo.MaterialInstances.EmplaceBack();
@@ -217,8 +209,6 @@ void Game::PostInitialize()
 
 		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0.5, -2));
 		fov = cameraSystem->GetFieldOfView(camera);
-
-		uint32 ttt = 0;
 	}
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
@@ -263,7 +253,7 @@ void Game::PostInitialize()
 	audioListener = audioSystem->CreateAudioListener();
 	audioSystem->SetAudioListener(audioListener);
 	audioSystem->BindAudio(audioEmitter, "gunshot");
-	//audioSystem->SetLooping(audioEmitter, true);//
+	//audioSystem->SetLooping(audioEmitter, true)//
 	
 	//{
 	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
@@ -448,7 +438,7 @@ void Game::move(InputManager::Vector2DInputEvent data)
 	posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI * 2.0f));
 	
 	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]//
-	auto rot = GTSL::Matrix4(GTSL::AxisAngle(0, 1, 0, posDelta.X()));
+	auto rot = GTSL::Matrix4(GTSL::Rotator(0, posDelta.X(), 0));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
 
 	//auto rot = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, 0));

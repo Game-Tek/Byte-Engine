@@ -101,10 +101,10 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<CameraSystem>("CameraSystem");
 	
 	{
-		renderOrchestrator->AddAttachment("Color", 8, 4, GAL::ComponentType::INT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Position", 16, 4, GAL::ComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Normal", 16, 4, GAL::ComponentType::FLOAT, TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, GAL::ComponentType::FLOAT, TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
 
 		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;

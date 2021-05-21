@@ -181,7 +181,7 @@ namespace BE
 
 	bool Application::parseConfig()
 	{
-		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += "/settings.ini", GTSL::File::AccessMode::READ);
+		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += "/settings.ini", GTSL::File::READ);
 
 		//don't try parsing if file is empty
 		if(settingsFile.GetSize() == 0) { return false; }

@@ -31,20 +31,31 @@ constexpr GTSL::ShortString<12> ShaderTypeToFileExtension(GAL::ShaderType type)
 MaterialResourceManager::MaterialResourceManager() : ResourceManager("MaterialResourceManager"), rasterMaterialInfos(16, GetPersistentAllocator()),
 rtPipelineInfos(8, GetPersistentAllocator())
 {
-	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate((uint32)GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> rasterFileBuffer; rasterFileBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), 8, GetTransientAllocator());
 
-	package.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	//initializePackageFiles(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")));
+	switch (package.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::READ | GTSL::File::WRITE)) {
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: package.Create(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("bepkg")), GTSL::File::READ | GTSL::File::WRITE); break;
+	case GTSL::File::OpenResult::ERROR: break;
+	default: ;
+	}
+	
 
-	index.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	switch (index.Open(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::READ | GTSL::File::WRITE)) {
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: index.Create(GetResourcePath(GTSL::ShortString<32>("Materials"), GTSL::ShortString<32>("beidx")), GTSL::File::READ | GTSL::File::WRITE); break;
+	case GTSL::File::OpenResult::ERROR: break;
+	}
+	
 	index.Read(rasterFileBuffer.GetBufferInterface());
 
-	if (rasterFileBuffer.GetLength())
-	{
+	if (rasterFileBuffer.GetLength()) {
 		Extract(rasterMaterialInfos, rasterFileBuffer);
 		Extract(rtPipelineInfos, rasterFileBuffer);
-	}
-	else
-	{
+	} else {
 		Insert(rasterMaterialInfos, rasterFileBuffer);
 		Insert(rtPipelineInfos, rasterFileBuffer);
 	}
@@ -90,7 +101,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			}
 			
 			GTSL::File shaderSourceFile;
-			shaderSourceFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::AccessMode::READ);
+			shaderSourceFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ);
 			
 			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
 			GenerateShader(string, shaderType);
@@ -194,7 +205,7 @@ void MaterialResourceManager::CreateRayTracePipeline(const RayTracePipelineCreat
 
 			GTSL::File shaderFile;
 
-			shaderFile.Open(GetResourcePath(shaderInfo.ShaderName, ShaderTypeToFileExtension(shaderInfo.Type)), GTSL::File::AccessMode::READ);
+			shaderFile.Open(GetResourcePath(shaderInfo.ShaderName, ShaderTypeToFileExtension(shaderInfo.Type)), GTSL::File::READ);
 
 			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
 			GenerateShader(string, shaderInfo.Type);

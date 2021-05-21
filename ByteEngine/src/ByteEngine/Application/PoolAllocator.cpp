@@ -47,10 +47,10 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 	uint64 allocation_min_size{ GTSL::NextPowerOfTwo(GTSL::Math::RoundUpByPowerOf2(size, alignment)) };
 
-	uint8 set_bit { 0 }; GTSL::FindFirstSetBit(allocation_min_size, set_bit);
-	BE_ASSERT(POOL_COUNT > set_bit, "No pool big enough!");	
+	auto set_bit = GTSL::FindFirstSetBit(allocation_min_size);
+	BE_ASSERT(POOL_COUNT > set_bit.Get(), "No pool big enough!");	
 
-	poolsData[set_bit].Allocate(size, alignment, memory, allocatedSize);
+	poolsData[set_bit.Get()].Allocate(size, alignment, memory, allocatedSize);
 }
 
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize)
@@ -74,8 +74,8 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 	GTSL::Lock lock(globalLock);
 	BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 	uint64 allocation_min_size{ GTSL::NextPowerOfTwo(size) };
-	uint8 set_bit{ 0 }; GTSL::FindFirstSetBit(allocation_min_size, set_bit);
-	poolsData[set_bit].Deallocate(size, alignment, memory, systemAllocatorReference);
+	auto set_bit = GTSL::FindFirstSetBit(allocation_min_size);
+	poolsData[set_bit.Get()].Deallocate(size, alignment, memory, systemAllocatorReference);
 }
 
 void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference)

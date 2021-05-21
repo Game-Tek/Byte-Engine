@@ -13,12 +13,10 @@
 
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
-using AccessType = GTSL::Flags<uint8>;
+using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
 
-namespace AccessTypes
-{
-	static constexpr AccessType READ = 1;
-	static constexpr AccessType READ_WRITE = 4;
+namespace AccessTypes {
+	static constexpr AccessType READ = 1, READ_WRITE = 4;
 }
 
 struct TaskInfo

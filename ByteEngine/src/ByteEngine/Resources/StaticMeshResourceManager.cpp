@@ -44,11 +44,11 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 
 	auto package_path = GetResourcePath(GTSL::ShortString<32>("StaticMesh"), GTSL::ShortString<32>("bepkg"));
 
-	switch (indexFile.Open(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ))
+	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ))
 	{
 	case GTSL::File::OpenResult::OK: break;
 	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: indexFile.Create(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ); break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: indexFile.Create(index_path, GTSL::File::WRITE | GTSL::File::READ); break;
 	case GTSL::File::OpenResult::ERROR: break;
 	default: ;
 	}
@@ -62,11 +62,11 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 	else
 	{
 		GTSL::File staticMeshPackage;
-		switch (staticMeshPackage.Open(package_path, GTSL::File::AccessMode::WRITE))
+		switch (staticMeshPackage.Open(package_path, GTSL::File::WRITE))
 		{
 		case GTSL::File::OpenResult::OK: break;
 		case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-		case GTSL::File::OpenResult::DOES_NOT_EXIST: staticMeshPackage.Create(package_path, GTSL::File::AccessMode::WRITE); break;
+		case GTSL::File::OpenResult::DOES_NOT_EXIST: staticMeshPackage.Create(package_path, GTSL::File::WRITE); break;
 		case GTSL::File::OpenResult::ERROR: break;
 		default: ;
 		}
@@ -84,7 +84,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 				GTSL::Buffer<BE::TAR> meshFileBuffer;
 
 				GTSL::File queryFile;
-				queryFile.Open(file_path, GTSL::File::AccessMode::READ);
+				queryFile.Open(file_path, GTSL::File::READ);
 				meshFileBuffer.Allocate(queryFile.GetSize(), 32, GetTransientAllocator());
 				queryFile.Read(meshFileBuffer.GetBufferInterface());
 
@@ -119,7 +119,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 {
 	Assimp::Importer importer;
 	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_FlipUVs |
-		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder);
+		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, "obj");
 
 	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
 		BE_LOG_ERROR(importer.GetErrorString());

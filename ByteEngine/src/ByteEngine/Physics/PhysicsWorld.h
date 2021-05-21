@@ -4,8 +4,6 @@
 #include <GTSL/Math/Vectors.h>
 #include <GTSL/Math/Vectors.h>
 
-
-
 #include "HitResult.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Handle.hpp"

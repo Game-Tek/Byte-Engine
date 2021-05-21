@@ -8,8 +8,6 @@
 #include <GTSL/Serialize.h>
 
 #include "ByteEngine/Application/Application.h"
-#include "ByteEngine/Debug/Assert.h"
-#include "ByteEngine/Game/GameInstance.h"
 
 #undef Extract
 
@@ -23,22 +21,16 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	auto index_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("beidx"));
 	auto package_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("bepkg"));
 
-	indexFile.Open(index_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
-	
-	GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048 * 2048 * 3, 32, GetTransientAllocator());
-
-	if (indexFile.Read(indexFileBuffer.GetBufferInterface()))
-	{
-		GTSL::Extract(textureInfos, indexFileBuffer);
-	}
-	else
-	{
-		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::AccessMode::WRITE | GTSL::File::AccessMode::READ);
+	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ)) {
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: {
+		indexFile.Create(index_path, GTSL::File::WRITE | GTSL::File::READ);
+		GTSL::File packageFile; packageFile.Create(package_path, GTSL::File::WRITE);
 
 		GTSL::FileQuery file_query(query_path);
 
-		while(file_query.DoQuery())
-		{
+		while (file_query.DoQuery()) {
 			auto file_path = resources_path;
 			file_path += file_query.GetFileNameWithExtension();
 			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
@@ -47,7 +39,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			if (!textureInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
-				query_file.Open(file_path, GTSL::File::AccessMode::READ); GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
+				query_file.Open(file_path, GTSL::File::READ); GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
 
 				query_file.Read(textureBuffer.GetBufferInterface());
 
@@ -64,7 +56,6 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 
 				const uint32 size = static_cast<uint32>(x) * y * finalChannelCount;
 
-				texture_info.Dimensions = GAL::Dimension::SQUARE;
 				texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 
 				packageFile.Write(GTSL::Range<byte*>(size, data));
@@ -75,12 +66,24 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			}
 		}
 
-		indexFileBuffer.Resize(0);
+		GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048 , 32, GetTransientAllocator());
 		Insert(textureInfos, indexFileBuffer);
-		indexFile.Write(indexFileBuffer);
+		indexFile.Write(indexFileBuffer.GetBufferInterface());
+
+		textureInfos.Clear();
+		indexFile.SetPointer(0);
+		
+		break;
+	}
+	case GTSL::File::OpenResult::ERROR: break;
+	default: ;
 	}
 		
 	initializePackageFiles(package_path);
+
+	GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048, 32, GetTransientAllocator());
+	indexFile.Read(indexFileBuffer.GetBufferInterface());
+	GTSL::Extract(textureInfos, indexFileBuffer);
 }
 
 TextureResourceManager::~TextureResourceManager()

@@ -17,21 +17,20 @@ public:
 	struct Bone
 	{
 		GTSL::Matrix4 Offset;
-		uint32 AffectedBone[4];
-		float32 EffectIntensity[4];
+		GTSL::Vector<GTSL::Pair<uint32, float32>, BE::PAR> AffectedVertices;
 
 		INSERT_START(Bone)
 		{
 			Insert(insertInfo.Offset, buffer);
-			Insert(insertInfo.AffectedBone, buffer);
-			Insert(insertInfo.EffectIntensity, buffer);
+			Insert(insertInfo.AffectedVertices, buffer);
+			//Insert(insertInfo.EffectIntensity, buffer);
 		}
 
 		EXTRACT_START(Bone)
 		{
 			Extract(extractInfo.Offset, buffer);
-			Extract(extractInfo.AffectedBone, buffer);
-			Extract(extractInfo.EffectIntensity, buffer);
+			Extract(extractInfo.AffectedVertices, buffer);
+			//Extract(extractInfo.EffectIntensity, buffer);
 		}
 	};
 	
@@ -43,15 +42,13 @@ public:
 
 	struct SkeletonDataSerialize : DataSerialize<SkeletonData>
 	{
-		INSERT_START(SkeletonDataSerialize)
-		{
+		INSERT_START(SkeletonDataSerialize) {
 			INSERT_BODY;
 			Insert(insertInfo.Bones, buffer);
 			Insert(insertInfo.BonesMap, buffer);
 		}
 
-		EXTRACT_START(SkeletonDataSerialize)
-		{
+		EXTRACT_START(SkeletonDataSerialize) {
 			EXTRACT_BODY;
 			Extract(extractInfo.Bones, buffer);
 			Extract(extractInfo.BonesMap, buffer);
@@ -132,5 +129,5 @@ private:
 	void loadSkeleton(const GTSL::Range<const byte*> sourceBuffer, SkeletonData& skeletonData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 	void loadAnimation(const GTSL::Range<const byte*> sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 
-	
+	GTSL::FlatHashMap<Id, AnimationDataSerialize, BE::PAR> animations;
 };

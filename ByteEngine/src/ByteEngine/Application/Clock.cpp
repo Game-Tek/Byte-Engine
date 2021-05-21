@@ -35,15 +35,11 @@ void Clock::OnUpdate()
 	auto delta_microseconds = current_ticks.QuadPart - performanceCounterTicks;
 	delta_microseconds *= 1000000; delta_microseconds /= processorFrequency;
 	const auto delta_time = GTSL::Microseconds(delta_microseconds);
-
-	auto secondsInMicroseconds = GTSL::Microseconds(GTSL::Seconds(1));
 	
-	if (delta_time > secondsInMicroseconds)
-	{
+	if (delta_time > GTSL::Microseconds(GTSL::Seconds(1))) {
 		deltaTime = static_cast<GTSL::Microseconds>(GTSL::Milliseconds(16));
 	}
-	else
-	{
+	else {
 		deltaTime = delta_time;
 	}
 	

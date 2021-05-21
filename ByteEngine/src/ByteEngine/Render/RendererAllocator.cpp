@@ -1,8 +1,5 @@
 #include "RendererAllocator.h"
 
-#include <GTSL/ShortString.hpp>
-
-
 #include "ByteEngine/Debug/Assert.h"
 
 static constexpr uint8 ALLOC_IS_ISOLATED = 0;
@@ -19,12 +16,12 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	
 	GAL::MemoryRequirements memory_requirements;
 	scratchBuffer.GetMemoryRequirements(&renderDevice, 1024,
-		BufferType::UNIFORM | BufferType::TRANSFER_SOURCE | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE,
+		GAL::BufferUses::UNIFORM | GAL::BufferUses::TRANSFER_SOURCE | GAL::BufferUses::INDEX | GAL::BufferUses::VERTEX | GAL::BufferUses::ADDRESS | GAL::BufferUses::SHADER_BINDING_TABLE,
 		&memory_requirements);
 
-	bufferMemoryType = memory_requirements.MemoryTypes;
+	//bufferMemoryType = memory_requirements.MemoryTypes;
 
-	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT, allocatorReference);
+	bufferMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT, allocatorReference);
 
 	bufferMemoryAlignment = memory_requirements.Alignment;
 	
@@ -58,24 +55,14 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 		}
 
 		bufferMemoryBlocks.EmplaceBack();
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &renderAllocation->Data);
 	}
 	else
 	{
-		DeviceMemory::CreateInfo memory_create_info;
-		memory_create_info.RenderDevice = &renderDevice;
-		memory_create_info.Name = GTSL::ShortString<64>("Buffer GPU Memory Block");
-		memory_create_info.Size = alignedSize;
-		memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::SHARED | MemoryType::COHERENT);
-		memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
-		deviceMemory->Initialize(memory_create_info);
-
-		DeviceMemory::MapInfo map_info;
-		map_info.RenderDevice = &renderDevice;
-		map_info.Size = memory_create_info.Size;
-		map_info.Offset = 0;
-		renderAllocation->Data = deviceMemory->Map(map_info);
+		deviceMemory->Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, alignedSize, renderDevice.FindNearestMemoryType(GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT));
+		
+		renderAllocation->Data = deviceMemory->Map(&renderDevice, alignedSize, 0);
 	}
 	
 	allocation.Size = alignedSize;
@@ -88,25 +75,14 @@ void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::Pe
 	for (auto& e : bufferMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void MemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, MemoryType::value_type memoryType, const BE::PersistentAllocatorReference& allocatorReference)
+void MemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	freeSpaces.Initialize(16, allocatorReference);
 	
-	DeviceMemory::CreateInfo memory_create_info;
-	memory_create_info.RenderDevice = &renderDevice;
-	memory_create_info.Name = GTSL::StaticString<32>("Memory Block");
-	memory_create_info.Size = size;
-	memory_create_info.MemoryType = renderDevice.FindMemoryType(memType, memoryType);
-	memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
-	deviceMemory.Initialize(memory_create_info);
+	deviceMemory.Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, size, renderDevice.FindNearestMemoryType(memoryType));
 
-	if (memoryType & MemoryType::SHARED)
-	{
-		DeviceMemory::MapInfo map_info;
-		map_info.RenderDevice = &renderDevice;
-		map_info.Size = memory_create_info.Size;
-		map_info.Offset = 0;
-		mappedMemory = deviceMemory.Map(map_info);
+	if (static_cast<GAL::MemoryType::value_type>(memoryType & GAL::MemoryTypes::HOST_VISIBLE)) {
+		mappedMemory = deviceMemory.Map(&renderDevice, size, 0);
 	}
 	
 	freeSpaces.EmplaceBack(size, 0);
@@ -115,9 +91,7 @@ void MemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size, uint
 void MemoryBlock::Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
 	if (mappedMemory) {
-		DeviceMemory::UnmapInfo unmap_info;
-		unmap_info.RenderDevice = &renderDevice;
-		deviceMemory.Unmap(unmap_info);
+		deviceMemory.Unmap(&renderDevice);
 	}
 
 	deviceMemory.Destroy(&renderDevice);
@@ -226,21 +200,21 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	Texture dummyTexture;
 
 	GAL::MemoryRequirements imageMemoryRequirements;
-	dummyTexture.GetMemoryRequirements(&renderDevice, &imageMemoryRequirements, TextureLayout::UNDEFINED, TextureUse::TRANSFER_DESTINATION, TextureFormat::RGBA_I8,
-		{ 1280, 720, 1 }, TextureTiling::OPTIMAL, 1);
+	dummyTexture.GetMemoryRequirements(&renderDevice, &imageMemoryRequirements, GAL::TextureUses::TRANSFER_DESTINATION, GAL::FORMATS::RGBA_I8,
+		{ 1280, 720, 1 }, GAL::Tiling::OPTIMAL, 1);
 
 	Buffer dummyBuffer;
 	
 	GAL::MemoryRequirements bufferMemoryRequirements;
 	dummyBuffer.GetMemoryRequirements(&renderDevice, 1024,
-		BufferType::UNIFORM | BufferType::TRANSFER_DESTINATION | BufferType::INDEX | BufferType::VERTEX | BufferType::ADDRESS | BufferType::SHADER_BINDING_TABLE | BufferType::ACCELERATION_STRUCTURE | BufferType::BUILD_INPUT_READ_ONLY,
+		GAL::BufferUses::UNIFORM | GAL::BufferUses::TRANSFER_DESTINATION | GAL::BufferUses::INDEX | GAL::BufferUses::VERTEX | GAL::BufferUses::ADDRESS | GAL::BufferUses::SHADER_BINDING_TABLE | GAL::BufferUses::ACCELERATION_STRUCTURE | GAL::BufferUses::BUILD_INPUT_READ,
 		&bufferMemoryRequirements);
 
-	bufferMemoryType = bufferMemoryRequirements.MemoryTypes;
-	textureMemoryType = imageMemoryRequirements.MemoryTypes;
+	//bufferMemoryType = bufferMemoryRequirements.MemoryTypes;
+	//textureMemoryType = imageMemoryRequirements.MemoryTypes;
 
-	bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::GPU, allocatorReference);
-	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, MemoryType::GPU, allocatorReference);
+	bufferMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::GPU, allocatorReference);
+	textureMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::GPU, allocatorReference);
 
 	dummyBuffer.Destroy(&renderDevice);
 	dummyTexture.Destroy(&renderDevice);
@@ -287,18 +261,12 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 		}
 
 		bufferMemoryBlocks.EmplaceBack();
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), bufferMemoryType, MemoryType::GPU, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::GPU, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 	}
 	else
 	{
-		DeviceMemory::CreateInfo memory_create_info;
-		memory_create_info.RenderDevice = &renderDevice;
-		memory_create_info.Name = GTSL::ShortString<64>("Buffer GPU Memory Block");
-		memory_create_info.Size = alignedSize;
-		memory_create_info.MemoryType = renderDevice.FindMemoryType(bufferMemoryType, MemoryType::GPU);
-		memory_create_info.Flags = AllocationFlags::DEVICE_ADDRESS;
-		deviceMemory->Initialize(memory_create_info);
+		deviceMemory->Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, alignedSize, renderDevice.FindNearestMemoryType(GAL::MemoryTypes::GPU));
 	}
 	
 	allocation.Size = alignedSize;
@@ -330,7 +298,7 @@ void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDev
 	}
 	
 	textureMemoryBlocks.EmplaceBack();
-	textureMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), textureMemoryType, MemoryType::GPU, GetPersistentAllocator());
+	textureMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::GPU, GetPersistentAllocator());
 	textureMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 
 	//{

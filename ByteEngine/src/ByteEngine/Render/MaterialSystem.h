@@ -22,9 +22,9 @@ struct TaskInfo;
 
 MAKE_HANDLE(uint32, Set)
 
-struct SubSetDescription
-{
-	SetHandle SetHandle; uint32 Subset; BindingType Type;
+struct SubSetDescription {
+	SetHandle SetHandle; uint32 Subset;
+	GAL::BindingType Type;
 };
 
 MAKE_HANDLE(SubSetDescription, SubSet)
@@ -85,6 +85,11 @@ public:
 	RenderSystem::BufferAddress GetBufferAddress(RenderSystem* renderSystem, const Id bufferName) const { return RenderSystem::BufferAddress(buffers[buffersByName[bufferName]].Buffers[frame].GetAddress(renderSystem->GetRenderDevice())); }
 	
 	bool DoesBufferExist(const Id buffer) const { return buffersByName.Find(buffer); }
+	
+	void PushConstant(const RenderSystem* renderSystem, CommandBuffer commandBuffer, Id layout, uint32 offset, GTSL::Range<const byte*> range) const {
+		const auto& set = setLayoutDatas[layout];
+		commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), set.PipelineLayout, offset, range, set.Stage);
+	}
 
 	struct BufferIterator {
 		BufferIterator()
@@ -129,12 +134,11 @@ public:
 		}
 	}
 	
-	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, PipelineType pipelineType)
-	{
-		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName), pipelineType);
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, Id setName, GAL::ShaderStage shaderStage) {
+		BindSet(renderSystem, commandBuffer, setHandlesByName.At(setName), shaderStage);
 	}
 	
-	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, PipelineType pipelineType);
+	void BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle set, GAL::ShaderStage shaderStage);
 
 	SetHandle GetSetHandleByName(const Id name) const { return setHandlesByName.At(name); }
 
@@ -272,7 +276,7 @@ private:
 	void updateDescriptors(TaskInfo taskInfo);
 	void updateCounter(TaskInfo taskInfo);
 
-	static constexpr BindingType BUFFER_BINDING_TYPE = BindingType::STORAGE_BUFFER;
+	static constexpr GAL::BindingType BUFFER_BINDING_TYPE = GAL::BindingType::STORAGE_BUFFER;
 
 	void updateSubBindingsCount(SubSetHandle subSetHandle, uint32 newCount);
 
@@ -323,10 +327,10 @@ private:
 			sets.Clear();
 		}
 
-		GTSL::SparseVector<GTSL::SparseVector<GTSL::Pair<BindingType, GTSL::SparseVector<BindingsSet::BindingUpdateInfo, BE::PAR>>, BE::PAR>, BE::PAR> sets;
+		GTSL::SparseVector<GTSL::SparseVector<GTSL::Pair<GAL::BindingType, GTSL::SparseVector<BindingsSet::BindingUpdateInfo, BE::PAR>>, BE::PAR>, BE::PAR> sets;
 
 	private:
-		void addUpdate(SubSetHandle subSetHandle, uint32 binding, BindingType bindingType, BindingsSet::BindingUpdateInfo update)
+		void addUpdate(SubSetHandle subSetHandle, uint32 binding, GAL::BindingType bindingType, BindingsSet::BindingUpdateInfo update)
 		{			
 			if (sets.IsSlotOccupied(subSetHandle().SetHandle())) {
 				auto& set = sets[subSetHandle().SetHandle()];
@@ -403,6 +407,7 @@ private:
 		Id Parent;
 		BindingsSetLayout BindingsSetLayout;
 		PipelineLayout PipelineLayout;
+		GAL::ShaderStage Stage;
 	};
 	GTSL::FlatHashMap<Id, SetLayoutData, BE::PAR> setLayoutDatas;
 	

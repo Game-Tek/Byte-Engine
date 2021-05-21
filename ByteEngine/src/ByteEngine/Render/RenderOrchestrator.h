@@ -105,7 +105,7 @@ public:
 		auto& renderPass = renderPassesMap[renderPassName];
 		uint8 count = 0;
 		for(const auto& e : renderPass.WriteAttachments) {
-			if (e.Layout == TextureLayout::COLOR_ATTACHMENT || e.Layout == TextureLayout::GENERAL) { ++count; }
+			if (e.Layout == GAL::TextureLayout::ATTACHMENT || e.Layout == GAL::TextureLayout::GENERAL) { ++count; }
 		}
 		return count;
 	}
@@ -114,7 +114,7 @@ public:
 		renderGroups.At(renderGroupName).Sets.EmplaceBack(setName);
 	}
 
-	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, TextureType::value_type type, GTSL::RGBA clearColor);
+	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor);
 
 	enum class PassType : uint8
 	{
@@ -124,9 +124,8 @@ public:
 	struct AttachmentInfo
 	{
 		Id Name;
-		TextureLayout StartState, EndState;
-		GAL::RenderTargetLoadOperations Load;
-		GAL::RenderTargetStoreOperations Store;
+		GAL::TextureLayout StartState, EndState;
+		GAL::Operations Load, Store;
 	};
 	
 	struct PassData
@@ -210,10 +209,9 @@ private:
 		Id BoundRenderGroup;
 		GTSL::Array<uint32, 8> IndexStreams; // MUST be 4 bytes or push constant reads will be messed up
 		//PipelineLayout PipelineLayout;
-		PipelineType PipelineType;
-		ShaderStage::value_type ShaderStages = ShaderStage::ALL;
+		GAL::ShaderStage ShaderStages;
 		uint8 Offset = 0;
-		PipelineLayout PipelineLayout;
+		Id PipelineLayout;
 	} renderState;
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
@@ -241,8 +239,8 @@ private:
 	struct AttachmentData
 	{
 		Id Name;
-		TextureLayout Layout;
-		PipelineStage::value_type ConsumingStages;
+		GAL::TextureLayout Layout;
+		GAL::PipelineStage ConsumingStages;
 	};
 	
 	struct RenderPassData
@@ -254,7 +252,7 @@ private:
 		PassType PassType;
 		GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
 		
-		PipelineStage::value_type PipelineStages;
+		GAL::PipelineStage PipelineStages;
 		SetHandle AttachmentsSetHandle;
 		MemberHandle<uint32> AttachmentsIndicesHandle;
 		BufferHandle BufferHandle;
@@ -262,7 +260,7 @@ private:
 	GTSL::FlatHashMap<Id, RenderPassData, BE::PAR> renderPassesMap;
 	GTSL::Array<Id, 8> renderPassesNames;
 
-	AccessFlags::value_type accessFlagsFromStageAndAccessType(PipelineStage::value_type, bool writeAccess);
+	GAL::AccessFlag accessFlagsFromStageAndAccessType(GAL::PipelineStage pipelineStage, bool writeAccess);
 	
 	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, CommandBuffer, Id)>;
 	
@@ -446,19 +444,17 @@ private:
 		RenderSystem::TextureHandle TextureHandle;
 
 		Id Name;
-		TextureType::value_type Type;
-		TextureUses Uses;
-		TextureLayout Layout;
-		PipelineStage::value_type ConsumingStages;
-		bool WriteAccess = false;
+		GAL::TextureUse Uses;
+		GAL::TextureLayout Layout;
+		GAL::PipelineStage ConsumingStages;
+		GAL::AccessType WriteAccess;
 		GTSL::RGBA ClearColor;
 		GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndex;
 	};
 	GTSL::StaticMap<Id, Attachment, 32> attachments;
 
-	void updateImage(Attachment& attachment, TextureLayout textureLayout, PipelineStage::value_type stages, bool writeAccess)
-	{
+	void updateImage(Attachment& attachment, GAL::TextureLayout textureLayout, GAL::PipelineStage stages, GAL::AccessType writeAccess) {
 		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.WriteAccess = writeAccess;
 	}
 

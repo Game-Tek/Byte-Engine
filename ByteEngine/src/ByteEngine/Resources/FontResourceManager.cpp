@@ -420,13 +420,13 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 {
 	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"), GTSL::ShortString<32>("bepkg"));
 	
-	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::AccessMode::WRITE);
+	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::WRITE);
 
 	auto GetFont = [&](const GTSL::Range<const utf8*> fontName)
 	{
 		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
-		GTSL::File fontFile; fontFile.Open(path, GTSL::File::AccessMode::READ);
+		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ);
 		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetSize(), 8, GetTransientAllocator());
 
 		fontFile.Read(fontFile.GetSize(), fileBuffer.GetBufferInterface());

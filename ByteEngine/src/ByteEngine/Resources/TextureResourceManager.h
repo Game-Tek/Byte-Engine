@@ -18,7 +18,6 @@ public:
 	
 	struct TextureData : Data
 	{
-		GAL::Dimension Dimensions;
 		GTSL::Extent3D Extent;
 		GAL::FormatDescriptor Format;
 	};
@@ -28,7 +27,6 @@ public:
 		INSERT_START(TextureDataSerialize)
 		{
 			INSERT_BODY
-			Insert(insertInfo.Dimensions, buffer);
 			Insert(insertInfo.Extent, buffer);
 			Insert(insertInfo.Format, buffer);
 		}
@@ -36,7 +34,6 @@ public:
 		EXTRACT_START(TextureDataSerialize)
 		{
 			EXTRACT_BODY
-			Extract(extractInfo.Dimensions, buffer);
 			Extract(extractInfo.Extent, buffer);
 			Extract(extractInfo.Format, buffer);
 		}

@@ -6,7 +6,7 @@ PipelineCacheResourceManager::PipelineCacheResourceManager() : ResourceManager("
 {
 	GTSL::StaticString<256> resources_path;
 	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += "/resources/PipelineCache.bepkg";
-	cache.Open(resources_path, GTSL::File::AccessMode::READ | GTSL::File::AccessMode::WRITE);
+	cache.Open(resources_path, GTSL::File::READ | GTSL::File::WRITE);
 }
 
 PipelineCacheResourceManager::~PipelineCacheResourceManager()

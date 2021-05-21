@@ -6,6 +6,7 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/Filesystem.h>
+#include <GTSL/Serialize.h>
 
 static GTSL::Matrix4 assimpMatrixToMatrix(const aiMatrix4x4 assimpMatrix)
 {
@@ -34,23 +35,55 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager("Animation
 	initializePackageFiles(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("bepkg")));
 
 	auto aa = GetResourcePath(GTSL::StaticString<64>("*.fbx"));
-	
-	GTSL::FileQuery fileQuery(aa);
-	
-	while (fileQuery.DoQuery()) {
-		GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::AccessMode::READ);
-		GTSL::Buffer<BE::TAR> buffer(animationFile.GetSize(), 16, GetTransientAllocator());
-		animationFile.Read(buffer.GetBufferInterface());
 
-		SkeletonData skeletonData;
-		AnimationData animationData;
+	GTSL::File dic;
+
+	switch (dic.Open(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("beidx")), GTSL::File::READ)) {
+	case GTSL::File::OpenResult::OK: break;
+	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: {
+		GTSL::FileQuery fileQuery(aa);
+
+		GTSL::FlatHashMap<Id, AnimationDataSerialize, BE::TAR> animationDataSerializes(8, GetTransientAllocator());
+		GTSL::FlatHashMap<Id, SkeletonDataSerialize, BE::TAR> skeletonDataSerializes(8, GetTransientAllocator());
 		
-		GTSL::Buffer<BE::TAR> skeletonDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
-		GTSL::Buffer<BE::TAR> animationDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+		while (fileQuery.DoQuery()) {
+			GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ);
+			GTSL::Buffer buffer(animationFile.GetSize(), 16, GetTransientAllocator());
+			animationFile.Read(buffer.GetBufferInterface());
+
+			SkeletonDataSerialize skeletonData;
+			AnimationDataSerialize animationData;
+
+			GTSL::Buffer<BE::TAR> skeletonDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+			GTSL::Buffer<BE::TAR> animationDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+
+			loadSkeleton(buffer, skeletonData, skeletonDataBuffer);
+			loadAnimation(buffer, animationData, animationDataBuffer);
+			 //todo: serialize data offset
+			//animationDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), animationData);
+			//skeletonDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), skeletonData); //todo: check skeleton existance
+		}
 		
-		loadSkeleton(buffer, skeletonData, skeletonDataBuffer);
-		loadAnimation(buffer, animationData, animationDataBuffer);
+		dic.Create(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("beidx")), GTSL::File::WRITE);
+
+		GTSL::Buffer<BE::TAR> b; b.Allocate(2048 * 16, 16, GetTransientAllocator());
+		
+		GTSL::Insert(animationDataSerializes, b);
+
+		dic.Write(b);
+		
+		break;
 	}
+	case GTSL::File::OpenResult::ERROR: break;
+	}
+
+	GTSL::Buffer<BE::TAR> b; b.Allocate(2048 * 16, 16, GetTransientAllocator());
+
+	dic.Read(b.GetBufferInterface());
+	
+	GTSL::Extract(animations, b);
+
 }
 
 void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourceBuffer, SkeletonData& skeletonData,
@@ -80,9 +113,12 @@ void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourc
 		skeletonData.BonesMap.Emplace(assimpStringToId(assimpBone->mName), b);
 		auto& bone = skeletonData.Bones.EmplaceBack();
 
+		bone.AffectedVertices.Initialize(assimpBone->mNumWeights, GetPersistentAllocator());
+		
 		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
-			bone.AffectedBone[w] = assimpBone->mWeights[w].mVertexId;
-			bone.EffectIntensity[w] = assimpBone->mWeights[w].mWeight;
+			auto& affectedVertex = bone.AffectedVertices.EmplaceBack();
+			affectedVertex.First = assimpBone->mWeights[w].mVertexId;
+			affectedVertex.Second = assimpBone->mWeights[w].mWeight;
 		}
 
 		bone.Offset = assimpMatrixToMatrix(mesh->mBones[b]->mOffsetMatrix);

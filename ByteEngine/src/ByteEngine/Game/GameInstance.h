@@ -31,10 +31,10 @@ using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
 
 inline const char* AccessTypeToString(const AccessType access)
 {
-	switch ((uint8)access)
+	switch (static_cast<uint8>(access))
 	{
-	case (uint8)AccessTypes::READ: return "READ";
-	case (uint8)AccessTypes::READ_WRITE: return "READ_WRITE";
+	case static_cast<uint8>(AccessTypes::READ): return "READ";
+	case static_cast<uint8>(AccessTypes::READ_WRITE): return "READ_WRITE";
 	}
 }
 

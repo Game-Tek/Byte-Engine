@@ -1,7 +1,6 @@
 #pragma once
 
 #include <unordered_map>
-#include <GTSL/Atomic.hpp>
 #include <GTSL/Pair.h>
 #include <GTSL/FunctionPointer.hpp>
 
@@ -12,6 +11,8 @@
 #include "RenderTypes.h"
 
 #include "ByteEngine/Handle.hpp"
+
+#include <GAL/Vulkan/VulkanQueue.h>
 
 namespace GTSL {
 	class Window;
@@ -29,14 +30,15 @@ public:
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameIndex(int32 frameDelta) const { return static_cast<uint8>(frameDelta % pipelinedFrames); }
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
+	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 
 	MAKE_HANDLE(uint32, Texture);
 	
-	void AllocateLocalTextureMemory(uint32 size, Texture* texture, TextureLayout initialLayout, TextureUses uses,
-		TextureFormat format, GTSL::Extent3D extent, TextureTiling tiling, GTSL::uint8 mipLevels, RenderAllocation* allocation)
+	void AllocateLocalTextureMemory(uint32 size, Texture* texture, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
+	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
 	{
 		GAL::MemoryRequirements memoryRequirements;
-		texture->GetMemoryRequirements(GetRenderDevice(), &memoryRequirements, initialLayout, uses, format, extent, tiling, mipLevels);
+		texture->GetMemoryRequirements(GetRenderDevice(), &memoryRequirements, uses, format, extent, tiling, mipLevels);
 
 		DeviceMemory memory;  uint32 offset = 0;
 		
@@ -51,29 +53,19 @@ public:
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, ::Buffer* buffer, GTSL::Range<const AccelerationStructure::Geometry*> geometries, AccelerationStructure::CreateInfo* createInfo, RenderAllocation* renderAllocation, BuildType build, uint32* scratchSize)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, ::Buffer* buffer, GTSL::Range<const GAL::Geometry*> geometries, RenderAllocation* renderAllocation, uint32* scratchSize)
 	{
 		uint32 bufferSize, memoryScratchSize;
+		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::BuildDevice::GPU, 0, &bufferSize, &memoryScratchSize);
 		
-		AccelerationStructure::GetMemoryRequirementsInfo memoryRequirements;
-		memoryRequirements.RenderDevice = GetRenderDevice();
-		memoryRequirements.BuildType = build;
-		memoryRequirements.Flags = 0;
-		memoryRequirements.Geometries = geometries;
-		accelerationStructure->GetMemoryRequirements(memoryRequirements, &bufferSize, &memoryScratchSize);
-		
-		AllocateScratchBufferMemory(bufferSize, BufferType::ACCELERATION_STRUCTURE, buffer, renderAllocation);
+		AllocateScratchBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, buffer, renderAllocation);
 
-		createInfo->Buffer = *buffer;
-
-		createInfo->Offset = 0;
-		createInfo->Size = bufferSize;
-		accelerationStructure->Initialize(*createInfo);
+		accelerationStructure->Initialize(GetRenderDevice(), geometries, *buffer, bufferSize, 0);
 
 		*scratchSize = memoryScratchSize;
 	}
 	
-	void AllocateScratchBufferMemory(uint32 size, BufferType::value_type flags, ::Buffer* buffer, RenderAllocation* allocation)
+	void AllocateScratchBufferMemory(uint32 size, GAL::BufferUse flags, ::Buffer* buffer, RenderAllocation* allocation)
 	{		
 		GAL::MemoryRequirements memoryRequirements;
 		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
@@ -92,7 +84,7 @@ public:
 		scratchMemoryAllocator.DeallocateLinearMemory(renderDevice, allocation);
 	}
 	
-	void AllocateLocalBufferMemory(uint32 size, BufferType::value_type flags, ::Buffer* buffer, RenderAllocation* allocation)
+	void AllocateLocalBufferMemory(uint32 size, GAL::BufferUse flags, ::Buffer* buffer, RenderAllocation* allocation)
 	{
 		GAL::MemoryRequirements memoryRequirements;
 		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
@@ -138,7 +130,8 @@ public:
 
 		GTSL::Extent3D Extent;
 		
-		TextureLayout Layout;
+		GAL::TextureLayout Layout;
+		GAL::FormatDescriptor Format;
 	};
 	void AddTextureCopy(const TextureCopyData& textureCopyData)
 	{
@@ -149,7 +142,7 @@ public:
 
 	[[nodiscard]] PipelineCache GetPipelineCache() const;
 
-	[[nodiscard]] Texture GetSwapchainTexture() const { return swapchainTextures[imageIndex]; }
+	[[nodiscard]] const Texture* GetSwapchainTexture() const { return &swapchainTextures[imageIndex]; }
 
 	MAKE_HANDLE(uint32, Mesh);
 
@@ -263,28 +256,26 @@ public:
 
 	void SetWindow(GTSL::Window* window) { this->window = window; }
 
-	[[nodiscard]] TextureHandle CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, TextureUses textureUses, bool updatable);
+	[[nodiscard]] TextureHandle CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable);
 	void UpdateTexture(const TextureHandle textureHandle);
 
 	//TODO: SELECT DATA POINTER BASED ON STAGING BUFFER NECESSITY
 	
-	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle)
-	{
+	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle) {
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
 		size *= texture.FormatDescriptor.GetSize();
 		return GTSL::Range<byte*>(size, static_cast<byte*>(texture.ScratchAllocation.Data));
 	}
 	
-	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const
-	{
+	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const {
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
 		size *= texture.FormatDescriptor.GetSize();
 		return GTSL::Range<const byte*>(size, static_cast<const byte*>(texture.ScratchAllocation.Data));
 	}
 
-	Texture GetTexture(const TextureHandle textureHandle) const { return textures[textureHandle()].Texture; }
+	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].Texture; }
 	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
 	TextureSampler GetTextureSampler(const TextureHandle handle) const { return textures[handle()].TextureSampler; }
 
@@ -294,7 +285,7 @@ public:
 	bool AcquireImage();
 	void SetHasRendered(const bool state) { hasRenderTasks = state; }
 
-	BufferHandle CreateBuffer(uint32 size, BufferType::value_type flags, bool willWriteFromHost, bool updateable);
+	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
 private:
 	GTSL::Window* window;
@@ -325,11 +316,9 @@ private:
 	Semaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
 	Semaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
 	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
-	CommandBuffer graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
-	CommandPool graphicsCommandPools[MAX_CONCURRENT_FRAMES];
 	Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
-	CommandPool transferCommandPools[MAX_CONCURRENT_FRAMES];
+	CommandBuffer graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
 	CommandBuffer transferCommandBuffers[MAX_CONCURRENT_FRAMES];
 
 	/**
@@ -337,8 +326,8 @@ private:
 	 */
 	uint32 rayTracingInstancesCount = 0;
 	
-	Queue graphicsQueue;
-	Queue transferQueue;
+	GAL::VulkanQueue graphicsQueue;
+	GAL::VulkanQueue transferQueue;
 	
 	struct Mesh
 	{
@@ -363,7 +352,7 @@ private:
 	struct Buffer
 	{
 		::Buffer Buffer; uint32 Size = 0, Counter = 0;
-		BufferType::value_type Flags;
+		GAL::BufferUse Flags;
 		BufferHandle Staging, Next;
 		RenderAllocation Allocation;
 	};
@@ -376,7 +365,7 @@ private:
 		uint32 BuildFlags = 0;
 	};
 	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas[MAX_CONCURRENT_FRAMES];
-	GTSL::Vector<AccelerationStructure::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
+	GTSL::Vector<GAL::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
 
 	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
 	::Buffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
@@ -404,8 +393,8 @@ private:
 	uint8 currentFrameIndex = 0;
 
 	GAL::PresentModes swapchainPresentMode;
-	TextureFormat swapchainFormat;
-	ColorSpace swapchainColorSpace;
+	GAL::FormatDescriptor swapchainFormat;
+	GAL::ColorSpace swapchainColorSpace;
 
 	bool resize();
 	
@@ -442,9 +431,9 @@ private:
 		RenderAllocation Allocation, ScratchAllocation;
 
 		GAL::FormatDescriptor FormatDescriptor;
-		TextureUses Uses;
+		GAL::TextureUse Uses;
 		::Buffer ScratchBuffer;
-		TextureLayout Layout;
+		GAL::TextureLayout Layout;
 		GTSL::Extent3D Extent;
 	};
 	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;

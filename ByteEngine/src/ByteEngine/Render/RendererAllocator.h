@@ -32,7 +32,7 @@ struct AllocationInfo : Space
 
 struct MemoryBlock
 {
-	void Initialize(const RenderDevice& renderDevice, uint32 size, uint32 memType, MemoryType::value_type memoryType, const BE::PersistentAllocatorReference& allocatorReference);
+	void Initialize(const RenderDevice& renderDevice, uint32 size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 	bool TryAllocate(DeviceMemory* deviceMemory, uint32 size, AllocationInfo& allocationInfo, void** data);

@@ -11,13 +11,13 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/Application.h"
 
-const char* BindingTypeString(const BindingType binding)
+const char* BindingTypeString(const GAL::BindingType binding)
 {
 	switch (binding)
 	{
-	case BindingType::UNIFORM_BUFFER_DYNAMIC: return "UNIFORM_BUFFER_DYNAMIC";
-	case BindingType::COMBINED_IMAGE_SAMPLER: return "COMBINED_IMAGE_SAMPLER";
-	case BindingType::UNIFORM_BUFFER: return "UNIFORM_BUFFER";
+	case GAL::BindingType::UNIFORM_BUFFER_DYNAMIC: return "UNIFORM_BUFFER_DYNAMIC";
+	case GAL::BindingType::COMBINED_IMAGE_SAMPLER: return "COMBINED_IMAGE_SAMPLER";
+	case GAL::BindingType::UNIFORM_BUFFER: return "UNIFORM_BUFFER";
 	default: return "null";
 	}
 }
@@ -66,7 +66,7 @@ void MaterialSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 	RenderSystem* renderSystem = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 }
 
-void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle setHandle, PipelineType pipelineType)
+void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBuffer, SetHandle setHandle, GAL::ShaderStage shaderStage)
 {
 	if constexpr (_DEBUG)
 	{
@@ -75,28 +75,26 @@ void MaterialSystem::BindSet(RenderSystem* renderSystem, CommandBuffer commandBu
 
 	auto& set = sets[setHandle()];
 
-	if (set.BindingsSet[frame].GetHandle())
-	{
+	if (set.BindingsSet[frame].GetHandle()) {
 		//FUTURE: if we ever support buffer dynamic offset intead of indexing remember to implement switch for descriptors and here to supply offsets
 	
-		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), pipelineType, GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]),
+		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), shaderStage, GTSL::Range<BindingsSet*>(1, &set.BindingsSet[frame]),
 			GTSL::Range<const uint32*>(), set.PipelineLayout, set.Level);
 	}
 }
 
 void MaterialSystem::WriteSetTexture(const RenderSystem* renderSystem, SubSetHandle setHandle, RenderSystem::TextureHandle textureHandle, uint32 bindingIndex)
 {
-	TextureLayout layout;
-	BindingType bindingType;
-	if (setHandle().Type == BindingType::STORAGE_IMAGE)
+	GAL::TextureLayout layout; GAL::BindingType bindingType;
+	if (setHandle().Type == GAL::BindingType::STORAGE_IMAGE)
 	{
-		layout = TextureLayout::GENERAL;
-		bindingType = BindingType::STORAGE_IMAGE;
+		layout = GAL::TextureLayout::GENERAL;
+		bindingType = GAL::BindingType::STORAGE_IMAGE;
 	}
 	else
 	{
-		layout = TextureLayout::SHADER_READ_ONLY;
-		bindingType = BindingType::COMBINED_IMAGE_SAMPLER;
+		layout = GAL::TextureLayout::SHADER_READ;
+		bindingType = GAL::BindingType::COMBINED_IMAGE_SAMPLER;
 	}
 
 	for (uint8 f = 0; f < queuedFrames; ++f)
@@ -145,63 +143,51 @@ void MaterialSystem::AddSetLayout(RenderSystem* renderSystem, Id layoutName, Id 
 		}
 	}
 
+	setLayoutData.Stage = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN;
+	
 	{
 		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> subSetDescriptors;
 
-		
-		for (auto e : members)
-		{
-			uint32 shaderStage = ShaderStage::ALL, bindingFlags = 0;
+		for (auto e : members) {
+			GAL::ShaderStage shaderStage = setLayoutData.Stage;
+			GAL::BindingFlag bindingFlags = 0;
 			
-			BindingType bindingType;
+			GAL::BindingType bindingType = {};
 
-			if (e.BindingsCount != 1) { bindingFlags = BindingFlags::PARTIALLY_BOUND; }
+			if (e.BindingsCount != 1) { bindingFlags = GAL::BindingFlags::PARTIALLY_BOUND; }
 			
 			switch (e.SubSetType)
 			{
-			case SubSetType::BUFFER: bindingType = BindingType::STORAGE_BUFFER; break;
-			case SubSetType::READ_TEXTURES: bindingType = BindingType::COMBINED_IMAGE_SAMPLER; break;
-			case SubSetType::WRITE_TEXTURES: bindingType = BindingType::STORAGE_IMAGE; break;
-			case SubSetType::RENDER_ATTACHMENT: bindingType = BindingType::INPUT_ATTACHMENT; break;
+			case SubSetType::BUFFER: bindingType = GAL::BindingType::STORAGE_BUFFER; break;
+			case SubSetType::READ_TEXTURES: bindingType = GAL::BindingType::COMBINED_IMAGE_SAMPLER; break;
+			case SubSetType::WRITE_TEXTURES: bindingType = GAL::BindingType::STORAGE_IMAGE; break;
+			case SubSetType::RENDER_ATTACHMENT: bindingType = GAL::BindingType::INPUT_ATTACHMENT; break;
 			case SubSetType::ACCELERATION_STRUCTURE: 
-				bindingType = BindingType::ACCELERATION_STRUCTURE;
-				shaderStage = ShaderStage::RAY_GEN;
+				bindingType = GAL::BindingType::ACCELERATION_STRUCTURE;
+				shaderStage = GAL::ShaderStages::RAY_GEN;
+				setLayoutData.Stage |= shaderStage;
 				break;
 			}
 
 			subSetDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, shaderStage, e.BindingsCount, bindingFlags });
 		}
 		
-		BindingsSetLayout::CreateInfo bindingsSetLayoutCreateInfo;
-		bindingsSetLayoutCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-		GTSL::StaticString<64> bindingsSetLayoutName("Set layout: "); bindingsSetLayoutName += layoutName.GetString();
-		bindingsSetLayoutCreateInfo.Name = bindingsSetLayoutName;
-
-		bindingsSetLayoutCreateInfo.BindingsDescriptors = subSetDescriptors;
-		setLayoutData.BindingsSetLayout = BindingsSetLayout(bindingsSetLayoutCreateInfo);
-
-		bindingsSetLayouts.EmplaceBack(setLayoutData.BindingsSetLayout);
+		//GTSL::StaticString<64> bindingsSetLayoutName("Set layout: "); bindingsSetLayoutName += layoutName.GetString();
+		
+		setLayoutData.BindingsSetLayout.Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
+		bindingsSetLayouts.EmplaceBack().Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
 	}
 
 	{
-		PipelineLayout::CreateInfo pipelineLayout;
-		pipelineLayout.RenderDevice = renderSystem->GetRenderDevice();
-
-		if constexpr (_DEBUG)
-		{
+		if constexpr (_DEBUG) {
 			GTSL::StaticString<128> name("Pipeline layout: "); name += layoutName.GetString();
-			pipelineLayout.Name = name;
+			//pipelineLayout.Name = name;
 		}
 
-		PipelineLayout::PushConstant pushConstant;
-		pushConstant.ShaderStages = ShaderStage::ALL;
-		pushConstant.Offset = 0;
-		pushConstant.Size = 128;
-
-		pipelineLayout.PushConstant = &pushConstant;
-
-		pipelineLayout.BindingsSetLayouts = bindingsSetLayouts;
-		setLayoutData.PipelineLayout.Initialize(pipelineLayout);
+		GAL::PushConstant pushConstant;
+		pushConstant.Stage = setLayoutData.Stage;
+		pushConstant.NumberOf4ByteSlots = 32;
+		setLayoutData.PipelineLayout.Initialize(renderSystem->GetRenderDevice(), &pushConstant, bindingsSetLayouts);
 	}
 }
 
@@ -211,35 +197,37 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id setL
 
 	for(auto& ss : setInfo)
 	{
+		GAL::ShaderStage enabledShaderStages = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::ANY_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::CALLABLE | GAL::ShaderStages::COMPUTE;	
+		
 		switch(ss.Type)
 		{
 		case SubSetType::BUFFER:
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::STORAGE_BUFFER, ShaderStage::ALL, ss.Count, BindingFlags::PARTIALLY_BOUND });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 			break;
 		}
 			
 		case SubSetType::READ_TEXTURES:
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::COMBINED_IMAGE_SAMPLER, ShaderStage::ALL, ss.Count, BindingFlags::PARTIALLY_BOUND });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{GAL::BindingType::COMBINED_IMAGE_SAMPLER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 			break;
 		}
 
 		case SubSetType::WRITE_TEXTURES:
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::STORAGE_IMAGE, ShaderStage::ALL, ss.Count, BindingFlags::PARTIALLY_BOUND });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 			break;
 		}
 
 		case SubSetType::RENDER_ATTACHMENT:
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::INPUT_ATTACHMENT, ShaderStage::ALL, ss.Count, BindingFlags::PARTIALLY_BOUND });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 			break;
 		}
 			
 		case SubSetType::ACCELERATION_STRUCTURE:
 		{
-			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ BindingType::ACCELERATION_STRUCTURE, ShaderStage::RAY_GEN, ss.Count, 0 });
+			bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.Count, 0 });
 			break;
 		}
 		}
@@ -251,8 +239,7 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id setL
 
 	uint32 i = 0;
 	
-	for (auto& ss : setInfo)
-	{
+	for (auto& ss : setInfo) {
 		*ss.Handle = SubSetHandle({ setHandle, i, bindingDescriptors[i].BindingType });
 		++i;
 	}
@@ -262,23 +249,17 @@ SetHandle MaterialSystem::AddSet(RenderSystem* renderSystem, Id setName, Id setL
 
 BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members)
 {
-	uint32 bufferFlags = 0, notBufferFlags = 0;
+	GAL::BufferUse bufferUses, notBufferFlags;
 
 	auto bufferIndex = buffers.Emplace(); //this also essentially referes to the binding wince there's only a buffer per binding
 	auto& bufferData = buffers[bufferIndex];
 	
-	auto parseMembers = [&](auto&& self, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> uint32
-	{
+	auto parseMembers = [&](auto&& self, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> uint32 {
 		uint32 offset = 0;
 
-		for (uint8 m = 0; m < levelMembers.ElementCount(); ++m)
-		{
-			if(levelMembers[m].Type == Member::DataType::PAD)
-			{
-				offset += levelMembers[m].Count;
-			}
-			else
-			{
+		for (uint8 m = 0; m < levelMembers.ElementCount(); ++m) {
+			if(levelMembers[m].Type == Member::DataType::PAD) { offset += levelMembers[m].Count; }
+			else {
 				auto memberDataIndex = bufferData.MemberData.GetLength();
 				auto& member = bufferData.MemberData.EmplaceBack();
 
@@ -289,16 +270,12 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 				
 				*reinterpret_cast<MemberHandle<byte>*>(levelMembers[m].Handle) = MemberHandle<byte>(bufferIndex, memberDataIndex);
 
-				if (levelMembers[m].Type == Member::DataType::STRUCT)
-				{
+				if (levelMembers[m].Type == Member::DataType::STRUCT) {
 					member.Size = self(self, levelMembers[m].MemberInfos, level + 1);
-				}
-				else
-				{
-					if (levelMembers[m].Type == Member::DataType::SHADER_HANDLE)
-					{
-						bufferFlags |= BufferType::SHADER_BINDING_TABLE;
-						notBufferFlags |= BufferType::ACCELERATION_STRUCTURE; notBufferFlags |= BufferType::STORAGE;
+				} else {
+					if (levelMembers[m].Type == Member::DataType::SHADER_HANDLE) {
+						bufferUses |= GAL::BufferUses::SHADER_BINDING_TABLE;
+						notBufferFlags |= GAL::BufferUses::ACCELERATION_STRUCTURE; notBufferFlags |= GAL::BufferUses::STORAGE;
 					}
 					
 					member.Size = dataTypeSize(levelMembers[m].Type);
@@ -313,17 +290,16 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 
 	uint32 bufferSize = parseMembers(parseMembers, members, 0);
 
-	if(bufferSize != 0)
-	{
+	if(bufferSize != 0) {
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<64> name("Buffer");
 			//createInfo.Name = name;
 		}
 
-		bufferFlags |= BufferType::ADDRESS; bufferFlags |= BufferType::STORAGE;
+		bufferUses |= GAL::BufferUses::ADDRESS; bufferUses |= GAL::BufferUses::STORAGE;
 
 		for (uint8 f = 0; f < queuedFrames; ++f) {
-			renderSystem->AllocateScratchBufferMemory(bufferSize, bufferFlags & ~notBufferFlags, &bufferData.Buffers[f], &bufferData.RenderAllocations[f]);
+			renderSystem->AllocateScratchBufferMemory(bufferSize, bufferUses & ~notBufferFlags, &bufferData.Buffers[f], &bufferData.RenderAllocations[f]);
 		}
 	}
 
@@ -332,7 +308,7 @@ BufferHandle MaterialSystem::CreateBuffer(RenderSystem* renderSystem, GTSL::Rang
 
 void MaterialSystem::Dispatch(GTSL::Extent2D workGroups, CommandBuffer* commandBuffer, RenderSystem* renderSystem)
 {
-	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), Pipeline(), PipelineType::COMPUTE);
+	commandBuffer->BindPipeline(renderSystem->GetRenderDevice(), Pipeline(), GAL::ShaderStages::COMPUTE);
 	commandBuffer->Dispatch(renderSystem->GetRenderDevice(), GTSL::Extent3D(workGroups));
 }
 
@@ -349,9 +325,6 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 	}
 
 	queuedSetUpdates.Clear();
-
-	BindingsSet::BindingsSetUpdateInfo bindingsUpdateInfo;
-	bindingsUpdateInfo.RenderDevice = renderSystem->GetRenderDevice();
 
 	{
 		auto& descriptorsUpdate = descriptorsUpdates[frame];
@@ -374,8 +347,7 @@ void MaterialSystem::updateDescriptors(TaskInfo taskInfo)
 					}
 				}
 
-				bindingsUpdateInfo.BindingsUpdateInfos = bindingsUpdateInfos;
-				sets[set.First].BindingsSet[frame].Update(bindingsUpdateInfo, GetTransientAllocator());
+				sets[set.First].BindingsSet[frame].Update(renderSystem->GetRenderDevice(), bindingsUpdateInfos, GetTransientAllocator());
 			}
 		}
 		
@@ -418,73 +390,34 @@ SetHandle MaterialSystem::makeSetEx(RenderSystem* renderSystem, Id setName, Id s
 	
 	//GTSL::Array<BindingsSetLayout, 16> setLayouts(set.Level + 1);
 	
-	if (bindingDesc.ElementCount())
-	{
-		//{
-		//	auto lastSet = setLayoutName;
-		//
-		//	for (uint8 i = 0, l = set.Level; i < set.Level + 1; ++i, --l)
-		//	{
-		//		setLayouts[l] = setLayoutDatas[lastSet()].BindingsSetLayout;
-		//		lastSet = setLayoutDatas[lastSet()].Parent;
-		//	}
-		//}
+	if (bindingDesc.ElementCount()) {		
 		
-		{
-			BindingsPool::CreateInfo bindingsPoolCreateInfo;
-			bindingsPoolCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-
-			if constexpr (_DEBUG)
-			{
-				GTSL::StaticString<64> name("Bindings pool. Set: "); name += setName.GetString();
-				bindingsPoolCreateInfo.Name = name;
-			}
-
-			GTSL::Array<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
-
-			for (auto e : bindingDesc)
-			{
-				bindingsPoolSizes.PushBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * queuedFrames });
-			}
-
-			bindingsPoolCreateInfo.BindingsPoolSizes = bindingsPoolSizes;
-			bindingsPoolCreateInfo.MaxSets = MAX_CONCURRENT_FRAMES;
-			set.BindingsPool = BindingsPool(bindingsPoolCreateInfo);
-		}
-		
-		{
-			BindingsPool::AllocateBindingsSetsInfo allocateBindings;
-			allocateBindings.RenderDevice = renderSystem->GetRenderDevice();
-
-			for (uint8 f = 0; f < queuedFrames; ++f)
-			{
-				GTSL::Array<BindingsSet*, 8> bindingsSets;
-				bindingsSets.EmplaceBack(&set.BindingsSet[f]);
-
-				allocateBindings.BindingsSets = bindingsSets;
-
-				{
-					allocateBindings.BindingsSetLayouts = GTSL::Range<BindingsSetLayout*>(1, &setLayout.BindingsSetLayout);
-
-					GTSL::Array<GAL::VulkanCreateInfo, 1> bindingsSetsCreateInfos;
-
-					if constexpr (_DEBUG)
-					{
-						GTSL::StaticString<64> name("BindingsSet. Set: "); name += setName.GetString();
-						auto& bindingsSetCreateInfo = bindingsSetsCreateInfos.EmplaceBack();
-						bindingsSetCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
-						bindingsSetCreateInfo.Name = name;
-					}
-
-					allocateBindings.BindingsSetCreateInfos = bindingsSetsCreateInfos;
-
-					set.BindingsPool.AllocateBindingsSets(allocateBindings);
-				}
-			}
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Bindings pool. Set: "); name += setName.GetString();
+			//bindingsPoolCreateInfo.Name = name;
 		}
 
-		for(auto& e : bindingDesc)
-		{
+		GTSL::Array<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
+
+		for (auto e : bindingDesc) {
+			bindingsPoolSizes.PushBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * queuedFrames });
+		}
+
+		set.BindingsPool.Initialize(renderSystem->GetRenderDevice(), bindingsPoolSizes, MAX_CONCURRENT_FRAMES);
+		
+		for (uint8 f = 0; f < queuedFrames; ++f) {
+
+			if constexpr (_DEBUG) {
+				GTSL::StaticString<64> name("BindingsSet. Set: "); name += setName.GetString();
+				//auto& bindingsSetCreateInfo = bindingsSetsCreateInfos.EmplaceBack();
+				//bindingsSetCreateInfo.RenderDevice = renderSystem->GetRenderDevice();
+				//bindingsSetCreateInfo.Name = name;
+			}
+			
+			set.BindingsSet[f].Initialize(renderSystem->GetRenderDevice(), set.BindingsPool, setLayout.BindingsSetLayout);
+		}
+
+		for(auto& e : bindingDesc) {
 			set.SubSets.EmplaceBack(); auto& subSet = set.SubSets.back();
 			subSet.AllocatedBindings = e.BindingsCount;
 		}

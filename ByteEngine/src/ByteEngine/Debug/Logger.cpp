@@ -17,11 +17,11 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), log
 	
 	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
 	path += "/log.txt";
-	switch (logFile.Open(path, GTSL::File::AccessMode::WRITE))
+	switch (logFile.Open(path, GTSL::File::WRITE))
 	{
 	case GTSL::File::OpenResult::OK: break;
 	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: logFile.Create(path, GTSL::File::AccessMode::WRITE);
+	case GTSL::File::OpenResult::DOES_NOT_EXIST: logFile.Create(path, GTSL::File::WRITE);
 	case GTSL::File::OpenResult::ERROR: break;
 	default: ;
 	}

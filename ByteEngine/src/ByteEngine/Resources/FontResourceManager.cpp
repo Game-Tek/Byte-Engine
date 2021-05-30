@@ -28,12 +28,10 @@
 #include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
-#include "ByteEngine/Game/GameInstance.h"
 
 void get8b(void* dst, const char* src)
 {
-	if constexpr (_WIN64)
-	{
+	if constexpr (_WIN64) {
 		static_cast<uint8_t*>(dst)[0] = src[7];
 		static_cast<uint8_t*>(dst)[1] = src[6];
 		static_cast<uint8_t*>(dst)[2] = src[5];
@@ -42,9 +40,7 @@ void get8b(void* dst, const char* src)
 		static_cast<uint8_t*>(dst)[5] = src[2];
 		static_cast<uint8_t*>(dst)[6] = src[1];
 		static_cast<uint8_t*>(dst)[7] = src[0];
-	}
-	else
-	{
+	} else {
 		static_cast<uint8_t*>(dst)[0] = src[0];
 		static_cast<uint8_t*>(dst)[1] = src[1];
 		static_cast<uint8_t*>(dst)[2] = src[2];
@@ -56,17 +52,13 @@ void get8b(void* dst, const char* src)
 	}
 }
 
-void get4b(void* dst, const char* src)
-{
-	if constexpr (_WIN64)
-	{
+void get4b(void* dst, const char* src) {
+	if constexpr (_WIN64) {
 		static_cast<uint8_t*>(dst)[0] = src[3];
 		static_cast<uint8_t*>(dst)[1] = src[2];
 		static_cast<uint8_t*>(dst)[2] = src[1];
 		static_cast<uint8_t*>(dst)[3] = src[0];
-	}
-	else
-	{
+	} else {
 		static_cast<uint8_t*>(dst)[0] = src[0];
 		static_cast<uint8_t*>(dst)[1] = src[1];
 		static_cast<uint8_t*>(dst)[2] = src[2];
@@ -76,58 +68,44 @@ void get4b(void* dst, const char* src)
 
 void get2b(void* dst, const char* src)
 {
-	if constexpr (_WIN64)
-	{
+	if constexpr (_WIN64) {
 		static_cast<uint8_t*>(dst)[0] = src[1];
 		static_cast<uint8_t*>(dst)[1] = src[0];
-	}
-	else
-	{
+	} else {
 		static_cast<uint8_t*>(dst)[0] = src[0];
 		static_cast<uint8_t*>(dst)[1] = src[1];
 	}
 }
 
-void get1b(void* dst, const char* src)
-{
+void get1b(void* dst, const char* src) {
 	static_cast<uint8_t*>(dst)[0] = src[0];
 }
 
-void get8b(void* dst, const char* src, uint32& offset)
-{
-	offset += 8;
-	
+void get8b(void* dst, const char* src, uint32& offset) {
+	offset += 8;	
 	get8b(dst, src);
 }
 
-void get4b(void* dst, const char* src, uint32& offset)
-{
-	offset += 4;
-	
+void get4b(void* dst, const char* src, uint32& offset) {
+	offset += 4;	
 	get4b(dst, src);
 }
 
-void get2b(void* dst, const char* src, uint32& offset)
-{
+void get2b(void* dst, const char* src, uint32& offset) {
 	offset += 2;
-	
 	get2b(dst, src);
 }
 
-void get1b(void* dst, const char* src, uint32& offset)
-{
-	++offset;
-	
+void get1b(void* dst, const char* src, uint32& offset) {
+	++offset;	
 	get1b(dst, src);
 }
 
-float32 to_2_14_float(const int16 value)
-{
+float32 to_2_14_float(const int16 value) {
 	return static_cast<float32>(value & 0x3fff) / static_cast<float32>(1 << 14) + (-2 * ((value >> 15) & 0x1) + ((value >> 14) & 0x1));
 }
 
-struct Flags
-{
+struct Flags {
 	bool xDual : 1;
 	bool yDual : 1;
 	bool xShort : 1;
@@ -136,8 +114,7 @@ struct Flags
 	bool isControlPoint : 1;
 };
 
-enum COMPOUND_GLYPH_FLAGS
-{
+enum COMPOUND_GLYPH_FLAGS {
 	ARG_1_AND_2_ARE_WORDS = 0x0001,
 	ARGS_ARE_XY_VALUES = 0x0002,
 	ROUND_XY_TO_GRID = 0x0004,
@@ -152,8 +129,7 @@ enum COMPOUND_GLYPH_FLAGS
 	UNSCALED_COMPONENT_OFFSET = 0x1000
 };
 
-struct TTFHeader
-{
+struct TTFHeader {
 	uint32 Version;
 	uint16 NumberOfTables;
 	uint16 SearchRange;
@@ -422,8 +398,7 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 	
 	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::WRITE);
 
-	auto GetFont = [&](const GTSL::Range<const utf8*> fontName)
-	{
+	auto GetFont = [&](const GTSL::Range<const utf8*> fontName) {
 		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
 
 		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ);
@@ -445,8 +420,7 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 	//glyf map
 	//glyfs
 	
-	for(auto& e : font.Glyphs)
-	{
+	for(auto& e : font.Glyphs) {
 		Face face;
 		MakeFromPaths(e, face, 4, GetPersistentAllocator());
 
@@ -468,6 +442,8 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 			}
 		}
 	}
+
+	beFontFile.Write(data.GetBufferInterface());
 }
 
 GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y); }

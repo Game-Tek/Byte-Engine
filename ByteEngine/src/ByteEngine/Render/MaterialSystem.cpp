@@ -40,8 +40,7 @@ void MaterialSystem::Initialize(const InitializeInfo& initializeInfo)
 	//initializeInfo.GameInstance->AddEvent("MaterialSystem", GetOnMaterialLoadEventHandle());
 	//initializeInfo.GameInstance->AddEvent("MaterialSystem", GetOnMaterialInstanceLoadEventHandle());
 	
-	queuedFrames = BE::Application::Get()->GetOption("buffer");
-	queuedFrames = GTSL::Math::Clamp(queuedFrames, (uint8)2, (uint8)3);
+	queuedFrames = renderSystem->GetPipelinedFrames();
 
 	buffers.Initialize(64, GetPersistentAllocator()); buffersByName.Initialize(32, GetPersistentAllocator());
 

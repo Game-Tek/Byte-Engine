@@ -2,13 +2,9 @@
 
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
-
-
 #include "ByteEngine/Application/AllocatorReferences.h"
-
 #include "ByteEngine/Resources/FontResourceManager.h"
 #include <GTSL/Math/Vectors.h>
-
 #include "ByteEngine/Debug/Assert.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -31,7 +27,7 @@ struct CubicBezier
 
 inline float det(GTSL::Vector2 a, GTSL::Vector2 b) { return a.X() * b.Y() - b.X() * a.Y(); }
 // Find vector vi given pixel p=(0,0) and B�zier points b0, b1, b2
-GTSL::Vector2 get_distance_vector(GTSL::Vector2 b0, GTSL::Vector2 b1, GTSL::Vector2 b2) {
+inline GTSL::Vector2 get_distance_vector(GTSL::Vector2 b0, GTSL::Vector2 b1, GTSL::Vector2 b2) {
 	float a = det(b0, b2), b = 2 * det(b1, b0), d = 2 * det(b2, b1); // ab,c(p)
 	float f = b * d - a * a; // f(p)
 	
@@ -132,8 +128,7 @@ float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
 {
 	constexpr auto AA_LENGTH = 0.001f; constexpr uint16 BANDS = 4;
 
-	auto getBandIndex = [](const GTSL::Vector2 pos)
-	{
+	auto getBandIndex = [](const GTSL::Vector2 pos) {
 		return GTSL::Math::Clamp(static_cast<uint16>(pos.Y() * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
 	};
 	
@@ -143,75 +138,72 @@ float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
 
 	float32 result = 0.0f; float32 lowestLength = 100.0f;
 	
-	{				
-		for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
-		{
-			auto line = face.LinearBeziers[band.Lines[i]];
-
-			GTSL::Vector2 min, max;
 			
-			GTSL::Math::MinMax(line.Points[0], line.Points[1], min, max);
+	for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
+	{
+		auto line = face.LinearBeziers[band.Lines[i]];
 
-			if(GTSL::Math::PointInBoxProjection(min, max, point))
-			{
-				float32 isOnSegment;
-				auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point, isOnSegment);
-				auto dist = GTSL::Math::LengthSquared(point, pointLine);
-				
-				if(dist < lowestLength)
-				{
-					lowestLength = dist;
-					auto side = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : 0.0f;
-					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
-					//result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
-				}
+		GTSL::Vector2 min, max;
+		
+		GTSL::Math::MinMax(line.Points[0], line.Points[1], min, max);
+
+		if(GTSL::Math::PointInBoxProjection(min, max, point)) {
+			float32 isOnSegment;
+			auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point, isOnSegment);
+			auto dist = GTSL::Math::LengthSquared(point, pointLine);
+			
+			if(dist < lowestLength) {
+				lowestLength = dist;
+				auto side = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : 0.0f;
+				result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+				//result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
 			}
 		}
+	}
 
+	{
+		GTSL::Vector2 closestAB, closestBC;
+		
+		for(uint8 i = 0; i < band.Curves.GetLength(); ++i)
 		{
-			GTSL::Vector2 closestAB, closestBC;
+			const auto& curve = face.CubicBeziers[band.Curves[i]];
+		
+			GTSL::Vector2 min, max;
 			
-			for(uint8 i = 0; i < band.Curves.GetLength(); ++i)
+			GTSL::Math::MinMax(curve.Points[0], curve.Points[2], min, max);
+		
+			if(GTSL::Math::PointInBoxProjection(min, max, point))
 			{
-				const auto& curve = face.CubicBeziers[band.Curves[i]];
-			
-				GTSL::Vector2 min, max;
-				
-				GTSL::Math::MinMax(curve.Points[0], curve.Points[2], min, max);
-			
-				if(GTSL::Math::PointInBoxProjection(min, max, point))
+				float32 dist = 100.0f;
+
+				constexpr uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f };
+
+				uint8 sideToAdjust = 0;
+
+				for (uint32 l = 0; l < LOOPS; ++l)
 				{
-					float32 dist = 100.0f;
-
-					constexpr uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f };
-
-					uint8 sideToAdjust = 0;
-
-					for (uint32 l = 0; l < LOOPS; ++l)
+					for (uint8 i = 0, ni = 1; i < 2; ++i, --ni)
 					{
-						for (uint8 i = 0, ni = 1; i < 2; ++i, --ni)
-						{
-							auto t = GTSL::Math::Lerp(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f);
-							auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
-							auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
-							auto pos = GTSL::Math::Lerp(ab, bc, t);
-							auto newDist = GTSL::Math::LengthSquared(pos, point);
+						auto t = GTSL::Math::Lerp(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f);
+						auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
+						auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
+						auto pos = GTSL::Math::Lerp(ab, bc, t);
+						auto newDist = GTSL::Math::LengthSquared(pos, point);
 
-							if (newDist < dist) { sideToAdjust = ni; dist = newDist; closestAB = ab; closestBC = bc; }
-						}
-
-						bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f;
+						if (newDist < dist) { sideToAdjust = ni; dist = newDist; closestAB = ab; closestBC = bc; }
 					}
 
-					if (dist < lowestLength)
-					{
-						lowestLength = dist;
+					bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f;
+				}
 
-						auto side = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) > 0.0f ? 1.0f : 0.0f;
-						result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+				if (dist < lowestLength)
+				{
+					lowestLength = dist;
 
-						//result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
-					}
+					auto side = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) > 0.0f ? 1.0f : 0.0f;
+					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+
+					//result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
 				}
 			}
 		}

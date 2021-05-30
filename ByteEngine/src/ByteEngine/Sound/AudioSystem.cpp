@@ -75,9 +75,7 @@ void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay)
 void AudioSystem::PlayAudio(AudioEmitterHandle audioEmitter)
 {
 	if ((!onHoldEmitters.Find(audioEmitter).State())) {
-		auto res = playingEmitters.Find(audioEmitter);
-		
-		if(res.State()) {
+		if(const auto res = playingEmitters.Find(audioEmitter); res.State()) {
 			audioEmittersSettings[audioEmitter()].Samples = 0;
 		}
 		else {
@@ -159,20 +157,15 @@ void AudioSystem::render(TaskInfo)
 			auto remainingFrames = audioFrames - playedSamples;
 			auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
 
-			if (audioResourceManager->GetChannelCount(emmitter.Name) == 1)
-			{
-				for (uint32 s = 0; s < clampedFrames; ++s) //left channel
-				{
+			if (audioResourceManager->GetChannelCount(emmitter.Name) == 1) {
+				for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
 					auto sample = getSample<int16>(audio, 1, s + playedSamples, 0);
 					
 					getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += sample * leftPercentange;
 					getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += sample * rightPercentage;
 				}
-			}
-			else
-			{
-				for (uint32 s = 0; s < clampedFrames; ++s) //left channel
-				{
+			} else {
+				for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
 					auto lSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::LEFT_CHANNEL);
 					auto rSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::RIGHT_CHANNEL);
 
@@ -181,8 +174,7 @@ void AudioSystem::render(TaskInfo)
 				}
 			}
 				
-			if ((emmitter.Samples += clampedFrames) == audioFrames)
-			{
+			if ((emmitter.Samples += clampedFrames) == audioFrames) {
 				if (!GetLooping(playingEmitters[pe])) {
 					emittersToStop.EmplaceBack(pe);
 				}
@@ -202,8 +194,7 @@ void AudioSystem::render(TaskInfo)
 		audioDevice.PushAudioData(audioDataCopyFunction, availableAudioFrames);
 	}
 	
-	for (uint32 i = 0; i < emittersToStop.GetLength(); ++i)
-	{
+	for (uint32 i = 0; i < emittersToStop.GetLength(); ++i) {
 		removePlayingEmitter(i);
 	}
 }

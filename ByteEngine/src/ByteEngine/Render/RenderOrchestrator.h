@@ -1,5 +1,7 @@
 #pragma once
 
+#include <any>
+
 #include "ByteEngine/Game/System.h"
 
 #include <GTSL/Array.hpp>
@@ -70,6 +72,7 @@ private:
 	RenderSystem::MeshHandle square;
 
 	MemberHandle<GTSL::Matrix4> matrixUniformBufferMemberHandle, colorHandle;
+	MemberHandle<void*> uiDataStruct;
 
 	uint8 comps = 2;
 	MaterialInstanceHandle uiMaterial;
@@ -77,6 +80,90 @@ private:
 
 class RenderOrchestrator : public System
 {
+public:
+	enum class PassType : uint8 {
+		RASTER, COMPUTE, RAY_TRACING
+	};
+protected:
+	enum class LayerType {
+		DISPATCH, RAY_TRACE, MATERIAL, MESHES, RENDER_PASS, LAYER
+	};
+
+	enum class InternalLayerType {
+		DISPATCH, RAY_TRACE, MATERIAL_AND_MESHES, RENDER_PASS, LAYER
+	};
+	
+	struct Layer {
+		LayerType Type;
+		InternalLayerType PrivateType;
+		Id Name; uint32 Index; bool Indexed;
+
+		Layer() {
+		}
+		
+		struct MeshInstanceData {
+			RenderSystem::MeshHandle Handle;
+			uint32 InstanceCount;
+		};
+
+		struct MaterialData {
+			MaterialInstanceHandle MaterialHandle;
+
+			struct VertexGroup {
+				GTSL::Array<MeshInstanceData, 16> Meshes;
+				uint8 VertexGroupIndex;
+			};
+
+			GTSL::Array<VertexGroup, 8> MeshInstancesPerVertexGroup;
+		};
+
+		struct DispatchData {
+			GTSL::Extent3D DispatchSize;
+		};
+
+		struct RayTraceData {
+			GTSL::Extent3D DispatchSize;
+		};
+
+		struct AttachmentData {
+			Id Name;
+			GAL::TextureLayout Layout;
+			GAL::PipelineStage ConsumingStages;
+		};
+
+		struct RenderPassData {
+			bool Enabled = false;
+			uint8 APIRenderPass = 0;
+
+			PassType PassType;
+			GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
+
+			GAL::PipelineStage PipelineStages;
+			SetHandle AttachmentsSetHandle;
+			MemberHandle<uint32> AttachmentsIndicesHandle;
+			BufferHandle BufferHandle;
+			Id Name;
+		};
+		
+		union {
+			MaterialData Material;
+			DispatchData Dispatch;
+			RayTraceData RayTrace;
+			RenderPassData RenderPass;
+		};
+
+		~Layer() {
+			switch (PrivateType) {
+			case InternalLayerType::DISPATCH: Dispatch.~DispatchData();  break;
+			case InternalLayerType::RAY_TRACE: RayTrace.~RayTraceData(); break;
+			case InternalLayerType::MATERIAL_AND_MESHES: Material.~MaterialData(); break;
+			case InternalLayerType::RENDER_PASS: RenderPass.~RenderPassData(); break;
+			case InternalLayerType::LAYER: break;
+			default:;
+			}
+		}
+	};
+	
 public:
 	RenderOrchestrator() : System("RenderOrchestrator") {}
 	
@@ -100,9 +187,8 @@ public:
 	[[nodiscard]] MaterialInstanceHandle CreateMaterial(const CreateMaterialInfo& info);
 	[[nodiscard]] MaterialInstanceHandle CreateRayTracingMaterial(const CreateMaterialInfo& info);
 	
-	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName)
-	{
-		auto& renderPass = renderPassesMap[renderPassName];
+	GTSL::uint8 GetRenderPassColorWriteAttachmentCount(const Id renderPassName) {
+		auto& renderPass = renderingTreeMap[renderPassName]->Data.RenderPass;
 		uint8 count = 0;
 		for(const auto& e : renderPass.WriteAttachments) {
 			if (e.Layout == GAL::TextureLayout::ATTACHMENT || e.Layout == GAL::TextureLayout::GENERAL) { ++count; }
@@ -110,28 +196,10 @@ public:
 		return count;
 	}
 
-	void AddSetToRenderGroup(Id renderGroupName, Id setName) {
-		renderGroups.At(renderGroupName).Sets.EmplaceBack(setName);
-	}
-
 	void AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor);
-
-	enum class PassType : uint8
-	{
-		RASTER, COMPUTE, RAY_TRACING
-	};
-
-	struct AttachmentInfo
-	{
-		Id Name;
-		GAL::TextureLayout StartState, EndState;
-		GAL::Operations Load, Store;
-	};
 	
 	struct PassData
-	{
-		Id Name;
-		
+	{	
 		struct AttachmentReference {
 			Id Name;
 		};
@@ -141,7 +209,7 @@ public:
 
 		Id ResultAttachment;
 	};
-	void AddPass(RenderSystem* renderSystem, MaterialSystem* materialSystem, GTSL::Range<const PassData*> passesData);
+	void AddPass(Id name, Id parent, RenderSystem* renderSystem, MaterialSystem* materialSystem, PassData passData);
 
 	void OnResize(RenderSystem* renderSystem, MaterialSystem* materialSystem, const GTSL::Extent2D newSize);
 
@@ -152,19 +220,14 @@ public:
 	 */
 	void ToggleRenderPass(Id renderPassName, bool enable);
 
-	void AddToRenderPass(Id renderPass, Id renderGroup);
-
-	void AddMesh(const RenderSystem::MeshHandle meshHandle, const MaterialInstanceHandle materialHandle, const uint32 instanceIndex, GTSL::Range<const GAL::ShaderDataType*> vertexDescriptor);
-
 	MAKE_HANDLE(uint8, IndexStream)
 	
-	IndexStreamHandle AddIndexStream()
-	{
+	IndexStreamHandle AddIndexStream() {
 		auto index = renderState.IndexStreams.GetLength();
 		renderState.IndexStreams.EmplaceBack(0);
 		return IndexStreamHandle(index);
 	}
-	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+
 	void UpdateIndexStream(IndexStreamHandle indexStreamHandle, CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, uint32 value);
 	void PopIndexStream(IndexStreamHandle indexStreamHandle) { renderState.IndexStreams[indexStreamHandle()] = 0; renderState.IndexStreams.PopBack(); }
 
@@ -174,6 +237,73 @@ public:
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
+
+	using LayerHandle = GTSL::Tree<Layer, BE::PAR>::Node*;
+	
+	[[nodiscard]] LayerHandle AddLayer(const Id name, const Id parent, const LayerType layerType) {
+		GTSL::Tree<Layer, BE::PAR>::Node* layerHandle;
+
+		InternalLayerType internalLayer = InternalLayerType::LAYER;
+
+		switch (layerType) {
+		case LayerType::DISPATCH:
+			internalLayer = InternalLayerType::DISPATCH;
+			break;
+		case LayerType::RAY_TRACE:
+			internalLayer = InternalLayerType::DISPATCH;
+			break;
+		case LayerType::MATERIAL:
+		case LayerType::MESHES:
+			internalLayer = InternalLayerType::MATERIAL_AND_MESHES;
+			break;
+		case LayerType::RENDER_PASS:
+			internalLayer = InternalLayerType::RENDER_PASS;
+			break;
+		case LayerType::LAYER:
+			internalLayer = InternalLayerType::LAYER;
+			break;
+		}
+		
+		if (parent()) {
+			layerHandle = renderingTree.AddChild(nullptr);
+		} else {
+			layerHandle = renderingTree.AddChild(renderingTreeMap[name]);
+		}
+
+		layerHandle->Data.Type = layerType;
+		layerHandle->Data.PrivateType = internalLayer;
+		layerHandle->Data.Name = name;
+		
+		renderingTreeMap.Emplace(name, LayerHandle(layerHandle));
+
+		return LayerHandle(layerHandle);
+	}
+
+	auto GetLayer(LayerHandle layerHandle) { return &layerHandle->Data; }
+	auto GetLayer(const Id layerHandle) { return GetLayer(renderingTreeMap[layerHandle]); }
+	
+	void AddMesh(LayerHandle layerHandle, RenderSystem::MeshHandle meshHandle, MaterialInstanceHandle materialInstanceHandle, uint32 instanceCount, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout) {
+		auto layer = GetLayer(layerHandle);
+		//layer->Material.
+		
+		//auto& material = materials[materialHandle.MaterialIndex];
+		//auto& materialInstance = material.MaterialInstances[materialHandle.MaterialInstanceIndex];
+		//
+		//bool found = false;
+		//uint16 vertexGroupIndex = 0;
+		//
+		//for (const auto& e : material.VertexDescriptors) {
+		//	if (CompareContents(GTSL::Range<const GAL::ShaderDataType*>(e.begin(), e.end()), vertexDescriptor)) { found = true; break; }
+		//
+		//	++vertexGroupIndex;
+		//}
+		//
+		//if (found)
+		//	materialInstance.VertexGroups[vertexGroupIndex].Meshes.EmplaceBack(meshHandle, 1, instanceIndex);
+	}
+
+	auto GetSceneRenderPass() const { return sceneRenderPass; }
+	auto GetStaticMeshRenderGroup() const { return staticMeshRenderGroup; }
 
 private:
 	inline static const Id RENDER_TASK_NAME{ "RenderRenderGroups" };
@@ -195,14 +325,6 @@ private:
 	SubSetHandle textureSubsetsHandle;
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle topLevelAsHandle;
-
-	struct RenderGroupData
-	{
-		uint32 Index;
-		GTSL::Array<uint8, 8> IndexStreams;
-		GTSL::Array<Id, 8> Sets;
-	};
-	GTSL::StaticMap<Id, RenderGroupData, 16> renderGroups;
 	
 	struct RenderState
 	{
@@ -210,6 +332,7 @@ private:
 		GTSL::Array<uint32, 8> IndexStreams; // MUST be 4 bytes or push constant reads will be messed up
 		//PipelineLayout PipelineLayout;
 		GAL::ShaderStage ShaderStages;
+		Id ActiveRenderPass; PassType ActiveRenderPassType;
 		uint8 Offset = 0;
 		Id PipelineLayout;
 	} renderState;
@@ -218,61 +341,20 @@ private:
 	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
 	
 	GTSL::FlatHashMap<Id, SystemHandle, BE::PersistentAllocatorReference> renderManagers;
-
-	struct ExecuteCommand
-	{
-		union
-		{
-			GTSL::Extent3D LaunchMatrix;
-
-			union
-			{
-				RenderSystem::MeshHandle MeshHandle; uint32 InstanceCount;
-			};
-		};
-	};
 	
 	Id resultAttachment;
 	
-	GTSL::Array<Id, 8> renderPasses;
-
-	struct AttachmentData
-	{
-		Id Name;
-		GAL::TextureLayout Layout;
-		GAL::PipelineStage ConsumingStages;
-	};
-	
-	struct RenderPassData
-	{
-		bool Enabled = false;
-		uint8 APIRenderPass = 0;
-		
-		GTSL::Array<Id, 8> RenderGroups;
-		PassType PassType;
-		GTSL::Array<AttachmentData, 8> WriteAttachments, ReadAttachments;
-		
-		GAL::PipelineStage PipelineStages;
-		SetHandle AttachmentsSetHandle;
-		MemberHandle<uint32> AttachmentsIndicesHandle;
-		BufferHandle BufferHandle;
-	};
-	GTSL::FlatHashMap<Id, RenderPassData, BE::PAR> renderPassesMap;
-	GTSL::Array<Id, 8> renderPassesNames;
-
-	GAL::AccessFlag accessFlagsFromStageAndAccessType(GAL::PipelineStage pipelineStage, bool writeAccess);
+	LayerHandle staticMeshRenderGroup, sceneRenderPass;
+	LayerHandle globalData;
+	LayerHandle cameraDataLayer;
 	
 	using RenderPassFunctionType = GTSL::FunctionPointer<void(GameInstance*, RenderSystem*, MaterialSystem*, CommandBuffer, Id)>;
 	
-	GTSL::StaticMap<Id, RenderPassFunctionType, 8> renderPassesFunctions;
+	//GTSL::StaticMap<Id, RenderPassFunctionType, 8> renderPassesFunctions;
 
-	void renderScene(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
 	void renderUI(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
-	void renderRays(GameInstance*, RenderSystem* renderSystem, MaterialSystem* materialSystem, CommandBuffer commandBuffer, Id rp);
-	void dispatch(GameInstance* gameInstance, RenderSystem* renderSystem, MaterialSystem* materialSystem,
-	              CommandBuffer commandBuffer, Id rp);
 
-	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, Id renderPassId);
+	void transitionImages(CommandBuffer commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem, const LayerHandle renderPassId);
 
 	struct ShaderLoadInfo
 	{
@@ -284,13 +366,12 @@ private:
 	void onShaderInfosLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaderInfos, ShaderLoadInfo shaderLoadInfo);
 	void onShadersLoaded(TaskInfo taskInfo, MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8> shaders, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 
-	void traceRays(GTSL::Extent2D rayGrid, CommandBuffer* commandBuffer, RenderSystem* renderSystem, MaterialSystem* materialSystem);
+	GTSL::Tree<Layer, BE::PAR> renderingTree;
+	GTSL::FlatHashMap<Id, LayerHandle, BE::PAR> renderingTreeMap;
 	
 	//MATERIAL STUFF
-	struct RayTracingPipelineData
-	{
-		struct ShaderGroupData
-		{
+	struct RayTracingPipelineData {
+		struct ShaderGroupData {
 			uint32 RoundedEntrySize = 0;
 			BufferHandle Buffer;
 
@@ -299,14 +380,7 @@ private:
 			MemberHandle<RenderSystem::BufferAddress> BufferBufferReferencesMemberHandle;
 			//uint32 Instances = 0;
 
-			struct ShaderRegisterData
-			{
-				//struct Instance {
-				//
-				//};
-				//
-				//GTSL::Array<Instance, 8> Instances;
-
+			struct ShaderRegisterData {
 				struct BufferPatchData {
 					Id Buffer;
 					bool Has = false;
@@ -351,36 +425,19 @@ private:
 	{
 		Id Name;
 		uint8 Counter = 0, Target = 0;
-
-		struct VertexGroup {
-			struct MeshData
-			{
-				RenderSystem::MeshHandle Handle;
-				uint32 InstanceCount = 0, InstanceIndex = 0;
-			};
-
-			GTSL::Vector<MeshData, BE::PAR> Meshes;
-		};
-		GTSL::Array<VertexGroup, 8> VertexGroups;
 	};
 	//GTSL::KeepVector<MaterialInstance, BE::PAR> materialInstances;
 	
-	struct MaterialData
-	{
-		Id Name;
-		
-		GTSL::Vector<MaterialInstance, BE::PAR> MaterialInstances;
-
+	struct MaterialData {
+		Id Name;		
 		Id RenderGroup;
-
+		GTSL::Vector<MaterialInstance, BE::PAR> MaterialInstances;
 		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
-
 		struct Permutation {
 			Pipeline Pipeline;
 		};
 		GTSL::Array<Permutation, 8> VertexGroups;
-		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 20>, 8> VertexDescriptors;
-		
+		GTSL::Array<GTSL::Array<GAL::ShaderDataType, 20>, 8> VertexDescriptors;		
 		GTSL::Array<MaterialResourceManager::Parameter, 16> Parameters;
 		MemberHandle<void*> MaterialInstancesMemberHandle;
 		BufferHandle BufferHandle;
@@ -416,15 +473,12 @@ private:
 
 	GTSL::Vector<uint32, BE::PAR> latestLoadedTextures;
 	GTSL::KeepVector<GTSL::Vector<MaterialInstanceHandle, BE::PAR>, BE::PersistentAllocatorReference> pendingMaterialsPerTexture;
-
-	void setMaterialInstanceAsLoaded(const MaterialInstanceHandle privateMaterialHandle, const MaterialInstanceHandle materialInstanceHandle);
 	
 	void addPendingMaterialToTexture(uint32 texture, MaterialInstanceHandle material) {
 		pendingMaterialsPerTexture[texture].EmplaceBack(material);
 	}
 
-	struct APIRenderPassData
-	{
+	struct APIRenderPassData {
 		Id Name;
 		RenderPass RenderPass;
 		FrameBuffer FrameBuffer;
@@ -432,13 +486,13 @@ private:
 	};
 	GTSL::Array<APIRenderPassData, 16> apiRenderPasses;
 
-	struct SubPass
-	{
+	GTSL::Array<LayerHandle, 16> renderPasses; //TODO: GUARENTEE ORDERING
+	struct SubPass {
 		Id Name;
 		uint8 DepthAttachment;
 	};
 	GTSL::Array<GTSL::Array<SubPass, 16>, 16> subPasses;
-
+	
 	struct Attachment
 	{
 		RenderSystem::TextureHandle TextureHandle;
@@ -458,17 +512,17 @@ private:
 		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.WriteAccess = writeAccess;
 	}
 
-	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, ::RenderOrchestrator::TextureLoadInfo> onTextureInfoLoadHandle;
-	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, ::RenderOrchestrator::TextureLoadInfo> onTextureLoadHandle;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureInfoLoadHandle;
+	DynamicTaskHandle<TextureResourceManager*, TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, ShaderLoadInfo> onShaderInfosLoadHandle;
 	DynamicTaskHandle<MaterialResourceManager*, GTSL::Array<MaterialResourceManager::ShaderInfo, 8>, GTSL::Range<byte*>, ShaderLoadInfo> onShadersLoadHandle;
 
-	[[nodiscard]] const RenderPass* getAPIRenderPass(const Id renderPassName) const { return &apiRenderPasses[renderPassesMap.At(renderPassName).APIRenderPass].RenderPass; }
+	[[nodiscard]] const RenderPass* getAPIRenderPass(const Id renderPassName) const {
+		return &apiRenderPasses[renderingTreeMap[renderPassName]->Data.RenderPass.APIRenderPass].RenderPass;
+	}
 	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPass) const {
 		uint8 i = 0;
-		for (auto& e : subPasses[renderPassesMap.At(renderPass).APIRenderPass]) { if (e.Name == renderPass) { return i; } }
+		for (auto& e : subPasses[renderingTreeMap[renderPass]->Data.RenderPass.APIRenderPass]) { if (e.Name == renderPass) { return i; } }
 	}
 	[[nodiscard]] FrameBuffer getFrameBuffer(const uint8 rp) const { return apiRenderPasses[rp].FrameBuffer; }
-
-	void BindMaterial(RenderSystem* renderSystem, CommandBuffer commandBuffer, MaterialData& materialHandle);
 };

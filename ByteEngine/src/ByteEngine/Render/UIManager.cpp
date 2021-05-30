@@ -19,7 +19,7 @@ uint16 Canvas::AddOrganizer(const Id name)
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 
-	auto* node = organizerTree[0];
+	auto* node = organizerTree.AddChild(nullptr);
 	node->Data = organizer;
 	
 	organizers.EmplaceAt(organizer, node);
@@ -52,17 +52,15 @@ void Canvas::ProcessUpdates()
 
 void Canvas::queueUpdateAndCull(uint32 organizer)
 {
-	GTSL::Array<uint32, 32> branchesToProne;
+	GTSL::Array<uint32, 32> branchesToPrune;
 
 	uint32 i = 0;
-	for(auto e : queuedUpdates)
-	{
-		if(organizerDepth[organizer] < organizerDepth[e]) { branchesToProne.EmplaceBack(i); }
-		
+	for(auto e : queuedUpdates) {
+		if(organizerDepth[organizer] < organizerDepth[e]) { branchesToPrune.EmplaceBack(i); }
 		++i;
 	}
 
-	for(auto e : branchesToProne) { queuedUpdates.Pop(e); }
+	for(auto e : branchesToPrune) { queuedUpdates.Pop(e); }
 	queuedUpdates.EmplaceBack(organizer);
 }
 
@@ -78,8 +76,7 @@ void Canvas::updateBranch(uint32 organizer)
 
 		float32 way = 1.0f;
 
-		switch (organizerAlignments[organizer])
-		{
+		switch (organizerAlignments[organizer]) {
 		case Alignment::LEFT: way = -1.0f; break;
 		case Alignment::CENTER: way = 0.0f; break;
 		case Alignment::RIGHT: way = 1.0f; break;

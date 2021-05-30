@@ -87,10 +87,8 @@ bool Game::Initialize()
 	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
 	a.PopBack(); a.EmplaceBack("RightStick");
 	inputManagerInstance->Register2DInputEvent("View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-
-	a.PopBack(); a.EmplaceBack("LeftStick");//
+	a.PopBack(); a.EmplaceBack("LeftStick");
 	inputManagerInstance->Register2DInputEvent("Move Camera", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
-	
 	a.PopBack(); a.EmplaceBack("LeftMouseButton"); a.EmplaceBack("RightTrigger");
 	inputManagerInstance->RegisterActionInputEvent("Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
 
@@ -298,7 +296,7 @@ void Game::PostInitialize()
 	//	}
 	//
 	//	uint32 t = 0;
-	//}
+	//}//
 	
 	{		
 		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
@@ -333,44 +331,44 @@ void Game::PostInitialize()
 	}
 
 	
-	//{
-	//	auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
-	//
-	//	uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
-	//	uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
-	//	uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
-	//	
-	//	auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
-	//	auto canvas = canvasSystem->CreateCanvas("MainCanvas");
-	//	auto& canvasRef = canvasSystem->GetCanvas(canvas);
-	//	canvasRef.SetExtent({ 1280, 720 });
-	//
-	//	uiManager->AddCanvas(canvas);
-	//
-	//	auto organizerComp = canvasRef.AddOrganizer("TopBar");
-	//	canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
-	//	canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
-	//	canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
-	//	//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });
-	//	canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::SET_ASPECT_RATIO);
-	//	canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
-	//	canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
-	//
-	//	auto minimizeButtonComp = canvasRef.AddSquare();
-	//	canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
-	//	canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
-	//	canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
-	//	
-	//	auto toggleButtonComp = canvasRef.AddSquare();
-	//	canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
-	//	canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
-	//	canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
-	//
-	//	auto closeButtonComp = canvasRef.AddSquare();
-	//	canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
-	//	canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
-	//	canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
-	//}
+	{
+		auto* uiManager = gameInstance->GetSystem<UIManager>("UIManager");
+	
+		uiManager->AddColor("sandboxRed", { 0.9607f, 0.2588f, 0.2588f, 1.0f });
+		uiManager->AddColor("sandboxYellow", { 0.9607f, 0.7843f, 0.2588f, 1.0f });
+		uiManager->AddColor("sandboxGreen", { 0.2882f, 0.9507f, 0.4588f, 1.0f });
+		
+		auto* canvasSystem = gameInstance->GetSystem<CanvasSystem>("CanvasSystem");
+		auto canvas = canvasSystem->CreateCanvas("MainCanvas");
+		auto& canvasRef = canvasSystem->GetCanvas(canvas);
+		canvasRef.SetExtent({ 1280, 720 });
+	
+		uiManager->AddCanvas(canvas);
+	
+		auto organizerComp = canvasRef.AddOrganizer("TopBar");
+		canvasRef.SetOrganizerAspectRatio(organizerComp, { 2, 0.06f });
+		canvasRef.SetOrganizerAlignment(organizerComp, Alignment::RIGHT);
+		canvasRef.SetOrganizerPosition(organizerComp, { 0, 0.96f });
+		//canvasRef.SetOrganizerPosition(organizerComp, { 0, 0 });//
+		canvasRef.SetOrganizerSizingPolicy(organizerComp, SizingPolicy::SET_ASPECT_RATIO);
+		canvasRef.SetOrganizerScalingPolicy(organizerComp, ScalingPolicy::FROM_SCREEN);
+		canvasRef.SetOrganizerSpacingPolicy(organizerComp, SpacingPolicy::PACK);
+	
+		auto minimizeButtonComp = canvasRef.AddSquare();
+		canvasRef.SetSquareMaterial(minimizeButtonComp, buttonMaterial);
+		canvasRef.SetSquareColor(minimizeButtonComp, "sandboxGreen");
+		canvasRef.AddSquareToOrganizer(organizerComp, minimizeButtonComp);
+		
+		auto toggleButtonComp = canvasRef.AddSquare();
+		canvasRef.SetSquareColor(toggleButtonComp, "sandboxYellow");
+		canvasRef.SetSquareMaterial(toggleButtonComp, buttonMaterial);
+		canvasRef.AddSquareToOrganizer(organizerComp, toggleButtonComp);
+	
+		auto closeButtonComp = canvasRef.AddSquare();
+		canvasRef.SetSquareColor(closeButtonComp, "sandboxRed");
+		canvasRef.SetSquareMaterial(closeButtonComp, buttonMaterial);
+		canvasRef.AddSquareToOrganizer(organizerComp, closeButtonComp);
+	}
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
@@ -396,10 +394,15 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 
+	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+	
 	if (shouldFire)
 	{
+		inputManagerInstance->SetInputDeviceParameter(controller, "HighEndVibration", 1.0f);
 		audioSystem->PlayAudio(audioEmitter);
 		shouldFire = false;
+	} else {
+		inputManagerInstance->SetInputDeviceParameter(controller, "HighEndVibration", GTSL::Math::Interp(0, inputManagerInstance->GetInputDeviceParameter(controller, "HighEndVibration"), deltaSeconds, 2));
 	}
 	
 	GameApplication::OnUpdate(onUpdate);
@@ -409,7 +412,6 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	auto cameraDirection = GTSL::Quaternion(GTSL::Rotator(0, posDelta.X(), 0));
 	auto dir = cameraDirection * moveDir;
 
-	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
 
 	auto camPos = GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 1);
 	
@@ -420,7 +422,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 
-	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime() * 0.0000009f) / 4, 2);
+	auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime().As<float32, GTSL::Seconds>()) / 4, 2);
 	
 	//staticMeshRenderer->SetPosition(hydrant, hydrantPos);
 	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(0, 0, 0));
@@ -435,9 +437,9 @@ void Game::move(InputManager::Vector2DInputEvent data)
 {
 	//posDelta += (data.Value - data.LastValue) * 2;
 	//data.Value.X() *= -1;
-	posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI * 2.0f));
+	posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI));
 	
-	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]//
+	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]
 	auto rot = GTSL::Matrix4(GTSL::Rotator(0, posDelta.X(), 0));
 	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
 

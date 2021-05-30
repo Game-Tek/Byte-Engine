@@ -66,19 +66,14 @@ void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 	{
 		GAL::GeometryTriangles geometryTriangles;
 		geometryTriangles.IndexType = GAL::SizeToIndexType(mesh.IndexSize);
-		geometryTriangles.VertexFormat = GAL::ShaderDataType::FLOAT3;
+		geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
 		geometryTriangles.MaxVertices = mesh.VertexCount;
-		geometryTriangles.TransformData = 0;
 		geometryTriangles.VertexData = meshDataAddress;
 		geometryTriangles.IndexData = meshDataAddress + GTSL::Math::RoundUpByPowerOf2(mesh.VertexCount * mesh.VertexSize, GetBufferSubDataAlignment());
 		geometryTriangles.VertexStride = mesh.VertexSize;
 		geometryTriangles.FirstVertex = 0;
 
-		GAL::Geometry geometry;
-		geometry.Flags = GAL::GeometryFlags::OPAQUE;
-		geometry.SetGeometryTriangles(geometryTriangles);
-		geometry.PrimitiveCount = mesh.IndicesCount / 3;
-		geometry.PrimitiveOffset = 0;
+		GAL::Geometry geometry(geometryTriangles, GAL::GeometryFlags::OPAQUE, mesh.IndicesCount / 3, 0);
 
 		for (uint8 f = 0; f < pipelinedFrames; ++f) geometries[f].EmplaceBack(geometry);
 
@@ -122,13 +117,14 @@ void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 
 	mesh.Buffer = CreateBuffer(meshSize, GAL::BufferUses::VERTEX | GAL::BufferUses::INDEX, true, false);
 }
 
-
 void RenderSystem::UpdateMesh(MeshHandle meshHandle)
 {
 	auto& mesh = meshes[meshHandle()];
 
 	auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
 	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
+
+	++buffers[buffers[mesh.Buffer()].Staging()].references;
 	
 	BufferCopyData bufferCopyData;
 	bufferCopyData.Buffer = mesh.Buffer;
@@ -254,10 +250,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 		if (rayTracing)
 		{
-			GAL::Geometry geometry;
-			geometry.PrimitiveCount = MAX_INSTANCES_COUNT;
-			geometry.Flags = 0; geometry.PrimitiveOffset = 0;
-			geometry.SetGeometryInstances(GAL::GeometryInstances{ 0 });
+			GAL::Geometry geometry(GAL::GeometryInstances{ 0 }, 0, MAX_INSTANCES_COUNT, 0);
 
 			for (uint8 f = 0; f < pipelinedFrames; ++f) {
 				geometries[f].Initialize(16, GetPersistentAllocator());
@@ -429,17 +422,13 @@ void RenderSystem::renderStart(TaskInfo taskInfo) {
 
 void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuffer)
 {
-	if (buildDatas[GetCurrentFrame()].GetLength())
-	{
+	if (buildDatas[GetCurrentFrame()].GetLength()) {
 		GTSL::Array<GAL::BuildAccelerationStructureInfo, 8> accelerationStructureBuildInfos;
 		GTSL::Array<GTSL::Array<GAL::Geometry, 8>, 16> geometryDescriptors;
 
-		uint32 offset = 0;
-
-		auto scratchBufferAddress = accelerationStructureScratchBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice());
+		uint32 offset = 0; auto scratchBufferAddress = accelerationStructureScratchBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice());
 		
-		for (uint32 i = 0; i < buildDatas[GetCurrentFrame()].GetLength(); ++i)
-		{
+		for (uint32 i = 0; i < buildDatas[GetCurrentFrame()].GetLength(); ++i) {
 			geometryDescriptors.EmplaceBack();
 			geometryDescriptors[i].EmplaceBack(geometries[GetCurrentFrame()][i]);
 			
@@ -535,11 +524,8 @@ void RenderSystem::renderBegin(TaskInfo taskInfo)
 	commandBuffer.BeginRecording(GetRenderDevice());
 
 	if (BE::Application::Get()->GetOption("rayTracing")) {
-		GAL::Geometry geometry;
-		geometry.Flags = 0;
-		geometry.PrimitiveCount = rayTracingInstancesCount; //TODO: WHAT HAPPENS IF MESH IS REMOVED FROM THE MIDDLE OF THE COLLECTION, maybe: keep index of highest element in the colection
-		geometry.PrimitiveOffset = 0;
-		geometry.SetGeometryInstances(GAL::GeometryInstances{ instancesBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice()) });
+		GAL::Geometry geometry(GAL::GeometryInstances{ instancesBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice()) }, 0, rayTracingInstancesCount, 0);
+		//TODO: WHAT HAPPENS IF MESH IS REMOVED FROM THE MIDDLE OF THE COLLECTION, maybe: keep index of highest element in the colection		
 		geometries[GetCurrentFrame()].EmplaceBack(geometry);
 
 		AccelerationStructureBuildData buildData;
@@ -592,24 +578,47 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
+
+	GTSL::Array<uint32, 32> buffersToDelete;
+
+	IndexedForEach(buffers, [&](const uint32 index, Buffer& e) {
+		if (!e.references) {
+			auto destroyBuffer = [&](Buffer& buffer) {
+				buffer.Buffer.Destroy(GetRenderDevice());
+				DeallocateLocalBufferMemory(buffer.Allocation);
+				++buffer.references; //TODO: remove, there to avoid loop trying to delete chained buffers which will be already flagged to be deleted
+
+				if (buffer.Staging != BufferHandle()) {
+					auto& stagingBuffer = buffers[buffer.Staging()];
+					stagingBuffer.Buffer.Destroy(GetRenderDevice());
+					DeallocateScratchBufferMemory(stagingBuffer.Allocation);
+					buffersToDelete.EmplaceBack(buffer.Staging());
+					++stagingBuffer.references;
+				}
+
+				buffersToDelete.EmplaceBack(index);
+			};
+
+			if (e.Next() != 0xFFFFFFFF) {
+				BufferHandle nextBufferHandle = e.Next;
+				for (uint8 f = 1; f < pipelinedFrames; ++f) {
+					auto& otherBuffer = buffers[nextBufferHandle()];
+					auto currentHandle = nextBufferHandle;
+					nextBufferHandle = otherBuffer.Next;
+					destroyBuffer(otherBuffer);
+				}
+			}
+
+			destroyBuffer(e);
+		}
+		});
+
+	for (auto e : buffersToDelete)
+		buffers.Pop(e);
 	
 	//if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
-	{
-		//for(uint32 i = 0; i < processedBufferCopies[GetCurrentFrame()]; ++i)
-		//{
-		//	bufferCopyData[i].SourceBuffer.Destroy(&renderDevice);
-		//	DeallocateScratchBufferMemory(bufferCopyData[i].Allocation);
-		//}
-
-		//for(uint32 i = 0; i < processedTextureCopies[GetCurrentFrame()]; ++i)
-		//{
-		//	textureCopyData[i].SourceBuffer.Destroy(&renderDevice);
-		//	DeallocateScratchBufferMemory(textureCopyData[i].Allocation);
-		//}
-		
+	{		
 		bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
-		//textureCopyData.Pop(0, processedTextureCopies[GetCurrentFrame()]);
-		//triangleDatas.Pop(0, processedAccelerationStructureBuilds[GetCurrentFrame()]);
 		
 		transferFences[currentFrameIndex].Reset(GetRenderDevice());
 	}
@@ -632,6 +641,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			auto& buffer = buffers[e.Buffer()]; auto& stagingBuffer = buffers[buffer.Staging()];
 			
 			commandBuffer.CopyBuffer(GetRenderDevice(), stagingBuffer.Buffer, e.Offset, buffer.Buffer, 0, buffer.Size); //TODO: offset
+			--stagingBuffer.references;
 		}
 
 		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
@@ -800,6 +810,7 @@ BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool 
 	auto bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
 
 	buffer.Size = size; buffer.Flags = flags;
+	++buffer.references;
 	
 	if (updateable) {
 		auto* last = &buffer;
@@ -815,6 +826,7 @@ BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool 
 			if (needsStagingBuffer) { //create staging buffer
 				auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
 
+				++stagingBuffer.references;
 				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE | GAL::BufferUses::STORAGE,
 					&stagingBuffer.Buffer, &stagingBuffer.Allocation);
 				
@@ -834,8 +846,7 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 {
 	auto& buffer = buffers[bufferHandle()];
 	
-	if(state)
-	{
+	if(state) {
 		if(buffer.Staging == BufferHandle()) //if will write from host and we have no buffer
 		{
 			if (needsStagingBuffer) {
@@ -849,16 +860,11 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 		}
 
 		//if will write from host and we have buffer, do nothing
-	}
-	else
-	{
-		if (buffer.Staging != BufferHandle()) //if won't write from host and we have a buffer
-		{
+	} else {
+		if (buffer.Staging != BufferHandle()) { //if won't write from host and we have a buffer
 			if (needsStagingBuffer) {
 				auto& stagingBuffer = buffers[buffer.Staging()];
-				stagingBuffer.Buffer.Destroy(GetRenderDevice());
-				DeallocateScratchBufferMemory(stagingBuffer.Allocation);
-				buffer.Staging = BufferHandle();
+				--stagingBuffer.references;
 			}
 		}
 

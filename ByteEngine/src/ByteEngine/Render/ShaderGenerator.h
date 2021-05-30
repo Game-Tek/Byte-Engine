@@ -109,11 +109,11 @@ inline auto AddVertexShaderLayout(GTSL::String<T>& string, const GTSL::Range<con
 		
 		switch (GTSL::Id64(att.VertexAttribute)())
 		{
-		case GTSL::Hash(GAL::Pipeline::POSITION): addElement("in_Position", i, att.Type); break;
-		case GTSL::Hash(GAL::Pipeline::NORMAL): addElement("in_Normal", i, att.Type); break;
-		case GTSL::Hash(GAL::Pipeline::TANGENT): addElement("in_Tangent", i, att.Type); break;
-		case GTSL::Hash(GAL::Pipeline::BITANGENT): addElement("in_BiTangent", i, att.Type); break;
-		case GTSL::Hash(GAL::Pipeline::TEXTURE_COORDINATES): addElement("in_TextureCoordinates", i, att.Type); break;
+		case Hash(GAL::Pipeline::POSITION): addElement("in_Position", i, att.Type); break;
+		case Hash(GAL::Pipeline::NORMAL): addElement("in_Normal", i, att.Type); break;
+		case Hash(GAL::Pipeline::TANGENT): addElement("in_Tangent", i, att.Type); break;
+		case Hash(GAL::Pipeline::BITANGENT): addElement("in_BiTangent", i, att.Type); break;
+		case Hash(GAL::Pipeline::TEXTURE_COORDINATES): addElement("in_TextureCoordinates", i, att.Type); break;
 		}
 	}
 }

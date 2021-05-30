@@ -11,7 +11,6 @@
 #include <GTSL/Tree.hpp>
 
 #include "MaterialSystem.h"
-#include "RenderGroup.h"
 #include "ByteEngine/Id.h"
 
 #include "ByteEngine/Handle.hpp"
@@ -300,7 +299,7 @@ private:
 	GTSL::KeepVector<Canvas, BE::PAR> canvases;
 };
 
-class UIManager : public RenderGroup
+class UIManager : public System
 {
 public:
 	void Initialize(const InitializeInfo& initializeInfo) override;

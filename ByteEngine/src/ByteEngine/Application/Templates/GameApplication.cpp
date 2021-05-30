@@ -106,37 +106,30 @@ void GameApplication::PostInitialize()
 		renderOrchestrator->AddAttachment("Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
 		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
 
-		GTSL::Array<RenderOrchestrator::PassData, 6> passes;
 		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.Name = "SceneRenderPass";
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "RenderDepth" } );
 		geoRenderPass.ResultAttachment = "Color";
-		passes.EmplaceBack(geoRenderPass);
+		renderOrchestrator->AddPass("SceneRenderPass", "CameraData", renderSystem, materialSystem, geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
-		uiRenderPass.Name = "UIRenderPass";
 		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
 		uiRenderPass.ResultAttachment = "Color";
-		passes.EmplaceBack(uiRenderPass);
 
 		RenderOrchestrator::PassData rtRenderPass{};
-		rtRenderPass.Name = "SceneRTRenderPass";
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" });
 		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" });
 		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
 		rtRenderPass.ResultAttachment = "Color";
-		passes.EmplaceBack(rtRenderPass);
 		
-		renderOrchestrator->AddPass(renderSystem, materialSystem, passes);
-		renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
-		renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
-		renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
+		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
+		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
+		//renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
 	}
 
 	
@@ -191,12 +184,14 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 
 			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue("Controller", controller, "LeftTrigger");
 
-			if (value >= 0.95f)
+			if (value >= 0.99f) {
 				if (!wasPressed)
 					Get()->GetInputManager()->RecordActionInputSource(controller, "RightTrigger", true);
-			else
-				if (wasPressed)
+			} else {
+				if (wasPressed) {
 					Get()->GetInputManager()->RecordActionInputSource(controller, "RightTrigger", false);
+				}
+			}
 
 			break;
 		}
@@ -210,7 +205,7 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 				if (!wasPressed) //and wasn't pressed
 					Get()->GetInputManager()->RecordActionInputSource(controller, "LeftTrigger", true);
 			else //isn't pressed
-				if (wasPressed)
+				if (wasPressed && value <= 0.95f - 0.10f)
 					Get()->GetInputManager()->RecordActionInputSource(controller, "LeftTrigger", false);
 
 			break;
@@ -230,8 +225,12 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	};
 	
 	GTSL::Update(gamepad, button, floats, vectors, 0);
-	
-	gamepad.SetVibration(0, 0);
+
+	{
+		auto lowEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, "LowEndVibration");
+		auto highEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, "HighEndVibration");
+		gamepad.SetVibration(lowEndVibration, highEndVibration);
+	}
 }
 
 void GameApplication::Shutdown()
@@ -308,6 +307,9 @@ void GameApplication::RegisterKeyboard()
 void GameApplication::RegisterControllers()
 {
 	controller = inputManagerInstance->RegisterInputDevice("Controller");
+
+	inputManagerInstance->RegisterInputDeviceParameter(controller, "LowEndVibration");
+	inputManagerInstance->RegisterInputDeviceParameter(controller, "HighEndVibration");
 	
 	inputManagerInstance->Register2DInputSource(controller, "LeftStick");
 	inputManagerInstance->Register2DInputSource(controller, "RightStick");
@@ -340,7 +342,7 @@ void GameApplication::RegisterControllers()
 
 using namespace GTSL;
 
-void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
+void GameApplication::onWindowResize(const Extent2D extent)
 {
 	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE },	{ "MaterialSystem", AccessTypes::READ_WRITE } };
 
@@ -361,87 +363,86 @@ void GameApplication::onWindowResize(const GTSL::Extent2D& extent)
 	}
 }
 
-void GameApplication::keyboardEvent(const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType)
+void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType)
 {
 	Id id;
 	
-	switch (key)
-	{
-	case GTSL::Window::KeyboardKeys::Q: id = "Q_Key"; break;
-	case GTSL::Window::KeyboardKeys::W: id = "W_Key"; break;
-	case GTSL::Window::KeyboardKeys::E: id = "E_Key"; break;
-	case GTSL::Window::KeyboardKeys::R: id = "R_Key"; break;
-	case GTSL::Window::KeyboardKeys::T: id = "T_Key"; break;
-	case GTSL::Window::KeyboardKeys::Y: id = "Y_Key"; break;
-	case GTSL::Window::KeyboardKeys::U: id = "U_Key"; break;
-	case GTSL::Window::KeyboardKeys::I: id = "I_Key"; break;
-	case GTSL::Window::KeyboardKeys::O: id = "O_Key"; break;
-	case GTSL::Window::KeyboardKeys::P: id = "P_Key"; break;
-	case GTSL::Window::KeyboardKeys::A: id = "A_Key"; break;
-	case GTSL::Window::KeyboardKeys::S: id = "S_Key"; break;
-	case GTSL::Window::KeyboardKeys::D: id = "D_Key"; break;
-	case GTSL::Window::KeyboardKeys::F: id = "F_Key"; break;
-	case GTSL::Window::KeyboardKeys::G: id = "G_Key"; break;
-	case GTSL::Window::KeyboardKeys::H: id = "H_Key"; break;
-	case GTSL::Window::KeyboardKeys::J: id = "J_Key"; break;
-	case GTSL::Window::KeyboardKeys::K: id = "K_Key"; break;
-	case GTSL::Window::KeyboardKeys::L: id = "L_Key"; break;
-	case GTSL::Window::KeyboardKeys::Z: id = "Z_Key"; break;
-	case GTSL::Window::KeyboardKeys::X: id = "X_Key"; break;
-	case GTSL::Window::KeyboardKeys::C: id = "C_Key"; break;
-	case GTSL::Window::KeyboardKeys::V: id = "V_Key"; break;
-	case GTSL::Window::KeyboardKeys::B: id = "B_Key"; break;
-	case GTSL::Window::KeyboardKeys::N: id = "N_Key"; break;
-	case GTSL::Window::KeyboardKeys::M: id = "M_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard0: id = "0_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard1: id = "1_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard2: id = "2_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard3: id = "3_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard4: id = "4_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard5: id = "5_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard6: id = "6_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard7: id = "7_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard8: id = "8_Key"; break;
-	case GTSL::Window::KeyboardKeys::Keyboard9: id = "9_Key"; break;
-	case GTSL::Window::KeyboardKeys::Backspace: id = "Backspace_Key"; break;
-	case GTSL::Window::KeyboardKeys::Enter: id = "Enter_Key"; break;
-	case GTSL::Window::KeyboardKeys::Supr: id = "Supr_Key"; break;
-	case GTSL::Window::KeyboardKeys::Tab: id = "Tab_Key"; break;
-	case GTSL::Window::KeyboardKeys::CapsLock: id = "CapsLock_Key"; break;
-	case GTSL::Window::KeyboardKeys::Esc: id = "Esc_Key"; break;
-	case GTSL::Window::KeyboardKeys::RShift: id = "RightShift_Key"; break;
-	case GTSL::Window::KeyboardKeys::LShift: id = "LeftShift_Key"; break;
-	case GTSL::Window::KeyboardKeys::RControl: id = "RightControl_Key"; break;
-	case GTSL::Window::KeyboardKeys::LControl: id = "LeftControl_Key"; break;
-	case GTSL::Window::KeyboardKeys::Alt: id = "LeftAlt_Key"; break;
-	case GTSL::Window::KeyboardKeys::AltGr: id = "RightAlt_Key"; break;
-	case GTSL::Window::KeyboardKeys::UpArrow: id = "Up_Key"; break;
-	case GTSL::Window::KeyboardKeys::RightArrow: id = "Right_Key"; break;
-	case GTSL::Window::KeyboardKeys::DownArrow: id = "Down_Key"; break;
-	case GTSL::Window::KeyboardKeys::LeftArrow: id = "Left_Key"; break;
-	case GTSL::Window::KeyboardKeys::SpaceBar: id = "SpaceBar_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad0: id = "Numpad0_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad1: id = "Numpad1_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad2: id = "Numpad2_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad3: id = "Numpad3_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad4: id = "Numpad4_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad5: id = "Numpad5_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad6: id = "Numpad6_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad7: id = "Numpad7_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad8: id = "Numpad8_Key"; break;
-	case GTSL::Window::KeyboardKeys::Numpad9: id = "Numpad9_Key"; break;
-	case GTSL::Window::KeyboardKeys::F1: id = "F1_Key"; break;
-	case GTSL::Window::KeyboardKeys::F2: id = "F2_Key"; break;
-	case GTSL::Window::KeyboardKeys::F3: id = "F3_Key"; break;
-	case GTSL::Window::KeyboardKeys::F4: id = "F4_Key"; break;
-	case GTSL::Window::KeyboardKeys::F5: id = "F5_Key"; break;
-	case GTSL::Window::KeyboardKeys::F6: id = "F6_Key"; break;
-	case GTSL::Window::KeyboardKeys::F7: id = "F7_Key"; break;
-	case GTSL::Window::KeyboardKeys::F8: id = "F8_Key"; break;
-	case GTSL::Window::KeyboardKeys::F9: id = "F9_Key"; break;
-	case GTSL::Window::KeyboardKeys::F10: id = "F10_Key"; break;
-	case GTSL::Window::KeyboardKeys::F11: id = "F11_Key"; break;
-	case GTSL::Window::KeyboardKeys::F12: id = "F12_Key"; break;
+	switch (key) {
+	case Window::KeyboardKeys::Q: id = "Q_Key"; break;
+	case Window::KeyboardKeys::W: id = "W_Key"; break;
+	case Window::KeyboardKeys::E: id = "E_Key"; break;
+	case Window::KeyboardKeys::R: id = "R_Key"; break;
+	case Window::KeyboardKeys::T: id = "T_Key"; break;
+	case Window::KeyboardKeys::Y: id = "Y_Key"; break;
+	case Window::KeyboardKeys::U: id = "U_Key"; break;
+	case Window::KeyboardKeys::I: id = "I_Key"; break;
+	case Window::KeyboardKeys::O: id = "O_Key"; break;
+	case Window::KeyboardKeys::P: id = "P_Key"; break;
+	case Window::KeyboardKeys::A: id = "A_Key"; break;
+	case Window::KeyboardKeys::S: id = "S_Key"; break;
+	case Window::KeyboardKeys::D: id = "D_Key"; break;
+	case Window::KeyboardKeys::F: id = "F_Key"; break;
+	case Window::KeyboardKeys::G: id = "G_Key"; break;
+	case Window::KeyboardKeys::H: id = "H_Key"; break;
+	case Window::KeyboardKeys::J: id = "J_Key"; break;
+	case Window::KeyboardKeys::K: id = "K_Key"; break;
+	case Window::KeyboardKeys::L: id = "L_Key"; break;
+	case Window::KeyboardKeys::Z: id = "Z_Key"; break;
+	case Window::KeyboardKeys::X: id = "X_Key"; break;
+	case Window::KeyboardKeys::C: id = "C_Key"; break;
+	case Window::KeyboardKeys::V: id = "V_Key"; break;
+	case Window::KeyboardKeys::B: id = "B_Key"; break;
+	case Window::KeyboardKeys::N: id = "N_Key"; break;
+	case Window::KeyboardKeys::M: id = "M_Key"; break;
+	case Window::KeyboardKeys::Keyboard0: id = "0_Key"; break;
+	case Window::KeyboardKeys::Keyboard1: id = "1_Key"; break;
+	case Window::KeyboardKeys::Keyboard2: id = "2_Key"; break;
+	case Window::KeyboardKeys::Keyboard3: id = "3_Key"; break;
+	case Window::KeyboardKeys::Keyboard4: id = "4_Key"; break;
+	case Window::KeyboardKeys::Keyboard5: id = "5_Key"; break;
+	case Window::KeyboardKeys::Keyboard6: id = "6_Key"; break;
+	case Window::KeyboardKeys::Keyboard7: id = "7_Key"; break;
+	case Window::KeyboardKeys::Keyboard8: id = "8_Key"; break;
+	case Window::KeyboardKeys::Keyboard9: id = "9_Key"; break;
+	case Window::KeyboardKeys::Backspace: id = "Backspace_Key"; break;
+	case Window::KeyboardKeys::Enter: id = "Enter_Key"; break;
+	case Window::KeyboardKeys::Supr: id = "Supr_Key"; break;
+	case Window::KeyboardKeys::Tab: id = "Tab_Key"; break;
+	case Window::KeyboardKeys::CapsLock: id = "CapsLock_Key"; break;
+	case Window::KeyboardKeys::Esc: id = "Esc_Key"; break;
+	case Window::KeyboardKeys::RShift: id = "RightShift_Key"; break;
+	case Window::KeyboardKeys::LShift: id = "LeftShift_Key"; break;
+	case Window::KeyboardKeys::RControl: id = "RightControl_Key"; break;
+	case Window::KeyboardKeys::LControl: id = "LeftControl_Key"; break;
+	case Window::KeyboardKeys::Alt: id = "LeftAlt_Key"; break;
+	case Window::KeyboardKeys::AltGr: id = "RightAlt_Key"; break;
+	case Window::KeyboardKeys::UpArrow: id = "Up_Key"; break;
+	case Window::KeyboardKeys::RightArrow: id = "Right_Key"; break;
+	case Window::KeyboardKeys::DownArrow: id = "Down_Key"; break;
+	case Window::KeyboardKeys::LeftArrow: id = "Left_Key"; break;
+	case Window::KeyboardKeys::SpaceBar: id = "SpaceBar_Key"; break;
+	case Window::KeyboardKeys::Numpad0: id = "Numpad0_Key"; break;
+	case Window::KeyboardKeys::Numpad1: id = "Numpad1_Key"; break;
+	case Window::KeyboardKeys::Numpad2: id = "Numpad2_Key"; break;
+	case Window::KeyboardKeys::Numpad3: id = "Numpad3_Key"; break;
+	case Window::KeyboardKeys::Numpad4: id = "Numpad4_Key"; break;
+	case Window::KeyboardKeys::Numpad5: id = "Numpad5_Key"; break;
+	case Window::KeyboardKeys::Numpad6: id = "Numpad6_Key"; break;
+	case Window::KeyboardKeys::Numpad7: id = "Numpad7_Key"; break;
+	case Window::KeyboardKeys::Numpad8: id = "Numpad8_Key"; break;
+	case Window::KeyboardKeys::Numpad9: id = "Numpad9_Key"; break;
+	case Window::KeyboardKeys::F1: id = "F1_Key"; break;
+	case Window::KeyboardKeys::F2: id = "F2_Key"; break;
+	case Window::KeyboardKeys::F3: id = "F3_Key"; break;
+	case Window::KeyboardKeys::F4: id = "F4_Key"; break;
+	case Window::KeyboardKeys::F5: id = "F5_Key"; break;
+	case Window::KeyboardKeys::F6: id = "F6_Key"; break;
+	case Window::KeyboardKeys::F7: id = "F7_Key"; break;
+	case Window::KeyboardKeys::F8: id = "F8_Key"; break;
+	case Window::KeyboardKeys::F9: id = "F9_Key"; break;
+	case Window::KeyboardKeys::F10: id = "F10_Key"; break;
+	case Window::KeyboardKeys::F11: id = "F11_Key"; break;
+	case Window::KeyboardKeys::F12: id = "F12_Key"; break;
 	default: break;
 	}
 

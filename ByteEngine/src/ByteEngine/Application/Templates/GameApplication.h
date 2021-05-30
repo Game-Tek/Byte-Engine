@@ -40,7 +40,7 @@ protected:
 	void RegisterKeyboard();
 	void RegisterControllers();
 
-	void onWindowResize(const GTSL::Extent2D& extent);
+	void onWindowResize(const GTSL::Extent2D extent);
 
 	void keyboardEvent(const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType);
 	void windowUpdateFunction(void* userData, GTSL::Window::WindowEvents event, void* eventData);

@@ -189,8 +189,20 @@ public:
 		return actionInputSourcesToActionInputEvents[eventName].LastValue;
 	}
 	
-	void Update();	
+	void Update();
 	
+	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, Id parameterName, float32 value) {
+		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName) = value;
+	}
+
+	[[nodiscard]] float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) const {
+		return inputDevices[inputDeviceHandle.DeviceHandle].Parameters.At(parameterName);
+	}
+
+	void RegisterInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) {
+		inputDevices[inputDeviceHandle.DeviceHandle].Parameters.Emplace(parameterName);
+	}
+
 protected:
 	template<typename T>
 	struct InputSourceData
@@ -209,6 +221,7 @@ protected:
 	struct InputDevice {
 		Id Name;
 		GTSL::Array<uint32, 8> ActiveIndeces;
+		GTSL::StaticMap<Id, float32, 8> Parameters;
 	};
 	GTSL::Array<InputDevice, 16> inputDevices;
 	

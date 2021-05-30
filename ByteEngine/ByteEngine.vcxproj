@@ -220,7 +220,6 @@
     <ClInclude Include="src\ByteEngine\Id.h" />
     <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
-    <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
     <ClInclude Include="src\ByteEngine\Object.h" />
@@ -239,6 +238,7 @@
     <ClInclude Include="src\ByteEngine\Resources\AnimationResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\LUTResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />

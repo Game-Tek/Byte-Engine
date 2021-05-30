@@ -24,7 +24,6 @@ public:
 
 	void Shutdown(const ShutdownInfo& shutdownInfo)
 	{
-		socket.Close();
 	}
 
 	void poll()

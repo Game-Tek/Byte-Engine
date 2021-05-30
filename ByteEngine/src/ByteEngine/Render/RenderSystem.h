@@ -147,6 +147,25 @@ public:
 	MAKE_HANDLE(uint32, Mesh);
 
 	GTSL::Range<const GAL::ShaderDataType*> GetMeshVertexLayout(const MeshHandle meshHandle) const { return meshes[meshHandle()].VertexDescriptor; }
+
+	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
+		if (needsStagingBuffer) {
+			return static_cast<byte*>(buffers[buffers[bufferHandle()].Staging()].Allocation.Data);
+		}
+		else {
+			return static_cast<byte*>(buffers[bufferHandle()].Allocation.Data);
+		}
+	}
+	
+	void AddVolume(const GTSL::Matrix3x4& position, const GTSL::Vector3 size) {
+		GAL::GeometryAABB aabb;
+		GAL::Geometry geometry(aabb, {}, 1, 0);
+
+		auto volume = CreateBuffer(sizeof(float32) * 6, GAL::BufferUses::BUILD_INPUT_READ, true, false);
+		auto* bufferPointer = GetBufferPointer(volume);
+		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
+		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
+	}
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
 	
@@ -162,39 +181,8 @@ public:
 	
 	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
 	
-	void DestroyBuffer(const BufferHandle handle)
-	{
-		auto& buffer = buffers[handle()];
-
-		auto destroyBuffer = [&](BufferHandle bufferHandle)
-		{
-			auto& buffer = buffers[bufferHandle()];
-			buffer.Buffer.Destroy(GetRenderDevice());
-			DeallocateLocalBufferMemory(buffer.Allocation);
-
-			if (buffer.Staging != BufferHandle()) {
-				auto& stagingBuffer = buffers[buffer.Staging()];
-				stagingBuffer.Buffer.Destroy(GetRenderDevice());
-				DeallocateScratchBufferMemory(stagingBuffer.Allocation);
-				buffers.Pop(buffer.Staging());
-			}
-			
-			buffers.Pop(bufferHandle());
-		};
-		
-		if(buffer.Next() != 0xFFFFFFFF)
-		{
-			BufferHandle nextBufferHandle = buffer.Next;
-			
-			for (uint8 f = 1; f < pipelinedFrames; ++f) {
-				auto& otherBuffer = buffers[nextBufferHandle()];
-				auto currentHandle = nextBufferHandle;
-				nextBufferHandle = otherBuffer.Next;
-				destroyBuffer(currentHandle);
-			}
-		}
-
-		destroyBuffer(handle);
+	void DestroyBuffer(const BufferHandle handle) {
+		--buffers[handle()].references;
 	}
 
 	void DestroyMesh(MeshHandle meshHandle)
@@ -202,16 +190,9 @@ public:
 		DestroyBuffer(meshes[meshHandle()].Buffer);
 	}
 	
-	byte* GetMeshPointer(MeshHandle sharedMesh) const
-	{
+	byte* GetMeshPointer(MeshHandle sharedMesh) const {
 		const auto& mesh = meshes[sharedMesh()];
-
-		if (needsStagingBuffer) {
-			return static_cast<byte*>(buffers[buffers[mesh.Buffer()].Staging()].Allocation.Data);
-		}
-		else {
-			return static_cast<byte*>(buffers[mesh.Buffer()].Allocation.Data);
-		}
+		return GetBufferPointer(mesh.Buffer);
 	}
 
 	uint32 GetMeshSize(MeshHandle meshHandle) const
@@ -353,6 +334,7 @@ private:
 	{
 		::Buffer Buffer; uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
+		uint32 references = 0;
 		BufferHandle Staging, Next;
 		RenderAllocation Allocation;
 	};

@@ -22,8 +22,9 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo)
 	GTSL::Vector4 accumulatedUnboundedForces;
 	for (auto f : boundlessForces) { accumulatedUnboundedForces += f; }
 	
-	for(auto& e : physicsObjects) {
-		e.Position = e.Velocity * deltaSeconds;
+	for(auto& e : physicsObjects) { //semi implicit euler
+		e.Velocity += e.Acceleration * deltaSeconds;
+		e.Position += e.Velocity * deltaSeconds;
 	}
 
 	updatedObjects.ResizeDown(0);

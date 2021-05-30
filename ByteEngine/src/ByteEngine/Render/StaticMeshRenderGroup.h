@@ -3,7 +3,6 @@
 #include <GTSL/Math/Vectors.h>
 
 #include "MaterialSystem.h"
-#include "RenderGroup.h"
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
@@ -11,7 +10,7 @@
 
 MAKE_HANDLE(uint32, StaticMesh)
 
-class StaticMeshRenderGroup final : public RenderGroup
+class StaticMeshRenderGroup final : public System
 {
 public:
 	StaticMeshRenderGroup();

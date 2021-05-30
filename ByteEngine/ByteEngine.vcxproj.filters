@@ -121,7 +121,6 @@
     <ClInclude Include="src\ByteEngine\Application\AllocatorReferences.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\StaticMeshRenderGroup.h" />
-    <ClInclude Include="src\ByteEngine\Render\RenderGroup.h" />
     <ClInclude Include="src\ByteEngine\Application\EntryPoint.h" />
     <ClInclude Include="src\ByteEngine\Application\ThreadPool.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderTypes.h" />
@@ -143,6 +142,7 @@
     <ClInclude Include="src\ByteEngine\fpfParser.h" />
     <ClInclude Include="src\ByteEngine\Animation\AnimationSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\ShaderGenerator.h" />
+    <ClInclude Include="src\ByteEngine\Resources\LUTResourceManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

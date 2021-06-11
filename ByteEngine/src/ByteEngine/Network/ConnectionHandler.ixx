@@ -16,10 +16,7 @@ public:
 		source.Address[3] = 1;
 		source.Port = 25565;
 
-		GTSL::UDPSocket::CreateInfo createInfo;
-		createInfo.Blocking = false;
-		createInfo.Endpoint = source;
-		socket.Open(createInfo);
+		socket.Open(source, false);
 	}
 
 	void Shutdown(const ShutdownInfo& shutdownInfo)
@@ -30,10 +27,7 @@ public:
 	{
 		GTSL::IPv4Endpoint sender;
 
-		GTSL::UDPSocket::ReceiveInfo receiveInfo;
-		receiveInfo.Buffer;
-		receiveInfo.Sender = &sender;
-		socket.Receive(receiveInfo);
+		socket.Receive(&sender, {});
 	}
 
 private:

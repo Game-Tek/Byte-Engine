@@ -2,8 +2,6 @@
 
 #include "ByteEngine/Core.h"
 
-#include "ByteEngine/Debug/Assert.h"
-
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
 #include <GAL/Vulkan/VulkanBuffer.h>
@@ -52,11 +50,11 @@ struct RenderAllocation
 #undef OPAQUE
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;
-using Buffer = GAL::VulkanBuffer;
+using GPUBuffer = GAL::VulkanBuffer;
 using Texture = GAL::VulkanTexture;
 using Surface = GAL::VulkanSurface;
 using Pipeline = GAL::VulkanPipeline;
-using Semaphore = GAL::VulkanSemaphore;
+using GPUSemaphore = GAL::VulkanSemaphore;
 using QueryPool = GAL::VulkanQueryPool;
 using RenderPass = GAL::VulkanRenderPass;
 using TextureSampler = GAL::VulkanSampler;

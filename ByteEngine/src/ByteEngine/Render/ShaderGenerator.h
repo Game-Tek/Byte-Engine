@@ -1,10 +1,10 @@
 #pragma once
-#include <GTSL/String.hpp>
 
+#include <GTSL/String.hpp>
 #include "ByteEngine/Application/AllocatorReferences.h"
 
 template<typename T>
-inline void AddExtensions(GTSL::String<T>& string, GAL::ShaderType shaderType)
+void AddExtensions(GTSL::String<T>& string, GAL::ShaderType shaderType)
 {
 	string += "#version 460 core\n"; //push version
 	
@@ -37,8 +37,7 @@ inline void AddExtensions(GTSL::String<T>& string, GAL::ShaderType shaderType)
 }
 
 template<typename T>
-inline void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType shaderType)
-{
+void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType shaderType) {
 	switch (shaderType)
 	{
 	case GAL::ShaderType::VERTEX_SHADER: break;
@@ -67,10 +66,34 @@ inline void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType 
 }
 
 template<typename T>
-inline auto GenerateShader(GTSL::String<T>& string, GAL::ShaderType shaderType)
+void AddCommonFunctions(GTSL::String<T>& string, GAL::ShaderType shaderType) {
+	switch (shaderType)
+	{
+	case GAL::ShaderType::VERTEX_SHADER: break;
+	case GAL::ShaderType::TESSELLATION_CONTROL_SHADER: break;
+	case GAL::ShaderType::TESSELLATION_EVALUATION_SHADER: break;
+	case GAL::ShaderType::GEOMETRY_SHADER: break;
+	case GAL::ShaderType::COMPUTE_SHADER: break;
+	case GAL::ShaderType::RAY_GEN: break;
+	case GAL::ShaderType::MISS: break;
+	case GAL::ShaderType::CALLABLE: break;
+
+	case GAL::ShaderType::FRAGMENT_SHADER:
+	case GAL::ShaderType::ANY_HIT:
+	case GAL::ShaderType::CLOSEST_HIT:
+	case GAL::ShaderType::INTERSECTION:
+		string += "vec3 fresnelSchlick(float cosTheta, vec3 F0) { return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0); }\n";
+		break;
+	default:;
+	}
+}
+
+template<typename T>
+auto GenerateShader(GTSL::String<T>& string, GAL::ShaderType shaderType)
 {
 	AddExtensions(string, shaderType);
 	AddDataTypesAndDescriptors(string, shaderType);
+	AddCommonFunctions(string, shaderType);
 }
 
 //layout(location = 0) in vec3 in_Position;
@@ -78,13 +101,12 @@ inline auto GenerateShader(GTSL::String<T>& string, GAL::ShaderType shaderType)
 template<typename T>
 inline auto AddVertexShaderLayout(GTSL::String<T>& string, const GTSL::Range<const MaterialResourceManager::RasterMaterialData::VertexElement*> vertexElements)
 {
-	auto addElement = [&](GTSL::ShortString<32> name, uint16 index, GAL::ShaderDataType type)
-	{
-		string += "layout(location = "; GTSL::StaticString<32> number; GTSL::ToString(index, number); string += number;
+	auto addElement = [&](GTSL::ShortString<32> name, uint16 index, GAL::ShaderDataType type) {
+		string += "layout(location = "; GTSL::StaticString<32> number;
+		ToString(index, number); string += number;
 		string += ") in ";
 
-		switch (type)
-		{
+		switch (type) {
 		case GAL::ShaderDataType::FLOAT:  string += "float"; break;
 		case GAL::ShaderDataType::FLOAT2: string += "vec2"; break;
 		case GAL::ShaderDataType::FLOAT3: string += "vec3"; break;
@@ -103,12 +125,10 @@ inline auto AddVertexShaderLayout(GTSL::String<T>& string, const GTSL::Range<con
 		string += ' '; string += name; string += ";\n";
 	};
 
-	for(uint8 i = 0; i < vertexElements.ElementCount(); ++i)
-	{
+	for(uint8 i = 0; i < vertexElements.ElementCount(); ++i) {
 		const auto& att = vertexElements[i];
 		
-		switch (GTSL::Id64(att.VertexAttribute)())
-		{
+		switch (GTSL::Id64(att.VertexAttribute)()) {
 		case Hash(GAL::Pipeline::POSITION): addElement("in_Position", i, att.Type); break;
 		case Hash(GAL::Pipeline::NORMAL): addElement("in_Normal", i, att.Type); break;
 		case Hash(GAL::Pipeline::TANGENT): addElement("in_Tangent", i, att.Type); break;

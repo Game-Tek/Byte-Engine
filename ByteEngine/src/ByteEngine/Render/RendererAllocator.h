@@ -6,6 +6,7 @@
 
 #include "RenderTypes.h"
 #include "ByteEngine/Core.h"
+#include "ByteEngine/Object.h"
 #include "ByteEngine/Application/AllocatorReferences.h"
 
 class ScratchMemoryAllocator;

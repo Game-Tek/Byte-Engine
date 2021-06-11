@@ -13,35 +13,35 @@ class LightsRenderGroup : public System
 public:
 	LightsRenderGroup() : System("LightsRenderGroup") {}
 	
-	void Initialize(const InitializeInfo& initializeInfo) override
-	{
+	void Initialize(const InitializeInfo& initializeInfo) override {
 		directionalLights.Initialize(8, GetPersistentAllocator());
 	}
 
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
-	DirectionalLightHandle CreateDirectionalLight()
-	{
+	DirectionalLightHandle CreateDirectionalLight() {
 		return DirectionalLightHandle(directionalLights.Emplace());
 	}
 
-	void SetLightRotation(const DirectionalLightHandle lightHandle, const GTSL::Rotator rotator)
-	{
+	void SetLightRotation(const DirectionalLightHandle lightHandle, const GTSL::Rotator rotator) {
 		directionalLights[lightHandle()].Rotation = rotator;
 	}
 
-	void SetLightColor(const DirectionalLightHandle lightHandle, const GTSL::RGBA color)
-	{
+	void SetLightColor(const DirectionalLightHandle lightHandle, const GTSL::RGBA color) {
 		directionalLights[lightHandle()].Color = color;
 	}
 
 private:
-	struct DirectionalLight
-	{
+	struct DirectionalLight {
 		GTSL::RGBA Color;
 		GTSL::Rotator Rotation;
 	};
 	GTSL::KeepVector<DirectionalLight, BE::PersistentAllocatorReference> directionalLights;
+
+	struct PointLight {
+		GTSL::RGBA Color;
+	};
+	GTSL::KeepVector<PointLight, BE::PersistentAllocatorReference> pointLights;
 
 public:
 	[[nodiscard]] auto GetDirectionalLights() const { return directionalLights.GetRange(); }

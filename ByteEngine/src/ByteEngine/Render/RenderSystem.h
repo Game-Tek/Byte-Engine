@@ -53,10 +53,10 @@ public:
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, ::Buffer* buffer, GTSL::Range<const GAL::Geometry*> geometries, RenderAllocation* renderAllocation, uint32* scratchSize)
+	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, GPUBuffer* buffer, GTSL::Range<const GAL::Geometry*> geometries, RenderAllocation* renderAllocation, uint32* scratchSize)
 	{
 		uint32 bufferSize, memoryScratchSize;
-		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::BuildDevice::GPU, 0, &bufferSize, &memoryScratchSize);
+		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::Device::GPU, 0, &bufferSize, &memoryScratchSize);
 		
 		AllocateScratchBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, buffer, renderAllocation);
 
@@ -65,8 +65,7 @@ public:
 		*scratchSize = memoryScratchSize;
 	}
 	
-	void AllocateScratchBufferMemory(uint32 size, GAL::BufferUse flags, ::Buffer* buffer, RenderAllocation* allocation)
-	{		
+	void AllocateScratchBufferMemory(uint32 size, GAL::BufferUse flags, GPUBuffer* buffer, RenderAllocation* allocation) {		
 		GAL::MemoryRequirements memoryRequirements;
 		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
 
@@ -79,13 +78,11 @@ public:
 		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
 	
-	void DeallocateScratchBufferMemory(const RenderAllocation allocation)
-	{
+	void DeallocateScratchBufferMemory(const RenderAllocation allocation) {
 		scratchMemoryAllocator.DeallocateLinearMemory(renderDevice, allocation);
 	}
 	
-	void AllocateLocalBufferMemory(uint32 size, GAL::BufferUse flags, ::Buffer* buffer, RenderAllocation* allocation)
-	{
+	void AllocateLocalBufferMemory(uint32 size, GAL::BufferUse flags, GPUBuffer* buffer, RenderAllocation* allocation) {
 		GAL::MemoryRequirements memoryRequirements;
 		buffer->GetMemoryRequirements(GetRenderDevice(), size, flags, &memoryRequirements);
 
@@ -120,9 +117,8 @@ public:
 			bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData);
 	}
 	
-	struct TextureCopyData
-	{
-		::Buffer SourceBuffer;
+	struct TextureCopyData {
+		GPUBuffer SourceBuffer;
 		Texture DestinationTexture;
 		
 		uint32 SourceOffset = 0;
@@ -158,13 +154,13 @@ public:
 	}
 	
 	void AddVolume(const GTSL::Matrix3x4& position, const GTSL::Vector3 size) {
-		GAL::GeometryAABB aabb;
-		GAL::Geometry geometry(aabb, {}, 1, 0);
-
 		auto volume = CreateBuffer(sizeof(float32) * 6, GAL::BufferUses::BUILD_INPUT_READ, true, false);
 		auto* bufferPointer = GetBufferPointer(volume);
+
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
+
+		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(reinterpret_cast<GAL::DeviceAddress>(bufferPointer), sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
 	}
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
@@ -278,6 +274,8 @@ private:
 	uint8 imageIndex = 0;
 
 	uint8 pipelinedFrames = 0;
+
+	bool useHDR = false;
 	
 	RenderDevice renderDevice;
 	Surface surface;
@@ -293,23 +291,19 @@ private:
 	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
-	Semaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
-	Semaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
-	Semaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
+	GPUSemaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
+	GPUSemaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
+	GPUSemaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
 	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
 	Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
 	CommandBuffer graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
 	CommandBuffer transferCommandBuffers[MAX_CONCURRENT_FRAMES];
-
-	/**
-	 * \brief Keeps track of created instances. Mesh / Material combo.
-	 */
-	uint32 rayTracingInstancesCount = 0;
 	
 	GAL::VulkanQueue graphicsQueue;
 	GAL::VulkanQueue transferQueue;
-	
+	GAL::Device accelerationStructureBuildDevice;
+
 	struct Mesh
 	{
 		BufferHandle Buffer;
@@ -320,9 +314,8 @@ private:
 		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 	
-	struct RayTracingMesh
-	{
-		Buffer StructureBuffer;
+	struct RayTracingMesh {
+		GPUBuffer StructureBuffer;
 		RenderAllocation StructureBufferAllocation;
 		AccelerationStructure AccelerationStructure;
 	};
@@ -332,7 +325,7 @@ private:
 
 	struct Buffer
 	{
-		::Buffer Buffer; uint32 Size = 0, Counter = 0;
+		GPUBuffer Buffer; uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
 		uint32 references = 0;
 		BufferHandle Staging, Next;
@@ -350,18 +343,32 @@ private:
 	GTSL::Vector<GAL::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
 
 	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
-	::Buffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
+	GPUBuffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
 
 	AccelerationStructure topLevelAccelerationStructure[MAX_CONCURRENT_FRAMES];
 	RenderAllocation topLevelAccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
-	::Buffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
+	GPUBuffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
 
+	/**
+	* \brief Keeps track of created instances. Mesh / Material combo.
+	*/
+	uint32 rayTracingInstancesCount = 0;
+
+	void addRayTracingInstance(GAL::Geometry geometry, AccelerationStructureBuildData buildData) {
+		++rayTracingInstancesCount;
+
+		for (uint8 f = 0; f < pipelinedFrames; ++f) {
+			geometries[f].EmplaceBack(geometry);
+			buildDatas[f].EmplaceBack(buildData);
+		}
+	}
+	
 	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
 
 	uint32 topLevelStructureScratchSize;
 	
 	RenderAllocation instancesAllocation[MAX_CONCURRENT_FRAMES];
-	::Buffer instancesBuffer[MAX_CONCURRENT_FRAMES];
+	GPUBuffer instancesBuffer[MAX_CONCURRENT_FRAMES];
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.
@@ -414,7 +421,7 @@ private:
 
 		GAL::FormatDescriptor FormatDescriptor;
 		GAL::TextureUse Uses;
-		::Buffer ScratchBuffer;
+		GPUBuffer ScratchBuffer;
 		GAL::TextureLayout Layout;
 		GTSL::Extent3D Extent;
 	};

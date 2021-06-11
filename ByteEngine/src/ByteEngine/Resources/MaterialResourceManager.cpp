@@ -103,7 +103,7 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 			GTSL::File shaderSourceFile;
 			shaderSourceFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ);
 			
-			GTSL::String<BE::TAR> string(1024, GetTransientAllocator());
+			GTSL::String<BE::TAR> string(8192, GetTransientAllocator());
 			GenerateShader(string, shaderType);
 
 			switch (shaderType)
@@ -113,12 +113,11 @@ void MaterialResourceManager::CreateRasterMaterial(const RasterMaterialCreateInf
 				break;
 			}
 
-			shaderSourceBuffer.CopyBytes(string.GetLength() - 1, (const byte*)string.c_str());
-
 			shaderSourceFile.Read(shaderSourceBuffer.GetBufferInterface());
+
+			string += GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
 			
-			auto f = GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
-			const auto compilationResult = GAL::CompileShader(f, materialCreateInfo.ShaderName, shaderType, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
+			const auto compilationResult = CompileShader(string, materialCreateInfo.ShaderName, shaderType, GAL::ShaderLanguage::GLSL, shaderBuffer.GetBufferInterface(), shaderErrorBuffer.GetBufferInterface());
 
 			//BE_LOG_MESSAGE(reinterpret_cast<const char*>(shaderSourceBuffer.GetData()));
 			

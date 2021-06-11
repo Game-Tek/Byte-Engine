@@ -102,20 +102,16 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
-	{
+	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
 		if constexpr (_DEBUG) { if (assertTask(name, startOn, doneFor, dependencies)) { return; } }
 		
 		auto taskInfo = GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>::Create<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void
-		{			
-			{
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
+			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 				
-				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
-			}
+			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->semaphores[goal].Post();
@@ -146,26 +142,22 @@ public:
 	void RemoveTask(Id name, Id startOn);
 
 	template<typename... ARGS>
-	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args)
-	{
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
 		uint16 startOnGoalIndex, taskObjectiveIndex;
 
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void
-		{
-			{
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {
+			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
-				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 
-				gameInstance->resourcesUpdated.NotifyAll();
-				gameInstance->semaphores[goal].Post();
-				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
-			}
+			gameInstance->resourcesUpdated.NotifyAll();
+			gameInstance->semaphores[goal].Post();
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());			
 
 			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
 		};
@@ -186,17 +178,13 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, ARGS&&... args)
-	{
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 asyncTasksIndex, void* data) -> void
-		{
-			{
-				auto* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, ARGS&&... args) {
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 asyncTasksIndex, void* data) -> void {
+			auto* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
-				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
-				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
-			}
+			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());			
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->taskSorter.ReleaseResources(asyncTasksIndex);
@@ -219,18 +207,14 @@ public:
 	}
 
 	template<typename... ARGS>
-	[[nodiscard]] DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies)
-	{
+	[[nodiscard]] DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies) {
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void
-		{
-			{
-				DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
-				GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
-				GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
-			}
+		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
+			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
+			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
@@ -252,8 +236,7 @@ public:
 	}
 	
 	template<typename... ARGS>
-	void AddStoredDynamicTask(const DynamicTaskHandle<ARGS...> taskHandle, ARGS&&... args)
-	{
+	void AddStoredDynamicTask(const DynamicTaskHandle<ARGS...> taskHandle, ARGS&&... args) {
 		StoredDynamicTaskData storedDynamicTask;
 		
 		{
@@ -270,16 +253,14 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle)
-	{
+	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		events.Emplace(eventHandle.Name).Initialize(8, GetPersistentAllocator());
 	}
 
 	template<typename... ARGS>
-	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle)
-	{
+	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name);
@@ -287,8 +268,7 @@ public:
 	}
 	
 	template<typename... ARGS>
-	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args)
-	{
+	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 		

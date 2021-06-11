@@ -12,7 +12,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	bufferMemoryBlocks.EmplaceBack();
 	//textureMemoryBlocks.EmplaceBack();
 
-	Buffer scratchBuffer;
+	GPUBuffer scratchBuffer;
 	
 	GAL::MemoryRequirements memory_requirements;
 	scratchBuffer.GetMemoryRequirements(&renderDevice, 1024,
@@ -203,7 +203,7 @@ void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE
 	dummyTexture.GetMemoryRequirements(&renderDevice, &imageMemoryRequirements, GAL::TextureUses::TRANSFER_DESTINATION, GAL::FORMATS::RGBA_I8,
 		{ 1280, 720, 1 }, GAL::Tiling::OPTIMAL, 1);
 
-	Buffer dummyBuffer;
+	GPUBuffer dummyBuffer;
 	
 	GAL::MemoryRequirements bufferMemoryRequirements;
 	dummyBuffer.GetMemoryRequirements(&renderDevice, 1024,

@@ -75,32 +75,19 @@ void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 
 		GAL::Geometry geometry(geometryTriangles, GAL::GeometryFlags::OPAQUE, mesh.IndicesCount / 3, 0);
 
-		for (uint8 f = 0; f < pipelinedFrames; ++f) geometries[f].EmplaceBack(geometry);
-
 		AllocateAccelerationStructureMemory(&rayTracingMesh.AccelerationStructure, &rayTracingMesh.StructureBuffer,
 			GTSL::Range<const GAL::Geometry*>(1, &geometry), &rayTracingMesh.StructureBufferAllocation, &scratchSize);
-	}
-
-	{
 		AccelerationStructureBuildData buildData;
 		buildData.ScratchBuildSize = scratchSize;
 		buildData.Destination = rayTracingMesh.AccelerationStructure;
 
-		for(uint8 f = 0; f < pipelinedFrames; ++f) buildDatas[f].EmplaceBack(buildData);
+		addRayTracingInstance(geometry, buildData);
 	}
 
 	for (uint8 f = 0; f < pipelinedFrames; ++f) {
-		auto instance = GAL::RayTracingInstance();
-		instance.AccelerationStructureAddress = rayTracingMesh.AccelerationStructure.GetAddress(GetRenderDevice());
-		instance.Flags = GAL::GeometryFlags::OPAQUE;
-		instance.InstanceIndex = mesh.CustomMeshIndex;
-		instance.Mask = 0xFF;
-		instance.Transform = GTSL::Matrix3x4();
-		instance.InstanceShaderBindingTableRecordOffset = 0;
-		WriteInstance(instance, instancesAllocation[f].Data, mesh.DerivedTypeIndex);
+		GAL::WriteInstance(rayTracingMesh.AccelerationStructure, mesh.CustomMeshIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), instancesAllocation[f].Data, mesh.DerivedTypeIndex, accelerationStructureBuildDevice);
+		GAL::WriteInstanceBindingTableRecordOffset(0, instancesAllocation[f].Data, mesh.DerivedTypeIndex);
 	}
-
-	++rayTracingInstancesCount;
 }
 
 void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout)
@@ -186,8 +173,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
-	pipelinedFrames = BE::Application::Get()->GetOption("buffer");
-	pipelinedFrames = GTSL::Math::Clamp(pipelinedFrames, static_cast<uint8>(2), static_cast<uint8>(3));
+	useHDR = BE::Application::Get()->GetOption("hdr");
+	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp(BE::Application::Get()->GetOption("buffer"), 2u, 3u));
 	bool rayTracing = BE::Application::Get()->GetOption("rayTracing");
 
 	{
@@ -248,8 +235,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		scratchMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
-		if (rayTracing)
-		{
+		if (rayTracing) {
 			GAL::Geometry geometry(GAL::GeometryInstances{ 0 }, 0, MAX_INSTANCES_COUNT, 0);
 
 			for (uint8 f = 0; f < pipelinedFrames; ++f) {
@@ -269,26 +255,26 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 			scratchBufferOffsetAlignment = rayTracingCapabilities.ScratchBuildOffsetAlignment;
 			shaderGroupBaseAlignment = rayTracingCapabilities.ShaderGroupBaseAlignment;
 
-			if (rayTracingCapabilities.CanBuildOnHost)
-			{
-			}
-			else
-			{
+			accelerationStructureBuildDevice = rayTracingCapabilities.BuildDevice;
+			
+			switch (rayTracingCapabilities.BuildDevice) {
+			case GAL::Device::CPU: break;
+			case GAL::Device::GPU:
+			case GAL::Device::GPU_OR_CPU:
 				buildAccelerationStructures = decltype(buildAccelerationStructures)::Create<RenderSystem, &RenderSystem::buildAccelerationStructuresOnDevice>();
+				break;
+			default: ;
 			}
 		}
 	}
 
 	swapchainPresentMode = GAL::PresentModes::SWAP;
-	swapchainColorSpace = GAL::ColorSpace::SRGB;
+	swapchainColorSpace = GAL::ColorSpace::SRGB_NONLINEAR;
 	swapchainFormat = GAL::FORMATS::BGRA_I8;
 
-	for (uint32 i = 0; i < pipelinedFrames; ++i)
-	{
-		{
-			if constexpr (_DEBUG) { GTSL::StaticString<32> name("Transfer semaphore. Frame: "); name += i; }
-			transferDoneSemaphores[i].Initialize(GetRenderDevice());
-		}
+	for (uint32 i = 0; i < pipelinedFrames; ++i) {
+		if constexpr (_DEBUG) { GTSL::StaticString<32> name("Transfer semaphore. Frame: "); name += i; }
+		transferDoneSemaphores[i].Initialize(GetRenderDevice());
 		
 		//processedTextureCopies.EmplaceBack(0);
 		processedBufferCopies[i] = 0;
@@ -313,23 +299,20 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		}
 		transferFences[i].Initialize(GetRenderDevice(), true);
 
-		{
-			if constexpr (_DEBUG) {
-				GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
-				//commandPoolCreateInfo.Name = commandPoolName;
-			}
-			
-			graphicsCommandBuffers[i].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
+		
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
+			//commandPoolCreateInfo.Name = commandPoolName;
 		}
-
-		{
-			if constexpr (_DEBUG) {
-				GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
-				//commandPoolCreateInfo.Name = commandPoolName;
-			}
-			
-			transferCommandBuffers[i].Initialize(GetRenderDevice(), transferQueue.GetQueueKey());
+		
+		graphicsCommandBuffers[i].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
+		
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
+			//commandPoolCreateInfo.Name = commandPoolName;
 		}
+		
+		transferCommandBuffers[i].Initialize(GetRenderDevice(), transferQueue.GetQueueKey());
 
 		bufferCopyDatas[i].Initialize(64, GetPersistentAllocator());
 		textureCopyDatas[i].Initialize(64, GetPersistentAllocator());
@@ -380,9 +363,12 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 		graphicsCommandBuffers[i].Destroy(&renderDevice);
 		transferCommandBuffers[i].Destroy(&renderDevice);
 	}
-	
-	renderContext.Destroy(&renderDevice);
-	surface.Destroy(&renderDevice);
+
+	if(renderContext.GetHandle())
+		renderContext.Destroy(&renderDevice);
+
+	if(surface.GetHandle())
+		surface.Destroy(&renderDevice);
 	
 	//DeallocateLocalTextureMemory();
 	
@@ -492,7 +478,27 @@ bool RenderSystem::resize()
 	swapchainPresentMode = supportedPresentModes[0];
 
 	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
-	swapchainColorSpace = supportedSurfaceFormats[0].First; swapchainFormat = supportedSurfaceFormats[0].Second;
+
+	{
+		GTSL::Pair<GAL::ColorSpace, GAL::FormatDescriptor> bestColorSpaceFormat;
+
+		for (uint8 topScore = 0; const auto& e : supportedSurfaceFormats) {
+			uint8 score = 0;
+			
+			if (useHDR && e.First == GAL::ColorSpace::HDR10_ST2048) {
+				score += 2;
+			} else {
+				score += 1;
+			}
+
+			if(score > topScore) {
+				bestColorSpaceFormat = e;
+				topScore = score;
+			}
+		}
+
+		swapchainColorSpace = bestColorSpaceFormat.First; swapchainFormat = bestColorSpaceFormat.Second;
+	}	
 
 	renderContext.InitializeOrRecreate(GetRenderDevice(), &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
 
@@ -545,7 +551,7 @@ void RenderSystem::renderFinish(TaskInfo taskInfo)
 	commandBuffer.EndRecording(GetRenderDevice());
 
 	{
-		GTSL::Array<Queue::WorkUnit, 8> workUnits; GTSL::Array<Semaphore, 8> presentWaitSemaphores;
+		GTSL::Array<Queue::WorkUnit, 8> workUnits; GTSL::Array<GPUSemaphore, 8> presentWaitSemaphores;
 
 		auto& workUnit = workUnits.EmplaceBack();
 
@@ -794,9 +800,7 @@ bool RenderSystem::AcquireImage()
 		case GAL::VulkanRenderContext::AcquireState::BAD: resize(); result = true; break;
 		default:;
 		}
-	}
-	else
-	{
+	} else {
 		resize(); result = true; AcquireImage();
 	}
 
@@ -820,8 +824,7 @@ BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool 
 			last->Next = BufferHandle(nextBufferIndex);
 			last = &nextBuffer;
 		}
-	}
-	else {
+	} else {
 		if (willWriteFromHost) {
 			if (needsStagingBuffer) { //create staging buffer
 				auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
@@ -847,8 +850,7 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 	auto& buffer = buffers[bufferHandle()];
 	
 	if(state) {
-		if(buffer.Staging == BufferHandle()) //if will write from host and we have no buffer
-		{
+		if(buffer.Staging == BufferHandle()) {//if will write from host and we have no buffer
 			if (needsStagingBuffer) {
 				auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
 

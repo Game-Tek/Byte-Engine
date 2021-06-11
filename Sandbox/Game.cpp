@@ -198,7 +198,7 @@ bool Game::Initialize()
 
 void Game::PostInitialize()
 {
-	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
+	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);//
 	
 	GameApplication::PostInitialize();
 

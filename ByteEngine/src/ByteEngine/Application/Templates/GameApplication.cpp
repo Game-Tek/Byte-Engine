@@ -108,24 +108,21 @@ void GameApplication::PostInitialize()
 
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } ); //result attachment
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "RenderDepth" } );
-		geoRenderPass.ResultAttachment = "Color";
-		renderOrchestrator->AddPass("SceneRenderPass", "CameraData", renderSystem, materialSystem, geoRenderPass);
+		renderOrchestrator->AddPass("SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, materialSystem, geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
-		uiRenderPass.ResultAttachment = "Color";
+		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" }); //result attachment
 
 		RenderOrchestrator::PassData rtRenderPass{};
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" });
 		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" });
-		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" });
-		rtRenderPass.ResultAttachment = "Color";
+		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" }); //result attachment
 		
 		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
 		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);

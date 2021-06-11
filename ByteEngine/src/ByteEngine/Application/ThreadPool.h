@@ -26,18 +26,14 @@ public:
 	explicit ThreadPool() : Object("Thread Pool")
 	{		
 		//lambda
-		auto workers_loop = [](ThreadPool* pool, const uint8 i)
-		{			
-			while (true)
-			{		
+		auto workers_loop = [](ThreadPool* pool, const uint8 i) {			
+			while (true) {		
 				Tasks task;
 				
-				for (auto n = 0; n < threadCount * K; ++n)
-				{
+				for (auto n = 0; n < threadCount * K; ++n) {
 					auto queueIndex = (i + n) % threadCount;
 
-					if (pool->queues[queueIndex].TryPop(task))
-					{
+					if (pool->queues[queueIndex].TryPop(task)) {
 						GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(pool, GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(task));
 						pool->queues[queueIndex].Done();
 						break;
@@ -45,13 +41,10 @@ public:
 				}
 
 				//if (!GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task) && !pool->queues[i].Pop(task)) { break;	}
-				if (pool->queues[i].Pop(task))
-				{
+				if (pool->queues[i].Pop(task)) {
 					GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task)(pool, GTSL::Get<TUPLE_LAMBDA_TASK_INFO_INDEX>(task));
 					pool->queues[i].Done();
-				}
-				else
-				{
+				} else {
 					break;
 				}
 			}
@@ -61,8 +54,7 @@ public:
 			queues.EmplaceBack(); //don't remove we need to force initialization of blocking queues
 		}
 		
-		for (uint8 i = 0; i < threadCount; ++i)
-		{
+		for (uint8 i = 0; i < threadCount; ++i) {
 			//Constructing threads with function and I parameter. i + 1 is because we leave id 0 to the main thread
 			threads.EmplaceBack(GetPersistentAllocator(), i + 1, GTSL::Delegate<void(ThreadPool*, uint8)>::Create(workers_loop), this, i);
 			threads[i].SetPriority(GTSL::Thread::Priority::HIGH);
@@ -76,12 +68,10 @@ public:
 	}
 
 	template<typename F, typename... ARGS>
-	void EnqueueTask(const GTSL::Delegate<F>& task, ARGS&&... args)
-	{
+	void EnqueueTask(const GTSL::Delegate<F>& task, ARGS&&... args) {
 		TaskInfo<F, ARGS...>* taskInfoAlloc = GTSL::New<TaskInfo<F, ARGS...>>(GetPersistentAllocator(), task, GTSL::ForwardRef<ARGS>(args)...);
 
-		auto work = [](ThreadPool* threadPool, void* voidTask) -> void
-		{
+		auto work = [](ThreadPool* threadPool, void* voidTask) -> void {
 			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(voidTask);
 			
 			GTSL::Call(taskInfo->Delegate, GTSL::MoveRef(taskInfo->Arguments));
@@ -91,8 +81,7 @@ public:
 		
 		const auto currentIndex = index++;
 
-		for (auto n = 0; n < threadCount * K; ++n)
-		{
+		for (auto n = 0; n < threadCount * K; ++n) {
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 		
 			if (queues[(currentIndex + n) % threadCount].TryPush(Tasks(TaskDelegate::Create(work), GTSL::MoveRef((void*)taskInfoAlloc)))) { return; }

@@ -68,7 +68,7 @@ public:
 
 		queuedFrames = renderSystem->GetPipelinedFrames();
 
-		buffers.Initialize(64, GetPersistentAllocator()); buffersByName.Initialize(32, GetPersistentAllocator());
+		buffers.Initialize(64, GetPersistentAllocator());
 
 		queuedSetUpdates.Initialize(1, 2, GetPersistentAllocator());
 
@@ -89,7 +89,6 @@ public:
 		//RenderSystem* renderSystem = shutdownInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 	}
 
-	[[nodiscard]] GPUBuffer GetBuffer(Id bufferName) const { return buffers[buffersByName[bufferName]].Buffers[frame]; }
 	[[nodiscard]] GPUBuffer GetBuffer(BufferHandle bufferHandle) const { return buffers[bufferHandle()].Buffers[frame]; }
 	[[nodiscard]] PipelineLayout GetSetLayoutPipelineLayout(Id id) const { return setLayoutDatas[id].PipelineLayout; }
 	
@@ -110,10 +109,6 @@ public:
 		}
 		return address;
 	}
-	
-	RenderSystem::BufferAddress GetBufferAddress(RenderSystem* renderSystem, const Id bufferName) const { return RenderSystem::BufferAddress(buffers[buffersByName[bufferName]].Buffers[frame].GetAddress(renderSystem->GetRenderDevice())); }
-	
-	bool DoesBufferExist(const Id buffer) const { return buffersByName.Find(buffer); }
 	
 	void PushConstant(const RenderSystem* renderSystem, CommandBuffer commandBuffer, Id layout, uint32 offset, GTSL::Range<const byte*> range) const {
 		const auto& set = setLayoutDatas[layout];
@@ -365,8 +360,7 @@ public:
 	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, GTSL::Range<MemberInfo*> members) {
 		GAL::BufferUse bufferUses, notBufferFlags;
 
-		auto bufferIndex = buffers.Emplace(); //this also essentially referes to the binding wince there's only a buffer per binding
-		auto& bufferData = buffers[bufferIndex];
+		auto bufferIndex = buffers.Emplace(); auto& bufferData = buffers[bufferIndex];
 
 		auto parseMembers = [&](auto&& self, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> uint32 {
 			uint32 offset = 0;
@@ -414,6 +408,7 @@ public:
 
 			for (uint8 f = 0; f < queuedFrames; ++f) {
 				renderSystem->AllocateScratchBufferMemory(bufferSize, bufferUses & ~notBufferFlags, &bufferData.Buffers[f], &bufferData.RenderAllocations[f]);
+				bufferData.Size[f] = bufferSize;
 			}
 		}
 
@@ -423,8 +418,6 @@ public:
 	[[nodiscard]] BufferHandle CreateBuffer(RenderSystem* renderSystem, MemberInfo member) {
 		return CreateBuffer(renderSystem, GTSL::Range<MemberInfo*>(1, &member));
 	}
-	
-	void BindBufferToName(const BufferHandle bufferHandle, const Id name) { buffersByName.Emplace(name, bufferHandle()); }
 	
 	/**
 	 * \brief Update the member instance count to be able to fit at least count requested elements.
@@ -478,6 +471,22 @@ public:
 		iterator.Levels.back() = index;
 		
 		iterator.ByteOffset += shiftedElements * memberData.Size;
+
+		bufferData.Written[frame] = true;
+	}
+
+	void CopyWrittenBuffers(RenderSystem* renderSystem) {
+		for (auto& e : buffers) {
+			if(e.Written[frame]) {
+			} else {
+				auto beforeFrame = uint8(frame - uint8(1)) % renderSystem->GetPipelinedFrames();
+				if(e.Written[beforeFrame]) {
+					GTSL::MemCopy(e.Size[frame], e.RenderAllocations[beforeFrame].Data, e.RenderAllocations[frame].Data);
+				}
+			}
+
+			e.Written[frame] = false;
+		}
 	}
 
 private:
@@ -504,12 +513,8 @@ private:
 	void updateDescriptors(TaskInfo taskInfo) {
 		auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
 
-		for (uint32 p = 0; p < queuedSetUpdates.GetReference().GetPageCount(); ++p)
-		{
-			for (uint32 i = 0; i < queuedSetUpdates.GetReference().GetPage(p).ElementCount(); ++i)
-			{
-				resizeSet(renderSystem, queuedSetUpdates.GetReference().GetPage(p)[i]);
-			}
+		for (auto& e : queuedSetUpdates) {
+			resizeSet(renderSystem, e);
 		}
 
 		queuedSetUpdates.Clear();
@@ -562,7 +567,10 @@ private:
 	struct BufferData {
 		RenderAllocation RenderAllocations[MAX_CONCURRENT_FRAMES];
 		GPUBuffer Buffers[MAX_CONCURRENT_FRAMES];
-
+		//GTSL::Bitfield<128> WrittenAreas[MAX_CONCURRENT_FRAMES];
+		bool Written[MAX_CONCURRENT_FRAMES]{ false };
+		uint32 Size[MAX_CONCURRENT_FRAMES]{ 0 };
+		
 		struct MemberData {
 			uint16 ByteOffsetIntoStruct;
 			uint16 Count = 0;
@@ -573,7 +581,6 @@ private:
 		GTSL::Array<MemberData, 16> MemberData;
 	};
 	GTSL::KeepVector<BufferData, BE::PAR> buffers;
-	GTSL::FlatHashMap<Id, uint32, BE::PAR> buffersByName;
 
 	struct DescriptorsUpdate
 	{

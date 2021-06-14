@@ -25,11 +25,10 @@ void RenderSystem::CreateRayTracedMesh(const MeshHandle meshHandle)
 	BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
 }
 
-RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, const MaterialInstanceHandle materialInstanceHandle)
+RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex)
 {
 	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
 	mesh.CustomMeshIndex = customIndex;
-	mesh.MaterialHandle = materialInstanceHandle;
 
 	return MeshHandle(meshIndex);
 }
@@ -850,7 +849,7 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 	auto& buffer = buffers[bufferHandle()];
 	
 	if(state) {
-		if(buffer.Staging == BufferHandle()) {//if will write from host and we have no buffer
+		if(!buffer.Staging) {//if will write from host and we have no buffer
 			if (needsStagingBuffer) {
 				auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
 
@@ -863,7 +862,7 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 
 		//if will write from host and we have buffer, do nothing
 	} else {
-		if (buffer.Staging != BufferHandle()) { //if won't write from host and we have a buffer
+		if (buffer.Staging) { //if won't write from host and we have a buffer
 			if (needsStagingBuffer) {
 				auto& stagingBuffer = buffers[buffer.Staging()];
 				--stagingBuffer.references;

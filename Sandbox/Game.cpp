@@ -213,17 +213,6 @@ void Game::PostInitialize()
 	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
-	
-	{
-		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
-		createMaterialInfo.GameInstance = gameInstance;
-		createMaterialInfo.RenderSystem = renderSystem;
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		createMaterialInfo.MaterialName = "HydrantMat";
-		createMaterialInfo.InstanceName = "hydrantMat";
-		hydrantMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
-	}
 
 	{
 		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
@@ -308,26 +297,27 @@ void Game::PostInitialize()
 		tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
 	
 		GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv), { 0, 0, 1 });
-		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(tv), GTSL::Rotator(0, GTSL::Math::PI, 0));
-		//GTSL::Math::SetScale(staticMeshRenderer->GetTransformation(tv), GTSL::Vector3(1, 1, -1));
+		
+		auto tv2 = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv2), { 0, 1, 1 });//
 	}
 
 	{		
-		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-		addStaticMeshInfo.MeshName = "plane";
-		addStaticMeshInfo.Material = plainMaterialInstance;
-		addStaticMeshInfo.GameInstance = gameInstance;
-		addStaticMeshInfo.RenderSystem = renderSystem;
-		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-		plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	
-		auto position = staticMeshRenderer->GetMeshPosition(plane);
-		staticMeshRenderer->SetPosition(plane, { 0, 0, 0 });
-		
-		GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Rotator(-GTSL::Math::PI / 2, 0, 0));
-		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::AxisAngle(1, 0, 0, GTSL::Math::PI / 2));
-		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Quaternion(0.707, 0, 0, 0.707));
-		GTSL::Math::AddScale(staticMeshRenderer->GetTransformation(plane), { 2, 2, 2 });
+		//StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		//addStaticMeshInfo.MeshName = "plane";
+		//addStaticMeshInfo.Material = plainMaterialInstance;
+		//addStaticMeshInfo.GameInstance = gameInstance;
+		//addStaticMeshInfo.RenderSystem = renderSystem;
+		//addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
+		//plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		//
+		//auto position = staticMeshRenderer->GetMeshPosition(plane);
+		//staticMeshRenderer->SetPosition(plane, { 0, 0, 0 });
+		//
+		//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Rotator(-GTSL::Math::PI / 2, 0, 0));
+		////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::AxisAngle(1, 0, 0, GTSL::Math::PI / 2));
+		////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Quaternion(0.707, 0, 0, 0.707));
+		//GTSL::Math::AddScale(staticMeshRenderer->GetTransformation(plane), { 2, 2, 2 });
 	}
 
 	
@@ -383,8 +373,10 @@ void Game::PostInitialize()
 	{
 		auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
 		auto light = lightsRenderGroup->CreateDirectionalLight();
-		lightsRenderGroup->SetLightColor(light, { 1.0f, 0.98f, 0.98f, 1.0f });
-		lightsRenderGroup->SetLightRotation(light, { -0.785398f, 0.0f, 0.0f });
+		lightsRenderGroup->SetColor(light, { 1.0f, 0.98f, 0.98f, 1.0f });
+		lightsRenderGroup->SetRotation(light, { -0.785398f, 0.0f, 0.0f });
+		auto pointLight = lightsRenderGroup->CreatePointLight();
+		lightsRenderGroup->SetRadius(pointLight, 1);
 	}
 }
 

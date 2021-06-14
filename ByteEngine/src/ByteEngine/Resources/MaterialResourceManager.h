@@ -110,7 +110,7 @@ public:
 			}
 		};
 
-		GTSL::Id64 Name;
+		GTSL::ShortString<32> Name;
 		GTSL::Array<GTSL::Pair<GTSL::Id64, ParameterData>, 16> Parameters;
 
 		template<class ALLOC>

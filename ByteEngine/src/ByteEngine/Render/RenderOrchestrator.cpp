@@ -34,7 +34,6 @@ void StaticMeshRenderManager::Initialize(const InitializeInfo& initializeInfo)
 	//TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
 
 	bufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&staticMeshStruct, 16, members));
-	materialSystem->BindBufferToName(bufferHandle, "StaticMeshRenderGroup");
 
 	//staticMeshRenderGroup = renderOrchestrator->AddLayer("StaticMeshRenderGroup", "SceneRenderPass", RenderOrchestrator::LayerType::LAYER);
 }
@@ -48,60 +47,45 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 {
 	auto* const renderGroup = info.GameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	
-	info.MaterialSystem->UpdateObjectCount(info.RenderSystem, staticMeshStruct, renderGroup->GetStaticMeshCount());
+	//info.MaterialSystem->UpdateObjectCount(info.RenderSystem, staticMeshStruct, renderGroup->GetStaticMeshCount());
 
 	{
 		MaterialSystem::BufferIterator bufferIterator;
 	
-		for (uint32 p = 0; p < renderGroup->GetAddedMeshes().GetPageCount(); ++p) {
-			for (auto e : renderGroup->GetAddedMeshes().GetPage(p)) {
-				auto materialHandle = info.RenderSystem->GetMeshMaterialHandle(e.First);
-				auto materialLayer = info.RenderOrchestrator->AddMaterial(info.RenderOrchestrator->GetSceneRenderPass(), materialHandle);
-				auto renderGroupLayer = info.RenderOrchestrator->AddLayer("StaticMeshRenderGroup", bufferHandle, true, materialLayer);
-				
-				info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, e.Second);
-				info.RenderOrchestrator->AddMesh(renderGroupLayer, e.First, e.Second, 1, info.RenderSystem->GetMeshVertexLayout(e.First));
-			}
+		for (auto e : renderGroup->GetAddedMeshes()) {
+			
+			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, e.StaticMeshHandle());
+			
+			auto materialHandle = renderGroup->GetMaterialHandle(e.StaticMeshHandle);
+			auto materialLayer = info.RenderOrchestrator->AddMaterial(info.RenderOrchestrator->GetSceneRenderPass(), materialHandle);
+			auto renderGroupLayer = info.RenderOrchestrator->AddLayer("StaticMeshRenderGroup", bufferHandle, true, materialLayer);
+			
+			info.RenderOrchestrator->AddMesh(renderGroupLayer, e.MeshHandle, e.StaticMeshHandle(), info.RenderSystem->GetMeshVertexLayout(e.MeshHandle));
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(e.MeshHandle);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(e.MeshHandle);
+			*info.MaterialSystem->GetMemberPointer(bufferIterator, materialInstance) = materialHandle.MaterialInstanceIndex;
 		}
 	
 		renderGroup->ClearAddedMeshes();
 	}
 
 	{
-		auto handleSize = GTSL::Math::RoundUpByPowerOf2(info.RenderSystem->GetShaderGroupHandleSize(), info.RenderSystem->GetShaderGroupHandleAlignment());
-	
 		MaterialSystem::BufferIterator bufferIterator;
+		
+		for(auto& e : renderGroup->GetDirtyMeshes()) {
+			auto pos = renderGroup->GetMeshTransform(e);
 
-		GTSL::MultiFor([&](uint32 i, const RenderSystem::MeshHandle& meshHandle)
-		{
-			auto pos = renderGroup->GetMeshTransform(i);
-			
-			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, i);
+			info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, renderGroup->GetMeshIndex(e));
 			*info.MaterialSystem->GetMemberPointer(bufferIterator, matrixUniformBufferMemberHandle) = pos;
-			*info.MaterialSystem->GetMemberPointer(bufferIterator, vertexBufferReferenceHandle) = info.RenderSystem->GetVertexBufferAddress(meshHandle);
-			*info.MaterialSystem->GetMemberPointer(bufferIterator, indexBufferReferenceHandle) = info.RenderSystem->GetIndexBufferAddress(meshHandle);
-			auto materialHandle = info.RenderSystem->GetMeshMaterialHandle(meshHandle);
-			*info.MaterialSystem->GetMemberPointer(bufferIterator, materialInstance) = materialHandle.MaterialInstanceIndex;
 
 
 			if (BE::Application::Get()->GetOption("rayTracing")) {
-				info.RenderSystem->SetMeshMatrix(meshHandle, GTSL::Matrix3x4(pos));
-				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index * 96);
-				//info.RenderSystem->SetMeshOffset(RenderSystem::MeshHandle(index), index);
+				info.RenderSystem->SetMeshMatrix(renderGroup->GetMeshHandle(e), GTSL::Matrix3x4(pos));
 			}
-		}, renderGroup->GetStaticMeshCount(), renderGroup->GetMeshHandles());
-		
-		//for (auto& e : renderGroup->GetMeshHandles())
-		//{
-		//
-		//
-		//	++index;
-		//}
-	}
+		}
 
-	//if ray tracing
-	//info.RenderSystem->SetMeshMatrix();
-	//clear updated meshes
+		renderGroup->ClearDirtyMeshes();
+	}
 }
 
 void UIRenderManager::Initialize(const InitializeInfo& initializeInfo)
@@ -608,6 +592,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	if (renderArea == 0) { return; }
 
 	if (renderSystem->AcquireImage() || sizeHistory[currentFrame] != renderArea || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) { OnResize(renderSystem, materialSystem, renderArea); }
+
+	materialSystem->CopyWrittenBuffers(renderSystem);
 	
 	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
 
@@ -637,7 +623,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		const InternalLayer& data = node->Data;
 		DataStreamHandle dataStreamHandle = {}; IndexStreamHandle indexStream = {}; bool propagate = true;
 
-		commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), static_cast<GTSL::Range<const utf8*>>(data.Name));
+		commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), data.Name);
 		
 		//if (parent) {
 		//	BE_LOG_MESSAGE("Node: ", static_cast<GTSL::Range<const utf8*>>(data.Name), ", ", siblingIndex, ". Parent: ", static_cast<GTSL::Range<const utf8*>>(parent->Data.Name));
@@ -663,11 +649,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 					for (uint32 bufferIndex = 0; bufferIndex < shader.Buffers.GetLength(); ++bufferIndex) {
 						auto& buffer = shader.Buffers[bufferIndex];
 						if (!buffer.Has) {
-							if (materialSystem->DoesBufferExist(buffer.Buffer)) {
-								auto address = materialSystem->GetBufferAddress(renderSystem, buffer.Buffer);
-								materialSystem->WriteMultiBuffer(iterator, sg.BufferBufferReferencesMemberHandle, &address, bufferIndex);
-								buffer.Has = true;
-							}
+							//auto address = materialSystem->GetBufferAddress(renderSystem, buffer.Buffer);
+							//materialSystem->WriteMultiBuffer(iterator, sg.BufferBufferReferencesMemberHandle, &address, bufferIndex);
+							//buffer.Has = true;
 						}
 					}
 
@@ -698,7 +682,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			
 			renderState.BindData(dataStreamHandle, renderSystem, materialSystem, commandBuffer, materialSystem->GetBuffer(material.BufferHandle));
 			indexStream = renderState.AddIndexStream();
-			renderState.UpdateIndexStream(indexStream, commandBuffer, renderSystem, materialSystem, data.Material.MaterialHandle.MaterialInstanceIndex);
+			break;
+		}
+		case InternalLayerType::MATERIAL_INSTANCE: {
+			renderState.UpdateIndexStream(renderState.indexStreams.back(), commandBuffer, renderSystem, materialSystem, data.Index);
 			break;
 		}
 		case InternalLayerType::VERTEX_LAYOUT: {
@@ -716,10 +703,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		}
 		case InternalLayerType::MESH: {
 			renderState.UpdateIndexStream(renderState.indexStreams.back(), commandBuffer, renderSystem, materialSystem, data.Index);
-			renderSystem->RenderMesh(data.Mesh.Handle);
+			renderSystem->RenderMesh(data.Mesh.Handle, data.Mesh.InstanceCount);
 			break;
 		}
 		case InternalLayerType::RENDER_PASS: {
+			if(!data.RenderPass.Enabled) {
+				propagate = false;
+				break;
+			}
+			
 			switch (data.RenderPass.Type) {
 			case PassType::RASTER: {
 				for (const auto& e : data.RenderPass.Attachments) {
@@ -792,7 +784,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 			break;
 		}
 		case InternalLayerType::LAYER: {
-			if (data.Name()) {
+			if (data.Key) {
 				if (data.Layer.Indexed) { renderState.PopIndexStream(indexStream); }
 				renderState.PopData(dataStreamHandle);
 			}
@@ -938,12 +930,13 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 		material_load_info.OnMaterialLoad = Task<MaterialResourceManager::OnMaterialLoadInfo>::Create<RenderOrchestrator, &RenderOrchestrator::onMaterialLoaded>(this);
 		auto materialLoadInfo = info.MaterialResourceManager->LoadMaterial(material_load_info);
 
-		auto index = materialLoadInfo.MaterialInstances.LookFor([&](const MaterialResourceManager::MaterialInstance& materialInstance)
+		auto index = LookFor(materialLoadInfo.MaterialInstances, [&](const MaterialResourceManager::MaterialInstance& materialInstance)
 		{
-			return materialInstance.Name == info.InstanceName;
+			return Id(materialInstance.Name) == info.InstanceName;
 		});
 
 		//TODO: ERROR CHECK
+		BE_ASSERT(index.State())
 		
 		auto& material = materials[materialIndex];
 
@@ -951,13 +944,11 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 
 		for (auto& e : materialLoadInfo.MaterialInstances) {
 			auto& materialInstance = material.MaterialInstances.EmplaceBack();
-			materialInstance.Name = e.Name;
+			materialInstance.Name = Id(e.Name);
 		}
 
-		materialInstanceIndex = index.Get();
-	}
-	else
-	{
+		materialInstanceIndex = index.Get() - materialLoadInfo.MaterialInstances.begin();
+	} else {
 		auto& material = materials[materialReference.Get()];
 		materialIndex = materialReference.Get();
 		auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance)
@@ -1013,6 +1004,8 @@ void RenderOrchestrator::AddPass(Id name, LayerHandle parent, RenderSystem* rend
 	
 	GTSL::StaticMap<Id, uint32, 16> attachmentReadsPerPass;
 
+	renderPass->Enabled = true;
+	
 	if(passData.WriteAttachments.GetLength())
 		resultAttachment = passData.WriteAttachments[0].Name;
 	
@@ -1516,7 +1509,6 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		}
 
 		materialData.BufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&materialData.MaterialInstancesMemberHandle, 8, materialParameters));
-		materialSystem->BindBufferToName(materialData.BufferHandle, Id(onMaterialLoadInfo.ResourceName));
 	}
 
 	GTSL::Array<GAL::VulkanShader, 16> shaders;
@@ -1628,11 +1620,11 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 			
 			for (auto& e : permutationInfo.VertexElements) {
 
-				auto vertexElement = vertexDescriptor.LookFor([&](const Pipeline::VertexElement& vertexElement) {
+				auto vertexElement = LookFor(vertexDescriptor, [&](const Pipeline::VertexElement& vertexElement) {
 					return vertexElement.Index == e.Index && vertexElement.Identifier == e.VertexAttribute;
 				});
 
-				vertexDescriptor[vertexElement.Get()].Enabled = vertexElement.State();
+				vertexElement.Get()->Enabled = vertexElement.State();
 			}
 
 			vertexState.Vertex.VertexDescriptor = vertexDescriptor;
@@ -1650,11 +1642,11 @@ void RenderOrchestrator::onMaterialLoaded(TaskInfo taskInfo, MaterialResourceMan
 		MaterialInstanceHandle materialInstanceHandle{ materialIndex, materialInstanceIndex };
 		
 		for (auto& resourceMaterialInstanceParameter : materialInstanceInfo.Parameters) {
-			auto materialParameter = materialData.Parameters.LookFor([&](const MaterialResourceManager::Parameter& parameter) { return parameter.Name == resourceMaterialInstanceParameter.First; }); //get parameter description from name
+			auto materialParameter = LookFor(materialData.Parameters, [&](const MaterialResourceManager::Parameter& parameter) { return parameter.Name == resourceMaterialInstanceParameter.First; }); //get parameter description from name
 
 			BE_ASSERT(materialParameter.State(), "No parameter by that name found. Data must be invalid");
 
-			if (materialData.Parameters[materialParameter.Get()].Type == MaterialResourceManager::ParameterType::TEXTURE_REFERENCE) {//if parameter is texture reference, load texture
+			if (materialParameter.Get()->Type == MaterialResourceManager::ParameterType::TEXTURE_REFERENCE) { //if parameter is texture reference, load texture
 				uint32 textureComponentIndex;
 
 				auto textureReference = texturesRefTable.TryGet(resourceMaterialInstanceParameter.Second.TextureReference);

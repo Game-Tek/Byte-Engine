@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GTSL/StaticMap.hpp>
 #include <GTSL/Math/Vectors.h>
 
 #include "MaterialSystem.h"
@@ -17,10 +18,13 @@ public:
 	
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
-	GTSL::Matrix4 GetMeshTransform(uint32 index) { return transformations[index]; }
+	GTSL::Matrix4 GetMeshTransform(StaticMeshHandle index) { return transformations[index()]; }
 	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }
 	GTSL::Vector3 GetMeshPosition(StaticMeshHandle staticMeshHandle) const { return GTSL::Math::GetTranslation(transformations[staticMeshHandle()]); }
-
+	MaterialInstanceHandle GetMaterialHandle(StaticMeshHandle i) const { return meshes[i()].MaterialInstanceHandle; }
+	RenderSystem::MeshHandle GetMeshHandle(StaticMeshHandle i) const { return meshes[i()].MeshHandle; }
+	uint32 GetMeshIndex(const StaticMeshHandle meshHandle) const { return meshHandle(); }
+	
 	struct AddStaticMeshInfo
 	{
 		Id MeshName;
@@ -31,27 +35,29 @@ public:
 	};
 	StaticMeshHandle AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo);
 
-	[[nodiscard]] auto GetTransformations() const { return transformations.GetRange(); }
-	[[nodiscard]] GTSL::Range<const GTSL::Id64*> GetResourceNames() const { return resourceNames; }
-
 	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
+		dirtyMeshes.EmplaceBack(staticMeshHandle);
 	}
 
 	void SetRotation(StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
 		GTSL::Math::SetRotation(transformations[staticMeshHandle()], quaternion);
+		dirtyMeshes.EmplaceBack(staticMeshHandle);
 	}
-	
-	uint32 GetStaticMeshCount() const { return staticMeshCount; }
 
-	auto GetMeshHandles() const { return meshes.GetRange(); }
+	struct AddedMeshData {
+		StaticMeshHandle StaticMeshHandle;
+		RenderSystem::MeshHandle MeshHandle;
+	};
 	
-	auto GetAddedMeshes()
-	{
-		return addedMeshes.GetReference();
+	auto& GetAddedMeshes() {
+		return addedMeshes;
 	}
 
 	void ClearAddedMeshes() { addedMeshes.Clear(); }
+
+	auto GetDirtyMeshes() const { return GTSL::Range(dirtyMeshes.begin(), dirtyMeshes.end()); }
+	void ClearDirtyMeshes() { return dirtyMeshes.Resize(0); }
 private:
 	struct MeshLoadInfo
 	{
@@ -66,13 +72,24 @@ private:
 	
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad);
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
-
-	GTSL::Array<GTSL::Id64, 16> resourceNames;
-	uint32 staticMeshCount = 0;
 	
 	GTSL::KeepVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
-	GTSL::KeepVector<RenderSystem::MeshHandle, BE::PAR> meshes;
-	GTSL::PagedVector<GTSL::Pair<RenderSystem::MeshHandle, uint32>, BE::PAR> addedMeshes;
+
+	struct Mesh {
+		RenderSystem::MeshHandle MeshHandle; MaterialInstanceHandle MaterialInstanceHandle;
+	};
+
+	GTSL::Array<StaticMeshHandle, 8> dirtyMeshes;
+	
+	struct ResourceData {
+		bool Loaded;
+		GTSL::Array<StaticMeshHandle, 8> DependentMeshes;
+		RenderSystem::MeshHandle MeshHandle;
+	};
+	GTSL::FlatHashMap<Id, ResourceData, BE::PAR> resourceNames;
+	
+	GTSL::KeepVector<Mesh, BE::PAR> meshes;
+	GTSL::PagedVector<AddedMeshData, BE::PAR> addedMeshes;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshInfoLoadHandle;
 };

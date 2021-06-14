@@ -165,7 +165,7 @@ public:
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
 	
-	MeshHandle CreateMesh(Id name, uint32 customIndex, const MaterialInstanceHandle materialInstanceHandle);
+	MeshHandle CreateMesh(Id name, uint32 customIndex);
 	//MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
 	void UpdateRayTraceMesh(const MeshHandle meshHandle);
@@ -226,8 +226,6 @@ public:
 	
 	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice())); }
 	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
-	
-	MaterialInstanceHandle GetMeshMaterialHandle(MeshHandle meshHandle) { return meshes[meshHandle()].MaterialHandle; }
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 
@@ -308,7 +306,6 @@ private:
 	{
 		BufferHandle Buffer;
 		uint32 IndicesCount, VertexCount;
-		MaterialInstanceHandle MaterialHandle;
 		uint32 DerivedTypeIndex, CustomMeshIndex;
 		uint8 IndexSize, VertexSize;
 		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;

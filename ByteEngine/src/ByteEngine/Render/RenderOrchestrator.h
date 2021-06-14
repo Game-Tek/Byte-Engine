@@ -1,7 +1,5 @@
 #pragma once
 
-#include <any>
-
 #include "ByteEngine/Game/System.h"
 
 #include <GTSL/Array.hpp>
@@ -55,7 +53,8 @@ public:
 
 protected:
 	enum class InternalLayerType {
-		DISPATCH, RAY_TRACE, MATERIAL, MESH, RENDER_PASS, LAYER, VERTEX_LAYOUT
+		DISPATCH, RAY_TRACE, MATERIAL, MESH, RENDER_PASS, LAYER, VERTEX_LAYOUT,
+		MATERIAL_INSTANCE
 	};
 
 	struct AttachmentData {
@@ -72,11 +71,11 @@ protected:
 	};
 	
 	struct InternalLayer {
-		InternalLayerType Type; Id Name; uint64 Key; uint32 Index;
+		InternalLayerType Type; GTSL::ShortString<32> Name; uint64 Key; uint32 Index;
 
 		struct MeshData {
 			RenderSystem::MeshHandle Handle;
-			uint32 InstanceCount;
+			uint32 InstanceCount = 0;
 		};
 		
 		struct MaterialData {
@@ -229,17 +228,20 @@ public:
 	using LayerHandle = GTSL::Tree<PublicLayer, BE::PAR>::Node*;
 
 private:	
-	GTSL::Tree<InternalLayer, BE::PAR>::Node* addInternalLayer(const uint64 key, LayerHandle publicSibling, LayerHandle publicParent, InternalLayerType type) {
+	GTSL::Tree<InternalLayer, BE::PAR>::Node* addInternalLayer(const uint64 key, LayerHandle publicSibling, LayerHandle publicParent, InternalLayerType type, uint8 index) {
 		InternalLayerHandle layerHandle = nullptr;
 
+		
 		if (publicParent) {
-			if (publicParent->Data.InternalSiblings.back().ChildrenMap.Find(key)) { //do parent thing, where sibling becomes parent
-				layerHandle = publicParent->Data.InternalSiblings.back().ChildrenMap.At(key);
+			if (index == 0xFF) { index = publicParent->Data.InternalSiblings.GetLength() - 1; }
+			
+			if (publicParent->Data.InternalSiblings[index].ChildrenMap.Find(key)) { //do parent thing, where sibling becomes parent
+				layerHandle = publicParent->Data.InternalSiblings[index].ChildrenMap.At(key);
 				return layerHandle;
 			}
 			else {
-				layerHandle = internalRenderingTree.AddChild(publicParent->Data.InternalSiblings.back().InternalNode);
-				publicParent->Data.InternalSiblings.back().ChildrenMap.Emplace(key, layerHandle);
+				layerHandle = internalRenderingTree.AddChild(publicParent->Data.InternalSiblings[index].InternalNode);
+				publicParent->Data.InternalSiblings[index].ChildrenMap.Emplace(key, layerHandle);
 				
 				if (publicSibling) {
 					auto& sibling = publicSibling->Data.InternalSiblings.EmplaceBack();
@@ -346,26 +348,25 @@ public:
 		
 		switch (data.Type) {
 		case LayerType::DISPATCH: {
-			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::DISPATCH);
+			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::DISPATCH, 0xFF);
 			break;
 		}
 		case LayerType::RAY_TRACE: {
-			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::RAY_TRACE);
+			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::RAY_TRACE, 0xFF);
 			break;
 		}
 		case LayerType::MATERIAL: {
-			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::MATERIAL);
 			break;
 		}
 		case LayerType::MESHES: {
 			break;
 		}
 		case LayerType::RENDER_PASS: {
-			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::RENDER_PASS);
+			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::RENDER_PASS, 0xFF);
 			break;
 		}
 		case LayerType::LAYER: {
-			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::LAYER);
+			addInternalLayer(data.Key, layerHandle, parent, InternalLayerType::LAYER, 0xFF);
 			break;
 		}
 		}
@@ -376,14 +377,14 @@ public:
 	[[nodiscard]] LayerHandle AddLayer(const Id name, const LayerHandle parent, const LayerType layerType) {
 		auto l = AddLayer(name(), parent, layerType);
 		l->Data.Name = name;
-		l->Data.InternalSiblings.back().InternalNode->Data.Name = name;
+		l->Data.InternalSiblings.back().InternalNode->Data.Name = name.GetString();
 		return l;
 	}
 
 	[[nodiscard]] LayerHandle AddLayer(const Id name, const BufferHandle bufferHandle, bool indexed, const LayerHandle parent) {
 		auto l = AddLayer(name(), parent, LayerType::LAYER);
 		l->Data.Name = name;
-		l->Data.InternalSiblings.back().InternalNode->Data.Name = name;
+		l->Data.InternalSiblings.back().InternalNode->Data.Name = name.GetString();
 		l->Data.InternalSiblings.back().InternalNode->Data.Layer.BufferHandle = bufferHandle;
 		l->Data.InternalSiblings.back().InternalNode->Data.Layer.Indexed = indexed;
 		return l;
@@ -392,13 +393,27 @@ public:
 	auto GetLayer(LayerHandle layerHandle) { return &layerHandle->Data; }
 	
 	LayerHandle AddMaterial(LayerHandle layerHandle, MaterialInstanceHandle materialHandle) {
-		auto layer = AddLayer((uint64)materialHandle.MaterialInstanceIndex << 32 | materialHandle.MaterialIndex, layerHandle, LayerType::MATERIAL);
-		layer->Data.InternalSiblings.back().InternalNode->Data.Name = materials[materialHandle.MaterialIndex].Name;
-		layer->Data.InternalSiblings.back().InternalNode->Data.Material.MaterialHandle = materialHandle;
+		auto materialKey = (uint64)materialHandle.MaterialInstanceIndex << 32 | materialHandle.MaterialIndex;
+		
+		auto layer = AddLayer(materialKey, layerHandle, LayerType::MATERIAL);
+
+		auto material = addInternalLayer(materialKey, layer, layerHandle, InternalLayerType::MATERIAL, 0);
+		auto materialInstance = addInternalLayer(materialHandle.MaterialInstanceIndex, nullptr, layer, InternalLayerType::MATERIAL_INSTANCE, 0);
+		
+		material->Data.Name = materials[materialHandle.MaterialIndex].Name.GetString();
+		material->Data.Material.MaterialHandle = materialHandle;
+
+		if constexpr (_DEBUG) {
+			GTSL::StaticString<64> name("Material Instance #"); name += materialHandle.MaterialInstanceIndex;
+			materialInstance->Data.Name = name;
+		}
+		
+		materialInstance->Data.Index = materialHandle.MaterialInstanceIndex;
+		
 		return layer;
 	}
 	
-	void AddMesh(LayerHandle layerHandle, RenderSystem::MeshHandle meshHandle, uint32 index, uint32 instanceCount, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout) {
+	void AddMesh(LayerHandle layerHandle, RenderSystem::MeshHandle meshHandle, uint32 index, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout) {
 		auto layer = AddLayer(meshHandle(), layerHandle, LayerType::MESHES);
 
 		bool foundLayout = false; uint8 layoutIndex = 0;
@@ -427,23 +442,24 @@ public:
 			}
 		}
 
-		auto vertexLayoutNode = addInternalLayer(layoutIndex, nullptr, layerHandle, InternalLayerType::VERTEX_LAYOUT);
+		auto vertexLayoutNode = addInternalLayer(layoutIndex, nullptr, layerHandle, InternalLayerType::VERTEX_LAYOUT, 0);
 
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<64> name("Vertex Layout #"); name += static_cast<uint32>(layoutIndex);
-			vertexLayoutNode->Data.Name = Id(name);
+			vertexLayoutNode->Data.Name = name;
 		}
 		
-		auto meshLayer = addInternalLayer(meshHandle(), layer, layerHandle, InternalLayerType::MESH);
+		auto meshLayer = addInternalLayer(meshHandle(), layer, layerHandle, InternalLayerType::MESH, 1);
 		
 		if constexpr (_DEBUG) {
 			GTSL::StaticString<64> name("Mesh #"); name += static_cast<uint32>(meshHandle());
-			meshLayer->Data.Name = Id(name);
+			meshLayer->Data.Name = name;
 		}
 		
 		vertexLayoutNode->Data.VertexLayout.VertexLayoutIndex = layoutIndex;
 		meshLayer->Data.Index = index;
-		meshLayer->Data.Mesh.Handle = meshHandle; meshLayer->Data.Mesh.InstanceCount = instanceCount;
+		meshLayer->Data.Mesh.Handle = meshHandle;
+		++meshLayer->Data.Mesh.InstanceCount;
 	}
 
 	auto GetSceneRenderPass() const { return sceneRenderPass; }

@@ -16,6 +16,7 @@ void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 	transformations.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	meshes.Initialize(32, GetPersistentAllocator());
 	addedMeshes.Initialize(2, 16, GetPersistentAllocator());
+	resourceNames.Initialize(8, GetPersistentAllocator());
 
 	{
 		auto acts_on = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessTypes::READ_WRITE }, { "StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
@@ -37,16 +38,33 @@ void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
 StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& addStaticMeshInfo)
 {
 	uint32 index = transformations.Emplace();
-	resourceNames.EmplaceBack(addStaticMeshInfo.MeshName.GetHash());
 
-	auto meshHandle = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, index, addStaticMeshInfo.Material);
+	auto resourceLookup = resourceNames.TryEmplace(addStaticMeshInfo.MeshName);
 
-	if (BE::Application::Get()->GetOption("rayTracing"))
-	{
-		addStaticMeshInfo.RenderSystem->CreateRayTracedMesh(meshHandle);
+	ResourceData* resource;
+
+	if(resourceLookup.State()) {
+		resource = &resourceLookup.Get();
+		
+		RenderSystem::MeshHandle meshHandle = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, index);
+		resource->MeshHandle = meshHandle;
+		
+		if (BE::Application::Get()->GetOption("rayTracing")) {
+			addStaticMeshInfo.RenderSystem->CreateRayTracedMesh(meshHandle);
+		}
+
+		addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, meshHandle));
+	} else {
+		resource = &resourceLookup.Get();
+
+		if (resource->Loaded) {
+			addedMeshes.EmplaceBack(AddedMeshData{ StaticMeshHandle(index), resource->MeshHandle });
+		}
 	}
-	
-	addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, meshHandle));
+
+	resource->DependentMeshes.EmplaceBack(StaticMeshHandle(index));
+	meshes.EmplaceAt(index, Mesh{ resource->MeshHandle, addStaticMeshInfo.Material });
+	dirtyMeshes.EmplaceBack(StaticMeshHandle(index));
 	
 	return StaticMeshHandle(index);
 }
@@ -67,9 +85,12 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 		meshLoadInfo.RenderSystem->UpdateRayTraceMesh(meshLoadInfo.MeshHandle);
 	}
 
-	//meshLoadInfo.RenderSystem->SetWillWriteMesh(meshLoadInfo.MeshHandle, false);
+	//meshLoadInfo.RenderSystem->SetWillWriteMesh(meshLoadInfo.MeshHandle, false);	
+
+	auto& resource = resourceNames[staticMeshInfo.Name];
+	resource.Loaded = true;
 	
-	++staticMeshCount;
-	meshes.EmplaceAt(meshLoadInfo.InstanceId, meshLoadInfo.MeshHandle);
-	addedMeshes.EmplaceBack(meshLoadInfo.MeshHandle, meshLoadInfo.InstanceId);
+	for (uint32 i = 0; i < resource.DependentMeshes.GetLength(); ++i) {
+		addedMeshes.EmplaceBack(AddedMeshData{ resource.DependentMeshes[i], meshLoadInfo.MeshHandle });
+	}
 }

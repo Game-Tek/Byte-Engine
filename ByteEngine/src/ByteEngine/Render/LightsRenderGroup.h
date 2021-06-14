@@ -6,15 +6,18 @@
 
 #include "ByteEngine/Game/System.h"
 
-MAKE_HANDLE(uint32, DirectionalLight)
 
 class LightsRenderGroup : public System
 {
 public:
+	MAKE_HANDLE(uint32, DirectionalLight)
+	MAKE_HANDLE(uint32, PointLight)
+	
 	LightsRenderGroup() : System("LightsRenderGroup") {}
 	
 	void Initialize(const InitializeInfo& initializeInfo) override {
 		directionalLights.Initialize(8, GetPersistentAllocator());
+		pointLights.Initialize(8, GetPersistentAllocator());
 	}
 
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
@@ -23,12 +26,24 @@ public:
 		return DirectionalLightHandle(directionalLights.Emplace());
 	}
 
-	void SetLightRotation(const DirectionalLightHandle lightHandle, const GTSL::Rotator rotator) {
+	PointLightHandle CreatePointLight() {
+		return PointLightHandle(pointLights.Emplace());
+	}
+
+	void SetRotation(const DirectionalLightHandle lightHandle, const GTSL::Rotator rotator) {
 		directionalLights[lightHandle()].Rotation = rotator;
 	}
 
-	void SetLightColor(const DirectionalLightHandle lightHandle, const GTSL::RGBA color) {
+	void SetColor(const DirectionalLightHandle lightHandle, const GTSL::RGBA color) {
 		directionalLights[lightHandle()].Color = color;
+	}
+
+	void SetColor(const PointLightHandle lightHandle, const GTSL::RGBA color) {
+		pointLights[lightHandle()].Color = color;
+	}
+
+	void SetRadius(const PointLightHandle lightHandle, const float32 size) {
+		pointLights[lightHandle()].Radius = size;
 	}
 
 private:
@@ -40,6 +55,7 @@ private:
 
 	struct PointLight {
 		GTSL::RGBA Color;
+		float32 Radius;
 	};
 	GTSL::KeepVector<PointLight, BE::PersistentAllocatorReference> pointLights;
 

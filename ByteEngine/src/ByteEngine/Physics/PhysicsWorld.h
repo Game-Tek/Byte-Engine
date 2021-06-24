@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/KeepVector.h>
+#include <GTSL/FixedVector.h>
 #include <GTSL/Math/Vectors.h>
 #include <GTSL/Math/Vectors.h>
 
@@ -68,7 +68,7 @@ private:
 		GTSL::Buffer<BE::PAR> Buffer;
 		GTSL::Vector4 Velocity, Acceleration, Position;
 	};
-	GTSL::KeepVector<PhysicsObject, BE::PAR> physicsObjects;
+	GTSL::FixedVector<PhysicsObject, BE::PAR> physicsObjects;
 
 	GTSL::Array<GTSL::Vector4, 8> boundlessForces;
 	

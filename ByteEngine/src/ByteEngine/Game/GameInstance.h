@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/Delegate.hpp>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
 #include <GTSL/Vector.hpp>
@@ -109,9 +109,15 @@ public:
 
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
-				
+
+			BE_ASSERT(info->Counter == 0, "")
+			
+			++info->Counter;
+			
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			
+			--info->Counter;
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->semaphores[goal].Post();
@@ -157,7 +163,7 @@ public:
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->semaphores[goal].Post();
-			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());			
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());			
 
 			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
 		};
@@ -184,7 +190,7 @@ public:
 
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
-			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());			
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());			
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->taskSorter.ReleaseResources(asyncTasksIndex);
@@ -214,7 +220,7 @@ public:
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
-			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(info, gameInstance->GetPersistentAllocator());
+			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
@@ -282,10 +288,10 @@ private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	
 	mutable GTSL::ReadWriteMutex systemsMutex;
-	GTSL::KeepVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
-	GTSL::KeepVector<Id, BE::PersistentAllocatorReference> systemNames;
-	GTSL::FlatHashMap<Id, System*, BE::PersistentAllocatorReference> systemsMap;
-	GTSL::FlatHashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
+	GTSL::FixedVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::FixedVector<Id, BE::PersistentAllocatorReference> systemNames;
+	GTSL::HashMap<Id, System*, BE::PersistentAllocatorReference> systemsMap;
+	GTSL::HashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	template<typename... ARGS>
 	struct DispatchTaskInfo
@@ -298,7 +304,7 @@ private:
 		{
 		}
 
-		uint32 TaskIndex;
+		uint32 TaskIndex, Counter = 0;
 		GTSL::Delegate<void(ARGS...)> Delegate;
 		GTSL::Tuple<ARGS...> Arguments;
 	};
@@ -308,10 +314,10 @@ private:
 	{
 		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType GameInstanceFunction; GTSL::Delegate<void()> AnonymousFunction;
 	};
-	GTSL::KeepVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
+	GTSL::FixedVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 
 	mutable GTSL::ReadWriteMutex eventsMutex;
-	GTSL::FlatHashMap<Id, GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
+	GTSL::HashMap<Id, GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
 
 	mutable GTSL::ReadWriteMutex recurringTasksMutex;
 	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;

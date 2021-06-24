@@ -4,7 +4,7 @@
 
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/String.hpp>
 
 
@@ -116,9 +116,9 @@ namespace BE
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;
 
-		GTSL::FlatHashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
+		GTSL::HashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 
-		GTSL::FlatHashMap<Id, uint32, PersistentAllocatorReference> settings;
+		GTSL::HashMap<Id, uint32, PersistentAllocatorReference> settings;
 		
 		SystemAllocatorReference systemAllocatorReference;
 		SystemAllocator* systemAllocator{ nullptr };

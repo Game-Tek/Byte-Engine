@@ -44,8 +44,8 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager("Animation
 	case GTSL::File::OpenResult::DOES_NOT_EXIST: {
 		GTSL::FileQuery fileQuery(aa);
 
-		GTSL::FlatHashMap<Id, AnimationDataSerialize, BE::TAR> animationDataSerializes(8, GetTransientAllocator());
-		GTSL::FlatHashMap<Id, SkeletonDataSerialize, BE::TAR> skeletonDataSerializes(8, GetTransientAllocator());
+		GTSL::HashMap<Id, AnimationDataSerialize, BE::TAR> animationDataSerializes(8, GetTransientAllocator());
+		GTSL::HashMap<Id, SkeletonDataSerialize, BE::TAR> skeletonDataSerializes(8, GetTransientAllocator());
 		
 		while (fileQuery.DoQuery()) {
 			GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ);

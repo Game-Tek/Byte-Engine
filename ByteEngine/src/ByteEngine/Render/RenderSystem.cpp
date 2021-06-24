@@ -2,7 +2,6 @@
 
 #include <GTSL/Window.h>
 
-#include "MaterialSystem.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"
@@ -207,6 +206,8 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 		renderDevice.Initialize(createInfo);
 
+		BE_LOG_MESSAGE("Started Vulkan API\n	GPU: ", renderDevice.GetGPUInfo().GPUName)
+		
 		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]);
 		transferQueue.Initialize(GetRenderDevice(), queueKeys[1]);
 
@@ -405,7 +406,7 @@ void RenderSystem::renderStart(TaskInfo taskInfo) {
 	graphicsFences[currentFrameIndex].Reset(GetRenderDevice());
 }
 
-void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuffer)
+void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffer)
 {
 	if (buildDatas[GetCurrentFrame()].GetLength()) {
 		GTSL::Array<GAL::BuildAccelerationStructureInfo, 8> accelerationStructureBuildInfos;
@@ -431,14 +432,14 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandBuffer& commandBuf
 		
 		commandBuffer.BuildAccelerationStructure(GetRenderDevice(), accelerationStructureBuildInfos, GetTransientAllocator());
 		
-		GTSL::Array<CommandBuffer::BarrierData, 1> barriers;
-		barriers.EmplaceBack(CommandBuffer::MemoryBarrier{ GAL::AccessTypes::WRITE, GAL::AccessTypes::READ });
+		GTSL::Array<CommandList::BarrierData, 1> barriers;
+		barriers.EmplaceBack(CommandList::MemoryBarrier{ GAL::AccessTypes::WRITE, GAL::AccessTypes::READ });
 		
 		commandBuffer.AddPipelineBarrier(GetRenderDevice(), barriers, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GetTransientAllocator());
 	}
 	
-	buildDatas[GetCurrentFrame()].ResizeDown(0);
-	geometries[GetCurrentFrame()].ResizeDown(0);
+	buildDatas[GetCurrentFrame()].Resize(0);
+	geometries[GetCurrentFrame()].Resize(0);
 }
 
 bool RenderSystem::resize()
@@ -586,9 +587,9 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 
 	GTSL::Array<uint32, 32> buffersToDelete;
 
-	IndexedForEach(buffers, [&](const uint32 index, Buffer& e) {
+	IndexedForEach(buffers, [&](const uint32 index, BufferData& e) {
 		if (!e.references) {
-			auto destroyBuffer = [&](Buffer& buffer) {
+			auto destroyBuffer = [&](BufferData& buffer) {
 				buffer.Buffer.Destroy(GetRenderDevice());
 				DeallocateLocalBufferMemory(buffer.Allocation);
 				++buffer.references; //TODO: remove, there to avoid loop trying to delete chained buffers which will be already flagged to be deleted
@@ -655,12 +656,12 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	if (auto & textureCopyData = textureCopyDatas[GetCurrentFrame()]; textureCopyData.GetLength())
 	{
 
-		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
-		GTSL::Vector<CommandBuffer::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
+		GTSL::Vector<CommandList::BarrierData, BE::TransientAllocatorReference> sourceTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
+		GTSL::Vector<CommandList::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i) {
-			sourceTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, false, true, textureCopyData[i].Format });
-			destinationTextureBarriers.EmplaceBack(CommandBuffer::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, true, false, textureCopyData[i].Format });
+			sourceTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, false, true, textureCopyData[i].Format });
+			destinationTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, true, false, textureCopyData[i].Format });
 		}
 
 		commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GetTransientAllocator());
@@ -670,7 +671,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		}
 
 		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GAL::PipelineStages::TRANSFER, GAL::PipelineStages::FRAGMENT_SHADER, GetTransientAllocator());
-		textureCopyDatas[GetCurrentFrame()].ResizeDown(0);
+		textureCopyDatas[GetCurrentFrame()].Resize(0);
 	}
 		
 	//processedTextureCopies[GetCurrentFrame()] = textureCopyData.GetLength();
@@ -810,36 +811,53 @@ bool RenderSystem::AcquireImage()
 
 BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable)
 {
-	auto bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
+	uint32 bufferIndex = 0;
+
+	bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
 
 	buffer.Size = size; buffer.Flags = flags;
 	++buffer.references;
+
+	if (willWriteFromHost) {
+		if (needsStagingBuffer) { //create staging buffer
+			auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
+
+			++stagingBuffer.references;
+			AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE,
+				&stagingBuffer.Buffer, &stagingBuffer.Allocation);
+
+			buffer.Staging = BufferHandle(stagingBufferIndex);
+
+			flags |= GAL::BufferUses::TRANSFER_DESTINATION;
+		}
+	}
+
+	AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer, &buffer.Allocation);
 	
-	if (updateable) {
-		auto* last = &buffer;
+	if (updateable) {		
+		uint32 lastBuffer = bufferIndex;
 		
 		for (uint8 f = 1; f < pipelinedFrames; ++f) {
 			auto nextBufferIndex = buffers.Emplace(); auto& nextBuffer = buffers[nextBufferIndex];
-			last->Next = BufferHandle(nextBufferIndex);
-			last = &nextBuffer;
-		}
-	} else {
-		if (willWriteFromHost) {
+
 			if (needsStagingBuffer) { //create staging buffer
 				auto stagingBufferIndex = buffers.Emplace(); auto& stagingBuffer = buffers[stagingBufferIndex];
 
 				++stagingBuffer.references;
-				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE | GAL::BufferUses::STORAGE,
+				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE,
 					&stagingBuffer.Buffer, &stagingBuffer.Allocation);
-				
-				buffer.Staging = BufferHandle(stagingBufferIndex);
-				
+
+				nextBuffer.Staging = BufferHandle(stagingBufferIndex);
+
 				flags |= GAL::BufferUses::TRANSFER_DESTINATION;
 			}
-		}
-	}
-	
-	AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::STORAGE, &buffer.Buffer, &buffer.Allocation);
+			
+			AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &nextBuffer.Buffer, &nextBuffer.Allocation);
+
+			buffers[lastBuffer].Next = BufferHandle(nextBufferIndex);
+			lastBuffer = nextBufferIndex;
+		}		
+	}	
 
 	return BufferHandle(bufferIndex);
 }

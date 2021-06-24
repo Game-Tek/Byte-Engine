@@ -6,6 +6,7 @@
 #include <GTSL/Atomic.hpp>
 #include <GTSL/Mutex.h>
 #include <GTSL/Range.h>
+#include <GTSL/StaticMap.hpp>
 
 #include "ByteEngine/Game/System.h"
 
@@ -44,7 +45,8 @@ public:
 		
 		const uint32 SLOTS_SIZE{ 0 };
 		const uint32 MAX_SLOTS_COUNT{ 0 };
-
+		uint32 bitNums = 0;
+		
 		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return slotsData + (slotIndex * SLOTS_SIZE); }
 		uint32 getSlotIndexFromPointer(void* pointer) const { return static_cast<uint32>((static_cast<byte*>(pointer) - slotsData) / SLOTS_SIZE); }
 
@@ -52,12 +54,18 @@ public:
 		static uint64 slotsDataAllocationAlignment() { return alignof(uint64); }
 	};
 
+
+	static constexpr bool USE_MALLOC = false;
+	static constexpr bool STRONG_CHECK = false;
+
 private:
 	Pool* poolsData{ nullptr };
 	const uint32 POOL_COUNT{ 0 };
 	BE::SystemAllocatorReference* systemAllocatorReference{ nullptr };
 
 	mutable GTSL::Mutex globalLock;
+	
+	mutable GTSL::StaticMap<uint64, uint32, 32> map;
 
 	[[nodiscard]] GTSL::Range<Pool*> pools() const { return GTSL::Range<Pool*>(POOL_COUNT, poolsData); }
 };

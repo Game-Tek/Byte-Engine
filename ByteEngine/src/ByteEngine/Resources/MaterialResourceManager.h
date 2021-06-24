@@ -6,7 +6,7 @@
 #include <GTSL/Array.hpp>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Math/Vectors.h>
 
 #include "ResourceManager.h"
@@ -414,7 +414,7 @@ public:
 
 private:
 	GTSL::File package, index;
-	GTSL::FlatHashMap<Id, RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
-	GTSL::FlatHashMap<Id, RayTracePipelineInfo, BE::PersistentAllocatorReference> rtPipelineInfos;
+	GTSL::HashMap<Id, RasterMaterialDataSerialize, BE::PersistentAllocatorReference> rasterMaterialInfos;
+	GTSL::HashMap<Id, RayTracePipelineInfo, BE::PersistentAllocatorReference> rtPipelineInfos;
 	mutable GTSL::ReadWriteMutex mutex;
 };

@@ -4,7 +4,7 @@
 #include <GTSL/Math/Vectors.h>
 #include <GTSL/Id.h>
 #include <map>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Math/Matrix4.h>
 
 
@@ -27,7 +27,7 @@ struct Joint
 
 class Skeleton
 {
-	GTSL::FlatHashMap<Id, Joint, BE::PAR> bones;
+	GTSL::HashMap<Id, Joint, BE::PAR> bones;
 
 public:
 };

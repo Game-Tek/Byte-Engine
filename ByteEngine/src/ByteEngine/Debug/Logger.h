@@ -8,7 +8,7 @@
 #include "ByteEngine/Core.h"
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Time.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 
 
 #include "ByteEngine/Id.h"
@@ -61,7 +61,7 @@ namespace BE
 
 		mutable std::atomic<uint32> posInBuffer{ 0 };
 
-		mutable GTSL::FlatHashMap<Id, Id, BE::SystemAllocatorReference> allowedLoggers;
+		mutable GTSL::HashMap<Id, Id, BE::SystemAllocatorReference> allowedLoggers;
 		
 		mutable utf8* data{ nullptr };
 

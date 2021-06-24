@@ -9,7 +9,7 @@ public:
 	//{
 	//	GameInstance::OnUpdate(application);
 	//
-	//	//GTSL::FlatHashMap<float32> map(2, GetTransientAllocator());
+	//	//GTSL::HashMap<float32> map(2, GetTransientAllocator());
 	//	//
 	//	//map.Emplace(GetTransientAllocator(), 25, 25.32f);
 	//	//

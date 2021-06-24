@@ -47,7 +47,7 @@ uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
 void Canvas::ProcessUpdates()
 {
 	for(auto e : queuedUpdates) { updateBranch(e); }
-	queuedUpdates.ResizeDown(0);
+	queuedUpdates.Resize(0);
 }
 
 void Canvas::queueUpdateAndCull(uint32 organizer)

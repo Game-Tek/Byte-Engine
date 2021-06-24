@@ -1,9 +1,9 @@
 #pragma once
 
+#include <GTSL/PagedVector.h>
 #include <GTSL/StaticMap.hpp>
 #include <GTSL/Math/Vectors.h>
 
-#include "MaterialSystem.h"
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
@@ -73,7 +73,7 @@ private:
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoad);
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, MeshLoadInfo meshLoadInfo);
 	
-	GTSL::KeepVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
+	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
 
 	struct Mesh {
 		RenderSystem::MeshHandle MeshHandle; MaterialInstanceHandle MaterialInstanceHandle;
@@ -86,9 +86,9 @@ private:
 		GTSL::Array<StaticMeshHandle, 8> DependentMeshes;
 		RenderSystem::MeshHandle MeshHandle;
 	};
-	GTSL::FlatHashMap<Id, ResourceData, BE::PAR> resourceNames;
+	GTSL::HashMap<Id, ResourceData, BE::PAR> resourceNames;
 	
-	GTSL::KeepVector<Mesh, BE::PAR> meshes;
+	GTSL::FixedVector<Mesh, BE::PAR> meshes;
 	GTSL::PagedVector<AddedMeshData, BE::PAR> addedMeshes;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshLoadHandle;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshInfoLoadHandle;

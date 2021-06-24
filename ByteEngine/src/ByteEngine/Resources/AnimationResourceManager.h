@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Quaternion.h>
 
@@ -37,7 +37,7 @@ public:
 	struct SkeletonData : Data
 	{
 		GTSL::Vector<Bone, BE::PAR> Bones;
-		GTSL::FlatHashMap<Id, uint32, BE::PAR> BonesMap;
+		GTSL::HashMap<Id, uint32, BE::PAR> BonesMap;
 	};
 
 	struct SkeletonDataSerialize : DataSerialize<SkeletonData>
@@ -129,5 +129,5 @@ private:
 	void loadSkeleton(const GTSL::Range<const byte*> sourceBuffer, SkeletonData& skeletonData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 	void loadAnimation(const GTSL::Range<const byte*> sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 
-	GTSL::FlatHashMap<Id, AnimationDataSerialize, BE::PAR> animations;
+	GTSL::HashMap<Id, AnimationDataSerialize, BE::PAR> animations;
 };

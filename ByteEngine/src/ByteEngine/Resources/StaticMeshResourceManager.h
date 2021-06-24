@@ -6,7 +6,7 @@
 #include "ResourceManager.h"
 
 #include <GTSL/Delegate.hpp>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/File.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vectors.h>
@@ -130,7 +130,7 @@ public:
 private:
 	GTSL::File indexFile;
 	
-	GTSL::FlatHashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
+	GTSL::HashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 
 	void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

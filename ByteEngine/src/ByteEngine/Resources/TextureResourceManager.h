@@ -6,7 +6,7 @@
 #include <GAL/RenderCore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/File.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -80,5 +80,5 @@ public:
 
 private:
 	GTSL::File indexFile;
-	GTSL::FlatHashMap<Id, TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
+	GTSL::HashMap<Id, TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
 };

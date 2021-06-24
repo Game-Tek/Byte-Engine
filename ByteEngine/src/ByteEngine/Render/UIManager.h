@@ -3,14 +3,14 @@
 #include "ByteEngine/Game/System.h"
 
 #include <GTSL/Extent.h>
-#include <GTSL/FlatHashMap.h>
-#include <GTSL/KeepVector.h>
+#include <GTSL/HashMap.h>
+#include <GTSL/FixedVector.h>
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vectors.h>
 #include <GTSL/Tree.hpp>
 
-#include "MaterialSystem.h"
+#include "RenderTypes.h"
 #include "ByteEngine/Id.h"
 
 #include "ByteEngine/Handle.hpp"
@@ -175,7 +175,7 @@ public:
 	
 	//[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
 
-	[[nodiscard]] auto GetOrganizers() const { return organizers.GetRange(); }
+	[[nodiscard]] auto& GetOrganizers() const { return organizers; }
 	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
 	void SetSquarePosition(uint16 square, GTSL::Vector2 pos)
 	{
@@ -183,8 +183,8 @@ public:
 		primitives[squares[square].PrimitiveIndex].RelativeLocation = pos;
 	}
 
-	auto GetSquares() const { return squares.GetRange(); }
-	auto GetPrimitives() const { return primitives.GetRange(); }
+	auto& GetSquares() const { return squares; }
+	auto& GetPrimitives() const { return primitives; }
 	
 	void AddSquareToOrganizer(uint16 organizer, uint16 square)
 	{
@@ -237,15 +237,15 @@ public:
 	//Button& GetButton(const ComponentReference button) { return buttons[button.Component]; }
 	
 private:
-	//GTSL::KeepVector<GTSL::KeepVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
-	GTSL::KeepVector<PrimitiveData, BE::PAR> primitives;
-	GTSL::KeepVector<Square, BE::PAR> squares;
-	GTSL::KeepVector<uint32, BE::PAR> organizerDepth;
-	GTSL::KeepVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPrimitives;
-	GTSL::KeepVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPerOrganizer;
-	//GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
-	//GTSL::KeepVector<GTSL::Vector2, BE::PAR> organizersPosition;
-	GTSL::KeepVector<Alignment, BE::PAR> organizerAlignments;
+	//GTSL::FixedVector<GTSL::FixedVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
+	GTSL::FixedVector<PrimitiveData, BE::PAR> primitives;
+	GTSL::FixedVector<Square, BE::PAR> squares;
+	GTSL::FixedVector<uint32, BE::PAR> organizerDepth;
+	GTSL::FixedVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPrimitives;
+	GTSL::FixedVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPerOrganizer;
+	//GTSL::FixedVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
+	//GTSL::FixedVector<GTSL::Vector2, BE::PAR> organizersPosition;
+	GTSL::FixedVector<Alignment, BE::PAR> organizerAlignments;
 
 	struct SizingParameters
 	{
@@ -254,12 +254,12 @@ private:
 		SpacingPolicy SpacingPolicy;
 		uint16 OrganizerRef;
 	};
-	GTSL::KeepVector<SizingParameters, BE::PAR> organizerSizingPolicies;
+	GTSL::FixedVector<SizingParameters, BE::PAR> organizerSizingPolicies;
 	
 	GTSL::Tree<uint32, BE::PAR> organizerTree;
 	
-	GTSL::KeepVector<uint32, BE::PAR> organizersAsPrimitives;
-	GTSL::KeepVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
+	GTSL::FixedVector<uint32, BE::PAR> organizersAsPrimitives;
+	GTSL::FixedVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
 	
 	GTSL::Extent2D realExtent;
 
@@ -274,6 +274,9 @@ private:
 	void updateBranch(uint32 organizer);
 };
 
+MAKE_HANDLE(uint32, Organizer)
+MAKE_HANDLE(uint32, Square)
+
 class CanvasSystem : public System
 {
 public:
@@ -284,19 +287,36 @@ public:
 	{
 		return CanvasHandle(canvases.Emplace());
 	}
-
-	Canvas& GetCanvas(const CanvasHandle componentReference)
-	{		
-		return canvases[componentReference()];
-	}
 	
 	void SignalHit(const GTSL::Vector2 pos)
 	{
 		for (auto& c : canvases) { if (c.CheckHit(pos)) { BE_LOG_MESSAGE("Hit"); } }
 	}
 
+	void SetExtent(CanvasHandle canvasHandle, GTSL::Extent2D extent) {
+		canvases[canvasHandle()].SetExtent(extent);
+	}
+
+	OrganizerHandle AddOrganizer(CanvasHandle canvasHandle, Id name) {
+		canvases[canvasHandle()].AddOrganizer(name);
+		return OrganizerHandle();
+	}
+
+	SquareHandle AddSquare() {}
+
+	void SetColor(SquareHandle squareHandle, Id colorName);
+	void SetMaterial(SquareHandle squareHandle, MaterialInstanceHandle materialInstanceHandle);
+	void AddToOrganizer(OrganizerHandle organizerHandle, SquareHandle squareHandle);
+	void SetAspectRatio(OrganizerHandle organizerHandle, GTSL::Vector2 extent);
+	void SetAlignment(OrganizerHandle organizerHandle, Alignment alignment);
+	void SetPosition(OrganizerHandle organizerHandle, GTSL::Vector2 position);
+	void SetSizingPolicy(OrganizerHandle organizerHandle, SizingPolicy sizingPolicy);
+	void SetScalingPolicy(OrganizerHandle organizerHandle, ScalingPolicy scalingPolicy);
+	void SetSpacingPolicy(OrganizerHandle organizerHandle, SpacingPolicy spacingPolicy);
+
 private:
-	GTSL::KeepVector<Canvas, BE::PAR> canvases;
+	GTSL::FixedVector<Canvas, BE::PAR> canvases;
+	GTSL::FixedVector<Canvas, BE::PAR> blabla;
 };
 
 class UIManager : public System
@@ -310,12 +330,12 @@ public:
 		canvases.Emplace(system);
 	}
 
-	auto GetCanvases() { return canvases.GetRange(); }
+	auto& GetCanvases() { return canvases; }
 
 	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 private:
-	GTSL::KeepVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
-	GTSL::FlatHashMap<Id, GTSL::RGBA, BE::PAR> colors;
+	GTSL::FixedVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
+	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
 };

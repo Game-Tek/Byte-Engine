@@ -1,5 +1,5 @@
 #pragma once
-#include <GTSL/KeepVector.h>
+#include <GTSL/FixedVector.h>
 #include <GTSL/RGB.h>
 #include <GTSL/Math/Rotator.h>
 
@@ -51,14 +51,14 @@ private:
 		GTSL::RGBA Color;
 		GTSL::Rotator Rotation;
 	};
-	GTSL::KeepVector<DirectionalLight, BE::PersistentAllocatorReference> directionalLights;
+	GTSL::FixedVector<DirectionalLight, BE::PersistentAllocatorReference> directionalLights;
 
 	struct PointLight {
 		GTSL::RGBA Color;
 		float32 Radius;
 	};
-	GTSL::KeepVector<PointLight, BE::PersistentAllocatorReference> pointLights;
+	GTSL::FixedVector<PointLight, BE::PersistentAllocatorReference> pointLights;
 
 public:
-	[[nodiscard]] auto GetDirectionalLights() const { return directionalLights.GetRange(); }
+	[[nodiscard]] auto& GetDirectionalLights() const { return directionalLights; }
 };

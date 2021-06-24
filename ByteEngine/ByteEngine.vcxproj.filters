@@ -128,7 +128,6 @@
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
-    <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\CameraSystem.h" />
     <ClInclude Include="src\ByteEngine\Id.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderOrchestrator.h" />
@@ -144,6 +143,7 @@
     <ClInclude Include="src\ByteEngine\Render\ShaderGenerator.h" />
     <ClInclude Include="src\ByteEngine\Resources\LUTResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Application\EditorInterface.h" />
+    <ClInclude Include="src\ByteEngine\Sound\Effect.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ext\stb image\IMAGE_IMPLEMENTATION.cpp" />

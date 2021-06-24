@@ -3,7 +3,7 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/StaticString.hpp>
 
 #include "ByteEngine/Application/InputManager.h"

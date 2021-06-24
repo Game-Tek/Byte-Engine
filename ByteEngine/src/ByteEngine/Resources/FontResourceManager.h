@@ -7,7 +7,7 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/Extent.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Serialize.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vectors.h>
@@ -81,9 +81,9 @@ public:
 		uint32 FileNameHash;
 		std::string FullFontName;
 		std::string NameTable[25];
-		GTSL::FlatHashMap<uint32, int16, BE::PAR> KerningTable;
-		GTSL::FlatHashMap<uint32, Glyph, BE::PAR> Glyphs;
-		GTSL::FlatHashMap<uint32, uint16, BE::PAR> GlyphMap;
+		GTSL::HashMap<uint32, int16, BE::PAR> KerningTable;
+		GTSL::HashMap<uint32, Glyph, BE::PAR> Glyphs;
+		GTSL::HashMap<uint32, uint16, BE::PAR> GlyphMap;
 		FontMetaData Metadata;
 		uint64 LastUsed;
 	};
@@ -98,7 +98,7 @@ public:
 
 	struct FontData : Data
 	{
-		GTSL::FlatHashMap<uint32, Character, BE::PAR> Characters;
+		GTSL::HashMap<uint32, Character, BE::PAR> Characters;
 	};
 
 	struct FontDataSerialize : DataSerialize<FontData>

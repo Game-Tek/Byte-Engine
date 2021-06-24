@@ -1,13 +1,10 @@
 #include "GameApplication.h"
 
-#include <iostream>
-
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Render/LightsRenderGroup.h"
-#include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 
@@ -18,7 +15,6 @@
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
-#include "ByteEngine/Resources/AnimationResourceManager.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 #include "ByteEngine/Resources/FontResourceManager.h"
 
@@ -76,7 +72,6 @@ void GameApplication::PostInitialize()
 	gameInstance->AddEvent("Application", EventHandle<>("OnFocusLoss"));
 	
 	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
-	auto* materialSystem = gameInstance->AddSystem<MaterialSystem>("MaterialSystem");
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
 
 	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
@@ -112,7 +107,7 @@ void GameApplication::PostInitialize()
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "RenderDepth" } );
-		renderOrchestrator->AddPass("SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, materialSystem, geoRenderPass);
+		renderOrchestrator->AddPass("SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
@@ -341,14 +336,13 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const Extent2D extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE },	{ "MaterialSystem", AccessTypes::READ_WRITE } };
+	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE } };
 
 	auto ext = extent;
 
 	auto resize = [](TaskInfo info, Extent2D newSize)
 	{
 		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
-		auto* materialSystem = info.GameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 
 		renderSystem->OnResize(newSize);
 	};

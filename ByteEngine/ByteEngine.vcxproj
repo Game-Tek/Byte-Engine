@@ -219,7 +219,6 @@
     <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
     <ClInclude Include="src\ByteEngine\Game\Tasks.h" />
     <ClInclude Include="src\ByteEngine\Id.h" />
-    <ClInclude Include="src\ByteEngine\Render\MaterialSystem.h" />
     <ClInclude Include="src\ByteEngine\Render\RendererAllocator.h" />
     <ClInclude Include="src\ByteEngine\Render\RenderSystem.h" />
     <ClInclude Include="src\ByteEngine\Game\System.h" />
@@ -247,6 +246,7 @@
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextRendering.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Sound\Effect.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
     <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />

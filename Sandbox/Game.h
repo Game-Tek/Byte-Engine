@@ -7,7 +7,6 @@
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/GameInstance.h"
-#include "ByteEngine/Render/MaterialSystem.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Sound/AudioSystem.h"

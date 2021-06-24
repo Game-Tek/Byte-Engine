@@ -27,7 +27,7 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo)
 		e.Position += e.Velocity * deltaSeconds;
 	}
 
-	updatedObjects.ResizeDown(0);
+	updatedObjects.Resize(0);
 }
 
 void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32 buffer)

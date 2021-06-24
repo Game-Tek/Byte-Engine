@@ -61,8 +61,8 @@ void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType shaderT
 	
 	string += "layout(set = 0, binding = 0) uniform sampler2D textures[];\n"; //textures descriptor
 	
-	string += "struct BufferReference { uint Address; }; struct TextureReference { uint Instance; };\n"; //basic datatypes
-	string += "uint64_t BRP(BufferReference reference) { return uint64_t(reference.Address * 16); }\n";
+	string += "#define BufferReference uint64_t\n";
+	string += "struct TextureReference { uint Instance; };\n"; //basic datatypes
 }
 
 template<typename T>

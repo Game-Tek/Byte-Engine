@@ -4,7 +4,7 @@
 
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
-#include <GTSL/KeepVector.h>
+#include <GTSL/FixedVector.h>
 #include <GTSL/Result.h>
 #include <GTSL/Array.hpp>
 
@@ -133,16 +133,16 @@ struct Stage
 
 	void Clear()
 	{
-		for (auto& e : taskAccessedObjects) { e.ResizeDown(0); }
-		taskAccessedObjects.ResizeDown(0);
-		for (auto& e : taskAccessTypes) { e.ResizeDown(0); }
-		taskAccessTypes.ResizeDown(0);
+		for (auto& e : taskAccessedObjects) { e.Resize(0); }
+		taskAccessedObjects.Resize(0);
+		for (auto& e : taskAccessTypes) { e.Resize(0); }
+		taskAccessTypes.Resize(0);
 
-		taskGoalIndex.ResizeDown(0);
+		taskGoalIndex.Resize(0);
 
-		tasksInfos.ResizeDown(0);
-		taskNames.ResizeDown(0);
-		tasks.ResizeDown(0);
+		tasksInfos.Resize(0);
+		taskNames.Resize(0);
+		tasks.Resize(0);
 	}
 
 	bool DoesTaskExist(const Id id) const { return taskNames.Find(id).State(); }
@@ -186,17 +186,13 @@ struct TaskSorter
 		const auto elementCount = objects.ElementCount();
 		
 		{
-			GTSL::ReadLock lock(mutex);
+			GTSL::WriteLock lock(mutex);
 			
 			for (uint32 i = 0; i < elementCount; ++i)
 			{
 				if (currentObjectAccessState[objects[i]] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
 				if (currentObjectAccessState[objects[i]] == AccessTypes::READ && accesses[i] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
 			}
-		}
-
-		{
-			GTSL::WriteLock lock(mutex);
 			
 			for (uint32 i = 0; i < elementCount; ++i)
 			{
@@ -246,14 +242,14 @@ struct TaskSorter
 	}
 
 private:
-	GTSL::KeepVector<AccessType, ALLOCATOR> currentObjectAccessState;
-	GTSL::KeepVector<uint16, ALLOCATOR> currentObjectAccessCount;
+	GTSL::FixedVector<AccessType, ALLOCATOR> currentObjectAccessState;
+	GTSL::FixedVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	GTSL::KeepVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
-	GTSL::KeepVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
+	GTSL::FixedVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
+	GTSL::FixedVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
 
 	GTSL::Vector<Id, ALLOCATOR> inUseSystems;
-	GTSL::KeepVector<Id, ALLOCATOR> objectNames;
+	GTSL::FixedVector<Id, ALLOCATOR> objectNames;
 
 	GTSL::ReadWriteMutex mutex;
 };

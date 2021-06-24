@@ -1,7 +1,7 @@
 #pragma once
 #include <GTSL/Range.h>
 #include <GTSL/StaticString.hpp>
-
+#include <GTSL/Tree.hpp>
 
 #include "Core.h"
 
@@ -20,7 +20,7 @@ template<class ALLOCATOR>
 struct FileDescription
 {
 	GTSL::Tree<ClassDesciptor, ALLOCATOR> Classes;
-	GTSL::FlatHashMap<Id, ClassDesciptor*, ALLOCATOR> ClassesByName;
+	GTSL::HashMap<Id, ClassDesciptor*, ALLOCATOR> ClassesByName;
 	
 	uint32 DataStart = 0xFFFFFFFF;
 };
@@ -33,7 +33,7 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 
 	fileDescription.Classes.Initialize(allocator); fileDescription.ClassesByName.Initialize(16, allocator);
 	
-	GTSL::FlatHashMap<Id, GTSL::StaticString<64>, ALLOCATOR> registeredTypes(16, allocator);
+	GTSL::HashMap<Id, GTSL::StaticString<64>, ALLOCATOR> registeredTypes(16, allocator);
 	registeredTypes.Emplace(Id("uint32"), "uint32"); registeredTypes.Emplace(Id("float32"), "float32");
 	registeredTypes.Emplace(Id("string"), "string");
 

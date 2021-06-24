@@ -4,7 +4,7 @@
 
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/String.hpp>
 
 class CommandMap : public Object
@@ -27,5 +27,5 @@ public:
 	}
 
 private:
-	GTSL::FlatHashMap<Id, GTSL::Delegate<void(const GTSL::String&)>> commands;
+	GTSL::HashMap<Id, GTSL::Delegate<void(const GTSL::String&)>> commands;
 };

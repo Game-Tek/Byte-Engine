@@ -4,7 +4,7 @@
 
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/StaticMap.hpp>
 #include <GTSL/Time.h>
 #include <GTSL/Pair.h>
@@ -226,22 +226,22 @@ protected:
 	GTSL::Array<InputDevice, 16> inputDevices;
 	
 	using ActionInputSourceData = InputSourceData<ActionInputEvent>;
-	GTSL::FlatHashMap<Id, ActionInputSourceData, BE::PersistentAllocatorReference> actionInputSourcesToActionInputEvents;
+	GTSL::HashMap<Id, ActionInputSourceData, BE::PersistentAllocatorReference> actionInputSourcesToActionInputEvents;
 
 	using CharacterInputSourceData = InputSourceData<CharacterInputEvent>;
-	GTSL::FlatHashMap<Id, CharacterInputSourceData, BE::PersistentAllocatorReference> characterInputSourcesToCharacterInputEvents;
+	GTSL::HashMap<Id, CharacterInputSourceData, BE::PersistentAllocatorReference> characterInputSourcesToCharacterInputEvents;
 	
 	using LinearInputSourceData = InputSourceData<LinearInputEvent>;
-	GTSL::FlatHashMap<Id, LinearInputSourceData, BE::PersistentAllocatorReference> linearInputSourcesToLinearInputEvents;
+	GTSL::HashMap<Id, LinearInputSourceData, BE::PersistentAllocatorReference> linearInputSourcesToLinearInputEvents;
 	
 	using Vector2DInputSourceData = InputSourceData<Vector2DInputEvent>;
-	GTSL::FlatHashMap<Id, Vector2DInputSourceData, BE::PersistentAllocatorReference> vector2dInputSourceEventsToVector2DInputEvents;
+	GTSL::HashMap<Id, Vector2DInputSourceData, BE::PersistentAllocatorReference> vector2dInputSourceEventsToVector2DInputEvents;
 	
 	using Vector3DInputSourceData = InputSourceData<Vector3DInputEvent>;
-	GTSL::FlatHashMap<Id, Vector3DInputSourceData, BE::PersistentAllocatorReference> vector3dInputSourcesToVector3DInputEvents;
+	GTSL::HashMap<Id, Vector3DInputSourceData, BE::PersistentAllocatorReference> vector3dInputSourcesToVector3DInputEvents;
 
 	using QuaternionInputSourceData = InputSourceData<QuaternionInputEvent>;
-	GTSL::FlatHashMap<Id, QuaternionInputSourceData, BE::PersistentAllocatorReference> quaternionInputSourcesToQuaternionInputEvents;
+	GTSL::HashMap<Id, QuaternionInputSourceData, BE::PersistentAllocatorReference> quaternionInputSourcesToQuaternionInputEvents;
 	
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.
@@ -278,7 +278,7 @@ protected:
 	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
 	//
 	template<typename A, typename B>
-	static void updateInput(GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::FlatHashMap<Id, B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
+	static void updateInput(GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::HashMap<Id, B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
 	{
 		for (auto& record : records)
 		{
@@ -290,6 +290,6 @@ protected:
 			inputSource.LastTime = time;
 		}
 
-		records.ResizeDown(0);
+		records.Resize(0);
 	}
 };

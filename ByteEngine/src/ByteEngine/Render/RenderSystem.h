@@ -102,7 +102,7 @@ public:
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
-	CommandBuffer* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
+	CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 
 	struct BufferCopyData
 	{
@@ -197,8 +197,8 @@ public:
 		return GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()) + mesh.IndexSize * mesh.IndicesCount;
 	}
 	
-	CommandBuffer* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
-	const CommandBuffer* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
+	CommandList* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
+	const CommandList* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 
 	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix3x4& matrix);
@@ -211,21 +211,9 @@ public:
 	uint32 GetShaderGroupHandleAlignment() const { return shaderGroupHandleAlignment; }
 
 	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
-
-	struct BufferAddress
-	{
-		BufferAddress(const uint64 address) : Address(address / MULTIPLIER)
-		{
-			BE_ASSERT(address < 0xFFFFFFFF, ""); BE_ASSERT(address % MULTIPLIER == 0, "");
-		}
-		
-		BufferAddress(const void* address) : BufferAddress(reinterpret_cast<uint64>(address)) {}
-		
-		uint32 Address; static constexpr uint32 MULTIPLIER = 16;
-	};
 	
-	BufferAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice())); }
-	BufferAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return BufferAddress(buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment())); }
+	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()); }
+	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment()); }
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 
@@ -295,8 +283,8 @@ private:
 	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
 	Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
-	CommandBuffer graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
-	CommandBuffer transferCommandBuffers[MAX_CONCURRENT_FRAMES];
+	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
+	CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue;
 	GAL::VulkanQueue transferQueue;
@@ -317,10 +305,10 @@ private:
 		AccelerationStructure AccelerationStructure;
 	};
 	
-	GTSL::KeepVector<Mesh, BE::PersistentAllocatorReference> meshes;
-	GTSL::KeepVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
+	GTSL::FixedVector<Mesh, BE::PersistentAllocatorReference> meshes;
+	GTSL::FixedVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	struct Buffer
+	struct BufferData
 	{
 		GPUBuffer Buffer; uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
@@ -328,7 +316,7 @@ private:
 		BufferHandle Staging, Next;
 		RenderAllocation Allocation;
 	};
-	GTSL::KeepVector<Buffer, BE::PAR> buffers;
+	GTSL::FixedVector<BufferData, BE::PAR> buffers;
 	
 	struct AccelerationStructureBuildData
 	{
@@ -372,9 +360,9 @@ private:
 	 * Since acc. structures can be built on the host or on the device depending on device capabilities
 	 * we determine which one we are able to do and cache it.
 	 */
-	GTSL::FunctionPointer<void(CommandBuffer&)> buildAccelerationStructures;
+	GTSL::FunctionPointer<void(CommandList&)> buildAccelerationStructures;
 
-	void buildAccelerationStructuresOnDevice(CommandBuffer&);
+	void buildAccelerationStructuresOnDevice(CommandList&);
 	
 	uint8 currentFrameIndex = 0;
 
@@ -397,7 +385,7 @@ private:
 
 //	GTSL::StaticMap<uint64, GTSL::Array<GAL::ShaderDataType, 8>, 8> vertexFormats;
 	
-	//GTSL::FlatHashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
+	//GTSL::HashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
 	std::unordered_map<uint64, GTSL::Pair<uint64, uint64>> apiAllocations;
 	GTSL::Mutex allocationsMutex;
 	
@@ -422,5 +410,5 @@ private:
 		GAL::TextureLayout Layout;
 		GTSL::Extent3D Extent;
 	};
-	GTSL::KeepVector<TextureComponent, BE::PersistentAllocatorReference> textures;
+	GTSL::FixedVector<TextureComponent, BE::PersistentAllocatorReference> textures;
 };

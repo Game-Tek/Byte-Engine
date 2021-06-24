@@ -11,7 +11,7 @@
 #include <GAL/Vulkan/VulkanRenderPass.h>
 #include <GAL/Vulkan/VulkanFramebuffer.h>
 #include <GAL/Vulkan/VulkanRenderDevice.h>
-#include <GAL/Vulkan/VulkanCommandBuffer.h>
+#include <GAL/Vulkan/VulkanCommandList.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
 #include <GAL/Vulkan/VulkanAccelerationStructures.h>
@@ -59,13 +59,13 @@ using QueryPool = GAL::VulkanQueryPool;
 using RenderPass = GAL::VulkanRenderPass;
 using TextureSampler = GAL::VulkanSampler;
 using TextureView = GAL::VulkanTextureView;
+using CommandList = GAL::VulkanCommandList;
 using BindingsSet = GAL::VulkanBindingsSet;
 using FrameBuffer = GAL::VulkanFramebuffer;
 using DeviceMemory = GAL::VulkanDeviceMemory;
 using RenderDevice = GAL::VulkanRenderDevice;
 using BindingsPool = GAL::VulkanBindingsPool;
 using RenderContext = GAL::VulkanRenderContext;
-using CommandBuffer = GAL::VulkanCommandBuffer;
 using PipelineCache = GAL::VulkanPipelineCache;
 using PipelineLayout = GAL::VulkanPipelineLayout;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;

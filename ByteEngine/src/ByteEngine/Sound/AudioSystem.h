@@ -45,6 +45,11 @@ public:
 
 	void SetLooping(const AudioEmitterHandle audioEmitterHandle, bool loop) { audioEmittersSettings[audioEmitterHandle()].Loop = loop; }
 	bool GetLooping(const AudioEmitterHandle audioEmitterHandle) { return audioEmittersSettings[audioEmitterHandle()].Loop; }
+	
+	MAKE_HANDLE(uint8, Channel);
+	MAKE_HANDLE(uint8, SoundSource);
+
+	ChannelHandle GetMasterChannel() const { return masterChannel; }
 
 private:
 	using AudioDevice = AAL::WindowsAudioDevice;
@@ -52,6 +57,25 @@ private:
 	AudioDevice audioDevice;
 	AudioDevice::MixFormat mixFormat;
 
+	struct SoundSource {
+		byte* Data;
+	};
+	GTSL::Array<SoundSource, 16> soundSources;
+	
+	struct MixerChannel {
+		struct Effect {
+			
+		};		
+		GTSL::Array<Effect, 8> Effects;
+
+		GTSL::Array<SoundSourceHandle, 16> SoundSources;
+		
+		float32 Volume = 0.0f;
+	};
+	GTSL::Array<MixerChannel, 16> channels;
+
+	ChannelHandle masterChannel;
+	
 	GTSL::Array<uint8, 8> audioListeners;
 	GTSL::Array<GTSL::Vector3, 8> audioListenersLocation;
 	GTSL::Array<GTSL::Quaternion, 8> audioListenersOrientation;

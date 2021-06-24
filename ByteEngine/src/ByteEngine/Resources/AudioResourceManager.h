@@ -3,7 +3,7 @@
 #include "ByteEngine/Core.h"
 
 #include <GTSL/File.h>
-#include <GTSL/FlatHashMap.h>
+#include <GTSL/HashMap.h>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Serialize.h>
 
@@ -111,6 +111,6 @@ public:
 
 private:
 	GTSL::File indexFile;
-	GTSL::FlatHashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
-	GTSL::FlatHashMap<Id, GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
+	GTSL::HashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
+	GTSL::HashMap<Id, GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
 };

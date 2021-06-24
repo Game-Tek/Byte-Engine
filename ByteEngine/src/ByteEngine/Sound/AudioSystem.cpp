@@ -20,35 +20,44 @@ AudioSystem::~AudioSystem()
 void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 {
 	AudioDevice::CreateInfo createInfo;
-	audioDevice.Initialize(createInfo);
+
+	bool error = false;
 	
-	mixFormat.BitsPerSample = 16;
-	mixFormat.NumberOfChannels = 2;
-	mixFormat.SamplesPerSecond = 48000;
+	if (audioDevice.Initialize(createInfo)) {
+		mixFormat.BitsPerSample = 16;
+		mixFormat.NumberOfChannels = 2;
+		mixFormat.SamplesPerSecond = 48000;
 
-	onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
-	onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
-	
-	if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
-	{
-		audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat);
-		audioDevice.Start();
-		audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
-		initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessTypes::READ_WRITE } }, "RenderDo", "RenderEnd");
+		onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
+		onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 
-		loadedSounds.Initialize(32, GetPersistentAllocator());
+		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
+		{
+			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
+				if (audioDevice.Start()) {
+					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
+					initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessTypes::READ_WRITE } }, "RenderDo", "RenderEnd");
 
-		BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, "Unsupported");
-	}
-	else
-	{
-		BE_LOG_WARNING("Unable to start audio device with requested parameters:\n	Stream share mode: Shared\n	Bits per sample: ", mixFormat.BitsPerSample, "\n	Number of channels: ", mixFormat.NumberOfChannels, "\n	Samples per second: ", mixFormat.SamplesPerSecond);
-	}
+					loadedSounds.Initialize(32, GetPersistentAllocator());
+
+					BE_LOG_MESSAGE("Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, "\n	Khz: ", mixFormat.SamplesPerSecond, "\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
+
+					BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, "Unsupported");
+				} else { error = true; }
+			} else { error = true; }
+		} else { error = true; }
+	} else { error = true; }
+
+	if(error)
+		BE_LOG_WARNING("Unable to start audio device with requested parameters:\n Stream share mode: Shared\n Bits per sample: ", mixFormat.BitsPerSample, "\nNumber of channels: ", mixFormat.NumberOfChannels, "\nSamples per second: ", mixFormat.SamplesPerSecond);
 }
 
 void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
-	audioDevice.Stop();
+	if(!audioDevice.Stop()) {
+		
+	}
+	
 	audioDevice.Destroy();
 }
 
@@ -100,6 +109,8 @@ void AudioSystem::render(TaskInfo)
 {
 	requestAudioStreams();
 
+	if(!activeAudioListenerHandle) { return; }
+	
 	{
 		GTSL::Array<uint32, 16> emittersToRemove;
 		for (uint32 i = 0; i < onHoldEmitters.GetLength(); ++i) {
@@ -119,7 +130,10 @@ void AudioSystem::render(TaskInfo)
 	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
 	
 	uint32 availableAudioFrames = 0;
-	audioDevice.GetAvailableBufferFrames(availableAudioFrames);
+	if(!audioDevice.GetAvailableBufferFrames(availableAudioFrames)) {
+		BE_LOG_ERROR("Failed to acquire audio buffer size.")
+		//TODO: disable audio
+	}
 	
 	auto* buffer = audioBuffer.GetData();
 
@@ -191,7 +205,10 @@ void AudioSystem::render(TaskInfo)
 			GTSL::MemCopy(size, audioBuffer.GetData(), to);
 		};
 		
-		audioDevice.PushAudioData(audioDataCopyFunction, availableAudioFrames);
+		if(!audioDevice.PushAudioData(audioDataCopyFunction, availableAudioFrames)) {
+			BE_LOG_ERROR("Failed to push audio data to driver.")
+			//TODO: disable audio
+		}
 	}
 	
 	for (uint32 i = 0; i < emittersToStop.GetLength(); ++i) {

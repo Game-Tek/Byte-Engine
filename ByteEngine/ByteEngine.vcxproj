@@ -98,6 +98,7 @@
       <EnableModules>true</EnableModules>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalBMIDirectories>D:\ByteEngine\ByteEngine\ext\GTSL;%(AdditionalBMIDirectories)</AdditionalBMIDirectories>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -135,6 +136,7 @@
       <ExceptionHandling>false</ExceptionHandling>
       <EnableModules>true</EnableModules>
       <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalBMIDirectories>D:\ByteEngine\ByteEngine\ext\GTSL;</AdditionalBMIDirectories>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\vulkan;$(ProjectDir)vendor\assimp;$(ProjectDir)vendor\GLFW;$(WindowsSDK_IncludePath)</AdditionalLibraryDirectories>
@@ -175,6 +177,7 @@
       <ExceptionHandling>false</ExceptionHandling>
       <EnableModules>true</EnableModules>
       <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalBMIDirectories>D:\ByteEngine\ByteEngine\ext\GTSL;</AdditionalBMIDirectories>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -239,7 +242,7 @@
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\FontResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\LUTResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\ShaderResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\PipelineCacheResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
     <ClInclude Include="src\ByteEngine\Resources\StaticMeshResourceManager.h" />
@@ -250,7 +253,6 @@
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
     <ClInclude Include="src\ByteEngine\Sound\AudioSystem.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
-    <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
     <ClInclude Include="src\ByteEngine\Light.h" />
     <ClInclude Include="src\ByteEngine\Utility\Shapes\BoxWithFalloff.h" />
@@ -286,7 +288,7 @@
     <ClCompile Include="src\ByteEngine\Resources\AnimationResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\FontResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\ShaderResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\PipelineCacheResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\ResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />

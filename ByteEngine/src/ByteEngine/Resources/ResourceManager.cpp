@@ -6,7 +6,7 @@ GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const
 {
 	GTSL::StaticString<512> path;
 	path += BE::Application::Get()->GetPathToApplication();
-	path += "/resources/"; path += fileName; path += '.'; path += extension;
+	path += u8"/resources/"; path += fileName; path += u8'.'; path += extension;
 	return path;
 }
 
@@ -14,19 +14,18 @@ GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const
 {
 	GTSL::StaticString<512> path;
 	path += BE::Application::Get()->GetPathToApplication();
-	path += "/resources/"; path += fileWithExtension;
+	path += u8"/resources/"; path += fileWithExtension;
 	return path;
 }
 
-void ResourceManager::initializePackageFiles(GTSL::Range<const utf8*> path)
+void ResourceManager::initializePackageFiles(GTSL::Array<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path)
 {
-	for(uint32 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
-		packageFiles.EmplaceBack();
-		switch (packageFiles.back().Open(path, GTSL::File::READ)) {
-			case GTSL::File::OpenResult::OK: break;
-			case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-			case GTSL::File::OpenResult::DOES_NOT_EXIST: packageFiles.back().Create(path, GTSL::File::READ); BE_LOG_ERROR("Package file doesn't exist."); break;
-			case GTSL::File::OpenResult::ERROR: break;
+	for (uint32 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
+		filesPerThread.EmplaceBack();
+		switch (filesPerThread.back().Open(path, GTSL::File::READ | GTSL::File::WRITE, true)) {
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::CREATED: break;
+		case GTSL::File::OpenResult::ERROR: break;
 		}
 	}
 }

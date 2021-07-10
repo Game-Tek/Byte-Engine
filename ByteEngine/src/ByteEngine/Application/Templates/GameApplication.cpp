@@ -11,7 +11,7 @@
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/UIManager.h"
 
-#include "ByteEngine/Resources/MaterialResourceManager.h"
+#include "ByteEngine/Resources/ShaderResourceManager.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
@@ -34,7 +34,7 @@ bool GameApplication::Initialize()
 	
 	CreateResourceManager<StaticMeshResourceManager>();
 	CreateResourceManager<TextureResourceManager>();
-	CreateResourceManager<MaterialResourceManager>();
+	CreateResourceManager<ShaderResourceManager>();
 	CreateResourceManager<AudioResourceManager>();
 	CreateResourceManager<PipelineCacheResourceManager>();
 	//CreateResourceManager<AnimationResourceManager>();
@@ -45,37 +45,37 @@ bool GameApplication::Initialize()
 void GameApplication::PostInitialize()
 {
 	//FRAME START
-	gameInstance->AddStage("FrameStart");
+	gameInstance->AddStage(u8"FrameStart");
 
 	//GAMEPLAY CODE BEGINS
-	gameInstance->AddStage("GameplayStart");
+	gameInstance->AddStage(u8"GameplayStart");
 	//GAMEPLAY CODE ENDS
-	gameInstance->AddStage("GameplayEnd");
+	gameInstance->AddStage(u8"GameplayEnd");
 	
 	//RENDER CODE BEGINS
-	gameInstance->AddStage("RenderStart");
+	gameInstance->AddStage(u8"RenderStart");
 	//RENDER SETUP BEGINS
-	gameInstance->AddStage("RenderStartSetup");
+	gameInstance->AddStage(u8"RenderStartSetup");
 	//RENDER SETUP ENDS
-	gameInstance->AddStage("RenderEndSetup");
+	gameInstance->AddStage(u8"RenderEndSetup");
 	//RENDER IS DISPATCHED
-	gameInstance->AddStage("RenderDo");
+	gameInstance->AddStage(u8"RenderDo");
 	//RENDER DISPATCH IS DONE
-	gameInstance->AddStage("RenderFinished");
+	gameInstance->AddStage(u8"RenderFinished");
 	//RENDER CODE ENDS
-	gameInstance->AddStage("RenderEnd");
+	gameInstance->AddStage(u8"RenderEnd");
 	
 	//FRAME ENDS
-	gameInstance->AddStage("FrameEnd");
+	gameInstance->AddStage(u8"FrameEnd");
 
-	gameInstance->AddEvent("Application", EventHandle<>("OnFocusGain"));
-	gameInstance->AddEvent("Application", EventHandle<>("OnFocusLoss"));
+	gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnFocusGain"));
+	gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnFocusLoss"));
 	
-	auto* renderSystem = gameInstance->AddSystem<RenderSystem>("RenderSystem");
-	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>("RenderOrchestrator");
+	auto* renderSystem = gameInstance->AddSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	gameInstance->AddSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	gameInstance->AddSystem<AudioSystem>("AudioSystem");
+	gameInstance->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	gameInstance->AddSystem<AudioSystem>(u8"AudioSystem");
 
 	GTSL::Window::WindowCreateInfo create_window_info;
 	create_window_info.Application = &systemApplication;
@@ -93,31 +93,31 @@ void GameApplication::PostInitialize()
 
 	window.ShowWindow();
 	
-	gameInstance->AddSystem<CameraSystem>("CameraSystem");
+	gameInstance->AddSystem<CameraSystem>(u8"CameraSystem");
 	
 	{
-		renderOrchestrator->AddAttachment("Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment("RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
+		renderOrchestrator->AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
+		renderOrchestrator->AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
 
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" } ); //result attachment
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" } );
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" } );
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "RenderDepth" } );
-		renderOrchestrator->AddPass("SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass);
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" } ); //result attachment
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" } );
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" } );
+		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass);
 
 		RenderOrchestrator::PassData uiRenderPass{};
 		uiRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" }); //result attachment
+		uiRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
 
 		RenderOrchestrator::PassData rtRenderPass{};
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Position" });
-		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Normal" });
-		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ "Color" }); //result attachment
+		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" });
+		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
+		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
 		
 		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
 		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
@@ -125,15 +125,15 @@ void GameApplication::PostInitialize()
 	}
 
 	
-	auto* uiManager = gameInstance->AddSystem<UIManager>("UIManager");
-	gameInstance->AddSystem<CanvasSystem>("CanvasSystem");
+	auto* uiManager = gameInstance->AddSystem<UIManager>(u8"UIManager");
+	gameInstance->AddSystem<CanvasSystem>(u8"CanvasSystem");
 	
-	gameInstance->AddSystem<StaticMeshRenderManager>("StaticMeshRenderManager");
-	gameInstance->AddSystem<UIRenderManager>("UIRenderManager");
-	gameInstance->AddSystem<LightsRenderGroup>("LightsRenderGroup");
+	gameInstance->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
+	gameInstance->AddSystem<UIRenderManager>(u8"UIRenderManager");
+	gameInstance->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
 	
-	renderOrchestrator->AddRenderManager(gameInstance, "StaticMeshRenderManager", gameInstance->GetSystemReference("StaticMeshRenderManager"));
-	renderOrchestrator->AddRenderManager(gameInstance, "UIRenderManager", gameInstance->GetSystemReference("UIRenderManager"));
+	renderOrchestrator->AddRenderManager(gameInstance, u8"StaticMeshRenderManager", gameInstance->GetSystemReference(u8"StaticMeshRenderManager"));
+	renderOrchestrator->AddRenderManager(gameInstance, u8"UIRenderManager", gameInstance->GetSystemReference(u8"UIRenderManager"));
 }	
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
@@ -148,20 +148,20 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	{
 		switch (button)
 		{
-		case GTSL::Gamepad::GamepadButtonPosition::TOP: GetInputManager()->RecordActionInputSource(controller, "TopFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT: GetInputManager()->RecordActionInputSource(controller, "RightFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::BOTTOM: GetInputManager()->RecordActionInputSource(controller, "BottomFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT: GetInputManager()->RecordActionInputSource(controller, "LeftFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::BACK: GetInputManager()->RecordActionInputSource(controller, "LeftMenuButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::HOME: GetInputManager()->RecordActionInputSource(controller, "RightMenuButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_UP: GetInputManager()->RecordActionInputSource(controller, "TopDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_RIGHT: GetInputManager()->RecordActionInputSource(controller, "RightDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_DOWN: GetInputManager()->RecordActionInputSource(controller, "BottomDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_LEFT: GetInputManager()->RecordActionInputSource(controller, "LeftDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT_SHOULDER: GetInputManager()->RecordActionInputSource(controller, "LeftHatButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_SHOULDER: GetInputManager()->RecordActionInputSource(controller, "RightHatButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT_STICK: GetInputManager()->RecordActionInputSource(controller, "LeftStickButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_STICK: GetInputManager()->RecordActionInputSource(controller, "RightStickButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::TOP: GetInputManager()->RecordInputSource(controller, u8"TopFrontButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightFrontButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::BOTTOM: GetInputManager()->RecordInputSource(controller, u8"BottomFrontButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftFrontButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::BACK: GetInputManager()->RecordInputSource(controller, u8"LeftMenuButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::HOME: GetInputManager()->RecordInputSource(controller, u8"RightMenuButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::DPAD_UP: GetInputManager()->RecordInputSource(controller, u8"TopDPadButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::DPAD_RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightDPadButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::DPAD_DOWN: GetInputManager()->RecordInputSource(controller, u8"BottomDPadButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::DPAD_LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftDPadButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::LEFT_SHOULDER: GetInputManager()->RecordInputSource(controller, u8"LeftHatButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_SHOULDER: GetInputManager()->RecordInputSource(controller, u8"RightHatButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::LEFT_STICK: GetInputManager()->RecordInputSource(controller, u8"LeftStickButton", state); break;
+		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_STICK: GetInputManager()->RecordInputSource(controller, u8"RightStickButton", state); break;
 		default: ;
 		}
 	};
@@ -172,16 +172,16 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 		{
 		case GTSL::Gamepad::Side::RIGHT:
 		{
-			Get()->GetInputManager()->RecordLinearInputSource(controller, "RightTrigger", value);
+			Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", value);
 
-			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue("Controller", controller, "LeftTrigger");
+			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
 
 			if (value >= 0.99f) {
 				if (!wasPressed)
-					Get()->GetInputManager()->RecordActionInputSource(controller, "RightTrigger", true);
+					Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", true);
 			} else {
 				if (wasPressed) {
-					Get()->GetInputManager()->RecordActionInputSource(controller, "RightTrigger", false);
+					Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", false);
 				}
 			}
 
@@ -189,16 +189,16 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 		}
 		case GTSL::Gamepad::Side::LEFT:
 		{
-			Get()->GetInputManager()->RecordLinearInputSource(controller, "LeftTrigger", value);
+			Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", value);
 
-			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue("Controller", controller, "LeftTrigger");
+			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
 
 			if (value >= 0.95f) //if is pressed
 				if (!wasPressed) //and wasn't pressed
-					Get()->GetInputManager()->RecordActionInputSource(controller, "LeftTrigger", true);
+					Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", true);
 			else //isn't pressed
 				if (wasPressed && value <= 0.95f - 0.10f)
-					Get()->GetInputManager()->RecordActionInputSource(controller, "LeftTrigger", false);
+					Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", false);
 
 			break;
 		}
@@ -210,8 +210,8 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	{
 		switch (side)
 		{
-		case GTSL::Gamepad::Side::RIGHT: Get()->GetInputManager()->Record2DInputSource(controller, "RightStick", value); break;
-		case GTSL::Gamepad::Side::LEFT: Get()->GetInputManager()->Record2DInputSource(controller, "LeftStick", value); break;
+		case GTSL::Gamepad::Side::RIGHT: Get()->GetInputManager()->RecordInputSource(controller, u8"RightStick", value); break;
+		case GTSL::Gamepad::Side::LEFT: Get()->GetInputManager()->RecordInputSource(controller, u8"LeftStick", value); break;
 		default: break;
 		}
 	};
@@ -219,8 +219,8 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	GTSL::Update(gamepad, button, floats, vectors, 0);
 
 	{
-		auto lowEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, "LowEndVibration");
-		auto highEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, "HighEndVibration");
+		auto lowEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, u8"LowEndVibration");
+		auto highEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, u8"HighEndVibration");
 		gamepad.SetVibration(lowEndVibration, highEndVibration);
 	}
 }
@@ -239,117 +239,117 @@ void GameApplication::SetupInputSources()
 
 void GameApplication::RegisterMouse()
 {
-	mouse = inputManagerInstance->RegisterInputDevice("Mouse");
+	mouse = inputManagerInstance->RegisterInputDevice(u8"Mouse");
 	
-	inputManagerInstance->Register2DInputSource(mouse, "MouseMove");
+	inputManagerInstance->Register2DInputSource(mouse, u8"MouseMove");
 
-	inputManagerInstance->RegisterActionInputSource(mouse, "LeftMouseButton");
-	inputManagerInstance->RegisterActionInputSource(mouse, "RightMouseButton");
-	inputManagerInstance->RegisterActionInputSource(mouse, "MiddleMouseButton");
+	inputManagerInstance->RegisterActionInputSource(mouse, u8"LeftMouseButton");
+	inputManagerInstance->RegisterActionInputSource(mouse, u8"RightMouseButton");
+	inputManagerInstance->RegisterActionInputSource(mouse, u8"MiddleMouseButton");
 
-	inputManagerInstance->RegisterLinearInputSource(mouse, "MouseWheel");
+	inputManagerInstance->RegisterLinearInputSource(mouse, u8"MouseWheel");
 }
 
 void GameApplication::RegisterKeyboard()
 {
-	keyboard = inputManagerInstance->RegisterInputDevice("Keyboard");
+	keyboard = inputManagerInstance->RegisterInputDevice(u8"Keyboard");
 
-	inputManagerInstance->RegisterCharacterInputSource(keyboard, "Character");
+	inputManagerInstance->RegisterCharacterInputSource(keyboard, u8"Character");
 	
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Q_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "W_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "E_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "R_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "T_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Y_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "U_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "I_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "O_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "P_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "A_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "S_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "D_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "F_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "G_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "H_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "J_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "K_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "L_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Z_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "X_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "C_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "V_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "B_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "N_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "M_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "0_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "1_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "2_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "3_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "4_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "5_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "6_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "7_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "8_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "9_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Backspace_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, "Enter_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Supr_Key");			inputManagerInstance->RegisterActionInputSource(keyboard, "Tab_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "CapsLock_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, "Esc_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "RightShift_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, "LeftShift_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "RightControl_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, "LeftControl_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "RightAlt_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, "LeftAlt_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "UpArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, "RightArrow_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "DownArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, "LeftArrow_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "SpaceBar_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad0_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad1_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad2_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad3_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad4_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad5_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad6_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad7_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad8_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "Numpad9_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F1_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, "F2_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F3_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, "F4_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F5_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, "F6_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F7_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, "F8_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F9_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, "F10_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, "F11_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, "F12_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Q_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"W_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"E_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"R_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"T_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Y_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"U_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"I_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"O_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"P_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"A_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"S_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"D_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"F_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"G_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"H_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"J_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"K_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"L_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Z_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"X_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"C_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"V_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"B_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"N_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"M_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"0_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"1_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"2_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"3_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"4_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"5_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"6_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"7_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"8_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"9_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Backspace_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"Enter_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Supr_Key");			inputManagerInstance->RegisterActionInputSource(keyboard, u8"Tab_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"CapsLock_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"Esc_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightShift_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftShift_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightControl_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftControl_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightAlt_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftAlt_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"UpArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightArrow_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"DownArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftArrow_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"SpaceBar_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad0_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad1_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad2_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad3_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad4_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad5_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad6_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad7_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad8_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad9_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F1_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, u8"F2_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F3_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, u8"F4_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F5_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, u8"F6_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F7_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, u8"F8_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F9_Key");  inputManagerInstance->RegisterActionInputSource(keyboard, u8"F10_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"F11_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"F12_Key");
 }
 
 void GameApplication::RegisterControllers()
 {
-	controller = inputManagerInstance->RegisterInputDevice("Controller");
+	controller = inputManagerInstance->RegisterInputDevice(u8"Controller");
 
-	inputManagerInstance->RegisterInputDeviceParameter(controller, "LowEndVibration");
-	inputManagerInstance->RegisterInputDeviceParameter(controller, "HighEndVibration");
+	inputManagerInstance->RegisterInputDeviceParameter(controller, u8"LowEndVibration");
+	inputManagerInstance->RegisterInputDeviceParameter(controller, u8"HighEndVibration");
 	
-	inputManagerInstance->Register2DInputSource(controller, "LeftStick");
-	inputManagerInstance->Register2DInputSource(controller, "RightStick");
+	inputManagerInstance->Register2DInputSource(controller, u8"LeftStick");
+	inputManagerInstance->Register2DInputSource(controller, u8"RightStick");
 
-	inputManagerInstance->RegisterActionInputSource(controller, "TopFrontButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightFrontButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "BottomFrontButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftFrontButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"TopFrontButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightFrontButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"BottomFrontButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftFrontButton");
 	
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftTrigger");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightTrigger");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftTrigger");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightTrigger");
 
-	inputManagerInstance->RegisterActionInputSource(controller, "TopDPadButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightDPadButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "BottomDPadButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftDPadButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"TopDPadButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightDPadButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"BottomDPadButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftDPadButton");
 	
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftStickButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightStickButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftStickButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightStickButton");
 	
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftMenuButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightMenuButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftMenuButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightMenuButton");
 	
-	inputManagerInstance->RegisterActionInputSource(controller, "LeftHatButton");
-	inputManagerInstance->RegisterActionInputSource(controller, "RightHatButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"LeftHatButton");
+	inputManagerInstance->RegisterActionInputSource(controller, u8"RightHatButton");
 	
-	inputManagerInstance->RegisterLinearInputSource(controller, "LeftTrigger");
-	inputManagerInstance->RegisterLinearInputSource(controller, "RightTrigger");
+	inputManagerInstance->RegisterLinearInputSource(controller, u8"LeftTrigger");
+	inputManagerInstance->RegisterLinearInputSource(controller, u8"RightTrigger");
 }
 
 using namespace GTSL;
 
 void GameApplication::onWindowResize(const Extent2D extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { "RenderSystem", AccessTypes::READ_WRITE } };
+	Array<TaskDependency, 10> taskDependencies = { { u8"RenderSystem", AccessTypes::READ_WRITE } };
 
 	auto ext = extent;
 
 	auto resize = [](TaskInfo info, Extent2D newSize)
 	{
-		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		renderSystem->OnResize(newSize);
 	};
 	
 	if (extent != 0 && extent != oldSize)
 	{
-		gameInstance->AddDynamicTask("windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, "FrameStart", "RenderStart", MoveRef(ext));
+		gameInstance->AddDynamicTask(u8"windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, u8"FrameStart", u8"RenderStart", MoveRef(ext));
 		oldSize = extent;
 	}
 }
@@ -359,86 +359,86 @@ void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool s
 	Id id;
 	
 	switch (key) {
-	case Window::KeyboardKeys::Q: id = "Q_Key"; break;
-	case Window::KeyboardKeys::W: id = "W_Key"; break;
-	case Window::KeyboardKeys::E: id = "E_Key"; break;
-	case Window::KeyboardKeys::R: id = "R_Key"; break;
-	case Window::KeyboardKeys::T: id = "T_Key"; break;
-	case Window::KeyboardKeys::Y: id = "Y_Key"; break;
-	case Window::KeyboardKeys::U: id = "U_Key"; break;
-	case Window::KeyboardKeys::I: id = "I_Key"; break;
-	case Window::KeyboardKeys::O: id = "O_Key"; break;
-	case Window::KeyboardKeys::P: id = "P_Key"; break;
-	case Window::KeyboardKeys::A: id = "A_Key"; break;
-	case Window::KeyboardKeys::S: id = "S_Key"; break;
-	case Window::KeyboardKeys::D: id = "D_Key"; break;
-	case Window::KeyboardKeys::F: id = "F_Key"; break;
-	case Window::KeyboardKeys::G: id = "G_Key"; break;
-	case Window::KeyboardKeys::H: id = "H_Key"; break;
-	case Window::KeyboardKeys::J: id = "J_Key"; break;
-	case Window::KeyboardKeys::K: id = "K_Key"; break;
-	case Window::KeyboardKeys::L: id = "L_Key"; break;
-	case Window::KeyboardKeys::Z: id = "Z_Key"; break;
-	case Window::KeyboardKeys::X: id = "X_Key"; break;
-	case Window::KeyboardKeys::C: id = "C_Key"; break;
-	case Window::KeyboardKeys::V: id = "V_Key"; break;
-	case Window::KeyboardKeys::B: id = "B_Key"; break;
-	case Window::KeyboardKeys::N: id = "N_Key"; break;
-	case Window::KeyboardKeys::M: id = "M_Key"; break;
-	case Window::KeyboardKeys::Keyboard0: id = "0_Key"; break;
-	case Window::KeyboardKeys::Keyboard1: id = "1_Key"; break;
-	case Window::KeyboardKeys::Keyboard2: id = "2_Key"; break;
-	case Window::KeyboardKeys::Keyboard3: id = "3_Key"; break;
-	case Window::KeyboardKeys::Keyboard4: id = "4_Key"; break;
-	case Window::KeyboardKeys::Keyboard5: id = "5_Key"; break;
-	case Window::KeyboardKeys::Keyboard6: id = "6_Key"; break;
-	case Window::KeyboardKeys::Keyboard7: id = "7_Key"; break;
-	case Window::KeyboardKeys::Keyboard8: id = "8_Key"; break;
-	case Window::KeyboardKeys::Keyboard9: id = "9_Key"; break;
-	case Window::KeyboardKeys::Backspace: id = "Backspace_Key"; break;
-	case Window::KeyboardKeys::Enter: id = "Enter_Key"; break;
-	case Window::KeyboardKeys::Supr: id = "Supr_Key"; break;
-	case Window::KeyboardKeys::Tab: id = "Tab_Key"; break;
-	case Window::KeyboardKeys::CapsLock: id = "CapsLock_Key"; break;
-	case Window::KeyboardKeys::Esc: id = "Esc_Key"; break;
-	case Window::KeyboardKeys::RShift: id = "RightShift_Key"; break;
-	case Window::KeyboardKeys::LShift: id = "LeftShift_Key"; break;
-	case Window::KeyboardKeys::RControl: id = "RightControl_Key"; break;
-	case Window::KeyboardKeys::LControl: id = "LeftControl_Key"; break;
-	case Window::KeyboardKeys::Alt: id = "LeftAlt_Key"; break;
-	case Window::KeyboardKeys::AltGr: id = "RightAlt_Key"; break;
-	case Window::KeyboardKeys::UpArrow: id = "Up_Key"; break;
-	case Window::KeyboardKeys::RightArrow: id = "Right_Key"; break;
-	case Window::KeyboardKeys::DownArrow: id = "Down_Key"; break;
-	case Window::KeyboardKeys::LeftArrow: id = "Left_Key"; break;
-	case Window::KeyboardKeys::SpaceBar: id = "SpaceBar_Key"; break;
-	case Window::KeyboardKeys::Numpad0: id = "Numpad0_Key"; break;
-	case Window::KeyboardKeys::Numpad1: id = "Numpad1_Key"; break;
-	case Window::KeyboardKeys::Numpad2: id = "Numpad2_Key"; break;
-	case Window::KeyboardKeys::Numpad3: id = "Numpad3_Key"; break;
-	case Window::KeyboardKeys::Numpad4: id = "Numpad4_Key"; break;
-	case Window::KeyboardKeys::Numpad5: id = "Numpad5_Key"; break;
-	case Window::KeyboardKeys::Numpad6: id = "Numpad6_Key"; break;
-	case Window::KeyboardKeys::Numpad7: id = "Numpad7_Key"; break;
-	case Window::KeyboardKeys::Numpad8: id = "Numpad8_Key"; break;
-	case Window::KeyboardKeys::Numpad9: id = "Numpad9_Key"; break;
-	case Window::KeyboardKeys::F1: id = "F1_Key"; break;
-	case Window::KeyboardKeys::F2: id = "F2_Key"; break;
-	case Window::KeyboardKeys::F3: id = "F3_Key"; break;
-	case Window::KeyboardKeys::F4: id = "F4_Key"; break;
-	case Window::KeyboardKeys::F5: id = "F5_Key"; break;
-	case Window::KeyboardKeys::F6: id = "F6_Key"; break;
-	case Window::KeyboardKeys::F7: id = "F7_Key"; break;
-	case Window::KeyboardKeys::F8: id = "F8_Key"; break;
-	case Window::KeyboardKeys::F9: id = "F9_Key"; break;
-	case Window::KeyboardKeys::F10: id = "F10_Key"; break;
-	case Window::KeyboardKeys::F11: id = "F11_Key"; break;
-	case Window::KeyboardKeys::F12: id = "F12_Key"; break;
+	case Window::KeyboardKeys::Q: id = u8"Q_Key"; break;
+	case Window::KeyboardKeys::W: id = u8"W_Key"; break;
+	case Window::KeyboardKeys::E: id = u8"E_Key"; break;
+	case Window::KeyboardKeys::R: id = u8"R_Key"; break;
+	case Window::KeyboardKeys::T: id = u8"T_Key"; break;
+	case Window::KeyboardKeys::Y: id = u8"Y_Key"; break;
+	case Window::KeyboardKeys::U: id = u8"U_Key"; break;
+	case Window::KeyboardKeys::I: id = u8"I_Key"; break;
+	case Window::KeyboardKeys::O: id = u8"O_Key"; break;
+	case Window::KeyboardKeys::P: id = u8"P_Key"; break;
+	case Window::KeyboardKeys::A: id = u8"A_Key"; break;
+	case Window::KeyboardKeys::S: id = u8"S_Key"; break;
+	case Window::KeyboardKeys::D: id = u8"D_Key"; break;
+	case Window::KeyboardKeys::F: id = u8"F_Key"; break;
+	case Window::KeyboardKeys::G: id = u8"G_Key"; break;
+	case Window::KeyboardKeys::H: id = u8"H_Key"; break;
+	case Window::KeyboardKeys::J: id = u8"J_Key"; break;
+	case Window::KeyboardKeys::K: id = u8"K_Key"; break;
+	case Window::KeyboardKeys::L: id = u8"L_Key"; break;
+	case Window::KeyboardKeys::Z: id = u8"Z_Key"; break;
+	case Window::KeyboardKeys::X: id = u8"X_Key"; break;
+	case Window::KeyboardKeys::C: id = u8"C_Key"; break;
+	case Window::KeyboardKeys::V: id = u8"V_Key"; break;
+	case Window::KeyboardKeys::B: id = u8"B_Key"; break;
+	case Window::KeyboardKeys::N: id = u8"N_Key"; break;
+	case Window::KeyboardKeys::M: id = u8"M_Key"; break;
+	case Window::KeyboardKeys::Keyboard0: id = u8"0_Key"; break;
+	case Window::KeyboardKeys::Keyboard1: id = u8"1_Key"; break;
+	case Window::KeyboardKeys::Keyboard2: id = u8"2_Key"; break;
+	case Window::KeyboardKeys::Keyboard3: id = u8"3_Key"; break;
+	case Window::KeyboardKeys::Keyboard4: id = u8"4_Key"; break;
+	case Window::KeyboardKeys::Keyboard5: id = u8"5_Key"; break;
+	case Window::KeyboardKeys::Keyboard6: id = u8"6_Key"; break;
+	case Window::KeyboardKeys::Keyboard7: id = u8"7_Key"; break;
+	case Window::KeyboardKeys::Keyboard8: id = u8"8_Key"; break;
+	case Window::KeyboardKeys::Keyboard9: id = u8"9_Key"; break;
+	case Window::KeyboardKeys::Backspace: id = u8"Backspace_Key"; break;
+	case Window::KeyboardKeys::Enter: id = u8"Enter_Key"; break;
+	case Window::KeyboardKeys::Supr: id = u8"Supr_Key"; break;
+	case Window::KeyboardKeys::Tab: id = u8"Tab_Key"; break;
+	case Window::KeyboardKeys::CapsLock: id = u8"CapsLock_Key"; break;
+	case Window::KeyboardKeys::Esc: id = u8"Esc_Key"; break;
+	case Window::KeyboardKeys::RShift: id = u8"RightShift_Key"; break;
+	case Window::KeyboardKeys::LShift: id = u8"LeftShift_Key"; break;
+	case Window::KeyboardKeys::RControl: id = u8"RightControl_Key"; break;
+	case Window::KeyboardKeys::LControl: id = u8"LeftControl_Key"; break;
+	case Window::KeyboardKeys::Alt: id = u8"LeftAlt_Key"; break;
+	case Window::KeyboardKeys::AltGr: id = u8"RightAlt_Key"; break;
+	case Window::KeyboardKeys::UpArrow: id = u8"Up_Key"; break;
+	case Window::KeyboardKeys::RightArrow: id = u8"Right_Key"; break;
+	case Window::KeyboardKeys::DownArrow: id = u8"Down_Key"; break;
+	case Window::KeyboardKeys::LeftArrow: id = u8"Left_Key"; break;
+	case Window::KeyboardKeys::SpaceBar: id = u8"SpaceBar_Key"; break;
+	case Window::KeyboardKeys::Numpad0: id = u8"Numpad0_Key"; break;
+	case Window::KeyboardKeys::Numpad1: id = u8"Numpad1_Key"; break;
+	case Window::KeyboardKeys::Numpad2: id = u8"Numpad2_Key"; break;
+	case Window::KeyboardKeys::Numpad3: id = u8"Numpad3_Key"; break;
+	case Window::KeyboardKeys::Numpad4: id = u8"Numpad4_Key"; break;
+	case Window::KeyboardKeys::Numpad5: id = u8"Numpad5_Key"; break;
+	case Window::KeyboardKeys::Numpad6: id = u8"Numpad6_Key"; break;
+	case Window::KeyboardKeys::Numpad7: id = u8"Numpad7_Key"; break;
+	case Window::KeyboardKeys::Numpad8: id = u8"Numpad8_Key"; break;
+	case Window::KeyboardKeys::Numpad9: id = u8"Numpad9_Key"; break;
+	case Window::KeyboardKeys::F1: id = u8"F1_Key"; break;
+	case Window::KeyboardKeys::F2: id = u8"F2_Key"; break;
+	case Window::KeyboardKeys::F3: id = u8"F3_Key"; break;
+	case Window::KeyboardKeys::F4: id = u8"F4_Key"; break;
+	case Window::KeyboardKeys::F5: id = u8"F5_Key"; break;
+	case Window::KeyboardKeys::F6: id = u8"F6_Key"; break;
+	case Window::KeyboardKeys::F7: id = u8"F7_Key"; break;
+	case Window::KeyboardKeys::F8: id = u8"F8_Key"; break;
+	case Window::KeyboardKeys::F9: id = u8"F9_Key"; break;
+	case Window::KeyboardKeys::F10: id = u8"F10_Key"; break;
+	case Window::KeyboardKeys::F11: id = u8"F11_Key"; break;
+	case Window::KeyboardKeys::F12: id = u8"F12_Key"; break;
 	default: break;
 	}
 
 	if (isFirstkeyOfType) {
-		GetInputManager()->RecordActionInputSource(keyboard, id, state);
+		GetInputManager()->RecordInputSource(keyboard, id, state);
 	}
 }
 
@@ -452,10 +452,10 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	{
 		auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
 		if(focusEventData->Focus) {
-			app->gameInstance->DispatchEvent("Application", EventHandle<bool>("OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
+			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		else {
-			app->gameInstance->DispatchEvent("Application", EventHandle<bool>("OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
+			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		break;
 	}
@@ -466,7 +466,7 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 		app->keyboardEvent(keyboardEventData->Key, keyboardEventData->State, keyboardEventData->IsFirstTime);
 		break;
 	}
-	case GTSL::Window::WindowEvents::CHAR: app->GetInputManager()->RecordCharacterInputSource(app->keyboard, "Character", *(GTSL::Window::CharEventData*)eventData); break;
+	case GTSL::Window::WindowEvents::CHAR: app->GetInputManager()->RecordInputSource(app->keyboard, u8"Character", *(GTSL::Window::CharEventData*)eventData); break;
 	case GTSL::Window::WindowEvents::SIZE:
 	{
 		auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEventData*>(eventData);
@@ -477,13 +477,13 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	case GTSL::Window::WindowEvents::MOUSE_MOVE:
 	{
 		auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
-		app->GetInputManager()->Record2DInputSource(app->mouse, "MouseMove", *mouseMoveEventData);
+		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
 		break;
 	}
 	case GTSL::Window::WindowEvents::MOUSE_WHEEL:
 	{
 		auto* mouseWheelEventData = static_cast<GTSL::Window::MouseWheelEventData*>(eventData);
-		app->GetInputManager()->RecordLinearInputSource(app->mouse, "MouseWheel", *mouseWheelEventData);
+		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseWheel", *mouseWheelEventData);
 		break;
 	}
 	case GTSL::Window::WindowEvents::MOUSE_BUTTON:
@@ -493,11 +493,11 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 		switch (mouseButtonEventData->Button)
 		{
 		case GTSL::Window::MouseButton::LEFT_BUTTON:
-			app->GetInputManager()->RecordActionInputSource(app->mouse, "LeftMouseButton", mouseButtonEventData->State);
-			app->GetGameInstance()->GetSystem<CanvasSystem>("CanvasSystem")->SignalHit(GTSL::Vector2());
+			app->GetInputManager()->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->State);
+			app->GetGameInstance()->GetSystem<CanvasSystem>(u8"CanvasSystem")->SignalHit(GTSL::Vector2());
 			break;
-		case GTSL::Window::MouseButton::RIGHT_BUTTON: app->GetInputManager()->RecordActionInputSource(app->mouse, "RightMouseButton", mouseButtonEventData->State); break;
-		case GTSL::Window::MouseButton::MIDDLE_BUTTON: app->GetInputManager()->RecordActionInputSource(app->mouse, "MiddleMouseButton", mouseButtonEventData->State); break;
+		case GTSL::Window::MouseButton::RIGHT_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"RightMouseButton", mouseButtonEventData->State); break;
+		case GTSL::Window::MouseButton::MIDDLE_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"MiddleMouseButton", mouseButtonEventData->State); break;
 		default:;
 		}
 		break;

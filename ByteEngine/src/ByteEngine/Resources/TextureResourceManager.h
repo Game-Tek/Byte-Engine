@@ -10,6 +10,8 @@
 
 #include "ByteEngine/Game/GameInstance.h"
 
+#include <GTSL/MappedFile.hpp>;
+
 class TextureResourceManager final : public ResourceManager
 {
 public:
@@ -61,7 +63,7 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
-		gameInstance->AddDynamicTask("loadTextureInfo", Task<TextureResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadTextureInfo), {}, this, GTSL::MoveRef(textureName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadTextureInfo", Task<TextureResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadTextureInfo), {}, this, GTSL::MoveRef(textureName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
 	template<typename... ARGS>
@@ -69,16 +71,15 @@ public:
 	{
 		auto loadTexture = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, TextureInfo textureInfo, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			resourceManager->packageFiles[resourceManager->getThread()].SetPointer(textureInfo.ByteOffset);
-			resourceManager->packageFiles[resourceManager->getThread()].Read(GTSL::Range<byte*>(textureInfo.GetTextureSize(), buffer.begin()));
-			
+			GTSL::MemCopy(textureInfo.GetTextureSize(), resourceManager->mappedFile.GetData(), buffer.begin());
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
-		gameInstance->AddDynamicTask("loadTexture", Task<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadTexture), {}, this, GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadTexture", Task<TextureResourceManager*, TextureInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadTexture), {}, this, GTSL::MoveRef(textureInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 private:
 	GTSL::File indexFile;
+	GTSL::MappedFile mappedFile;
 	GTSL::HashMap<Id, TextureDataSerialize, BE::PersistentAllocatorReference> textureInfos;
 };

@@ -152,12 +152,12 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	{
 
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessTypes::READ_WRITE } };
-		initializeInfo.GameInstance->AddTask("frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, "FrameStart", "RenderStart");
-		initializeInfo.GameInstance->AddTask("executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
-		initializeInfo.GameInstance->AddTask("renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, "RenderStart", "RenderStartSetup");
-		initializeInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, "RenderEndSetup", "RenderDo");
-		initializeInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
+		const GTSL::Array<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
+		initializeInfo.GameInstance->AddTask(u8"frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
+		initializeInfo.GameInstance->AddTask(u8"executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
+		initializeInfo.GameInstance->AddTask(u8"renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
+		initializeInfo.GameInstance->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
+		initializeInfo.GameInstance->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
 	}
 	
 	//apiAllocations.Initialize(128, GetPersistentAllocator());
@@ -171,16 +171,16 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
-	useHDR = BE::Application::Get()->GetOption("hdr");
-	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp(BE::Application::Get()->GetOption("buffer"), 2u, 3u));
-	bool rayTracing = BE::Application::Get()->GetOption("rayTracing");
+	useHDR = BE::Application::Get()->GetOption(u8"hdr");
+	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp(BE::Application::Get()->GetOption(u8"buffer"), 2u, 3u));
+	bool rayTracing = BE::Application::Get()->GetOption(u8"rayTracing");
 
 	{
 		RenderDevice::CreateInfo createInfo;
 		createInfo.ApplicationName = GTSL::StaticString<128>(BE::Application::Get()->GetApplicationName());
 		createInfo.ApplicationVersion[0] = 0; createInfo.ApplicationVersion[1] = 0; createInfo.ApplicationVersion[2] = 0;
 
-		createInfo.Debug = BE::Application::Get()->GetOption("debug");
+		createInfo.Debug = BE::Application::Get()->GetOption(u8"debug");
 
 		GTSL::Array<GAL::QueueType, 5> queue_create_infos;
 		GTSL::Array<RenderDevice::QueueKey, 5> queueKeys;
@@ -236,7 +236,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 		if (rayTracing) {
-			GAL::Geometry geometry(GAL::GeometryInstances{ 0 }, 0, MAX_INSTANCES_COUNT, 0);
+			GAL::Geometry geometry(GAL::GeometryInstances{ 0 }, GAL::GeometryFlag(), MAX_INSTANCES_COUNT, 0);
 
 			for (uint8 f = 0; f < pipelinedFrames; ++f) {
 				geometries[f].Initialize(16, GetPersistentAllocator());
@@ -273,7 +273,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	swapchainFormat = GAL::FORMATS::BGRA_I8;
 
 	for (uint32 i = 0; i < pipelinedFrames; ++i) {
-		if constexpr (_DEBUG) { GTSL::StaticString<32> name("Transfer semaphore. Frame: "); name += i; }
+		if constexpr (_DEBUG) { GTSL::StaticString<32> name(u8"Transfer semaphore. Frame: "); name += i; }
 		transferDoneSemaphores[i].Initialize(GetRenderDevice());
 		
 		//processedTextureCopies.EmplaceBack(0);
@@ -285,30 +285,30 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		imageAvailableSemaphore[i].Initialize(GetRenderDevice());
 
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name("RenderFinishedSemaphore #"); name += i;
+			GTSL::StaticString<32> name(u8"RenderFinishedSemaphore #"); name += i;
 		}
 		renderFinishedSemaphore[i].Initialize(GetRenderDevice());
 		
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name("InFlightFence #"); name += i;
+			GTSL::StaticString<32> name(u8"InFlightFence #"); name += i;
 		}
 
 		graphicsFences[i].Initialize(GetRenderDevice(), true);
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name("TrasferFence #"); name += i;
+			GTSL::StaticString<32> name(u8"TrasferFence #"); name += i;
 		}
 		transferFences[i].Initialize(GetRenderDevice(), true);
 
 		
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
+			GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
 			//commandPoolCreateInfo.Name = commandPoolName;
 		}
 		
 		graphicsCommandBuffers[i].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
 		
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> commandPoolName("Transfer command pool #"); commandPoolName += i;
+			GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
 			//commandPoolCreateInfo.Name = commandPoolName;
 		}
 		
@@ -319,7 +319,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 	}
 
 	bool pipelineCacheAvailable;
-	auto* pipelineCacheManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
+	auto* pipelineCacheManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 	pipelineCacheManager->DoesCacheExist(pipelineCacheAvailable);
 
 	pipelineCaches.Initialize(BE::Application::Get()->GetNumberOfThreads(), GetPersistentAllocator());
@@ -335,7 +335,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
 			if constexpr (_DEBUG) {
-				GTSL::StaticString<32> name("Pipeline cache. Thread: "); name += i;
+				GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, pipelineCacheBuffer);
@@ -344,7 +344,7 @@ void RenderSystem::Initialize(const InitializeInfo& initializeInfo)
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
 		{
 			if constexpr (_DEBUG) {
-				GTSL::StaticString<32> name("Pipeline cache. Thread: "); name += i;
+				GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, {});
@@ -391,7 +391,7 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 		pipelineCache.GetCacheSize(GetRenderDevice(), cacheSize);
 
 		if (cacheSize) {
-			auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>("PipelineCacheResourceManager");
+			auto* pipelineCacheResourceManager = BE::Application::Get()->GetResourceManager<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 			
 			GTSL::Buffer<BE::TAR> pipelineCacheBuffer;
 			pipelineCacheBuffer.Allocate(cacheSize, 32, GetTransientAllocator());
@@ -471,7 +471,7 @@ bool RenderSystem::resize()
 	renderArea = surfaceCapabilities.CurrentExtent;
 	
 	if (!isSupported) {
-		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>("No supported surface found!"));
+		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>(u8"No supported surface found!"));
 	}
 
 	auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
@@ -512,7 +512,7 @@ bool RenderSystem::resize()
 			swapchainTextures[f] = newSwapchainTextures[f];
 			swapchainTextureViews[f].Destroy(GetRenderDevice());
 
-			GTSL::StaticString<64> name("Swapchain ImageView "); name += f;
+			GTSL::StaticString<64> name(u8"Swapchain ImageView "); name += f;
 			
 			swapchainTextureViews[f].Initialize(GetRenderDevice(), name, swapchainTextures[f], swapchainFormat, renderArea, 1);
 		}
@@ -529,8 +529,8 @@ void RenderSystem::renderBegin(TaskInfo taskInfo)
 	
 	commandBuffer.BeginRecording(GetRenderDevice());
 
-	if (BE::Application::Get()->GetOption("rayTracing")) {
-		GAL::Geometry geometry(GAL::GeometryInstances{ instancesBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice()) }, 0, rayTracingInstancesCount, 0);
+	if (BE::Application::Get()->GetOption(u8"rayTracing")) {
+		GAL::Geometry geometry(GAL::GeometryInstances{ instancesBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice()) }, GAL::GeometryFlag(), rayTracingInstancesCount, 0);
 		//TODO: WHAT HAPPENS IF MESH IS REMOVED FROM THE MIDDLE OF THE COLLECTION, maybe: keep index of highest element in the colection		
 		geometries[GetCurrentFrame()].EmplaceBack(geometry);
 
@@ -660,8 +660,8 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 		GTSL::Vector<CommandList::BarrierData, BE::TransientAllocatorReference> destinationTextureBarriers(textureCopyData.GetLength(), textureCopyData.GetLength(), GetTransientAllocator());
 
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i) {
-			sourceTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, false, true, textureCopyData[i].Format });
-			destinationTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, true, false, textureCopyData[i].Format });
+			sourceTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, textureCopyData[i].Format });
+			destinationTextureBarriers.EmplaceBack(CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, textureCopyData[i].Format });
 		}
 
 		commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GetTransientAllocator());
@@ -670,7 +670,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 			commandBuffer.CopyBufferToTexture(GetRenderDevice(), textureCopyData[i].SourceBuffer, textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, textureCopyData[i].Format, textureCopyData[i].Extent);
 		}
 
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GAL::PipelineStages::TRANSFER, GAL::PipelineStages::FRAGMENT_SHADER, GetTransientAllocator());
+		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GAL::PipelineStages::TRANSFER, GAL::PipelineStages::FRAGMENT, GetTransientAllocator());
 		textureCopyDatas[GetCurrentFrame()].Resize(0);
 	}
 		
@@ -723,7 +723,7 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor fo
 	AllocateLocalTextureMemory(textureSize, &textureComponent.Texture, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
 		1, &textureComponent.Allocation);
 
-	auto textureViewName = GTSL::StaticString<64>("nnn"); textureViewName += index++;
+	auto textureViewName = GTSL::StaticString<64>(u8"nnn"); textureViewName += index++;
 	
 	textureComponent.TextureView.Initialize(GetRenderDevice(), textureViewName, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
 	textureComponent.TextureSampler.Initialize(GetRenderDevice(), 0);
@@ -754,15 +754,15 @@ void RenderSystem::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 {
 	if(!oldFocus)
 	{
-		const GTSL::Array<TaskDependency, 8> actsOn{ { "RenderSystem", AccessTypes::READ_WRITE } };
-		taskInfo.GameInstance->AddTask("frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, "FrameStart", "RenderStart");
+		const GTSL::Array<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
+		taskInfo.GameInstance->AddTask(u8"frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
 
-		taskInfo.GameInstance->AddTask("executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, "GameplayEnd", "RenderStart");
+		taskInfo.GameInstance->AddTask(u8"executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
 	
-		taskInfo.GameInstance->AddTask("renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, "RenderStart", "RenderStartSetup");
-		taskInfo.GameInstance->AddTask("renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, "RenderEndSetup", "RenderDo");
+		taskInfo.GameInstance->AddTask(u8"renderStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderStart>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
+		taskInfo.GameInstance->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderBegin>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
 	
-		taskInfo.GameInstance->AddTask("renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, "RenderFinished", "RenderEnd");
+		taskInfo.GameInstance->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFinish>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
 
 		BE_LOG_SUCCESS("Enabled rendering")
 	}
@@ -774,11 +774,11 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 {
 	if (oldFocus)
 	{
-		taskInfo.GameInstance->RemoveTask("frameStart", "FrameStart");
-		taskInfo.GameInstance->RemoveTask("executeTransfers", "GameplayEnd");
-		taskInfo.GameInstance->RemoveTask("renderStart", "RenderStart");
-		taskInfo.GameInstance->RemoveTask("renderSetup", "RenderEndSetup");
-		taskInfo.GameInstance->RemoveTask("renderFinished", "RenderFinished");
+		taskInfo.GameInstance->RemoveTask(u8"frameStart", u8"FrameStart");
+		taskInfo.GameInstance->RemoveTask(u8"executeTransfers", u8"GameplayEnd");
+		taskInfo.GameInstance->RemoveTask(u8"renderStart", u8"RenderStart");
+		taskInfo.GameInstance->RemoveTask(u8"renderSetup", u8"RenderEndSetup");
+		taskInfo.GameInstance->RemoveTask(u8"renderFinished", u8"RenderFinished");
 
 		BE_LOG_SUCCESS("Disabled rendering")
 	}

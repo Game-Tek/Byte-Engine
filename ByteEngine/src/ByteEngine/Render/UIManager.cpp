@@ -2,7 +2,7 @@
 
 #include <GTSL/Math/Math.hpp>
 
-Canvas::Canvas() : Object("Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
+Canvas::Canvas() : Object(u8"Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
 squares(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()),
 organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator()),
 queuedUpdates(8, GetPersistentAllocator())

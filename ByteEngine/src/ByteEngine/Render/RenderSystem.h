@@ -23,7 +23,7 @@ MAKE_HANDLE(uint32, Buffer)
 class RenderSystem : public System
 {
 public:
-	RenderSystem() : System("RenderSystem") {}
+	RenderSystem() : System(u8"RenderSystem") {}
 
 	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
@@ -56,7 +56,7 @@ public:
 	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, GPUBuffer* buffer, GTSL::Range<const GAL::Geometry*> geometries, RenderAllocation* renderAllocation, uint32* scratchSize)
 	{
 		uint32 bufferSize, memoryScratchSize;
-		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::Device::GPU, 0, &bufferSize, &memoryScratchSize);
+		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::Device::GPU, GAL::AccelerationStructureFlag(), &bufferSize, &memoryScratchSize);
 		
 		AllocateScratchBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, buffer, renderAllocation);
 

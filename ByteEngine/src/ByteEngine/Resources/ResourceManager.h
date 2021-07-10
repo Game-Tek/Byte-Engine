@@ -2,8 +2,6 @@
 
 #include "ByteEngine/Object.h"
 
-#include <GTSL/Id.h>
-#include <GTSL/DynamicType.h>
 #include <GTSL/Array.hpp>
 
 #include "ByteEngine/Game/Tasks.h"
@@ -24,31 +22,6 @@ public:
 	
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
-	
-	struct ResourceLoadInfo
-	{
-		/**
-		 * \brief Name of the resource to load. Must be unique and match the name used in the editor. Is case sensitive.
-		 */
-		Id Name;
-		
-		/**
-		 * \brief Pointer to some data to potentially be retrieved on resource load for the client to identify the resource. Can be NULL.
-		 */
-		SAFE_POINTER UserData;
-
-		/**
-		 * \brief Buffer to write the loaded data to.
-		 */
-		GTSL::Range<byte*> DataBuffer;
-		
-		/**
-		 * \brief Instance of game instance to call to dispatch task when resource is loaded.
-		 */
-		class GameInstance* GameInstance = nullptr;
-		
-		GTSL::Array<TaskDependency, 64> ActsOn;
-	};
 
 	//DATA
 	//DATA SERIALIZE : DATA
@@ -103,35 +76,9 @@ public:
 	friend void Extract(className& extractInfo, GTSL::Buffer<ALLOCATOR>& buffer)
 
 	#define EXTRACT_BODY Extract(extractInfo.ByteOffset, buffer);
-	
-	struct OnResourceLoad
-	{
-		OnResourceLoad& operator=(const ResourceLoadInfo& resourceLoadInfo)
-		{
-			UserData = resourceLoadInfo.UserData;
-			DataBuffer = resourceLoadInfo.DataBuffer;
-			ResourceName = resourceLoadInfo.Name;
-		}
-		
-		/**
-		 * \brief Pointer to the user provided data on the resource request.
-		 */
-		SAFE_POINTER UserData;
-		
-		/**
-		 * \brief Buffer where the loaded data was written to.
-		 */
-		GTSL::Range<byte*> DataBuffer;
-
-		Id ResourceName;
-	};
 
 	static constexpr uint8 MAX_THREADS = 32;
 
-
 protected:
-	GTSL::File& getFile() { return packageFiles[getThread()]; }
-	void initializePackageFiles(GTSL::Range<const utf8*> path);
-	
-	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
+	void initializePackageFiles(GTSL::Array<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path);
 };

@@ -29,12 +29,12 @@ namespace BE {
 template<typename... ARGS>
 using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
 
-inline const char* AccessTypeToString(const AccessType access)
+inline const char8_t* AccessTypeToString(const AccessType access)
 {
 	switch (static_cast<uint8>(access))
 	{
-	case static_cast<uint8>(AccessTypes::READ): return "READ";
-	case static_cast<uint8>(AccessTypes::READ_WRITE): return "READ_WRITE";
+	case static_cast<uint8>(AccessTypes::READ): return u8"READ";
+	case static_cast<uint8>(AccessTypes::READ_WRITE): return u8"READ_WRITE";
 	}
 }
 
@@ -343,42 +343,42 @@ private:
 
 	uint64 frameNumber = 0;
 
-	GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
+	GTSL::StaticString<1024> genTaskLog(const char8_t* from, Id taskName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
 	{
 		GTSL::StaticString<1024> log;
 
 		log += from;
 		log += taskName.GetString();
 
-		log += '\n';
+		log += u8'\n';
 		
-		log += "Accessed objects: \n	";
+		log += u8"Accessed objects: \n	";
 		for (uint16 i = 0; i < objects.ElementCount(); ++i)
 		{
-			log += "Obj: "; log += systemNames[objects[i]].GetString(); log += ". Access: "; log += AccessTypeToString(accesses[i]); log += "\n	";
+			log += u8"Obj: "; log += systemNames[objects[i]].GetString(); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
 		}
 
 		return log;
 	}
 	
-	GTSL::StaticString<1024> genTaskLog(const char* from, Id taskName, Id goalName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
+	GTSL::StaticString<1024> genTaskLog(const char8_t* from, Id taskName, Id goalName, const GTSL::Range<const AccessType*> accesses, const GTSL::Range<const uint16*> objects)
 	{
 		GTSL::StaticString<1024> log;
 
 		log += from;
 		log += taskName.GetString();
 
-		log += '\n';
+		log += u8'\n';
 
-		log += " Stage: ";
+		log += u8" Stage: ";
 		log += goalName.GetString();
 
-		log += '\n';
+		log += u8'\n';
 		
-		log += "Accessed objects: \n	";
+		log += u8"Accessed objects: \n	";
 		for (uint16 i = 0; i < objects.ElementCount(); ++i)
 		{
-			log += "Obj: "; log += systemNames[objects[i]].GetString(); log += ". Access: "; log += AccessTypeToString(accesses[i]); log += "\n	";
+			log += u8"Obj: "; log += systemNames[objects[i]].GetString(); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
 		}
 
 		return log;

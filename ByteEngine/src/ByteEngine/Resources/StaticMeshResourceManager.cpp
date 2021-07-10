@@ -32,23 +32,22 @@ static GTSL::Vector2 toAssimp(const aiVector2D assimpVector) {
 
 using ShaderDataTypeType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 
-StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
+StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();
 	resources_path += BE::Application::Get()->GetPathToApplication();
 	index_path += BE::Application::Get()->GetPathToApplication();
-	query_path += "/resources/*.obj";
-	index_path += "/resources/StaticMesh.beidx";
-	resources_path += "/resources/";
+	query_path += u8"/resources/*.obj";
+	index_path += u8"/resources/StaticMesh.beidx";
+	resources_path += u8"/resources/";
 
-	auto package_path = GetResourcePath(GTSL::ShortString<32>("StaticMesh"), GTSL::ShortString<32>("bepkg"));
+	auto package_path = GetResourcePath(GTSL::ShortString<32>(u8"StaticMesh"), GTSL::ShortString<32>(u8"bepkg"));
 
-	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ))
+	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true))
 	{
 	case GTSL::File::OpenResult::OK: break;
-	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: indexFile.Create(index_path, GTSL::File::WRITE | GTSL::File::READ); break;
+	case GTSL::File::OpenResult::CREATED: break;
 	case GTSL::File::OpenResult::ERROR: break;
 	default: ;
 	}
@@ -58,15 +57,12 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(indexFile.GetSize(), 16, GetTransientAllocator());
 		indexFile.Read(meshInfosFileBuffer.GetBufferInterface());
 		GTSL::Extract(meshInfos, meshInfosFileBuffer);
-	}
-	else
-	{
+	} else {
 		GTSL::File staticMeshPackage;
-		switch (staticMeshPackage.Open(package_path, GTSL::File::WRITE))
+		switch (staticMeshPackage.Open(package_path, GTSL::File::WRITE, true))
 		{
 		case GTSL::File::OpenResult::OK: break;
-		case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-		case GTSL::File::OpenResult::DOES_NOT_EXIST: staticMeshPackage.Create(package_path, GTSL::File::WRITE); break;
+		case GTSL::File::OpenResult::CREATED: break;
 		case GTSL::File::OpenResult::ERROR: break;
 		default: ;
 		}
@@ -84,7 +80,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 				GTSL::Buffer<BE::TAR> meshFileBuffer;
 
 				GTSL::File queryFile;
-				queryFile.Open(file_path, GTSL::File::READ);
+				queryFile.Open(file_path, GTSL::File::READ, false);
 				meshFileBuffer.Allocate(queryFile.GetSize(), 32, GetTransientAllocator());
 				queryFile.Read(meshFileBuffer.GetBufferInterface());
 
@@ -108,7 +104,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager("Static
 		indexFile.Write(meshInfosFileBuffer.GetBufferInterface());
 	}
 
-	initializePackageFiles(package_path);
+	initializePackageFiles(packageFiles, package_path);
 }
 
 StaticMeshResourceManager::~StaticMeshResourceManager()

@@ -21,7 +21,7 @@ class Object;
 
 namespace BE
 {
-	constexpr const char* FIX_OR_CRASH_STRING = "Fix this issue as it will lead to a crash in release mode!";
+	constexpr const utf8* FIX_OR_CRASH_STRING = u8"Fix this issue as it will lead to a crash in release mode!";
 	
 	/**
 	 * \brief Self locking class that manages logging to console and to disk.
@@ -68,7 +68,7 @@ namespace BE
 		mutable std::atomic<uint32> counter{ 0 };
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
-		void log(VerbosityLevel verbosityLevel, const GTSL::Range<const char*> text) const;
+		void log(VerbosityLevel verbosityLevel, const GTSL::Range<const char8_t*> text) const;
 
 		friend class FunctionTimer;
 		void logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken);
@@ -86,8 +86,8 @@ namespace BE
 		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args)
 		{
 			GTSL::StaticString<maxLogLength> text;
-			text += obj->GetName(); text += ": ";
-			(text += ... += GTSL::ForwardRef<ARGS>(args));
+			text += obj->GetName(); text += u8": ";
+			(ToString(GTSL::ForwardRef<ARGS>(args), text), ...);
 			log(level, text);
 		}
 
@@ -95,7 +95,7 @@ namespace BE
 		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args)
 		{
 			GTSL::StaticString<maxLogLength> text;
-			(text += ... += GTSL::ForwardRef<ARGS>(args));
+			(ToString(GTSL::ForwardRef<ARGS>(args), text), ...);
 			log(level, text);
 		}
 		

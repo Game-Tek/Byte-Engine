@@ -2,12 +2,13 @@
 
 #include "ByteEngine/Core.h"
 #include <GTSL/Allocator.h>
+#include <GTSL/ShortString.hpp>
 
 namespace BE
 {
 	struct BEAllocatorReference : GTSL::AllocatorReference
 	{
-		const char* Name{ nullptr };
+		GTSL::ShortString<128> Name;
 		bool IsDebugAllocation = false;
 
 		BEAllocatorReference() = default;
@@ -19,7 +20,8 @@ namespace BE
 			Name = other.Name; IsDebugAllocation = other.IsDebugAllocation; return *this;
 		}
 		
-		explicit BEAllocatorReference(const char* name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
+		explicit BEAllocatorReference(const GTSL::ShortString<128>& name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
+		explicit BEAllocatorReference(const utf8* name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
 	};
 
 	struct SystemAllocatorReference : BEAllocatorReference
@@ -30,7 +32,7 @@ namespace BE
 
 		SystemAllocatorReference() = default;
 		
-		SystemAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
+		SystemAllocatorReference(const utf8* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}
 
@@ -53,7 +55,7 @@ namespace BE
 
 		TransientAllocatorReference& operator=(const TransientAllocatorReference& allocatorReference) = default;
 		
-		TransientAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
+		TransientAllocatorReference(const GTSL::Range<const char8_t*> name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}
 	};
@@ -74,7 +76,7 @@ namespace BE
 		
 		PersistentAllocatorReference(PersistentAllocatorReference&& persistentAllocatorReference) = default;
 
-		explicit PersistentAllocatorReference(const char* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
+		explicit PersistentAllocatorReference(const GTSL::Range<const char8_t*> name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}
 	};

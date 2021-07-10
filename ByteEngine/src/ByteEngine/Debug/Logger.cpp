@@ -1,27 +1,23 @@
 #include "Logger.h"
 
-#include <cstdio>
-#include <GTSL/Memory.h>
 #include <GTSL/Thread.h>
-
 
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
 using namespace BE;
 
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), logFile()
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), logFile()
 {
 	uint64 allocated_size{ 0 };
 	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
 	
 	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
-	path += "/log.txt";
-	switch (logFile.Open(path, GTSL::File::WRITE))
+	path += u8"/log.txt";
+	switch (logFile.Open(path, GTSL::File::WRITE, true))
 	{
 	case GTSL::File::OpenResult::OK: break;
-	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: logFile.Create(path, GTSL::File::WRITE);
+	case GTSL::File::OpenResult::CREATED: break;
 	case GTSL::File::OpenResult::ERROR: break;
 	default: ;
 	}
@@ -29,28 +25,29 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object("Logger"), log
 	logFile.Resize(0);
 }
 
-void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const GTSL::UTF8*> text) const
+void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const char8_t*> text) const
 {
 	const auto day_of_month = Clock::GetDayOfMonth(); const auto month = Clock::GetMonth(); const auto year = Clock::GetYear(); const auto time = Clock::GetTime();
 
 	GTSL::StaticString<maxLogLength> string;
+
+	string += u8"[Date: ";
+	ToString(day_of_month, string); string += u8"/";
+	ToString(static_cast<uint8>(month), string); string += u8"/";
+	ToString(year, string); string += u8"]";
+
+	string += u8"[Time: ";
+	ToString(time.Hour, string); string += u8":";
+	ToString(time.Minute, string); string += u8":";
+	ToString(time.Second, string); string += u8"] ";
+
+	string += GTSL::Range<const utf8*>(GTSL::Math::Clamp(text.ElementCount(), 0ull, static_cast<uint64>(string.GetCapacity() - string.GetLength()) - 1), text.begin());// string += u8"\n";
+
+	string += u8'\n';
 	
-	char buffer[1024];
-
-	const uint32 date_length = snprintf(buffer, 1024, "Counter: %u, Thread: %u, [Date: %02d/%02d/%02d]", counter++, GTSL::Thread::ThisTreadID(), day_of_month, month, year);
-	string += buffer;
-
-	const uint32 time_length = snprintf(buffer, 1024, "[Time: %02d:%02d:%02d]", time.Hour, time.Minute, time.Second);
-	string += buffer;
-
-	const uint32 text_chars_to_write = text.Bytes() + 2 > string.GetCapacity() - string.GetLength() ? string.GetLength() - 1 : text.Bytes();
-
-	string += GTSL::Range<const utf8*>(text_chars_to_write, text.begin()); string += '\n';
-	
-	if(verbosityLevel >= minLogLevel)
-	{
+	if(verbosityLevel >= minLogLevel) {
 		SetTextColorOnLogLevel(verbosityLevel);
-		printf(string.begin());
+		WriteConsoleA(GetStdHandle(STD_OUTPUT_HANDLE), string.begin(), string.GetLength() - 1, nullptr, nullptr);
 	}
 
 	logMutex.Lock();

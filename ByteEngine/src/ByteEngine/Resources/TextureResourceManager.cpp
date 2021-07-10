@@ -11,22 +11,20 @@
 
 #undef Extract
 
-TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
+TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, resources_path;
 	query_path += BE::Application::Get()->GetPathToApplication();
 	resources_path += BE::Application::Get()->GetPathToApplication();
-	resources_path += "/resources/";
-	query_path += "/resources/*.png";
-	auto index_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("beidx"));
-	auto package_path = GetResourcePath(GTSL::ShortString<32>("Textures"), GTSL::ShortString<32>("bepkg"));
+	resources_path += u8"/resources/";
+	query_path += u8"/resources/*.png";
+	auto index_path = GetResourcePath(GTSL::ShortString<32>(u8"Textures"), GTSL::ShortString<32>(u8"beidx"));
+	auto package_path = GetResourcePath(GTSL::ShortString<32>(u8"Textures"), GTSL::ShortString<32>(u8"bepkg"));
 
-	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ)) {
+	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true)) {
 	case GTSL::File::OpenResult::OK: break;
-	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: {
-		indexFile.Create(index_path, GTSL::File::WRITE | GTSL::File::READ);
-		GTSL::File packageFile; packageFile.Create(package_path, GTSL::File::WRITE);
+	case GTSL::File::OpenResult::CREATED: {
+		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, false);
 
 		GTSL::FileQuery file_query(query_path);
 
@@ -39,7 +37,8 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 			if (!textureInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
-				query_file.Open(file_path, GTSL::File::READ); GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
+				query_file.Open(file_path, GTSL::File::READ, false);
+				GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
 
 				query_file.Read(textureBuffer.GetBufferInterface());
 
@@ -78,12 +77,12 @@ TextureResourceManager::TextureResourceManager() : ResourceManager("TextureResou
 	case GTSL::File::OpenResult::ERROR: break;
 	default: ;
 	}
-		
-	initializePackageFiles(package_path);
 
 	GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048, 32, GetTransientAllocator());
 	indexFile.Read(indexFileBuffer.GetBufferInterface());
 	GTSL::Extract(textureInfos, indexFileBuffer);
+
+	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")));
 }
 
 TextureResourceManager::~TextureResourceManager()

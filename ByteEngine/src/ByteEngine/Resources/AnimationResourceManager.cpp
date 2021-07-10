@@ -19,7 +19,7 @@ static GTSL::Matrix4 assimpMatrixToMatrix(const aiMatrix4x4 assimpMatrix)
 }
 
 static Id assimpStringToId(const aiString& aiString) {
-	return Id(GTSL::Range<const utf8*>(aiString.length + 1, aiString.data));
+	return Id(GTSL::Range<const utf8*>(aiString.length + 1, reinterpret_cast<const char8_t*>(aiString.data)));
 }
 
 static GTSL::Vector3 aiVector3DToVector(const aiVector3D assimpVector) {
@@ -30,25 +30,24 @@ static GTSL::Quaternion aiQuaternionToQuaternion(const aiQuaternion assimpQuater
 	return GTSL::Quaternion(assimpQuaternion.x, assimpQuaternion.y, assimpQuaternion.z, assimpQuaternion.w);
 }
 
-AnimationResourceManager::AnimationResourceManager(): ResourceManager("AnimationResourceManager")
+AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"AnimationResourceManager")
 {
-	initializePackageFiles(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("bepkg")));
+	initializePackageFiles(packageFiles, GetResourcePath(GTSL::StaticString<32>(u8"Animations"), GTSL::ShortString<32>(u8"bepkg")));
 
-	auto aa = GetResourcePath(GTSL::StaticString<64>("*.fbx"));
+	auto aa = GetResourcePath(GTSL::StaticString<64>(u8"*.fbx"));
 
 	GTSL::File dic;
 
-	switch (dic.Open(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("beidx")), GTSL::File::READ)) {
+	switch (dic.Open(GetResourcePath(GTSL::StaticString<32>(u8"Animations"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
 	case GTSL::File::OpenResult::OK: break;
-	case GTSL::File::OpenResult::ALREADY_EXISTS: break;
-	case GTSL::File::OpenResult::DOES_NOT_EXIST: {
+	case GTSL::File::OpenResult::CREATED: {
 		GTSL::FileQuery fileQuery(aa);
 
 		GTSL::HashMap<Id, AnimationDataSerialize, BE::TAR> animationDataSerializes(8, GetTransientAllocator());
 		GTSL::HashMap<Id, SkeletonDataSerialize, BE::TAR> skeletonDataSerializes(8, GetTransientAllocator());
 		
 		while (fileQuery.DoQuery()) {
-			GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ);
+			GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ, false);
 			GTSL::Buffer buffer(animationFile.GetSize(), 16, GetTransientAllocator());
 			animationFile.Read(buffer.GetBufferInterface());
 
@@ -64,8 +63,6 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager("Animation
 			//animationDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), animationData);
 			//skeletonDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), skeletonData); //todo: check skeleton existance
 		}
-		
-		dic.Create(GetResourcePath(GTSL::StaticString<32>("Animations"), GTSL::ShortString<32>("beidx")), GTSL::File::WRITE);
 
 		GTSL::Buffer<BE::TAR> b; b.Allocate(2048 * 16, 16, GetTransientAllocator());
 		

@@ -287,16 +287,14 @@ struct NameTable
 			if (NameRecords[i].nameID > maxNumberOfNames) { continue; }
 			
 			offset = NameRecords[i].Parse(data, offset);
-			utf8* newNameString = new utf8[NameRecords[i].length];
-			memcpy(newNameString, data + offset_start + stringOffset + NameRecords[i].offset_value, sizeof(utf8) * NameRecords[i].length);
+			char* newNameString = new char[NameRecords[i].length];
+			memcpy(newNameString, data + offset_start + stringOffset + NameRecords[i].offset_value, sizeof(char) * NameRecords[i].length);
 			uint16 string_length = NameRecords[i].length;
 			
-			if (newNameString[0] == 0)
-			{
+			if (newNameString[0] == 0) {
 				string_length = string_length >> 1;
 				
-				for (uint16 j = 0; j < string_length; j++)
-				{
+				for (uint16 j = 0; j < string_length; j++) {
 					newNameString[j] = newNameString[j * 2 + 1];
 				}
 			}
@@ -392,16 +390,16 @@ int16 GetKerningOffset(FontResourceManager::Font* font_data, uint16 left_glyph, 
 	return kern_data.State() ? kern_data.Get() : 0;
 }
 
-FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager")
+FontResourceManager::FontResourceManager(): ResourceManager(u8"FontResourceManager")
 {
-	auto path = GetResourcePath(GTSL::StaticString<64>("Fonts"), GTSL::ShortString<32>("bepkg"));
+	auto path = GetResourcePath(GTSL::StaticString<64>(u8"Fonts"), GTSL::ShortString<32>(u8"bepkg"));
 	
-	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::WRITE);
+	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::WRITE, true);
 
 	auto GetFont = [&](const GTSL::Range<const utf8*> fontName) {
-		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += "/resources/"; path += fontName; path += ".ttf";
+		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += u8"/resources/"; path += fontName; path += u8".ttf";
 
-		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ);
+		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ, false);
 		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetSize(), 8, GetTransientAllocator());
 
 		fontFile.Read(fontFile.GetSize(), fileBuffer.GetBufferInterface());
@@ -413,7 +411,7 @@ FontResourceManager::FontResourceManager(): ResourceManager("FontResourceManager
 		return fontData;
 	};
 	
-	auto font = GetFont(GTSL::StaticString<64>("FTLTLT"));
+	auto font = GetFont(GTSL::StaticString<64>(u8"FTLTLT"));
 
 	GTSL::Buffer<BE::TAR> data; data.Allocate(1000000, 8, GetTransientAllocator());
 

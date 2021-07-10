@@ -1,12 +1,9 @@
 #include "InputManager.h"
 
-#include <GTSL/Math/Vectors.h>
-
-
 #include "Application.h"
 #include "ByteEngine/Debug/Logger.h"
 
-InputManager::InputManager() : Object("InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
+InputManager::InputManager() : Object(u8"InputManager"), actionInputSourcesToActionInputEvents(128, 0.2f, GetPersistentAllocator()),
                                characterInputSourcesToCharacterInputEvents(2, GetPersistentAllocator()),
                                linearInputSourcesToLinearInputEvents(32, 0.2f, GetPersistentAllocator()),
                                vector2dInputSourceEventsToVector2DInputEvents(32, 0.2f, GetPersistentAllocator()),

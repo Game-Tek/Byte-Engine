@@ -16,7 +16,7 @@
 using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
 
 namespace AccessTypes {
-	static constexpr AccessType READ = 1, READ_WRITE = 4;
+	static constexpr AccessType READ(1), READ_WRITE(4);
 }
 
 struct TaskInfo
@@ -222,9 +222,8 @@ struct TaskSorter
 		{
 			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
 			BE_ASSERT(accesses[i] == AccessTypes::READ || accesses[i] == AccessTypes::READ_WRITE, "Unexpected value");
-			if (--currentObjectAccessCount[objects[i]] == 0) //if task is done
-			{
-				currentObjectAccessState[objects[i]] = 0;
+			if (--currentObjectAccessCount[objects[i]] == 0) { //if object is no longer accessed
+				currentObjectAccessState[objects[i]] = AccessType();
 			}
 
 			inUseSystems.Pop(inUseSystems.Find(objectNames[objects[i]]).Get(), 1);

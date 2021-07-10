@@ -50,7 +50,7 @@ private:
 class LocalMemoryAllocator : public Object
 {
 public:
-	LocalMemoryAllocator() : Object("LocalMemoryAllocator") {}
+	LocalMemoryAllocator() : Object(u8"LocalMemoryAllocator") {}
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
@@ -96,7 +96,7 @@ private:
 class ScratchMemoryAllocator : public Object
 {
 public:
-	ScratchMemoryAllocator() : Object("ScratchMemoryAllocator") {}
+	ScratchMemoryAllocator() : Object(u8"ScratchMemoryAllocator") {}
 
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	

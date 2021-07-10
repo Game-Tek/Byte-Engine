@@ -10,7 +10,7 @@ public:
 	Id() = default;
 	
 	template<uint64 N>
-	constexpr Id(char const (&s)[N]) : hashedName(s) {}
+	constexpr Id(char8_t const (&s)[N]) : hashedName(s) {}
 	
 	constexpr Id(const utf8* name) noexcept : hashedName(name), stringName(name) {}
 	constexpr Id(const GTSL::Range<const utf8*> name) noexcept : hashedName(name), stringName(name) {}

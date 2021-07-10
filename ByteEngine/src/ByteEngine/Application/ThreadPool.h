@@ -26,7 +26,7 @@ class ThreadPool : public Object
 		void* TaskInfo;
 	};
 public:
-	explicit ThreadPool() : Object("Thread Pool")
+	explicit ThreadPool() : Object(u8"Thread Pool")
 	{		
 		//lambda
 		auto workers_loop = [](ThreadPool* pool, const uint8 i) {			

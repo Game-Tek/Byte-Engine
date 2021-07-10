@@ -9,7 +9,7 @@
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
-AudioSystem::AudioSystem() : System("AudioSystem")
+AudioSystem::AudioSystem() : System(u8"AudioSystem")
 {
 }
 
@@ -28,28 +28,28 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 		mixFormat.NumberOfChannels = 2;
 		mixFormat.SamplesPerSecond = 48000;
 
-		onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
-		onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
+		onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
+		onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 
 		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
 		{
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
-					initializeInfo.GameInstance->AddTask("renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { "AudioSystem", AccessTypes::READ_WRITE } }, "RenderDo", "RenderEnd");
+					initializeInfo.GameInstance->AddTask(u8"renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
 
 					loadedSounds.Initialize(32, GetPersistentAllocator());
 
-					BE_LOG_MESSAGE("Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, "\n	Khz: ", mixFormat.SamplesPerSecond, "\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
+					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
-					BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, "Unsupported");
+					BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, u8"Unsupported");
 				} else { error = true; }
 			} else { error = true; }
 		} else { error = true; }
 	} else { error = true; }
 
 	if(error)
-		BE_LOG_WARNING("Unable to start audio device with requested parameters:\n Stream share mode: Shared\n Bits per sample: ", mixFormat.BitsPerSample, "\nNumber of channels: ", mixFormat.NumberOfChannels, "\nSamples per second: ", mixFormat.SamplesPerSecond);
+		BE_LOG_WARNING(u8"Unable to start audio device with requested parameters:\n Stream share mode: Shared\n Bits per sample: ", mixFormat.BitsPerSample, u8"\nNumber of channels: ", mixFormat.NumberOfChannels, u8"\nSamples per second: ", mixFormat.SamplesPerSecond);
 }
 
 void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -95,7 +95,7 @@ void AudioSystem::PlayAudio(AudioEmitterHandle audioEmitter)
 
 void AudioSystem::requestAudioStreams()
 {
-	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
+	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
 
 	for(uint8 i = 0; i < lastRequestedAudios.GetLength(); ++i)
 	{
@@ -127,7 +127,7 @@ void AudioSystem::render(TaskInfo)
 	
 	GTSL::Array<uint32, 16> emittersToStop;
 	
-	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>("AudioResourceManager");
+	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
 	
 	uint32 availableAudioFrames = 0;
 	if(!audioDevice.GetAvailableBufferFrames(availableAudioFrames)) {

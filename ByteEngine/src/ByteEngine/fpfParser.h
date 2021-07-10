@@ -34,8 +34,8 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 	fileDescription.Classes.Initialize(allocator); fileDescription.ClassesByName.Initialize(16, allocator);
 	
 	GTSL::HashMap<Id, GTSL::StaticString<64>, ALLOCATOR> registeredTypes(16, allocator);
-	registeredTypes.Emplace(Id("uint32"), "uint32"); registeredTypes.Emplace(Id("float32"), "float32");
-	registeredTypes.Emplace(Id("string"), "string");
+	registeredTypes.Emplace(Id(u8"uint32"), u8"uint32"); registeredTypes.Emplace(Id(u8"float32"), u8"float32");
+	registeredTypes.Emplace(Id(u8"string"), u8"string");
 
 	
 	GTSL::Array<GTSL::StaticString<64>, 128> tokens;
@@ -68,11 +68,11 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 			foundIdentifier();
 
 			if (tokens.GetLength() > 1) {
-				if (tokens[tokens.GetLength() - 2] == "}" && tokens.back() == "{") {
+				if (tokens[tokens.GetLength() - 2] == u8"}" && tokens.back() == u8"{") {
 					tokens.PopBack();
 
 					while (true) {
-						if (text[c] == '{') {
+						if (text[c] == u8'{') {
 							fileDescription.DataStart = c; break;
 						}
 
@@ -100,14 +100,14 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 			
 			
 			auto* classPointer = fileDescription.Classes.AddChild(nullptr);
-			if (advance() != "{") { return false; }
+			if (advance() != u8"{") { return false; }
 			fileDescription.ClassesByName.Emplace(hashedName, &classPointer->Data);
 
-			while (token != "}") {
+			while (token != u8"}") {
 				{
 					auto memberType = advance();
 
-					if (memberType.Find("[]")) { //register array class
+					if (memberType.Find(u8"[]")) { //register array class
 						auto hashedName = Id(memberType);
 						auto placeAttempt = registeredTypes.TryEmplace(hashedName, memberType);
 						
@@ -115,8 +115,8 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 							auto* node = fileDescription.Classes.AddChild(nullptr);
 							fileDescription.ClassesByName.Emplace(hashedName, &node->Data);
 							auto nonArrayType = memberType;
-							nonArrayType.Drop(nonArrayType.FindLast('[').Get());
-							node->Data.Members.EmplaceBack(nonArrayType, "arrMem");
+							nonArrayType.Drop(nonArrayType.FindLast(u8'[').Get());
+							node->Data.Members.EmplaceBack(nonArrayType, u8"arrMem");
 						}
 					}
 					
@@ -134,7 +134,7 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 		};
 		
 		for (; tokenIndex < tokens.GetLength(); ++tokenIndex) {
-			if (advance() == "class") { if (!processClass()) { return false; }; }
+			if (advance() == u8"class") { if (!processClass()) { return false; }; }
 		}
 	}
 	
@@ -156,7 +156,7 @@ struct ParseState
 
 	template<class ALLOC>
 	auto advance(FileDescription<ALLOC>& fileDescription) {
-		if (Character == '{')
+		if (Character == u8'{')
 		{
 			if (Stack.GetLength())
 			{
@@ -172,9 +172,9 @@ struct ParseState
 					Stack.EmplaceBack(stackState);
 				}
 			}
-		} else if (Character == '}') {
+		} else if (Character == u8'}') {
 			Stack.PopBack();
-		} else if (Character == ',') {
+		} else if (Character == u8',') {
 			++Stack.back().BlockIndex;
 		}
 		
@@ -234,8 +234,8 @@ bool GoToArray(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& par
 				auto* node = fileDescription.Classes.AddChild(nullptr);
 				fileDescription.ClassesByName.Emplace(Id(strings[0]), &node->Data);
 				auto nonArrayType = strings[0];
-				nonArrayType.Drop(nonArrayType.FindLast('[').Get());
-				node->Data.Members.EmplaceBack(nonArrayType, "arrMem");
+				nonArrayType.Drop(nonArrayType.FindLast(u8'[').Get());
+				node->Data.Members.EmplaceBack(nonArrayType, u8"arrMem");
 
 				typename ParseState<ALLOC2>::StackState stackState;
 				stackState.Type = strings[0];

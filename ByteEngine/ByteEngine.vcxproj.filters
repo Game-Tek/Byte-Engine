@@ -96,12 +96,11 @@
     <ClInclude Include="src\ByteEngine\Physics\Queries.h" />
     <ClInclude Include="src\ByteEngine\Physics\RigidBody.h" />
     <ClInclude Include="src\ByteEngine\Resources\AudioResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Resources\MaterialResourceManager.h" />
+    <ClInclude Include="src\ByteEngine\Resources\ShaderResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceData.h" />
     <ClInclude Include="src\ByteEngine\Resources\ResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\StaticMeshResourceManager.h" />
     <ClInclude Include="src\ByteEngine\Resources\TextureResourceManager.h" />
-    <ClInclude Include="src\ByteEngine\Sound\ReverbVolume.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundListener.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundMixer.h" />
     <ClInclude Include="src\ByteEngine\Sound\SoundPlayer.h" />
@@ -163,7 +162,7 @@
     </ClCompile>
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\MaterialResourceManager.cpp" />
+    <ClCompile Include="src\ByteEngine\Resources\ShaderResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />

@@ -34,6 +34,11 @@ PoolAllocator::Pool::Pool(const uint32 slotsCount, const uint32 slotsSize, uint6
 	allocatorReference->Allocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), reinterpret_cast<void**>(&freeSlotsBitTrack), &pool_allocated_size);
 	allocatedSize += pool_allocated_size;
 
+	if constexpr (_DEBUG) {
+		allocatorReference->Allocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), reinterpret_cast<void**>(&freeSlotsBitTrack2), &pool_allocated_size);
+		allocatedSize += pool_allocated_size;
+	}
+
 	bitNums = MAX_SLOTS_COUNT / GTSL::Bits<free_slots_type>() + 1;
 
 	if constexpr (STRONG_CHECK) {
@@ -43,13 +48,19 @@ PoolAllocator::Pool::Pool(const uint32 slotsCount, const uint32 slotsSize, uint6
 	}
 	
 	GTSL::InitializeBits(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack));
+	
+	if constexpr (_DEBUG) {
+		GTSL::InitializeBits(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack2));
+	}
 }
 
 // ALLOCATE //
 
-void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const
+void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, GTSL::Range<const char8_t*> name) const
 {
-	GTSL::Lock lock(globalLock);
+	if constexpr (SERIALIZE_ACCESS) {
+		GTSL::Lock lock(globalLock);
+	}
 	
 	if constexpr (USE_MALLOC) {
 		*memory = malloc(size);
@@ -79,6 +90,8 @@ void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, vo
 		}
 
 		BE_ASSERT(isCorrect);
+		
+		 GTSL::SetAsOccupied(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack2), slot.Get());
 	}
 	
 	BE_ASSERT(slot.State(), "No more free slots!")
@@ -92,9 +105,11 @@ void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, vo
 
 // DEALLOCATE //
 
-void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, const char* name) const
+void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, GTSL::Range<const char8_t*> name) const
 {
-	GTSL::Lock lock(globalLock);
+	if constexpr (SERIALIZE_ACCESS) {
+		GTSL::Lock lock(globalLock);
+	}
 
 	if constexpr (USE_MALLOC) {
 		free(memory);
@@ -116,6 +131,8 @@ void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* 
 		for (uint32 i = 0; i < SLOTS_SIZE; ++i) {
 			static_cast<byte*>(memory)[i] = 0xCA;
 		}
+		
+		GTSL::SetAsFree(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack2), index);
 	}
 	
 	GTSL::SetAsFree(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack), index);
@@ -137,6 +154,9 @@ void PoolAllocator::Pool::Free(uint64& freedBytes, BE::SystemAllocatorReference*
 
 	if constexpr (_DEBUG)
 	{
+		allocatorReference->Deallocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), freeSlotsBitTrack2);
+		freedBytes += GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT);
+		
 		freedBytes += slotsDataAllocationSize();
 		freedBytes += GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT);
 	}

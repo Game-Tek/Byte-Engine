@@ -12,23 +12,23 @@ StaticMeshRenderGroup::StaticMeshRenderGroup()
 
 void StaticMeshRenderGroup::Initialize(const InitializeInfo& initializeInfo)
 {
-	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>("RenderSystem");
+	auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 	transformations.Initialize(initializeInfo.ScalingFactor, GetPersistentAllocator());
 	meshes.Initialize(32, GetPersistentAllocator());
 	addedMeshes.Initialize(2, 16, GetPersistentAllocator());
 	resourceNames.Initialize(8, GetPersistentAllocator());
 
 	{
-		auto acts_on = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessTypes::READ_WRITE }, { "StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
-		onStaticMeshInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshInfoLoaded>(this), acts_on);
+		auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+		onStaticMeshInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshInfoLoaded>(this), acts_on);
 	}
 	
 	{
-		auto acts_on = GTSL::Array<TaskDependency, 4>{ { "RenderSystem", AccessTypes::READ_WRITE }, { "StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
-		onStaticMeshLoadHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this), acts_on);
+		auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+		onStaticMeshLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this), acts_on);
 	}
 	
-	BE_LOG_MESSAGE("Initialized StaticMeshRenderGroup");
+	BE_LOG_MESSAGE(u8"Initialized StaticMeshRenderGroup");
 }
 
 void StaticMeshRenderGroup::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -49,7 +49,7 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 		RenderSystem::MeshHandle meshHandle = addStaticMeshInfo.RenderSystem->CreateMesh(addStaticMeshInfo.MeshName, index);
 		resource->MeshHandle = meshHandle;
 		
-		if (BE::Application::Get()->GetOption("rayTracing")) {
+		if (BE::Application::Get()->GetOption(u8"rayTracing")) {
 			addStaticMeshInfo.RenderSystem->CreateRayTracedMesh(meshHandle);
 		}
 
@@ -80,7 +80,7 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 {
 	meshLoadInfo.RenderSystem->UpdateMesh(meshLoadInfo.MeshHandle);
 
-	if (BE::Application::Get()->GetOption("rayTracing"))
+	if (BE::Application::Get()->GetOption(u8"rayTracing"))
 	{
 		meshLoadInfo.RenderSystem->UpdateRayTraceMesh(meshLoadInfo.MeshHandle);
 	}

@@ -43,7 +43,7 @@ int main(int argc, char** argv)
 
 	application->SetSystemAllocator(&system_allocator);
 
-	if (application->BaseInitialize(argc, argv)) //call BE::Application initialize, which does basic universal startup
+	if (application->BaseInitialize(argc, reinterpret_cast<char8_t**>(argv))) //call BE::Application initialize, which does basic universal startup
 	{
 		if (application->Initialize()) //call BE::Application virtual initialize which will call the chain of initialize's
 		{

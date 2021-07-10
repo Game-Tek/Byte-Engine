@@ -161,32 +161,44 @@ public:
 		}
 	}
 	
-	void RecordActionInputSource(InputDeviceHandle deviceIndex, Id eventName, ActionInputEvent::type newValue)
+	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, ActionInputEvent::type newValue)
 	{
 		if (!actionInputSourcesToActionInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as an action input source."); return; }
 		actionInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void RecordCharacterInputSource(InputDeviceHandle deviceIndex, Id eventName, CharacterInputEvent::type newValue)
+	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, CharacterInputEvent::type newValue)
 	{
 		if (!characterInputSourcesToCharacterInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a character input source."); return; }
 		characterInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void RecordLinearInputSource(InputDeviceHandle deviceIndex, Id eventName, LinearInputEvent::type newValue)
+	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, LinearInputEvent::type newValue)
 	{
 		if (!linearInputSourcesToLinearInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a linear input source."); return; }
 		linearInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
-	void Record2DInputSource(InputDeviceHandle deviceIndex, Id eventName, Vector2DInputEvent::type newValue)
+	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, Vector2DInputEvent::type newValue)
 	{
 		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a vector 2d input source."); return; }
 		vector2DInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 
-	ActionInputEvent::type GetActionInputSourceValue(Id sourceDevice, InputDeviceHandle deviceHandle, Id eventName) const {
+	ActionInputEvent::type GetActionInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
 		return actionInputSourcesToActionInputEvents[eventName].LastValue;
+	}
+
+	CharacterInputEvent::type GetCharacterInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+		return characterInputSourcesToCharacterInputEvents[eventName].LastValue;
+	}
+
+	LinearInputEvent::type GetLinearInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+		return linearInputSourcesToLinearInputEvents[eventName].LastValue;
+	}
+
+	Vector2DInputEvent::type GetVector2DInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+		return vector2dInputSourceEventsToVector2DInputEvents[eventName].LastValue;
 	}
 	
 	void Update();

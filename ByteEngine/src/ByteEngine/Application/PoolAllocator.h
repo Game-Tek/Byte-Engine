@@ -18,9 +18,9 @@ public:
 
 	~PoolAllocator() = default;
 
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const char* name) const;
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, GTSL::Range<const char8_t*> name) const;
 
-	void Deallocate(uint64 size, uint64 alignment, void* memory, const char* name) const;
+	void Deallocate(uint64 size, uint64 alignment, void* memory, const GTSL::Range<const char8_t*> name) const;
 
 	void Free() const;
 
@@ -41,6 +41,11 @@ public:
 		using free_slots_type = uint64;
 		
 		free_slots_type* freeSlotsBitTrack{ nullptr };
+		
+#ifdef _DEBUG
+		free_slots_type* freeSlotsBitTrack2{ nullptr };
+#endif
+		
 		byte* slotsData{ nullptr };
 		
 		const uint32 SLOTS_SIZE{ 0 };
@@ -57,6 +62,7 @@ public:
 
 	static constexpr bool USE_MALLOC = false;
 	static constexpr bool STRONG_CHECK = false;
+	static constexpr bool SERIALIZE_ACCESS = true;
 
 private:
 	Pool* poolsData{ nullptr };

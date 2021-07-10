@@ -3,7 +3,6 @@
 #include "ByteEngine/Game/World.h"
 #include "ByteEngine/Game/System.h"
 
-#include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
 #include "ByteEngine/Application/ThreadPool.h"
@@ -11,7 +10,7 @@
 
 #include <GTSL/Semaphore.h>
 
-GameInstance::GameInstance() : Object("GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
+GameInstance::GameInstance() : Object(u8"GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
 recurringTasksPerStage(16, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()),
 dynamicTasksPerStage(32, GetPersistentAllocator()),
 taskSorter(64, GetPersistentAllocator()),

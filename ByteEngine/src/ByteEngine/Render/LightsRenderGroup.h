@@ -13,7 +13,7 @@ public:
 	MAKE_HANDLE(uint32, DirectionalLight)
 	MAKE_HANDLE(uint32, PointLight)
 	
-	LightsRenderGroup() : System("LightsRenderGroup") {}
+	LightsRenderGroup() : System(u8"LightsRenderGroup") {}
 	
 	void Initialize(const InitializeInfo& initializeInfo) override {
 		directionalLights.Initialize(8, GetPersistentAllocator());

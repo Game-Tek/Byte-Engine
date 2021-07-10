@@ -30,7 +30,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : Object(ACI.ApplicationName), systemAllocatorReference("Application"),
+	Application::Application(const ApplicationCreateInfo& ACI) : Object(ACI.ApplicationName.begin()), systemAllocatorReference(u8"Application"),
 	systemApplication(GTSL::Application::ApplicationCreateInfo{})
 	{
 		applicationInstance = this;
@@ -43,7 +43,7 @@ namespace BE
 	bool Application::BaseInitialize(int argc, utf8* argv[])
 	{
 		if (!checkPlatformSupport()) {
-			Close(CloseMode::ERROR, GTSL::StaticString<128>("No platform support."));
+			Close(CloseMode::ERROR, GTSL::StaticString<128>(u8"No platform support."));
 			return false;
 		}
 
@@ -68,16 +68,16 @@ namespace BE
 		settings.Initialize(64, GetPersistentAllocator());
 
 		if (!parseConfig())	{
-			Close(CloseMode::ERROR, GTSL::StaticString<64>("Failed to parse config file"));
+			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
 		}
 
 		initialized = true;
 
-		BE_LOG_SUCCESS("Succesfully initialized Byte Engine module!");
+		BE_LOG_SUCCESS(u8"Succesfully initialized Byte Engine module!");
 		
 		if (argc > 0)
 		{	
-			GTSL::StaticString<2048> string("Application started with parameters:\n");
+			GTSL::StaticString<2048> string(u8"Application started with parameters:\n");
 
 			for (uint32 p = 0; p < argc; ++p) {
 				string += '	'; string += argv[p];
@@ -87,7 +87,7 @@ namespace BE
 		}
 		else
 		{
-			BE_LOG_MESSAGE("Application started with no parameters.");
+			BE_LOG_MESSAGE(u8"Application started with no parameters.");
 		}
 
 		return true;
@@ -111,14 +111,14 @@ namespace BE
 			{
 				if (closeMode == CloseMode::WARNING)
 				{
-					BE_LOG_WARNING("Shutting down application!\nReason: ", closeReason)
+					BE_LOG_WARNING(u8"Shutting down application!\nReason: ", closeReason)
 				}
 
-				BE_LOG_ERROR("Shutting down application!\nReason: ", closeReason)
+				BE_LOG_ERROR(u8"Shutting down application!\nReason: ", closeReason)
 			}
 			else
 			{
-				BE_LOG_SUCCESS("Shutting down application. No reported errors.")
+				BE_LOG_SUCCESS(u8"Shutting down application. No reported errors.")
 			}
 
 			settings.Free();
@@ -148,7 +148,7 @@ namespace BE
 
 	int Application::Run(int argc, char** argv)
 	{
-		gameInstance->AddEvent("Application", EventHandle<>("OnPromptClose"));
+		gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnPromptClose"));
 		
 		while (!flaggedForClose)
 		{
@@ -169,7 +169,7 @@ namespace BE
 
 	void Application::PromptClose()
 	{
-		gameInstance->DispatchEvent("Application", EventHandle<>("OnPromptClose"));
+		gameInstance->DispatchEvent(u8"Application", EventHandle<>(u8"OnPromptClose"));
 	}
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)
@@ -181,7 +181,7 @@ namespace BE
 
 	bool Application::parseConfig()
 	{
-		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += "/settings.ini", GTSL::File::READ);
+		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += u8"/settings.ini", GTSL::File::READ, false);
 
 		//don't try parsing if file is empty
 		if(settingsFile.GetSize() == 0) { return false; }

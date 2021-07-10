@@ -102,7 +102,7 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask("loadstaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadstaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
@@ -116,19 +116,20 @@ public:
 				byte* vertices = buffer.begin();
 				byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
 
-				resourceManager->getFile().SetPointer(staticMeshInfo.ByteOffset);
-				resourceManager->getFile().Read(GTSL::Range<byte*>(verticesSize, vertices));
-				resourceManager->getFile().Read(GTSL::Range<byte*>(indicesSize, indices));
+				//resourceManager->.SetPointer(staticMeshInfo.ByteOffset);
+				//resourceManager->.Read(GTSL::Range<byte*>(verticesSize, vertices));
+				//resourceManager->.Read(GTSL::Range<byte*>(indicesSize, indices));
 			}
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask("loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
 private:
 	GTSL::File indexFile;
+	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 	
 	GTSL::HashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 

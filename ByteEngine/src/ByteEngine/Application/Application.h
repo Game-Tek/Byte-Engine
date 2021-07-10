@@ -31,7 +31,7 @@ namespace BE
 	 */
 	struct ApplicationCreateInfo
 	{
-		const char* ApplicationName = nullptr;
+		GTSL::ShortString<128> ApplicationName;
 	};
 	
 	class Application : public Object
@@ -65,7 +65,7 @@ namespace BE
 		
 		int Run(int argc, char** argv);
 		
-		virtual const char* GetApplicationName() = 0;
+		virtual GTSL::ShortString<128> GetApplicationName() = 0;
 
 		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();

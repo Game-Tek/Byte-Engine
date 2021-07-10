@@ -1,5 +1,7 @@
 #pragma once
 
+#include <GTSL/ShortString.hpp>
+
 #include "Application/AllocatorReferences.h"
 
 namespace BE
@@ -19,7 +21,7 @@ public:
 	
 	~Object() = default;
 
-	[[nodiscard]] const char* GetName() const { return name; }
+	[[nodiscard]] auto& GetName() const { return name; }
 
 	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const
 	{
@@ -36,7 +38,7 @@ protected:
 	uint8 getThread() const;
 	
 private:
-	const utf8* name = "Object";
+	GTSL::ShortString<128> name = u8"Object";
 
 };
 

@@ -2,7 +2,6 @@
 
 #include <GTSL/FixedVector.h>
 #include <GTSL/Math/Vectors.h>
-#include <GTSL/Math/Vectors.h>
 
 #include "HitResult.h"
 #include "ByteEngine/Game/System.h"
@@ -20,10 +19,10 @@ public:
 	void Initialize(const InitializeInfo& initializeInfo) override
 	{
 		physicsObjects.Initialize(32, GetPersistentAllocator()); updatedObjects.Initialize(32, GetPersistentAllocator());
-		initializeInfo.GameInstance->AddTask("onUpdate", Task<>::Create<PhysicsWorld, &PhysicsWorld::onUpdate>(this), {}, "FrameUpdate", "RenderStart");
+		initializeInfo.GameInstance->AddTask(u8"onUpdate", Task<>::Create<PhysicsWorld, &PhysicsWorld::onUpdate>(this), {}, u8"FrameUpdate", u8"RenderStart");
 
-		onStaticMeshInfoLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshInfoLoaded>(this), {});
-		onStaticMeshLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask("onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshLoaded>(this), {});
+		onStaticMeshInfoLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshInfoLoaded>(this), {});
+		onStaticMeshLoadedHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshLoaded>(this), {});
 
 		boundlessForces.EmplaceBack(0, -10, 0, 0);
 	}

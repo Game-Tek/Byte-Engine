@@ -11,7 +11,7 @@
 class GameApplication : public BE::Application
 {
 public:
-	GameApplication(const char* name) : Application(BE::ApplicationCreateInfo{ name })
+	GameApplication(GTSL::ShortString<128> name) : Application(BE::ApplicationCreateInfo{ name })
 	{
 	}
 
@@ -23,8 +23,8 @@ public:
 	void Shutdown() override;
 
 	// EVENTS
-	static EventHandle<bool> GetOnFocusGainEventHandle() { return EventHandle<bool>("OnFocusGain"); }
-	static EventHandle<bool> GetOnFocusLossEventHandle() { return EventHandle<bool>("OnFocusLoss"); }
+	static EventHandle<bool> GetOnFocusGainEventHandle() { return EventHandle<bool>(u8"OnFocusGain"); }
+	static EventHandle<bool> GetOnFocusLossEventHandle() { return EventHandle<bool>(u8"OnFocusLoss"); }
 
 protected:
 	GTSL::Window window;

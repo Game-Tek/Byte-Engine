@@ -77,7 +77,7 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask("loadAudioInfo", Task<AudioResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudioInfo), {}, this, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadAudioInfo", Task<AudioResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudioInfo), {}, this, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	//Audio data is aligned to 16 bytes
@@ -106,11 +106,13 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::Range<const byte*>(bytes, dataPointer), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask("loadAudio", Task<AudioResourceManager*, AudioInfo, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudio), {}, this, GTSL::MoveRef(audioInfo), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"loadAudio", Task<AudioResourceManager*, AudioInfo, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudio), {}, this, GTSL::MoveRef(audioInfo), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 private:
 	GTSL::File indexFile;
 	GTSL::HashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
 	GTSL::HashMap<Id, GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
+
+	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 };

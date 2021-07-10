@@ -3,19 +3,13 @@
 #include "SandboxGameInstance.h"
 #include "SandboxWorld.h"
 #include "ByteEngine/Application/InputManager.h"
-#include "ByteEngine/Resources/MaterialResourceManager.h"
+#include "ByteEngine/Resources/ShaderResourceManager.h"
 
 #include "ByteEngine/Game/CameraSystem.h"
 
-#include <GTSL/Math/AxisAngle.h>
-
 #include "ByteEngine/fpfParser.h"
-#include "ByteEngine/Application/Clock.h"
-#include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
-#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Render/UIManager.h"
-#include "ByteEngine/Sound/AudioSystem.h"
 
 class UIManager;
 class TestSystem;
@@ -70,120 +64,56 @@ bool Game::Initialize()
 	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	GTSL::Array<Id, 2> a({ "MouseMove" });
-	inputManagerInstance->Register2DInputEvent("Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+	GTSL::Array<Id, 2> a({ u8"MouseMove" });
+	inputManagerInstance->Register2DInputEvent(u8"Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 
-	a.PopBack(); a.EmplaceBack("W_Key");
-	inputManagerInstance->RegisterActionInputEvent("Move Forward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
-	a.PopBack(); a.EmplaceBack("A_Key");
-	inputManagerInstance->RegisterActionInputEvent("Move Left", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
-	a.PopBack(); a.EmplaceBack("S_Key");
-	inputManagerInstance->RegisterActionInputEvent("Move Backward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
-	a.PopBack(); a.EmplaceBack("D_Key");
-	inputManagerInstance->RegisterActionInputEvent("Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
-	a.PopBack(); a.EmplaceBack("MouseWheel");
-	inputManagerInstance->RegisterLinearInputEvent("Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
-	a.PopBack(); a.EmplaceBack("RightStick");
-	inputManagerInstance->Register2DInputEvent("View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-	a.PopBack(); a.EmplaceBack("LeftStick");
-	inputManagerInstance->Register2DInputEvent("Move Camera", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
-	a.PopBack(); a.EmplaceBack("LeftMouseButton"); a.EmplaceBack("RightTrigger");
-	inputManagerInstance->RegisterActionInputEvent("Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
+	a.PopBack(); a.EmplaceBack(u8"W_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Forward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
+	a.PopBack(); a.EmplaceBack(u8"A_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Left", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
+	a.PopBack(); a.EmplaceBack(u8"S_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Backward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
+	a.PopBack(); a.EmplaceBack(u8"D_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
+	a.PopBack(); a.EmplaceBack(u8"MouseWheel");
+	inputManagerInstance->RegisterLinearInputEvent(u8"Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
+	a.PopBack(); a.EmplaceBack(u8"RightStick");
+	inputManagerInstance->Register2DInputEvent(u8"View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+	a.PopBack(); a.EmplaceBack(u8"LeftStick");
+	inputManagerInstance->Register2DInputEvent(u8"Move Camera", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
+	a.PopBack(); a.EmplaceBack(u8"LeftMouseButton"); a.EmplaceBack(u8"RightTrigger");
+	inputManagerInstance->RegisterActionInputEvent(u8"Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
 
 	GameInstance::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	{
-		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "HydrantMat";
-		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
-		materialCreateInfo.RenderPass = "SceneRenderPass";
-		
-		materialCreateInfo.Parameters.EmplaceBack("albedo", MaterialResourceManager::ParameterType::TEXTURE_REFERENCE);
-		
-		materialCreateInfo.DepthWrite = true;
-		materialCreateInfo.DepthTest = true;
-		materialCreateInfo.StencilTest = false;
-		materialCreateInfo.CullMode = GAL::CullMode::CULL_BACK;
-		materialCreateInfo.BlendEnable = false;
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
+		ShaderResourceManager::ShaderGroupCreateInfo shaderGroupCreateInfo;
+		shaderGroupCreateInfo.Name = u8"PlainMaterial";
 
-		materialCreateInfo.Permutations.EmplaceBack();
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::POSITION, 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::NORMAL, 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TANGENT, 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::BITANGENT, 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::TEXTURE_COORDINATES, 0, GAL::ShaderDataType::FLOAT2 });
-
-		{
-			materialCreateInfo.MaterialInstances.EmplaceBack();
-			materialCreateInfo.MaterialInstances.back().Name = "tvMat";
-			materialCreateInfo.MaterialInstances.back().Parameters.EmplaceBack();
-			materialCreateInfo.MaterialInstances.back().Parameters.back().First = "albedo";
-			materialCreateInfo.MaterialInstances.back().Parameters.back().Second.TextureReference = "TV_Albedo";
-		}
+		auto& vertexShader = shaderGroupCreateInfo.Shaders.EmplaceBack();
+		vertexShader.Name = u8"VertexShader";
+		vertexShader.Type = GAL::ShaderType::VERTEX;
 		
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	}
-
-	{
-		MaterialResourceManager::RasterMaterialCreateInfo materialCreateInfo;
-		materialCreateInfo.ShaderName = "PlainMaterial";
-		materialCreateInfo.RenderGroup = "StaticMeshRenderGroup";
-		materialCreateInfo.RenderPass = "SceneRenderPass";
+		ShaderResourceManager::VertexShader vertex_shader;
+		vertex_shader.VertexElements.PushBack({ GAL::Pipeline::POSITION, GAL::ShaderDataType::FLOAT3 });
+		vertex_shader.VertexElements.PushBack({ GAL::Pipeline::NORMAL, GAL::ShaderDataType::FLOAT3 });
 		
-		materialCreateInfo.DepthWrite = true;
-		materialCreateInfo.DepthTest = true;
-		materialCreateInfo.StencilTest = false;
-		materialCreateInfo.CullMode = GAL::CullMode::CULL_NONE;
-		materialCreateInfo.BlendEnable = false;
-		materialCreateInfo.ColorBlendOperation = GAL::BlendOperation::ADD;
-
-		materialCreateInfo.Permutations.EmplaceBack();
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::POSITION, 0, GAL::ShaderDataType::FLOAT3 });
-		materialCreateInfo.Permutations.back().PushBack({ GAL::Pipeline::NORMAL, 0, GAL::ShaderDataType::FLOAT3 });
+		vertexShader.VertexShader = vertex_shader;
 		
-		{
-			materialCreateInfo.MaterialInstances.EmplaceBack();
-			materialCreateInfo.MaterialInstances.back().Name = "plainMaterial";
-		}
-		
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRasterMaterial(materialCreateInfo);
-	}
-	
-	{
-		MaterialResourceManager::RayTracePipelineCreateInfo pipelineCreateInfo;
-		pipelineCreateInfo.RecursionDepth = 3;
-		pipelineCreateInfo.Payload.EmplaceBack(MaterialResourceManager::ParameterType::FVEC4);
-		pipelineCreateInfo.PipelineName = "ScenePipeline";
+		auto& fragmentShader = shaderGroupCreateInfo.Shaders.EmplaceBack();
+		ShaderResourceManager::FragmentShader fragment_shader;
+		fragmentShader.Name = u8"FragmentShader";
+		fragmentShader.Type = GAL::ShaderType::FRAGMENT;
+		fragment_shader.WriteOperation = GAL::BlendOperation::WRITE;
+		fragmentShader.FragmentShader = fragment_shader;
 
 		{
-			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
-			shader.ShaderName = "RayGen";
-			shader.Type = GAL::ShaderType::RAY_GEN;
-			shader.MaterialInstances.EmplaceBack();
-		}
-
-		{
-			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
-			shader.ShaderName = "ClosestHit";
-			shader.Type = GAL::ShaderType::CLOSEST_HIT;
-			auto& hydrantInstance = shader.MaterialInstances.EmplaceBack();
-			hydrantInstance.EmplaceBack("StaticMeshRenderGroup");
-			hydrantInstance.EmplaceBack("HydrantMat");
-			auto& tvInstance = shader.MaterialInstances.EmplaceBack();
-			tvInstance.EmplaceBack("StaticMeshRenderGroup");
-			tvInstance.EmplaceBack("HydrantMat");
-		}
-
-		{
-			auto& shader = pipelineCreateInfo.Shaders.EmplaceBack();
-			shader.ShaderName = "Miss";
-			shader.Type = GAL::ShaderType::MISS;
-			shader.MaterialInstances.EmplaceBack();
+			shaderGroupCreateInfo.MaterialInstances.EmplaceBack();
+			shaderGroupCreateInfo.MaterialInstances.back().Name = u8"plainMaterial";
 		}
 		
-		GetResourceManager<MaterialResourceManager>("MaterialResourceManager")->CreateRayTracePipeline(pipelineCreateInfo);
+		GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager")->CreateShaderGroup(shaderGroupCreateInfo);
 	}
 	
 	//show loading screen
@@ -196,12 +126,12 @@ bool Game::Initialize()
 
 void Game::PostInitialize()
 {
-	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);//
+	//BE_LOG_LEVEL(BE::Logger::VerbosityLevel::WARNING);
 	
 	GameApplication::PostInitialize();
 
 	{
-		auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+		auto* cameraSystem = gameInstance->GetSystem<CameraSystem>(u8"CameraSystem");
 	
 		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0.5, -2));
 		fov = cameraSystem->GetFieldOfView(camera);
@@ -209,32 +139,32 @@ void Game::PostInitialize()
 	
 	//
 	//auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	//auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>("RenderOrchestrator");
-	//auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
+	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
+	auto* renderSystem = gameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 	//auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 	//
 	//{
 	//	RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = renderSystem;
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.ShaderResourceManager = GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "HydrantMat";
 	//	createMaterialInfo.InstanceName = "tvMat";
 	//	tvMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
 	//}
 	//
-	//{
-	//	RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
-	//	createMaterialInfo.RenderSystem = renderSystem;
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
-	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	createMaterialInfo.MaterialName = "PlainMaterial";
-	//	createMaterialInfo.InstanceName = "plainMaterial";
-	//	plainMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
-	//}
-	//
+	{
+		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
+		createMaterialInfo.GameInstance = gameInstance;
+		createMaterialInfo.RenderSystem = renderSystem;
+		createMaterialInfo.MaterialResourceManager = GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager");
+		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>(u8"TextureResourceManager");
+		createMaterialInfo.MaterialName = u8"PlainMaterial";
+		createMaterialInfo.InstanceName = u8"plainMaterial";
+		plainMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
+	}
+	
 	//audioEmitter = audioSystem->CreateAudioEmitter();
 	//audioListener = audioSystem->CreateAudioListener();
 	//audioSystem->SetAudioListener(audioListener);
@@ -361,7 +291,7 @@ void Game::PostInitialize()
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
-	//	createMaterialInfo.MaterialResourceManager = GetResourceManager<MaterialResourceManager>("MaterialResourceManager");
+	//	createMaterialInfo.ShaderResourceManager = GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);

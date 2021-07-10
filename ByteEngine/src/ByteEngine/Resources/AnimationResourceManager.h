@@ -130,4 +130,5 @@ private:
 	void loadAnimation(const GTSL::Range<const byte*> sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 
 	GTSL::HashMap<Id, AnimationDataSerialize, BE::PAR> animations;
+	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
 };

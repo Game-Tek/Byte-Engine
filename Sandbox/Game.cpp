@@ -57,11 +57,11 @@ void Game::moveCamera(InputManager::Vector2DInputEvent data)
 
 bool Game::Initialize()
 {
-	if (!GameApplication::Initialize()) { return false; }
+	if (!GameApplication::Initialize()) { return false; }//
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
-	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>::Create<SandboxGameInstance>(systemAllocatorReference);
+	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
 	GTSL::Array<Id, 2> a({ u8"MouseMove" });
@@ -90,6 +90,7 @@ bool Game::Initialize()
 	{
 		ShaderResourceManager::ShaderGroupCreateInfo shaderGroupCreateInfo;
 		shaderGroupCreateInfo.Name = u8"PlainMaterial";
+		shaderGroupCreateInfo.RenderPass = u8"SceneRenderPass";
 
 		auto& vertexShader = shaderGroupCreateInfo.Shaders.EmplaceBack();
 		vertexShader.Name = u8"VertexShader";
@@ -116,7 +117,7 @@ bool Game::Initialize()
 		GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager")->CreateShaderGroup(shaderGroupCreateInfo);
 	}
 	
-	//show loading screen
+	//show loading screen//
 	//load menu
 	//show menu
 	//start game
@@ -137,12 +138,12 @@ void Game::PostInitialize()
 		fov = cameraSystem->GetFieldOfView(camera);
 	}
 	
-	//
-	//auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
+	
+	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
 	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 	//auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
-	//
+	
 	//{
 	//	RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 	//	createMaterialInfo.GameInstance = gameInstance;
@@ -153,12 +154,12 @@ void Game::PostInitialize()
 	//	createMaterialInfo.InstanceName = "tvMat";
 	//	tvMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
 	//}
-	//
+	
 	{
 		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 		createMaterialInfo.GameInstance = gameInstance;
 		createMaterialInfo.RenderSystem = renderSystem;
-		createMaterialInfo.MaterialResourceManager = GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager");
+		createMaterialInfo.ShaderResourceManager = GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager");
 		createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>(u8"TextureResourceManager");
 		createMaterialInfo.MaterialName = u8"PlainMaterial";
 		createMaterialInfo.InstanceName = u8"plainMaterial";
@@ -169,7 +170,7 @@ void Game::PostInitialize()
 	//audioListener = audioSystem->CreateAudioListener();
 	//audioSystem->SetAudioListener(audioListener);
 	//audioSystem->BindAudio(audioEmitter, "gunshot");
-	//audioSystem->SetLooping(audioEmitter, true)//
+	//audioSystem->SetLooping(audioEmitter, true)
 	
 	//{
 	//	auto fpfString = GTSL::StaticString<512>(R"(class AudioFile { uint32 FrameCount } class AudioFormat { uint32 KHz uint32 BitDepth AudioFile[] AudioFiles }
@@ -228,26 +229,26 @@ void Game::PostInitialize()
 	//	GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv), { 0, 0, 1 });
 	//	
 	//	//auto tv2 = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	//	//GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv2), { 0, 1, 1 });//
+	//	//GTSL::Math::SetTranslation(staticMeshRenderer->GetTransformation(tv2), { 0, 1, 1 });
 	//}
 	//
-	//{		
-	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
-	//	addStaticMeshInfo.MeshName = "plane";
-	//	addStaticMeshInfo.Material = plainMaterialInstance;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
-	//	addStaticMeshInfo.RenderSystem = renderSystem;
-	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
-	//	plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
-	//	
-	//	auto position = staticMeshRenderer->GetMeshPosition(plane);
-	//	staticMeshRenderer->SetPosition(plane, { 0, 0, 0 });//
-	//	//
-	//	//GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Rotator(-GTSL::Math::PI / 2, 0, 0));
-	//	////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::AxisAngle(1, 0, 0, GTSL::Math::PI / 2));
-	//	////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Quaternion(0.707, 0, 0, 0.707));
-	//	//GTSL::Math::AddScale(staticMeshRenderer->GetTransformation(plane), { 2, 2, 2 });
-	//}
+	{		
+		StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
+		addStaticMeshInfo.MeshName = u8"plane";
+		addStaticMeshInfo.Material = plainMaterialInstance;
+		addStaticMeshInfo.GameInstance = gameInstance;
+		addStaticMeshInfo.RenderSystem = renderSystem;
+		addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>(u8"StaticMeshResourceManager");
+		plane = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
+		
+		auto position = staticMeshRenderer->GetMeshPosition(plane);
+		staticMeshRenderer->SetPosition(plane, { 0, 0, 0 });
+		
+		GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Rotator(-GTSL::Math::PI / 2, 0, 0));
+		////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::AxisAngle(1, 0, 0, GTSL::Math::PI / 2));
+		////GTSL::Math::SetRotation(staticMeshRenderer->GetTransformation(plane), GTSL::Quaternion(0.707, 0, 0, 0.707));
+		GTSL::Math::AddScale(staticMeshRenderer->GetTransformation(plane), { 2, 2, 2 });//
+	}
 
 	
 	//{
@@ -295,7 +296,7 @@ void Game::PostInitialize()
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
 	//	createMaterialInfo.MaterialName = "TvMat";
 	//	tvMat = material_system->CreateMaterial(createMaterialInfo);
-	//}
+	//}//
 	
 	//{
 	//	auto* lightsRenderGroup = gameInstance->GetSystem<LightsRenderGroup>("LightsRenderGroup");
@@ -313,7 +314,7 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	//auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
 	//
-	//auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
 	//
 	//if (shouldFire)
 	//{
@@ -326,18 +327,18 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	//
 	GameApplication::OnUpdate(onUpdate);
 	//
-	//auto* cameraSystem = gameInstance->GetSystem<CameraSystem>("CameraSystem");
+	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>(u8"CameraSystem");
 	//
-	//auto cameraDirection = GTSL::Quaternion(GTSL::Rotator(0, posDelta.X(), 0));
-	//auto dir = cameraDirection * moveDir;
+	auto cameraDirection = GTSL::Quaternion(GTSL::Rotator(0, -posDelta.X(), 0));
+	auto dir = cameraDirection * moveDir;
 	//
 	//
-	//auto camPos = GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 1);
+	auto camPos = GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 1);
 	//
 	//audioSystem->SetPosition(audioListener, camPos);
 	//audioSystem->SetOrientation(audioListener, cameraDirection);
-	//cameraSystem->SetCameraPosition(camera, camPos);
-	//cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
+	cameraSystem->SetCameraPosition(camera, camPos);
+	cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
 	//
 	//auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
 	//
@@ -354,16 +355,16 @@ void Game::Shutdown()
 
 void Game::move(InputManager::Vector2DInputEvent data)
 {
-	////posDelta += (data.Value - data.LastValue) * 2;
-	////data.Value.X() *= -1;
-	//posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI));
-	//
-	////auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]
-	//auto rot = GTSL::Matrix4(GTSL::Rotator(0, posDelta.X(), 0));
-	//rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
-	//
-	////auto rot = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, 0));
-	//gameInstance->GetSystem<CameraSystem>("CameraSystem")->SetCameraRotation(camera, rot);
+	//posDelta += (data.Value - data.LastValue) * 2;
+	data.Value.X() *= -1;
+	posDelta = GTSL::Math::Wrap(posDelta + data.Value * 0.005f, GTSL::Vector2(GTSL::Math::PI));
+	
+	//auto rot = GTSL::Matrix4(GTSL::AxisAngle(0.f, 1.0f, 0.f, posDelta.X()));//inMesh->mFaces[face].mIndices[index]
+	auto rot = GTSL::Matrix4(GTSL::Rotator(0, posDelta.X(), 0));
+	rot *= GTSL::Matrix4(GTSL::AxisAngle(GTSL::Vector3(rot.GetXBasisVector()), posDelta.Y()));
+	
+	//auto rot = GTSL::Quaternion(GTSL::AxisAngle(0.f, 1.0f, 0.f, 0));
+	gameInstance->GetSystem<CameraSystem>(u8"CameraSystem")->SetCameraRotation(camera, rot);
 }
 
 Game::~Game()

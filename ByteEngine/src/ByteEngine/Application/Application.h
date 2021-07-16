@@ -7,14 +7,13 @@
 #include <GTSL/HashMap.h>
 #include <GTSL/String.hpp>
 
-
 #include "Clock.h"
 #include "PoolAllocator.h"
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 #include "ByteEngine/Id.h"
+#include "ByteEngine/Resources/ResourceManager.h"
 
-class ResourceManager;
 class GameInstance;
 class InputManager;
 class ThreadPool;
@@ -26,14 +25,6 @@ namespace BE
 {	
 	class Logger;
 	
-	/**
-	 * \brief Defines all the data necessary to startup a GameStudio application instance.
-	 */
-	struct ApplicationCreateInfo
-	{
-		GTSL::ShortString<128> ApplicationName;
-	};
-	
 	class Application : public Object
 	{
 	public:
@@ -42,10 +33,8 @@ namespace BE
 
 		static Application* Get() { return applicationInstance; }
 		
-		explicit Application(const ApplicationCreateInfo& ACI);
+		explicit Application(GTSL::ShortString<128> applicationName);
 		virtual ~Application();
-
-		void SetSystemAllocator(SystemAllocator* newSystemAllocator) { systemAllocator = newSystemAllocator; }
 
 		bool BaseInitialize(int argc, utf8* argv[]);
 		virtual bool Initialize() = 0;
@@ -75,12 +64,12 @@ namespace BE
 			OK, WARNING, ERROR
 		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, const GTSL::Range<const utf8*> reason);
+		void Close(CloseMode closeMode, GTSL::Range<const utf8*> reason);
 
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
 		{
 			auto path = systemApplication.GetPathToExecutable();
-			path.Drop(path.FindLast('/').Get().Second); return path;
+			path.Drop(FindLast(path, u8'/').Get()); return path;
 		}
 		
 		[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }
@@ -92,8 +81,10 @@ namespace BE
 		template<typename RM>
 		RM* CreateResourceManager()
 		{
-			auto resource_manager = GTSL::SmartPointer<ResourceManager, BE::SystemAllocatorReference>::Create<RM>(systemAllocatorReference);
-			return static_cast<RM*>(resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MoveRef(resource_manager)).GetData());
+			auto resource_manager = GTSL::SmartPointer<RM, SystemAllocatorReference>(systemAllocatorReference);
+			auto* pointer = resource_manager.GetData();
+			resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MoveRef(resource_manager));
+			return pointer;
 		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
@@ -103,8 +94,8 @@ namespace BE
 		
 		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		
-		[[nodiscard]] SystemAllocator* GetSystemAllocator() const { return systemAllocator; }
-		[[nodiscard]] PoolAllocator* GetNormalAllocator() { return &poolAllocator; }
+		[[nodiscard]] SystemAllocator* GetSystemAllocator() { return &systemAllocator; }
+		[[nodiscard]] PoolAllocator* GetPersistantAllocator() { return &poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
 		uint32 GetOption(const Id name) const
@@ -113,15 +104,18 @@ namespace BE
 		}
 		
 	protected:
+		inline static Application* applicationInstance{ nullptr };
+		
+		SystemAllocator systemAllocator;
+		SystemAllocatorReference systemAllocatorReference;
+		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
-		GTSL::SmartPointer<GameInstance, SystemAllocatorReference> gameInstance;
+		GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference> gameInstance;
 
 		GTSL::HashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 
-		GTSL::HashMap<Id, uint32, PersistentAllocatorReference> settings;
+		GTSL::HashMap<Id, uint32, SystemAllocatorReference> settings;
 		
-		SystemAllocatorReference systemAllocatorReference;
-		SystemAllocator* systemAllocator{ nullptr };
 		PoolAllocator poolAllocator;
 		StackAllocator transientAllocator;
 
@@ -146,7 +140,6 @@ namespace BE
 		 */
 		bool checkPlatformSupport();
 	private:
-		inline static Application* applicationInstance{ nullptr };
 	};
 
 	Application* CreateApplication(GTSL::AllocatorReference* allocatorReference);

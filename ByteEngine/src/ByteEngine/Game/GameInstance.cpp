@@ -42,8 +42,6 @@ GameInstance::~GameInstance()
 
 void GameInstance::OnUpdate(BE::Application* application)
 {
-	PROFILE;
-
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localRecurringTasksPerStage(64, GetTransientAllocator());
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localDynamicTasksPerStage(64, GetTransientAllocator());
 	
@@ -220,13 +218,4 @@ void GameInstance::initWorld(const uint8 worldId)
 	World::InitializeInfo initializeInfo;
 	initializeInfo.GameInstance = this;
 	worlds[worldId]->InitializeWorld(initializeInfo);
-}
-
-void GameInstance::initSystem(System* system, const Id name, const uint16 id)
-{
-	System::InitializeInfo initializeInfo;
-	system->systemId = id;
-	initializeInfo.GameInstance = this;
-	initializeInfo.ScalingFactor = scalingFactor;
-	system->Initialize(initializeInfo);
 }

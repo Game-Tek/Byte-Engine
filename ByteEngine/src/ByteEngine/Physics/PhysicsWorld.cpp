@@ -35,9 +35,9 @@ void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceM
 	staticMeshInfo.BoundingBox;
 	staticMeshInfo.BoundingRadius;
 
-	physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize(), 16, GetPersistentAllocator());
+	//physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize(), 16, GetPersistentAllocator());
 	
-	staticMeshResourceManager->LoadStaticMesh(taskInfo.GameInstance, staticMeshInfo, 16, physicsObjects[buffer].Buffer, onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
+	//staticMeshResourceManager->LoadStaticMesh(taskInfo.GameInstance, staticMeshInfo, 16, physicsObjects[buffer].Buffer, onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
 }
 
 void PhysicsWorld::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32)

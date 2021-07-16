@@ -6,7 +6,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/Mutex.h>
 #include <GTSL/Atomic.hpp>
-#include <GTSL/StaticString.hpp>
+#include <GTSL/String.hpp>
 #include <GTSL/Vector.hpp>
 #include "AllocatorReferences.h"
 #include "ByteEngine/Debug/Assert.h"
@@ -77,8 +77,6 @@ public:
 			return result;
 		}
 	};
-
-	StackAllocator() = default;
 
 	explicit StackAllocator(BE::SystemAllocatorReference* allocatorReference, const uint8 stackCount = 8, const uint8 defaultBlocksPerStackCount = 2, const uint64 blockSizes = 512) :
 		blockSize(blockSizes), stacks(stackCount, *allocatorReference), stacksMutexes(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)

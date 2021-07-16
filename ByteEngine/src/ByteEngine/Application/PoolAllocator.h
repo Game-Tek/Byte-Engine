@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_map>
+
 #include "ByteEngine/Core.h"
 
 #include <GTSL/Allocator.h>
@@ -44,12 +46,14 @@ public:
 		
 #ifdef _DEBUG
 		free_slots_type* freeSlotsBitTrack2{ nullptr };
+		uint8* allocCounter{ nullptr };
 #endif
 		
 		byte* slotsData{ nullptr };
 		
 		const uint32 SLOTS_SIZE{ 0 };
 		const uint32 MAX_SLOTS_COUNT{ 0 };
+		mutable GTSL::Mutex globalLock;
 		uint32 bitNums = 0;
 		
 		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return slotsData + (slotIndex * SLOTS_SIZE); }
@@ -60,8 +64,9 @@ public:
 	};
 
 
-	static constexpr bool USE_MALLOC = false;
-	static constexpr bool STRONG_CHECK = false;
+	static constexpr bool USE_MALLOC = true;
+	static constexpr bool MEMORY_PATTERN = true;
+	static constexpr bool DEALLOC_COUNT = true;
 	static constexpr bool SERIALIZE_ACCESS = true;
 
 private:
@@ -69,7 +74,9 @@ private:
 	const uint32 POOL_COUNT{ 0 };
 	BE::SystemAllocatorReference* systemAllocatorReference{ nullptr };
 
-	mutable GTSL::Mutex globalLock;
+	mutable GTSL::Mutex debugLock;
+	mutable std::unordered_map<void*, uint32> allocMap;
+	
 	
 	mutable GTSL::StaticMap<uint64, uint32, 32> map;
 

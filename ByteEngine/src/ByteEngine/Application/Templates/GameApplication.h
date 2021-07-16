@@ -11,7 +11,7 @@
 class GameApplication : public BE::Application
 {
 public:
-	GameApplication(GTSL::ShortString<128> name) : Application(BE::ApplicationCreateInfo{ name })
+	GameApplication(GTSL::ShortString<128> name) : Application(name)
 	{
 	}
 

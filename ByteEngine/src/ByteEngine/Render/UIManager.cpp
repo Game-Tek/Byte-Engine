@@ -5,9 +5,8 @@
 Canvas::Canvas() : Object(u8"Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
 squares(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()),
 organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator()),
-queuedUpdates(8, GetPersistentAllocator())
+queuedUpdates(8, GetPersistentAllocator()), organizerTree(GetPersistentAllocator())
 {
-	organizerTree.Initialize(GetPersistentAllocator());
 }
 
 uint16 Canvas::AddOrganizer(const Id name)
@@ -162,19 +161,16 @@ void Canvas::updateBranch(uint32 organizer)
 	}
 }
 
-void CanvasSystem::Initialize(const InitializeInfo& initializeInfo)
+CanvasSystem::CanvasSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"CanvasSystem"), canvases(8, GetPersistentAllocator())
 {
-	canvases.Initialize(8, GetPersistentAllocator());
 }
 
 void CanvasSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 {
 }
 
-void UIManager::Initialize(const InitializeInfo& initializeInfo)
+UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"), colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator())
 {
-	canvases.Initialize(8, GetPersistentAllocator());
-	colors.Initialize(16, GetPersistentAllocator());
 }
 
 void UIManager::Shutdown(const ShutdownInfo& shutdownInfo)

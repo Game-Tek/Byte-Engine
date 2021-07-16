@@ -15,13 +15,13 @@ public:
 	void GetCacheSize(uint32& size) const { size = static_cast<uint32>(cache.GetSize()); }
 	
 	template<class ALLOCTOR>
-	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { cache.Read(cache.GetSize(), buffer.GetBufferInterface()); }
+	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { cache.Read(cache.GetSize(), buffer); }
 	
 	template<class ALLOCTOR>
 	void WriteCache(GTSL::Buffer<ALLOCTOR>& buffer)
 	{
 		cache.SetPointer(0);
-		cache.Write(buffer.GetBufferInterface());
+		cache.Write(buffer);
 	}
 private:
 	GTSL::File cache;

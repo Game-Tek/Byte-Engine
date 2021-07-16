@@ -68,8 +68,8 @@ void GameApplication::PostInitialize()
 	//FRAME ENDS
 	gameInstance->AddStage(u8"FrameEnd");
 
-	gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnFocusGain"));
-	gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnFocusLoss"));
+	gameInstance->AddEvent(u8"Application", EventHandle(u8"OnFocusGain"));
+	gameInstance->AddEvent(u8"Application", EventHandle(u8"OnFocusLoss"));
 	
 	auto* renderSystem = gameInstance->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
@@ -139,8 +139,6 @@ void GameApplication::PostInitialize()
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
 	Application::OnUpdate(updateInfo);
-
-	PROFILE;
 
 	window.Update(this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this));
 
@@ -459,7 +457,7 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 		}
 		break;
 	}
-	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, {}); break;
+	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, MakeRange(u8"")); break;
 	case GTSL::Window::WindowEvents::KEYBOARD_KEY:
 	{
 		auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);

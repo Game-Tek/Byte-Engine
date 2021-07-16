@@ -65,19 +65,23 @@ public:
 	
 	struct Glyph
 	{
-		uint32 Character;
-		int16 GlyphIndex;
-		int16 NumContours;
-		GTSL::Vector<Path, BE::PersistentAllocatorReference> Paths;
-		uint16 AdvanceWidth;
-		int16 LeftSideBearing;
+		uint32 Character = 0;
+		int16 GlyphIndex = 0;
+		int16 NumContours = 0;
+		GTSL::Vector<Path, BE::PAR> Paths;
+		uint16 AdvanceWidth = 0;
+		int16 LeftSideBearing = 0;
 		GTSL::Vector2 BoundingBox[2]; //min, max
 		GTSL::Vector2 Center;
+
+		Glyph(const BE::PAR& allocator) : Paths(allocator) {}
 	};
 
 	//MAIN STRUCT
 	struct Font
 	{
+		Font(const BE::PAR& allocator) : KerningTable(8, allocator), Glyphs(128, allocator), GlyphMap(128, allocator) {}
+		
 		uint32 FileNameHash;
 		std::string FullFontName;
 		std::string NameTable[25];

@@ -30,7 +30,7 @@ static GTSL::Quaternion aiQuaternionToQuaternion(const aiQuaternion assimpQuater
 	return GTSL::Quaternion(assimpQuaternion.x, assimpQuaternion.y, assimpQuaternion.z, assimpQuaternion.w);
 }
 
-AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"AnimationResourceManager")
+AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"AnimationResourceManager"), animations(32, 0.3f, GetPersistentAllocator())
 {
 	initializePackageFiles(packageFiles, GetResourcePath(GTSL::StaticString<32>(u8"Animations"), GTSL::ShortString<32>(u8"bepkg")));
 
@@ -49,22 +49,22 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"Animati
 		while (fileQuery.DoQuery()) {
 			GTSL::File animationFile; animationFile.Open(GetResourcePath(fileQuery.GetFileNameWithExtension()), GTSL::File::READ, false);
 			GTSL::Buffer buffer(animationFile.GetSize(), 16, GetTransientAllocator());
-			animationFile.Read(buffer.GetBufferInterface());
+			animationFile.Read(buffer);
 
-			SkeletonDataSerialize skeletonData;
-			AnimationDataSerialize animationData;
+			SkeletonDataSerialize skeletonData(GetPersistentAllocator());
+			AnimationDataSerialize animationData(GetPersistentAllocator());
 
-			GTSL::Buffer<BE::TAR> skeletonDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
-			GTSL::Buffer<BE::TAR> animationDataBuffer; skeletonDataBuffer.Allocate(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+			GTSL::Buffer skeletonDataBuffer(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+			GTSL::Buffer animationDataBuffer(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
 
-			loadSkeleton(buffer, skeletonData, skeletonDataBuffer);
-			loadAnimation(buffer, animationData, animationDataBuffer);
+			loadSkeleton(static_cast<GTSL::Range<const byte*>>(buffer), skeletonData, skeletonDataBuffer);
+			loadAnimation(static_cast<GTSL::Range<const byte*>>(buffer), animationData, animationDataBuffer);
 			 //todo: serialize data offset
 			//animationDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), animationData);
 			//skeletonDataSerializes.Emplace(Id(fileQuery.GetFileNameWithExtension()), skeletonData); //todo: check skeleton existance
 		}
 
-		GTSL::Buffer<BE::TAR> b; b.Allocate(2048 * 16, 16, GetTransientAllocator());
+		GTSL::Buffer b(2048 * 16, 16, GetTransientAllocator());
 		
 		GTSL::Insert(animationDataSerializes, b);
 
@@ -75,10 +75,8 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"Animati
 	case GTSL::File::OpenResult::ERROR: break;
 	}
 
-	GTSL::Buffer<BE::TAR> b; b.Allocate(2048 * 16, 16, GetTransientAllocator());
-
-	dic.Read(b.GetBufferInterface());
-	
+	GTSL::Buffer<BE::TAR> b(2048 * 16, 16, GetTransientAllocator());
+	dic.Read(b);	
 	GTSL::Extract(animations, b);
 
 }
@@ -99,23 +97,15 @@ void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourc
 	}
 
 	aiMesh* mesh = scene->mMeshes[0];
-
-	skeletonData.Bones.Initialize(mesh->mNumBones, GetPersistentAllocator());
-	skeletonData.BonesMap.Initialize(mesh->mNumBones, GetPersistentAllocator());
 	
-	for (uint32 b = 0; b < mesh->mNumBones; ++b)
-	{
+	for (uint32 b = 0; b < mesh->mNumBones; ++b) {
 		const auto& assimpBone = mesh->mBones[b];
 		
 		skeletonData.BonesMap.Emplace(assimpStringToId(assimpBone->mName), b);
-		auto& bone = skeletonData.Bones.EmplaceBack();
-
-		bone.AffectedVertices.Initialize(assimpBone->mNumWeights, GetPersistentAllocator());
+		auto& bone = skeletonData.Bones.EmplaceBack(GetPersistentAllocator());
 		
 		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
-			auto& affectedVertex = bone.AffectedVertices.EmplaceBack();
-			affectedVertex.First = assimpBone->mWeights[w].mVertexId;
-			affectedVertex.Second = assimpBone->mWeights[w].mWeight;
+			bone.AffectedVertices.EmplaceBack(assimpBone->mWeights[w].mVertexId, assimpBone->mWeights[w].mWeight);
 		}
 
 		bone.Offset = assimpMatrixToMatrix(mesh->mBones[b]->mOffsetMatrix);
@@ -135,7 +125,7 @@ void AnimationResourceManager::loadAnimation(const GTSL::Range<const byte*> sour
 
 	aiMesh* mesh = scene->mMeshes[0];
 
-	animationData.Frames.Initialize(static_cast<uint32>(scene->mAnimations[0]->mDuration), GetPersistentAllocator());
+	//animationData.Frames.Initialize(static_cast<uint32>(scene->mAnimations[0]->mDuration), GetPersistentAllocator());
 
 	GTSL::Vector<Id, BE::TAR> boneNames(128, GetTransientAllocator());
 
@@ -151,7 +141,7 @@ void AnimationResourceManager::loadAnimation(const GTSL::Range<const byte*> sour
 		auto& assimpAnimation = scene->mAnimations[a]; //a single animation, e.g. "walk", "run", "shoot"
 		auto animationName = assimpStringToId(assimpAnimation->mName);
 
-		AnimationData animation;
+		AnimationData animation(GetPersistentAllocator());
 
 		BE_ASSERT(assimpAnimation->mDuration - ((float64)(uint64)assimpAnimation->mDuration) != 0.0,
 			"Animation is not round number");
@@ -167,8 +157,8 @@ void AnimationResourceManager::loadAnimation(const GTSL::Range<const byte*> sour
 
 		for (uint32 frameIndex = 0; frameIndex < animation.FrameCount; ++frameIndex)
 		{
-			auto& frame = animation.Frames.EmplaceBack();
-			frame.Bones.Initialize(assimpAnimation->mNumChannels, GetPersistentAllocator());
+			auto& frame = animation.Frames.EmplaceBack(GetPersistentAllocator());
+			//frame.Bones.Initialize(assimpAnimation->mNumChannels, GetPersistentAllocator());
 			
 			for (uint32 b = 0; b < assimpAnimation->mNumChannels; ++b)
 			{

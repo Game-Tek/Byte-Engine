@@ -9,7 +9,7 @@ static constexpr uint8 IS_PRE_AND_POST_BLOCK_CONTIGUOUS = IS_PRE_BLOCK_CONTIGUOU
 
 void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
-	bufferMemoryBlocks.EmplaceBack();
+	bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
 	//textureMemoryBlocks.EmplaceBack();
 
 	GPUBuffer scratchBuffer;
@@ -54,7 +54,7 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 			++allocation.BlockIndex;
 		}
 
-		bufferMemoryBlocks.EmplaceBack();
+		bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
 		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &renderAllocation->Data);
 	}
@@ -76,9 +76,7 @@ void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::Pe
 }
 
 void MemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference)
-{
-	freeSpaces.Initialize(16, allocatorReference);
-	
+{	
 	deviceMemory.Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, size, renderDevice.FindNearestMemoryType(memoryType));
 
 	if (static_cast<GAL::MemoryType::value_type>(memoryType & GAL::MemoryTypes::HOST_VISIBLE)) {
@@ -194,8 +192,8 @@ void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, AllocationI
 
 void LocalMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
-	bufferMemoryBlocks.EmplaceBack();
-	textureMemoryBlocks.EmplaceBack();
+	bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
+	textureMemoryBlocks.EmplaceBack(GetPersistentAllocator());
 	
 	Texture dummyTexture;
 
@@ -260,7 +258,7 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 			++allocation.BlockIndex;
 		}
 
-		bufferMemoryBlocks.EmplaceBack();
+		bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
 		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::GPU, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 	}
@@ -297,7 +295,7 @@ void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDev
 		++allocation.BlockIndex;
 	}
 	
-	textureMemoryBlocks.EmplaceBack();
+	textureMemoryBlocks.EmplaceBack(GetPersistentAllocator());
 	textureMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::GPU, GetPersistentAllocator());
 	textureMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 

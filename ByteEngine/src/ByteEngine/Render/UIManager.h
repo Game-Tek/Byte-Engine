@@ -280,7 +280,8 @@ MAKE_HANDLE(uint32, Square)
 class CanvasSystem : public System
 {
 public:
-	void Initialize(const InitializeInfo& initializeInfo) override;
+	CanvasSystem(const InitializeInfo& initializeInfo);
+	
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
 	CanvasHandle CreateCanvas(const Id name)
@@ -316,13 +317,12 @@ public:
 
 private:
 	GTSL::FixedVector<Canvas, BE::PAR> canvases;
-	GTSL::FixedVector<Canvas, BE::PAR> blabla;
 };
 
 class UIManager : public System
 {
 public:
-	void Initialize(const InitializeInfo& initializeInfo) override;
+	explicit UIManager(const InitializeInfo& initializeInfo);
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	void AddCanvas(const CanvasHandle system)

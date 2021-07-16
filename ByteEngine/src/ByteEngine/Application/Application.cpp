@@ -4,13 +4,11 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/HashMap.h>
-#include <GTSL/StaticString.hpp>
+#include <GTSL/String.hpp>
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Application/Clock.h"
-
-#include "ByteEngine/Resources/ResourceManager.h"
 
 #include "ByteEngine/Game/GameInstance.h"
 
@@ -18,7 +16,6 @@
 #include "ByteEngine/Debug/Logger.h"
 
 #include <GTSL/System.h>
-#include <GTSL/DataSizes.h>
 #include <GTSL/Math/Math.hpp>
 
 #if (_DEBUG)
@@ -30,8 +27,9 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(const ApplicationCreateInfo& ACI) : Object(ACI.ApplicationName.begin()), systemAllocatorReference(u8"Application"),
-	systemApplication(GTSL::Application::ApplicationCreateInfo{})
+	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), resourceManagers(8, systemAllocatorReference),
+	settings(32, systemAllocatorReference), systemApplication(GTSL::Application::ApplicationCreateInfo{}),
+	transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4)
 	{
 		applicationInstance = this;
 	}
@@ -48,24 +46,19 @@ namespace BE
 		}
 
 		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
-		::new(&transientAllocator) StackAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4);
 
 		GTSL::Thread::SetThreadId(0);
-
-		resourceManagers.Initialize(8, systemAllocatorReference);
 
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = systemApplication.GetPathToExecutable();
-		path.Drop(path.FindLast('/').Get().Second);
+		path.Drop(FindLast(path, u8'/').Get());
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger = GTSL::SmartPointer<Logger, BE::SystemAllocatorReference>::Create<Logger>(systemAllocatorReference, logger_create_info);
+		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
-		inputManagerInstance = GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference>::Create<InputManager>(systemAllocatorReference);
-		threadPool = GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference>::Create<ThreadPool>(systemAllocatorReference);
-
-		settings.Initialize(64, GetPersistentAllocator());
+		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
+		threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(systemAllocatorReference);
 
 		if (!parseConfig())	{
 			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
@@ -75,8 +68,7 @@ namespace BE
 
 		BE_LOG_SUCCESS(u8"Succesfully initialized Byte Engine module!");
 		
-		if (argc > 0)
-		{	
+		if (argc > 0) {	
 			GTSL::StaticString<2048> string(u8"Application started with parameters:\n");
 
 			for (uint32 p = 0; p < argc; ++p) {
@@ -84,9 +76,7 @@ namespace BE
 			}
 
 			BE_LOG_MESSAGE(string);
-		}
-		else
-		{
+		} else {
 			BE_LOG_MESSAGE(u8"Application started with no parameters.");
 		}
 
@@ -139,21 +129,16 @@ namespace BE
 	uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
-	{
-		PROFILE;
-		
+	{		
 		inputManagerInstance->Update();
 		gameInstance->OnUpdate(this);
 	}
 
 	int Application::Run(int argc, char** argv)
 	{
-		gameInstance->AddEvent(u8"Application", EventHandle<>(u8"OnPromptClose"));
+		gameInstance->AddEvent(u8"Application", EventHandle(u8"OnPromptClose"));
 		
-		while (!flaggedForClose)
-		{
-			systemApplication.Update();
-			
+		while (!flaggedForClose) {			
 			clockInstance.OnUpdate();
 			
 			OnUpdateInfo update_info{};
@@ -169,7 +154,7 @@ namespace BE
 
 	void Application::PromptClose()
 	{
-		gameInstance->DispatchEvent(u8"Application", EventHandle<>(u8"OnPromptClose"));
+		gameInstance->DispatchEvent(u8"Application", EventHandle(u8"OnPromptClose"));
 	}
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)
@@ -181,14 +166,17 @@ namespace BE
 
 	bool Application::parseConfig()
 	{
-		GTSL::File settingsFile; settingsFile.Open(GetPathToApplication() += u8"/settings.ini", GTSL::File::READ, false);
+		auto path = GetPathToApplication();
+		path += u8"/settings.ini";
+		
+		GTSL::File settingsFile; settingsFile.Open(path, GTSL::File::READ, false);
 
 		//don't try parsing if file is empty
 		if(settingsFile.GetSize() == 0) { return false; }
 		
-		GTSL::Buffer<TAR> fileBuffer; fileBuffer.Allocate(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
+		GTSL::Buffer fileBuffer(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
 
-		settingsFile.Read(fileBuffer.GetBufferInterface());
+		settingsFile.Read(fileBuffer);
 		
 		uint32 i = 0;
 

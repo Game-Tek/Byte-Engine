@@ -20,10 +20,9 @@ MAKE_HANDLE(uint32, AudioEmitter)
 class AudioSystem : public System
 {
 public:
-	AudioSystem();
+	AudioSystem(const InitializeInfo& initializeInfo);
 	~AudioSystem();
 	
-	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	AudioListenerHandle CreateAudioListener();

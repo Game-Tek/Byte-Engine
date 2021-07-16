@@ -1,20 +1,32 @@
 #include "Logger.h"
 
-#include <GTSL/Thread.h>
-
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
+#include <GTSL/Console.h>
+
 using namespace BE;
 
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), logFile()
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), logFile()//, allowedLoggers(32, GetSyste())
 {
 	uint64 allocated_size{ 0 };
 	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
-	
+
+	{
+		GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
+		path += u8"/log.txt";
+		switch (logFile.Open(path, GTSL::File::WRITE, true))
+		{
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::CREATED: break;
+		case GTSL::File::OpenResult::ERROR: break;
+		default:;
+		}
+	}
+
 	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
-	path += u8"/log.txt";
-	switch (logFile.Open(path, GTSL::File::WRITE, true))
+	path += u8"/trace.txt";
+	switch (graphFile.Open(path, GTSL::File::WRITE, true))
 	{
 	case GTSL::File::OpenResult::OK: break;
 	case GTSL::File::OpenResult::CREATED: break;
@@ -23,6 +35,15 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), l
 	}
 	
 	logFile.Resize(0);
+	graphFile.Resize(0);
+
+	{
+		GTSL::StaticString<512> string;
+		
+		string += u8"{\"otherData\": {},\"traceEvents\":[";
+		
+		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end() - 1)));
+	}
 }
 
 void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const char8_t*> text) const
@@ -57,7 +78,26 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const ch
 
 void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
 {
-	//log(VerbosityLevel::MESSAGE, GTSL::Range<UTF8>(GTSL::StringLength(functionTimer->Name), functionTimer->Name));
+	GTSL::StaticString<1024> string;
+
+	{
+		GTSL::Lock lock(traceMutex);
+
+		if (profileCount++ > 0)
+			string += u8",";
+
+		string += u8"{";
+		string += u8"\"cat\":\"function\",";
+		string += u8"\"dur\":"; GTSL::ToString(timeTaken.GetCount(), string); string += u8",";
+		string += u8"\"name\":\""; string += functionTimer->Name; string += u8"\",";
+		string += u8"\"ph\":\"X\",";
+		string += u8"\"pid\":0,";
+		string += u8"\"tid\":"; ToString(getThread(), string); string += u8",";
+		string += u8"\"ts\":"; ToString(functionTimer->StartingTime, string);
+		string += u8"}";
+
+		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end() - 1)));
+	}
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
@@ -74,4 +114,9 @@ void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 
 Logger::~Logger()
 {
+	{
+		GTSL::StaticString<512> string;
+		string += u8"]}";
+		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end()) - 1));
+	}
 }

@@ -400,11 +400,11 @@ FontResourceManager::FontResourceManager(): ResourceManager(u8"FontResourceManag
 		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += u8"/resources/"; path += fontName; path += u8".ttf";
 
 		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ, false);
-		GTSL::Buffer<BE::TAR> fileBuffer; fileBuffer.Allocate(fontFile.GetSize(), 8, GetTransientAllocator());
+		GTSL::Buffer fileBuffer(fontFile.GetSize(), 8, GetTransientAllocator());
 
-		fontFile.Read(fontFile.GetSize(), fileBuffer.GetBufferInterface());
+		fontFile.Read(fileBuffer);
 
-		Font fontData;
+		Font fontData(GetPersistentAllocator());
 		const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
 		BE_ASSERT(result > -1, "Failed to parse!");
 
@@ -413,35 +413,38 @@ FontResourceManager::FontResourceManager(): ResourceManager(u8"FontResourceManag
 	
 	auto font = GetFont(GTSL::StaticString<64>(u8"FTLTLT"));
 
-	GTSL::Buffer<BE::TAR> data; data.Allocate(1000000, 8, GetTransientAllocator());
+	GTSL::Buffer<BE::TAR> data(1000000, 8, GetTransientAllocator());
 
 	//glyf map
 	//glyfs
 	
 	for(auto& e : font.Glyphs) {
-		Face face;
+		Face face(GetPersistentAllocator());
 		MakeFromPaths(e, face, 4, GetPersistentAllocator());
 
 		for(auto f : face.LinearBeziers) {
-			GTSL::Insert(f.Points[0], data); GTSL::Insert(f.Points[1], data);
+			Insert(f.Points[0], data);
+			Insert(f.Points[1], data);
 		}
 
 		for(auto f : face.CubicBeziers) {
-			GTSL::Insert(f.Points[0], data); GTSL::Insert(f.Points[1], data); GTSL::Insert(f.Points[2], data);
+			Insert(f.Points[0], data);
+			Insert(f.Points[1], data);
+			Insert(f.Points[2], data);
 		}
 
 		for(auto f : face.Bands) {
 			for (auto l : f.Lines) {
-				GTSL::Insert(l, data);
+				Insert(l, data);
 			}
 
 			for (auto c : f.Curves) {
-				GTSL::Insert(c, data);
+				Insert(c, data);
 			}
 		}
 	}
 
-	beFontFile.Write(data.GetBufferInterface());
+	beFontFile.Write(data);
 }
 
 GTSL::Vector2 toVector(const ShortVector sh) { return GTSL::Vector2(sh.X, sh.Y); }
@@ -557,8 +560,6 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 		cmap_subtable_offset += sizeof(uint16);
 		
-		fontData->GlyphMap.Initialize(maximumProfile.numGlyphs, GetPersistentAllocator());
-		
 		for (uint16 j = 0; j < segCount; j++)
 		{
 			get2b(&startCount[j], data + cmap_subtable_offset);
@@ -614,35 +615,30 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 	uint32 hmtx_offset = hmtxTableEntry->second.offsetPos;
 	uint16 last_glyph_advance_width = 0;
 
-	std::vector<std::vector<uint16>> pointsPerContour((maximumProfile.maxContours < 4096) ? maximumProfile.maxContours : 4096);
-	std::vector<uint16> pointsInContour((maximumProfile.maxContours < 4096) ? maximumProfile.maxContours : 4096);
-
-	fontData->Glyphs.Initialize(maximumProfile.numGlyphs, GetPersistentAllocator());
+	std::vector<std::vector<uint16>> pointsPerContour(GTSL::Math::Limit(maximumProfile.maxContours, (uint16)4096));
+	std::vector<uint16> pointsInContour(GTSL::Math::Limit(maximumProfile.maxContours,  (uint16)4096));
 	
-	GTSL::Vector<bool, BE::TAR> glyphLoaded(maximumProfile.numGlyphs, maximumProfile.numGlyphs, GetTransientAllocator());
-	for (auto& e : glyphLoaded) { e = false; }
+	GTSL::Vector<bool, BE::TAR> glyphLoaded(maximumProfile.numGlyphs, GetTransientAllocator());
+	for (uint32 i = 0; i < maximumProfile.numGlyphs; ++i) {
+		glyphLoaded.EmplaceBack(false);
+	}
 	
-	auto parseGlyph = [&](uint32 glyphIndex, auto&& self) -> int8
-	{
+	auto parseGlyph = [&](uint32 glyphIndex, auto&& self) -> int8 {
 		if (glyphLoaded[glyphIndex]) { return 1; }
 
-		Glyph& currentGlyph = fontData->Glyphs.Emplace(glyphIndex);
+		Glyph& currentGlyph = fontData->Glyphs.Emplace(glyphIndex, GetPersistentAllocator());
 		currentGlyph.GlyphIndex = static_cast<int16>(glyphIndex);
 		currentGlyph.Character = glyphReverseMap[static_cast<int16>(glyphIndex)];
 
-		if (glyphIndex < hheaTable.numberOfHMetrics)
-		{
+		if (glyphIndex < hheaTable.numberOfHMetrics) {
 			get2b(&currentGlyph.AdvanceWidth, data + hmtx_offset + glyphIndex * sizeof(uint32));
 			last_glyph_advance_width = currentGlyph.AdvanceWidth;
 			get2b(&currentGlyph.LeftSideBearing, data + hmtx_offset + glyphIndex * sizeof(uint32) + sizeof(uint16));
-		}
-		else
-		{
+		} else {
 			currentGlyph.AdvanceWidth = last_glyph_advance_width;
 		}
 
-		if (glyphIndex != maximumProfile.numGlyphs - 1 && glyphIndices[glyphIndex] == glyphIndices[glyphIndex + 1])
-		{
+		if (glyphIndex != maximumProfile.numGlyphs - 1 && glyphIndices[glyphIndex] == glyphIndices[glyphIndex + 1]) {
 			glyphLoaded[glyphIndex] = true;
 			return -1;
 		}
@@ -667,14 +663,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 		
 		if (currentGlyph.NumContours > 0) //simple glyph
 		{
-			currentGlyph.Paths.Initialize(currentGlyph.NumContours, GetPersistentAllocator());
+			currentGlyph.Paths.Resize(currentGlyph.NumContours);
 			
 			std::vector<uint16> contourEnd(currentGlyph.NumContours);
 			
 			for (uint16 j = 0; j < currentGlyph.NumContours; j++) { get2b(&contourEnd[j], data + currentOffset, currentOffset); }
 			
-			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; contourIndex++)
-			{
+			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; contourIndex++) {
 				uint16 num_points = contourEnd[contourIndex] - (contourIndex ? contourEnd[contourIndex - 1] : -1);
 				
 				if (pointsPerContour[contourIndex].size() < num_points) {
@@ -697,16 +692,12 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			int16 repeat = 0;
 			uint16 contour_count_first_point = 0;
 			
-			for (uint16 j = 0; j < numPoints; j++, ++contour_count_first_point)
-			{
-				if (repeat == 0)
-				{
+			for (uint16 j = 0; j < numPoints; j++, ++contour_count_first_point) {
+				if (!repeat) {
 					get1b(&flags[j], data + currentOffset, currentOffset);
 					
 					if (flags[j] & 0x8) { get1b(&repeat, data + currentOffset, currentOffset); }
-				}
-				else
-				{
+				} else {
 					flags[j] = flags[j - 1];
 					repeat--;
 				}
@@ -730,20 +721,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 			std::vector<ShortVector> glyphPoints(numPoints);
 
-			for(uint16 j = 0; j < numPoints; ++j)
-			{
-				if (flagsEnum[j].xDual && !flagsEnum[j].xShort)
-				{
+			for(uint16 j = 0; j < numPoints; ++j) {
+				if (flagsEnum[j].xDual && !flagsEnum[j].xShort) {
 					glyphPoints[j].X = j ? glyphPoints[j - 1].X : 0;
-				}
-				else
-				{
-					if (flagsEnum[j].xShort)
-					{
+				} else {
+					if (flagsEnum[j].xShort) {
 						get1b(&glyphPoints[j].X, data + currentOffset, currentOffset);
-					}
-					else
-					{
+					} else {
 						get2b(&glyphPoints[j].X, data + currentOffset, currentOffset);
 					}
 
@@ -753,20 +737,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 				}
 			}
 			
-			for (uint16 j = 0; j < numPoints; j++)
-			{				
-				if (flagsEnum[j].yDual && !flagsEnum[j].yShort)
-				{
+			for (uint16 j = 0; j < numPoints; j++) {				
+				if (flagsEnum[j].yDual && !flagsEnum[j].yShort) {
 					glyphPoints[j].Y = j ? glyphPoints[j - 1].Y : 0;
-				}
-				else
-				{
-					if (flagsEnum[j].yShort)
-					{
+				} else {
+					if (flagsEnum[j].yShort) {
 						get1b(&glyphPoints[j].Y, data + currentOffset, currentOffset);
-					}
-					else
-					{
+					} else {
 						get2b(&glyphPoints[j].Y, data + currentOffset, currentOffset);
 					}
 					
@@ -777,10 +754,9 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 			}
 
 			//Generate contours
-			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; ++contourIndex)
-			{
-				currentGlyph.Paths.EmplaceBack();
-				currentGlyph.Paths[contourIndex].Initialize(pointsInContour[contourIndex], GetPersistentAllocator());
+			for (uint16 contourIndex = 0; contourIndex < currentGlyph.NumContours; ++contourIndex) {
+				currentGlyph.Paths.EmplaceBack(pointsInContour[contourIndex], GetPersistentAllocator());
+				//can be broken
 				
 				const uint16 numPointsInContour = pointsInContour[contourIndex];
 
@@ -798,16 +774,13 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 
 				++pointInIndices;
 				
-				for (uint32 p = 0; p < numPointsInContour; ++p, ++pointInIndices)
-				{
+				for (uint32 p = 0; p < numPointsInContour; ++p, ++pointInIndices) {
 					uint32 safeIndexToData = pointsPerContour[contourIndex][pointInIndices % numPointsInContour];
 					
 					thisPointIsControlPoint = contourPointsFlags[safeIndexToData].isControlPoint;
 
-					if(thisPointIsControlPoint)
-					{
-						if(lastPointWasControlPoint)
-						{
+					if(thisPointIsControlPoint) {
+						if(lastPointWasControlPoint) {
 							auto thisPoint = toVector(glyphPoints[safeIndexToData]);
 							auto newPoint = (thisPoint + currentCurve.Points[1]) * 0.5f;
 							currentCurve.Points[2] = newPoint;
@@ -817,25 +790,18 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 							currentCurve.Points[0] = newPoint;
 							
 							currentCurve.Points[1] = thisPoint;
-						}
-						else
-						{
+						} else {
 							currentCurve.Points[1] = toVector(glyphPoints[safeIndexToData]);
 						}
-					}
-					else
-					{
-						if(lastPointWasControlPoint)
-						{
+					} else {
+						if(lastPointWasControlPoint) {
 							auto thisPoint = toVector(glyphPoints[safeIndexToData]);
 							currentCurve.Points[2] = thisPoint;
 							currentCurve.IsCurve = true;
 							currentGlyph.Paths[contourIndex].EmplaceBack(currentCurve);
 
 							currentCurve.Points[0] = thisPoint;
-						}
-						else
-						{
+						} else {
 							auto thisPoint = toVector(glyphPoints[safeIndexToData]);
 							currentCurve.Points[1] = GTSL::Vector2(0, 0);
 							currentCurve.Points[2] = thisPoint;
@@ -849,15 +815,11 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					lastPointWasControlPoint = thisPointIsControlPoint;
 				}
 			} //for contour
-		}
-		else //Composite glyph
-		{
-			for (auto compound_glyph_index = 0; compound_glyph_index < -currentGlyph.NumContours; compound_glyph_index++)
-			{
+		} else { //Composite glyph
+			for (auto compound_glyph_index = 0; compound_glyph_index < -currentGlyph.NumContours; compound_glyph_index++) {
 				uint16 glyfFlags, glyphIndex;
 
-				do
-				{
+				do {
 					get2b(&glyfFlags, data + currentOffset); currentOffset += sizeof(uint16);
 					get2b(&glyphIndex, data + currentOffset); currentOffset += sizeof(uint16);
 
@@ -953,24 +915,19 @@ int8 FontResourceManager::parseData(const char* data, Font* fontData)
 					};
 
 					uint32 compositeGlyphPathCount = compositeGlyphElement.Paths.GetLength();
-					for (uint32 glyphPointIndex = 0; glyphPointIndex < compositeGlyphPathCount; glyphPointIndex++)
-					{
+					for (uint32 glyphPointIndex = 0; glyphPointIndex < compositeGlyphPathCount; glyphPointIndex++) {
 						auto& currentCurvesList = compositeGlyphElement.Paths[glyphPointIndex];
 
 						uint32 compositeGlyphPathCurvesCount = currentCurvesList.GetLength();
 
-						Path newPath;
-						if (matched_points == false)
-						{
-							newPath.Initialize(compositeGlyphPathCurvesCount, GetPersistentAllocator());
+						Path newPath(GetPersistentAllocator());
+						if (!matched_points) {
+							newPath.Resize(compositeGlyphPathCurvesCount);
 
-							for (uint32 glyphCurvesPointIndex = 0; glyphCurvesPointIndex < compositeGlyphPathCurvesCount; glyphCurvesPointIndex++)
-							{
+							for (uint32 glyphCurvesPointIndex = 0; glyphCurvesPointIndex < compositeGlyphPathCurvesCount; glyphCurvesPointIndex++) {
 								newPath.EmplaceBack(transformCurve(currentCurvesList[glyphCurvesPointIndex]));
 							}
-						}
-						else
-						{
+						} else {
 							BE_LOG_WARNING("ttf-parser: unsupported matched points in ttf composite glyph");
 							continue;
 						}

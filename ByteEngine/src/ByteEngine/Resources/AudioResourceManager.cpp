@@ -18,9 +18,9 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 
 	indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true);
 	
-	GTSL::Buffer<BE::TAR> file_buffer; file_buffer.Allocate(2048 * 2048, 32, GetTransientAllocator());
+	GTSL::Buffer file_buffer(2048 * 2048, 32, GetTransientAllocator());
 	
-	if(indexFile.Read(file_buffer.GetBufferInterface()))
+	if(indexFile.Read(file_buffer))
 	{
 		GTSL::Extract(audioResourceInfos, file_buffer);
 	}
@@ -34,17 +34,16 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 		{
 			auto file_path = resources_path;
 			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name, u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
-			if (!audioResourceInfos.Find(hashed_name))
-			{
+			if (!audioResourceInfos.Find(hashed_name)) {
 				GTSL::File query_file;
 				query_file.Open(file_path, GTSL::File::READ, false);
 
-				GTSL::Buffer<BE::TAR> wavBuffer; wavBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
+				GTSL::Buffer wavBuffer(query_file.GetSize(), 8, GetTransientAllocator());
 
-				query_file.Read(wavBuffer.GetBufferInterface());
+				query_file.Read(wavBuffer);
 
 				AudioDataSerialize data;
 

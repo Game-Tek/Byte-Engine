@@ -47,6 +47,8 @@ struct Band
 {
 	GTSL::Vector<uint16, BE::PAR> Lines;
 	GTSL::Vector<uint16, BE::PAR> Curves;
+
+	Band(const BE::PAR& allocator) : Lines(allocator), Curves(allocator) {}
 };
 
 struct Face
@@ -55,15 +57,14 @@ struct Face
 	GTSL::Vector<CubicBezier, BE::PersistentAllocatorReference> CubicBeziers;
 
 	GTSL::Vector<Band, BE::PAR> Bands;
+
+	Face(const BE::PAR& allocator) : LinearBeziers(allocator), CubicBeziers(allocator), Bands(allocator) {}
 };
 
 //Lower index bands represent lower Y locations
 //Fonts are in the range 0 <-> 1
 inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, const uint16 bands, const BE::PAR& allocator)
 {
-	face.LinearBeziers.Initialize(16, allocator);
-	face.CubicBeziers.Initialize(16, allocator);
-
 	auto minBBox = glyph.BoundingBox[0]; auto maxBBox = glyph.BoundingBox[1];
 
 	for (const auto& path : glyph.Paths) {
@@ -88,11 +89,8 @@ inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, c
 		}
 	}
 
-	face.Bands.Initialize(bands, allocator);
-
 	for (uint16 i = 0; i < bands; ++i) {
-		auto& e = face.Bands.EmplaceBack();
-		e.Lines.Initialize(8, allocator); e.Curves.Initialize(8, allocator);
+		face.Bands.EmplaceBack(allocator);
 	}
 
 	auto GetBandsForLinear = [&](const LinearBezier& linearBezier, uint16& from, uint16& to) -> void {
@@ -124,103 +122,102 @@ inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, c
 	}
 }
 
-float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
-{
-	constexpr auto AA_LENGTH = 0.001f; constexpr uint16 BANDS = 4;
-
-	auto getBandIndex = [](const GTSL::Vector2 pos) {
-		return GTSL::Math::Clamp(static_cast<uint16>(pos.Y() * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
-	};
-	
-	auto face = Face();
-
-	auto& band = face.Bands[getBandIndex(point)];
-
-	float32 result = 0.0f; float32 lowestLength = 100.0f;
-	
-			
-	for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
-	{
-		auto line = face.LinearBeziers[band.Lines[i]];
-
-		GTSL::Vector2 min, max;
-		
-		GTSL::Math::MinMax(line.Points[0], line.Points[1], min, max);
-
-		if(GTSL::Math::PointInBoxProjection(min, max, point)) {
-			float32 isOnSegment;
-			auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point, isOnSegment);
-			auto dist = GTSL::Math::LengthSquared(point, pointLine);
-			
-			if(dist < lowestLength) {
-				lowestLength = dist;
-				auto side = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : 0.0f;
-				result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
-				//result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
-			}
-		}
-	}
-
-	{
-		GTSL::Vector2 closestAB, closestBC;
-		
-		for(uint8 i = 0; i < band.Curves.GetLength(); ++i)
-		{
-			const auto& curve = face.CubicBeziers[band.Curves[i]];
-		
-			GTSL::Vector2 min, max;
-			
-			GTSL::Math::MinMax(curve.Points[0], curve.Points[2], min, max);
-		
-			if(GTSL::Math::PointInBoxProjection(min, max, point))
-			{
-				float32 dist = 100.0f;
-
-				constexpr uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f };
-
-				uint8 sideToAdjust = 0;
-
-				for (uint32 l = 0; l < LOOPS; ++l)
-				{
-					for (uint8 i = 0, ni = 1; i < 2; ++i, --ni)
-					{
-						auto t = GTSL::Math::Lerp(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f);
-						auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
-						auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
-						auto pos = GTSL::Math::Lerp(ab, bc, t);
-						auto newDist = GTSL::Math::LengthSquared(pos, point);
-
-						if (newDist < dist) { sideToAdjust = ni; dist = newDist; closestAB = ab; closestBC = bc; }
-					}
-
-					bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f;
-				}
-
-				if (dist < lowestLength)
-				{
-					lowestLength = dist;
-
-					auto side = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) > 0.0f ? 1.0f : 0.0f;
-					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
-
-					//result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
-				}
-			}
-		}
-	}
-
-	return result;
-}
+//float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
+//{
+//	constexpr auto AA_LENGTH = 0.001f; constexpr uint16 BANDS = 4;
+//
+//	auto getBandIndex = [](const GTSL::Vector2 pos) {
+//		return GTSL::Math::Clamp(static_cast<uint16>(pos.Y() * static_cast<float32>(BANDS)), static_cast<uint16>(0), uint16(BANDS - 1));
+//	};
+//	
+//	auto face = Face({});
+//
+//	auto& band = face.Bands[getBandIndex(point)];
+//
+//	float32 result = 0.0f; float32 lowestLength = 100.0f;	
+//			
+//	for(uint8 i = 0; i < band.Lines.GetLength(); ++i)
+//	{
+//		auto line = face.LinearBeziers[band.Lines[i]];
+//
+//		GTSL::Vector2 min, max;
+//		
+//		GTSL::Math::MinMax(line.Points[0], line.Points[1], min, max);
+//
+//		if(GTSL::Math::PointInBoxProjection(min, max, point)) {
+//			float32 isOnSegment;
+//			auto pointLine = GTSL::Math::ClosestPointOnLineSegmentToPoint(line.Points[0], line.Points[1], point, isOnSegment);
+//			auto dist = GTSL::Math::LengthSquared(point, pointLine);
+//			
+//			if(dist < lowestLength) {
+//				lowestLength = dist;
+//				auto side = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) > 0.0f ? 1.0f : 0.0f;
+//				result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+//				//result = GTSL::Math::TestPointToLineSide(line.Points[0], line.Points[1], point) >= 0.0f ? 1.0f : 0.0f;
+//			}
+//		}
+//	}
+//
+//	{
+//		GTSL::Vector2 closestAB, closestBC;
+//		
+//		for(uint8 i = 0; i < band.Curves.GetLength(); ++i)
+//		{
+//			const auto& curve = face.CubicBeziers[band.Curves[i]];
+//		
+//			GTSL::Vector2 min, max;
+//			
+//			GTSL::Math::MinMax(curve.Points[0], curve.Points[2], min, max);
+//		
+//			if(GTSL::Math::PointInBoxProjection(min, max, point))
+//			{
+//				float32 dist = 100.0f;
+//
+//				constexpr uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f };
+//
+//				uint8 sideToAdjust = 0;
+//
+//				for (uint32 l = 0; l < LOOPS; ++l)
+//				{
+//					for (uint8 i = 0, ni = 1; i < 2; ++i, --ni)
+//					{
+//						auto t = GTSL::Math::Lerp(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f);
+//						auto ab = GTSL::Math::Lerp(curve.Points[0], curve.Points[1], t);
+//						auto bc = GTSL::Math::Lerp(curve.Points[1], curve.Points[2], t);
+//						auto pos = GTSL::Math::Lerp(ab, bc, t);
+//						auto newDist = GTSL::Math::LengthSquared(pos, point);
+//
+//						if (newDist < dist) { sideToAdjust = ni; dist = newDist; closestAB = ab; closestBC = bc; }
+//					}
+//
+//					bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f;
+//				}
+//
+//				if (dist < lowestLength)
+//				{
+//					lowestLength = dist;
+//
+//					auto side = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) > 0.0f ? 1.0f : 0.0f;
+//					result = GTSL::Math::MapToRange(GTSL::Math::Clamp(lowestLength, 0.0f, AA_LENGTH), 0.0f, AA_LENGTH, 0.0f, 1.0f) * side;
+//
+//					//result = GTSL::Math::TestPointToLineSide(closestAB, closestBC, point) >= 0.0f ? 1.0f : 0.0f;
+//				}
+//			}
+//		}
+//	}
+//
+//	return result;
+//}
 
 inline void RenderChar(GTSL::Extent2D res, uint16 ch, const BE::PAR& allocator)
 {
-	GTSL::Buffer<BE::PAR> buffer; buffer.Allocate(res.Width * res.Width, 8, allocator);
+	GTSL::Buffer buffer(res.Width * res.Width, 8, allocator);
 	
 	for(uint16 xr = 0, x = 0; xr < res.Width; ++xr, ++x)
 	{
 		for(uint16 yr = 0, y = res.Height - 1; yr < res.Height; ++yr, --y)
 		{
-			buffer.GetData()[xr + yr * res.Height] = Eval(GTSL::Vector2(x / static_cast<float32>(res.Width), y / static_cast<float32>(res.Height)), GTSL::Vector2(res.Width, res.Height), ch) * 255;
+			//buffer.GetData()[xr + yr * res.Height] = Eval(GTSL::Vector2(x / static_cast<float32>(res.Width), y / static_cast<float32>(res.Height)), GTSL::Vector2(res.Width, res.Height), ch) * 255;
 		}
 	}
 

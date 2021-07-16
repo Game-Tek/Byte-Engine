@@ -88,14 +88,13 @@ public:
 		{
 			uint32 bytes = audioInfo.GetAudioSize(); const byte* dataPointer = nullptr;
 
-			auto searchResult = resourceManager->audioBytes.TryEmplace(audioInfo.Name);
+			auto searchResult = resourceManager->audioBytes.TryEmplace(audioInfo.Name, bytes, 16, resourceManager->GetPersistentAllocator());
 			
 			if (searchResult.State())
 			{
 				resourceManager->packageFiles[resourceManager->getThread()].SetPointer(audioInfo.ByteOffset);
 				auto& buffer = searchResult.Get();
-				buffer.Allocate(bytes, 16, resourceManager->GetPersistentAllocator()); //allocate on 16 byte alignment to allow data to be loaded for SIMD with alignment
-				resourceManager->packageFiles[resourceManager->getThread()].Read(bytes, buffer.GetBufferInterface());
+				resourceManager->packageFiles[resourceManager->getThread()].Read(bytes, buffer);
 				dataPointer = buffer.GetData();
 			}
 			else

@@ -32,16 +32,24 @@ public:
 			Extract(extractInfo.AffectedVertices, buffer);
 			//Extract(extractInfo.EffectIntensity, buffer);
 		}
+
+		Bone(const BE::PAR& allocator) : AffectedVertices(allocator) {}
 	};
 	
 	struct SkeletonData : Data
 	{
 		GTSL::Vector<Bone, BE::PAR> Bones;
 		GTSL::HashMap<Id, uint32, BE::PAR> BonesMap;
+		
+		SkeletonData(const BE::PAR& allocator) : Bones(allocator), BonesMap(256, 0.1f, allocator) {}
 	};
 
-	struct SkeletonDataSerialize : DataSerialize<SkeletonData>
+	struct SkeletonDataSerialize : SkeletonData
 	{
+		SkeletonDataSerialize(const BE::PAR& allocator) : SkeletonData(allocator) {}
+
+		uint32 ByteOffset = 0;
+		
 		INSERT_START(SkeletonDataSerialize) {
 			INSERT_BODY;
 			Insert(insertInfo.Bones, buffer);
@@ -62,7 +70,7 @@ public:
 	
 	struct AnimationData : Data
 	{
-		uint32 FrameCount, FPS;
+		uint32 FrameCount = 0, FPS = 0;
 		
 		struct BoneAnimationData
 		{
@@ -85,6 +93,8 @@ public:
 
 		struct Frame
 		{
+			Frame(const BE::PAR& allocator) : Bones(allocator) {}
+			
 			GTSL::Vector<BoneAnimationData, BE::PAR> Bones;
 
 			INSERT_START(Frame)
@@ -99,10 +109,14 @@ public:
 		};
 
 		GTSL::Vector<Frame, BE::PAR> Frames;
+
+		AnimationData(const BE::PAR& allocator) : Frames(allocator) {}
 	};
 
-	struct AnimationDataSerialize : DataSerialize<AnimationData>
+	struct AnimationDataSerialize : AnimationData
 	{
+		uint32 ByteOffset = 0;
+		
 		INSERT_START(AnimationDataSerialize)
 		{
 			INSERT_BODY;
@@ -118,6 +132,8 @@ public:
 			Extract(extractInfo.FPS, buffer);
 			Extract(extractInfo.Frames, buffer);
 		}
+
+		AnimationDataSerialize(const BE::PAR& allocator) : AnimationData(allocator) {}
 	};
 
 	struct AnimationInfo : Info<AnimationDataSerialize>

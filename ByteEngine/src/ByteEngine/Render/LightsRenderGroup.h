@@ -13,11 +13,8 @@ public:
 	MAKE_HANDLE(uint32, DirectionalLight)
 	MAKE_HANDLE(uint32, PointLight)
 	
-	LightsRenderGroup() : System(u8"LightsRenderGroup") {}
-	
-	void Initialize(const InitializeInfo& initializeInfo) override {
-		directionalLights.Initialize(8, GetPersistentAllocator());
-		pointLights.Initialize(8, GetPersistentAllocator());
+	LightsRenderGroup(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"LightsRenderGroup"), directionalLights(8, GetPersistentAllocator()), pointLights(16, GetPersistentAllocator())
+	{
 	}
 
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}

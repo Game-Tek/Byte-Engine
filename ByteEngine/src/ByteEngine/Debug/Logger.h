@@ -3,13 +3,10 @@
 #include <atomic>
 #include <GTSL/Mutex.h>
 #include <GTSL/File.h>
-#include <GTSL/Console.h>
 
 #include "ByteEngine/Core.h"
-#include <GTSL/StaticString.hpp>
+#include <GTSL/String.hpp>
 #include <GTSL/Time.h>
-#include <GTSL/HashMap.h>
-
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Object.h"
@@ -39,6 +36,7 @@ namespace BE
 		 * \brief Mutex for all log operations.
 		 */
 		mutable GTSL::Mutex logMutex;
+		mutable GTSL::Mutex traceMutex;
 		
 		/**
 		 * \brief Minimum level for a log to go through to console, all logs get dumped to disk.
@@ -49,6 +47,8 @@ namespace BE
 		 * \brief File handle to log file where all logs are dumped to.
 		 */
 		mutable GTSL::File logFile;
+		mutable GTSL::File graphFile;
+		mutable uint64 profileCount = 0;
 
 		static constexpr uint16 maxLogLength{ 8192 };
 
@@ -61,7 +61,7 @@ namespace BE
 
 		mutable std::atomic<uint32> posInBuffer{ 0 };
 
-		mutable GTSL::HashMap<Id, Id, BE::SystemAllocatorReference> allowedLoggers;
+		//mutable GTSL::HashMap<Id, Id, BE::SystemAllocatorReference> allowedLoggers;
 		
 		mutable utf8* data{ nullptr };
 

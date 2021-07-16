@@ -8,7 +8,7 @@ export module ConnectionHandler;
 export class ConnectionHandler : public System
 {
 public:
-	void Initialize(const InitializeInfo& initializeInfo) override
+	ConnectionHandler(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"ConnectionHandler")
 	{
 		source.Address[0] = 127;
 		source.Address[1] = 0;

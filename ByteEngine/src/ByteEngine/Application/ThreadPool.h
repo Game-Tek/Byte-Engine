@@ -20,10 +20,13 @@
 
 class ThreadPool : public Object
 {
-	using TaskDelegate = GTSL::Delegate<void(ThreadPool*, void*)>;
+	using TaskDelegate = GTSL::Delegate<void(ThreadPool*, GTSL::SmartPointer<void*, BE::PAR>)>;
 	struct Task {
-		TaskDelegate TaskDelegate;
-		void* TaskInfo;
+		TaskDelegate Delegate;
+		GTSL::SmartPointer<void*, BE::PAR> TaskInfo;
+
+		Task(const BE::PAR& a) : TaskInfo(a) {}
+		Task(TaskDelegate del, GTSL::SmartPointer<void*, BE::PAR>&& info) : Delegate(del),  TaskInfo(MoveRef(info)) {}
 	};
 public:
 	explicit ThreadPool() : Object(u8"Thread Pool")
@@ -31,13 +34,13 @@ public:
 		//lambda
 		auto workers_loop = [](ThreadPool* pool, const uint8 i) {			
 			while (true) {		
-				Task task;
+				Task task(pool->GetPersistentAllocator());
 				
 				for (auto n = 0; n < threadCount * K; ++n) {
 					auto queueIndex = (i + n) % threadCount;
 
 					if (pool->queues[queueIndex].TryPop(task)) {
-						task.TaskDelegate(pool, task.TaskInfo);
+						task.Delegate(pool, GTSL::MoveRef(task.TaskInfo));
 						pool->queues[queueIndex].Done();
 						break;
 					}
@@ -45,7 +48,7 @@ public:
 
 				//if (!GTSL::Get<TUPLE_LAMBDA_DELEGATE_INDEX>(task) && !pool->queues[i].Pop(task)) { break;	}
 				if (pool->queues[i].Pop(task)) {
-					task.TaskDelegate(pool, task.TaskInfo);
+					task.Delegate(pool, GTSL::MoveRef(task.TaskInfo));
 					pool->queues[i].Done();
 				} else {
 					break;
@@ -74,10 +77,10 @@ public:
 	void EnqueueTask(const GTSL::Delegate<F>& task, ARGS&&... args) {
 		const auto currentIndex = index++;
 		
-		TaskInfo<F, ARGS...>* taskInfoAlloc = GTSL::New<TaskInfo<F, ARGS...>>(GetPersistentAllocator(), currentIndex, task, GTSL::ForwardRef<ARGS>(args)...);
+		GTSL::SmartPointer<TaskInfo<F, ARGS...>, BE::PAR> taskInfoAlloc(GetPersistentAllocator(), currentIndex, task, GTSL::ForwardRef<ARGS>(args)...);
 
-		auto work = [](ThreadPool* threadPool, void* voidTask) -> void {
-			TaskInfo<F, ARGS...>* taskInfo = static_cast<TaskInfo<F, ARGS...>*>(voidTask);
+		auto work = [](ThreadPool* threadPool, GTSL::SmartPointer<void*, BE::PAR> voidTask) -> void {
+			TaskInfo<F, ARGS...>* taskInfo = reinterpret_cast<TaskInfo<F, ARGS...>*>(voidTask.GetData());
 
 			BE_ASSERT(taskInfo->TimesRun == 0, "")
 
@@ -85,22 +88,22 @@ public:
 			
 			GTSL::Call(taskInfo->Delegate, GTSL::MoveRef(taskInfo->Arguments));
 
-			GTSL::Delete<TaskInfo<F, ARGS...>>(&taskInfo, threadPool->GetPersistentAllocator());
+			//GTSL::Delete<TaskInfo<F, ARGS...>>(&taskInfo, threadPool->GetPersistentAllocator());
 		};		
 
 		for (auto n = 0; n < threadCount * K; ++n) {
 			//Try to Push work into queues, if success return else when Done looping place into some queue.
 		
-			if (queues[(currentIndex + n) % threadCount].TryPush(Task{ TaskDelegate::Create(work), static_cast<void*>(taskInfoAlloc) })) { return; }
+			if (queues[(currentIndex + n) % threadCount].TryPush(TaskDelegate::Create(work), GTSL::MoveRef(taskInfoAlloc))) { return; }
 		}
 
-		queues[currentIndex % threadCount].Push(Task{ TaskDelegate::Create(work), static_cast<void*>(taskInfoAlloc) });
+		queues[currentIndex % threadCount].Push(TaskDelegate::Create(work), GTSL::MoveRef(taskInfoAlloc));
 	}
 
 	uint8 GetNumberOfThreads() { return threadCount; }
 
 private:
-	inline const static uint8 threadCount{ 1/*static_cast<uint8>(GTSL::Thread::ThreadCount() - 1)*/};
+	inline const static uint8 threadCount{ /*static_cast<uint8>(GTSL::Thread::ThreadCount() - 1)*/ 1 };
 	GTSL::Atomic<uint32> index{ 0 }, runTasks{ 0 };
 	
 	GTSL::Array<GTSL::BlockingQueue<Task>, 32> queues;

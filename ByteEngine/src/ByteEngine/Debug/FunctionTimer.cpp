@@ -6,7 +6,7 @@
 
 #undef GetCurrentTime
 
-FunctionTimer::FunctionTimer(const char* name) : StartingTime(BE::Application::Get()->GetClock()->GetCurrentMicroseconds()), Name(name)
+FunctionTimer::FunctionTimer(const GTSL::StaticString<64>& name) : StartingTime(BE::Application::Get()->GetClock()->GetCurrentMicroseconds()), Name(name)
 {
 }
 

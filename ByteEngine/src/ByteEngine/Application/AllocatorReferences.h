@@ -6,6 +6,8 @@
 
 namespace BE
 {
+	class Application;
+
 	struct BEAllocatorReference : GTSL::AllocatorReference
 	{
 		GTSL::ShortString<128> Name;
@@ -32,10 +34,11 @@ namespace BE
 
 		SystemAllocatorReference() = default;
 		
-		SystemAllocatorReference(const utf8* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
+		SystemAllocatorReference(BE::Application* application, const utf8* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation), application(application)
 		{
 		}
-
+		
+		BE::Application* application = nullptr;
 	};
 
 	struct TransientAllocatorReference : BEAllocatorReference
@@ -48,7 +51,7 @@ namespace BE
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const {}
 #endif
 
-		TransientAllocatorReference() = default;
+		TransientAllocatorReference() = delete;
 
 		TransientAllocatorReference(const TransientAllocatorReference& reference) : BEAllocatorReference(reference.Name, reference.IsDebugAllocation) {}
 		TransientAllocatorReference(TransientAllocatorReference&& reference) = default;
@@ -66,7 +69,7 @@ namespace BE
 
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const;
 
-		PersistentAllocatorReference() = default;
+		PersistentAllocatorReference() = delete;
 		
 		PersistentAllocatorReference(const PersistentAllocatorReference& allocatorReference) : BEAllocatorReference(allocatorReference.Name, allocatorReference.IsDebugAllocation)
 		{

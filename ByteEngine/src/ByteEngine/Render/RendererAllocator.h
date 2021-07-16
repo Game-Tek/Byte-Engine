@@ -33,6 +33,8 @@ struct AllocationInfo : Space
 
 struct MemoryBlock
 {
+	MemoryBlock(const BE::PAR& allocator) : freeSpaces(32, allocator) {}
+	
 	void Initialize(const RenderDevice& renderDevice, uint32 size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference);
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 

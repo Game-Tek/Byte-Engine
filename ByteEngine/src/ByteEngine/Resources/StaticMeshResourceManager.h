@@ -8,6 +8,7 @@
 #include <GTSL/Delegate.hpp>
 #include <GTSL/HashMap.h>
 #include <GTSL/File.h>
+#include <GTSL/MappedFile.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vectors.h>
 
@@ -102,7 +103,7 @@ public:
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask(u8"loadstaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
@@ -111,25 +112,24 @@ public:
 		auto loadMesh = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
 			auto verticesSize = staticMeshInfo.GetVerticesSize(); auto indicesSize = staticMeshInfo.GetIndicesSize();
-
-			{
-				byte* vertices = buffer.begin();
-				byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
-
-				//resourceManager->.SetPointer(staticMeshInfo.ByteOffset);
-				//resourceManager->.Read(GTSL::Range<byte*>(verticesSize, vertices));
-				//resourceManager->.Read(GTSL::Range<byte*>(indicesSize, indices));
-			}
+			
+			BE_ASSERT(buffer.Bytes() >= GTSL::Math::RoundUpByPowerOf2(verticesSize, indicesAlignment) + indicesSize, u8"")
+			
+			byte* vertices = buffer.begin();
+			byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
+			
+			GTSL::MemCopy(verticesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset, vertices);
+			GTSL::MemCopy(indicesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset + verticesSize, indices);
 			
 			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
-		gameInstance->AddDynamicTask(u8"loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
 private:
 	GTSL::File indexFile;
-	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
+	GTSL::MappedFile mappedFile;
 	
 	GTSL::HashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
 

@@ -22,10 +22,6 @@ class System : public Object
 {
 public:
 	System() = default;
-	
-	System(const utf8* name) : Object(name)
-	{
-	}
 
 	struct InitializeInfo
 	{
@@ -35,8 +31,10 @@ public:
 		 * Can be used for initialization of data structures to allocate "enough" space during start as to avoid as many re-allocations further down the line.
 		 */
 		uint32 ScalingFactor = 0;
-	};
-	virtual void Initialize(const InitializeInfo& initializeInfo) = 0;
+	};	
+	System(const InitializeInfo& initializeInfo, const utf8* name) : Object(name)
+	{
+	}
 
 	struct ShutdownInfo
 	{

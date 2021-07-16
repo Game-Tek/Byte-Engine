@@ -9,20 +9,13 @@
 #include "ByteEngine/Game/GameInstance.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
-AudioSystem::AudioSystem() : System(u8"AudioSystem")
-{
-}
-
-AudioSystem::~AudioSystem()
-{
-}
-
-void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
+AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), audioBuffer(200000, 16, GetPersistentAllocator()),
+	loadedSounds(16, GetPersistentAllocator())
 {
 	AudioDevice::CreateInfo createInfo;
 
 	bool error = false;
-	
+
 	if (audioDevice.Initialize(createInfo)) {
 		mixFormat.BitsPerSample = 16;
 		mixFormat.NumberOfChannels = 2;
@@ -35,21 +28,23 @@ void AudioSystem::Initialize(const InitializeInfo& initializeInfo)
 		{
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
-					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize(), GetPersistentAllocator());
+					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
 					initializeInfo.GameInstance->AddTask(u8"renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
-
-					loadedSounds.Initialize(32, GetPersistentAllocator());
 
 					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
-					BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, u8"Unsupported");
+						BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, u8"Unsupported");
 				} else { error = true; }
 			} else { error = true; }
 		} else { error = true; }
 	} else { error = true; }
 
-	if(error)
+	if (error)
 		BE_LOG_WARNING(u8"Unable to start audio device with requested parameters:\n Stream share mode: Shared\n Bits per sample: ", mixFormat.BitsPerSample, u8"\nNumber of channels: ", mixFormat.NumberOfChannels, u8"\nSamples per second: ", mixFormat.SamplesPerSecond);
+}
+
+AudioSystem::~AudioSystem()
+{
 }
 
 void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)

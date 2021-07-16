@@ -1,6 +1,6 @@
 #pragma once
 #include <GTSL/Range.h>
-#include <GTSL/StaticString.hpp>
+#include <GTSL/String.hpp>
 #include <GTSL/Tree.hpp>
 
 #include "Core.h"
@@ -234,7 +234,7 @@ bool GoToArray(FileDescription<ALLOC1>& fileDescription, ParseState<ALLOC2>& par
 				auto* node = fileDescription.Classes.AddChild(nullptr);
 				fileDescription.ClassesByName.Emplace(Id(strings[0]), &node->Data);
 				auto nonArrayType = strings[0];
-				nonArrayType.Drop(nonArrayType.FindLast(u8'[').Get());
+				nonArrayType.Drop(FindLast(nonArrayType, u8'[').Get());
 				node->Data.Members.EmplaceBack(nonArrayType, u8"arrMem");
 
 				typename ParseState<ALLOC2>::StackState stackState;

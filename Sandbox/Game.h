@@ -45,7 +45,7 @@ class Game final : public GameApplication
 	void moveCamera(InputManager::Vector2DInputEvent data);
 	void view(InputManager::Vector2DInputEvent data);
 public:
-	Game() : GameApplication(u8"Sandbox")
+	Game(GTSL::ShortString<128> name) : GameApplication(name)
 	{
 	}
 
@@ -63,7 +63,9 @@ public:
 	GTSL::ShortString<128> GetApplicationName() override { return u8"Sandbox"; }
 };
 
-inline GTSL::SmartPointer<BE::Application, SystemAllocatorReference> CreateApplication(const SystemAllocatorReference& allocatorReference)
+inline int CreateApplication()
 {
-	return GTSL::SmartPointer<BE::Application, SystemAllocatorReference>::Create<Game>(allocatorReference);
+	Game applicationInstance(u8"Sandbox");
+	const auto res = Start(&applicationInstance);
+	return res;
 }

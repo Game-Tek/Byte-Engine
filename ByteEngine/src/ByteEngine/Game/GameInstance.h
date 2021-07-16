@@ -11,12 +11,14 @@
 #include <GTSL/Pair.h>
 #include <GTSL/Semaphore.h>
 
+#include "System.h"
 #include "Tasks.h"
 #include "ByteEngine/Id.h"
 
 #include "ByteEngine/Debug/Assert.h"
 
 #include "ByteEngine/Handle.hpp"
+#include "ByteEngine/Debug/FunctionTimer.h"
 
 class World;
 class ComponentCollection;
@@ -75,7 +77,7 @@ public:
 	WorldReference CreateNewWorld(const CreateNewWorldInfo& createNewWorldInfo)
 	{
 		auto index = worlds.GetLength();
-		worlds.EmplaceBack(GTSL::SmartPointer<World, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
+		worlds.EmplaceBack(GetPersistentAllocator());
 		initWorld(index); return index;
 	}
 
@@ -84,20 +86,20 @@ public:
 	template<class T>
 	T* GetSystem(const Id systemName)
 	{
-		GTSL::ReadLock lock(systemsMutex);
+		GTSL::Lock lock(systemsMutex);
 		return static_cast<T*>(systemsMap.At(systemName));
 	}
 	
 	template<class T>
 	T* GetSystem(const SystemHandle systemReference)
 	{
-		GTSL::ReadLock lock(systemsMutex);
+		GTSL::Lock lock(systemsMutex);
 		return static_cast<T*>(systems[systemReference()].GetData());
 	}
 	
 	SystemHandle GetSystemReference(const Id systemName)
 	{
-		GTSL::ReadLock lock(systemsMutex);
+		GTSL::Lock lock(systemsMutex);
 		return SystemHandle(systemsIndirectionTable.At(systemName));
 	}
 
@@ -105,14 +107,18 @@ public:
 	void AddTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
 		if constexpr (_DEBUG) { if (assertTask(name, startOn, doneFor, dependencies)) { return; } }
 		
-		auto taskInfo = GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>::Create<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		auto taskInfo = GTSL::SmartPointer<DispatchTaskInfo<TaskInfo, ARGS...>, BE::PAR>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
+		taskInfo->Name = name.GetString();
+		
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
 			BE_ASSERT(info->Counter == 0, "")
 			
 			++info->Counter;
+
+			FunctionTimer f(info->Name);
 			
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
@@ -150,7 +156,8 @@ public:
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
-
+		taskInfo->Name = name.GetString();
+		
 		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
 
 		uint16 startOnGoalIndex, taskObjectiveIndex;
@@ -158,6 +165,8 @@ public:
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
+			FunctionTimer f(info->Name);
+			
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 
@@ -188,6 +197,8 @@ public:
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 asyncTasksIndex, void* data) -> void {
 			auto* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
+			FunctionTimer f(info->Name);
+			
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());			
@@ -206,6 +217,7 @@ public:
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
 			auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo->Name = name.GetString();
 			asyncTasks.AddTask(name, FunctionType::Create(task), objects, accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
 		}
 
@@ -218,6 +230,9 @@ public:
 
 		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
+
+			FunctionTimer f(info->Name);
+			
 			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
 			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
 			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());
@@ -251,6 +266,7 @@ public:
 		}
 
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), GTSL::Delegate<void(TaskInfo, ARGS...)>(storedDynamicTask.AnonymousFunction), TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo->Name = storedDynamicTask.Name.GetString();
 		
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
@@ -262,7 +278,7 @@ public:
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
-		events.Emplace(eventHandle.Name).Initialize(8, GetPersistentAllocator());
+		events.Emplace(eventHandle.Name, 8, GetPersistentAllocator());
 	}
 
 	template<typename... ARGS>
@@ -287,7 +303,7 @@ public:
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	
-	mutable GTSL::ReadWriteMutex systemsMutex;
+	mutable GTSL::Mutex systemsMutex;
 	GTSL::FixedVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FixedVector<Id, BE::PersistentAllocatorReference> systemNames;
 	GTSL::HashMap<Id, System*, BE::PersistentAllocatorReference> systemsMap;
@@ -304,6 +320,7 @@ private:
 		{
 		}
 
+		GTSL::StaticString<64> Name;
 		uint32 TaskIndex, Counter = 0;
 		GTSL::Delegate<void(ARGS...)> Delegate;
 		GTSL::Tuple<ARGS...> Arguments;
@@ -333,7 +350,7 @@ private:
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> stagesNames;
 
 	mutable GTSL::ReadWriteMutex recurringTasksInfoMutex;
-	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<void*, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
+	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<DispatchTaskInfo<TaskInfo>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 	
@@ -433,7 +450,7 @@ private:
 		}
 
 		{
-			GTSL::ReadLock lock(systemsMutex);
+			GTSL::Lock lock(systemsMutex);
 
 			for(auto e : dependencies)
 			{
@@ -448,7 +465,6 @@ private:
 	}
 
 	void initWorld(uint8 worldId);
-	void initSystem(System* system, Id name, const uint16 id);
 	
 public:
 	template<typename T>
@@ -460,24 +476,27 @@ public:
 				return reinterpret_cast<T*>(systemsMap.At(systemName));
 			}
 		}
+
+		T* systemPointer = nullptr;
 		
-		System* system;
-
-		uint32 l;
-		
-		{
-			GTSL::WriteLock lock(systemsMutex);
-			l = systems.Emplace(GTSL::SmartPointer<System, BE::PersistentAllocatorReference>::Create<T>(GetPersistentAllocator()));
-			systemsMap.Emplace(systemName, systems[l]);
-			systemsIndirectionTable.Emplace(systemName, l);
-			systemNames.Emplace(systemName);
-			system = systems[l];
-		}
-
-		initSystem(system, systemName, static_cast<uint16>(l));
-
 		taskSorter.AddSystem(systemName);
 		
-		return reinterpret_cast<T*>(system);
+		{
+			System::InitializeInfo initializeInfo;
+			initializeInfo.GameInstance = this;
+			initializeInfo.ScalingFactor = scalingFactor;
+			
+			GTSL::Lock lock(systemsMutex);
+			auto systemIndex = systemNames.Emplace(systemName);
+			auto& t = systemsMap.Emplace(systemName, reinterpret_cast<System*>(systemPointer));
+			systemsIndirectionTable.Emplace(systemName, systemIndex);
+			
+			systems.Emplace(GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo));
+			systemPointer = reinterpret_cast<T*>(systems[systemIndex].GetData());
+			t = reinterpret_cast<System*>(systemPointer);
+		}
+
+		
+		return systemPointer;
 	}
 };

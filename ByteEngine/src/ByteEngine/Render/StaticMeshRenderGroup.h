@@ -14,9 +14,24 @@ MAKE_HANDLE(uint32, StaticMesh)
 class StaticMeshRenderGroup final : public System
 {
 public:
-	StaticMeshRenderGroup();
+	StaticMeshRenderGroup(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"StaticMeshRenderGroup"), resourceNames(8, GetPersistentAllocator()),
+		transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()), addedMeshes(1, 16, GetPersistentAllocator())
+	{
+		auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
+
+		{
+			auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+			onStaticMeshInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"StaticMeshRenderGroup::OnStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshInfoLoaded>(this), acts_on);
+		}
+
+		{
+			auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+			onStaticMeshLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"StaticMeshRenderGroup::OnStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this), acts_on);
+		}
+
+		BE_LOG_MESSAGE(u8"Initialized StaticMeshRenderGroup");
+	}
 	
-	void Initialize(const InitializeInfo& initializeInfo) override;
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	GTSL::Matrix4 GetMeshTransform(StaticMeshHandle index) { return transformations[index()]; }
 	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }

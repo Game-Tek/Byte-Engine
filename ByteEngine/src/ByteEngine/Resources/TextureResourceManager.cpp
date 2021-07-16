@@ -31,16 +31,16 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 		while (file_query.DoQuery()) {
 			auto file_path = resources_path;
 			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name,u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!textureInfos.Find(hashed_name))
 			{
 				GTSL::File query_file;
 				query_file.Open(file_path, GTSL::File::READ, false);
-				GTSL::Buffer<BE::TAR> textureBuffer; textureBuffer.Allocate(query_file.GetSize(), 8, GetTransientAllocator());
-
-				query_file.Read(textureBuffer.GetBufferInterface());
+				
+				GTSL::Buffer textureBuffer(GetTransientAllocator());
+				query_file.Read(textureBuffer);
 
 				int32 x, y, channel_count = 0;
 				stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
@@ -65,9 +65,9 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 			}
 		}
 
-		GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048 , 32, GetTransientAllocator());
+		GTSL::Buffer indexFileBuffer(2048 , 32, GetTransientAllocator());
 		Insert(textureInfos, indexFileBuffer);
-		indexFile.Write(indexFileBuffer.GetBufferInterface());
+		indexFile.Write(indexFileBuffer);
 
 		textureInfos.Clear();
 		indexFile.SetPointer(0);
@@ -78,8 +78,8 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	default: ;
 	}
 
-	GTSL::Buffer<BE::TAR> indexFileBuffer; indexFileBuffer.Allocate(2048, 32, GetTransientAllocator());
-	indexFile.Read(indexFileBuffer.GetBufferInterface());
+	GTSL::Buffer<BE::TAR> indexFileBuffer(2048, 32, GetTransientAllocator());
+	indexFile.Read(indexFileBuffer);
 	GTSL::Extract(textureInfos, indexFileBuffer);
 
 	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")));

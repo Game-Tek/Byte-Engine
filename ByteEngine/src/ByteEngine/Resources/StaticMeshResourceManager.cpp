@@ -43,7 +43,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 	resources_path += u8"/resources/";
 
 	auto package_path = GetResourcePath(GTSL::ShortString<32>(u8"StaticMesh"), GTSL::ShortString<32>(u8"bepkg"));
-
+	
 	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true))
 	{
 	case GTSL::File::OpenResult::OK: break;
@@ -54,8 +54,8 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 	
 	if (indexFile.GetSize())
 	{
-		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(indexFile.GetSize(), 16, GetTransientAllocator());
-		indexFile.Read(meshInfosFileBuffer.GetBufferInterface());
+		GTSL::Buffer meshInfosFileBuffer(indexFile.GetSize(), 16, GetTransientAllocator());
+		indexFile.Read(meshInfosFileBuffer);
 		GTSL::Extract(meshInfos, meshInfosFileBuffer);
 	} else {
 		GTSL::File staticMeshPackage;
@@ -72,19 +72,18 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 		{
 			auto file_path = resources_path;
 			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(name.FindLast('.').Get().Second);
+			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name, u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!meshInfos.Find(hashed_name))
 			{
-				GTSL::Buffer<BE::TAR> meshFileBuffer;
-
 				GTSL::File queryFile;
 				queryFile.Open(file_path, GTSL::File::READ, false);
-				meshFileBuffer.Allocate(queryFile.GetSize(), 32, GetTransientAllocator());
-				queryFile.Read(meshFileBuffer.GetBufferInterface());
+				
+				GTSL::Buffer meshFileBuffer(queryFile.GetSize(), 32, GetTransientAllocator());
+				queryFile.Read(meshFileBuffer);
 
-				GTSL::Buffer<BE::TAR> meshDataBuffer; meshDataBuffer.Allocate(2048 * 2048, 8, GetTransientAllocator());
+				GTSL::Buffer meshDataBuffer(2048 * 2048, 8, GetTransientAllocator());
 
 				StaticMeshDataSerialize meshInfo;
 
@@ -92,19 +91,19 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 
 				meshInfo.ByteOffset = static_cast<uint32>(staticMeshPackage.GetSize());
 
-				staticMeshPackage.Write(meshDataBuffer.GetBufferInterface());
+				staticMeshPackage.Write(meshDataBuffer);
 
 				meshInfos.Emplace(hashed_name, meshInfo);
 			}
 		}
 
-		GTSL::Buffer<BE::TAR> meshInfosFileBuffer; meshInfosFileBuffer.Allocate(4096, 16, GetTransientAllocator());
+		GTSL::Buffer<BE::TAR> meshInfosFileBuffer(4096, 16, GetTransientAllocator());
 		Insert(meshInfos, meshInfosFileBuffer);
 
-		indexFile.Write(meshInfosFileBuffer.GetBufferInterface());
+		indexFile.Write(meshInfosFileBuffer);
 	}
 
-	initializePackageFiles(packageFiles, package_path);
+	mappedFile.Open(package_path);
 }
 
 StaticMeshResourceManager::~StaticMeshResourceManager()

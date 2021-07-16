@@ -23,9 +23,7 @@ MAKE_HANDLE(uint32, Buffer)
 class RenderSystem : public System
 {
 public:
-	RenderSystem() : System(u8"RenderSystem") {}
-
-	void Initialize(const InitializeInfo& initializeInfo) override;
+	explicit RenderSystem(const InitializeInfo& initializeInfo);
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameIndex(int32 frameDelta) const { return static_cast<uint8>(frameDelta % pipelinedFrames); }
@@ -102,7 +100,7 @@ public:
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
-	CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
+	//CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 
 	struct BufferCopyData
 	{
@@ -146,10 +144,27 @@ public:
 
 	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
 		if (needsStagingBuffer) {
-			return static_cast<byte*>(buffers[buffers[bufferHandle()].Staging()].Allocation.Data);
+			if (buffers[bufferHandle()].isMulti) {
+				return reinterpret_cast<byte*>(buffers[bufferHandle()].StagingAllocation[GetCurrentFrame()].Data);
+			} else {
+				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[0].Data);
+			}
 		}
 		else {
-			return static_cast<byte*>(buffers[bufferHandle()].Allocation.Data);
+			return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
+		}
+	}
+
+	[[nodiscard]] byte* GetBufferPointerA(BufferHandle bufferHandle) const {
+		if (needsStagingBuffer) {
+			if (buffers[bufferHandle()].isMulti) {
+				return reinterpret_cast<byte*>(buffers[bufferHandle()].Staging[GetCurrentFrame()].GetAddress(GetRenderDevice()));
+			} else {
+				return reinterpret_cast<byte*>(buffers[bufferHandle()].Staging[0].GetAddress(GetRenderDevice()));
+			}
+		}
+		else {
+			return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
 		}
 	}
 	
@@ -212,8 +227,15 @@ public:
 
 	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
 	
-	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const { return buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()); }
-	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const { return buffers[meshes[meshHandle()].Buffer()].Buffer.GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment()); }
+	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const
+	{
+		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice());
+	}
+	
+	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const
+	{
+		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment());
+	}
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 
@@ -278,16 +300,16 @@ private:
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
 	GPUSemaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
-	GPUSemaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
+	//GPUSemaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
 	GPUSemaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
 	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
-	Fence transferFences[MAX_CONCURRENT_FRAMES];
+	//Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
 	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
-	CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];
+	//CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue;
-	GAL::VulkanQueue transferQueue;
+	//GAL::VulkanQueue transferQueue;
 	GAL::Device accelerationStructureBuildDevice;
 
 	struct Mesh
@@ -310,11 +332,14 @@ private:
 
 	struct BufferData
 	{
-		GPUBuffer Buffer; uint32 Size = 0, Counter = 0;
+		GPUBuffer Buffer[MAX_CONCURRENT_FRAMES];
+		uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
 		uint32 references = 0;
-		BufferHandle Staging, Next;
-		RenderAllocation Allocation;
+		bool isMulti = false;
+		GPUBuffer Staging[MAX_CONCURRENT_FRAMES];
+		RenderAllocation Allocation[MAX_CONCURRENT_FRAMES];
+		RenderAllocation StagingAllocation[MAX_CONCURRENT_FRAMES];
 	};
 	GTSL::FixedVector<BufferData, BE::PAR> buffers;
 	
@@ -372,9 +397,8 @@ private:
 
 	bool resize();
 	
-	void renderBegin(TaskInfo taskInfo);
-	void renderStart(TaskInfo taskInfo);
-	void renderFinish(TaskInfo taskInfo);
+	void beginGraphicsCommandLists(TaskInfo taskInfo);
+	void renderFlush(TaskInfo taskInfo);
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);
 
@@ -392,7 +416,7 @@ private:
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;
 
-	Vector<PipelineCache> pipelineCaches;
+	GTSL::StaticVector<PipelineCache, 32> pipelineCaches;
 
 	uint32 shaderGroupHandleAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;

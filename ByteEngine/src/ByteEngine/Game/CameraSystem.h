@@ -12,12 +12,11 @@
 class CameraSystem : public System
 {
 public:
-	CameraSystem() : positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())
+	CameraSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"CameraSystem"), positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())
 	{}
 
 	MAKE_HANDLE(uint32, Camera);
 	
-	void Initialize(const InitializeInfo& initializeInfo) override {}
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 	
 	CameraHandle AddCamera(const GTSL::Vector3 pos)

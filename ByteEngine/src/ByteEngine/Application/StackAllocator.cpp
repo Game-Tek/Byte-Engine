@@ -32,7 +32,8 @@ bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 a
 	allocatedSize = GTSL::Math::RoundUpByPowerOf2(size, alignment);
 	if (at + allocatedSize < end)
 	{
-		*data = GTSL::AlignPointer(alignment, at);
+		//*data = GTSL::AlignPointer(alignment, at);
+		*data = at;
 		at += allocatedSize;
 		return true;
 	}

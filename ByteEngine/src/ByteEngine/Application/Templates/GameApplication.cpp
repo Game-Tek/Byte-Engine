@@ -3,7 +3,7 @@
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -19,8 +19,6 @@
 #include "ByteEngine/Resources/FontResourceManager.h"
 
 #include "ByteEngine/Sound/AudioSystem.h"
-
-#include <GTSL/GamepadQuery.h>
 
 #pragma comment(lib, "XInput.lib")
 
@@ -91,7 +89,7 @@ void GameApplication::PostInitialize()
 	
 	renderSystem->SetWindow(&window);
 
-	window.ShowWindow();
+	window.SetWindowVisibility(true);
 	
 	gameInstance->AddSystem<CameraSystem>(u8"CameraSystem");
 	
@@ -214,7 +212,7 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 		}
 	};
 	
-	GTSL::Update(gamepad, button, floats, vectors, 0);
+	Update(gamepad, button, floats, vectors, 0);
 
 	{
 		auto lowEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, u8"LowEndVibration");
@@ -334,13 +332,13 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(const Extent2D extent)
 {
-	Array<TaskDependency, 10> taskDependencies = { { u8"RenderSystem", AccessTypes::READ_WRITE } };
+	GTSL::StaticVector<TaskDependency, 10> taskDependencies = { { u8"RenderSystem", AccessTypes::READ_WRITE } };
 
 	auto ext = extent;
 
 	auto resize = [](TaskInfo info, Extent2D newSize)
 	{
-		auto* renderSystem = info.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
+		auto* renderSystem = info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		renderSystem->OnResize(newSize);
 	};

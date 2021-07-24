@@ -5,7 +5,7 @@
 #include "SoundPlayer.h"
 #include <GTSL/Vector.hpp>
 #include <GTSL/Pair.h>
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Application/AllocatorReferences.h"
 
@@ -77,7 +77,7 @@ class SoundMixer
 		/**
 		 * \brief Holds the collection of effects this channel has. Every channel can have a maximum of 10 simultaneous effects running on it.
 		 */
-		GTSL::Array<SoundMixerChannelEffect*, 10> effects;
+		GTSL::StaticVector<SoundMixerChannelEffect*, 10> effects;
 
 	public:
 		~SoundMixerChannel()

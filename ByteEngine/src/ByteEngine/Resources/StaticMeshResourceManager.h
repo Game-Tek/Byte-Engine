@@ -1,19 +1,18 @@
 #pragma once
 
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 
 #include "ResourceManager.h"
 
 #include <GTSL/Delegate.hpp>
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/File.h>
 #include <GTSL/MappedFile.hpp>
-#include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vectors.h>
 
 
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 
 namespace GAL {
 	enum class ShaderDataType : unsigned char;
@@ -53,7 +52,7 @@ public:
 
 		GTSL::Vector3 BoundingBox; float32 BoundingRadius;
 		
-		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
+		GTSL::StaticVector<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 	
 	struct StaticMeshDataSerialize : DataSerialize<StaticMeshData>
@@ -92,7 +91,7 @@ public:
 	};
 
 	template<typename... ARGS>
-	void LoadStaticMeshInfo(GameInstance* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadStaticMeshInfo = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, Id meshName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
@@ -100,14 +99,14 @@ public:
 
 			StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
 			
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
 		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
-	void LoadStaticMesh(GameInstance* gameInstance, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadStaticMesh(ApplicationManager* gameInstance, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadMesh = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
@@ -121,7 +120,7 @@ public:
 			GTSL::MemCopy(verticesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset, vertices);
 			GTSL::MemCopy(indicesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset + verticesSize, indices);
 			
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
 		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);

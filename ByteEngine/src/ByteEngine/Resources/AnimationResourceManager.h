@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Quaternion.h>
 
@@ -23,14 +23,12 @@ public:
 		{
 			Insert(insertInfo.Offset, buffer);
 			Insert(insertInfo.AffectedVertices, buffer);
-			//Insert(insertInfo.EffectIntensity, buffer);
 		}
 
 		EXTRACT_START(Bone)
 		{
 			Extract(extractInfo.Offset, buffer);
 			Extract(extractInfo.AffectedVertices, buffer);
-			//Extract(extractInfo.EffectIntensity, buffer);
 		}
 
 		Bone(const BE::PAR& allocator) : AffectedVertices(allocator) {}
@@ -122,7 +120,7 @@ public:
 			INSERT_BODY;
 			Insert(insertInfo.FrameCount, buffer);
 			Insert(insertInfo.FPS, buffer);
-			Insert(insertInfo.Frames, buffer);
+			//Insert(insertInfo.Frames, buffer);
 		}
 
 		EXTRACT_START(AnimationDataSerialize)
@@ -130,7 +128,7 @@ public:
 			EXTRACT_BODY;
 			Extract(extractInfo.FrameCount, buffer);
 			Extract(extractInfo.FPS, buffer);
-			Extract(extractInfo.Frames, buffer);
+			//Extract(extractInfo.Frames, buffer);
 		}
 
 		AnimationDataSerialize(const BE::PAR& allocator) : AnimationData(allocator) {}
@@ -146,5 +144,5 @@ private:
 	void loadAnimation(const GTSL::Range<const byte*> sourceBuffer, AnimationData& animationData, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 
 	GTSL::HashMap<Id, AnimationDataSerialize, BE::PAR> animations;
-	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
+	GTSL::StaticVector<GTSL::File, MAX_THREADS> packageFiles;
 };

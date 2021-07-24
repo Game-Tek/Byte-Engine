@@ -5,7 +5,7 @@
 #include <GTSL/FunctionPointer.hpp>
 
 #include "ByteEngine/Game/System.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 
 #include "RendererAllocator.h"
 #include "RenderTypes.h"
@@ -294,7 +294,7 @@ private:
 	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas[MAX_CONCURRENT_FRAMES];
 	uint32 processedBufferCopies[MAX_CONCURRENT_FRAMES];
 	GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference> textureCopyDatas[MAX_CONCURRENT_FRAMES];
-	//GTSL::Array<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
+	//GTSL::StaticVector<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 	
 	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
@@ -318,7 +318,7 @@ private:
 		uint32 IndicesCount, VertexCount;
 		uint32 DerivedTypeIndex, CustomMeshIndex;
 		uint8 IndexSize, VertexSize;
-		GTSL::Array<GAL::ShaderDataType, 20> VertexDescriptor;
+		GTSL::StaticVector<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
 	
 	struct RayTracingMesh {
@@ -407,7 +407,7 @@ private:
 	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
 	void deallocateApiMemory(void* data, void* allocation);
 
-//	GTSL::StaticMap<uint64, GTSL::Array<GAL::ShaderDataType, 8>, 8> vertexFormats;
+//	GTSL::StaticMap<uint64, GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> vertexFormats;
 	
 	//GTSL::HashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
 	std::unordered_map<uint64, GTSL::Pair<uint64, uint64>> apiAllocations;

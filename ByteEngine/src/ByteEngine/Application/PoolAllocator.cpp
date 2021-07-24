@@ -86,7 +86,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 
 void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize)
 {
-	GTSL::Lock lock(globalLock);
+	GTSL::Lock lock(poolLock);
 	
 	auto slot = GTSL::OccupyFirstFreeSlot(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack), MAX_SLOTS_COUNT);
 
@@ -142,7 +142,7 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 
 void PoolAllocator::Pool::Deallocate(uint64 size, const uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference)
 {
-	GTSL::Lock lock(globalLock);
+	GTSL::Lock lock(poolLock);
 	
 	BE_ASSERT(memory >= slotsData && memory <= slotsData + slotsDataAllocationSize(), "Allocation does not belong to pool!")
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <GTSL/PagedVector.h>
-#include <GTSL/StaticMap.hpp>
 #include <GTSL/Math/Vectors.h>
 
 #include "RenderSystem.h"
@@ -20,12 +19,12 @@ public:
 		auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		{
-			auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+			auto acts_on = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
 			onStaticMeshInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"StaticMeshRenderGroup::OnStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshInfoLoaded>(this), acts_on);
 		}
 
 		{
-			auto acts_on = GTSL::Array<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
+			auto acts_on = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };
 			onStaticMeshLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"StaticMeshRenderGroup::OnStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo>::Create<StaticMeshRenderGroup, &StaticMeshRenderGroup::onStaticMeshLoaded>(this), acts_on);
 		}
 
@@ -44,7 +43,7 @@ public:
 	{
 		Id MeshName;
 		RenderSystem* RenderSystem = nullptr;
-		class GameInstance* GameInstance = nullptr;
+		class ApplicationManager* GameInstance = nullptr;
 		StaticMeshResourceManager* StaticMeshResourceManager = nullptr;
 		MaterialInstanceHandle Material;
 	};
@@ -94,11 +93,11 @@ private:
 		RenderSystem::MeshHandle MeshHandle; MaterialInstanceHandle MaterialInstanceHandle;
 	};
 
-	GTSL::Array<StaticMeshHandle, 8> dirtyMeshes;
+	GTSL::StaticVector<StaticMeshHandle, 8> dirtyMeshes;
 	
 	struct ResourceData {
 		bool Loaded;
-		GTSL::Array<StaticMeshHandle, 8> DependentMeshes;
+		GTSL::StaticVector<StaticMeshHandle, 8> DependentMeshes;
 		RenderSystem::MeshHandle MeshHandle;
 	};
 	GTSL::HashMap<Id, ResourceData, BE::PAR> resourceNames;

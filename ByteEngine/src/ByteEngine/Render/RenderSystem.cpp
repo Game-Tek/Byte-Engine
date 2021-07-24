@@ -143,21 +143,21 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	textures(16, GetPersistentAllocator())
 {
 	//{
-	//	GTSL::Array<TaskDependency, 1> dependencies{ { "RenderSystem", AccessTypes::READ_WRITE } };
+	//	GTSL::StaticVector<TaskDependency, 1> dependencies{ { "RenderSystem", AccessTypes::READ_WRITE } };
 	//	
-	//	auto renderEnableHandle = initializeInfo.GameInstance->StoreDynamicTask("RS::OnRenderEnable", Task<bool>::Create<RenderSystem, &RenderSystem::OnRenderEnable>(this), dependencies);
-	//	initializeInfo.GameInstance->SubscribeToEvent("Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
+	//	auto renderEnableHandle = initializeInfo.ApplicationManager->StoreDynamicTask("RS::OnRenderEnable", Task<bool>::Create<RenderSystem, &RenderSystem::OnRenderEnable>(this), dependencies);
+	//	initializeInfo.ApplicationManager->SubscribeToEvent("Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
 	//	
-	//	auto renderDisableHandle = initializeInfo.GameInstance->StoreDynamicTask("RS::OnRenderDisable", Task<bool>::Create<RenderSystem, &RenderSystem::OnRenderDisable>(this), dependencies);
-	//	initializeInfo.GameInstance->SubscribeToEvent("Application", GameApplication::GetOnFocusGainEventHandle(), renderDisableHandle);
+	//	auto renderDisableHandle = initializeInfo.ApplicationManager->StoreDynamicTask("RS::OnRenderDisable", Task<bool>::Create<RenderSystem, &RenderSystem::OnRenderDisable>(this), dependencies);
+	//	initializeInfo.ApplicationManager->SubscribeToEvent("Application", GameApplication::GetOnFocusGainEventHandle(), renderDisableHandle);
 	//}
 
 	{
 
-		const GTSL::Array<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
+		const GTSL::StaticVector<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
 		initializeInfo.GameInstance->AddTask(u8"RenderSystem::frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
-		//initializeInfo.GameInstance->AddTask(u8"RenderSystem::executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
-		//initializeInfo.GameInstance->AddTask(u8"RenderSystem::waitForFences", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::waitForFences>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
+		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
+		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::waitForFences", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::waitForFences>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
 		initializeInfo.GameInstance->AddTask(u8"RenderSystem::beginCommandLists", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::beginGraphicsCommandLists>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
 		initializeInfo.GameInstance->AddTask(u8"RenderSystem::endCommandLists", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFlush>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
 	}
@@ -178,8 +178,8 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 		createInfo.Debug = BE::Application::Get()->GetOption(u8"debug");
 
-		GTSL::Array<GAL::QueueType, 5> queue_create_infos;
-		GTSL::Array<RenderDevice::QueueKey, 5> queueKeys;
+		GTSL::StaticVector<GAL::QueueType, 5> queue_create_infos;
+		GTSL::StaticVector<RenderDevice::QueueKey, 5> queueKeys;
 
 		queue_create_infos.EmplaceBack(GAL::QueueTypes::GRAPHICS); queueKeys.EmplaceBack();
 		//queue_create_infos.EmplaceBack(GAL::QueueTypes::TRANSFER); queueKeys.EmplaceBack();
@@ -187,7 +187,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		createInfo.Queues = queue_create_infos;
 		createInfo.QueueKeys = queueKeys;
 
-		GTSL::Array<GTSL::Pair<RenderDevice::Extension, void*>, 8> extensions{ { RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC, nullptr } };
+		GTSL::StaticVector<GTSL::Pair<RenderDevice::Extension, void*>, 8> extensions{ { RenderDevice::Extension::PIPELINE_CACHE_EXTERNAL_SYNC, nullptr } };
 		extensions.EmplaceBack(RenderDevice::Extension::SWAPCHAIN_RENDERING, nullptr);
 		extensions.EmplaceBack(RenderDevice::Extension::SCALAR_LAYOUT, nullptr);
 		if (rayTracing) { extensions.EmplaceBack(RenderDevice::Extension::RAY_TRACING, &rayTracingCapabilities); }
@@ -391,8 +391,8 @@ void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
 void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffer)
 {
 	if (buildDatas[GetCurrentFrame()].GetLength()) {
-		GTSL::Array<GAL::BuildAccelerationStructureInfo, 8> accelerationStructureBuildInfos;
-		GTSL::Array<GTSL::Array<GAL::Geometry, 8>, 16> geometryDescriptors;
+		GTSL::StaticVector<GAL::BuildAccelerationStructureInfo, 8> accelerationStructureBuildInfos;
+		GTSL::StaticVector<GTSL::StaticVector<GAL::Geometry, 8>, 16> geometryDescriptors;
 
 		uint32 offset = 0; auto scratchBufferAddress = accelerationStructureScratchBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice());
 		
@@ -414,7 +414,7 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffe
 		
 		commandBuffer.BuildAccelerationStructure(GetRenderDevice(), accelerationStructureBuildInfos, GetTransientAllocator());
 		
-		GTSL::Array<CommandList::BarrierData, 1> barriers;
+		GTSL::StaticVector<CommandList::BarrierData, 1> barriers;
 		barriers.EmplaceBack(CommandList::MemoryBarrier{ GAL::AccessTypes::WRITE, GAL::AccessTypes::READ });
 		
 		commandBuffer.AddPipelineBarrier(GetRenderDevice(), barriers, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GetTransientAllocator());
@@ -572,7 +572,7 @@ void RenderSystem::renderFlush(TaskInfo taskInfo)
 	commandBuffer.EndRecording(GetRenderDevice());
 
 	{
-		GTSL::Array<Queue::WorkUnit, 8> workUnits;
+		GTSL::StaticVector<Queue::WorkUnit, 8> workUnits;
 
 		auto& graphicsWork = workUnits.EmplaceBack();
 
@@ -589,7 +589,7 @@ void RenderSystem::renderFlush(TaskInfo taskInfo)
 
 		graphicsQueue.Submit(GetRenderDevice(), workUnits, graphicsFences[GetCurrentFrame()]);
 		
-		GTSL::Array<GPUSemaphore*, 8> presentWaitSemaphores;
+		GTSL::StaticVector<GPUSemaphore*, 8> presentWaitSemaphores;
 
 		if(surface.GetHandle()) {
 			presentWaitSemaphores.EmplaceBack(&renderFinishedSemaphore[GetCurrentFrame()]);
@@ -605,7 +605,7 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 
-	//GTSL::Array<uint32, 32> buffersToDelete;
+	//GTSL::StaticVector<uint32, 32> buffersToDelete;
 	//
 	//IndexedForEach(buffers, [&](const uint32 index, BufferData& e) {
 	//	if (!e.references) {
@@ -700,7 +700,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	
 	////if (bufferCopyDatas[currentFrameIndex].GetLength() || textureCopyDatas[GetCurrentFrame()].GetLength())
 	////{
-	//	GTSL::Array<GAL::Queue::WorkUnit, 8> workUnits;
+	//	GTSL::StaticVector<GAL::Queue::WorkUnit, 8> workUnits;
 	//	auto& workUnit = workUnits.EmplaceBack();
 	//	workUnit.CommandBuffer = &commandBuffer;
 	//	workUnit.WaitPipelineStage = GAL::PipelineStages::TRANSFER;
@@ -715,7 +715,7 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor fo
 	//RenderDevice::FindSupportedImageFormat findFormat;
 	//findFormat.TextureTiling = TextureTiling::OPTIMAL;
 	//findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	//GTSL::Array<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
+	//GTSL::StaticVector<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
 	//findFormat.Candidates = candidates;
 	//auto supportedFormat = renderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
 
@@ -774,11 +774,11 @@ void RenderSystem::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 {
 	if(!oldFocus)
 	{
-		//const GTSL::Array<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
-		//taskInfo.GameInstance->AddTask(u8"frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
-		//taskInfo.GameInstance->AddTask(u8"executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
-		//taskInfo.GameInstance->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::beginGraphicsCommandLists>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
-		//taskInfo.GameInstance->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFlush>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
+		//const GTSL::StaticVector<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
+		//taskInfo.ApplicationManager->AddTask(u8"frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
+		//taskInfo.ApplicationManager->AddTask(u8"executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
+		//taskInfo.ApplicationManager->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::beginGraphicsCommandLists>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
+		//taskInfo.ApplicationManager->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFlush>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
 
 		BE_LOG_SUCCESS("Enabled rendering")
 	}
@@ -790,11 +790,11 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 {
 	if (oldFocus)
 	{
-		//taskInfo.GameInstance->RemoveTask(u8"frameStart", u8"FrameStart");
-		//taskInfo.GameInstance->RemoveTask(u8"executeTransfers", u8"GameplayEnd");
-		//taskInfo.GameInstance->RemoveTask(u8"waitForFences", u8"RenderStart");
-		//taskInfo.GameInstance->RemoveTask(u8"renderSetup", u8"RenderEndSetup");
-		//taskInfo.GameInstance->RemoveTask(u8"renderFinished", u8"RenderFinished");
+		//taskInfo.ApplicationManager->RemoveTask(u8"frameStart", u8"FrameStart");
+		//taskInfo.ApplicationManager->RemoveTask(u8"executeTransfers", u8"GameplayEnd");
+		//taskInfo.ApplicationManager->RemoveTask(u8"waitForFences", u8"RenderStart");
+		//taskInfo.ApplicationManager->RemoveTask(u8"renderSetup", u8"RenderEndSetup");
+		//taskInfo.ApplicationManager->RemoveTask(u8"renderFinished", u8"RenderFinished");
 
 		BE_LOG_SUCCESS("Disabled rendering")
 	}
@@ -883,7 +883,7 @@ void RenderSystem::printError(const char* message, const RenderDevice::MessageSe
 {
 	switch (messageSeverity)
 	{
-	case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
+	//case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
 	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
 	default: break;

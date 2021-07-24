@@ -2,13 +2,10 @@
 
 #include "ByteEngine/Game/System.h"
 
-#include <GTSL/Array.hpp>
-#include <GTSL/HashMap.h>
-#include <GTSL/FunctionPointer.hpp>
-#include <GTSL/StaticMap.hpp>
+#include <GTSL/Vector.hpp>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/PagedVector.h>
 #include <GTSL/SparseVector.hpp>
-#include <GTSL/Vector.hpp>
 #include <GTSL/Bitfield.h>
 
 #include "ByteEngine/Id.h"
@@ -30,11 +27,11 @@ class RenderManager : public System
 public:
 	RenderManager(const InitializeInfo& initializeInfo, const char8_t* name) : System(initializeInfo, name) {}
 	
-	virtual void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) = 0;
+	virtual void GetSetupAccesses(GTSL::StaticVector<TaskDependency, 16>& dependencies) = 0;
 
 	struct SetupInfo
 	{
-		GameInstance* GameInstance;
+		ApplicationManager* GameInstance;
 		RenderSystem* RenderSystem;
 		//RenderState* RenderState;
 		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
@@ -104,7 +101,7 @@ protected:
 		
 		struct RenderPassData {
 			PassType Type;
-			GTSL::Array<AttachmentData, 8> Attachments;
+			GTSL::StaticVector<AttachmentData, 8> Attachments;
 			GAL::PipelineStage PipelineStages;
 
 			RenderPassData() : Type(PassType::RASTER), Attachments(), PipelineStages(), APIRenderPass() {
@@ -128,7 +125,18 @@ protected:
 			LayerData Layer;
 		};
 
-		InternalLayer() {}
+		InternalLayer(const InternalLayerType t) : Type(t) {
+			switch (Type) {
+			case InternalLayerType::DISPATCH: break;
+			case InternalLayerType::RAY_TRACE: break;
+			case InternalLayerType::MATERIAL: break;
+			case InternalLayerType::MESH: break;
+			case InternalLayerType::RENDER_PASS: ::new(&RenderPass) RenderPassData(); break;
+			case InternalLayerType::LAYER: break;
+			case InternalLayerType::MATERIAL_INSTANCE: break;
+			default: ;
+			}
+		}
 		
 		~InternalLayer() {			
 			switch (Type) {
@@ -162,7 +170,7 @@ protected:
 			InternalLayerHandle InternalNode;
 			GTSL::StaticMap<uint64, InternalLayerHandle, 8> ChildrenMap;
 		};
-		GTSL::Array<InternalNodeData, 8> InternalSiblings;
+		GTSL::StaticVector<InternalNodeData, 8> InternalSiblings;
 	};	
 
 	PublicLayer& getLayer(const LayerHandle layerHandle) {
@@ -232,7 +240,7 @@ private:
 				return getLayer(layerHandle);
 			}			
 			
-			uint32 insertPosition = internalRenderingTree.Emplace();
+			uint32 insertPosition = internalRenderingTree.Emplace(type);
 			layerHandle = InternalLayerHandle(insertPosition);
 			layer = &internalRenderingTree[insertPosition];
 
@@ -260,14 +268,12 @@ private:
 			//}
 			
 		} else {
-			uint32 insertPosition = internalRenderingTree.Emplace();
+			uint32 insertPosition = internalRenderingTree.Emplace(type);
 			layerHandle = InternalLayerHandle(insertPosition);
 			layer = &internalRenderingTree[insertPosition];
 			auto& sibling = getLayer(publicSiblingHandle).InternalSiblings.EmplaceBack();
 			sibling.InternalNode = layerHandle;
 		}
-
-		layer->Type = type;
 
 		return *layer;
 	}
@@ -306,8 +312,8 @@ public:
 	void Setup(TaskInfo taskInfo);
 	void Render(TaskInfo taskInfo);
 
-	void AddRenderManager(GameInstance* gameInstance, const Id renderManager, const SystemHandle systemReference);
-	void RemoveRenderManager(GameInstance* gameInstance, const Id renderGroupName, const SystemHandle systemReference);
+	void AddRenderManager(ApplicationManager* gameInstance, const Id renderManager, const SystemHandle systemReference);
+	void RemoveRenderManager(ApplicationManager* gameInstance, const Id renderGroupName, const SystemHandle systemReference);
 	LayerHandle GetCameraDataLayer() const { return cameraDataLayer; }
 
 	uint32 renderDataOffset = 0;
@@ -320,7 +326,7 @@ public:
 	{
 		Id MaterialName, InstanceName;
 		ShaderResourceManager* ShaderResourceManager = nullptr;
-		GameInstance* GameInstance = nullptr;
+		ApplicationManager* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager;
 	};
@@ -332,7 +338,7 @@ public:
 		struct AttachmentReference {
 			Id Name;
 		};
-		GTSL::Array<AttachmentReference, 8> ReadAttachments, WriteAttachments;
+		GTSL::StaticVector<AttachmentReference, 8> ReadAttachments, WriteAttachments;
 
 		PassType PassType;
 	};
@@ -473,7 +479,6 @@ public:
 		}
 		case LayerType::RENDER_PASS: {
 			auto& layer = addInternalLayer(key, layerHandle, parent, InternalLayerType::RENDER_PASS);
-			layer.RenderPass = InternalLayer::RenderPassData();
 			break;
 		}
 		case LayerType::LAYER: {
@@ -674,7 +679,7 @@ public:
 		setLayoutData.Parent = parentHandle;
 		setLayoutData.Level = level;
 
-		GTSL::Array<BindingsSetLayout, 16> bindingsSetLayouts;
+		GTSL::StaticVector<BindingsSetLayout, 16> bindingsSetLayouts;
 
 		// Traverse tree to find parent's pipeline layouts
 		{
@@ -690,7 +695,7 @@ public:
 
 		setLayoutData.Stage = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN;
 
-		GTSL::Array<BindingsSetLayout::BindingDescriptor, 10> subSetDescriptors;
+		GTSL::StaticVector<BindingsSetLayout::BindingDescriptor, 10> subSetDescriptors;
 
 		for (auto e : subsets) {
 			GAL::ShaderStage shaderStage = setLayoutData.Stage;
@@ -712,7 +717,7 @@ public:
 				break;
 			}
 
-			subSetDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ bindingType, shaderStage, e.BindingsCount, bindingFlags });
+			subSetDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ bindingType, shaderStage, e.BindingsCount, bindingFlags });
 		}
 
 		setLayoutData.BindingsSetLayout.Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
@@ -740,13 +745,13 @@ public:
 
 	SetLayoutHandle AddSetLayout(RenderSystem* renderSystem, SetLayoutHandle parent, const GTSL::Range<SubSetInfo*> subsets)
 	{
-		GTSL::Array<SubSetDescriptor, 16> subSetInfos;
+		GTSL::StaticVector<SubSetDescriptor, 16> subSetInfos;
 		for (auto e : subsets) { subSetInfos.EmplaceBack(e.Type, e.Count); }
 		return AddSetLayout(renderSystem, parent, subSetInfos);
 	}
 
 	SetHandle AddSet(RenderSystem* renderSystem, Id setName, SetLayoutHandle setLayoutHandle, const GTSL::Range<SubSetInfo*> setInfo) {
-		GTSL::Array<BindingsSetLayout::BindingDescriptor, 16> bindingDescriptors;
+		GTSL::StaticVector<BindingsSetLayout::BindingDescriptor, 16> bindingDescriptors;
 
 		for (auto& ss : setInfo) {
 			GAL::ShaderStage enabledShaderStages = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::ANY_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::CALLABLE | GAL::ShaderStages::COMPUTE;
@@ -754,23 +759,23 @@ public:
 			switch (ss.Type)
 			{
 			case SubSetType::BUFFER: {
-				bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
 			}
 			case SubSetType::READ_TEXTURES: {
-				bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::COMBINED_IMAGE_SAMPLER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::COMBINED_IMAGE_SAMPLER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
 			}
 			case SubSetType::WRITE_TEXTURES: {
-				bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
 			}
 			case SubSetType::RENDER_ATTACHMENT: {
-				bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
 			}
 			case SubSetType::ACCELERATION_STRUCTURE: {
-				bindingDescriptors.PushBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.Count, GAL::BindingFlag() });
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.Count, GAL::BindingFlag() });
 				break;
 			}
 			}
@@ -911,8 +916,8 @@ private:
 	inline static constexpr uint32 RENDER_DATA_BUFFER_SLACK_SIZE = 4096;
 	inline static constexpr uint32 RENDER_DATA_BUFFER_PAGE_SIZE = RENDER_DATA_BUFFER_SIZE + RENDER_DATA_BUFFER_SLACK_SIZE;
 	
-	void onRenderEnable(GameInstance* gameInstance, const GTSL::Range<const TaskDependency*> dependencies);
-	void onRenderDisable(GameInstance* gameInstance);
+	void onRenderEnable(ApplicationManager* gameInstance, const GTSL::Range<const TaskDependency*> dependencies);
+	void onRenderDisable(ApplicationManager* gameInstance);
 
 	GTSL::HashMap<uint64, GTSL::Vector<LayerHandle, BE::PAR>, BE::PAR> nodesByName;
 	
@@ -929,7 +934,7 @@ private:
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle topLevelAsHandle;
 
-	GTSL::Array<GTSL::Array<GAL::ShaderDataType, 24>, 32> vertexLayouts;
+	GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 24>, 32> vertexLayouts;
 	
 	struct RenderState {
 		uint8 APISubPass = 0, MaxAPIPass = 0;
@@ -960,15 +965,15 @@ private:
 	};
 	
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> systems;
-	GTSL::Vector<GTSL::Array<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
+	GTSL::Vector<GTSL::StaticVector<TaskDependency, 32>, BE::PersistentAllocatorReference> setupSystemsAccesses;
 	
 	GTSL::HashMap<Id, SystemHandle, BE::PersistentAllocatorReference> renderManagers;
 
 	struct RenderDataBuffer {
 		BufferHandle BufferHandle;
-		GTSL::Array<uint32, 16> Elements;
+		GTSL::StaticVector<uint32, 16> Elements;
 	};
-	GTSL::Array<RenderDataBuffer, 32> renderBuffers;
+	GTSL::StaticVector<RenderDataBuffer, 32> renderBuffers;
 	
 	Id resultAttachment;
 	
@@ -998,7 +1003,7 @@ private:
 	GTSL::FixedVector<InternalLayer, BE::PAR> internalRenderingTree;
 
 	GTSL::StaticMap<Id, InternalLayerHandle, 16> renderPasses;
-	GTSL::Array<InternalLayerHandle, 16> renderPassesInOrder;
+	GTSL::StaticVector<InternalLayerHandle, 16> renderPassesInOrder;
 
 	GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
 	
@@ -1024,7 +1029,7 @@ private:
 	struct CreateTextureInfo
 	{
 		Id TextureName;
-		GameInstance* GameInstance = nullptr;
+		ApplicationManager* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager = nullptr;
 		MaterialInstanceHandle MaterialHandle;
@@ -1055,7 +1060,7 @@ private:
 		Id Name;
 		GTSL::Vector<MaterialInstance, BE::PAR> MaterialInstances;
 		GTSL::StaticMap<Id, MemberHandle<uint32>, 16> ParametersHandles;
-		GTSL::Array<ShaderResourceManager::Parameter, 16> Parameters;
+		GTSL::StaticVector<ShaderResourceManager::Parameter, 16> Parameters;
 		BufferHandle BufferHandle;
 
 		MaterialData(const BE::PAR& allocator) : MaterialInstances(2, allocator) {}
@@ -1099,7 +1104,7 @@ private:
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndex;
 	};
-	GTSL::StaticMap<Id, Attachment, 32> attachments;
+	GTSL::StaticMap<Id, Attachment, 32> attachments{ 16 };
 
 	void updateImage(Attachment& attachment, GAL::TextureLayout textureLayout, GAL::PipelineStage stages, GAL::AccessType writeAccess) {
 		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.AccessType = writeAccess;
@@ -1138,7 +1143,7 @@ private:
 	}
 
 	void updateDescriptors(TaskInfo taskInfo) {
-		auto* renderSystem = taskInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
+		auto* renderSystem = taskInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		for (auto& e : queuedSetUpdates) {
 			resizeSet(renderSystem, e);
@@ -1202,7 +1207,7 @@ private:
 			Member::DataType Type;
 			uint16 Size;
 		};
-		GTSL::Array<MemberData, 16> MemberData;
+		GTSL::StaticVector<MemberData, 16> MemberData;
 	};
 	GTSL::FixedVector<BufferData, BE::PAR> buffers;
 
@@ -1261,7 +1266,7 @@ private:
 		}
 	};
 
-	GTSL::Array<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
+	GTSL::StaticVector<DescriptorsUpdate, MAX_CONCURRENT_FRAMES> descriptorsUpdates;
 
 	/**
 	 * \brief Stores all data per binding set.
@@ -1283,7 +1288,7 @@ private:
 			GAL::BindingType Type;
 			uint32 AllocatedBindings = 0;
 		};
-		GTSL::Array<SubSetData, 16> SubSets;
+		GTSL::StaticVector<SubSetData, 16> SubSets;
 	};
 	GTSL::FixedVector<SetData, BE::PAR> sets;
 
@@ -1315,10 +1320,10 @@ private:
 				//bindingsPoolCreateInfo.Name = name;
 			}
 
-			GTSL::Array<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
+			GTSL::StaticVector<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
 
 			for (auto e : bindingDescriptors) {
-				bindingsPoolSizes.PushBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * renderSystem->GetPipelinedFrames() });
+				bindingsPoolSizes.EmplaceBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * renderSystem->GetPipelinedFrames() });
 				set.SubSets.EmplaceBack(); auto& subSet = set.SubSets.back();
 				subSet.Type = e.BindingType;
 				subSet.AllocatedBindings = e.BindingsCount;
@@ -1349,7 +1354,7 @@ public:
 	StaticMeshRenderManager(const InitializeInfo& initializeInfo);
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 
-	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
+	void GetSetupAccesses(GTSL::StaticVector<TaskDependency, 16>& dependencies) override;
 
 	void Setup(const SetupInfo& info) override;
 
@@ -1378,7 +1383,7 @@ public:
 
 		//RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 		//createMaterialInfo.RenderSystem = renderSystem;
-		//createMaterialInfo.GameInstance = initializeInfo.GameInstance;
+		//createMaterialInfo.ApplicationManager = initializeInfo.ApplicationManager;
 		//createMaterialInfo.MaterialName = "UIMat";
 		//createMaterialInfo.InstanceName = "UIMat";
 		//createMaterialInfo.ShaderResourceManager = BE::Application::Get()->GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
@@ -1386,7 +1391,7 @@ public:
 		//uiMaterial = renderOrchestrator->CreateMaterial(createMaterialInfo);
 		//
 		//square = renderSystem->CreateMesh("BE_UI_SQUARE", 0, GetUIMaterial());
-		//renderSystem->UpdateMesh(square, 4, 4 * 2, 6, 2, GTSL::Array<GAL::ShaderDataType, 4>{ GAL::ShaderDataType::FLOAT2 });
+		//renderSystem->UpdateMesh(square, 4, 4 * 2, 6, 2, GTSL::StaticVector<GAL::ShaderDataType, 4>{ GAL::ShaderDataType::FLOAT2 });
 		////
 		//auto* meshPointer = renderSystem->GetMeshPointer(square);
 		//GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
@@ -1395,7 +1400,7 @@ public:
 		//renderSystem->UpdateMesh(square);
 		//renderSystem->SetWillWriteMesh(square, false);	
 		//
-		//GTSL::Array<MaterialSystem::MemberInfo, 8> members;
+		//GTSL::StaticVector<MaterialSystem::MemberInfo, 8> members;
 		//members.EmplaceBack(&matrixUniformBufferMemberHandle, 1);
 		////members.EmplaceBack(4); //padding
 		//
@@ -1408,7 +1413,7 @@ public:
 	
 	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
 
-	void GetSetupAccesses(GTSL::Array<TaskDependency, 16>& dependencies) override;
+	void GetSetupAccesses(GTSL::StaticVector<TaskDependency, 16>& dependencies) override;
 
 	void Setup(const SetupInfo& info) override;
 	RenderSystem::MeshHandle GetSquareMesh() const { return square; }

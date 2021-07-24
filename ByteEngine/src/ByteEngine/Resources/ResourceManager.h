@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Object.h"
 
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Game/Tasks.h"
 
@@ -80,5 +80,5 @@ public:
 	static constexpr uint8 MAX_THREADS = 32;
 
 protected:
-	void initializePackageFiles(GTSL::Array<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path);
+	void initializePackageFiles(GTSL::StaticVector<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path);
 };

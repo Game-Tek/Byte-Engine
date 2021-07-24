@@ -3,16 +3,15 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/String.hpp>
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Application/Clock.h"
 
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 
-#include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Debug/Logger.h"
 
 #include <GTSL/System.h>

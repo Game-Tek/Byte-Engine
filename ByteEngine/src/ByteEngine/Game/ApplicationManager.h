@@ -1,14 +1,11 @@
 #pragma once
 
 #include <GTSL/Delegate.hpp>
-#include <GTSL/HashMap.h>
-#include <GTSL/Id.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/Mutex.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Algorithm.h>
 #include <GTSL/Allocator.h>
-#include <GTSL/Array.hpp>
-#include <GTSL/Pair.h>
 #include <GTSL/Semaphore.h>
 
 #include "System.h"
@@ -58,12 +55,12 @@ struct EventHandle
 
 MAKE_HANDLE(uint32, System)
 
-class GameInstance : public Object
+class ApplicationManager : public Object
 {
-	using FunctionType = GTSL::Delegate<void(GameInstance*, uint32, uint32, void*)>;
+	using FunctionType = GTSL::Delegate<void(ApplicationManager*, uint32, uint32, void*)>;
 public:
-	GameInstance();
-	~GameInstance();
+	ApplicationManager();
+	~ApplicationManager();
 	
 	void OnUpdate(BE::Application* application);
 
@@ -111,17 +108,19 @@ public:
 
 		taskInfo->Name = name.GetString();
 		
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
+		auto task = [](ApplicationManager* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
 			BE_ASSERT(info->Counter == 0, "")
 			
 			++info->Counter;
-
-			FunctionTimer f(info->Name);
 			
-			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Get<0>(info->Arguments).ApplicationManager = gameInstance;
+			
+			{
+				FunctionTimer f(info->Name);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			}
 			
 			--info->Counter;
 
@@ -130,7 +129,7 @@ public:
 			gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);
 		};
 
-		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+		GTSL::StaticVector<uint16, 32> objects; GTSL::StaticVector<AccessType, 32> accesses;
 
 		uint16 startOnGoalIndex, taskObjectiveIndex;
 
@@ -147,8 +146,6 @@ public:
 			recurringTasksPerStage[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
 			recurringTasksInfo[startOnGoalIndex].EmplaceBack(GTSL::MoveRef(taskInfo));
 		}
-
-		BE_LOG_MESSAGE("Added recurring task ", name.GetString(), " to goal ", startOn.GetString(), " to be done before ", doneFor.GetString())
 	}
 	
 	void RemoveTask(Id name, Id startOn);
@@ -158,17 +155,19 @@ public:
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		taskInfo->Name = name.GetString();
 		
-		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+		GTSL::StaticVector<uint16, 32> objects; GTSL::StaticVector<AccessType, 32> accesses;
 
 		uint16 startOnGoalIndex, taskObjectiveIndex;
 
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {
+		auto task = [](ApplicationManager* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
 
-			FunctionTimer f(info->Name);
+			GTSL::Get<0>(info->Arguments).ApplicationManager = gameInstance;
 			
-			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			{
+				FunctionTimer f(info->Name);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			}
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->semaphores[goal].Post();
@@ -188,26 +187,27 @@ public:
 			GTSL::WriteLock lock2(dynamicTasksPerStageMutex);
 			dynamicTasksPerStage[startOnGoalIndex].AddTask(name, FunctionType::Create(task), objects, accesses, taskObjectiveIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
 		}
-
-		BE_LOG_MESSAGE("Added dynamic task ", name.GetString(), " to goal ", startOn.GetString(), " to be done before ", doneFor.GetString())
 	}
 
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, ARGS&&... args) {
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 asyncTasksIndex, void* data) -> void {
+		auto task = [](ApplicationManager* gameInstance, const uint32 goal, const uint32 asyncTasksIndex, void* data) -> void {
 			auto* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
-
-			FunctionTimer f(info->Name);
 			
-			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Get<0>(info->Arguments).ApplicationManager = gameInstance;
+
+			{
+				FunctionTimer f(info->Name);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			}
+			
 			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());			
 
 			gameInstance->resourcesUpdated.NotifyAll();
 			gameInstance->taskSorter.ReleaseResources(asyncTasksIndex);
 		};
 
-		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+		GTSL::StaticVector<uint16, 32> objects; GTSL::StaticVector<AccessType, 32> accesses;
 
 		{
 			GTSL::ReadLock lock(stagesNamesMutex);
@@ -220,21 +220,22 @@ public:
 			taskInfo->Name = name.GetString();
 			asyncTasks.AddTask(name, FunctionType::Create(task), objects, accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
 		}
-
-		BE_LOG_MESSAGE("Added async task ", name.GetString())
 	}
 
 	template<typename... ARGS>
 	[[nodiscard]] DynamicTaskHandle<ARGS...> StoreDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies) {
-		GTSL::Array<uint16, 32> objects; GTSL::Array<AccessType, 32> accesses;
+		GTSL::StaticVector<uint16, 32> objects; GTSL::StaticVector<AccessType, 32> accesses;
 
-		auto task = [](GameInstance* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
+		auto task = [](ApplicationManager* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
-
-			FunctionTimer f(info->Name);
 			
-			GTSL::Get<0>(info->Arguments).GameInstance = gameInstance;
-			GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			GTSL::Get<0>(info->Arguments).ApplicationManager = gameInstance;
+
+			{
+				FunctionTimer f(info->Name);
+				GTSL::Call(info->Delegate, GTSL::MoveRef(info->Arguments));
+			}
+			
 			GTSL::Delete<DispatchTaskInfo<TaskInfo, ARGS...>>(&info, gameInstance->GetPersistentAllocator());
 
 			gameInstance->resourcesUpdated.NotifyAll();
@@ -329,7 +330,7 @@ private:
 	mutable GTSL::ReadWriteMutex storedDynamicTasksMutex;
 	struct StoredDynamicTaskData
 	{
-		Id Name; GTSL::Array<uint16, 16> Objects;  GTSL::Array<AccessType, 16> Access; FunctionType GameInstanceFunction; GTSL::Delegate<void()> AnonymousFunction;
+		Id Name; GTSL::StaticVector<uint16, 32> Objects;  GTSL::StaticVector<AccessType, 32> Access; FunctionType GameInstanceFunction; GTSL::Delegate<void()> AnonymousFunction;
 	};
 	GTSL::FixedVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 
@@ -408,15 +409,12 @@ private:
 		return i;
 	}
 	
-	template<uint32 N>
-	void decomposeTaskDescriptor(GTSL::Range<const TaskDependency*> taskDependencies, GTSL::Array<uint16, N>& object, GTSL::Array<AccessType, N>& access)
-	{
-		object.Resize(taskDependencies.ElementCount()); access.Resize(taskDependencies.ElementCount());
-		
-		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) //for each dependency
-		{
-			object[i] = systemsIndirectionTable.At(taskDependencies[i].AccessedObject);
-			access[i] = (taskDependencies.begin() + i)->Access;
+	template<typename T, typename U>
+	void decomposeTaskDescriptor(GTSL::Range<const TaskDependency*> taskDependencies, T& object, U& access)
+	{		
+		for (uint16 i = 0; i < static_cast<uint16>(taskDependencies.ElementCount()); ++i) { //for each dependency
+			object.EmplaceBack(systemsIndirectionTable.At(taskDependencies[i].AccessedObject));
+			access.EmplaceBack(taskDependencies[i].Access);
 		}
 	}
 

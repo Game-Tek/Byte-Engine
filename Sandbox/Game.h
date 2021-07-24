@@ -6,16 +6,16 @@
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Game/CameraSystem.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Sound/AudioSystem.h"
 
 class Game final : public GameApplication
 {
-	GameInstance* sandboxGameInstance{ nullptr };
-	GameInstance::WorldReference menuWorld;
-	GameInstance::WorldReference gameWorld;
+	ApplicationManager* sandboxGameInstance{ nullptr };
+	ApplicationManager::WorldReference menuWorld;
+	ApplicationManager::WorldReference gameWorld;
 
 	GTSL::Vector2 posDelta;
 	GTSL::Vector3 moveDir;

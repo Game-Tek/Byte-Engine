@@ -13,7 +13,9 @@ InputManager::InputManager() : Object(u8"InputManager"), actionInputSourcesToAct
 								actionInputSourceRecords(10, GetPersistentAllocator()),
 								characterInputSourceRecords(10, GetPersistentAllocator()),
 								linearInputSourceRecords(10, GetPersistentAllocator()),
-								vector2DInputSourceRecords(10, GetPersistentAllocator())
+								vector2DInputSourceRecords(10, GetPersistentAllocator()),
+
+								inputLayers(4, { GetPersistentAllocator() })
 {
 }
 

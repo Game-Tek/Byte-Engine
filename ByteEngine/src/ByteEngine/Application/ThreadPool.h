@@ -7,7 +7,7 @@
 
 #include "ByteEngine/Debug/Logger.h"
 
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 #include <GTSL/Atomic.hpp>
 #include <GTSL/Algorithm.h>
 #include <GTSL/Semaphore.h>
@@ -106,8 +106,8 @@ private:
 	inline const static uint8 threadCount{ /*static_cast<uint8>(GTSL::Thread::ThreadCount() - 1)*/ 1 };
 	GTSL::Atomic<uint32> index{ 0 }, runTasks{ 0 };
 	
-	GTSL::Array<GTSL::BlockingQueue<Task>, 32> queues;
-	GTSL::Array<GTSL::Thread, 32> threads;
+	GTSL::StaticVector<GTSL::BlockingQueue<Task>, 32> queues;
+	GTSL::StaticVector<GTSL::Thread, 32> threads;
 
 	template<typename T, typename... ARGS>
 	struct TaskInfo

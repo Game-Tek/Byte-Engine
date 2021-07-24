@@ -10,13 +10,13 @@ public:
 
 	struct InitializeInfo
 	{
-		class GameInstance* GameInstance{ nullptr };
+		class ApplicationManager* GameInstance{ nullptr };
 	};
 	virtual void InitializeWorld(const InitializeInfo& initializeInfo);
 
 	struct DestroyInfo
 	{
-		class GameInstance* GameInstance{ nullptr };
+		class ApplicationManager* GameInstance{ nullptr };
 	};
 	virtual void DestroyWorld(const DestroyInfo& destroyInfo);
 	

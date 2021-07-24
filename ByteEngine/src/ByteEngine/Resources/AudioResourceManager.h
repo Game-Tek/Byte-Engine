@@ -3,12 +3,11 @@
 #include "ByteEngine/Core.h"
 
 #include <GTSL/File.h>
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/Buffer.hpp>
-#include <GTSL/Serialize.h>
 
 #include "ResourceManager.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 
 class AudioResourceManager final : public ResourceManager
 {
@@ -66,7 +65,7 @@ public:
 	~AudioResourceManager();
 
 	template<typename... ARGS>
-	void LoadAudioInfo(GameInstance* gameInstance, Id audioName, DynamicTaskHandle<AudioResourceManager*, AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadAudioInfo(ApplicationManager* gameInstance, Id audioName, DynamicTaskHandle<AudioResourceManager*, AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadAudioInfo = [](TaskInfo taskInfo, AudioResourceManager* resourceManager, Id audioName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{			
@@ -74,7 +73,7 @@ public:
 
 			AudioInfo audioInfo(audioName, audioInfoSerialize);
 
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
 		gameInstance->AddDynamicTask(u8"loadAudioInfo", Task<AudioResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudioInfo), {}, this, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
@@ -82,7 +81,7 @@ public:
 
 	//Audio data is aligned to 16 bytes
 	template<typename... ARGS>
-	void LoadAudio(GameInstance* gameInstance, AudioInfo audioInfo, DynamicTaskHandle<AudioResourceManager*, AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadAudio(ApplicationManager* gameInstance, AudioInfo audioInfo, DynamicTaskHandle<AudioResourceManager*, AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{
 		auto loadAudio = [](TaskInfo taskInfo, AudioResourceManager* resourceManager, AudioInfo audioInfo, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
@@ -102,7 +101,7 @@ public:
 				dataPointer = searchResult.Get().GetData();
 			}
 
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::Range<const byte*>(bytes, dataPointer), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(audioInfo), GTSL::Range<const byte*>(bytes, dataPointer), GTSL::ForwardRef<ARGS>(args)...);
 		};
 
 		gameInstance->AddDynamicTask(u8"loadAudio", Task<AudioResourceManager*, AudioInfo, decltype(dynamicTaskHandle), ARGS...>::Create(loadAudio), {}, this, GTSL::MoveRef(audioInfo), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
@@ -113,5 +112,5 @@ private:
 	GTSL::HashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
 	GTSL::HashMap<Id, GTSL::Buffer<BE::PAR>, BE::PersistentAllocatorReference> audioBytes;
 
-	GTSL::Array<GTSL::File, MAX_THREADS> packageFiles;
+	GTSL::StaticVector<GTSL::File, MAX_THREADS> packageFiles;
 };

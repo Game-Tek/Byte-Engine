@@ -2,7 +2,7 @@
 
 #include <GTSL/Network/Sockets.h>
 
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Game/System.h"
 
 class EditorInterface : public System {
@@ -22,7 +22,7 @@ public:
 		//		reject
 		
 		
-		GameInstance* gameInstance;
+		ApplicationManager* gameInstance;
 		gameInstance->DispatchEvent("Editor Interface", )
 		//push to command list
 	}

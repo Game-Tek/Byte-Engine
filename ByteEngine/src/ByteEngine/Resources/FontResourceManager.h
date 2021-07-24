@@ -1,14 +1,11 @@
 #pragma once
 
-#include <map>
 #include <string>
 #include <unordered_map>
-#include <GAL/RenderCore.h>
 #include <GTSL/Buffer.hpp>
-#include <GTSL/Delegate.hpp>
 #include <GTSL/Extent.h>
-#include <GTSL/HashMap.h>
-#include <GTSL/Serialize.h>
+#include <GTSL/HashMap.hpp>
+#include <GTSL/Serialize.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Vectors.h>
 

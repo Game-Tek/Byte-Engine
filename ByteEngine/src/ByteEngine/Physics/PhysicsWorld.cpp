@@ -4,7 +4,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
-PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(GameInstance* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager)
+PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager)
 {
 	auto objectIndex = physicsObjects.Emplace();
 	
@@ -37,7 +37,7 @@ void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceM
 
 	//physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize(), 16, GetPersistentAllocator());
 	
-	//staticMeshResourceManager->LoadStaticMesh(taskInfo.GameInstance, staticMeshInfo, 16, physicsObjects[buffer].Buffer, onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
+	//staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 16, physicsObjects[buffer].Buffer, onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
 }
 
 void PhysicsWorld::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32)

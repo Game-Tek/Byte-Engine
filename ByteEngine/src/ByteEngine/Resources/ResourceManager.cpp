@@ -18,7 +18,7 @@ GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const
 	return path;
 }
 
-void ResourceManager::initializePackageFiles(GTSL::Array<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path)
+void ResourceManager::initializePackageFiles(GTSL::StaticVector<GTSL::File, MAX_THREADS>& filesPerThread, GTSL::Range<const utf8*> path)
 {
 	for (uint32 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
 		filesPerThread.EmplaceBack();

@@ -4,7 +4,7 @@
 
 #include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/String.hpp>
 
 #include "Clock.h"
@@ -14,7 +14,7 @@
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Resources/ResourceManager.h"
 
-class GameInstance;
+class ApplicationManager;
 class InputManager;
 class ThreadPool;
 class Clock;
@@ -76,7 +76,7 @@ namespace BE
 		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
 		[[nodiscard]] Logger* GetLogger() const { return logger.GetData(); }
 		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
-		[[nodiscard]] class GameInstance* GetGameInstance() const { return gameInstance; }
+		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return gameInstance; }
 
 		template<typename RM>
 		RM* CreateResourceManager()
@@ -110,7 +110,7 @@ namespace BE
 		SystemAllocatorReference systemAllocatorReference;
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
-		GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference> gameInstance;
+		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> gameInstance;
 
 		GTSL::HashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 

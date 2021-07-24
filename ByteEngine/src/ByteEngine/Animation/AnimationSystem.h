@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
 
 #include "ByteEngine/Game/System.h"
@@ -45,8 +45,8 @@ public:
 	}
 
 private:
-	GTSL::Array<Id, 8> skeletonsNames;
-	GTSL::Array<void, 8> skeletons;
+	GTSL::StaticVector<Id, 8> skeletonsNames;
+	GTSL::StaticVector<void, 8> skeletons;
 	
-	GTSL::Array<void, 8> animations;
+	GTSL::StaticVector<void, 8> animations;
 };

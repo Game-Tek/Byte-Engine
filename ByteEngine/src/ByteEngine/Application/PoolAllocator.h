@@ -4,11 +4,8 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/Allocator.h>
-#include <GTSL/Atomic.hpp>
 #include <GTSL/Mutex.h>
 #include <GTSL/Range.h>
-#include <GTSL/StaticMap.hpp>
 
 #include "ByteEngine/Game/System.h"
 
@@ -53,7 +50,7 @@ public:
 		
 		const uint32 SLOTS_SIZE{ 0 };
 		const uint32 MAX_SLOTS_COUNT{ 0 };
-		mutable GTSL::Mutex globalLock;
+		mutable GTSL::Mutex poolLock;
 		uint32 bitNums = 0;
 		
 		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return slotsData + (slotIndex * SLOTS_SIZE); }
@@ -65,9 +62,8 @@ public:
 
 
 	static constexpr bool USE_MALLOC = true;
-	static constexpr bool MEMORY_PATTERN = true;
-	static constexpr bool DEALLOC_COUNT = true;
-	static constexpr bool SERIALIZE_ACCESS = true;
+	static constexpr bool MEMORY_PATTERN = false;
+	static constexpr bool DEALLOC_COUNT = false;
 
 private:
 	Pool* poolsData{ nullptr };
@@ -75,10 +71,7 @@ private:
 	BE::SystemAllocatorReference* systemAllocatorReference{ nullptr };
 
 	mutable GTSL::Mutex debugLock;
-	mutable std::unordered_map<void*, uint32> allocMap;
-	
-	
-	mutable GTSL::StaticMap<uint64, uint32, 32> map;
+	mutable std::unordered_map<void*, uint32> allocMap;	
 
 	[[nodiscard]] GTSL::Range<Pool*> pools() const { return GTSL::Range<Pool*>(POOL_COUNT, poolsData); }
 };

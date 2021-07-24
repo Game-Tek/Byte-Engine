@@ -51,7 +51,7 @@ void Canvas::ProcessUpdates()
 
 void Canvas::queueUpdateAndCull(uint32 organizer)
 {
-	GTSL::Array<uint32, 32> branchesToPrune;
+	GTSL::StaticVector<uint32, 32> branchesToPrune;
 
 	uint32 i = 0;
 	for(auto e : queuedUpdates) {

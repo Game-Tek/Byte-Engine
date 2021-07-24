@@ -6,7 +6,7 @@
 #include <GTSL/Gamepad.h>
 
 #include "ByteEngine/Application/InputManager.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 
 class GameApplication : public BE::Application
 {

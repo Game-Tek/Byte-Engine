@@ -4,7 +4,7 @@
 
 #include "ByteEngine/Game/System.h"
 #include <AAL/Platform/Windows/WindowsAudioDevice.h>
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Math/Quaternion.h>
 
@@ -59,27 +59,27 @@ private:
 	struct SoundSource {
 		byte* Data;
 	};
-	GTSL::Array<SoundSource, 16> soundSources;
+	GTSL::StaticVector<SoundSource, 16> soundSources;
 	
 	struct MixerChannel {
 		struct Effect {
 			
 		};		
-		GTSL::Array<Effect, 8> Effects;
+		GTSL::StaticVector<Effect, 8> Effects;
 
-		GTSL::Array<SoundSourceHandle, 16> SoundSources;
+		GTSL::StaticVector<SoundSourceHandle, 16> SoundSources;
 		
 		float32 Volume = 0.0f;
 	};
-	GTSL::Array<MixerChannel, 16> channels;
+	GTSL::StaticVector<MixerChannel, 16> channels;
 
 	ChannelHandle masterChannel;
 	
-	GTSL::Array<uint8, 8> audioListeners;
-	GTSL::Array<GTSL::Vector3, 8> audioListenersLocation;
-	GTSL::Array<GTSL::Quaternion, 8> audioListenersOrientation;
+	GTSL::StaticVector<uint8, 8> audioListeners;
+	GTSL::StaticVector<GTSL::Vector3, 8> audioListenersLocation;
+	GTSL::StaticVector<GTSL::Quaternion, 8> audioListenersOrientation;
 	
-	GTSL::Array<GTSL::Vector3, 8> audioEmittersLocation;
+	GTSL::StaticVector<GTSL::Vector3, 8> audioEmittersLocation;
 
 	MAKE_HANDLE(uint32, PrivateSound);
 	
@@ -90,13 +90,13 @@ private:
 		Id Name;
 		uint32 Samples = 0;
 	};
-	GTSL::Array<AudioEmitterSettings, 8> audioEmittersSettings;
+	GTSL::StaticVector<AudioEmitterSettings, 8> audioEmittersSettings;
 	
-	GTSL::Array<AudioEmitterHandle, 8> playingEmitters;
+	GTSL::StaticVector<AudioEmitterHandle, 8> playingEmitters;
 
-	GTSL::Array<Id, 8> lastRequestedAudios;
+	GTSL::StaticVector<Id, 8> lastRequestedAudios;
 
-	GTSL::Array<AudioEmitterHandle, 8> onHoldEmitters;
+	GTSL::StaticVector<AudioEmitterHandle, 8> onHoldEmitters;
 	
 	GTSL::Buffer<BE::PAR> audioBuffer;
 	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;

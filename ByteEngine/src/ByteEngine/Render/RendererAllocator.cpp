@@ -148,7 +148,7 @@ void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, AllocationI
 			return;
 		}
 
-		freeSpaces.Insert(i, Space(size, offset));
+		//freeSpaces.Insert(i, Space(size, offset));
 		return;
 	}
 
@@ -168,7 +168,7 @@ void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, AllocationI
 	switch (info)
 	{
 	case ALLOC_IS_ISOLATED:
-		freeSpaces.Insert(i, Space(size, offset));
+		//freeSpaces.Insert(i, Space(size, offset));
 		return;
 		
 	case IS_PRE_BLOCK_CONTIGUOUS:

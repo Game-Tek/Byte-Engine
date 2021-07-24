@@ -3,7 +3,7 @@
 #include "ByteEngine/Game/System.h"
 
 #include <GTSL/Extent.h>
-#include <GTSL/HashMap.h>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/FixedVector.h>
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>

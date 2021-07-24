@@ -6,7 +6,7 @@
 #include <GTSL/Flags.h>
 #include <GTSL/FixedVector.h>
 #include <GTSL/Result.h>
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
@@ -21,7 +21,7 @@ namespace AccessTypes {
 
 struct TaskInfo
 {
-	class GameInstance* GameInstance = nullptr;
+	class ApplicationManager* ApplicationManager = nullptr;
 	uint8 InvocationID = 0;
 };
 
@@ -43,19 +43,20 @@ struct Stage
 	taskAccessedObjects(num, allocatorReference),
 	taskAccessTypes(num, allocatorReference),
 	taskGoalIndex(num, allocatorReference),
-	tasksInfos(num, allocatorReference),
 	taskNames(num, allocatorReference),
+	tasksInfos(num, allocatorReference),
 	tasks(num, allocatorReference)
 	{
 	}
 
 	template<class OALLOC>
 	Stage(const Stage<TASK, OALLOC>& other, const ALLOCATOR& allocatorReference) :
-	taskAccessedObjects(other.taskAccessedObjects.GetCapacity(), allocatorReference),
-	taskAccessTypes(other.taskAccessTypes.GetCapacity(), allocatorReference),
+	taskAccessedObjects(other.taskAccessedObjects.GetLength(), allocatorReference),
+	taskAccessTypes(other.taskAccessTypes.GetLength(), allocatorReference),
 	taskGoalIndex(other.taskGoalIndex, allocatorReference),
 	taskNames(other.taskNames, allocatorReference),
-	tasks(other.tasks, allocatorReference), tasksInfos(other.tasksInfos, allocatorReference)
+	tasksInfos(other.tasksInfos, allocatorReference),
+	tasks(other.tasks, allocatorReference)
 	{
 		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i)
 		{
@@ -175,7 +176,7 @@ struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), objectNames(num, allocator), inUseSystems(32, allocator)
+	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), inUseSystems(32, allocator), objectNames(num, allocator)
 	{
 	}
 
@@ -244,8 +245,8 @@ private:
 	GTSL::FixedVector<AccessType, ALLOCATOR> currentObjectAccessState;
 	GTSL::FixedVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	GTSL::FixedVector<GTSL::Array<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
-	GTSL::FixedVector<GTSL::Array<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
+	GTSL::FixedVector<GTSL::StaticVector<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
+	GTSL::FixedVector<GTSL::StaticVector<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
 
 	GTSL::Vector<Id, ALLOCATOR> inUseSystems;
 	GTSL::FixedVector<Id, ALLOCATOR> objectNames;

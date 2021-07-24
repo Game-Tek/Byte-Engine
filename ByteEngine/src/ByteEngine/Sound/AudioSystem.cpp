@@ -6,7 +6,7 @@
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Application/Application.h"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
 AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), audioBuffer(200000, 16, GetPersistentAllocator()),
@@ -29,7 +29,7 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
-					initializeInfo.GameInstance->AddTask(u8"renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::Array<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
+					initializeInfo.GameInstance->AddTask(u8"renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::StaticVector<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
 
 					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
@@ -107,7 +107,7 @@ void AudioSystem::render(TaskInfo)
 	if(!activeAudioListenerHandle) { return; }
 	
 	{
-		GTSL::Array<uint32, 16> emittersToRemove;
+		GTSL::StaticVector<uint32, 16> emittersToRemove;
 		for (uint32 i = 0; i < onHoldEmitters.GetLength(); ++i) {
 			if (loadedSounds.Find(audioEmittersSettings[onHoldEmitters[i]()].Name).State()) {
 				emittersToRemove.EmplaceBack(i);
@@ -120,7 +120,7 @@ void AudioSystem::render(TaskInfo)
 		}
 	}
 	
-	GTSL::Array<uint32, 16> emittersToStop;
+	GTSL::StaticVector<uint32, 16> emittersToStop;
 	
 	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
 	
@@ -213,13 +213,13 @@ void AudioSystem::render(TaskInfo)
 
 void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audioResourceManager, AudioResourceManager::AudioInfo audioInfo)
 {
-	audioResourceManager->LoadAudio(taskInfo.GameInstance, audioInfo, onAudioLoadHandle);
+	audioResourceManager->LoadAudio(taskInfo.ApplicationManager, audioInfo, onAudioLoadHandle);
 }
 
 void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer)
 {
 	loadedSounds.EmplaceBack(audioInfo.Name);
-	GTSL::Array<uint32, 16> toDelete;
+	GTSL::StaticVector<uint32, 16> toDelete;
 	
 	for(uint32 i = 0; i < onHoldEmitters.GetLength(); ++i)
 	{

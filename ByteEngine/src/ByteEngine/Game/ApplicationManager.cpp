@@ -1,4 +1,4 @@
-#include "GameInstance.h"
+#include "ApplicationManager.h"
 
 #include "ByteEngine/Game/World.h"
 #include "ByteEngine/Game/System.h"
@@ -10,7 +10,7 @@
 
 #include <GTSL/Semaphore.h>
 
-GameInstance::GameInstance() : Object(u8"GameInstance"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
+ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
 recurringTasksPerStage(16, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()),
 dynamicTasksPerStage(32, GetPersistentAllocator()),
 taskSorter(64, GetPersistentAllocator()),
@@ -19,7 +19,7 @@ asyncTasks(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator(
 {
 }
 
-GameInstance::~GameInstance()
+ApplicationManager::~ApplicationManager()
 {
 	{
 		System::ShutdownInfo shutdownInfo;
@@ -40,7 +40,7 @@ GameInstance::~GameInstance()
 	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }
 }
 
-void GameInstance::OnUpdate(BE::Application* application)
+void ApplicationManager::OnUpdate(BE::Application* application)
 {
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localRecurringTasksPerStage(64, GetTransientAllocator());
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localDynamicTasksPerStage(64, GetTransientAllocator());
@@ -68,9 +68,9 @@ void GameInstance::OnUpdate(BE::Application* application)
 	GTSL::Mutex waitWhenNoChange;
 
 	TaskInfo task_info;
-	task_info.GameInstance = this;
+	task_info.ApplicationManager = this;
 
-	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
+	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
 	{
 		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
 		{
@@ -89,7 +89,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 		t = true;
 	};
 
-	auto tryDispatchTask = [&](Stage<GameInstance::FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
+	auto tryDispatchTask = [&](Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
 	{
 		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
 		{
@@ -136,7 +136,7 @@ void GameInstance::OnUpdate(BE::Application* application)
 	++frameNumber;
 }
 
-void GameInstance::UnloadWorld(const WorldReference worldId)
+void ApplicationManager::UnloadWorld(const WorldReference worldId)
 {
 	World::DestroyInfo destroy_info;
 	destroy_info.GameInstance = this;
@@ -144,7 +144,7 @@ void GameInstance::UnloadWorld(const WorldReference worldId)
 	worlds.Pop(worldId);
 }
 
-void GameInstance::RemoveTask(const Id name, const Id startOn)
+void ApplicationManager::RemoveTask(const Id name, const Id startOn)
 {
 	uint16 i = 0;
 
@@ -178,7 +178,7 @@ void GameInstance::RemoveTask(const Id name, const Id startOn)
 	BE_LOG_MESSAGE("Removed recurring task ", name.GetString(), " from stage ", startOn.GetString())
 }
 
-void GameInstance::AddStage(Id name)
+void ApplicationManager::AddStage(Id name)
 {
 	if constexpr (_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
@@ -213,7 +213,7 @@ void GameInstance::AddStage(Id name)
 	BE_LOG_MESSAGE("Added stage ", name.GetString())
 }
 
-void GameInstance::initWorld(const uint8 worldId)
+void ApplicationManager::initWorld(const uint8 worldId)
 {
 	World::InitializeInfo initializeInfo;
 	initializeInfo.GameInstance = this;

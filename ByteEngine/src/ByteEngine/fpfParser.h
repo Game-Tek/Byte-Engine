@@ -12,7 +12,7 @@ struct ClassDesciptor
 		GTSL::StaticString<64> Type, Name;
 	};
 	
-	GTSL::Array<ClassMember, 16> Members;
+	GTSL::StaticVector<ClassMember, 16> Members;
 	GTSL::StaticMap<Id, uint32, 16> MembersByName;
 };
 
@@ -38,7 +38,7 @@ bool BuildFileDescription(const GTSL::Range<const utf8*> text, const ALLOCATOR& 
 	registeredTypes.Emplace(Id(u8"string"), u8"string");
 
 	
-	GTSL::Array<GTSL::StaticString<64>, 128> tokens;
+	GTSL::StaticVector<GTSL::StaticString<64>, 128> tokens;
 
 	{
 		utf8 character = text[c];

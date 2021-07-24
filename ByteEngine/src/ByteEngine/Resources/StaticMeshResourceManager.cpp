@@ -11,12 +11,9 @@
 #include <GTSL/Buffer.hpp>
 #include <GAL/RenderCore.h>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Pair.h>
-#include <GTSL/Serialize.h>
+#include <GTSL/Serialize.hpp>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Vectors.h>
-
-#include "ByteEngine/Game/GameInstance.h"
 
 static GTSL::Vector4 toAssimp(const aiColor4D assimpVector) {
 	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);
@@ -56,7 +53,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 	{
 		GTSL::Buffer meshInfosFileBuffer(indexFile.GetSize(), 16, GetTransientAllocator());
 		indexFile.Read(meshInfosFileBuffer);
-		GTSL::Extract(meshInfos, meshInfosFileBuffer);
+		Extract(meshInfos, meshInfosFileBuffer);
 	} else {
 		GTSL::File staticMeshPackage;
 		switch (staticMeshPackage.Open(package_path, GTSL::File::WRITE, true))

@@ -87,7 +87,7 @@
     <ClInclude Include="src\ByteEngine\Debug\Logger.h">
       <Filter>Engine\Log</Filter>
     </ClInclude>
-    <ClInclude Include="src\ByteEngine\Game\GameInstance.h" />
+    <ClInclude Include="src\ByteEngine\Game\ApplicationManager.h" />
     <ClInclude Include="src\ByteEngine\Game\World.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerator.h" />
     <ClInclude Include="src\ByteEngine\Physics\ForceGenerators.h" />
@@ -162,14 +162,13 @@
     </ClCompile>
     <ClCompile Include="src\ByteEngine\Game\World.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\AudioResourceManager.cpp" />
-    <ClCompile Include="src\ByteEngine\Resources\ShaderResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\StaticMeshResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Resources\TextureResourceManager.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\Cone.cpp" />
     <ClCompile Include="src\ByteEngine\Utility\Shapes\ConeWithFalloff.cpp" />
     <ClCompile Include="src\ByteEngine\Light.cpp" />
     <ClCompile Include="src\ByteEngine\Application\Templates\GameApplication.cpp" />
-    <ClCompile Include="src\ByteEngine\Game\GameInstance.cpp" />
+    <ClCompile Include="src\ByteEngine\Game\ApplicationManager.cpp" />
     <ClCompile Include="src\ByteEngine\Debug\FunctionTimer.cpp" />
     <ClCompile Include="src\ByteEngine\Application\AllocatorReferences.cpp" />
     <ClCompile Include="src\ByteEngine\Render\RenderSystem.cpp" />

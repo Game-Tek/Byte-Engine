@@ -4,20 +4,16 @@
 
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
-#include <GTSL/HashMap.h>
-#include <GTSL/StaticMap.hpp>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/Time.h>
-#include <GTSL/Pair.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>
-#include <GTSL/Math/Vectors.h>
 #include <GTSL/Math/Vectors.h>
 
 #include "ByteEngine/Id.h"
 
 #include "ByteEngine/Debug/Logger.h"
-
-#include "ByteEngine/Handle.hpp"
+#include "ByteEngine/Game/ApplicationManager.h"
 
 namespace GTSL {
 	class Window;
@@ -45,6 +41,8 @@ public:
 		T Value, LastValue;
 	};
 
+	MAKE_HANDLE(uint32, InputLayer)
+	
 	using ActionInputEvent = InputEvent<bool>;
 	using LinearInputEvent = InputEvent<float32>;
 	using CharacterInputEvent = InputEvent<uint32>;
@@ -55,6 +53,12 @@ public:
 	InputManager();
 	~InputManager();
 
+	InputLayerHandle RegisterInputLayer(const Id name)
+	{
+		uint32 index = inputLayers.GetLength();
+		return InputLayerHandle(index);
+	}
+	
 	InputDeviceHandle RegisterInputDevice(Id name) {
 		auto index = inputDevices.GetLength();
 		auto& inputDevice = inputDevices.EmplaceBack();
@@ -65,7 +69,7 @@ public:
 	}
 
 	void UnregisterInputDevice(InputDeviceHandle inputDeviceHandle) {
-		if (inputDeviceHandle.DeviceHandle + 1 > inputDevices.GetLength()) { BE_LOG_WARNING("Tried to unregister an input source but it wasn't registered."); return; }
+		if (inputDeviceHandle.DeviceHandle + 1u > inputDevices.GetLength()) { BE_LOG_WARNING("Tried to unregister an input source but it wasn't registered."); return; }
 		inputDevices.Pop(inputDeviceHandle.DeviceHandle);
 	}
 	
@@ -219,6 +223,7 @@ protected:
 	template<typename T>
 	struct InputSourceData
 	{
+		DynamicTaskHandle<T> Task;
 		GTSL::Delegate<void(T)> Function;
 		typename T::type LastValue;
 		GTSL::Microseconds LastTime;
@@ -232,10 +237,10 @@ protected:
 
 	struct InputDevice {
 		Id Name;
-		GTSL::Array<uint32, 8> ActiveIndeces;
+		GTSL::StaticVector<uint32, 8> ActiveIndeces;
 		GTSL::StaticMap<Id, float32, 8> Parameters;
 	};
-	GTSL::Array<InputDevice, 16> inputDevices;
+	GTSL::StaticVector<InputDevice, 16> inputDevices;
 	
 	using ActionInputSourceData = InputSourceData<ActionInputEvent>;
 	GTSL::HashMap<Id, ActionInputSourceData, BE::PersistentAllocatorReference> actionInputSourcesToActionInputEvents;
@@ -288,7 +293,10 @@ protected:
 	GTSL::Vector<InputSourceRecord<Vector2DInputEvent>, BE::PersistentAllocatorReference> vector2DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<Vector3DInputEvent>> vector3DInputSourceRecords;
 	//GTSL::Vector<InputSourceRecord<QuaternionInputEvent>> quaternionInputSourceRecords;
-	//
+
+	InputLayerHandle activeInputLayer;
+	GTSL::SemiVector<uint32, 8, BE::PAR> inputLayers;
+	
 	template<typename A, typename B>
 	static void updateInput(GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::HashMap<Id, B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
 	{

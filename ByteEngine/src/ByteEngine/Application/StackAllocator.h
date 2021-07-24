@@ -198,12 +198,10 @@ public:
 	{
 		const auto i{ stackIndex % MAX_STACKS }; ++stackIndex;
 
-		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
-			BE_ASSERT(size <= blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.")
+		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
+		BE_ASSERT(size <= blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.");
 
-			uint64 allocated_size {
-			0
-		};
+		uint64 allocated_size { 0 };
 
 		if constexpr (BE_DEBUG)
 		{
@@ -266,21 +264,21 @@ public:
 
 	void Deallocate(uint64 size, uint64 alignment, void* memory, const GTSL::Range<const char8_t*> name)
 	{
-		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!")
-			BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!")
+		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
+		BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!");
 
-			if constexpr (BE_DEBUG)
-			{
-				const auto bytes_deallocated{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
+		if constexpr (BE_DEBUG)
+		{
+			const auto bytes_deallocated{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
 
-				GTSL::Lock lock(debugDataMutex);
-				perNameData[GTSL::Id64(name)()].BytesDeallocated += bytes_deallocated;
-				perNameData[GTSL::Id64(name)()].DeallocationCount += 1;
-				bytesDeallocated += bytes_deallocated;
-				totalBytesDeallocated += bytes_deallocated;
-				++deallocationsCount;
-				++totalDeallocationsCount;
-			}
+			GTSL::Lock lock(debugDataMutex);
+			perNameData[GTSL::Id64(name)()].BytesDeallocated += bytes_deallocated;
+			perNameData[GTSL::Id64(name)()].DeallocationCount += 1;
+			bytesDeallocated += bytes_deallocated;
+			totalBytesDeallocated += bytes_deallocated;
+			++deallocationsCount;
+			++totalDeallocationsCount;
+		}
 	}
 
 	void Free()

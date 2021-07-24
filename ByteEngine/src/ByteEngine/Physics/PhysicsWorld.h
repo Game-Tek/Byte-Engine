@@ -6,7 +6,7 @@
 #include "HitResult.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Handle.hpp"
-#include "ByteEngine/Game/GameInstance.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
 class StaticMeshResourceManager;
@@ -28,7 +28,7 @@ public:
 	
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
-	PhysicsObjectHandle AddPhysicsObject(GameInstance* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager);
+	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager);
 
 	//void SetGravity(const GTSL::Vector3 newGravity) { gravity = newGravity; }
 	void SetDampFactor(const float32 newDampFactor) { dampFactor = newDampFactor; }
@@ -68,7 +68,7 @@ private:
 	};
 	GTSL::FixedVector<PhysicsObject, BE::PAR> physicsObjects;
 
-	GTSL::Array<GTSL::Vector4, 8> boundlessForces;
+	GTSL::StaticVector<GTSL::Vector4, 8> boundlessForces;
 	
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
 	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;

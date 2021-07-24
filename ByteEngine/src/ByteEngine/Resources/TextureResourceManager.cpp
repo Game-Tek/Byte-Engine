@@ -5,7 +5,6 @@
 
 #include <GTSL/File.h>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Serialize.h>
 
 #include "ByteEngine/Application/Application.h"
 
@@ -80,7 +79,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 
 	GTSL::Buffer<BE::TAR> indexFileBuffer(2048, 32, GetTransientAllocator());
 	indexFile.Read(indexFileBuffer);
-	GTSL::Extract(textureInfos, indexFileBuffer);
+	Extract(textureInfos, indexFileBuffer);
 
 	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")));
 }

@@ -1,13 +1,13 @@
 #pragma once
 
-#include <ByteEngine/Game/GameInstance.h>
+#include <ByteEngine/Game/ApplicationManager.h>
 
-class SandboxGameInstance final : public GameInstance
+class SandboxGameInstance final : public ApplicationManager
 {
 public:
 	////void OnUpdate(BE::Application* application) override
 	//{
-	//	GameInstance::OnUpdate(application);
+	//	ApplicationManager::OnUpdate(application);
 	//
 	//	//GTSL::HashMap<float32> map(2, GetTransientAllocator());
 	//	//

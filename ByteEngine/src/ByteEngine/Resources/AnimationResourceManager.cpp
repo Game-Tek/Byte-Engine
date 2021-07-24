@@ -6,7 +6,7 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Serialize.h>
+#include <GTSL/Serialize.hpp>
 
 static GTSL::Matrix4 assimpMatrixToMatrix(const aiMatrix4x4 assimpMatrix)
 {
@@ -66,7 +66,7 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"Animati
 
 		GTSL::Buffer b(2048 * 16, 16, GetTransientAllocator());
 		
-		GTSL::Insert(animationDataSerializes, b);
+		Insert(animationDataSerializes, b);
 
 		dic.Write(b);
 		
@@ -77,8 +77,7 @@ AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"Animati
 
 	GTSL::Buffer<BE::TAR> b(2048 * 16, 16, GetTransientAllocator());
 	dic.Read(b);	
-	GTSL::Extract(animations, b);
-
+	Extract(animations, b);
 }
 
 void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourceBuffer, SkeletonData& skeletonData,

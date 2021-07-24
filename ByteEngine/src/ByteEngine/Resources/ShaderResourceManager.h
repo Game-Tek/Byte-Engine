@@ -3,21 +3,21 @@
 #include <GAL/Pipelines.h>
 #include <GAL/RenderCore.h>
 #include <GTSL/Algorithm.h>
-#include <GTSL/Array.hpp>
+#include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/File.h>
-#include <GTSL/HashMap.h>
-#include <GTSL/Serialize.h>
+#include <GTSL/HashMap.hpp>
+#include <GTSL/Serialize.hpp>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vectors.h>
 
-#include "ResourceManager.h"
+#include <GAL/Serialize.hpp>
 
-#include "ByteEngine/Game/GameInstance.h"
+#include "ResourceManager.h"
+#include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/ShaderGenerator.h"
 
-#include <GAL/Serialize.hpp>
 
 class ShaderResourceManager final : public ResourceManager
 {
@@ -41,8 +41,44 @@ class ShaderResourceManager final : public ResourceManager
 	}
 	
 public:
-	ShaderResourceManager();
-	~ShaderResourceManager();
+	ShaderResourceManager() : ResourceManager(u8"ShaderResourceManager"), shaderGroupsMap(8, GetPersistentAllocator()), shaderInfosMap(8, GetPersistentAllocator())
+	{
+		initializePackageFiles(shaderPackageFiles, GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")));
+
+		switch (shaderInfosFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::CREATED: break;
+		case GTSL::File::OpenResult::ERROR: break;
+		}
+
+		switch (shaderGroupsInfoFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"ShaderGroups"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::CREATED: break;
+		case GTSL::File::OpenResult::ERROR: break;
+		}
+
+		{
+			GTSL::Buffer fileBuffer(GetTransientAllocator());
+
+			shaderGroupsInfoFile.Read(fileBuffer);
+
+			if (fileBuffer.GetLength()) {
+				Extract(shaderGroupsMap, fileBuffer);
+			}
+		}
+
+		{
+			GTSL::Buffer fileBuffer(GetTransientAllocator());
+
+			shaderInfosFile.Read(fileBuffer);
+
+			if (fileBuffer.GetLength()) {
+				Extract(shaderInfosMap, fileBuffer);
+			}
+		}
+	}
+	
+	~ShaderResourceManager() = default;
 
 	enum class ParameterType : uint8
 	{
@@ -100,7 +136,7 @@ public:
 		};
 
 		GTSL::ShortString<32> Name;
-		GTSL::Array<GTSL::Pair<GTSL::Id64, ParameterData>, 16> Parameters;
+		GTSL::StaticVector<GTSL::Pair<GTSL::Id64, ParameterData>, 16> Parameters;
 
 		template<class ALLOC>
 		friend void Insert(const MaterialInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
@@ -117,15 +153,13 @@ public:
 	};
 	
 	struct VertexShader {
-		GTSL::Array<GAL::Pipeline::VertexElement, 32> VertexElements;
+		GTSL::StaticVector<GAL::Pipeline::VertexElement, 32> VertexElements;
 
-		template<class ALLOC>
-		friend void Insert(const VertexShader& vertex_shader, GTSL::Buffer<ALLOC>& buffer) {
+		friend void Insert(const VertexShader& vertex_shader, auto& buffer) {
 			Insert(vertex_shader.VertexElements, buffer);
 		}
 
-		template<class ALLOC>
-		friend void Extract(VertexShader& vertex_shader, GTSL::Buffer<ALLOC>& buffer) {
+		friend void Extract(VertexShader& vertex_shader, auto& buffer) {
 			Extract(vertex_shader.VertexElements, buffer);
 		}
 	};
@@ -341,7 +375,7 @@ public:
 		uint32 Size = 0;
 		bool Valid = true;
 		GTSL::ShortString<32> RenderPass;
-		GTSL::Array<GTSL::ShortString<32>, 16> Shaders;
+		GTSL::StaticVector<GTSL::ShortString<32>, 16> Shaders;
 	};
 	
 	struct ShaderGroupDataSerialize : DataSerialize<ShaderGroupData>
@@ -376,17 +410,17 @@ public:
 		bool Valid = true;
 		uint32 Size = 0;
 		GTSL::ShortString<32> RenderPass;
-		GTSL::Array<Shader, 16> Shaders;
+		GTSL::StaticVector<Shader, 16> Shaders;
 	};
 	
 	struct ShaderGroupCreateInfo
 	{		
 		GTSL::StaticString<32> Name;
 		GTSL::StaticString<32> RenderPass;
-		GTSL::Array<ShaderInfo, 16> Shaders;		
-		GTSL::Array<Parameter, 16> Parameters;
-		GTSL::Array<Parameter, 8> PerInstanceParameters;
-		GTSL::Array<MaterialInstance, 16> MaterialInstances;
+		GTSL::StaticVector<ShaderInfo, 16> Shaders;		
+		GTSL::StaticVector<Parameter, 16> Parameters;
+		GTSL::StaticVector<Parameter, 8> PerInstanceParameters;
+		GTSL::StaticVector<MaterialInstance, 16> MaterialInstances;
 	};
 	void CreateShaderGroup(const ShaderGroupCreateInfo& shader_group_create_info)
 	{
@@ -486,7 +520,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void LoadShaderGroupInfo(GameInstance* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
+	void LoadShaderGroupInfo(ApplicationManager* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
 	{		
 		auto loadShaderGroup = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, Id shaderGroupName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
@@ -505,14 +539,14 @@ public:
 				shaderGroupInfo.Shaders.EmplaceBack(shader);
 			}
 
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
 		gameInstance->AddDynamicTask(u8"loadShaderInfosFromDisk", Task<ShaderResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaderGroup), GTSL::Range<TaskDependency*>(), this, GTSL::MoveRef(shaderGroupName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
-	void LoadShaderGroup(GameInstance* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args)
+	void LoadShaderGroup(ApplicationManager* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args)
 	{
 		auto loadShaders = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
@@ -524,7 +558,7 @@ public:
 				offset += e.Size;
 			}
 
-			taskInfo.GameInstance->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 		};
 		
 		gameInstance->AddDynamicTask(u8"loadShadersFromDisk", Task<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaders), GTSL::Range<TaskDependency*>(), this, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
@@ -536,5 +570,5 @@ private:
 	GTSL::HashMap<Id, Shader, BE::PersistentAllocatorReference> shaderInfosMap;
 	mutable GTSL::ReadWriteMutex mutex;
 
-	GTSL::Array<GTSL::File, MAX_THREADS> shaderPackageFiles;
+	GTSL::StaticVector<GTSL::File, MAX_THREADS> shaderPackageFiles;
 };

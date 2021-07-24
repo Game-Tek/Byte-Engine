@@ -22,7 +22,7 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Serialize.h>
+#include <GTSL/Serialize.hpp>
 #include <GTSL/Math/Vectors.h>
 
 #include "TextRendering.h"

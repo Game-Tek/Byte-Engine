@@ -2,7 +2,6 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Serialize.h>
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -22,7 +21,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 	
 	if(indexFile.Read(file_buffer))
 	{
-		GTSL::Extract(audioResourceInfos, file_buffer);
+		Extract(audioResourceInfos, file_buffer);
 	}
 	else
 	{
@@ -93,7 +92,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 		}
 
 		file_buffer.Resize(0);
-		GTSL::Insert(audioResourceInfos, file_buffer);
+		Insert(audioResourceInfos, file_buffer);
 		indexFile.Write(file_buffer);
 	}
 

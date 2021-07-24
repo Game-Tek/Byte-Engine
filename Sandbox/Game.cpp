@@ -11,6 +11,9 @@
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/UIManager.h"
 
+#include <GTSL/Vector.hpp>
+#include <GTSL/Serialize.hpp>
+
 class UIManager;
 class TestSystem;
 
@@ -61,30 +64,30 @@ bool Game::Initialize()
 
 	BE_LOG_SUCCESS("Inited Game: ", GetApplicationName())
 	
-	gameInstance = GTSL::SmartPointer<GameInstance, BE::SystemAllocatorReference>(systemAllocatorReference);
+	gameInstance = GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	GTSL::Array<Id, 2> a({ u8"MouseMove" });
-	inputManagerInstance->Register2DInputEvent(u8"Move", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+	GTSL::StaticVector<Id, 2> input({ u8"MouseMove" });
+	inputManagerInstance->Register2DInputEvent(u8"Move", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
 
-	a.PopBack(); a.EmplaceBack(u8"W_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Forward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
-	a.PopBack(); a.EmplaceBack(u8"A_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Left", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
-	a.PopBack(); a.EmplaceBack(u8"S_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Backward", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
-	a.PopBack(); a.EmplaceBack(u8"D_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Right", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
-	a.PopBack(); a.EmplaceBack(u8"MouseWheel");
-	inputManagerInstance->RegisterLinearInputEvent(u8"Zoom", a, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
-	a.PopBack(); a.EmplaceBack(u8"RightStick");
-	inputManagerInstance->Register2DInputEvent(u8"View", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-	a.PopBack(); a.EmplaceBack(u8"LeftStick");
-	inputManagerInstance->Register2DInputEvent(u8"Move Camera", a, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
-	a.PopBack(); a.EmplaceBack(u8"LeftMouseButton"); a.EmplaceBack(u8"RightTrigger");
-	inputManagerInstance->RegisterActionInputEvent(u8"Left Click", a, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
+	input.PopBack(); input.EmplaceBack(u8"W_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Forward", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
+	input.PopBack(); input.EmplaceBack(u8"A_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Left", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
+	input.PopBack(); input.EmplaceBack(u8"S_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Backward", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
+	input.PopBack(); input.EmplaceBack(u8"D_Key");
+	inputManagerInstance->RegisterActionInputEvent(u8"Move Right", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
+	input.PopBack(); input.EmplaceBack(u8"MouseWheel");
+	inputManagerInstance->RegisterLinearInputEvent(u8"Zoom", input, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
+	input.PopBack(); input.EmplaceBack(u8"RightStick");
+	inputManagerInstance->Register2DInputEvent(u8"View", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
+	input.PopBack(); input.EmplaceBack(u8"LeftStick");
+	inputManagerInstance->Register2DInputEvent(u8"Move Camera", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
+	input.PopBack(); input.EmplaceBack(u8"LeftMouseButton"); input.EmplaceBack(u8"RightTrigger");
+	inputManagerInstance->RegisterActionInputEvent(u8"Left Click", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
 
-	GameInstance::CreateNewWorldInfo create_new_world_info;
+	ApplicationManager::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
 
 	{
@@ -97,8 +100,8 @@ bool Game::Initialize()
 		vertexShader.Type = GAL::ShaderType::VERTEX;
 		
 		ShaderResourceManager::VertexShader vertex_shader;
-		vertex_shader.VertexElements.PushBack({ GAL::Pipeline::POSITION, GAL::ShaderDataType::FLOAT3 });
-		vertex_shader.VertexElements.PushBack({ GAL::Pipeline::NORMAL, GAL::ShaderDataType::FLOAT3 });
+		vertex_shader.VertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GAL::Pipeline::POSITION, GAL::ShaderDataType::FLOAT3 });
+		vertex_shader.VertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GAL::Pipeline::NORMAL, GAL::ShaderDataType::FLOAT3 });
 		
 		vertexShader.VertexShader = vertex_shader;
 		
@@ -116,8 +119,16 @@ bool Game::Initialize()
 		
 		GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager")->CreateShaderGroup(shaderGroupCreateInfo);
 	}
+
+	GTSL::StaticVector<uint32, 4> a(1);
+
+	a.EmplaceBack(69);
 	
-	//show loading screen//
+	GTSL::StaticVector<uint32, 4> b(a.GetRange());
+	
+	BE_LOG_MESSAGE(b[0])
+	
+	//show loading screen
 	//load menu
 	//show menu
 	//start game
@@ -143,17 +154,6 @@ void Game::PostInitialize()
 	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 	auto* renderSystem = gameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 	//auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
-	
-	//{
-	//	RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
-	//	createMaterialInfo.RenderSystem = renderSystem;
-	//	createMaterialInfo.ShaderResourceManager = GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
-	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");
-	//	createMaterialInfo.MaterialName = "HydrantMat";
-	//	createMaterialInfo.InstanceName = "tvMat";
-	//	tvMaterialInstance = renderOrchestrator->CreateMaterial(createMaterialInfo);
-	//}
 	
 	{
 		RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
@@ -221,7 +221,7 @@ void Game::PostInitialize()
 	//	StaticMeshRenderGroup::AddStaticMeshInfo addStaticMeshInfo;
 	//	addStaticMeshInfo.MeshName = "TV";
 	//	addStaticMeshInfo.Material = tvMaterialInstance;
-	//	addStaticMeshInfo.GameInstance = gameInstance;
+	//	addStaticMeshInfo.ApplicationManager = gameInstance;
 	//	addStaticMeshInfo.RenderSystem = renderSystem;
 	//	addStaticMeshInfo.StaticMeshResourceManager = GetResourceManager<StaticMeshResourceManager>("StaticMeshResourceManager");
 	//	tv = staticMeshRenderer->AddStaticMesh(addStaticMeshInfo);
@@ -290,7 +290,7 @@ void Game::PostInitialize()
 	
 	//{
 	//	MaterialSystem::CreateMaterialInfo createMaterialInfo;
-	//	createMaterialInfo.GameInstance = gameInstance;
+	//	createMaterialInfo.ApplicationManager = gameInstance;
 	//	createMaterialInfo.RenderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//	createMaterialInfo.ShaderResourceManager = GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
 	//	createMaterialInfo.TextureResourceManager = GetResourceManager<TextureResourceManager>("TextureResourceManager");

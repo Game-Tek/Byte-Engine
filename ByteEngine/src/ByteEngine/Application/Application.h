@@ -41,6 +41,7 @@ namespace BE
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
 		uint8 GetNumberOfThreads();
+		const GTSL::Application& GetApplication() const { return systemApplication; }
 
 		enum class UpdateContext : uint8
 		{
@@ -66,6 +67,21 @@ namespace BE
 		//Flags the application to close on the next update.
 		void Close(CloseMode closeMode, GTSL::Range<const utf8*> reason);
 
+		//Immediately closes the application and logs the reason
+		void Exit(const GTSL::Range<const utf8*> reason) {
+			GTSL::Lock lock(crashLogMutex);
+			
+			if(!crashLog) {
+				crashLog.Open(GTSL::ShortString<32>(u8"crash.log"), GTSL::File::WRITE, true);
+			}
+
+			GTSL::Buffer<GTSL::StaticAllocator<512>> buffer;
+			buffer.CopyBytes(reason.Bytes(), reinterpret_cast<const byte*>(reason.begin()));
+			crashLog.Write(buffer);
+
+			//todo: open dialog box?
+		}
+		
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
 		{
 			auto path = systemApplication.GetPathToExecutable();
@@ -108,6 +124,9 @@ namespace BE
 		
 		SystemAllocator systemAllocator;
 		SystemAllocatorReference systemAllocatorReference;
+
+		GTSL::File crashLog;
+		GTSL::Mutex crashLogMutex;
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> gameInstance;

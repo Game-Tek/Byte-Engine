@@ -49,9 +49,9 @@ void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
 	auto& mesh = meshes[meshHandle()]; auto& rayTracingMesh = rayTracingMeshes[mesh.CustomMeshIndex];
 	auto& buffer = buffers[mesh.Buffer()];
 
-	GAL::DeviceAddress meshDataAddress = 0;
+	GAL::DeviceAddress meshDataAddress;
 
-	meshDataAddress = reinterpret_cast<uint64>(GetBufferPointer(mesh.Buffer));
+	meshDataAddress = GetBufferDeviceAddress(mesh.Buffer);
 	
 	uint32 scratchSize;
 	
@@ -232,7 +232,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 		if (rayTracing) {
-			GAL::Geometry geometry(GAL::GeometryInstances{ 0 }, GAL::GeometryFlag(), MAX_INSTANCES_COUNT, 0);
+			GAL::Geometry geometry(GAL::GeometryInstances(), GAL::GeometryFlag(), MAX_INSTANCES_COUNT, 0);
 
 			for (uint8 f = 0; f < pipelinedFrames; ++f) {
 				AllocateAccelerationStructureMemory(&topLevelAccelerationStructure[f], &topLevelAccelerationStructureBuffer[f],
@@ -429,22 +429,8 @@ bool RenderSystem::resize()
 	if (renderArea == 0) { return false; }
 	//graphicsQueue.Wait(GetRenderDevice());
 
-	if (!surface.GetHandle()) {
-		//if constexpr (_DEBUG) { surfaceCreateInfo.Name = GTSL::StaticString<32>("Surface"); }
-
-		GAL::WindowsWindowData windowsWindowData;
-		
-		if constexpr (_WIN64) {
-			GTSL::Window::Win32NativeHandles handles;
-			window->GetNativeHandles(&handles);
-			windowsWindowData.InstanceHandle = GetModuleHandle(nullptr);
-			windowsWindowData.WindowHandle = handles.HWND;
-		}
-
-#if __linux__
-#endif
-	
-		surface.Initialize(GetRenderDevice(), windowsWindowData);
+	if (!surface.GetHandle()) {	
+		surface.Initialize(GetRenderDevice(), BE::Application::Get()->GetApplication(), *window);
 	}
 
 	Surface::SurfaceCapabilities surfaceCapabilities;
@@ -482,7 +468,7 @@ bool RenderSystem::resize()
 		swapchainColorSpace = bestColorSpaceFormat.First; swapchainFormat = bestColorSpaceFormat.Second;
 	}	
 
-	renderContext.InitializeOrRecreate(GetRenderDevice(), &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
+	renderContext.InitializeOrRecreate(GetRenderDevice(), graphicsQueue, &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
 
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 
@@ -531,14 +517,15 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 	{
 		auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 
-		for (auto& e : bufferCopyData) //TODO: What to do with multibuffers.
-		{
+		for (auto& e : bufferCopyData) {
 			auto& buffer = buffers[e.Buffer()];
 
-			//todo: is multi
-			
-			commandBuffer.CopyBuffer(GetRenderDevice(), buffer.Staging[0], e.Offset, buffer.Buffer[0], 0, buffer.Size); //TODO: offset
-			--buffer.references;
+			if (buffer.isMulti) {
+				__debugbreak();
+			} else {
+				commandBuffer.CopyBuffer(GetRenderDevice(), buffer.Staging[0], e.Offset, buffer.Buffer[0], 0, buffer.Size); //TODO: offset
+				--buffer.references;
+			}
 		}
 
 		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
@@ -568,6 +555,18 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 void RenderSystem::renderFlush(TaskInfo taskInfo)
 {
 	auto& commandBuffer = graphicsCommandBuffers[GetCurrentFrame()];
+
+	auto beforeFrame = uint8(currentFrameIndex - uint8(1)) % GetPipelinedFrames();
+	
+	for(auto& e : buffers) {
+		if (e.isMulti) {
+			if (e.writeMask[beforeFrame] && !e.writeMask[GetCurrentFrame()]) {
+				GTSL::MemCopy(e.Size, e.StagingAllocation[beforeFrame].Data, e.StagingAllocation[GetCurrentFrame()].Data);
+			}
+		}
+		
+		e.writeMask[GetCurrentFrame()] = false;
+	}
 	
 	commandBuffer.EndRecording(GetRenderDevice());
 
@@ -604,53 +603,6 @@ void RenderSystem::frameStart(TaskInfo taskInfo)
 {
 	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
-
-	//GTSL::StaticVector<uint32, 32> buffersToDelete;
-	//
-	//IndexedForEach(buffers, [&](const uint32 index, BufferData& e) {
-	//	if (!e.references) {
-	//		auto destroyBuffer = [&](BufferData& buffer) {
-	//			buffer.Buffer.Destroy(GetRenderDevice());
-	//			DeallocateLocalBufferMemory(buffer.Allocation);
-	//			++buffer.references; //TODO: remove, there to avoid loop trying to delete chained buffers which will be already flagged to be deleted
-	//
-	//			if (buffer.Staging != BufferHandle()) {
-	//				auto& stagingBuffer = buffers[buffer.Staging()];
-	//				stagingBuffer.Buffer.Destroy(GetRenderDevice());
-	//				DeallocateScratchBufferMemory(stagingBuffer.Allocation);
-	//				buffersToDelete.EmplaceBack(buffer.Staging());
-	//				++stagingBuffer.references;
-	//			}
-	//
-	//			buffersToDelete.EmplaceBack(index);
-	//		};
-	//
-	//		if (e.Next() != 0xFFFFFFFF) {
-	//			BufferHandle nextBufferHandle = e.Next;
-	//			for (uint8 f = 1; f < pipelinedFrames; ++f) {
-	//				auto& otherBuffer = buffers[nextBufferHandle()];
-	//				auto currentHandle = nextBufferHandle;
-	//				nextBufferHandle = otherBuffer.Next;
-	//				destroyBuffer(otherBuffer);
-	//			}
-	//		}
-	//
-	//		destroyBuffer(e);
-	//	}
-	//	});
-	//
-	//for (auto e : buffersToDelete)
-	//	buffers.Pop(e);
-	
-	//if(transferFences[currentFrameIndex].GetStatus(&renderDevice))
-	{		
-		//bufferCopyData.Pop(0, processedBufferCopies[GetCurrentFrame()]);
-		
-		//transferFences[GetCurrentFrame()].Reset(GetRenderDevice());
-	}
-	
-	//should only be done if frame is finished transferring but must also implement check in execute transfers
-	//or begin command buffer complains
 }
 
 void RenderSystem::executeTransfers(TaskInfo taskInfo)
@@ -825,7 +777,7 @@ bool RenderSystem::AcquireImage()
 	return result;
 }
 
-BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable)
+RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable)
 {
 	uint32 bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
 

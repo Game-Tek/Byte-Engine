@@ -100,7 +100,7 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 		indexFile.Write(meshInfosFileBuffer);
 	}
 
-	mappedFile.Open(package_path);
+	mappedFile.Open(package_path, 1024*1024*1024, GTSL::File::READ);
 }
 
 StaticMeshResourceManager::~StaticMeshResourceManager()

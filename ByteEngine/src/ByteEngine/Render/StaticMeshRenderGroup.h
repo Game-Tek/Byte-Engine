@@ -60,6 +60,7 @@ public:
 	}
 
 	struct AddedMeshData {
+		bool Loaded = false;
 		StaticMeshHandle StaticMeshHandle;
 		RenderSystem::MeshHandle MeshHandle;
 	};

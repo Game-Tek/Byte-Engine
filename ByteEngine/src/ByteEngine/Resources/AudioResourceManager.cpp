@@ -91,7 +91,7 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 			}
 		}
 
-		file_buffer.Resize(0);
+		file_buffer.Clear();
 		Insert(audioResourceInfos, file_buffer);
 		indexFile.Write(file_buffer);
 	}

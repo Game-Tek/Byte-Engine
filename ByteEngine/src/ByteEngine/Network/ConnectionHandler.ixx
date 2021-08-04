@@ -31,7 +31,7 @@ public:
 	}
 
 private:
-	GTSL::UDPSocket socket;
+	GTSL::Socket socket;
 
 	GTSL::IPv4Endpoint source;
 };

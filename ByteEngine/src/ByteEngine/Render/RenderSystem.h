@@ -13,16 +13,18 @@
 #include "ByteEngine/Handle.hpp"
 
 #include <GAL/Vulkan/VulkanQueue.h>
+#include <GTSL/Bitfield.h>
 
 namespace GTSL {
 	class Window;
 }
 
-MAKE_HANDLE(uint32, Buffer)
 
 class RenderSystem : public System
 {
 public:
+	MAKE_HANDLE(uint32, Buffer)
+	
 	explicit RenderSystem(const InitializeInfo& initializeInfo);
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
@@ -145,7 +147,7 @@ public:
 	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
 		if (needsStagingBuffer) {
 			if (buffers[bufferHandle()].isMulti) {
-				return reinterpret_cast<byte*>(buffers[bufferHandle()].StagingAllocation[GetCurrentFrame()].Data);
+				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[GetCurrentFrame()].Data);
 			} else {
 				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[0].Data);
 			}
@@ -155,27 +157,28 @@ public:
 		}
 	}
 
-	[[nodiscard]] byte* GetBufferPointerA(BufferHandle bufferHandle) const {
+	[[nodiscard]] GAL::DeviceAddress GetBufferDeviceAddress(BufferHandle bufferHandle) const {
 		if (needsStagingBuffer) {
 			if (buffers[bufferHandle()].isMulti) {
-				return reinterpret_cast<byte*>(buffers[bufferHandle()].Staging[GetCurrentFrame()].GetAddress(GetRenderDevice()));
+				return buffers[bufferHandle()].Staging[GetCurrentFrame()].GetAddress(GetRenderDevice());
 			} else {
-				return reinterpret_cast<byte*>(buffers[bufferHandle()].Staging[0].GetAddress(GetRenderDevice()));
+				return buffers[bufferHandle()].Staging[0].GetAddress(GetRenderDevice());
 			}
 		}
 		else {
-			return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
+			//return buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data;
 		}
 	}
 	
 	void AddVolume(const GTSL::Matrix3x4& position, const GTSL::Vector3 size) {
 		auto volume = CreateBuffer(sizeof(float32) * 6, GAL::BufferUses::BUILD_INPUT_READ, true, false);
-		auto* bufferPointer = GetBufferPointer(volume);
+		auto bufferDeviceAddress = GetBufferDeviceAddress(volume);
+		auto bufferPointer = GetBufferPointer(volume);
 
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
 
-		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(reinterpret_cast<GAL::DeviceAddress>(bufferPointer), sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
+		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(bufferDeviceAddress, sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
 	}
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
@@ -191,6 +194,14 @@ public:
 	}
 	
 	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
+
+	void SignalBufferWrite(const BufferHandle buffer_handle) {
+		auto& buffer = buffers[buffer_handle()];
+		
+		if(buffer.isMulti) {
+			buffer.writeMask[currentFrameIndex] = true;
+		}
+	}
 	
 	void DestroyBuffer(const BufferHandle handle) {
 		--buffers[handle()].references;
@@ -306,6 +317,7 @@ private:
 	//Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
 	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
+	
 	//CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue;
@@ -337,6 +349,7 @@ private:
 		GAL::BufferUse Flags;
 		uint32 references = 0;
 		bool isMulti = false;
+		GTSL::Bitfield<MAX_CONCURRENT_FRAMES> writeMask;
 		GPUBuffer Staging[MAX_CONCURRENT_FRAMES];
 		RenderAllocation Allocation[MAX_CONCURRENT_FRAMES];
 		RenderAllocation StagingAllocation[MAX_CONCURRENT_FRAMES];

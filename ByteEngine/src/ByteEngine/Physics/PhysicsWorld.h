@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GTSL/Bitfield.h>
 #include <GTSL/FixedVector.h>
 #include <GTSL/Math/Vectors.h>
 
@@ -43,7 +44,7 @@ private:
 	 * \brief Specifies how much speed the to remove from entities.\n
 	 * Default value is 0.0001.
 	 */
-	float32 dampFactor = 0.001;
+	float32 dampFactor = 0.001f;
 
 	/**
 	 * \brief Defines the number of substeps used for simulation. Default is 0, which mean only one iteration will run each frame.
@@ -56,6 +57,14 @@ private:
 	void doNarrowPhase();
 	void solveDynamicObjects(double _UpdateTime);
 
+	void insertObject() {
+		GTSL::Vector3 aabb, pos;
+
+		GTSL::Bitfield<3> bitfield;
+
+		bitfield[0] = pos.X() > 0.0f; bitfield[1] = pos.Y() > 0.0f; bitfield[2] = pos.Z() > 0.0f;
+	}
+	
 	void onUpdate(TaskInfo taskInfo);
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);

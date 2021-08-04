@@ -29,11 +29,12 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 		}
 	
 		addStaticMeshInfo.StaticMeshResourceManager->LoadStaticMeshInfo(addStaticMeshInfo.GameInstance, addStaticMeshInfo.MeshName, onStaticMeshInfoLoadHandle, MeshLoadInfo(addStaticMeshInfo.RenderSystem, index, meshHandle));
+		addedMeshes.EmplaceBack(AddedMeshData{ false, StaticMeshHandle(index), resource->MeshHandle });
 	} else {
 		resource = &resourceLookup.Get();
 	
 		if (resource->Loaded) {
-			addedMeshes.EmplaceBack(AddedMeshData{ StaticMeshHandle(index), resource->MeshHandle });
+			addedMeshes.EmplaceBack(AddedMeshData{ true, StaticMeshHandle(index), resource->MeshHandle });
 		}
 	}
 	
@@ -85,6 +86,6 @@ void StaticMeshRenderGroup::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshReso
 	resource.Loaded = true;
 	
 	for (uint32 i = 0; i < resource.DependentMeshes.GetLength(); ++i) {
-		addedMeshes.EmplaceBack(AddedMeshData{ resource.DependentMeshes[i], meshLoadInfo.MeshHandle });
+		addedMeshes.EmplaceBack(AddedMeshData{ true, resource.DependentMeshes[i], meshLoadInfo.MeshHandle });
 	}
 }

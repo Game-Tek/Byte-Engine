@@ -43,8 +43,8 @@ class ShaderResourceManager final : public ResourceManager
 public:
 	ShaderResourceManager() : ResourceManager(u8"ShaderResourceManager"), shaderGroupsMap(8, GetPersistentAllocator()), shaderInfosMap(8, GetPersistentAllocator())
 	{
-		initializePackageFiles(shaderPackageFiles, GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")));
-
+		shaderPackageFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")), 1 * 1024 * 1024 * 1024, GTSL::File::READ | GTSL::File::WRITE);
+		
 		switch (shaderInfosFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
 		case GTSL::File::OpenResult::OK: break;
 		case GTSL::File::OpenResult::CREATED: break;
@@ -260,11 +260,7 @@ public:
 		}
 	};
 	
-	struct Shader : ShaderInfo {
-		Shader() {
-			
-		}
-		
+	struct Shader : ShaderInfo {		
 		uint32 Size = 0, Offset = 0;
 
 		template<class ALLOC>
@@ -297,6 +293,26 @@ public:
 			}
 		}
 
+		Shader(const GTSL::ShortString<32> name, const GAL::ShaderType type) : ShaderInfo(name, type) {
+			switch (Type) {
+			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(); break;
+			case GAL::ShaderType::TESSELLATION_CONTROL: break;
+			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+			case GAL::ShaderType::GEOMETRY: break;
+			case GAL::ShaderType::FRAGMENT: break;
+			case GAL::ShaderType::COMPUTE: break;
+			case GAL::ShaderType::TASK: break;
+			case GAL::ShaderType::MESH: break;
+			case GAL::ShaderType::RAY_GEN: break;
+			case GAL::ShaderType::ANY_HIT: break;
+			case GAL::ShaderType::CLOSEST_HIT: break;
+			case GAL::ShaderType::MISS: break;
+			case GAL::ShaderType::INTERSECTION: break;
+			case GAL::ShaderType::CALLABLE: break;
+			default: __debugbreak();
+			}
+		}
+		
 		Shader(const Shader& shader) : ShaderInfo(shader.Name, shader.Type), Size(shader.Size), Offset(shader.Offset)
 		{
 			switch (Type)
@@ -436,7 +452,7 @@ public:
 		shaderGroupDataSerialize.RenderPass = shader_group_create_info.RenderPass;
 		
 		for (auto& shaderCreateInfo : shader_group_create_info.Shaders) {
-			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo.Name));
+			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo.Name), shaderCreateInfo.Name, shaderCreateInfo.Type);
 			if (!shaderTryEmplace) { continue; }
 
 			GTSL::File shaderSourceFile;
@@ -463,13 +479,16 @@ public:
 			if (!compilationResult) {
 				BE_LOG_ERROR(compilationErrorString);
 			}
-
 			
 			auto& shader = shaderTryEmplace.Get();
-			shader.Name = shaderCreateInfo.Name;
-			shader.Type = shaderCreateInfo.Type;
 			shader.Size = shaderBuffer.GetLength();
-			shader.Offset = shaderPackageFiles[0].GetSize();
+			shader.Offset = size;
+
+			if (!shaderBuffer.GetLength()) {
+				shaderGroupDataSerialize.Valid = false;
+			}
+			
+			GTSL::MemCopy(shader.Size, shaderBuffer.begin(), shaderPackageFile.GetData() + size);
 
 			switch (shaderCreateInfo.Type)
 			{
@@ -489,17 +508,14 @@ public:
 			case GAL::ShaderType::MESH: break;
 			}
 
+			size += shaderBuffer.GetLength();
 			shaderGroupDataSerialize.Size += shaderBuffer.GetLength();
 			shaderGroupDataSerialize.Shaders.EmplaceBack(shaderCreateInfo.Name);
-
-			if (!shaderBuffer.GetLength()) {
-				shaderGroupDataSerialize.Valid = false;
-			}
 			
-			shaderPackageFiles[0].Write(shaderBuffer);
+			shaderPackageFile.Resize(shaderGroupDataSerialize.Size);
 
-			shaderSourceBuffer.Resize(0);
-			shaderBuffer.Resize(0);
+			shaderSourceBuffer.Clear();
+			shaderBuffer.Clear();
 		}
 		
 		{
@@ -520,10 +536,8 @@ public:
 	}
 
 	template<typename... ARGS>
-	void LoadShaderGroupInfo(ApplicationManager* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
-	{		
-		auto loadShaderGroup = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, Id shaderGroupName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
-		{
+	void LoadShaderGroupInfo(ApplicationManager* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		auto loadShaderGroup = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, Id shaderGroupName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args) {
 			auto& shaderGroup = materialResourceManager->shaderGroupsMap[shaderGroupName];
 			
 			ShaderGroupInfo shaderGroupInfo;
@@ -546,15 +560,12 @@ public:
 	}
 
 	template<typename... ARGS>
-	void LoadShaderGroup(ApplicationManager* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args)
-	{
-		auto loadShaders = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
-		{
+	void LoadShaderGroup(ApplicationManager* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args) {
+		auto loadShaders = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args) {
 			uint32 offset = 0;
 
 			for (auto& e : shader_group_info.Shaders) {
-				materialResourceManager->shaderPackageFiles[materialResourceManager->getThread()].SetPointer(e.Offset);
-				[[maybe_unused]] const auto read = materialResourceManager->shaderPackageFiles[materialResourceManager->getThread()].Read(e.Size, offset, buffer);
+				GTSL::MemCopy(e.Size, materialResourceManager->shaderPackageFile.GetData() + e.Offset, buffer.begin() + offset);
 				offset += e.Size;
 			}
 
@@ -570,5 +581,7 @@ private:
 	GTSL::HashMap<Id, Shader, BE::PersistentAllocatorReference> shaderInfosMap;
 	mutable GTSL::ReadWriteMutex mutex;
 
-	GTSL::StaticVector<GTSL::File, MAX_THREADS> shaderPackageFiles;
+	GTSL::MappedFile shaderPackageFile;
+
+	uint64 size = 0;
 };

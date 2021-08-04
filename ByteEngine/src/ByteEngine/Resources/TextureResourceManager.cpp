@@ -81,7 +81,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	indexFile.Read(indexFileBuffer);
 	Extract(textureInfos, indexFileBuffer);
 
-	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")));
+	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")), 1024*1024*1024, GTSL::File::READ);
 }
 
 TextureResourceManager::~TextureResourceManager()

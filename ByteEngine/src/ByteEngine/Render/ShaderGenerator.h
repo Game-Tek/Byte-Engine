@@ -83,6 +83,7 @@ void AddCommonFunctions(GTSL::String<T>& string, GAL::ShaderType shaderType) {
 	case GAL::ShaderType::CLOSEST_HIT:
 	case GAL::ShaderType::INTERSECTION:
 		string += u8"vec3 fresnelSchlick(float cosTheta, vec3 F0) { return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0); }\n";
+		string += u8"vec3 barycenter(vec2 coords) { return vec3(1.0f - coords.x - coords.y, coords.x, coords.y); }\n";
 		break;
 	default:;
 	}

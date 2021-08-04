@@ -57,12 +57,18 @@ namespace BE
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
 		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
-		threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(systemAllocatorReference);
 
 		if (!parseConfig())	{
 			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
 		}
 
+		{
+			auto threadCount = GetOption(u8"threadCount");
+			threadCount = GTSL::Math::Limit(threadCount, static_cast<uint32>(GTSL::Thread::ThreadCount() - 1/*main thread*/));
+			threadCount = threadCount ? static_cast<uint8>(threadCount) : GTSL::Thread::ThreadCount();
+			threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(systemAllocatorReference, threadCount);
+		}
+		
 		initialized = true;
 
 		BE_LOG_SUCCESS(u8"Succesfully initialized Byte Engine module!");

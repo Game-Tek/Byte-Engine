@@ -43,7 +43,9 @@ struct DynamicTaskHandle
 	DynamicTaskHandle() = default;
 	DynamicTaskHandle(uint32 reference) : Reference(reference) {}
 	
-	uint32 Reference = 0;
+	uint32 Reference = ~0U;
+
+	operator bool() const { return Reference != ~0U; }
 };
 
 template<typename... ARGS>
@@ -276,17 +278,21 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle) {
+	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
-		events.Emplace(eventHandle.Name, 8, GetPersistentAllocator());
+		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
+
+		if(priority) {
+			eventData.priorityEntry = 0;
+		}
 	}
 
 	template<typename... ARGS>
 	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
-		auto& vector = events.At(eventHandle.Name);
+		auto& vector = events.At(eventHandle.Name).Functions;
 		vector.EmplaceBack(taskHandle.Reference);
 	}
 	
@@ -294,11 +300,27 @@ public:
 	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
 		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
-		
-		auto& functionList = events.At(eventHandle.Name);
-		for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e), GTSL::ForwardRef<ARGS>(args)...); }
+
+		Event& eventData = events.At(eventHandle.Name);
+
+		if(eventData.priorityEntry != ~0U) {
+			AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(eventData.Functions[eventData.priorityEntry]), GTSL::ForwardRef<ARGS>(args)...);
+		} else {
+			auto& functionList = eventData.Functions;
+			for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e), GTSL::ForwardRef<ARGS>(args)...); }
+		}
 	}
-	
+
+	template<typename... ARGS>
+	void SetEventPrioritizedSubscriber(const EventHandle<ARGS...> eventHandle, const uint32 prioritized) { //todo: make event subscription handle
+		events[eventHandle.Name].priorityEntry = prioritized;
+	}
+
+	template<typename... ARGS>
+	void SetEventPriority(const EventHandle<ARGS...> eventHandle, const bool priority) { //todo: make event subscription handle
+		events[eventHandle.Name].priorityEntry = priority ? 0 : ~0U;
+	}
+
 	void AddStage(Id name);
 
 private:
@@ -335,7 +357,14 @@ private:
 	GTSL::FixedVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 
 	mutable GTSL::ReadWriteMutex eventsMutex;
-	GTSL::HashMap<Id, GTSL::Vector<uint32, BE::PAR>, BE::PersistentAllocatorReference> events;
+
+	struct Event {
+		Event(const BE::PAR& allocator) : Functions(allocator) {}
+
+		uint32 priorityEntry = ~0U;
+		GTSL::Vector<uint32, BE::PAR> Functions;
+	};
+	GTSL::HashMap<Id, Event, BE::PersistentAllocatorReference> events;
 
 	mutable GTSL::ReadWriteMutex recurringTasksMutex;
 	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;

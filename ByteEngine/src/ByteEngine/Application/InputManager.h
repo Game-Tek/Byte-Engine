@@ -5,6 +5,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/HashMap.hpp>
+#include <GTSL/RGB.h>
 #include <GTSL/Time.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>
@@ -39,6 +40,8 @@ public:
 		Id InputSource;
 		GTSL::Microseconds LastEventTime;
 		T Value, LastValue;
+
+		InputEvent(InputDeviceHandle device_handle, Id inputSource, GTSL::Microseconds lastEvent, T val, T lastVal) : DeviceIndex(device_handle), InputSource(inputSource), LastEventTime(lastEvent), Value(val), LastValue(lastVal) {}
 	};
 
 	MAKE_HANDLE(uint32, InputLayer)
@@ -109,8 +112,7 @@ public:
 		}
 	}
 
-	void RegisterActionInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, GTSL::Delegate<void(ActionInputEvent)> function)
-	{
+	void SubscribeToInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, DynamicTaskHandle<ActionInputEvent> function) {
 		for (const auto& e : inputSourceNames)
 		{
 			auto res = actionInputSourcesToActionInputEvents.TryGet(e);
@@ -123,8 +125,7 @@ public:
 		}
 	}
 	
-	void RegisterCharacterInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, GTSL::Delegate<void(CharacterInputEvent)> function)
-	{
+	void SubscribeToInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, DynamicTaskHandle<CharacterInputEvent> function) {
 		for (const auto& e : inputSourceNames)
 		{
 			auto res = characterInputSourcesToCharacterInputEvents.TryGet(e);
@@ -137,8 +138,7 @@ public:
 		}
 	}
 	
-	void RegisterLinearInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, GTSL::Delegate<void(LinearInputEvent)> function)
-	{
+	void SubscribeToInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, DynamicTaskHandle<LinearInputEvent> function) {
 		for (const auto& e : inputSourceNames)
 		{
 			auto res = linearInputSourcesToLinearInputEvents.TryGet(e);
@@ -151,8 +151,7 @@ public:
 		}
 	}
 	
-	void Register2DInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, GTSL::Delegate<void(Vector2DInputEvent)> function)
-	{
+	void SubscribeToInputEvent(Id actionName, GTSL::Range<const Id*> inputSourceNames, DynamicTaskHandle<Vector2DInputEvent> function) {
 		for (const auto& e : inputSourceNames)
 		{
 			auto res = vector2dInputSourceEventsToVector2DInputEvents.TryGet(e);
@@ -208,11 +207,15 @@ public:
 	void Update();
 	
 	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, Id parameterName, float32 value) {
-		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName) = value;
+		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Linear = value;
+	}
+
+	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, Id parameterName, GTSL::RGBA value) {
+		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Color = value;
 	}
 
 	[[nodiscard]] float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) const {
-		return inputDevices[inputDeviceHandle.DeviceHandle].Parameters.At(parameterName);
+		return inputDevices[inputDeviceHandle.DeviceHandle].Parameters.At(parameterName).Linear;
 	}
 
 	void RegisterInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) {
@@ -224,13 +227,12 @@ protected:
 	struct InputSourceData
 	{
 		DynamicTaskHandle<T> Task;
-		GTSL::Delegate<void(T)> Function;
 		typename T::type LastValue;
 		GTSL::Microseconds LastTime;
 
 		InputSourceData() = default;
 
-		InputSourceData(const GTSL::Delegate<void(T)> func, const typename T::type lstValue, const GTSL::Microseconds lstTime) : Function(func), LastValue(lstValue), LastTime(lstTime)
+		InputSourceData(const DynamicTaskHandle<T> func, const typename T::type lstValue, const GTSL::Microseconds lstTime) : Task(func), LastValue(lstValue), LastTime(lstTime)
 		{
 		}
 	};
@@ -238,7 +240,17 @@ protected:
 	struct InputDevice {
 		Id Name;
 		GTSL::StaticVector<uint32, 8> ActiveIndeces;
-		GTSL::StaticMap<Id, float32, 8> Parameters;
+
+		union Datatypes {
+			Datatypes() {}
+
+			bool Action; uint32 Unicode; float32 Linear;
+			GTSL::Vector2 Vector2D; GTSL::Vector3 Vector3D;
+			GTSL::RGBA Color;
+			GTSL::Quaternion Quaternion;
+		};
+
+		GTSL::StaticMap<Id, Datatypes, 8> Parameters;
 	};
 	GTSL::StaticVector<InputDevice, 16> inputDevices;
 	
@@ -277,6 +289,8 @@ protected:
 
 		typename T::type NewValue;
 
+		using III = T;
+
 		InputSourceRecord() = default;
 		
 		InputSourceRecord(InputDeviceHandle deviceIndex, const Id name, decltype(NewValue) newValue) : InputSource(name), DeviceIndex(deviceIndex), NewValue(newValue)
@@ -298,13 +312,13 @@ protected:
 	GTSL::SemiVector<uint32, 8, BE::PAR> inputLayers;
 	
 	template<typename A, typename B>
-	static void updateInput(GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::HashMap<Id, B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
+	static void updateInput(ApplicationManager* application_manager, GTSL::Vector<A, BE::PersistentAllocatorReference>& records, GTSL::HashMap<Id, B, BE::PersistentAllocatorReference>& map, GTSL::Microseconds time)
 	{
 		for (auto& record : records)
 		{
 			auto& inputSource = map.At(record.InputSource);
 
-			if (inputSource.Function) { inputSource.Function({ record.DeviceIndex, record.InputSource, inputSource.LastTime, record.NewValue, inputSource.LastValue }); }
+			if (inputSource.Task) { application_manager->AddStoredDynamicTask(inputSource.Task, A::III(record.DeviceIndex, record.InputSource, inputSource.LastTime, record.NewValue, inputSource.LastValue)); }
 
 			inputSource.LastValue = record.NewValue;
 			inputSource.LastTime = time;

@@ -27,8 +27,10 @@ void InputManager::Update()
 {
 	GTSL::Microseconds current_time{ BE::Application::Get()->GetClock()->GetElapsedTime() };
 
-	updateInput(actionInputSourceRecords, actionInputSourcesToActionInputEvents, current_time);
-	updateInput(characterInputSourceRecords, characterInputSourcesToCharacterInputEvents, current_time);
-	updateInput(linearInputSourceRecords, linearInputSourcesToLinearInputEvents, current_time);
-	updateInput(vector2DInputSourceRecords, vector2dInputSourceEventsToVector2DInputEvents, current_time);
+	auto* applicationManager = BE::Application::Get()->GetGameInstance();
+
+	updateInput(applicationManager, actionInputSourceRecords, actionInputSourcesToActionInputEvents, current_time);
+	updateInput(applicationManager, characterInputSourceRecords, characterInputSourcesToCharacterInputEvents, current_time);
+	updateInput(applicationManager, linearInputSourceRecords, linearInputSourcesToLinearInputEvents, current_time);
+	updateInput(applicationManager, vector2DInputSourceRecords, vector2dInputSourceEventsToVector2DInputEvents, current_time);
 }

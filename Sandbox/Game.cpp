@@ -67,25 +67,27 @@ bool Game::Initialize()
 	gameInstance = GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference>(systemAllocatorReference);
 	sandboxGameInstance = gameInstance;
 
-	GTSL::StaticVector<Id, 2> input({ u8"MouseMove" });
-	inputManagerInstance->Register2DInputEvent(u8"Move", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-
-	input.PopBack(); input.EmplaceBack(u8"W_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Forward", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveForward>(this));
-	input.PopBack(); input.EmplaceBack(u8"A_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Left", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveLeft>(this));
-	input.PopBack(); input.EmplaceBack(u8"S_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Backward", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveBackwards>(this));
-	input.PopBack(); input.EmplaceBack(u8"D_Key");
-	inputManagerInstance->RegisterActionInputEvent(u8"Move Right", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::moveRight>(this));
-	input.PopBack(); input.EmplaceBack(u8"MouseWheel");
-	inputManagerInstance->RegisterLinearInputEvent(u8"Zoom", input, GTSL::Delegate<void(InputManager::LinearInputEvent)>::Create<Game, &Game::zoom>(this));
-	input.PopBack(); input.EmplaceBack(u8"RightStick");
-	inputManagerInstance->Register2DInputEvent(u8"View", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::move>(this));
-	input.PopBack(); input.EmplaceBack(u8"LeftStick");
-	inputManagerInstance->Register2DInputEvent(u8"Move Camera", input, GTSL::Delegate<void(InputManager::Vector2DInputEvent)>::Create<Game, &Game::moveCamera>(this));
-	input.PopBack(); input.EmplaceBack(u8"LeftMouseButton"); input.EmplaceBack(u8"RightTrigger");
-	inputManagerInstance->RegisterActionInputEvent(u8"Left Click", input, GTSL::Delegate<void(InputManager::ActionInputEvent)>::Create<Game, &Game::leftClick>(this));
+	//auto handle = sandboxGameInstance->StoreDynamicTask<InputManager::ActionInputEvent>(u8"", {}, {});
+	//
+	//GTSL::StaticVector<Id, 2> input({ u8"MouseMove" });
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move", input, handle);
+	//
+	//input.PopBack(); input.EmplaceBack(u8"W_Key");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move Forward", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"A_Key");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move Left", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"S_Key");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move Backward", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"D_Key");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move Right", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"MouseWheel");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Zoom", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"RightStick");
+	//inputManagerInstance->SubscribeToInputEvent(u8"View", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"LeftStick");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Move Camera", input, handle);
+	//input.PopBack(); input.EmplaceBack(u8"LeftMouseButton"); input.EmplaceBack(u8"RightTrigger");
+	//inputManagerInstance->SubscribeToInputEvent(u8"Left Click", input, handle);
 
 	ApplicationManager::CreateNewWorldInfo create_new_world_info;
 	menuWorld = sandboxGameInstance->CreateNewWorld<MenuWorld>(create_new_world_info);
@@ -95,22 +97,38 @@ bool Game::Initialize()
 		shaderGroupCreateInfo.Name = u8"PlainMaterial";
 		shaderGroupCreateInfo.RenderPass = u8"SceneRenderPass";
 
-		auto& vertexShader = shaderGroupCreateInfo.Shaders.EmplaceBack();
-		vertexShader.Name = u8"VertexShader";
-		vertexShader.Type = GAL::ShaderType::VERTEX;
-		
-		ShaderResourceManager::VertexShader vertex_shader;
-		vertex_shader.VertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GAL::Pipeline::POSITION, GAL::ShaderDataType::FLOAT3 });
-		vertex_shader.VertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GAL::Pipeline::NORMAL, GAL::ShaderDataType::FLOAT3 });
-		
-		vertexShader.VertexShader = vertex_shader;
-		
-		auto& fragmentShader = shaderGroupCreateInfo.Shaders.EmplaceBack();
-		ShaderResourceManager::FragmentShader fragment_shader;
-		fragmentShader.Name = u8"FragmentShader";
-		fragmentShader.Type = GAL::ShaderType::FRAGMENT;
-		fragment_shader.WriteOperation = GAL::BlendOperation::WRITE;
-		fragmentShader.FragmentShader = fragment_shader;
+		Node albedo(u8"vec4", u8"albedo");
+		Node value(u8"vec4", u8"1.0f");
+
+		albedo.AddInput(value);
+
+		Shader fragmentShader(u8"FragmentShader", GAL::ShaderType::FRAGMENT);
+		fragmentShader.AddInput(albedo);
+		fragmentShader.AddLayer(u8"GlobalData");
+		fragmentShader.AddLayer(u8"CameraData");
+		fragmentShader.AddLayer(u8"RenderPassData");
+		shaderGroupCreateInfo.Shaders.EmplaceBack(&fragmentShader);
+
+		Node getInstancePosition(u8"GetInstancePosition");
+		Node getCameraViewMatrix(u8"GetCameraViewMatrix");
+		Node getCameraProjectionMatrix(u8"GetCameraProjectionMatrix");
+		Node getVertexPosition(u8"GetVertexPosition");
+
+		Node multiplyMatrices(u8"multiply");
+
+		multiplyMatrices.AddInput(getCameraProjectionMatrix);
+		multiplyMatrices.AddInput(getCameraViewMatrix);
+		multiplyMatrices.AddInput(getInstancePosition);
+		multiplyMatrices.AddInput(getVertexPosition);
+
+		Shader vertexShader(u8"VertexShader", GAL::ShaderType::VERTEX);
+		vertexShader.AddInput(multiplyMatrices);
+		vertexShader.AddLayer(u8"GlobalData");
+		vertexShader.AddLayer(u8"CameraData");
+		vertexShader.AddLayer(u8"RenderPassData");
+		vertexShader.AddVertexElement(GAL::Pipeline::VertexElement{ GAL::Pipeline::POSITION, GAL::ShaderDataType::FLOAT3 });
+		vertexShader.AddVertexElement(GAL::Pipeline::VertexElement{ GAL::Pipeline::NORMAL, GAL::ShaderDataType::FLOAT3 });
+		shaderGroupCreateInfo.Shaders.EmplaceBack(&vertexShader);
 
 		{
 			shaderGroupCreateInfo.MaterialInstances.EmplaceBack();
@@ -119,14 +137,6 @@ bool Game::Initialize()
 		
 		GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager")->CreateShaderGroup(shaderGroupCreateInfo);
 	}
-
-	GTSL::StaticVector<uint32, 4> a(1);
-
-	a.EmplaceBack(69);
-	
-	GTSL::StaticVector<uint32, 4> b(a.GetRange());
-	
-	BE_LOG_MESSAGE(b[0])
 	
 	//show loading screen
 	//load menu
@@ -147,8 +157,7 @@ void Game::PostInitialize()
 	
 		camera = cameraSystem->AddCamera(GTSL::Vector3(0, 0.5, -2));
 		fov = cameraSystem->GetFieldOfView(camera);
-	}
-	
+	}	
 	
 	auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
 	auto* renderOrchestrator = gameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
@@ -313,9 +322,9 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	//auto* material_system = gameInstance->GetSystem<MaterialSystem>("MaterialSystem");
 	//auto* renderSystem = gameInstance->GetSystem<RenderSystem>("RenderSystem");
 	//auto* audioSystem = gameInstance->GetSystem<AudioSystem>("AudioSystem");
-	//
+	
 	auto deltaSeconds = GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
-	//
+	
 	//if (shouldFire)
 	//{
 	//	inputManagerInstance->SetInputDeviceParameter(controller, "HighEndVibration", 1.0f);
@@ -324,28 +333,27 @@ void Game::OnUpdate(const OnUpdateInfo& onUpdate)
 	//} else {
 	//	inputManagerInstance->SetInputDeviceParameter(controller, "HighEndVibration", GTSL::Math::Interp(0, inputManagerInstance->GetInputDeviceParameter(controller, "HighEndVibration"), deltaSeconds, 2));
 	//}
-	//
+	
 	GameApplication::OnUpdate(onUpdate);
-	//
+	
 	auto* cameraSystem = gameInstance->GetSystem<CameraSystem>(u8"CameraSystem");
-	//
+	
 	auto cameraDirection = GTSL::Quaternion(GTSL::Rotator(0, -posDelta.X(), 0));
 	auto dir = cameraDirection * moveDir;
-	//
-	//
+		
 	auto camPos = GTSL::Math::Interp(cameraSystem->GetCameraPosition(camera) + dir, cameraSystem->GetCameraPosition(camera), deltaSeconds, 1);
-	//
+	
 	//audioSystem->SetPosition(audioListener, camPos);
 	//audioSystem->SetOrientation(audioListener, cameraDirection);
 	cameraSystem->SetCameraPosition(camera, camPos);
 	cameraSystem->SetFieldOfView(camera, GTSL::Math::DegreesToRadians(GTSL::Math::Interp(fov, GTSL::Math::RadiansToDegrees(cameraSystem->GetFieldOfView(camera)), deltaSeconds, 18.0f)));
-	//
+	
 	//auto* staticMeshRenderer = gameInstance->GetSystem<StaticMeshRenderGroup>("StaticMeshRenderGroup");
-	//
+	
 	//auto hydrantPos = GTSL::Vector3(0, GTSL::Math::Sine(GetClock()->GetElapsedTime().As<float32, GTSL::Seconds>()) / 4, 2);
-	//
-	////staticMeshRenderer->SetPosition(hydrant, hydrantPos);
-	////staticMeshRenderer->SetPosition(tv, GTSL::Vector3(0, 0, 0));
+	
+	//staticMeshRenderer->SetPosition(hydrant, hydrantPos);
+	//staticMeshRenderer->SetPosition(tv, GTSL::Vector3(0, 0, 0));
 }
 
 void Game::Shutdown()

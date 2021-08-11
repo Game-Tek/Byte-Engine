@@ -433,7 +433,7 @@ public:
 	{		
 		GTSL::StaticString<32> Name;
 		GTSL::StaticString<32> RenderPass;
-		GTSL::StaticVector<ShaderInfo, 16> Shaders;		
+		GTSL::StaticVector<::Shader*, 16> Shaders;
 		GTSL::StaticVector<Parameter, 16> Parameters;
 		GTSL::StaticVector<Parameter, 8> PerInstanceParameters;
 		GTSL::StaticVector<MaterialInstance, 16> MaterialInstances;
@@ -442,8 +442,7 @@ public:
 	{
 		Id hashedName(shader_group_create_info.Name);
 		if (shaderGroupsMap.Find(hashedName)) { return; }
-		
-		GTSL::Buffer shaderSourceBuffer(GTSL::Byte(GTSL::KiloByte(8)), 8, GetTransientAllocator());
+
 		GTSL::Buffer shaderBuffer(GTSL::Byte(GTSL::KiloByte(128)), 8, GetTransientAllocator());
 
 		ShaderGroupDataSerialize& shaderGroupDataSerialize = shaderGroupsMap.Emplace(hashedName);
@@ -452,29 +451,15 @@ public:
 		shaderGroupDataSerialize.RenderPass = shader_group_create_info.RenderPass;
 		
 		for (auto& shaderCreateInfo : shader_group_create_info.Shaders) {
-			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo.Name), shaderCreateInfo.Name, shaderCreateInfo.Type);
+			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo->Name), shaderCreateInfo->Name, shaderCreateInfo->Type);
 			if (!shaderTryEmplace) { continue; }
 
-			GTSL::File shaderSourceFile;
-			shaderSourceFile.Open(GetResourcePath(shaderCreateInfo.Name, ShaderTypeToFileExtension(shaderCreateInfo.Type)), GTSL::File::READ, false);
-
-			GTSL::String shaderCode(8192, GetTransientAllocator());
-			GenerateShader(shaderCode, shaderCreateInfo.Type);
-
-			switch (shaderCreateInfo.Type) {
-			case GAL::ShaderType::VERTEX:
-				AddVertexShaderLayout(shaderCode, shaderCreateInfo.VertexShader.VertexElements);
-				break;
-			}
-
-			shaderSourceFile.Read(shaderSourceBuffer);
-
-			shaderCode += GTSL::Range<const utf8*>(shaderSourceBuffer.GetLength(), reinterpret_cast<const utf8*>(shaderSourceBuffer.GetData()));
+			auto shaderCode = GenerateShader(*shaderCreateInfo);
 
 			//DON'T push null terminator, glslang doesn't like it
 			
 			GTSL::String compilationErrorString(8192, GetTransientAllocator());
-			const auto compilationResult = CompileShader(shaderCode, shaderCreateInfo.Name, shaderCreateInfo.Type, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
+			const auto compilationResult = CompileShader(GTSL::Range<const char8_t*>(shaderCode.begin(), shaderCode.end() - 1), shaderCreateInfo->Name, shaderCreateInfo->Type, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
 
 			if (!compilationResult) {
 				BE_LOG_ERROR(compilationErrorString);
@@ -490,10 +475,10 @@ public:
 			
 			GTSL::MemCopy(shader.Size, shaderBuffer.begin(), shaderPackageFile.GetData() + size);
 
-			switch (shaderCreateInfo.Type)
+			switch (shaderCreateInfo->Type)
 			{
-			case GAL::ShaderType::VERTEX: shader.VertexShader = shaderCreateInfo.VertexShader; shaderGroupDataSerialize.Stages |= GAL::ShaderStages::VERTEX; break;
-			case GAL::ShaderType::FRAGMENT: shader.FragmentShader = shaderCreateInfo.FragmentShader; shaderGroupDataSerialize.Stages |= GAL::ShaderStages::FRAGMENT; break;
+			case GAL::ShaderType::VERTEX: shader.VertexShader.VertexElements = shaderCreateInfo->VertexElements; shaderGroupDataSerialize.Stages |= GAL::ShaderStages::VERTEX; break;
+			case GAL::ShaderType::FRAGMENT: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::FRAGMENT; break;
 			case GAL::ShaderType::COMPUTE: break;
 			case GAL::ShaderType::RAY_GEN: break;
 			case GAL::ShaderType::ANY_HIT: break;
@@ -510,11 +495,10 @@ public:
 
 			size += shaderBuffer.GetLength();
 			shaderGroupDataSerialize.Size += shaderBuffer.GetLength();
-			shaderGroupDataSerialize.Shaders.EmplaceBack(shaderCreateInfo.Name);
+			shaderGroupDataSerialize.Shaders.EmplaceBack(shaderCreateInfo->Name);
 			
 			shaderPackageFile.Resize(shaderGroupDataSerialize.Size);
 
-			shaderSourceBuffer.Clear();
 			shaderBuffer.Clear();
 		}
 		

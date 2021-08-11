@@ -20,8 +20,6 @@
 
 #include "ByteEngine/Sound/AudioSystem.h"
 
-#pragma comment(lib, "XInput.lib")
-
 class RenderOrchestrator;
 
 bool GameApplication::Initialize()
@@ -86,6 +84,7 @@ void GameApplication::PostInitialize()
 	//queues a function that depends on these elements existing
 
 	window.AddDevice(GTSL::Window::DeviceType::MOUSE);
+	window.AddDevice(GTSL::Window::DeviceType::GAMEPAD);
 	
 	renderSystem->SetWindow(&window);
 
@@ -140,84 +139,123 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 
 	window.Update(this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this));
 
-	auto button = [&](GTSL::Gamepad::GamepadButtonPosition button, bool state)
-	{
-		switch (button)
-		{
-		case GTSL::Gamepad::GamepadButtonPosition::TOP: GetInputManager()->RecordInputSource(controller, u8"TopFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::BOTTOM: GetInputManager()->RecordInputSource(controller, u8"BottomFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftFrontButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::BACK: GetInputManager()->RecordInputSource(controller, u8"LeftMenuButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::HOME: GetInputManager()->RecordInputSource(controller, u8"RightMenuButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_UP: GetInputManager()->RecordInputSource(controller, u8"TopDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_DOWN: GetInputManager()->RecordInputSource(controller, u8"BottomDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::DPAD_LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftDPadButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT_SHOULDER: GetInputManager()->RecordInputSource(controller, u8"LeftHatButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_SHOULDER: GetInputManager()->RecordInputSource(controller, u8"RightHatButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::LEFT_STICK: GetInputManager()->RecordInputSource(controller, u8"LeftStickButton", state); break;
-		case GTSL::Gamepad::GamepadButtonPosition::RIGHT_STICK: GetInputManager()->RecordInputSource(controller, u8"RightStickButton", state); break;
-		default: ;
-		}
-	};
+	auto gamePadUpdate = [&](GTSL::Gamepad::SourceNames source, GTSL::Gamepad::Side side, const void* value) {
+		switch (source) {
+		case GTSL::Gamepad::SourceNames::TRIGGER: {
+			const auto state = *static_cast<const float32*>(value);
 
-	auto floats = [&](GTSL::Gamepad::Side side, const float32 value)
-	{
-		switch (side)
-		{
-		case GTSL::Gamepad::Side::RIGHT:
-		{
-			Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", value);
+			constexpr float32 TRIGGER_THRESHOLD = 0.95f;
 
-			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
+			switch (side) {
+			case GTSL::Gamepad::Side::RIGHT: {
+				GetInputManager()->RecordInputSource(controller, u8"RightTrigger", state);
 
-			if (value >= 0.99f) {
-				if (!wasPressed)
-					Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", true);
-			} else {
-				if (wasPressed) {
-					Get()->GetInputManager()->RecordInputSource(controller, u8"RightTrigger", false);
+				const auto wasPressed = GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
+
+				if (state >= TRIGGER_THRESHOLD) {
+					if (!wasPressed) {
+						GetInputManager()->RecordInputSource(controller, u8"RightTrigger", true);
+					}
+				} else {
+					if (wasPressed) {
+						GetInputManager()->RecordInputSource(controller, u8"RightTrigger", false);
+					}
 				}
+
+				break;
+			}
+			case GTSL::Gamepad::Side::LEFT: {
+				GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", state);
+
+				const auto wasPressed = GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
+
+				if (state >= TRIGGER_THRESHOLD) { //if is pressed
+					if (!wasPressed) { //and wasn't pressed
+						GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", true);
+					}
+				} else { //isn't pressed
+					if (wasPressed && state <= TRIGGER_THRESHOLD - 0.10f) {
+						GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", false);
+					}
+				}
+
+				break;
+			}
+			default: break;
 			}
 
 			break;
 		}
-		case GTSL::Gamepad::Side::LEFT:
-		{
-			Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", value);
-
-			auto wasPressed = Get()->GetInputManager()->GetActionInputSourceValue(controller, u8"LeftTrigger");
-
-			if (value >= 0.95f) //if is pressed
-				if (!wasPressed) //and wasn't pressed
-					Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", true);
-			else //isn't pressed
-				if (wasPressed && value <= 0.95f - 0.10f)
-					Get()->GetInputManager()->RecordInputSource(controller, u8"LeftTrigger", false);
+		case GTSL::Gamepad::SourceNames::SHOULDER: {
+			auto state = *static_cast<const bool*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightHatButton", state); break;
+			case GTSL::Gamepad::Side::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftHatButton", state); break;
+			default: __debugbreak();
+			}
+			break;
+		}
+		case GTSL::Gamepad::SourceNames::THUMB: {
+			auto state = *static_cast<const GTSL::Vector2*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::RIGHT: Get()->GetInputManager()->RecordInputSource(controller, u8"RightStick", state); break;
+			case GTSL::Gamepad::Side::LEFT: Get()->GetInputManager()->RecordInputSource(controller, u8"LeftStick", state); break;
+			default: __debugbreak();
+			}
 
 			break;
 		}
-		default: break;
+		case GTSL::Gamepad::SourceNames::MIDDLE_BUTTONS: {
+			auto state = *static_cast<const bool*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightMenuButton", state); break;
+			case GTSL::Gamepad::Side::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftMenuButton", state); break;
+			default: __debugbreak();
+			}
+			break;
 		}
-	};
+		case GTSL::Gamepad::SourceNames::DPAD: {
+			auto state = *static_cast<const bool*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::UP: GetInputManager()->RecordInputSource(controller, u8"TopDPadButton", state); break;
+			case GTSL::Gamepad::Side::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightDPadButton", state); break;
+			case GTSL::Gamepad::Side::DOWN: GetInputManager()->RecordInputSource(controller, u8"BottomDPadButton", state); break;
+			case GTSL::Gamepad::Side::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftDPadButton", state); break;
+			default: ;
+			}
+			break;
+		}
+		case GTSL::Gamepad::SourceNames::FACE_BUTTONS: {
+			auto state = *static_cast<const bool*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::UP: GetInputManager()->RecordInputSource(controller, u8"TopFrontButton", state); break;
+			case GTSL::Gamepad::Side::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightFrontButton", state); break;
+			case GTSL::Gamepad::Side::DOWN: GetInputManager()->RecordInputSource(controller, u8"BottomFrontButton", state); break;
+			case GTSL::Gamepad::Side::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftFrontButton", state); break;
+			default: __debugbreak();
+			}
 
-	auto vectors = [&](GTSL::Gamepad::Side side, const GTSL::Vector2 value)
-	{
-		switch (side)
-		{
-		case GTSL::Gamepad::Side::RIGHT: Get()->GetInputManager()->RecordInputSource(controller, u8"RightStick", value); break;
-		case GTSL::Gamepad::Side::LEFT: Get()->GetInputManager()->RecordInputSource(controller, u8"LeftStick", value); break;
-		default: break;
+			break;
+		}
+		case GTSL::Gamepad::SourceNames::THUMB_BUTTONS: {
+			auto state = *static_cast<const bool*>(value);
+			switch (side) {
+			case GTSL::Gamepad::Side::RIGHT: GetInputManager()->RecordInputSource(controller, u8"RightStickButton", state); break;
+			case GTSL::Gamepad::Side::LEFT: GetInputManager()->RecordInputSource(controller, u8"LeftStickButton", state); break;
+			default: __debugbreak();
+			}
+			break;
+		}
+		default: __debugbreak(); break;
 		}
 	};
 	
-	Update(gamepad, button, floats, vectors, 0);
+	GTSL::Gamepad::Update(gamepad, gamePadUpdate, 0);
 
 	{
 		auto lowEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, u8"LowEndVibration");
 		auto highEndVibration = inputManagerInstance->GetInputDeviceParameter(controller, u8"HighEndVibration");
-		gamepad.SetVibration(lowEndVibration, highEndVibration);
+		//gamepad.SetVibration(lowEndVibration, highEndVibration);
 	}
 }
 
@@ -270,14 +308,14 @@ void GameApplication::RegisterKeyboard()
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"4_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"5_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"6_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"7_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"8_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"9_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Backspace_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"Enter_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Backspace_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Enter_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Supr_Key");			inputManagerInstance->RegisterActionInputSource(keyboard, u8"Tab_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"CapsLock_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"Esc_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightShift_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftShift_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightControl_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftControl_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightAlt_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftAlt_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"UpArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"RightArrow_Key");
-	inputManagerInstance->RegisterActionInputSource(keyboard, u8"DownArrow_Key");		inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftArrow_Key");
+	inputManagerInstance->RegisterActionInputSource(keyboard, u8"DownArrow_Key");	inputManagerInstance->RegisterActionInputSource(keyboard, u8"LeftArrow_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"SpaceBar_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad0_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad1_Key");
 	inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad2_Key"); inputManagerInstance->RegisterActionInputSource(keyboard, u8"Numpad3_Key");
@@ -336,100 +374,63 @@ void GameApplication::onWindowResize(const Extent2D extent)
 
 	auto ext = extent;
 
-	auto resize = [](TaskInfo info, Extent2D newSize)
-	{
+	auto resize = [](TaskInfo info, Extent2D newSize) {
 		auto* renderSystem = info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		renderSystem->OnResize(newSize);
 	};
 	
-	if (extent != 0 && extent != oldSize)
-	{
+	if (extent != 0 && extent != oldSize) {
 		gameInstance->AddDynamicTask(u8"windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, u8"FrameStart", u8"RenderStart", MoveRef(ext));
 		oldSize = extent;
 	}
 }
 
-void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType)
-{
+void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType) {
 	Id id;
 	
 	switch (key) {
-	case Window::KeyboardKeys::Q: id = u8"Q_Key"; break;
-	case Window::KeyboardKeys::W: id = u8"W_Key"; break;
-	case Window::KeyboardKeys::E: id = u8"E_Key"; break;
-	case Window::KeyboardKeys::R: id = u8"R_Key"; break;
-	case Window::KeyboardKeys::T: id = u8"T_Key"; break;
-	case Window::KeyboardKeys::Y: id = u8"Y_Key"; break;
-	case Window::KeyboardKeys::U: id = u8"U_Key"; break;
-	case Window::KeyboardKeys::I: id = u8"I_Key"; break;
-	case Window::KeyboardKeys::O: id = u8"O_Key"; break;
-	case Window::KeyboardKeys::P: id = u8"P_Key"; break;
-	case Window::KeyboardKeys::A: id = u8"A_Key"; break;
-	case Window::KeyboardKeys::S: id = u8"S_Key"; break;
-	case Window::KeyboardKeys::D: id = u8"D_Key"; break;
-	case Window::KeyboardKeys::F: id = u8"F_Key"; break;
-	case Window::KeyboardKeys::G: id = u8"G_Key"; break;
-	case Window::KeyboardKeys::H: id = u8"H_Key"; break;
-	case Window::KeyboardKeys::J: id = u8"J_Key"; break;
-	case Window::KeyboardKeys::K: id = u8"K_Key"; break;
-	case Window::KeyboardKeys::L: id = u8"L_Key"; break;
-	case Window::KeyboardKeys::Z: id = u8"Z_Key"; break;
-	case Window::KeyboardKeys::X: id = u8"X_Key"; break;
-	case Window::KeyboardKeys::C: id = u8"C_Key"; break;
-	case Window::KeyboardKeys::V: id = u8"V_Key"; break;
-	case Window::KeyboardKeys::B: id = u8"B_Key"; break;
-	case Window::KeyboardKeys::N: id = u8"N_Key"; break;
-	case Window::KeyboardKeys::M: id = u8"M_Key"; break;
-	case Window::KeyboardKeys::Keyboard0: id = u8"0_Key"; break;
-	case Window::KeyboardKeys::Keyboard1: id = u8"1_Key"; break;
-	case Window::KeyboardKeys::Keyboard2: id = u8"2_Key"; break;
-	case Window::KeyboardKeys::Keyboard3: id = u8"3_Key"; break;
-	case Window::KeyboardKeys::Keyboard4: id = u8"4_Key"; break;
-	case Window::KeyboardKeys::Keyboard5: id = u8"5_Key"; break;
-	case Window::KeyboardKeys::Keyboard6: id = u8"6_Key"; break;
-	case Window::KeyboardKeys::Keyboard7: id = u8"7_Key"; break;
-	case Window::KeyboardKeys::Keyboard8: id = u8"8_Key"; break;
-	case Window::KeyboardKeys::Keyboard9: id = u8"9_Key"; break;
+	case Window::KeyboardKeys::Q: id = u8"Q_Key"; break; case Window::KeyboardKeys::W: id = u8"W_Key"; break;
+	case Window::KeyboardKeys::E: id = u8"E_Key"; break; case Window::KeyboardKeys::R: id = u8"R_Key"; break;
+	case Window::KeyboardKeys::T: id = u8"T_Key"; break; case Window::KeyboardKeys::Y: id = u8"Y_Key"; break;
+	case Window::KeyboardKeys::U: id = u8"U_Key"; break; case Window::KeyboardKeys::I: id = u8"I_Key"; break;
+	case Window::KeyboardKeys::O: id = u8"O_Key"; break; case Window::KeyboardKeys::P: id = u8"P_Key"; break;
+	case Window::KeyboardKeys::A: id = u8"A_Key"; break; case Window::KeyboardKeys::S: id = u8"S_Key"; break;
+	case Window::KeyboardKeys::D: id = u8"D_Key"; break; case Window::KeyboardKeys::F: id = u8"F_Key"; break;
+	case Window::KeyboardKeys::G: id = u8"G_Key"; break; case Window::KeyboardKeys::H: id = u8"H_Key"; break;
+	case Window::KeyboardKeys::J: id = u8"J_Key"; break; case Window::KeyboardKeys::K: id = u8"K_Key"; break;
+	case Window::KeyboardKeys::L: id = u8"L_Key"; break; case Window::KeyboardKeys::Z: id = u8"Z_Key"; break;
+	case Window::KeyboardKeys::X: id = u8"X_Key"; break; case Window::KeyboardKeys::C: id = u8"C_Key"; break;
+	case Window::KeyboardKeys::V: id = u8"V_Key"; break; case Window::KeyboardKeys::B: id = u8"B_Key"; break;
+	case Window::KeyboardKeys::N: id = u8"N_Key"; break; case Window::KeyboardKeys::M: id = u8"M_Key"; break;
+	case Window::KeyboardKeys::Keyboard0: id = u8"0_Key"; break; case Window::KeyboardKeys::Keyboard1: id = u8"1_Key"; break;
+	case Window::KeyboardKeys::Keyboard2: id = u8"2_Key"; break; case Window::KeyboardKeys::Keyboard3: id = u8"3_Key"; break;
+	case Window::KeyboardKeys::Keyboard4: id = u8"4_Key"; break; case Window::KeyboardKeys::Keyboard5: id = u8"5_Key"; break;
+	case Window::KeyboardKeys::Keyboard6: id = u8"6_Key"; break; case Window::KeyboardKeys::Keyboard7: id = u8"7_Key"; break;
+	case Window::KeyboardKeys::Keyboard8: id = u8"8_Key"; break; case Window::KeyboardKeys::Keyboard9: id = u8"9_Key"; break;
 	case Window::KeyboardKeys::Backspace: id = u8"Backspace_Key"; break;
 	case Window::KeyboardKeys::Enter: id = u8"Enter_Key"; break;
 	case Window::KeyboardKeys::Supr: id = u8"Supr_Key"; break;
 	case Window::KeyboardKeys::Tab: id = u8"Tab_Key"; break;
 	case Window::KeyboardKeys::CapsLock: id = u8"CapsLock_Key"; break;
 	case Window::KeyboardKeys::Esc: id = u8"Esc_Key"; break;
-	case Window::KeyboardKeys::RShift: id = u8"RightShift_Key"; break;
-	case Window::KeyboardKeys::LShift: id = u8"LeftShift_Key"; break;
-	case Window::KeyboardKeys::RControl: id = u8"RightControl_Key"; break;
-	case Window::KeyboardKeys::LControl: id = u8"LeftControl_Key"; break;
-	case Window::KeyboardKeys::Alt: id = u8"LeftAlt_Key"; break;
-	case Window::KeyboardKeys::AltGr: id = u8"RightAlt_Key"; break;
-	case Window::KeyboardKeys::UpArrow: id = u8"Up_Key"; break;
-	case Window::KeyboardKeys::RightArrow: id = u8"Right_Key"; break;
-	case Window::KeyboardKeys::DownArrow: id = u8"Down_Key"; break;
-	case Window::KeyboardKeys::LeftArrow: id = u8"Left_Key"; break;
+	case Window::KeyboardKeys::RShift: id = u8"RightShift_Key"; break; case Window::KeyboardKeys::LShift: id = u8"LeftShift_Key"; break;
+	case Window::KeyboardKeys::RControl: id = u8"RightControl_Key"; break; case Window::KeyboardKeys::LControl: id = u8"LeftControl_Key"; break;
+	case Window::KeyboardKeys::Alt: id = u8"LeftAlt_Key"; break; case Window::KeyboardKeys::AltGr: id = u8"RightAlt_Key"; break;
+	case Window::KeyboardKeys::UpArrow: id = u8"Up_Key"; break; case Window::KeyboardKeys::RightArrow: id = u8"Right_Key"; break;
+	case Window::KeyboardKeys::DownArrow: id = u8"Down_Key"; break; case Window::KeyboardKeys::LeftArrow: id = u8"Left_Key"; break;
 	case Window::KeyboardKeys::SpaceBar: id = u8"SpaceBar_Key"; break;
-	case Window::KeyboardKeys::Numpad0: id = u8"Numpad0_Key"; break;
-	case Window::KeyboardKeys::Numpad1: id = u8"Numpad1_Key"; break;
-	case Window::KeyboardKeys::Numpad2: id = u8"Numpad2_Key"; break;
-	case Window::KeyboardKeys::Numpad3: id = u8"Numpad3_Key"; break;
-	case Window::KeyboardKeys::Numpad4: id = u8"Numpad4_Key"; break;
-	case Window::KeyboardKeys::Numpad5: id = u8"Numpad5_Key"; break;
-	case Window::KeyboardKeys::Numpad6: id = u8"Numpad6_Key"; break;
-	case Window::KeyboardKeys::Numpad7: id = u8"Numpad7_Key"; break;
-	case Window::KeyboardKeys::Numpad8: id = u8"Numpad8_Key"; break;
-	case Window::KeyboardKeys::Numpad9: id = u8"Numpad9_Key"; break;
-	case Window::KeyboardKeys::F1: id = u8"F1_Key"; break;
-	case Window::KeyboardKeys::F2: id = u8"F2_Key"; break;
-	case Window::KeyboardKeys::F3: id = u8"F3_Key"; break;
-	case Window::KeyboardKeys::F4: id = u8"F4_Key"; break;
-	case Window::KeyboardKeys::F5: id = u8"F5_Key"; break;
-	case Window::KeyboardKeys::F6: id = u8"F6_Key"; break;
-	case Window::KeyboardKeys::F7: id = u8"F7_Key"; break;
-	case Window::KeyboardKeys::F8: id = u8"F8_Key"; break;
-	case Window::KeyboardKeys::F9: id = u8"F9_Key"; break;
-	case Window::KeyboardKeys::F10: id = u8"F10_Key"; break;
-	case Window::KeyboardKeys::F11: id = u8"F11_Key"; break;
-	case Window::KeyboardKeys::F12: id = u8"F12_Key"; break;
+	case Window::KeyboardKeys::Numpad0: id = u8"Numpad0_Key"; break; case Window::KeyboardKeys::Numpad1: id = u8"Numpad1_Key"; break;
+	case Window::KeyboardKeys::Numpad2: id = u8"Numpad2_Key"; break; case Window::KeyboardKeys::Numpad3: id = u8"Numpad3_Key"; break;
+	case Window::KeyboardKeys::Numpad4: id = u8"Numpad4_Key"; break; case Window::KeyboardKeys::Numpad5: id = u8"Numpad5_Key"; break;
+	case Window::KeyboardKeys::Numpad6: id = u8"Numpad6_Key"; break; case Window::KeyboardKeys::Numpad7: id = u8"Numpad7_Key"; break;
+	case Window::KeyboardKeys::Numpad8: id = u8"Numpad8_Key"; break; case Window::KeyboardKeys::Numpad9: id = u8"Numpad9_Key"; break;
+	case Window::KeyboardKeys::F1: id = u8"F1_Key"; break; case Window::KeyboardKeys::F2: id = u8"F2_Key"; break;
+	case Window::KeyboardKeys::F3: id = u8"F3_Key"; break; case Window::KeyboardKeys::F4: id = u8"F4_Key"; break;
+	case Window::KeyboardKeys::F5: id = u8"F5_Key"; break; case Window::KeyboardKeys::F6: id = u8"F6_Key"; break;
+	case Window::KeyboardKeys::F7: id = u8"F7_Key"; break; case Window::KeyboardKeys::F8: id = u8"F8_Key"; break;
+	case Window::KeyboardKeys::F9: id = u8"F9_Key"; break; case Window::KeyboardKeys::F10: id = u8"F10_Key"; break;
+	case Window::KeyboardKeys::F11: id = u8"F11_Key"; break; case Window::KeyboardKeys::F12: id = u8"F12_Key"; break;
 	default: break;
 	}
 
@@ -444,58 +445,52 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 
 	switch (event)
 	{
-	case Window::WindowEvents::FOCUS:
-	{
+	case Window::WindowEvents::FOCUS: {
 		auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
 		if(focusEventData->Focus) {
 			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
-		}
-		else {
+		} else {
 			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		break;
 	}
 	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, MakeRange(u8"")); break;
-	case GTSL::Window::WindowEvents::KEYBOARD_KEY:
-	{
+	case GTSL::Window::WindowEvents::KEYBOARD_KEY: {
 		auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);
 		app->keyboardEvent(keyboardEventData->Key, keyboardEventData->State, keyboardEventData->IsFirstTime);
 		break;
 	}
-	case GTSL::Window::WindowEvents::CHAR: app->GetInputManager()->RecordInputSource(app->keyboard, u8"Character", *(GTSL::Window::CharEventData*)eventData); break;
-	case GTSL::Window::WindowEvents::SIZE:
-	{
+	case GTSL::Window::WindowEvents::CHAR: app->GetInputManager()->RecordInputSource(app->keyboard, u8"Character", *static_cast<GTSL::Window::CharEventData*>(eventData)); break;
+	case GTSL::Window::WindowEvents::SIZE: {
 		auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEventData*>(eventData);
 		app->onWindowResize(*sizingEventData);
 		break;
 	}
 	case GTSL::Window::WindowEvents::MOVING: break;
-	case GTSL::Window::WindowEvents::MOUSE_MOVE:
-	{
+	case GTSL::Window::WindowEvents::MOUSE_MOVE: {
 		auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
 		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
 		break;
 	}
-	case GTSL::Window::WindowEvents::MOUSE_WHEEL:
-	{
+	case GTSL::Window::WindowEvents::MOUSE_WHEEL: {
 		auto* mouseWheelEventData = static_cast<GTSL::Window::MouseWheelEventData*>(eventData);
 		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseWheel", *mouseWheelEventData);
 		break;
 	}
-	case GTSL::Window::WindowEvents::MOUSE_BUTTON:
-	{
+	case GTSL::Window::WindowEvents::MOUSE_BUTTON: {
 		auto* mouseButtonEventData = static_cast<GTSL::Window::MouseButtonEventData*>(eventData);
 
 		switch (mouseButtonEventData->Button)
 		{
-		case GTSL::Window::MouseButton::LEFT_BUTTON:
-			app->GetInputManager()->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->State);
-			app->GetGameInstance()->GetSystem<CanvasSystem>(u8"CanvasSystem")->SignalHit(GTSL::Vector2());
-			break;
+		case GTSL::Window::MouseButton::LEFT_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->State);	break;
 		case GTSL::Window::MouseButton::RIGHT_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"RightMouseButton", mouseButtonEventData->State); break;
 		case GTSL::Window::MouseButton::MIDDLE_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"MiddleMouseButton", mouseButtonEventData->State); break;
 		default:;
 		}
+		break;
+	}
+	case Window::WindowEvents::DEVICE_CHANGE: {
+		BE_LOG_MESSAGE("Device changed!")
 		break;
 	}
 	default:;

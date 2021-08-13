@@ -5,6 +5,7 @@ bin-int/
 .git/
 .github/
 ext/
+out/
 
 # Files
 *.user

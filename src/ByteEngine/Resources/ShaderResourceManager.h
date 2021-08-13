@@ -43,7 +43,7 @@ class ShaderResourceManager final : public ResourceManager
 public:
 	ShaderResourceManager() : ResourceManager(u8"ShaderResourceManager"), shaderGroupsMap(8, GetPersistentAllocator()), shaderInfosMap(8, GetPersistentAllocator())
 	{
-		shaderPackageFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")), 1 * 1024 * 1024 * 1024, GTSL::File::READ | GTSL::File::WRITE);
+		shaderPackageFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")), 1 * 1024 * 1024, GTSL::File::READ | GTSL::File::WRITE);
 		
 		switch (shaderInfosFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
 		case GTSL::File::OpenResult::OK: break;
@@ -217,7 +217,8 @@ public:
 	struct ShaderInfo {
 		GTSL::ShortString<32> Name;
 		GAL::ShaderType Type;
-		
+		GTSL::StaticVector<Parameter, 8> Parameters;
+
 		union {
 			VertexShader VertexShader;
 			FragmentShader FragmentShader;
@@ -451,15 +452,33 @@ public:
 		shaderGroupDataSerialize.RenderPass = shader_group_create_info.RenderPass;
 		
 		for (auto& shaderCreateInfo : shader_group_create_info.Shaders) {
-			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo->Name), shaderCreateInfo->Name, shaderCreateInfo->Type);
+			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo->Name), shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics);
 			if (!shaderTryEmplace) { continue; }
+			
+			auto searchTextures = [&](const Node* node, auto&& self) -> void {
+				if(node->Type == u8"Texture") {
+					auto& param = shaderTryEmplace.Get().Parameters.EmplaceBack();
+					param.Type = ParameterType::TEXTURE_REFERENCE;
+					param.Name = GTSL::Id64(node->Name);
+				}
+
+				for(auto& e : node->Inputs) {
+					self(e.Other, self);
+				}
+			};
+
+			Node shaderResult;
+			shaderResult.AddInput(*shaderCreateInfo->Inputs[0]);
+			shaderCreateInfo->RemoveInput();
+			shaderCreateInfo->AddInput(shaderResult);
+			searchTextures(shaderCreateInfo->Inputs[0], searchTextures);
 
 			auto shaderCode = GenerateShader(*shaderCreateInfo);
 
 			//DON'T push null terminator, glslang doesn't like it
 			
 			GTSL::String compilationErrorString(8192, GetTransientAllocator());
-			const auto compilationResult = CompileShader(GTSL::Range<const char8_t*>(shaderCode.begin(), shaderCode.end() - 1), shaderCreateInfo->Name, shaderCreateInfo->Type, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
+			const auto compilationResult = CompileShader(GTSL::Range<const char8_t*>(shaderCode.begin(), shaderCode.end() - 1), shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
 
 			if (!compilationResult) {
 				BE_LOG_ERROR(compilationErrorString);
@@ -475,7 +494,7 @@ public:
 			
 			GTSL::MemCopy(shader.Size, shaderBuffer.begin(), shaderPackageFile.GetData() + size);
 
-			switch (shaderCreateInfo->Type)
+			switch (shaderCreateInfo->TargetSemantics)
 			{
 			case GAL::ShaderType::VERTEX: shader.VertexShader.VertexElements = shaderCreateInfo->VertexElements; shaderGroupDataSerialize.Stages |= GAL::ShaderStages::VERTEX; break;
 			case GAL::ShaderType::FRAGMENT: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::FRAGMENT; break;

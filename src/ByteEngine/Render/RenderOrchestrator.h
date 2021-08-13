@@ -220,11 +220,13 @@ public:
 	{
 		MemberInfo() = default;
 		MemberInfo(const uint32 count) : Member(count, Member::DataType::PAD) {}
-		MemberInfo(MemberHandle<uint32>* memberHandle, const uint32 count) : Member(count, DataType::UINT32), Handle(memberHandle) {}
-		MemberInfo(MemberHandle<GAL::DeviceAddress>* memberHandle, const uint32 count) : Member(count, DataType::UINT64), Handle(memberHandle) {}
-		MemberInfo(MemberHandle<GTSL::Matrix4>* memberHandle, const uint32 count) : Member(count, DataType::MATRIX4), Handle(memberHandle) {}
-		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count) : Member(count, DataType::MATRIX3X4), Handle(memberHandle) {}
-		MemberInfo(MemberHandle<GAL::ShaderHandle>* memberHandle, const uint32 count) : Member(count, DataType::SHADER_HANDLE), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<uint32>* memberHandle, const uint32 count = 1) : Member(count, DataType::UINT32), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<uint64>* memberHandle, const uint32 count = 1) : Member(count, DataType::UINT64), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<float32>* memberHandle, const uint32 count = 1) : Member(count, DataType::FLOAT32), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GAL::DeviceAddress>* memberHandle, const uint32 count = 1) : Member(count, DataType::UINT64), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GTSL::Matrix4>* memberHandle, const uint32 count = 1) : Member(count, DataType::MATRIX4), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GTSL::Matrix3x4>* memberHandle, const uint32 count = 1) : Member(count, DataType::MATRIX3X4), Handle(memberHandle) {}
+		MemberInfo(MemberHandle<GAL::ShaderHandle>* memberHandle, const uint32 count = 1) : Member(count, DataType::SHADER_HANDLE), Handle(memberHandle) {}
 		MemberInfo(MemberHandle<void*>* memberHandle, const uint32 count, GTSL::Range<MemberInfo*> memberInfos, const uint32 alignment = 0) : Member(count, DataType::STRUCT), Handle(memberHandle), MemberInfos(memberInfos), alignment(alignment) {}
 
 		void* Handle = nullptr;

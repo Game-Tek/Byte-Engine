@@ -6,6 +6,7 @@ bin-int/
 .github/
 ext/
 out/
+build/
 
 # Files
 *.user

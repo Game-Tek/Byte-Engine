@@ -7,12 +7,6 @@
 #include <GTSL/Math/Vectors.h>
 #include "ByteEngine/Debug/Assert.h"
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#define STBI_MSC_SECURE_CRT
-#include "stb image/stb_image_write.h"
-
-#undef MinMax
-
 struct LinearBezier
 {
 	LinearBezier(GTSL::Vector2 a, GTSL::Vector2 b) : Points{ a, b } {}
@@ -208,18 +202,3 @@ inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, c
 //
 //	return result;
 //}
-
-inline void RenderChar(GTSL::Extent2D res, uint16 ch, const BE::PAR& allocator)
-{
-	GTSL::Buffer buffer(res.Width * res.Width, 8, allocator);
-	
-	for(uint16 xr = 0, x = 0; xr < res.Width; ++xr, ++x)
-	{
-		for(uint16 yr = 0, y = res.Height - 1; yr < res.Height; ++yr, --y)
-		{
-			//buffer.GetData()[xr + yr * res.Height] = Eval(GTSL::Vector2(x / static_cast<float32>(res.Width), y / static_cast<float32>(res.Height)), GTSL::Vector2(res.Width, res.Height), ch) * 255;
-		}
-	}
-
-	stbi_write_bmp("A_CharRender.bmp", res.Width, res.Height, 1, buffer.GetData());
-}

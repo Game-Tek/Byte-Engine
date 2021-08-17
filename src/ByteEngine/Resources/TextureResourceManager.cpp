@@ -1,7 +1,6 @@
 #include "TextureResourceManager.h"
 
 #include <GTSL/Buffer.hpp>
-#include <stb image/stb_image.h>
 
 #include <GTSL/File.h>
 #include <GTSL/Filesystem.h>
@@ -41,10 +40,11 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 				GTSL::Buffer textureBuffer(GetTransientAllocator());
 				query_file.Read(textureBuffer);
 
-				int32 x, y, channel_count = 0;
-				stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
+				int32 x = 0, y = 0, channel_count = 0;
+				//stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
 				auto finalChannelCount = GTSL::NextPowerOfTwo(static_cast<uint32>(channel_count));
-				auto* const data = stbi_load_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
+				//auto* const data = stbi_load_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
+				byte* data = nullptr;
 
 				TextureInfo texture_info;
 
@@ -60,7 +60,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 
 				textureInfos.Emplace(hashed_name, texture_info);
 
-				stbi_image_free(data);
+				//stbi_image_free(data);
 			}
 		}
 

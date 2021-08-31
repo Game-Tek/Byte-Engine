@@ -46,7 +46,7 @@ struct RenderAllocation
 	void* Data = nullptr;
 };
 
-#if (_WIN64)
+#if (BE_VULKAN)
 #undef OPAQUE
 using Queue = GAL::VulkanQueue;
 using Fence = GAL::VulkanFence;

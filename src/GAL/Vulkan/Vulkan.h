@@ -63,7 +63,7 @@ namespace GAL
 		return vkAccessFlags;
 	}
 
-	inline VkAccessFlags ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor formatDescriptor) {
+	inline VkAccessFlags ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor) {
 		VkAccessFlags vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
 			TranslateMask<PipelineStages::TRANSFER, VK_ACCESS_TRANSFER_WRITE_BIT>(pipelineStage, vkAccessFlags);

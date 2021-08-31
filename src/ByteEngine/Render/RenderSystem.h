@@ -34,7 +34,7 @@ public:
 
 	MAKE_HANDLE(uint32, Texture);
 	
-	void AllocateLocalTextureMemory(uint32 size, Texture* texture, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
+	void AllocateLocalTextureMemory(Texture* texture, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
 	{
 		GAL::MemoryRequirements memoryRequirements;

@@ -163,13 +163,14 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 	meshDataBuffer.Resize(meshInfo.VertexSize * inMesh->mNumVertices);
 
 	byte* dataPointer = meshDataBuffer.GetData(); uint32 elementIndex = 0;
-	
+	meshDataBuffer.AddBytes(meshInfo.VertexSize * inMesh->mNumVertices);
+
 	auto advanceVertexElement = [&]() {
 		return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, meshInfo.VertexDescriptor);
 	};
 
-	auto getElementPointer = [&]<typename T>(T* elementPointer, const uint32 elementIndex) -> T& {
-		return *reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * meshInfo.VertexSize));
+	auto writeElement = [&]<typename T>(T* elementPointer, const T& obj, const uint32 elementIndex) -> void {
+		*reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * meshInfo.VertexSize)) = obj;
 	};
 
 	{
@@ -180,7 +181,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 			auto vertexPosition = toAssimp(inMesh->mVertices[vertex]);
 			meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(vertexPosition));
 			meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(vertexPosition));
-			getElementPointer(positions, vertex) = vertexPosition;
+			writeElement(positions, vertexPosition, vertex);
 		}
 	}
 
@@ -188,7 +189,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		GTSL::Vector3* normals = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
 		
 		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			getElementPointer(normals, vertex) = toAssimp(inMesh->mNormals[vertex]);
+			writeElement(normals, toAssimp(inMesh->mNormals[vertex]), vertex);
 		}
 	}
 
@@ -196,13 +197,13 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		GTSL::Vector3* tangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
 		
 		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			getElementPointer(tangents, vertex) = toAssimp(inMesh->mTangents[vertex]);
+			writeElement(tangents, toAssimp(inMesh->mTangents[vertex]), vertex);
 		}
 		
 		GTSL::Vector3* bitangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
 
 		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			getElementPointer(bitangents, vertex) = toAssimp(inMesh->mBitangents[vertex]);
+			writeElement(bitangents, toAssimp(inMesh->mBitangents[vertex]), vertex);
 		}
 	}
 
@@ -211,7 +212,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 			GTSL::Vector2* textureCoordinates = reinterpret_cast<GTSL::Vector2*>(advanceVertexElement());
 			
 			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-				getElementPointer(textureCoordinates, vertex) = GTSL::Vector2(toAssimp(inMesh->mTextureCoords[i][vertex]));
+				writeElement(textureCoordinates, GTSL::Vector2(toAssimp(inMesh->mTextureCoords[i][vertex])), vertex);
 			}
 		}
 	}
@@ -221,49 +222,49 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 			GTSL::Vector4* colors = reinterpret_cast<GTSL::Vector4*>(advanceVertexElement());
 			
 			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-				getElementPointer(colors, vertex) = toAssimp(inMesh->mColors[i][vertex]);
+				writeElement(colors, toAssimp(inMesh->mColors[i][vertex]), vertex);
 			}
 		}
 	}
 
-	if(false) {
-		uint32* index[4];
-		float32* weight[4];
-		index[0] = reinterpret_cast<uint32*>(advanceVertexElement());
-		weight[0] = reinterpret_cast<float32*>(advanceVertexElement());
-		
-		index[1] = reinterpret_cast<uint32*>(advanceVertexElement());
-		weight[1] = reinterpret_cast<float32*>(advanceVertexElement());
-		
-		index[2] = reinterpret_cast<uint32*>(advanceVertexElement());
-		weight[2] = reinterpret_cast<float32*>(advanceVertexElement());
-		
-		index[3] = reinterpret_cast<uint32*>(advanceVertexElement());
-		weight[3] = reinterpret_cast<float32*>(advanceVertexElement());
-
-		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			for (uint8 i = 0; i < 4; ++i) {
-				getElementPointer(index[i], vertex) = 0xFFFFFFFF;
-				getElementPointer(weight[i], vertex) = 0.0f;
-			}
-		}
-		
-		for (uint32 b = 0; b < inMesh->mNumBones; ++b) {
-			const auto& assimpBone = inMesh->mBones[b];
-		
-			for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
-				auto vertexIndex = assimpBone->mWeights[w].mVertexId;
-				
-				for (uint8 i = 0; i < 4; ++i) {
-					if (getElementPointer(index[i], vertexIndex) == 0xFFFFFFFF) {
-						getElementPointer(index[i], vertexIndex) = b;
-						getElementPointer(weight[i], vertexIndex) = assimpBone->mWeights[w].mWeight;
-						break;
-					}
-				}
-			}
-		}
-	}
+	//if(false) {
+	//	uint32* index[4];
+	//	float32* weight[4];
+	//	index[0] = reinterpret_cast<uint32*>(advanceVertexElement());
+	//	weight[0] = reinterpret_cast<float32*>(advanceVertexElement());
+	//	
+	//	index[1] = reinterpret_cast<uint32*>(advanceVertexElement());
+	//	weight[1] = reinterpret_cast<float32*>(advanceVertexElement());
+	//	
+	//	index[2] = reinterpret_cast<uint32*>(advanceVertexElement());
+	//	weight[2] = reinterpret_cast<float32*>(advanceVertexElement());
+	//	
+	//	index[3] = reinterpret_cast<uint32*>(advanceVertexElement());
+	//	weight[3] = reinterpret_cast<float32*>(advanceVertexElement());
+	//
+	//	for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
+	//		for (uint8 i = 0; i < 4; ++i) {
+	//			getElementPointer(index[i], 0xFFFFFFFF, vertex);
+	//			getElementPointer(weight[i], 0.0f, vertex);
+	//		}
+	//	}
+	//	
+	//	for (uint32 b = 0; b < inMesh->mNumBones; ++b) {
+	//		const auto& assimpBone = inMesh->mBones[b];
+	//	
+	//		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
+	//			auto vertexIndex = assimpBone->mWeights[w].mVertexId;
+	//			
+	//			for (uint8 i = 0; i < 4; ++i) {
+	//				if (getElementPointer(index[i], vertexIndex) == 0xFFFFFFFF) {
+	//					getElementPointer(index[i], vertexIndex) = b;
+	//					getElementPointer(weight[i], vertexIndex) = assimpBone->mWeights[w].mWeight;
+	//					break;
+	//				}
+	//			}
+	//		}
+	//	}
+	//}
 	
 	uint16 indexSize = 0;
 	

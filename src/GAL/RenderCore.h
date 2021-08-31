@@ -329,6 +329,10 @@ namespace GAL
 		FLOAT3,
 		FLOAT4,
 
+		UINT16,
+		UINT32,
+		UINT64,
+
 		INT,
 		INT2,
 		INT3,

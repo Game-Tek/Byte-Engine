@@ -129,7 +129,7 @@ namespace GAL {
 			VkAccelerationStructureCreateInfoKHR vkAccelerationStructureCreateInfoKhr{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
 			vkAccelerationStructureCreateInfoKhr.createFlags = 0;
 			vkAccelerationStructureCreateInfoKhr.type = geometries[0].Type == GeometryType::INSTANCES ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-			vkAccelerationStructureCreateInfoKhr.offset = 0;
+			vkAccelerationStructureCreateInfoKhr.offset = offset;
 			vkAccelerationStructureCreateInfoKhr.deviceAddress = 0;
 			vkAccelerationStructureCreateInfoKhr.buffer = buffer.GetVkBuffer();
 			vkAccelerationStructureCreateInfoKhr.size = size;

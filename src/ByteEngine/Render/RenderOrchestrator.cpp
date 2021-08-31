@@ -57,6 +57,7 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 				//info.RenderOrchestrator->AddMesh(info.RenderSystem, info.RenderOrchestrator->GetSceneReference(), e.MeshHandle, materialHandle, dataKey);
 			}
 			
+			info.RenderOrchestrator->AddMesh(meshNode.NodeHandle, e.MeshHandle, info.RenderSystem->GetMeshVertexLayout(e.MeshHandle), staticMeshInstanceDataStruct);
 			info.RenderOrchestrator->SetNodeState(meshNode.NodeHandle, true);
 		} else {
 			auto& mesh = meshes.EmplaceBack();
@@ -64,9 +65,9 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			auto materialLayer = info.RenderOrchestrator->AddMaterial(info.RenderOrchestrator->GetSceneRenderPass(), materialHandle);
 			info.RenderOrchestrator->SetNodeState(materialLayer, false);
 
-			auto meshNode = info.RenderOrchestrator->AddMesh(materialLayer, e.MeshHandle, info.RenderSystem->GetMeshVertexLayout(e.MeshHandle), staticMeshInstanceDataStruct);
+			auto meshNode = info.RenderOrchestrator->AddNode(e.MeshHandle(), materialLayer, RenderOrchestrator::NodeType::MESHES);
 			info.RenderOrchestrator->SetNodeState(meshNode, false);
-			
+
 			auto dataKey = info.RenderOrchestrator->AddData(staticMeshInstanceDataStruct);
 			info.RenderOrchestrator->AddData(meshNode, dataKey);
 
@@ -1152,9 +1153,13 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
                                          ShaderLoadInfo shaderLoadInfo)
 {
 	auto* renderSystem = taskInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
-	
-	if (!shader_group_info.Valid)
-		__debugbreak();
+
+	if constexpr (BE_DEBUG) {
+		if (!shader_group_info.Valid) {
+			BE_LOG_ERROR(u8"Tried to load shader group ", shader_group_info.Name, " which is not valid. Will use stand in shader. ", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
 
 	GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock, 32> pipelineStates;
 
@@ -1203,40 +1208,49 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			case GAL::ShaderType::CALLABLE: break;
 			default: ;
 			}
-
-			for(auto& e : s.Parameters) {
-				if(e.Type == ShaderResourceManager::ParameterType::TEXTURE_REFERENCE) {
-					//add params
-				}
-			}
 		}
 
-		//for (uint8 materialInstanceIndex = 0; materialInstanceIndex < 1; ++materialInstanceIndex) {
-		//	auto& materialInstanceData = materialData.MaterialInstances[materialInstanceIndex];
-		//
-		//	for (auto& e : s.Parameters) {
-		//		if (e.Type == ShaderResourceManager::ParameterType::TEXTURE_REFERENCE) {
-		//			uint32 textureComponentIndex;
-		//
-		//			auto textureReference = texturesRefTable.TryEmplace(e.Name);
-		//
-		//			if (!textureReference.State()) {
-		//				CreateTextureInfo createTextureInfo;
-		//				createTextureInfo.RenderSystem = renderSystem;
-		//				createTextureInfo.GameInstance = taskInfo.ApplicationManager;
-		//				createTextureInfo.TextureResourceManager = TextureResourceManager;
-		//				createTextureInfo.TextureName = e.Name;
-		//				createTextureInfo.MaterialHandle = { materialIndex, 0 };
-		//				textureReference.Get() = createTexture(createTextureInfo);
-		//				textureComponentIndex = textureReference.Get();
-		//			}
-		//
-		//			addPendingMaterialToTexture(textureComponentIndex, { materialIndex, 0 });
-		//
-		//			++materialInstanceData.Target;
-		//		}
-		//	}
-		//}
+		GTSL::StaticMap<GTSL::Id64, uint32, 4> parameters;
+
+		MemberHandle<uint32> textureReferences;
+
+		GTSL::StaticVector<MemberInfo, 16> members;
+		members.EmplaceBack(&textureReferences, 1);
+
+		AddData(getNodeByName({ materialIndex, 0 }), AddData(MakeMember(members)));
+
+		for(uint8 i = 0; i < shader_group_info.Parameters.GetLength(); ++i) {
+			parameters.Emplace(shader_group_info.Parameters[i].Name);
+		}
+
+		for (uint8 materialInstanceIndex = 0; materialInstanceIndex < shader_group_info.Instances.GetLength(); ++materialInstanceIndex) {
+			auto& materialInstanceData = materialData.MaterialInstances[materialInstanceIndex];
+		
+			for (auto& e : shader_group_info.Instances[materialInstanceIndex].Parameters) {
+				uint32 textureComponentIndex;
+
+				auto textureReference = texturesRefTable.TryGet(e.TextureReference);
+
+				if (!textureReference) {
+					CreateTextureInfo createTextureInfo;
+					createTextureInfo.RenderSystem = renderSystem;
+					createTextureInfo.GameInstance = taskInfo.ApplicationManager;
+					createTextureInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>(u8"TextureResourceManager");
+					createTextureInfo.TextureName = e.TextureReference;
+					createTextureInfo.MaterialHandle = { materialIndex, 0 };
+					textureReference.Get() = createTexture(createTextureInfo);
+					textureComponentIndex = textureReference.Get();
+				} else {
+					textureComponentIndex = textureReference.Get();
+				}
+
+				Write(renderSystem, GetBufferWriteKey(renderSystem, getNodeByName({ materialIndex, 0 }), textureReferences), textureReferences, textureComponentIndex);
+
+				addPendingMaterialToTexture(textureComponentIndex, { materialIndex, 0 });
+		
+				++materialInstanceData.Target;
+			}
+		}		
 
 		GAL::Pipeline::PipelineStateBlock::RenderContext context;
 
@@ -1269,7 +1283,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		auto& vertexState = pipelineStates.EmplaceBack(GAL::Pipeline::PipelineStateBlock::VertexState{});
 		vertexState.Vertex.VertexDescriptor = vertexElements;
 
-		for (uint8 materialInstanceIndex = 0; materialInstanceIndex < 1; ++materialInstanceIndex) {
+		for (uint8 materialInstanceIndex = 0; materialInstanceIndex < shader_group_info.Instances.GetLength(); ++materialInstanceIndex) {
 			auto& rasterMaterialInstanceData = rasterMaterialData.Instances.EmplaceBack();
 			rasterMaterialInstanceData.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 		}
@@ -1411,7 +1425,6 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 	auto component = textureIndex++;
 
 	pendingMaterialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
-	//pendingMaterialsPerTexture[component].Initialize(4, GetPersistentAllocator());
 
 	texturesRefTable.Emplace(createTextureInfo.TextureName, component);
 
@@ -1438,6 +1451,13 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 	loadInfo.RenderSystem->UpdateTexture(loadInfo.TextureHandle);
 
 	WriteBinding(loadInfo.RenderSystem, textureSubsetsHandle, loadInfo.TextureHandle, loadInfo.Component);
-	
+
+	for (auto& e : pendingMaterialsPerTexture[loadInfo.Component]) {
+		auto& l = materials[e.MaterialIndex].MaterialInstances[e.MaterialInstanceIndex];
+		if (++l.Counter == l.Target) { //todo: yuck, access contention
+			SetNodeState(getNodeByName(e), true);
+		}
+	}
+
 	latestLoadedTextures.EmplaceBack(loadInfo.Component);
 }

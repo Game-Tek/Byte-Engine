@@ -688,11 +688,11 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor fo
 
 	const auto textureSize = extent.Width * extent.Height * extent.Depth * formatDescriptor.GetSize();
 	
-	if (updatable && needsStagingBuffer) {	
+	if (updatable && needsStagingBuffer) {
 		AllocateScratchBufferMemory(textureSize, GAL::BufferUses::TRANSFER_SOURCE, &textureComponent.ScratchBuffer, &textureComponent.ScratchAllocation);
 	}
 	
-	AllocateLocalTextureMemory(textureSize, &textureComponent.Texture, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
+	AllocateLocalTextureMemory(&textureComponent.Texture, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
 		1, &textureComponent.Allocation);
 
 	auto textureViewName = GTSL::StaticString<64>(u8"nnn"); textureViewName += index++;

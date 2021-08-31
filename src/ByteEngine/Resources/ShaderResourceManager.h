@@ -18,13 +18,10 @@
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/ShaderGenerator.h"
 
-
 class ShaderResourceManager final : public ResourceManager
 {
-	static GTSL::ShortString<12> ShaderTypeToFileExtension(GAL::ShaderType type)
-	{
-		switch (type)
-		{
+	static GTSL::ShortString<12> ShaderTypeToFileExtension(GAL::ShaderType type) {
+		switch (type) {
 		case GAL::ShaderType::VERTEX: return u8"vert";
 		case GAL::ShaderType::TESSELLATION_CONTROL: return u8"tesc";
 		case GAL::ShaderType::TESSELLATION_EVALUATION: return u8"tese";
@@ -86,8 +83,7 @@ public:
 		TEXTURE_REFERENCE, BUFFER_REFERENCE
 	};
 	
-	struct Parameter
-	{
+	struct Parameter {
 		GTSL::Id64 Name;
 		ParameterType Type;
 
@@ -109,18 +105,21 @@ public:
 		}
 	};
 	
-	struct MaterialInstance
+	struct ShaderGroupInstance
 	{
-		MaterialInstance() = default;
+		ShaderGroupInstance() = default;
 		
-		union ParameterData
-		{
-			ParameterData() = default;
-			
-			uint32 uint32 = 0;
-			GTSL::Vector4 Vector4;
-			GTSL::Id64 TextureReference;
-			uint64 BufferReference;
+		struct ParameterData {
+			ParameterData(GTSL::Id64 name, GTSL::Id64 textureName) : Name(name), TextureReference(textureName) {}
+
+			GTSL::Id64 Name;
+
+			union {
+				uint32 uint32 = 0;
+				GTSL::Vector4 Vector4;
+				GTSL::Id64 TextureReference;
+				uint64 BufferReference;
+			};
 
 			template<class ALLOCATOR>
 			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer) //if trivially copyable
@@ -136,16 +135,16 @@ public:
 		};
 
 		GTSL::ShortString<32> Name;
-		GTSL::StaticVector<GTSL::Pair<GTSL::Id64, ParameterData>, 16> Parameters;
+		GTSL::StaticVector<ParameterData, 16> Parameters;
 
 		template<class ALLOC>
-		friend void Insert(const MaterialInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
+		friend void Insert(const ShaderGroupInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
 			Insert(materialInstance.Name, buffer);
 			Insert(materialInstance.Parameters, buffer);
 		}
 
 		template<class ALLOC>
-		friend void Extract(MaterialInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
+		friend void Extract(ShaderGroupInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
 			Extract(materialInstance.Name, buffer);
 			Extract(materialInstance.Parameters, buffer);
 		}
@@ -393,6 +392,8 @@ public:
 		bool Valid = true;
 		GTSL::ShortString<32> RenderPass;
 		GTSL::StaticVector<GTSL::ShortString<32>, 16> Shaders;
+		GTSL::StaticVector<ShaderGroupInstance, 16> Instances;
+		GTSL::StaticVector<Parameter, 16> Parameters;
 	};
 	
 	struct ShaderGroupDataSerialize : DataSerialize<ShaderGroupData>
@@ -406,6 +407,8 @@ public:
 			Insert(insertInfo.Valid, buffer);
 			Insert(insertInfo.RenderPass, buffer);
 			Insert(insertInfo.Shaders, buffer);
+			Insert(insertInfo.Instances, buffer);
+			Insert(insertInfo.Parameters, buffer);
 		}
 
 		EXTRACT_START(ShaderGroupDataSerialize)
@@ -417,6 +420,8 @@ public:
 			Extract(extractInfo.Valid, buffer);
 			Extract(extractInfo.RenderPass, buffer);
 			Extract(extractInfo.Shaders, buffer);
+			Extract(extractInfo.Instances, buffer);
+			Extract(extractInfo.Parameters, buffer);
 		}
 	};
 
@@ -428,6 +433,8 @@ public:
 		uint32 Size = 0;
 		GTSL::ShortString<32> RenderPass;
 		GTSL::StaticVector<Shader, 16> Shaders;
+		GTSL::StaticVector<ShaderGroupInstance, 16> Instances;
+		GTSL::StaticVector<Parameter, 16> Parameters;
 	};
 	
 	struct ShaderGroupCreateInfo
@@ -437,7 +444,7 @@ public:
 		GTSL::StaticVector<::Shader*, 16> Shaders;
 		GTSL::StaticVector<Parameter, 16> Parameters;
 		GTSL::StaticVector<Parameter, 8> PerInstanceParameters;
-		GTSL::StaticVector<MaterialInstance, 16> MaterialInstances;
+		GTSL::StaticVector<ShaderGroupInstance, 16> MaterialInstances;
 	};
 	void CreateShaderGroup(const ShaderGroupCreateInfo& shader_group_create_info)
 	{
@@ -450,29 +457,16 @@ public:
 		shaderGroupDataSerialize.Name = shader_group_create_info.Name;
 		shaderGroupDataSerialize.ByteOffset = 0xFFFFFFFF;
 		shaderGroupDataSerialize.RenderPass = shader_group_create_info.RenderPass;
+		shaderGroupDataSerialize.Instances = shader_group_create_info.MaterialInstances;
 		
 		for (auto& shaderCreateInfo : shader_group_create_info.Shaders) {
 			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo->Name), shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics);
 			if (!shaderTryEmplace) { continue; }
+
+			for (auto& e : shaderCreateInfo->Textures) {
+				shaderGroupDataSerialize.Parameters.EmplaceBack(GTSL::Id64(e), ParameterType::TEXTURE_REFERENCE);
+			}
 			
-			auto searchTextures = [&](const Node* node, auto&& self) -> void {
-				if(node->Type == u8"Texture") {
-					auto& param = shaderTryEmplace.Get().Parameters.EmplaceBack();
-					param.Type = ParameterType::TEXTURE_REFERENCE;
-					param.Name = GTSL::Id64(node->Name);
-				}
-
-				for(auto& e : node->Inputs) {
-					self(e.Other, self);
-				}
-			};
-
-			Node shaderResult;
-			shaderResult.AddInput(*shaderCreateInfo->Inputs[0]);
-			shaderCreateInfo->RemoveInput();
-			shaderCreateInfo->AddInput(shaderResult);
-			searchTextures(shaderCreateInfo->Inputs[0], searchTextures);
-
 			auto shaderCode = GenerateShader(*shaderCreateInfo);
 
 			//DON'T push null terminator, glslang doesn't like it
@@ -550,6 +544,8 @@ public:
 			shaderGroupInfo.Valid = shaderGroup.Valid;
 			shaderGroupInfo.RenderPass = shaderGroup.RenderPass;
 			shaderGroupInfo.Stages = shaderGroup.Stages;
+			shaderGroupInfo.Instances = shaderGroup.Instances;
+			shaderGroupInfo.Parameters = shaderGroup.Parameters;
 			
 			for (auto& e : materialResourceManager->shaderGroupsMap[shaderGroupName].Shaders) {
 				auto& shader = materialResourceManager->shaderInfosMap[Id(e)];

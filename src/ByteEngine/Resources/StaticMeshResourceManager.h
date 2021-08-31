@@ -95,7 +95,14 @@ public:
 	{
 		auto loadStaticMeshInfo = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, Id meshName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
-			auto staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName);
+			if constexpr (BE_DEBUG) {
+				if (!resourceManager->meshInfos.Find(meshName)) {
+					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Mesh with name ", meshName.GetString(), " could not be found. ", BE::FIX_OR_CRASH_STRING);
+					return;
+				}
+			}
+
+			auto &staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName);
 
 			StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
 			

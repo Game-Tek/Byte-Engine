@@ -60,7 +60,7 @@ public:
 
 	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
 	
-	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
+	void DeallocateLinearMemory(const RenderDevice&, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{
@@ -70,7 +70,7 @@ public:
 	}
 
 	void AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
-	void DeallocateNonLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
+	void DeallocateNonLinearMemory(const RenderDevice&, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{
@@ -103,7 +103,7 @@ public:
 	void Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 	
 	void AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset);
-	void DeallocateLinearMemory(const RenderDevice& renderDevice, const RenderAllocation renderAllocation)
+	void DeallocateLinearMemory(const RenderDevice&, const RenderAllocation renderAllocation)
 	{
 		if constexpr (!SINGLE_ALLOC)
 		{

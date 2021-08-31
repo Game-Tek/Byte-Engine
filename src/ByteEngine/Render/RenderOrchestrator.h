@@ -496,6 +496,13 @@ public:
 			break;
 		}
 		case NodeType::MESHES: {
+			auto& meshNode = addInternalLayer(key, nodeHandle, parent, InternalNodeType::MESH);
+
+			if constexpr (_DEBUG) {
+				//GTSL::StaticString<64> name(u8"Mesh #"); name += meshHandle();
+				//meshNode.Name = name;
+			}
+
 			break;
 		}
 		case NodeType::RENDER_PASS: {
@@ -548,9 +555,7 @@ public:
 		return layer;
 	}
 	
-	NodeHandle AddMesh(NodeHandle parentNodeHandle, RenderSystem::MeshHandle meshHandle, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout, MemberHandle<void*> handle) {
-		auto layer = AddNode(meshHandle(), parentNodeHandle, NodeType::MESHES);
-
+	void AddMesh(NodeHandle node_handle, RenderSystem::MeshHandle meshHandle, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout, MemberHandle<void*> handle) {
 		bool foundLayout = false; uint8 layoutIndex = 0;
 
 		for (; layoutIndex < vertexLayouts.GetLength(); ++layoutIndex) {
@@ -571,27 +576,13 @@ public:
 			foundLayout = true;
 			layoutIndex = vertexLayouts.GetLength();
 			auto& vertexLayout = vertexLayouts.EmplaceBack();
-			
+
 			for(auto e : meshVertexLayout) {
 				vertexLayout.EmplaceBack(e);
 			}
 		}
-		
-		auto& meshNode = addInternalLayer(meshHandle(), layer, parentNodeHandle, InternalNodeType::MESH);
-		
-		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> name(u8"Mesh #"); name += meshHandle();
-			meshNode.Name = name;
-		}
-	
-		meshNode.Mesh.Handle = meshHandle;
 
-		{
-			meshNode.Offset = renderDataOffset;
-			renderDataOffset += handle.Size;
-		}
-
-		return layer;
+		getNode2(node_handle).Mesh.Handle = meshHandle;
 	}
 
 	struct BufferWriteKey {

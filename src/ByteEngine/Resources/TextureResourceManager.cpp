@@ -7,6 +7,9 @@
 
 #include "ByteEngine/Application/Application.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #undef Extract
 
 TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
@@ -22,7 +25,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true)) {
 	case GTSL::File::OpenResult::OK: break;
 	case GTSL::File::OpenResult::CREATED: {
-		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, false);
+		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, true);
 
 		GTSL::FileQuery file_query(query_path);
 
@@ -41,10 +44,9 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 				query_file.Read(textureBuffer);
 
 				int32 x = 0, y = 0, channel_count = 0;
-				//stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
+				stbi_info_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count);
 				auto finalChannelCount = GTSL::NextPowerOfTwo(static_cast<uint32>(channel_count));
-				//auto* const data = stbi_load_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
-				byte* data = nullptr;
+				auto* const data = stbi_load_from_memory(textureBuffer.GetData(), textureBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
 
 				TextureInfo texture_info;
 
@@ -60,7 +62,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 
 				textureInfos.Emplace(hashed_name, texture_info);
 
-				//stbi_image_free(data);
+				stbi_image_free(data);
 			}
 		}
 

@@ -415,7 +415,7 @@ namespace GAL
 			//SET_NAME(pipeline, VK_OBJECT_TYPE_PIPELINE, createInfo);
 		}
 		
-		void InitializeComputePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*> pipelineStates, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
+		void InitializeComputePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*>, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
 			VkComputePipelineCreateInfo computePipelineCreateInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 			computePipelineCreateInfo.basePipelineIndex = -1;
 			computePipelineCreateInfo.layout = pipelineLayout.GetVkPipelineLayout();

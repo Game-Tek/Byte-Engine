@@ -54,6 +54,13 @@ public:
 	{
 		auto loadTextureInfo = [](TaskInfo taskInfo, TextureResourceManager* resourceManager, Id textureName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
 		{
+			if constexpr (BE_DEBUG) {
+				if (!resourceManager->textureInfos.Find(textureName)) {
+					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Texture with name ", textureName.GetString(), " could not be found. ", BE::FIX_OR_CRASH_STRING);
+					return;
+				}
+			}
+
 			auto textureInfoSerialize = resourceManager->textureInfos.At(textureName);
 
 			TextureInfo textureInfo(textureName, textureInfoSerialize);

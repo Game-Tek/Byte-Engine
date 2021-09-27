@@ -2,7 +2,7 @@
 
 #include "RenderCore.h"
 #include <GTSL/Extent.h>
-#include <GTSL/Range.h>
+#include <GTSL/Range.hpp>
 #include <shaderc/shaderc.h>
 #include <shaderc/shaderc.hpp>
 
@@ -198,11 +198,11 @@ namespace GAL
 
 		shaderc_compile_options.SetSourceLanguage(shaderc_source_language);
 		shaderc_compile_options.SetOptimizationLevel(shaderc_optimization_level_performance);
-		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.begin()), code.Bytes(), shaderc_stage, reinterpret_cast<const char*>(shaderName.begin()), shaderc_compile_options);
+		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes() - 1, shaderc_stage, reinterpret_cast<const char*>(shaderName.GetData()), shaderc_compile_options);
 
 		if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
 			auto errorString = shaderc_module.GetErrorMessage();
-			stringResult += GTSL::Range<const char8_t*>(errorString.size() + 1, reinterpret_cast<const char8_t*>(errorString.c_str()));
+			stringResult += GTSL::Range(reinterpret_cast<const char8_t*>(errorString.c_str()));
 			return false;
 		}
 

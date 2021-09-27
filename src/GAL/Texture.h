@@ -4,7 +4,7 @@
 
 #include <GTSL/Extent.h>
 #include <GTSL/Memory.h>
-#include <GTSL/SIMD/SIMD128.hpp>
+#include <GTSL/SIMD.hpp>
 
 namespace GAL
 {
@@ -34,7 +34,7 @@ namespace GAL
 
 			auto rgb_i8_to_rgba_i8 = [&]()
 			{
-				using Vector = GTSL::SIMD128<GTSL::uint8>;
+				using Vector = GTSL::SIMD<GTSL::uint8, 16>;
 				
 				GTSL::uint32 bytesToProcessWithScalar = sourceTextureSize % Vector::Bytes;
 				GTSL::uint32 bytesToProcessWithVector = sourceTextureSize - bytesToProcessWithScalar;

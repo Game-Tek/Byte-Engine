@@ -252,7 +252,7 @@ public:
 
 	void SetWindow(GTSL::Window* window) { this->window = window; }
 
-	[[nodiscard]] TextureHandle CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable);
+	[[nodiscard]] TextureHandle CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable);
 	void UpdateTexture(const TextureHandle textureHandle);
 
 	//TODO: SELECT DATA POINTER BASED ON STAGING BUFFER NECESSITY

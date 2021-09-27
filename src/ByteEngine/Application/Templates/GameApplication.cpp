@@ -73,14 +73,7 @@ void GameApplication::PostInitialize()
 	gameInstance->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
 	gameInstance->AddSystem<AudioSystem>(u8"AudioSystem");
 
-	GTSL::Window::WindowCreateInfo create_window_info;
-	create_window_info.Application = &systemApplication;
-	create_window_info.Name = GTSL::StaticString<1024>(GetApplicationName());
-	create_window_info.Extent = { 1280, 720 };
-	create_window_info.Type = GTSL::Window::WindowType::OS_WINDOW;
-	create_window_info.UserData = this;
-	create_window_info.Function = GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this);
-	window.BindToOS(create_window_info); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
+	window.BindToOS(GetApplicationName(), {1280, 720}, systemApplication, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this)); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
 	//queues a function that depends on these elements existing
 
 	window.AddDevice(GTSL::Window::DeviceType::MOUSE);
@@ -454,7 +447,7 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 		}
 		break;
 	}
-	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, MakeRange(u8"")); break;
+	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, u8""); break;
 	case GTSL::Window::WindowEvents::KEYBOARD_KEY: {
 		auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);
 		app->keyboardEvent(keyboardEventData->Key, keyboardEventData->State, keyboardEventData->IsFirstTime);

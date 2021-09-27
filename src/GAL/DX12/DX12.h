@@ -1,7 +1,7 @@
 #pragma once
 
 #include "GTSL/Core.h"
-#include "GTSL/Range.h"
+#include "GTSL/Range.hpp"
 
 #include <d3d12.h>
 

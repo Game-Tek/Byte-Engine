@@ -5,7 +5,7 @@
 #include "DX12.h"
 
 #include "GTSL/Delegate.hpp"
-#include "GTSL/Range.h"
+#include "GTSL/Range.hpp"
 #include <dxgi1_6.h>
 
 namespace GAL

@@ -108,7 +108,7 @@ public:
 		
 		auto taskInfo = GTSL::SmartPointer<DispatchTaskInfo<TaskInfo, ARGS...>, BE::PAR>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 
-		taskInfo->Name = name.GetString();
+		taskInfo->Name = GTSL::StringView(name);
 		
 		auto task = [](ApplicationManager* gameInstance, const uint32 goal, const uint32 dynamicTaskIndex, void* data) -> void {			
 			DispatchTaskInfo<TaskInfo, ARGS...>* info = static_cast<DispatchTaskInfo<TaskInfo, ARGS...>*>(data);
@@ -155,7 +155,7 @@ public:
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
-		taskInfo->Name = name.GetString();
+		taskInfo->Name = GTSL::StringView(name);
 		
 		GTSL::StaticVector<uint16, 32> objects; GTSL::StaticVector<AccessType, 32> accesses;
 
@@ -219,7 +219,7 @@ public:
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
 			auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), function, TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
-			taskInfo->Name = name.GetString();
+			taskInfo->Name = GTSL::StringView(name);
 			asyncTasks.AddTask(name, FunctionType::Create(task), objects, accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
 		}
 	}
@@ -269,7 +269,7 @@ public:
 		}
 
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), GTSL::Delegate<void(TaskInfo, ARGS...)>(storedDynamicTask.AnonymousFunction), TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
-		taskInfo->Name = storedDynamicTask.Name.GetString();
+		taskInfo->Name = GTSL::StringView(storedDynamicTask.Name);
 		
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
@@ -280,7 +280,7 @@ public:
 	template<typename... ARGS>
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", eventHandle.Name.GetString(), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", GTSL::StringView(eventHandle.Name), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
 
 		if(priority) {
@@ -395,14 +395,14 @@ private:
 		GTSL::StaticString<1024> log;
 
 		log += from;
-		log += taskName.GetString();
+		log += GTSL::StringView(taskName);
 
 		log += u8'\n';
 		
 		log += u8"Accessed objects: \n	";
 		for (uint16 i = 0; i < objects.ElementCount(); ++i)
 		{
-			log += u8"Obj: "; log += systemNames[objects[i]].GetString(); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
+			log += u8"Obj: "; log += GTSL::StringView(systemNames[objects[i]]); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
 		}
 
 		return log;
@@ -413,19 +413,19 @@ private:
 		GTSL::StaticString<1024> log;
 
 		log += from;
-		log += taskName.GetString();
+		log += GTSL::StringView(taskName);
 
 		log += u8'\n';
 
 		log += u8" Stage: ";
-		log += goalName.GetString();
+		log += GTSL::StringView(goalName);
 
 		log += u8'\n';
 		
 		log += u8"Accessed objects: \n	";
 		for (uint16 i = 0; i < objects.ElementCount(); ++i)
 		{
-			log += u8"Obj: "; log += systemNames[objects[i]].GetString(); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
+			log += u8"Obj: "; log += GTSL::StringView(systemNames[objects[i]]); log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
 		}
 
 		return log;
@@ -454,14 +454,14 @@ private:
 			
 			if (!stagesNames.Find(startGoal).State())
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " to stage ", GTSL::StringView(startGoal), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 
 			//assert done for exists
 			if (!stagesNames.Find(endGoal).State())
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " ending for stage ", endGoal.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " ending for stage ", GTSL::StringView(endGoal), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -471,7 +471,7 @@ private:
 			
 			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(name))
 			{
-				BE_LOG_WARNING("Tried to add task ", name.GetString(), " which already exists to stage ", startGoal.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " which already exists to stage ", GTSL::StringView(startGoal), ". Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -482,7 +482,7 @@ private:
 			for(auto e : dependencies)
 			{
 				if (!systemsMap.Find(e.AccessedObject)) {
-					BE_LOG_ERROR("Tried to add task ", name.GetString(), " to stage ", startGoal.GetString(), " with a dependency on ", e.AccessedObject.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+					BE_LOG_ERROR("Tried to add task ", GTSL::StringView(name), " to stage ", GTSL::StringView(startGoal), " with a dependency on ", GTSL::StringView(e.AccessedObject), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
 			}

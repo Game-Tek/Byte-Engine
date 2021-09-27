@@ -60,6 +60,7 @@ namespace BE
 
 		if (!parseConfig())	{
 			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
+			return false;
 		}
 
 		{
@@ -194,10 +195,8 @@ namespace BE
 		bool parseEnded = false;
 		Id key;
 		
-		while (i < fileBuffer.GetLength())
-		{			
-			switch (static_cast<utf8>(fileBuffer.GetData()[i]))
-			{
+		while (i < fileBuffer.GetLength()) {			
+			switch (static_cast<utf8>(fileBuffer.GetData()[i])) {
 			case '[':
 				{
 					if (lastParsedToken == Token::KEY) { return false; }
@@ -212,9 +211,9 @@ namespace BE
 					parseEnded = !text.IsEmpty() && !parseEnded;
 					if (!parseEnded) { return false; }
 
-					key = text.begin();
+					key = text.c_str();
 
-					text.Resize(0);
+					text.Drop(0);
 
 					lastParsedToken = Token::SECTION;
 					currentToken = Token::NONE;
@@ -236,7 +235,7 @@ namespace BE
 					{
 						if(currentToken != Token::NONE) { return false; }
 						if (text.IsEmpty()) { return false; }
-						key = text.begin();
+						key = text.c_str();
 						parseEnded = true;
 						lastParsedToken = Token::KEY;
 						currentToken = Token::VALUE;
@@ -250,7 +249,7 @@ namespace BE
 					default: break;
 					}
 
-					text.Resize(0);
+					text.Drop(0);
 					break;
 				}
 
@@ -290,13 +289,13 @@ namespace BE
 					default: break;
 					}
 
-					text.Resize(0);
+					text.Drop(0);
 					break;
 				}
 				
 			default:
 				{
-					if (text.GetLength() == 128) { return false; }
+					if (text.GetBytes() == 128) { return false; }
 					text += static_cast<utf8>(fileBuffer.GetData()[i]);
 				}
 			}
@@ -304,8 +303,7 @@ namespace BE
 			++i;
 		}
 
-		switch (lastParsedToken)
-		{
+		switch (lastParsedToken) {
 		case Token::NONE:
 			{
 				parseEnded = false;
@@ -339,8 +337,7 @@ namespace BE
 		return parseEnded;
 	}
 	
-	bool Application::checkPlatformSupport()
-	{
+	bool Application::checkPlatformSupport() {
 		GTSL::SystemInfo systemInfo;
 		GTSL::System::GetSystemInfo(systemInfo);
 

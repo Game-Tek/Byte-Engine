@@ -388,7 +388,7 @@ namespace GAL
 					vkDeviceCreateInfo.enabledExtensionCount = deviceExtensions.GetLength();
 
 					GTSL::StaticVector<const char*, 32> strings; {
-						for (GTSL::uint32 i = 0; i < deviceExtensions.GetLength(); ++i) { strings.EmplaceBack(reinterpret_cast<const char*>(deviceExtensions[i].begin())); }
+						for (GTSL::uint32 i = 0; i < deviceExtensions.GetLength(); ++i) { strings.EmplaceBack(reinterpret_cast<const char*>(deviceExtensions[i].c_str())); }
 					}
 
 					vkDeviceCreateInfo.ppEnabledExtensionNames = strings.begin();
@@ -608,7 +608,7 @@ namespace GAL
 
 			getInstanceProcAddr<PFN_vkGetPhysicalDeviceProperties>(u8"vkGetPhysicalDeviceProperties")(physicalDevice, &physicalDeviceProperties);
 
-			result.GPUName = reinterpret_cast<const char8_t*>(physicalDeviceProperties.deviceName);
+			result.GPUName = GTSL::Range(reinterpret_cast<const char8_t*>(physicalDeviceProperties.deviceName));
 			result.DriverVersion = physicalDeviceProperties.driverVersion;
 			result.APIVersion = physicalDeviceProperties.apiVersion;
 			for (auto e : physicalDeviceProperties.pipelineCacheUUID) {
@@ -860,7 +860,7 @@ namespace GAL
 			VkDebugUtilsObjectNameInfoEXT vkDebugUtilsObjectNameInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
 			vkDebugUtilsObjectNameInfo.objectHandle = reinterpret_cast<GTSL::uint64>(handle);
 			vkDebugUtilsObjectNameInfo.objectType = objectType;
-			vkDebugUtilsObjectNameInfo.pObjectName = reinterpret_cast<const char*>(text.begin());
+			vkDebugUtilsObjectNameInfo.pObjectName = reinterpret_cast<const char*>(text.GetData());
 			renderDevice->vkSetDebugUtilsObjectNameEXT(renderDevice->GetVkDevice(), &vkDebugUtilsObjectNameInfo);
 		}
 	}

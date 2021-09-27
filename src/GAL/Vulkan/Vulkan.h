@@ -19,7 +19,7 @@ typedef struct _SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 
 #include <GTSL/Extent.h>
 #include <GTSL/Flags.h>
-#include <GTSL/Range.h>
+#include <GTSL/Range.hpp>
 
 #undef OPAQUE
 

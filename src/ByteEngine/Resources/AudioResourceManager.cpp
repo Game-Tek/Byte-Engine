@@ -27,13 +27,13 @@ AudioResourceManager::AudioResourceManager() : ResourceManager(u8"AudioResourceM
 	{
 		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, false);
 
-		GTSL::FileQuery file_query(query_path);
+		GTSL::FileQuery file_query;
 
-		while(file_query.DoQuery())
+		while(auto queryResult = file_query.DoQuery(query_path))
 		{
 			auto file_path = resources_path;
-			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name, u8'.').Get());
+			file_path += queryResult.Get();
+			auto name = queryResult.Get(); name.Drop(FindLast(name, u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!audioResourceInfos.Find(hashed_name)) {

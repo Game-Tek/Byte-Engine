@@ -8,6 +8,8 @@
 #include "ByteEngine/Application/Application.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+//#define STBI_NO_STDIO
+//#define STBI_NO_GIF
 #include "stb_image.h"
 
 #undef Extract
@@ -27,12 +29,12 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	case GTSL::File::OpenResult::CREATED: {
 		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, true);
 
-		GTSL::FileQuery file_query(query_path);
+		GTSL::FileQuery file_query;
 
-		while (file_query.DoQuery()) {
+		while (auto queryResult = file_query.DoQuery(query_path)) {
 			auto file_path = resources_path;
-			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name,u8'.').Get());
+			file_path += queryResult.Get();
+			auto name = queryResult.Get(); name.Drop(FindLast(name,u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!textureInfos.Find(hashed_name))
@@ -83,7 +85,7 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	indexFile.Read(indexFileBuffer);
 	Extract(textureInfos, indexFileBuffer);
 
-	mappedFile.Open(GetResourcePath(GTSL::MakeRange(u8"Textures.bepkg")), 1024*1024*1024, GTSL::File::READ);
+	mappedFile.Open(GetResourcePath(u8"Textures.bepkg"), 1024*1024*1024, GTSL::File::READ);
 }
 
 TextureResourceManager::~TextureResourceManager()

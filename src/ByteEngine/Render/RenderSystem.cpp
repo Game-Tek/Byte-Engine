@@ -662,7 +662,7 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	////}
 }
 
-RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable)
+RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable)
 {
 	//RenderDevice::FindSupportedImageFormat findFormat;
 	//findFormat.TextureTiling = TextureTiling::OPTIMAL;
@@ -694,10 +694,8 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GAL::FormatDescriptor fo
 	
 	AllocateLocalTextureMemory(&textureComponent.Texture, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
 		1, &textureComponent.Allocation);
-
-	auto textureViewName = GTSL::StaticString<64>(u8"nnn"); textureViewName += index++;
 	
-	textureComponent.TextureView.Initialize(GetRenderDevice(), textureViewName, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
+	textureComponent.TextureView.Initialize(GetRenderDevice(), name, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
 	textureComponent.TextureSampler.Initialize(GetRenderDevice(), 0);
 	
 	auto textureIndex = textures.Emplace(textureComponent);

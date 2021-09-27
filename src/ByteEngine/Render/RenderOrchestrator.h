@@ -529,7 +529,7 @@ public:
 	[[nodiscard]] NodeHandle AddNode(const Id name, const NodeHandle parent, const NodeType layerType) {
 		auto l = AddNode(name(), parent, layerType);
 		auto& t = getNode(l);
-		t.Name = name; getNode(t.InternalSiblings.back().InternalNode).Name = name.GetString();
+		t.Name = name; getNode(t.InternalSiblings.back().InternalNode).Name = GTSL::StringView(name);
 		return l;
 	}
 	
@@ -543,7 +543,7 @@ public:
 		
 		materialInstance.Enabled = true;
 		
-		material.Name = materials[materialHandle.MaterialIndex].Name.GetString();
+		material.Name = GTSL::StringView(materials[materialHandle.MaterialIndex].Name);
 		material.Material.MaterialHandle = materialHandle;
 		materialInstance.Material.MaterialHandle = materialHandle;
 
@@ -1028,7 +1028,7 @@ private:
 	
 	struct CreateTextureInfo
 	{
-		Id TextureName;
+		GTSL::ShortString<64> TextureName;
 		ApplicationManager* GameInstance = nullptr;
 		RenderSystem* RenderSystem = nullptr;
 		TextureResourceManager* TextureResourceManager = nullptr;
@@ -1316,7 +1316,7 @@ private:
 
 		if (bindingDescriptors.ElementCount()) {
 			if constexpr (_DEBUG) {
-				GTSL::StaticString<64> name(u8"Bindings pool. Set: "); name += setName.GetString();
+				GTSL::StaticString<64> name(u8"Bindings pool. Set: "); name += GTSL::StringView(setName);
 				//bindingsPoolCreateInfo.Name = name;
 			}
 
@@ -1332,7 +1332,7 @@ private:
 
 			for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 				if constexpr (_DEBUG) {
-					GTSL::StaticString<64> name(u8"BindingsSet. Set: "); name += setName.GetString();
+					GTSL::StaticString<64> name(u8"BindingsSet. Set: "); name += GTSL::StringView(setName);
 				}
 
 				set.BindingsPool[f].Initialize(renderSystem->GetRenderDevice(), bindingsPoolSizes, 1);

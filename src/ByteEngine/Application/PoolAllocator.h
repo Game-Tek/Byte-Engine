@@ -5,7 +5,7 @@
 #include "ByteEngine/Core.h"
 
 #include <GTSL/Mutex.h>
-#include <GTSL/Range.h>
+#include <GTSL/Range.hpp>
 
 #include "ByteEngine/Game/System.h"
 

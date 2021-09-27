@@ -153,14 +153,14 @@ void ApplicationManager::RemoveTask(const Id name, const Id startOn)
 		GTSL::WriteLock lock2(recurringTasksMutex);
 		
 		if(!stagesNames.Find(startOn).State()) {
-			BE_LOG_ERROR("Tried to remove task ", name.GetString(), " from stage ", startOn.GetString(), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to remove task ", GTSL::StringView(name), " from stage ", GTSL::StringView(startOn), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 
 		i = getStageIndex(startOn);
 		
 		if(!recurringTasksPerStage[i].DoesTaskExist(name)) {
-			BE_LOG_ERROR("Tried to remove task ", name.GetString(), " which doesn't exist from stage ", startOn.GetString(), ". Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to remove task ", GTSL::StringView(name), " which doesn't exist from stage ", GTSL::StringView(startOn), ". Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
@@ -175,7 +175,7 @@ void ApplicationManager::RemoveTask(const Id name, const Id startOn)
 		recurringTasksPerStage[i].RemoveTask(name);
 	}
 
-	BE_LOG_MESSAGE("Removed recurring task ", name.GetString(), " from stage ", startOn.GetString())
+	BE_LOG_MESSAGE("Removed recurring task ", GTSL::StringView(name), " from stage ", GTSL::StringView(startOn))
 }
 
 void ApplicationManager::AddStage(Id name)
@@ -183,7 +183,7 @@ void ApplicationManager::AddStage(Id name)
 	if constexpr (_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
 		if (stagesNames.Find(name).State()) {
-			BE_LOG_ERROR("Tried to add stage ", name.GetString(), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR("Tried to add stage ", GTSL::StringView(name), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
@@ -210,7 +210,7 @@ void ApplicationManager::AddStage(Id name)
 
 	semaphores.EmplaceBack();
 
-	BE_LOG_MESSAGE("Added stage ", name.GetString())
+	BE_LOG_MESSAGE("Added stage ", GTSL::StringView(name))
 }
 
 void ApplicationManager::initWorld(const uint8 worldId)

@@ -2,7 +2,7 @@
 
 #include "GAL/Synchronization.h"
 #include "Vulkan.h"
-#include "GTSL/Range.h"
+#include "GTSL/Range.hpp"
 #include "VulkanRenderDevice.h"
 
 namespace GAL

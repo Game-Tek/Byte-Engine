@@ -986,11 +986,13 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 	auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
 	
 	auto resize = [&](Attachment& attachment) -> void {
+		GTSL::StaticString<64> name(u8"Attachment: "); name += GTSL::StringView(attachment.Name);
+
 		if(attachment.TextureHandle[currentFrame]) {
 			//destroy texture
-			attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(attachment.FormatDescriptor, newSize, attachment.Uses, false);
+			attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(name, attachment.FormatDescriptor, newSize, attachment.Uses, false);
 		} else {
-			attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(attachment.FormatDescriptor, newSize, attachment.Uses, false);
+			attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(name, attachment.FormatDescriptor, newSize, attachment.Uses, false);
 			attachment.ImageIndex = imageIndex++;
 		}
 
@@ -1210,7 +1212,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 		}
 
-		GTSL::StaticMap<GTSL::Id64, uint32, 4> parameters;
+		GTSL::StaticMap<Id, uint32, 4> parameters;
 
 		MemberHandle<uint32> textureReferences;
 
@@ -1220,7 +1222,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		AddData(getNodeByName({ materialIndex, 0 }), AddData(MakeMember(members)));
 
 		for(uint8 i = 0; i < shader_group_info.Parameters.GetLength(); ++i) {
-			parameters.Emplace(shader_group_info.Parameters[i].Name);
+			parameters.Emplace(Id(shader_group_info.Parameters[i].Name));
 		}
 
 		for (uint8 materialInstanceIndex = 0; materialInstanceIndex < shader_group_info.Instances.GetLength(); ++materialInstanceIndex) {
@@ -1229,7 +1231,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			for (auto& e : shader_group_info.Instances[materialInstanceIndex].Parameters) {
 				uint32 textureComponentIndex;
 
-				auto textureReference = texturesRefTable.TryGet(e.TextureReference);
+				auto textureReference = texturesRefTable.TryGet(Id(e.TextureReference));
 
 				if (!textureReference) {
 					CreateTextureInfo createTextureInfo;
@@ -1426,11 +1428,11 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 
 	pendingMaterialsPerTexture.EmplaceAt(component, GetPersistentAllocator());
 
-	texturesRefTable.Emplace(createTextureInfo.TextureName, component);
+	texturesRefTable.Emplace(Id(createTextureInfo.TextureName), component);
 
 	auto textureLoadInfo = TextureLoadInfo(component, createTextureInfo.RenderSystem, RenderAllocation());
 
-	createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, createTextureInfo.TextureName, onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
+	createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
 
 	return component;
 }
@@ -1438,7 +1440,9 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager,
 	TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
 {
-	loadInfo.TextureHandle = loadInfo.RenderSystem->CreateTexture(textureInfo.Format, textureInfo.Extent, GAL::TextureUses::SAMPLE | GAL::TextureUses::ATTACHMENT, true);
+	GTSL::StaticString<128> name(u8"Texture resource: "); name += GTSL::Range<const char8_t*>(textureInfo.Name);
+
+	loadInfo.TextureHandle = loadInfo.RenderSystem->CreateTexture(name, textureInfo.Format, textureInfo.Extent, GAL::TextureUses::SAMPLE | GAL::TextureUses::ATTACHMENT, true);
 
 	auto dataBuffer = loadInfo.RenderSystem->GetTextureRange(loadInfo.TextureHandle);
 

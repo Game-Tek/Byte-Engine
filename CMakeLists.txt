@@ -4,26 +4,27 @@ include(FetchContent)
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 
 # assimp download
-FetchContent_Declare(assimp GIT_REPOSITORY "https://github.com/assimp/assimp" GIT_TAG "ceced70df0fb33e9eaf483dac8851cdb834b6404")
+FetchContent_Declare(assimp GIT_REPOSITORY "https://github.com/assimp/assimp" GIT_TAG "96e2f1cd5b9ff5b0bc2c5f5e81630253ea3a1ceb")
 
 option(ASSIMP_BUILD_TESTS OFF)
 option(ASSIMP_BUILD_ZLIB ON)
 option(BUILD_SHARED_LIBS OFF)
 option(ASSIMP_BUILD_ASSIMP_TOOLS OFF)
 option(ASSIMP_INSTALL_PDB OFF)
-option(ASSIMP_BUILD_GLTF_IMPORTER OFF)
-option(ASSIMP_BUILD_GLTF_EXPORTER OFF)
+option(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF)
+option(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF)
+option(ASSIMP_BUILD_OBJ_IMPORTER ON)
 
 FetchContent_MakeAvailable(assimp)
 # assimp download
 
 # stb
-FetchContent_Declare(stb GIT_REPOSITORY "https://github.com/nothings/stb" GIT_TAG "c0c982601f40183e74d84a61237e968dca08380e")
+FetchContent_Declare(stb GIT_REPOSITORY "https://github.com/nothings/stb" GIT_TAG "af1a5bc352164740c1cc1354942b1c6b72eacb8a")
 FetchContent_MakeAvailable(stb)
 # stb
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "a780a0ca84480870e3e27844144d0bcdb7bc7091")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "a290995236216521b699a4973ef53be6a107a1f9")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 

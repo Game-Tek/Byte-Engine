@@ -28,66 +28,10 @@ namespace GTSL {
 	class Buffer;
 }
 
-struct ShortVector
-{
-	int16 X, Y;
-};
-
 class FontResourceManager : public ResourceManager
 {
 public:
 	FontResourceManager();
-
-	struct Segment
-	{
-		//0 is on curve
-		//1 is control point or nan
-		//2 is on curve
-		GTSL::Vector2 Points[3];
-
-		bool IsCurve = false;
-		
-		bool IsBezierCurve() const { return IsCurve; }
-	};
-
-	struct FontMetaData
-	{
-		uint16 UnitsPerEm;
-		int16 Ascender;
-		int16 Descender;
-		int16 LineGap;
-	};
-
-	using Path = GTSL::Vector<Segment, BE::PersistentAllocatorReference>;
-	
-	struct Glyph
-	{
-		uint32 Character = 0;
-		int16 GlyphIndex = 0;
-		int16 NumContours = 0;
-		GTSL::Vector<Path, BE::PAR> Paths;
-		uint16 AdvanceWidth = 0;
-		int16 LeftSideBearing = 0;
-		GTSL::Vector2 BoundingBox[2]; //min, max
-		GTSL::Vector2 Center;
-
-		Glyph(const BE::PAR& allocator) : Paths(allocator) {}
-	};
-
-	//MAIN STRUCT
-	struct Font
-	{
-		Font(const BE::PAR& allocator) : KerningTable(8, allocator), Glyphs(128, allocator), GlyphMap(128, allocator) {}
-		
-		uint32 FileNameHash;
-		std::string FullFontName;
-		std::string NameTable[25];
-		GTSL::HashMap<uint32, int16, BE::PAR> KerningTable;
-		GTSL::HashMap<uint32, Glyph, BE::PAR> Glyphs;
-		GTSL::HashMap<uint32, uint16, BE::PAR> GlyphMap;
-		FontMetaData Metadata;
-		uint64 LastUsed;
-	};
 	
 	struct Character
 	{
@@ -123,5 +67,5 @@ public:
 	};
 	
 private:
-	int8 parseData(const char* data, Font* fontData);
+	//int8 parseData(const char* data, Font* fontData);
 };

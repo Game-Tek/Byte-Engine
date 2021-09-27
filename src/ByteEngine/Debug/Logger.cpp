@@ -3,7 +3,7 @@
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
-#include <GTSL/Console.h>
+#include <GTSL/System.h>
 
 using namespace BE;
 
@@ -42,9 +42,13 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), l
 		
 		string += u8"{\"otherData\": {},\"traceEvents\":[";
 		
-		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end() - 1)));
+		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes() - 1, reinterpret_cast<const byte*>(string.c_str())));
 	}
+
+	GTSL::Console::SetConsoleInputModeAsUTF8();
 }
+
+//TODO: if string is too big clamp to nearest CODEPOINT not Byte
 
 void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const char8_t*> text) const
 {
@@ -52,27 +56,28 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const ch
 
 	GTSL::StaticString<maxLogLength> string;
 
-	string += u8"[Date: ";
-	ToString(day_of_month, string); string += u8"/";
-	ToString(static_cast<uint8>(month), string); string += u8"/";
-	ToString(year, string); string += u8"]";
+	string += u8"[";
+	ToString(string, day_of_month); string += u8"/";
+	ToString(string, static_cast<uint8>(month)); string += u8"/";
+	ToString(string, year); string += u8"]";
 
-	string += u8"[Time: ";
-	ToString(time.Hour, string); string += u8":";
-	ToString(time.Minute, string); string += u8":";
-	ToString(time.Second, string); string += u8"] ";
+	string += u8"[";
+	ToString(string, time.Hour); string += u8":";
+	ToString(string, time.Minute); string += u8":";
+	ToString(string, time.Second); string += u8"] ";
 
-	string += GTSL::Range<const utf8*>(GTSL::Math::Clamp(text.ElementCount(), 0ull, static_cast<uint64>(string.GetCapacity() - string.GetLength()) - 1), text.begin());// string += u8"\n";
+	auto clampedSize = GTSL::Math::Limit(text.GetBytes(), string.GetCapacity() - string.GetBytes() - 1);
+	string += GTSL::Range<const utf8*>(clampedSize, clampedSize, text.GetData());
 
 	string += u8'\n';
 	
 	if(verbosityLevel >= minLogLevel) {
 		SetTextColorOnLogLevel(verbosityLevel);
-		WriteConsoleA(GetStdHandle(STD_OUTPUT_HANDLE), string.begin(), string.GetLength() - 1, nullptr, nullptr);
+		GTSL::Console::Print(string);
 	}
 
 	logMutex.Lock();
-	logFile.Write(GTSL::Range<const byte*>(string.GetLength() - 1, reinterpret_cast<const byte*>(string.begin())));
+	logFile.Write(GTSL::Range<const byte*>(string.GetBytes() - 1, reinterpret_cast<const byte*>(string.c_str())));
 	logMutex.Unlock();
 }
 
@@ -88,22 +93,21 @@ void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds t
 
 		string += u8"{";
 		string += u8"\"cat\":\"function\",";
-		string += u8"\"dur\":"; GTSL::ToString(timeTaken.GetCount(), string); string += u8",";
+		string += u8"\"dur\":"; GTSL::ToString(string, timeTaken.GetCount()); string += u8",";
 		string += u8"\"name\":\""; string += functionTimer->Name; string += u8"\",";
 		string += u8"\"ph\":\"X\",";
 		string += u8"\"pid\":0,";
-		string += u8"\"tid\":"; ToString(getThread(), string); string += u8",";
-		string += u8"\"ts\":"; ToString(functionTimer->StartingTime, string);
+		string += u8"\"tid\":"; ToString(string, getThread()); string += u8",";
+		string += u8"\"ts\":"; ToString(string, functionTimer->StartingTime);
 		string += u8"}";
 
-		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end() - 1)));
+		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes() - 1, reinterpret_cast<const byte*>(string.c_str())));
 	}
 }
 
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 {
-	switch (level)
-	{
+	switch (level) {
 	case VerbosityLevel::MESSAGE: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
 	case VerbosityLevel::SUCCESS: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::GREEN); break;
 	case VerbosityLevel::WARNING: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::ORANGE); break;
@@ -117,6 +121,6 @@ Logger::~Logger()
 	{
 		GTSL::StaticString<512> string;
 		string += u8"]}";
-		graphFile.Write(GTSL::Range(reinterpret_cast<const byte*>(string.begin()), reinterpret_cast<const byte*>(string.end()) - 1));
+		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes() - 1, reinterpret_cast<const byte*>(string.c_str())));
 	}
 }

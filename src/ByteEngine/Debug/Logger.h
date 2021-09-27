@@ -87,7 +87,7 @@ namespace BE
 		{
 			GTSL::StaticString<maxLogLength> text;
 			text += obj->GetName(); text += u8": ";
-			(ToString(GTSL::ForwardRef<ARGS>(args), text), ...);
+			//(ToString(text, GTSL::ForwardRef<ARGS>(args)), ...);
 			log(level, text);
 		}
 
@@ -95,7 +95,7 @@ namespace BE
 		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args)
 		{
 			GTSL::StaticString<maxLogLength> text;
-			(ToString(GTSL::ForwardRef<ARGS>(args), text), ...);
+			//(ToString(text, GTSL::ForwardRef<ARGS>(args)), ...);
 			log(level, text);
 		}
 		

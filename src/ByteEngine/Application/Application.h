@@ -76,7 +76,7 @@ namespace BE
 			}
 
 			GTSL::Buffer<GTSL::StaticAllocator<512>> buffer;
-			buffer.CopyBytes(reason.Bytes(), reinterpret_cast<const byte*>(reason.begin()));
+			GTSL::Insert(reason, buffer);
 			crashLog.Write(buffer);
 
 			//todo: open dialog box?

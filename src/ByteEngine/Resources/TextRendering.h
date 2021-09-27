@@ -3,7 +3,6 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Application/AllocatorReferences.h"
-#include "ByteEngine/Resources/FontResourceManager.h"
 #include <GTSL/Math/Vectors.h>
 #include "ByteEngine/Debug/Assert.h"
 
@@ -57,64 +56,64 @@ struct Face
 
 //Lower index bands represent lower Y locations
 //Fonts are in the range 0 <-> 1
-inline void MakeFromPaths(const FontResourceManager::Glyph& glyph, Face& face, const uint16 bands, const BE::PAR& allocator)
-{
-	auto minBBox = glyph.BoundingBox[0]; auto maxBBox = glyph.BoundingBox[1];
-
-	for (const auto& path : glyph.Paths) {
-		for (const auto& segment : path) {
-			if (segment.IsBezierCurve()) {
-				GTSL::Vector2 postPoints[3];
-
-				postPoints[0] = GTSL::Math::MapToRange(segment.Points[0], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
-				postPoints[1] = GTSL::Math::MapToRange(segment.Points[1], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
-				postPoints[2] = GTSL::Math::MapToRange(segment.Points[2], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
-
-				face.CubicBeziers.EmplaceBack(postPoints[0], postPoints[1], postPoints[2]);
-			}
-			else {
-				GTSL::Vector2 postPoints[2];
-
-				postPoints[0] = GTSL::Math::MapToRange(segment.Points[0], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
-				postPoints[1] = GTSL::Math::MapToRange(segment.Points[2], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
-
-				face.LinearBeziers.EmplaceBack(postPoints[0], postPoints[1]);
-			}
-		}
-	}
-
-	for (uint16 i = 0; i < bands; ++i) {
-		face.Bands.EmplaceBack(allocator);
-	}
-
-	auto GetBandsForLinear = [&](const LinearBezier& linearBezier, uint16& from, uint16& to) -> void {
-		auto height = 1.0f / static_cast<float32>(bands);
-		auto min = 0.0f; auto max = height;
-
-		from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
-		to = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
-	};
-
-	auto GetBandsForCubic = [&](const CubicBezier& cubicBezier, uint16& from, uint16& to) -> void {
-		auto height = 1.0f / static_cast<float32>(bands);
-		auto min = 0.0f; auto max = height;
-
-		from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
-		to = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
-	};
-
-	for (uint16 l = 0; l < face.LinearBeziers.GetLength(); ++l) {
-		uint16 from, to;
-		GetBandsForLinear(face.LinearBeziers[l], from, to); GTSL::Math::MinMax(from, to, from, to);
-		for (uint16 b = from; b < to + 1; ++b) { face.Bands[b].Lines.EmplaceBack(l); }
-	}
-
-	for (uint16 c = 0; c < face.CubicBeziers.GetLength(); ++c) {
-		uint16 from, to;
-		GetBandsForCubic(face.CubicBeziers[c], from, to); GTSL::Math::MinMax(from, to, from, to);
-		for (uint16 b = from; b < to + 1; ++b) { face.Bands[b].Curves.EmplaceBack(c); }
-	}
-}
+//inline void MakeFromPaths(const GTSL::Glyph& glyph, Face& face, const uint16 bands, const BE::PAR& allocator)
+//{
+//	auto minBBox = glyph.BoundingBox[0]; auto maxBBox = glyph.BoundingBox[1];
+//
+//	for (const auto& path : glyph.Paths) {
+//		for (const auto& segment : path) {
+//			if (segment.IsBezierCurve()) {
+//				GTSL::Vector2 postPoints[3];
+//
+//				postPoints[0] = GTSL::Math::MapToRange(segment.Points[0], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
+//				postPoints[1] = GTSL::Math::MapToRange(segment.Points[1], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
+//				postPoints[2] = GTSL::Math::MapToRange(segment.Points[2], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
+//
+//				face.CubicBeziers.EmplaceBack(postPoints[0], postPoints[1], postPoints[2]);
+//			}
+//			else {
+//				GTSL::Vector2 postPoints[2];
+//
+//				postPoints[0] = GTSL::Math::MapToRange(segment.Points[0], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
+//				postPoints[1] = GTSL::Math::MapToRange(segment.Points[2], minBBox, maxBBox, GTSL::Vector2(0.0f, 0.0f), GTSL::Vector2(1.0f, 1.0f));
+//
+//				face.LinearBeziers.EmplaceBack(postPoints[0], postPoints[1]);
+//			}
+//		}
+//	}
+//
+//	for (uint16 i = 0; i < bands; ++i) {
+//		face.Bands.EmplaceBack(allocator);
+//	}
+//
+//	auto GetBandsForLinear = [&](const LinearBezier& linearBezier, uint16& from, uint16& to) -> void {
+//		auto height = 1.0f / static_cast<float32>(bands);
+//		auto min = 0.0f; auto max = height;
+//
+//		from = GTSL::Math::Clamp(uint16(linearBezier.Points[0].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
+//		to = GTSL::Math::Clamp(uint16(linearBezier.Points[1].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
+//	};
+//
+//	auto GetBandsForCubic = [&](const CubicBezier& cubicBezier, uint16& from, uint16& to) -> void {
+//		auto height = 1.0f / static_cast<float32>(bands);
+//		auto min = 0.0f; auto max = height;
+//
+//		from = GTSL::Math::Clamp(uint16(cubicBezier.Points[0].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
+//		to = GTSL::Math::Clamp(uint16(cubicBezier.Points[2].Y() * static_cast<float32>(bands)), uint16(0), uint16(bands - 1));
+//	};
+//
+//	for (uint16 l = 0; l < face.LinearBeziers.GetLength(); ++l) {
+//		uint16 from, to;
+//		GetBandsForLinear(face.LinearBeziers[l], from, to); GTSL::Math::MinMax(from, to, from, to);
+//		for (uint16 b = from; b < to + 1; ++b) { face.Bands[b].Lines.EmplaceBack(l); }
+//	}
+//
+//	for (uint16 c = 0; c < face.CubicBeziers.GetLength(); ++c) {
+//		uint16 from, to;
+//		GetBandsForCubic(face.CubicBeziers[c], from, to); GTSL::Math::MinMax(from, to, from, to);
+//		for (uint16 b = from; b < to + 1; ++b) { face.Bands[b].Curves.EmplaceBack(c); }
+//	}
+//}
 
 //float32 Eval(GTSL::Vector2 point, GTSL::Vector2 iResolution, uint16 ch)
 //{

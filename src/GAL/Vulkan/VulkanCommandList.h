@@ -156,13 +156,13 @@ namespace GAL
 		
 		void AddLabel(const VulkanRenderDevice* renderDevice, GTSL::Range<const char8_t*> name) const {
 			VkDebugUtilsLabelEXT vkLabelInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
-			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.begin());
+			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.GetData());
 			renderDevice->vkCmdInsertDebugUtilsLabelEXT(commandBuffer, &vkLabelInfo);
 		}
 
 		void BeginRegion(const VulkanRenderDevice* renderDevice, GTSL::Range<const char8_t*> name) const {
 			VkDebugUtilsLabelEXT vkLabelInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
-			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.begin());
+			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.GetData());
 			renderDevice->vkCmdBeginDebugUtilsLabelEXT(commandBuffer, &vkLabelInfo);
 		}
 

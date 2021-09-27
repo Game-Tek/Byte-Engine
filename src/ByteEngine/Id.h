@@ -17,14 +17,14 @@ public:
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 	//explicit Id(const uint64 value) noexcept : hashedName(value) {}
 
-	[[nodiscard]] const utf8* GetString() const { return GTSL::Range<const utf8*>(stringName).begin(); }
+	//[[nodiscard]] const utf8* GetString() const { return GTSL::Range<const utf8*>(stringName).begin(); }
 	[[nodiscard]] GTSL::Id64 GetHash() const { return hashedName; }
 	
 	explicit operator GTSL::Id64() const { return hashedName; }
-	explicit operator const utf8* () const { return GTSL::Range<const utf8*>(stringName).begin(); }
+	//explicit operator const utf8* () const { return GTSL::Range<const utf8*>(stringName).(); }
 	explicit operator GTSL::Range<const utf8*>() const { return stringName; }
 
-	Id& operator=(const utf8* name) { hashedName = name; stringName = name; return *this; }
+	Id& operator=(const utf8* name) { hashedName = name; stringName = GTSL::Range(name); return *this; }
 	Id& operator=(const GTSL::Id64 other) { hashedName = other; return *this; }
 	
 	bool operator==(const Id other) const { return hashedName == other.hashedName; }

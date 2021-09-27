@@ -6,10 +6,10 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
+#include <GTSL/String.hpp>
 #include <GTSL/File.h>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Serialize.hpp>
-#include <GTSL/String.hpp>
 #include <GTSL/Math/Vectors.h>
 
 #include <GAL/Serialize.hpp>
@@ -84,11 +84,11 @@ public:
 	};
 	
 	struct Parameter {
-		GTSL::Id64 Name;
+		GTSL::StaticString<32> Name;
 		ParameterType Type;
 
 		Parameter() = default;
-		Parameter(const GTSL::Id64 name, const ParameterType type) : Name(name), Type(type) {}
+		Parameter(const GTSL::Range<const char8_t*> name, const ParameterType type) : Name(name), Type(type) {}
 
 		template<class ALLOC>
 		friend void Insert(const Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer)
@@ -110,16 +110,22 @@ public:
 		ShaderGroupInstance() = default;
 		
 		struct ParameterData {
-			ParameterData(GTSL::Id64 name, GTSL::Id64 textureName) : Name(name), TextureReference(textureName) {}
+			ParameterData(const GTSL::Range<const char8_t*> name, GTSL::Range<const char8_t*> textureName) : Name(name), TextureReference(textureName) {}
 
-			GTSL::Id64 Name;
+			GTSL::StaticString<32> Name;
 
-			union {
-				uint32 uint32 = 0;
-				GTSL::Vector4 Vector4;
-				GTSL::Id64 TextureReference;
-				uint64 BufferReference;
-			};
+			//union {
+			//	uint32 uint32 = 0;
+			//	GTSL::Vector4 Vector4;
+				GTSL::StaticString<32> TextureReference;
+//				uint64 BufferReference;
+			//};
+
+			ParameterData& operator=(const ParameterData& parameter_data) {
+				Name = parameter_data.Name;
+				TextureReference = parameter_data.TextureReference;
+				return *this;
+			}
 
 			template<class ALLOCATOR>
 			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer) //if trivially copyable
@@ -136,6 +142,11 @@ public:
 
 		GTSL::ShortString<32> Name;
 		GTSL::StaticVector<ParameterData, 16> Parameters;
+
+		ShaderGroupInstance& operator=(const ShaderGroupInstance& shader_group_instance) {
+			Name = shader_group_instance.Name; Parameters = shader_group_instance.Parameters;
+			return *this;
+		}
 
 		template<class ALLOC>
 		friend void Insert(const ShaderGroupInstance& materialInstance, GTSL::Buffer<ALLOC>& buffer) {
@@ -464,15 +475,14 @@ public:
 			if (!shaderTryEmplace) { continue; }
 
 			for (auto& e : shaderCreateInfo->Textures) {
-				shaderGroupDataSerialize.Parameters.EmplaceBack(GTSL::Id64(e), ParameterType::TEXTURE_REFERENCE);
+				shaderGroupDataSerialize.Parameters.EmplaceBack(e, ParameterType::TEXTURE_REFERENCE);
 			}
 			
 			auto shaderCode = GenerateShader(*shaderCreateInfo);
-
-			//DON'T push null terminator, glslang doesn't like it
 			
 			GTSL::String compilationErrorString(8192, GetTransientAllocator());
-			const auto compilationResult = CompileShader(GTSL::Range<const char8_t*>(shaderCode.begin(), shaderCode.end() - 1), shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
+
+			const auto compilationResult = CompileShader(shaderCode, shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics, GAL::ShaderLanguage::GLSL, shaderBuffer, compilationErrorString);
 
 			if (!compilationResult) {
 				BE_LOG_ERROR(compilationErrorString);

@@ -81,7 +81,7 @@ public:
 		auto result = actionInputSourcesToActionInputEvents.TryEmplace(inputSourceName, ActionInputSourceData());
 
 		if (!result.State()) {
-			BE_LOG_WARNING("Tried to register action input source ", inputSourceName.GetString(), " but it was already registered.");
+			BE_LOG_WARNING("Tried to register action input source ", GTSL::StringView(inputSourceName), " but it was already registered.");
 		}
 	}
 	
@@ -90,7 +90,7 @@ public:
 		auto result = characterInputSourcesToCharacterInputEvents.TryEmplace(inputSourceName, CharacterInputSourceData());
 		
 		if(!result.State()) {
-			BE_LOG_WARNING("Tried to register character input source ", inputSourceName.GetString(), " but it was already registered.");
+			BE_LOG_WARNING("Tried to register character input source ", GTSL::StringView(inputSourceName), " but it was already registered.");
 		}
 	}
 	
@@ -99,7 +99,7 @@ public:
 		auto result = linearInputSourcesToLinearInputEvents.TryEmplace(inputSourceName, LinearInputSourceData());
 
 		if (!result.State()) {
-			BE_LOG_WARNING("Tried to register linear input source ", inputSourceName.GetString(), " but it was already registered.");
+			BE_LOG_WARNING("Tried to register linear input source ", GTSL::StringView(inputSourceName), " but it was already registered.");
 		}
 	}
 	
@@ -108,7 +108,7 @@ public:
 		auto result = vector2dInputSourceEventsToVector2DInputEvents.TryEmplace(inputSourceName, Vector2DInputSourceData());
 
 		if (!result.State()) {
-			BE_LOG_WARNING("Tried to register 2D input source ", inputSourceName.GetString(), " but it was already registered.");
+			BE_LOG_WARNING("Tried to register 2D input source ", GTSL::StringView(inputSourceName), " but it was already registered.");
 		}
 	}
 
@@ -120,7 +120,7 @@ public:
 				res.Get() = ActionInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to bind action input event ", actionName.GetString(), " to ", e.GetString(), ". As that input source was not registered.");
+				BE_LOG_WARNING("Failed to bind action input event ", GTSL::StringView(actionName), " to ", GTSL::StringView(e), ". As that input source was not registered.");
 			}
 		}
 	}
@@ -133,7 +133,7 @@ public:
 				res.Get() = CharacterInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " character input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
+				BE_LOG_WARNING("Failed to register ", GTSL::StringView(actionName), " character input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
@@ -146,7 +146,7 @@ public:
 				res.Get() = LinearInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " linear input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
+				BE_LOG_WARNING("Failed to register ", GTSL::StringView(actionName), " linear input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
@@ -159,32 +159,32 @@ public:
 				res.Get() = Vector2DInputSourceData(function, {}, {});
 			}
 			else {
-				BE_LOG_WARNING("Failed to register ", actionName.GetString(), " 2D input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
+				BE_LOG_WARNING("Failed to register ", GTSL::StringView(actionName), " 2D input event, dependent input source was not registered. Cannot create an input event which depends on a non existant input source, make sure the input source is registered before registering this input event");
 			}
 		}
 	}
 	
 	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, ActionInputEvent::type newValue)
 	{
-		if (!actionInputSourcesToActionInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as an action input source."); return; }
+		if (!actionInputSourcesToActionInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", GTSL::StringView(eventName), " which is not registered as an action input source."); return; }
 		actionInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
 	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, CharacterInputEvent::type newValue)
 	{
-		if (!characterInputSourcesToCharacterInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a character input source."); return; }
+		if (!characterInputSourcesToCharacterInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", GTSL::StringView(eventName), " which is not registered as a character input source."); return; }
 		characterInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
 	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, LinearInputEvent::type newValue)
 	{
-		if (!linearInputSourcesToLinearInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a linear input source."); return; }
+		if (!linearInputSourcesToLinearInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", GTSL::StringView(eventName), " which is not registered as a linear input source."); return; }
 		linearInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 	
 	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, Vector2DInputEvent::type newValue)
 	{
-		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", eventName.GetString(), " which is not registered as a vector 2d input source."); return; }
+		if (!vector2dInputSourceEventsToVector2DInputEvents.Find(eventName)) { BE_LOG_WARNING("Tried to record ", GTSL::StringView(eventName), " which is not registered as a vector 2d input source."); return; }
 		vector2DInputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 

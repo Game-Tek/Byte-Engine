@@ -64,12 +64,12 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 		default: ;
 		}
 
-		GTSL::FileQuery file_query(query_path);
-		while(file_query.DoQuery())
+		GTSL::FileQuery file_query;
+		while(auto queryResult = file_query.DoQuery(query_path))
 		{
 			auto file_path = resources_path;
-			file_path += file_query.GetFileNameWithExtension();
-			auto name = file_query.GetFileNameWithExtension(); name.Drop(FindLast(name, u8'.').Get());
+			file_path += queryResult.Get();
+			auto name = queryResult.Get(); name.Drop(FindLast(name, u8'.').Get());
 			const auto hashed_name = GTSL::Id64(name);
 
 			if (!meshInfos.Find(hashed_name))

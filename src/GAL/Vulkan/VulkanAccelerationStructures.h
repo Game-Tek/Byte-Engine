@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Vulkan.h"
-#include "GTSL/Range.h"
+#include "GTSL/Range.hpp"
 #include <GAL/Vulkan/VulkanBuffer.h>
 
 #include "GTSL/Vector.hpp"

@@ -65,7 +65,7 @@ public:
 
 		operator GTSL::StaticString<1024>() const
 		{
-#define ADD_FIELD(string, var) string += reinterpret_cast<const char8_t*>(#var); (string) += u8": "; ToString(var, string); (string) += u8'\n';
+#define ADD_FIELD(string, var) string += reinterpret_cast<const char8_t*>(#var); (string) += u8": "; ToString(string, var); (string) += u8'\n';
 			
 			GTSL::StaticString<1024> result;
 			ADD_FIELD(result, BytesAllocated)

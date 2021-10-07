@@ -9,7 +9,7 @@ queuedUpdates(8, GetPersistentAllocator()), organizerTree(GetPersistentAllocator
 {
 }
 
-uint16 Canvas::AddOrganizer(const Id name)
+uint16 Canvas::AddOrganizer(const Id organizerName)
 {
 	auto organizer = organizersAsPrimitives.Emplace(primitives.Emplace());
 	organizerDepth.Emplace(0);
@@ -26,8 +26,7 @@ uint16 Canvas::AddOrganizer(const Id name)
 	return organizer;
 }
 
-uint16 Canvas::AddOrganizer(const Id name, const uint16 parentOrganizer)
-{
+uint16 Canvas::AddOrganizer(const Id organizerName, const uint16 parentOrganizer) {
 	auto organizer = organizersAsPrimitives.Emplace(0);
 	organizerDepth.Emplace(0);
 	organizerAlignments.Emplace(Alignment::CENTER);
@@ -165,7 +164,7 @@ CanvasSystem::CanvasSystem(const InitializeInfo& initializeInfo) : System(initia
 {
 }
 
-void CanvasSystem::Shutdown(const ShutdownInfo& shutdownInfo)
+void CanvasSystem::Shutdown(const ShutdownInfo&)
 {
 }
 
@@ -173,6 +172,6 @@ UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeIn
 {
 }
 
-void UIManager::Shutdown(const ShutdownInfo& shutdownInfo)
+void UIManager::Shutdown(const ShutdownInfo&)
 {
 }

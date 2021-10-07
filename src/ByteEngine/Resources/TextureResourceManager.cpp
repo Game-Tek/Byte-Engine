@@ -34,11 +34,10 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 		while (auto queryResult = file_query.DoQuery(query_path)) {
 			auto file_path = resources_path;
 			file_path += queryResult.Get();
-			auto name = queryResult.Get(); name.Drop(FindLast(name,u8'.').Get());
-			const auto hashed_name = GTSL::Id64(name);
+			auto fileName = queryResult.Get(); DropLast(fileName, u8'.');
+			const auto hashed_name = GTSL::Id64(fileName);
 
-			if (!textureInfos.Find(hashed_name))
-			{
+			if (!textureInfos.Find(hashed_name)) {
 				GTSL::File query_file;
 				query_file.Open(file_path, GTSL::File::READ, false);
 				

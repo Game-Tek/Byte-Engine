@@ -58,7 +58,7 @@ public:
 	
 	byte* GetAssetPointer(const Id id) { return audioBytes.At(id).GetData(); }
 	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id).Frames; }
-	uint8 GetChannelCount(Id name) const { return audioResourceInfos.At(name).ChannelCount; }
+	uint8 GetChannelCount(Id channelName) const { return audioResourceInfos.At(channelName).ChannelCount; }
 
 	AudioResourceManager();
 

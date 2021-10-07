@@ -404,6 +404,7 @@ namespace GAL
 		case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
 		case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
 		}
+		return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
 	}
 
 	inline VkIndexType ToVulkan(const IndexType indexType) {
@@ -412,6 +413,7 @@ namespace GAL
 		case IndexType::UINT16: return VK_INDEX_TYPE_UINT16;
 		case IndexType::UINT32: return VK_INDEX_TYPE_UINT32;
 		}
+		return VK_INDEX_TYPE_MAX_ENUM;
 	}
 
 	inline VkImageUsageFlags ToVulkan(const TextureUse uses, const FormatDescriptor formatDescriptor) {
@@ -442,8 +444,9 @@ namespace GAL
 		case StencilCompareOperation::INVERT: return VK_STENCIL_OP_INVERT;
 		case StencilCompareOperation::INCREMENT_AND_WRAP: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
 		case StencilCompareOperation::DECREMENT_AND_WRAP: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
-		default: return VK_STENCIL_OP_MAX_ENUM;
 		}
+
+		return VK_STENCIL_OP_MAX_ENUM;
 	}
 
 	inline VkShaderStageFlags ToVulkan(const ShaderStage shaderStage) {
@@ -488,8 +491,9 @@ namespace GAL
 		case ColorSpace::ADOBERGB_LINEAR: return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
 		case ColorSpace::ADOBERGB_NONLINEAR: return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
 		case ColorSpace::PASS_THROUGH: break;
-		default: return VK_COLOR_SPACE_MAX_ENUM_KHR;
 		}
+
+		return VK_COLOR_SPACE_MAX_ENUM_KHR;
 	}
 
 	inline VkTransformMatrixKHR ToVulkan(const GTSL::Matrix3x4& matrix3X4) {
@@ -510,9 +514,9 @@ namespace GAL
 		case VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR: return PresentModes::SWAP;
 		case VK_PRESENT_MODE_MAX_ENUM_KHR: return PresentModes::SWAP;
 		case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentModes::FIFO;
-		case VK_PRESENT_MODE_MAILBOX_KHR:  return PresentModes::SWAP;
-		default: return PresentModes::SWAP;
+		case VK_PRESENT_MODE_MAILBOX_KHR:  return PresentModes::SWAP;		
 		}
+		return PresentModes::SWAP;
 	}
 
 	inline MemoryType ToGAL(const VkMemoryPropertyFlags memoryPropertyFlags) {

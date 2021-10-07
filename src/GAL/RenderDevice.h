@@ -68,7 +68,7 @@ namespace GAL
 			GTSL::uint16 ApplicationVersion[3];
 			GTSL::Range<const QueueType*> Queues;
 			GTSL::Range<QueueKey*> QueueKeys;
-			GTSL::Delegate<void(const char*, MessageSeverity)> DebugPrintFunction;
+			GTSL::Delegate<void(GTSL::StringView, MessageSeverity)> DebugPrintFunction;
 			bool Debug = false;
 			bool PerformanceValidation = false;
 			bool SynchronizationValidation = false;
@@ -76,16 +76,16 @@ namespace GAL
 			AllocationInfo AllocationInfo;
 		};
 		
-		RenderDevice(GTSL::Delegate<void(const char*, MessageSeverity)> pDelegate) : debugPrintFunction(pDelegate)
+		RenderDevice(GTSL::Delegate<void(GTSL::StringView, MessageSeverity)> pDelegate) : debugPrintFunction(pDelegate)
 		{
 		}
 
-		GTSL::Delegate<void(const char*, MessageSeverity)>& GetDebugPrintFunction() { return debugPrintFunction; }
+		GTSL::Delegate<void(GTSL::StringView, MessageSeverity)>& GetDebugPrintFunction() { return debugPrintFunction; }
 		
 	protected:
 		RenderDevice() = default;
 		~RenderDevice() = default;
 
-		GTSL::Delegate<void(const char*, MessageSeverity)> debugPrintFunction;
+		GTSL::Delegate<void(GTSL::StringView, MessageSeverity)> debugPrintFunction;
 	};
 }

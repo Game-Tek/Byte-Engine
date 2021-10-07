@@ -16,7 +16,7 @@ public:
 	StaticMeshRenderGroup(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"StaticMeshRenderGroup"), resourceNames(8, GetPersistentAllocator()),
 		transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()), addedMeshes(1, 16, GetPersistentAllocator())
 	{
-		auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
+		//auto render_device = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		{
 			auto acts_on = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"StaticMeshRenderGroup", AccessTypes::READ_WRITE } };

@@ -17,7 +17,7 @@ public:
 	{
 	}
 
-	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
+	void Shutdown(const ShutdownInfo&) override {}
 	
 	DirectionalLightHandle CreateDirectionalLight() {
 		return DirectionalLightHandle(directionalLights.Emplace());

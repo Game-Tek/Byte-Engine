@@ -144,8 +144,7 @@ void ApplicationManager::UnloadWorld(const WorldReference worldId)
 	worlds.Pop(worldId);
 }
 
-void ApplicationManager::RemoveTask(const Id name, const Id startOn)
-{
+void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 	uint16 i = 0;
 
 	if constexpr (_DEBUG) {
@@ -153,14 +152,14 @@ void ApplicationManager::RemoveTask(const Id name, const Id startOn)
 		GTSL::WriteLock lock2(recurringTasksMutex);
 		
 		if(!stagesNames.Find(startOn).State()) {
-			BE_LOG_ERROR("Tried to remove task ", GTSL::StringView(name), " from stage ", GTSL::StringView(startOn), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			BE_LOG_ERROR(u8"Tried to remove task ", GTSL::StringView(taskName), u8" from stage ", GTSL::StringView(startOn), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 
 		i = getStageIndex(startOn);
 		
-		if(!recurringTasksPerStage[i].DoesTaskExist(name)) {
-			BE_LOG_ERROR("Tried to remove task ", GTSL::StringView(name), " which doesn't exist from stage ", GTSL::StringView(startOn), ". Resolve this issue as it leads to undefined behavior in release builds!")
+		if(!recurringTasksPerStage[i].DoesTaskExist(taskName)) {
+			BE_LOG_ERROR(u8"Tried to remove task ", GTSL::StringView(taskName), u8" which doesn't exist from stage ", GTSL::StringView(startOn), u8". Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
@@ -172,25 +171,25 @@ void ApplicationManager::RemoveTask(const Id name, const Id startOn)
 
 	{
 		GTSL::WriteLock lock(recurringTasksMutex);
-		recurringTasksPerStage[i].RemoveTask(name);
+		recurringTasksPerStage[i].RemoveTask(taskName);
 	}
 
-	BE_LOG_MESSAGE("Removed recurring task ", GTSL::StringView(name), " from stage ", GTSL::StringView(startOn))
+	BE_LOG_MESSAGE(u8"Removed recurring task ", GTSL::StringView(taskName), u8" from stage ", GTSL::StringView(startOn))
 }
 
-void ApplicationManager::AddStage(Id name)
+void ApplicationManager::AddStage(Id stageName)
 {
 	if constexpr (_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
-		if (stagesNames.Find(name).State()) {
-			BE_LOG_ERROR("Tried to add stage ", GTSL::StringView(name), " which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
+		if (stagesNames.Find(stageName).State()) {
+			BE_LOG_ERROR(u8"Tried to add stage ", GTSL::StringView(stageName), u8" which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
 
 	{
 		GTSL::WriteLock lock(stagesNamesMutex);
-		stagesNames.EmplaceBack(name);
+		stagesNames.EmplaceBack(stageName);
 	}
 	
 	{
@@ -210,7 +209,7 @@ void ApplicationManager::AddStage(Id name)
 
 	semaphores.EmplaceBack();
 
-	BE_LOG_MESSAGE("Added stage ", GTSL::StringView(name))
+	BE_LOG_MESSAGE(u8"Added stage ", GTSL::StringView(stageName))
 }
 
 void ApplicationManager::initWorld(const uint8 worldId)

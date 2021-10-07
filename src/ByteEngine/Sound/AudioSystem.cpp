@@ -126,7 +126,7 @@ void AudioSystem::render(TaskInfo)
 	
 	uint32 availableAudioFrames = 0;
 	if(!audioDevice.GetAvailableBufferFrames(availableAudioFrames)) {
-		BE_LOG_ERROR("Failed to acquire audio buffer size.")
+		BE_LOG_ERROR(u8"Failed to acquire audio buffer size.")
 		//TODO: disable audio
 	}
 	
@@ -201,7 +201,7 @@ void AudioSystem::render(TaskInfo)
 		};
 		
 		if(!audioDevice.PushAudioData(audioDataCopyFunction, availableAudioFrames)) {
-			BE_LOG_ERROR("Failed to push audio data to driver.")
+			BE_LOG_ERROR(u8"Failed to push audio data to driver.")
 			//TODO: disable audio
 		}
 	}

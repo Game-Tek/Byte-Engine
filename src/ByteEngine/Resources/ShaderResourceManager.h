@@ -128,15 +128,17 @@ public:
 			}
 
 			template<class ALLOCATOR>
-			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer) //if trivially copyable
+			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer)
 			{
-				buffer.CopyBytes(sizeof(ParameterData), reinterpret_cast<const byte*>(&uni));
+				Insert(uni.Name, buffer);
+				Insert(uni.TextureReference, buffer);
 			}
 
 			template<class ALLOCATOR>
 			friend void Extract(ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer)
 			{
-				buffer.ReadBytes(sizeof(ParameterData), reinterpret_cast<byte*>(&uni));
+				Extract(uni.Name, buffer);
+				Extract(uni.TextureReference, buffer);
 			}
 		};
 
@@ -371,27 +373,6 @@ public:
 			}
 
 			return *this;
-		}
-		
-		~Shader() {
-			switch (Type)
-			{
-			case GAL::ShaderType::VERTEX: GTSL::Destroy(VertexShader); break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: GTSL::Destroy(FragmentShader); break;
-			case GAL::ShaderType::COMPUTE: GTSL::Destroy(ComputeShader); break;
-			case GAL::ShaderType::TASK: GTSL::Destroy(TaskShader); break;
-			case GAL::ShaderType::MESH: GTSL::Destroy(MeshShader); break;
-			case GAL::ShaderType::RAY_GEN: GTSL::Destroy(RayGenShader); break;
-			case GAL::ShaderType::ANY_HIT: GTSL::Destroy(AnyHitShader); break;
-			case GAL::ShaderType::CLOSEST_HIT: GTSL::Destroy(ClosestHitShader); break;
-			case GAL::ShaderType::MISS: GTSL::Destroy(MissShader); break;
-			case GAL::ShaderType::INTERSECTION: GTSL::Destroy(IntersectionShader); break;
-			case GAL::ShaderType::CALLABLE: GTSL::Destroy(CallableShader); break;
-			default:;
-			}
 		}
 	};
 

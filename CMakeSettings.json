@@ -12,16 +12,27 @@
       "ctestCommandArgs": "",
       "variables": [
         {
-          "name": "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT",
-          "value": "false",
+          "name": "ASSIMP_BUILD_OBJ_IMPORTER",
+          "value": "False",
           "type": "BOOL"
         },
         {
-          "name": "ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT",
+          "name": "ASSIMP_INSTALL",
           "value": "False",
           "type": "BOOL"
         }
       ]
+    },
+    {
+      "name": "x64-Release",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "buildRoot": "${projectDir}\\build\\${name}",
+      "installRoot": "${projectDir}\\out\\install\\${name}",
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
     }
   ]
 }

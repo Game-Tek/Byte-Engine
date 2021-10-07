@@ -68,8 +68,8 @@ void StaticMeshRenderManager::Setup(const SetupInfo& info)
 			auto meshNode = info.RenderOrchestrator->AddNode(e.MeshHandle(), materialLayer, RenderOrchestrator::NodeType::MESHES);
 			info.RenderOrchestrator->SetNodeState(meshNode, false);
 
-			auto dataKey = info.RenderOrchestrator->AddData(staticMeshInstanceDataStruct);
-			info.RenderOrchestrator->AddData(meshNode, dataKey);
+			auto dataKey = info.RenderOrchestrator->MakeDataKey(staticMeshInstanceDataStruct);
+			info.RenderOrchestrator->BindDataKey(meshNode, dataKey);
 
 			mesh.NodeHandle = meshNode;
 			mesh.StaticMeshHandle = e.StaticMeshHandle;
@@ -242,10 +242,10 @@ void UIRenderManager::Setup(const SetupInfo& info)
 RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderOrchestrator"), nodesByName(64, GetPersistentAllocator()),
 	systems(32, GetPersistentAllocator()), setupSystemsAccesses(16, GetPersistentAllocator()), renderManagers(16, GetPersistentAllocator()),
 	renderingTree(128, GetPersistentAllocator()), internalRenderingTree(128, GetPersistentAllocator()), rayTracingPipelines(4, GetPersistentAllocator()),
-	materials(16, GetPersistentAllocator()), materialsByName(16, GetPersistentAllocator()), texturesRefTable(16, GetPersistentAllocator()), latestLoadedTextures(8, GetPersistentAllocator()),
-	pendingMaterialsPerTexture(4, GetPersistentAllocator()), buffers(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()),
-	queuedSetUpdates(1, 8, GetPersistentAllocator()),
-	setLayoutDatas(2, GetPersistentAllocator()), rasterMaterials(8, GetPersistentAllocator())
+	materials(16, GetPersistentAllocator()), rasterMaterials(8, GetPersistentAllocator()), materialsByName(16, GetPersistentAllocator()), texturesRefTable(16, GetPersistentAllocator()),
+	latestLoadedTextures(8, GetPersistentAllocator()), pendingMaterialsPerTexture(4, GetPersistentAllocator()), buffers(16, GetPersistentAllocator()),
+	sets(16, GetPersistentAllocator()),
+	queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator())
 {
 	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 
@@ -292,25 +292,10 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		onRenderEnable(initializeInfo.GameInstance, taskDependencies);
 	}
 
-
 	{
 		GTSL::StaticVector<SubSetInfo, 10> subSetInfos;
-
-		{ // TEXTURES
-			SubSetInfo subSetInfo;
-			subSetInfo.Type = SubSetType::READ_TEXTURES;
-			subSetInfo.Count = 16;
-			subSetInfo.Handle = &textureSubsetsHandle;
-			subSetInfos.EmplaceBack(subSetInfo);
-		}
-
-		{ // IMAGES
-			SubSetInfo subSetInfo;
-			subSetInfo.Type = SubSetType::WRITE_TEXTURES;
-			subSetInfo.Count = 16;
-			subSetInfo.Handle = &imagesSubsetHandle;
-			subSetInfos.EmplaceBack(subSetInfo);
-		}
+		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, &textureSubsetsHandle, 16);
+		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, &imagesSubsetHandle, 16);
 
 		{
 			MemberHandle<uint64> AccelerationStructure;
@@ -332,7 +317,7 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		members.EmplaceBack(&globalDataHandle, 4);
 		auto d = MakeMember(members);
 		globalData = AddNode(u8"GlobalData", NodeHandle(), NodeType::LAYER);
-		AddData(globalData, AddData(d));
+		BindDataKey(globalData, MakeDataKey(d));
 	}
 
 	{
@@ -340,7 +325,7 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		members.EmplaceBack(&cameraMatricesHandle, 4);
 		auto d = MakeMember(members);
 		cameraDataNode = AddNode(u8"CameraData", globalData, NodeType::LAYER);
-		AddData(cameraDataNode, AddData(d));
+		BindDataKey(cameraDataNode, MakeDataKey(d));
 	}
 
 	sceneRenderPass = AddNode(u8"SceneRenderPass", cameraDataNode, NodeType::RENDER_PASS);
@@ -425,7 +410,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 	{
 		auto* cameraSystem = taskInfo.ApplicationManager->GetSystem<CameraSystem>(u8"CameraSystem");
 
-		GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(cameraSystem->GetFieldOfViews()[0], 16.f / 9.f, 0.01f, 1000.f);
+		auto fov = cameraSystem->GetFieldOfViews()[0]; auto aspectRatio = 16.f / 9.f;
+
+		GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
 		projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
 
 		auto viewMatrix = cameraSystem->GetCameraTransform();
@@ -434,7 +421,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 		Write(renderSystem, key, cameraMatricesHandle[0], viewMatrix);
 		Write(renderSystem, key, cameraMatricesHandle[1], projectionMatrix);
 		Write(renderSystem, key, cameraMatricesHandle[2], GTSL::Math::Inverse(viewMatrix));
-		Write(renderSystem, key, cameraMatricesHandle[3], GTSL::Math::Inverse(projectionMatrix));
+		Write(renderSystem, key, cameraMatricesHandle[3], GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f));
 	}	
 	
 	RenderState renderState;
@@ -612,8 +599,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo)
 
 //TODO: FIX ACCESS TO SYSTEMS HERE
 
-void RenderOrchestrator::AddRenderManager(ApplicationManager* gameInstance, const Id renderManager, const SystemHandle systemReference)
-{
+void RenderOrchestrator::AddRenderManager(ApplicationManager* gameInstance, const Id renderManager, const SystemHandle systemReference) {
 	systems.EmplaceBack(renderManager);
 
 	GTSL::StaticVector<TaskDependency, 32> dependencies;
@@ -641,8 +627,7 @@ void RenderOrchestrator::AddRenderManager(ApplicationManager* gameInstance, cons
 		setupSystemsAccesses.EmplaceBack(managerDependencies);
 	}
 
-	if (renderingEnabled)
-	{
+	if (renderingEnabled) {
 		onRenderDisable(gameInstance);
 		onRenderEnable(gameInstance, dependencies);
 	}
@@ -650,8 +635,7 @@ void RenderOrchestrator::AddRenderManager(ApplicationManager* gameInstance, cons
 	renderManagers.Emplace(renderManager, systemReference);
 }
 
-void RenderOrchestrator::RemoveRenderManager(ApplicationManager* gameInstance, const Id renderGroupName, const SystemHandle systemReference)
-{
+void RenderOrchestrator::RemoveRenderManager(ApplicationManager* gameInstance, const Id renderGroupName, const SystemHandle systemReference) {
 	const auto element = systems.Find(renderGroupName);
 	BE_ASSERT(element.State())
 	
@@ -670,21 +654,18 @@ void RenderOrchestrator::RemoveRenderManager(ApplicationManager* gameInstance, c
 
 	dependencies.EmplaceBack(u8"RenderSystem", AccessTypes::READ);
 
-	if (renderingEnabled)
-	{
+	if (renderingEnabled) {
 		onRenderDisable(gameInstance);
 		onRenderEnable(gameInstance, dependencies);
 	}
 }
 
-MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialInfo& info)
-{
+MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialInfo& info) {
 	auto materialReference = materialsByName.TryEmplace(info.MaterialName);
 
 	uint32 materialIndex = 0xFFFFFFFF, materialInstanceIndex = 0xFFFFFFFF;
 	
-	if(materialReference.State())
-	{
+	if(materialReference.State()) {
 		materialIndex = materials.Emplace(GetPersistentAllocator());
 		materialReference.Get() = materialIndex;
 	
@@ -699,8 +680,7 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 	} else {
 		auto& material = materials[materialReference.Get()];
 		materialIndex = materialReference.Get();
-		auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance)
-		{
+		auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance) {
 			return materialInstance.Name == info.InstanceName;
 		});
 		
@@ -712,10 +692,10 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 	return { materialIndex, materialInstanceIndex };
 }
 
-void RenderOrchestrator::AddAttachment(Id name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor)
+void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor)
 {
 	Attachment attachment;
-	attachment.Name = name;
+	attachment.Name = attachmentName;
 	attachment.Uses = GAL::TextureUse();
 	
 	GAL::FormatDescriptor formatDescriptor;
@@ -737,20 +717,18 @@ void RenderOrchestrator::AddAttachment(Id name, uint8 bitDepth, uint8 componentC
 	attachment.AccessType = GAL::AccessTypes::READ;
 	attachment.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
 
-	attachments.Emplace(name, attachment);
+	attachments.Emplace(attachmentName, attachment);
 }
 
-void RenderOrchestrator::AddPass(Id name, NodeHandle parent, RenderSystem* renderSystem, PassData passData)
-{	
+void RenderOrchestrator::AddPass(Id renderPassName, NodeHandle parent, RenderSystem* renderSystem, PassData passData) {	
 	uint32 currentPassIndex = renderPassesInOrder.GetLength();
 	
-	NodeHandle renderPassNode = AddNode(name, parent, NodeType::RENDER_PASS);
+	NodeHandle renderPassNode = AddNode(renderPassName, parent, NodeType::RENDER_PASS);
 	InternalNode::RenderPassData& renderPass = getNode2(renderPassNode).RenderPass;
 	auto t = getNode(renderPassNode).InternalSiblings.front().InternalNode;
-	renderPasses.Emplace(name, t);
+	renderPasses.Emplace(renderPassName, t);
 	renderPassesInOrder.EmplaceBack(t);
-	getNode2(renderPassNode).Enabled = true;
-	
+	getNode2(renderPassNode).Enabled = true;	
 	
 	if(passData.WriteAttachments.GetLength())
 		resultAttachment = passData.WriteAttachments[0].Name;
@@ -785,8 +763,8 @@ void RenderOrchestrator::AddPass(Id name, NodeHandle parent, RenderSystem* rende
 		//uint32 lastContiguousRasterPassIndex = contiguousRasterPassCount - 1;
 			
 		if constexpr (_DEBUG) {
-			auto name = GTSL::StaticString<32>(u8"RenderPass");
-			//renderPassCreateInfo.Name = name;
+			//auto name = GTSL::StaticString<32>(u8"RenderPass");
+			//renderPassCreateInfo.Name = renderPassName;
 		}
 
 		GTSL::StaticVector<Id, 16> renderPassUsedAttachments; GTSL::StaticVector<GTSL::StaticVector<Id, 16>, 16> usedAttachmentsPerSubPass;
@@ -971,7 +949,7 @@ void RenderOrchestrator::AddPass(Id name, NodeHandle parent, RenderSystem* rende
 	GTSL::StaticVector<MemberInfo, 16> members;
 	members.EmplaceBack(&renderPass.RenderTargetReferences, 16);
 	
-	AddData(renderPassNode, AddData(MakeMember(members)));
+	BindDataKey(renderPassNode, MakeDataKey(MakeMember(members)));
 
 	for(auto bwk = GetBufferWriteKey(renderSystem, renderPassNode, renderPass.RenderTargetReferences); bwk < renderPass.Attachments.GetLength(); ++bwk) {
 		Write(renderSystem, bwk, renderPass.RenderTargetReferences, attachments[renderPass.Attachments[bwk].Name].ImageIndex);
@@ -1072,7 +1050,7 @@ void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable
 
 		renderPass.Enabled = enable;
 	} else {
-		BE_LOG_WARNING("Tried to ", enable ? "enable" : "disable", " a render pass which does not exist.");
+		BE_LOG_WARNING(u8"Tried to ", enable ? u8"enable" : u8"disable", u8" a render pass which does not exist.");
 	}
 }
 
@@ -1158,7 +1136,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	if constexpr (BE_DEBUG) {
 		if (!shader_group_info.Valid) {
-			BE_LOG_ERROR(u8"Tried to load shader group ", shader_group_info.Name, " which is not valid. Will use stand in shader. ", BE::FIX_OR_CRASH_STRING);
+			BE_LOG_ERROR(u8"Tried to load shader group ", shader_group_info.Name, u8" which is not valid. Will use stand in shader. ", BE::FIX_OR_CRASH_STRING);
 			return;
 		}
 	}
@@ -1219,7 +1197,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		GTSL::StaticVector<MemberInfo, 16> members;
 		members.EmplaceBack(&textureReferences, 1);
 
-		AddData(getNodeByName({ materialIndex, 0 }), AddData(MakeMember(members)));
+		BindDataKey(getNodeByName({ materialIndex, 0 }), MakeDataKey(MakeMember(members)));
 
 		for(uint8 i = 0; i < shader_group_info.Parameters.GetLength(); ++i) {
 			parameters.Emplace(Id(shader_group_info.Parameters[i].Name));
@@ -1313,8 +1291,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		auto handleSize = renderSystem->GetShaderGroupHandleSize();
 		auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupHandleAlignment());
 
-		GTSL::StaticVector<Pipeline::PipelineStateBlock, 4> pipelineStates;
-
 		Pipeline::PipelineStateBlock::RayTracingState rtInfo;
 		rtInfo.Groups = groups;
 		rtInfo.MaxRecursionDepth = 0;
@@ -1370,7 +1346,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				shaderGroup = GAL::HIT_TABLE_INDEX;
 				break;
 			}		
-			default: BE_LOG_MESSAGE("Non raytracing shader found in raytracing material");
+			default: BE_LOG_MESSAGE(u8"Non raytracing shader found in raytracing material");
 			}
 		
 			groups.EmplaceBack(group);
@@ -1405,7 +1381,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			GTSL::StaticVector<MemberInfo, 2> elements{ MemberInfo(&groupData.ShaderGroupDataHandle, groupData.ShaderCount, members, renderSystem->GetShaderGroupBaseAlignment()) };
 			
 			groupData.Buffer = CreateBuffer(renderSystem, elements);			
-			//materialData.DataKey = AddData()
+			//materialData.DataKey = MakeDataKey()
 			
 			for (auto bWK = GetBufferWriteKey(renderSystem, groupData.Buffer, groupData.ShaderEntryMemberHandle); bWK < groupData.ShaderCount; ++shaderCount, ++bWK) {
 				Write(renderSystem, bWK, groupData.ShaderHandle, shaderGroupHandlesBuffer[shaderCount]);

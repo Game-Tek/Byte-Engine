@@ -123,7 +123,7 @@ void AddDefaults(GTSL::String<T>& string, GAL::ShaderType shaderType) {
 }
 
 template<typename T>
-void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType shaderType) {	
+void AddDataTypesAndDescriptors(GTSL::String<T>& string) {	
 	string += u8"layout(set = 0, binding = 0) uniform sampler2D textures[];\n"; //textures descriptor
 	string += u8"layout(set = 0, binding = 1) uniform image2D images[];\n"; //textures descriptor	
 	string += u8"#define ptr_t uint64_t\n";
@@ -133,7 +133,7 @@ void AddDataTypesAndDescriptors(GTSL::String<T>& string, GAL::ShaderType shaderT
 inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	GTSL::StaticString<8192> string;
 	AddDefaults(string, shader.TargetSemantics);
-	AddDataTypesAndDescriptors(string, shader.TargetSemantics);
+	AddDataTypesAndDescriptors(string);
 
 	struct ShaderFunction {
 		struct FunctionSignature {
@@ -362,14 +362,12 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	genVertexStruct();
 
 	if (shader.Class != Shader::Class::COMPUTE) {
-		{
-			GTSL::StaticVector<StructElement, 32> elements;
-			elements.EmplaceBack(u8"uint16_t", u8"i");
-			declStruct(u8"index", elements, true);
-		}
+		GTSL::StaticVector<StructElement, 32> elements;
+		elements.EmplaceBack(u8"uint16_t", u8"i");
+		declStruct(u8"index", elements, true);
 	}
 
-	{ //
+	{
 		GTSL::StaticVector<StructElement, 32> elements;
 		elements.EmplaceBack(u8"uint", u8"dummy");
 		declStruct(u8"renderPass", elements, true);
@@ -445,17 +443,17 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 	switch (shader.Class) {
 	case Shader::Class::VERTEX: {		
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetInstancePosition"), {}, GTSL::Range(u8"return invocationInfo.instance.ModelMatrix;"));
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetCameraViewMatrix"), {}, GTSL::Range(u8"return invocationInfo.camera.view;"));
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetCameraProjectionMatrix"), {}, GTSL::Range(u8"return invocationInfo.camera.proj;"));
-		declFunc(GTSL::Range(u8"vec4"), GTSL::Range(u8"GetVertexPosition"), {}, GTSL::Range(u8"return vec4(in_POSITION, 1.0);"));
+		declFunc(u8"mat4", u8"GetInstancePosition", {}, u8"return invocationInfo.instance.ModelMatrix;");
+		declFunc(u8"mat4", u8"GetCameraViewMatrix", {}, u8"return invocationInfo.camera.view;");
+		declFunc(u8"mat4", u8"GetCameraProjectionMatrix", {}, u8"return invocationInfo.camera.proj;");
+		declFunc(u8"vec4", u8"GetVertexPosition", {}, u8"return vec4(in_POSITION, 1.0);");
 		
 		break;
 	}
 	case Shader::Class::PIXEL: {
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetInstancePosition"), {}, GTSL::Range(u8"return invocationInfo.instance.ModelMatrix;"));
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetCameraViewMatrix"), {}, GTSL::Range(u8"return invocationInfo.camera.view;"));
-		declFunc(GTSL::Range(u8"mat4"), GTSL::Range(u8"GetCameraProjectionMatrix"), {}, GTSL::Range(u8"return invocationInfo.camera.proj;"));
+		declFunc(u8"mat4", u8"GetInstancePosition", {}, u8"return invocationInfo.instance.ModelMatrix;");
+		declFunc(u8"mat4", u8"GetCameraViewMatrix", {}, u8"return invocationInfo.camera.view;");
+		declFunc(u8"mat4", u8"GetCameraProjectionMatrix", {}, u8"return invocationInfo.camera.proj;");
 		//declFunc(u8"vec4", u8"GetVertexPosition", {}, u8"return vec4(in_POSITION, 1.0);");
 
 		break;
@@ -545,13 +543,13 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	
 	{
 		GTSL::StaticVector<StructElement, 2> parameters{ { u8"vec2", u8"coords" } };
-		declFunc(GTSL::Range(u8"vec3"), GTSL::Range(u8"Barycenter"), parameters, GTSL::Range(u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);"));
+		declFunc(u8"vec3", u8"Barycenter", parameters, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
 	} {
 		GTSL::StaticVector<StructElement, 2> parameters{ { u8"TextureReference", u8"textureReference" }, { u8"vec2", u8"texCoord" } };
-		declFunc(GTSL::Range(u8"vec4"), GTSL::Range(u8"Sample"), parameters, GTSL::Range(u8"return texture(textures[nonuniformEXT(textureReference.Instance)], texCoord);"));
+		declFunc(u8"vec4", u8"Sample", parameters, u8"return texture(textures[nonuniformEXT(textureReference.Instance)], texCoord);");
 	} {
 		GTSL::StaticVector<StructElement, 2> parameters{ { u8"float", u8"cosTheta" }, { u8"vec3", u8"F0"} };
-		declFunc(GTSL::Range(u8"vec3"), GTSL::Range(u8"FresnelSchlick"), parameters, GTSL::Range(u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);"));
+		declFunc(u8"vec3", u8"FresnelSchlick", parameters, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
 	}
 	
 	//{

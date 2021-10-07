@@ -114,8 +114,8 @@ public:
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
 
-	uint16 AddOrganizer(const Id name);
-	uint16 AddOrganizer(const Id name, const uint16 parentOrganizer);
+	uint16 AddOrganizer(const Id organizerName);
+	uint16 AddOrganizer(const Id organizerName, const uint16 parentOrganizer);
 
 	uint16 AddSquare()
 	{
@@ -284,22 +284,21 @@ public:
 	
 	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
-	CanvasHandle CreateCanvas(const Id name)
-	{
+	CanvasHandle CreateCanvas(const Id) {
 		return CanvasHandle(canvases.Emplace());
 	}
 	
 	void SignalHit(const GTSL::Vector2 pos)
 	{
-		for (auto& c : canvases) { if (c.CheckHit(pos)) { BE_LOG_MESSAGE("Hit"); } }
+		for (auto& c : canvases) { if (c.CheckHit(pos)) { BE_LOG_MESSAGE(u8"Hit"); } }
 	}
 
 	void SetExtent(CanvasHandle canvasHandle, GTSL::Extent2D extent) {
 		canvases[canvasHandle()].SetExtent(extent);
 	}
 
-	OrganizerHandle AddOrganizer(CanvasHandle canvasHandle, Id name) {
-		canvases[canvasHandle()].AddOrganizer(name);
+	OrganizerHandle AddOrganizer(CanvasHandle canvasHandle, Id organizerName) {
+		canvases[canvasHandle()].AddOrganizer(organizerName);
 		return OrganizerHandle();
 	}
 
@@ -332,7 +331,7 @@ public:
 
 	auto& GetCanvases() { return canvases; }
 
-	void AddColor(const Id name, const GTSL::RGBA color) { colors.Emplace(name, color); }
+	void AddColor(const Id colorName, const GTSL::RGBA color) { colors.Emplace(colorName, color); }
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 private:

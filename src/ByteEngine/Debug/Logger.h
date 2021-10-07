@@ -27,8 +27,7 @@ namespace BE
 	class Logger : public Object
 	{
 	public:
-		enum class VerbosityLevel : uint8
-		{
+		enum class VerbosityLevel : uint8 {
 			MESSAGE = 1, SUCCESS = 2, WARNING = 4, FATAL = 8
 		};
 	private:
@@ -76,24 +75,21 @@ namespace BE
 		Logger() = default;
 		~Logger();
 
-		struct LoggerCreateInfo
-		{
+		struct LoggerCreateInfo {
 			GTSL::Range<const utf8*> AbsolutePathToLogDirectory;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 
 		template<typename... ARGS>
-		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args)
-		{
+		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args) {
 			GTSL::StaticString<maxLogLength> text;
 			text += obj->GetName(); text += u8": ";
-			//(ToString(text, GTSL::ForwardRef<ARGS>(args)), ...);
+			(ToString(text, GTSL::ForwardRef<ARGS>(args)), ...);
 			log(level, text);
 		}
 
 		template<typename... ARGS>
-		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args)
-		{
+		void PrintBasicLog(const VerbosityLevel level, ARGS&& ...args) {
 			GTSL::StaticString<maxLogLength> text;
 			//(ToString(text, GTSL::ForwardRef<ARGS>(args)), ...);
 			log(level, text);
@@ -103,8 +99,7 @@ namespace BE
 		 * \brief Sets the minimum log verbosity, only affects logs to console. Value is inclusive.
 		 * \param level Verbosity level.
 		 */
-		void SetMinLogLevel(const VerbosityLevel level) const
-		{
+		void SetMinLogLevel(const VerbosityLevel level) const {
 			logMutex.Lock();
 			minLogLevel = level;
 			logMutex.Unlock();

@@ -195,14 +195,14 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		createInfo.Extensions = extensions;
 		createInfo.PerformanceValidation = true;
 		createInfo.SynchronizationValidation = true;
-		createInfo.DebugPrintFunction = GTSL::Delegate<void(const char*, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
+		createInfo.DebugPrintFunction = GTSL::Delegate<void(GTSL::StringView, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
 		createInfo.AllocationInfo.UserData = this;
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void* (void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
 		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void* (void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 		renderDevice.Initialize(createInfo);
 
-		BE_LOG_MESSAGE("Started Vulkan API\n	GPU: ", renderDevice.GetGPUInfo().GPUName);
+		BE_LOG_MESSAGE(u8"Started Vulkan API\n	GPU: ", renderDevice.GetGPUInfo().GPUName);
 
 		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]);
 		//transferQueue.Initialize(GetRenderDevice(), queueKeys[1]);
@@ -278,30 +278,30 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		imageAvailableSemaphore[i].Initialize(GetRenderDevice());
 
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name(u8"RenderFinishedSemaphore #"); name += i;
+			//GTSL::StaticString<32> renderFinishedSe(u8"RenderFinishedSemaphore #"); renderFinishedSe += i;
 		}
 		renderFinishedSemaphore[i].Initialize(GetRenderDevice());
 
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name(u8"InFlightFence #"); name += i;
+			//GTSL::StaticString<32> name(u8"InFlightFence #"); name += i;
 		}
 
 		graphicsFences[i].Initialize(GetRenderDevice(), true);
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<32> name(u8"TrasferFence #"); name += i;
+			//GTSL::StaticString<32> name(u8"TrasferFence #"); name += i;
 		}
 		//transferFences[i].Initialize(GetRenderDevice(), true);
 
 
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
+			//GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
 			//commandPoolCreateInfo.Name = commandPoolName;
 		}
 
 		graphicsCommandBuffers[i].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
 
 		if constexpr (_DEBUG) {
-			GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
+			//GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
 			//commandPoolCreateInfo.Name = commandPoolName;
 		}
 
@@ -322,7 +322,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
 			if constexpr (_DEBUG) {
-				GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
+				//GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, static_cast<GTSL::Range<const GTSL::byte*>>(pipelineCacheBuffer));
@@ -332,14 +332,14 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i)
 		{
 			if constexpr (_DEBUG) {
-				GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
+				//GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, {});
 		}
 	}
 
-	BE_LOG_MESSAGE("Initialized successfully");
+	BE_LOG_MESSAGE(u8"Initialized successfully");
 }
 
 void RenderSystem::Shutdown(const ShutdownInfo& shutdownInfo)
@@ -730,7 +730,7 @@ void RenderSystem::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 		//taskInfo.ApplicationManager->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::beginGraphicsCommandLists>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
 		//taskInfo.ApplicationManager->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFlush>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
 
-		BE_LOG_SUCCESS("Enabled rendering")
+		BE_LOG_SUCCESS(u8"Enabled rendering")
 	}
 
 	OnResize(window->GetFramebufferExtent());
@@ -746,7 +746,7 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 		//taskInfo.ApplicationManager->RemoveTask(u8"renderSetup", u8"RenderEndSetup");
 		//taskInfo.ApplicationManager->RemoveTask(u8"renderFinished", u8"RenderFinished");
 
-		BE_LOG_SUCCESS("Disabled rendering")
+		BE_LOG_SUCCESS(u8"Disabled rendering")
 	}
 }
 
@@ -829,10 +829,8 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 	}
 }
 
-void RenderSystem::printError(const char* message, const RenderDevice::MessageSeverity messageSeverity) const
-{
-	switch (messageSeverity)
-	{
+void RenderSystem::printError(GTSL::StringView message, const RenderDevice::MessageSeverity messageSeverity) const {
+	switch (messageSeverity) {
 	//case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
 	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;

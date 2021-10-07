@@ -89,9 +89,8 @@ void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourc
 		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals |
 		aiProcess_JoinIdenticalVertices, "fbx");
 
-	if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE))
-	{
-		BE_LOG_ERROR(importer.GetErrorString())
+	if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
+		BE_LOG_ERROR(reinterpret_cast<const char8_t*>(importer.GetErrorString()))
 		return;
 	}
 
@@ -167,7 +166,7 @@ void AnimationResourceManager::loadAnimation(const GTSL::Range<const byte*> sour
 
 				if (assimpChannel->mNumPositionKeys != assimpChannel->mNumRotationKeys != assimpChannel->mNumScalingKeys)
 				{
-					BE_LOG_WARNING("Number of keys doesn't match");
+					BE_LOG_WARNING(u8"Number of keys doesn't match");
 				}
 
 				auto& bone = frame.Bones.EmplaceBack();

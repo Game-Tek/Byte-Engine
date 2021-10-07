@@ -138,25 +138,24 @@ namespace GAL
 
 				setInstancepNext(&features);
 
-				auto debugCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) -> VkBool32
-				{
+				auto debugCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) -> VkBool32 {
 					auto* deviceCallback = static_cast<VulkanRenderDevice*>(pUserData);
 
 					switch (messageSeverity) {
 					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(pCallbackData->pMessage, MessageSeverity::MESSAGE);
+						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
 						break;
 					}
 					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(pCallbackData->pMessage, MessageSeverity::MESSAGE);
+						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
 						break;
 					}
 					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(pCallbackData->pMessage, MessageSeverity::WARNING);
+						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::WARNING);
 						break;
 					}
 					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(pCallbackData->pMessage, MessageSeverity::ERROR);
+						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::ERROR);
 						break;
 					}
 					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT: break;

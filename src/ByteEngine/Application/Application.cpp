@@ -52,7 +52,7 @@ namespace BE
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = systemApplication.GetPathToExecutable();
-		path.Drop(FindLast(path, u8'/').Get());
+		DropLast(path, u8'/');
 		logger_create_info.AbsolutePathToLogDirectory = path;
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
@@ -124,7 +124,7 @@ namespace BE
 			transientAllocator.Free();
 			StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
 			transientAllocator.GetDebugData(stack_allocator_debug_data);
-			BE_LOG_MESSAGE("Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
+			BE_LOG_MESSAGE(u8"Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
 
 			logger.TryFree();
 			

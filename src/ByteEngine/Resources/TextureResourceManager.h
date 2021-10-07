@@ -56,7 +56,7 @@ public:
 		{
 			if constexpr (BE_DEBUG) {
 				if (!resourceManager->textureInfos.Find(textureName)) {
-					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Texture with name ", GTSL::StringView(textureName), " could not be found. ", BE::FIX_OR_CRASH_STRING);
+					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Texture with name ", GTSL::StringView(textureName), u8" could not be found. ", BE::FIX_OR_CRASH_STRING);
 					return;
 				}
 			}

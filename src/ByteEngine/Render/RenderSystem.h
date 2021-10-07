@@ -415,7 +415,7 @@ private:
 	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);
 
-	void printError(const char* message, RenderDevice::MessageSeverity messageSeverity) const;
+	void printError(const GTSL::StringView message, RenderDevice::MessageSeverity messageSeverity) const;
 	void* allocateApiMemory(void* data, uint64 size, uint64 alignment);
 	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
 	void deallocateApiMemory(void* data, void* allocation);

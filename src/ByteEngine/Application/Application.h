@@ -114,9 +114,8 @@ namespace BE
 		[[nodiscard]] PoolAllocator* GetPersistantAllocator() { return &poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
-		uint32 GetOption(const Id name) const
-		{
-			return settings.At(name);
+		uint32 GetOption(const Id optionName) const {
+			return settings.At(optionName);
 		}
 		
 	protected:

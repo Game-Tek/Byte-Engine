@@ -20,7 +20,7 @@ namespace GAL
 	void setName(T* handle, const GTSL::Range<const char8_t*> name) {
 		if constexpr (_DEBUG) {
 			if (name.ElementCount() != 0)
-				handle->SetPrivateData(WKPDID_D3DDebugObjectName, name.ElementCount() - 1, name.begin());
+				handle->SetPrivateData(WKPDID_D3DDebugObjectName, name.ElementCount(), name.begin());
 		}
 	}
 	

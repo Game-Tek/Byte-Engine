@@ -150,7 +150,7 @@ public:
 		}
 	}
 	
-	void RemoveTask(Id name, Id startOn);
+	void RemoveTask(Id taskName, Id startOn);
 
 	template<typename... ARGS>
 	void AddDynamicTask(const Id name, const GTSL::Delegate<void(TaskInfo, ARGS...)>& function, const GTSL::Range<const TaskDependency*> dependencies, const Id startOn, const Id doneFor, ARGS&&... args) {
@@ -280,7 +280,7 @@ public:
 	template<typename... ARGS>
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR("An event by the name ", GTSL::StringView(eventHandle.Name), " already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(eventHandle.Name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
 
 		if(priority) {
@@ -291,7 +291,7 @@ public:
 	template<typename... ARGS>
 	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name).Functions;
 		vector.EmplaceBack(taskHandle.Reference);
 	}
@@ -299,7 +299,7 @@ public:
 	template<typename... ARGS>
 	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR("No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 
 		Event& eventData = events.At(eventHandle.Name);
 
@@ -321,7 +321,7 @@ public:
 		events[eventHandle.Name].priorityEntry = priority ? 0 : ~0U;
 	}
 
-	void AddStage(Id name);
+	void AddStage(Id stageName);
 
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
@@ -431,11 +431,10 @@ private:
 		return log;
 	}
 
-	uint16 getStageIndex(const Id name) const
-	{
-		uint16 i = 0; for (auto goal_name : stagesNames) { if (goal_name == name) break; ++i; }
-		BE_ASSERT(i != stagesNames.GetLength(), "No stage found with that name!")
-		return i;
+	uint16 getStageIndex(const Id stageName) const {
+		auto findRes = GTSL::LookFor(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
+		BE_ASSERT(findRes, "No stage found with that name!")
+		return findRes.Get() - stagesNames.begin();
 	}
 	
 	template<typename T, typename U>
@@ -447,21 +446,19 @@ private:
 		}
 	}
 
-	[[nodiscard]] bool assertTask(const Id name, const Id startGoal, const Id endGoal, const GTSL::Range<const TaskDependency*> dependencies) const
+	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const GTSL::Range<const TaskDependency*> dependencies) const
 	{
 		{
 			GTSL::ReadLock lock(stagesNamesMutex);
 			
-			if (!stagesNames.Find(startGoal).State())
-			{
-				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " to stage ", GTSL::StringView(startGoal), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			if (!stagesNames.Find(startGoal).State()) {
+				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 
 			//assert done for exists
-			if (!stagesNames.Find(endGoal).State())
-			{
-				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " ending for stage ", GTSL::StringView(endGoal), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+			if (!stagesNames.Find(endGoal).State()) {
+				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" ending for stage ", GTSL::StringView(endGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -469,9 +466,8 @@ private:
 		{
 			GTSL::ReadLock lock(recurringTasksMutex);
 			
-			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(name))
-			{
-				BE_LOG_WARNING("Tried to add task ", GTSL::StringView(name), " which already exists to stage ", GTSL::StringView(startGoal), ". Resolve this issue as it leads to undefined behavior in release builds!")
+			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(taskName)) {
+				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" which already exists to stage ", GTSL::StringView(startGoal), u8". Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -482,7 +478,7 @@ private:
 			for(auto e : dependencies)
 			{
 				if (!systemsMap.Find(e.AccessedObject)) {
-					BE_LOG_ERROR("Tried to add task ", GTSL::StringView(name), " to stage ", GTSL::StringView(startGoal), " with a dependency on ", GTSL::StringView(e.AccessedObject), " which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+					BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" with a dependency on ", GTSL::StringView(e.AccessedObject), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 					return true;
 				}
 			}
@@ -499,7 +495,7 @@ public:
 	{
 		if constexpr (_DEBUG) {
 			if (systemsMap.Find(systemName)) {
-				BE_LOG_ERROR("System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
+				BE_LOG_ERROR(u8"System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
 				return reinterpret_cast<T*>(systemsMap.At(systemName));
 			}
 		}

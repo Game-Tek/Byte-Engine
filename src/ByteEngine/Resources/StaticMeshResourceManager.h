@@ -97,7 +97,7 @@ public:
 		{
 			if constexpr (BE_DEBUG) {
 				if (!resourceManager->meshInfos.Find(meshName)) {
-					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Mesh with name ", GTSL::StringView(meshName), " could not be found. ", BE::FIX_OR_CRASH_STRING);
+					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Mesh with name ", GTSL::StringView(meshName), u8" could not be found. ", BE::FIX_OR_CRASH_STRING);
 					return;
 				}
 			}

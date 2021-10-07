@@ -69,11 +69,10 @@ StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"Stat
 		{
 			auto file_path = resources_path;
 			file_path += queryResult.Get();
-			auto name = queryResult.Get(); name.Drop(FindLast(name, u8'.').Get());
-			const auto hashed_name = GTSL::Id64(name);
+			auto fileName = queryResult.Get(); DropLast(fileName, u8'.');
+			const auto hashed_name = GTSL::Id64(fileName);
 
-			if (!meshInfos.Find(hashed_name))
-			{
+			if (!meshInfos.Find(hashed_name)) {
 				GTSL::File queryFile;
 				queryFile.Open(file_path, GTSL::File::READ, false);
 				
@@ -114,7 +113,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, "obj");
 
 	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
-		BE_LOG_ERROR(importer.GetErrorString());
+		BE_LOG_ERROR(reinterpret_cast<const char8_t*>(importer.GetErrorString()));
 		BE_ASSERT(false, "Error interpreting file!");
 	}
 

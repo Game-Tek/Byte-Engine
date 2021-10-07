@@ -198,7 +198,7 @@ namespace GAL
 
 		shaderc_compile_options.SetSourceLanguage(shaderc_source_language);
 		shaderc_compile_options.SetOptimizationLevel(shaderc_optimization_level_performance);
-		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes() - 1, shaderc_stage, reinterpret_cast<const char*>(shaderName.GetData()), shaderc_compile_options);
+		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes(), shaderc_stage, reinterpret_cast<const char*>(shaderName.GetData()), shaderc_compile_options);
 
 		if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
 			auto errorString = shaderc_module.GetErrorMessage();

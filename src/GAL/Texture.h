@@ -32,8 +32,7 @@ namespace GAL
 			const GTSL::uint8 sourceFormatSize = sourceImageFormat.BitDepth * sourceImageFormat.ComponentCount, targetFormatSize = targetImageFormat.BitDepth * targetImageFormat.ComponentCount;
 			const GTSL::uint32 targetTextureSize = GetImageSize(targetFormatSize, imageExtent), sourceTextureSize = GetImageSize(sourceFormatSize, imageExtent);
 
-			auto rgb_i8_to_rgba_i8 = [&]()
-			{
+			auto rgb_i8_to_rgba_i8 = [&]() {
 				using Vector = GTSL::SIMD<GTSL::uint8, 16>;
 				
 				GTSL::uint32 bytesToProcessWithScalar = sourceTextureSize % Vector::Bytes;

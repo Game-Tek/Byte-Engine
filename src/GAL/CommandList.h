@@ -73,6 +73,14 @@ namespace GAL
 			BarrierData(const BufferBarrier bufferBarrier) : Type(BarrierType::BUFFER), Buffer(bufferBarrier) {}
 			BarrierData(const TextureBarrier textureBarrier) : Type(BarrierType::TEXTURE), Texture(textureBarrier) {}
 
+			BarrierData(const BarrierData& other) : Type(other.Type) {
+				switch (Type) {
+				case BarrierType::MEMORY: Memory = other.Memory; break;
+				case BarrierType::BUFFER: Buffer = other.Buffer; break;
+				case BarrierType::TEXTURE: Texture = other.Texture; break;
+				}
+			}
+
 			BarrierType Type;
 
 			union {

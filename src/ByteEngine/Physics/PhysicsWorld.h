@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/Bitfield.h>
-#include <GTSL/FixedVector.h>
+#include <GTSL/FixedVector.hpp>
 #include <GTSL/Math/Vectors.h>
 
 #include "HitResult.h"

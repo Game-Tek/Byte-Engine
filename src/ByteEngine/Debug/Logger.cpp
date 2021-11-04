@@ -96,7 +96,7 @@ void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds t
 		string += u8"\"ph\":\"X\",";
 		string += u8"\"pid\":0,";
 		string += u8"\"tid\":"; ToString(string, getThread()); string += u8",";
-		string += u8"\"ts\":"; ToString(string, functionTimer->StartingTime);
+		string += u8"\"ts\":"; ToString(string, functionTimer->StartingTime.GetCount());
 		string += u8"}";
 
 		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));

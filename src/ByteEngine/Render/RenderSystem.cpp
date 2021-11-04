@@ -200,9 +200,12 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void* (void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
 		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void* (void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
 		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
-		renderDevice.Initialize(createInfo);
 
-		BE_LOG_MESSAGE(u8"Started Vulkan API\n	GPU: ", renderDevice.GetGPUInfo().GPUName);
+		if (auto renderDeviceInitializationResult = renderDevice.Initialize(createInfo, GetTransientAllocator())) {
+			BE_LOG_SUCCESS(u8"Started RenderDevice\n	API: Vulkan\n	GPU: ", renderDevice.GetGPUInfo().GPUName, u8"\n	Memory: ", 6, u8" GB\n	API Version: ", renderDevice.GetGPUInfo().APIVersion);
+		} else {
+			BE_LOG_ERROR(u8"Failed to initialize RenderDevice!\n	API: Vulkan\n	Reason: \"", renderDeviceInitializationResult.Get(), u8"\n");
+		}
 
 		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]);
 		//transferQueue.Initialize(GetRenderDevice(), queueKeys[1]);
@@ -212,8 +215,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 			auto memoryHeaps = renderDevice.GetMemoryHeaps(); GAL::VulkanRenderDevice::MemoryHeap& biggestGPUHeap = memoryHeaps[0];
 
-			for (auto& e : memoryHeaps)
-			{
+			for (auto& e : memoryHeaps) {
 				if (e.HeapType & GAL::MemoryTypes::GPU) {
 					if (e.Size > biggestGPUHeap.Size) {
 						biggestGPUHeap = e;
@@ -692,7 +694,7 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_
 		AllocateScratchBufferMemory(textureSize, GAL::BufferUses::TRANSFER_SOURCE, &textureComponent.ScratchBuffer, &textureComponent.ScratchAllocation);
 	}
 	
-	AllocateLocalTextureMemory(&textureComponent.Texture, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
+	AllocateLocalTextureMemory(&textureComponent.Texture, name, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
 		1, &textureComponent.Allocation);
 	
 	textureComponent.TextureView.Initialize(GetRenderDevice(), name, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
@@ -830,11 +832,17 @@ void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool st
 }
 
 void RenderSystem::printError(GTSL::StringView message, const RenderDevice::MessageSeverity messageSeverity) const {
+	bool breakeablelogLevel = false;
+
 	switch (messageSeverity) {
 	//case RenderDevice::MessageSeverity::MESSAGE: BE_LOG_MESSAGE(message) break;
-	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message) break;
-	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); break;
+	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
+	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); breakeablelogLevel = true; break;
 	default: break;
+	}
+
+	if(breakOnError && breakeablelogLevel) {
+		__debugbreak();
 	}
 }
 

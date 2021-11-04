@@ -10,12 +10,12 @@
 
 #include <GTSL/Semaphore.h>
 
-ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemsMap(16, GetPersistentAllocator()),
-recurringTasksPerStage(16, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()),
-dynamicTasksPerStage(32, GetPersistentAllocator()),
-taskSorter(64, GetPersistentAllocator()),
-recurringTasksInfo(32, GetPersistentAllocator()), events(32, GetPersistentAllocator()),
-asyncTasks(32, GetPersistentAllocator()), semaphores(16, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()), storedDynamicTasks(16, GetPersistentAllocator())
+ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()),
+systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), storedDynamicTasks(16, GetPersistentAllocator()),
+events(32, GetPersistentAllocator()),
+recurringTasksPerStage(16, GetPersistentAllocator()),
+dynamicTasksPerStage(32, GetPersistentAllocator()), asyncTasks(32, GetPersistentAllocator()),
+stagesNames(8, GetPersistentAllocator()), recurringTasksInfo(32, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator())
 {
 }
 
@@ -206,8 +206,6 @@ void ApplicationManager::AddStage(Id stageName)
 		GTSL::WriteLock lock(recurringTasksInfoMutex);
 		recurringTasksInfo.EmplaceBack(64, GetPersistentAllocator());
 	}
-
-	semaphores.EmplaceBack();
 
 	BE_LOG_MESSAGE(u8"Added stage ", GTSL::StringView(stageName))
 }

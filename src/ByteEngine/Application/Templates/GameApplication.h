@@ -35,6 +35,8 @@ protected:
 	InputDeviceHandle keyboard;
 	InputDeviceHandle mouse;
 
+	uint32 mouseCount = 0;
+
 	void SetupInputSources();
 	void RegisterMouse();
 	void RegisterKeyboard();

@@ -1,5 +1,5 @@
 #pragma once
-#include <GTSL/FixedVector.h>
+#include <GTSL/FixedVector.hpp>
 #include <GTSL/RGB.h>
 #include <GTSL/Math/Rotator.h>
 

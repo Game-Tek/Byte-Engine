@@ -79,7 +79,7 @@ public:
 	};
 
 	explicit StackAllocator(BE::SystemAllocatorReference* allocatorReference, const uint8 stackCount = 8, const uint8 defaultBlocksPerStackCount = 2, const uint64 blockSizes = 512) :
-		blockSize(blockSizes), stacks(stackCount, *allocatorReference), stacksMutexes(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)
+		blockSize(blockSizes), stacks(stackCount, *allocatorReference), allocatorReference(allocatorReference), MAX_STACKS(stackCount)
 	{
 		uint64 allocated_size = 0;
 
@@ -102,8 +102,6 @@ public:
 					totalAllocatorAllocatedBytes += allocated_size;
 				}
 			}
-
-			stacksMutexes.EmplaceBack();
 		}
 	}
 	
@@ -145,8 +143,7 @@ public:
 		debugData.AllocatorDeallocatedBytes = allocatorDeallocatedBytes;
 		debugData.TotalAllocatorDeallocatedBytes = totalAllocatorDeallocatedBytes;
 
-		for (auto& e : perNameData)
-		{
+		for (auto& e : perNameData) {
 			e.second.DeallocationCount = 0;
 			e.second.AllocationCount = 0;
 			e.second.BytesAllocated = 0;
@@ -332,7 +329,7 @@ protected:
 	const uint64 blockSize{ 0 };
 	GTSL::Atomic<uint32> stackIndex{ 0 };
 	GTSL::Vector<GTSL::Vector<Block, BE::SystemAllocatorReference>, BE::SystemAllocatorReference> stacks;
-	GTSL::Vector<GTSL::Mutex, BE::SystemAllocatorReference> stacksMutexes;
+	GTSL::Mutex stacksMutexes[32];
 	BE::SystemAllocatorReference* allocatorReference{ nullptr };
 
 #if BE_DEBUG

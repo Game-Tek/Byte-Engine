@@ -4,7 +4,7 @@
 
 #include <GTSL/Flags.h>
 
-#include <GTSL/Algorithm.h>
+#include <GTSL/Algorithm.hpp>
 
 #include "GTSL/Bitman.h"
 #include "GTSL/Extent.h"

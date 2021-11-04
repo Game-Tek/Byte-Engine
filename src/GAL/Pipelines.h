@@ -162,12 +162,10 @@ namespace GAL
 	};
 
 	template<class BUF, class STR>
-	bool CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, BUF& result, STR& stringResult)
-	{
+	bool CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, BUF& result, STR& stringResult) {
 		shaderc_shader_kind shaderc_stage;
 
-		switch (shaderType)
-		{
+		switch (shaderType) {
 		case ShaderType::VERTEX: shaderc_stage = shaderc_vertex_shader;	break;
 		case ShaderType::TESSELLATION_CONTROL: shaderc_stage = shaderc_tess_control_shader;	break;
 		case ShaderType::TESSELLATION_EVALUATION: shaderc_stage = shaderc_tess_evaluation_shader; break;
@@ -187,10 +185,10 @@ namespace GAL
 		shaderc::CompileOptions shaderc_compile_options;
 		shaderc_compile_options.SetTargetSpirv(shaderc_spirv_version_1_5);
 		shaderc_compile_options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+		shaderc_compile_options.SetGenerateDebugInfo();
 
 		shaderc_source_language shaderc_source_language;
-		switch (shaderLanguage)
-		{
+		switch (shaderLanguage) {
 		case ShaderLanguage::GLSL: shaderc_source_language = shaderc_source_language_glsl; break;
 		case ShaderLanguage::HLSL: shaderc_source_language = shaderc_source_language_hlsl; break;
 		default: GAL_DEBUG_BREAK;

@@ -33,9 +33,7 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(const AddStaticMeshInfo& a
 	} else {
 		resource = &resourceLookup.Get();
 	
-		if (resource->Loaded) {
-			addedMeshes.EmplaceBack(AddedMeshData{ true, StaticMeshHandle(index), resource->MeshHandle });
-		}
+		addedMeshes.EmplaceBack(AddedMeshData{ resource->Loaded, StaticMeshHandle(index), resource->MeshHandle });
 	}
 	
 	resource->DependentMeshes.EmplaceBack(StaticMeshHandle(index));

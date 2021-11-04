@@ -98,7 +98,7 @@ namespace BE
 	{
 		if (initialized)
 		{
-			gameInstance.TryFree();
+			applicationManager.TryFree();
 			
 			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
 			inputManagerInstance.TryFree();
@@ -137,12 +137,12 @@ namespace BE
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
 	{		
 		inputManagerInstance->Update();
-		gameInstance->OnUpdate(this);
+		applicationManager->OnUpdate(this);
 	}
 
 	int Application::Run(int argc, char** argv)
 	{
-		gameInstance->AddEvent(u8"Application", EventHandle(u8"OnPromptClose"));
+		applicationManager->AddEvent(u8"Application", EventHandle(u8"OnPromptClose"));
 		
 		while (!flaggedForClose) {			
 			clockInstance.OnUpdate();
@@ -160,7 +160,7 @@ namespace BE
 
 	void Application::PromptClose()
 	{
-		gameInstance->DispatchEvent(u8"Application", EventHandle(u8"OnPromptClose"));
+		applicationManager->DispatchEvent(u8"Application", EventHandle(u8"OnPromptClose"));
 	}
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)

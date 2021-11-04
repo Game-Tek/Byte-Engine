@@ -83,6 +83,10 @@ namespace GAL
 				description.preserveAttachmentCount = preserveAttachmentsIndices[s].GetLength();
 				description.pPreserveAttachments = preserveAttachmentsIndices[s].begin();
 				description.pDepthStencilAttachment = &vkDepthAttachmentReferences[s];
+
+				//if(vkDepthAttachmentReferences[s].attachment != 0U) {
+				//	
+				//}
 			}
 
 			GTSL::StaticVector<VkSubpassDependency, 32> vkSubpassDependencies;

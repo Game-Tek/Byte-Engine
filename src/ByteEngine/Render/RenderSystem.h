@@ -34,7 +34,7 @@ public:
 
 	MAKE_HANDLE(uint32, Texture);
 	
-	void AllocateLocalTextureMemory(Texture* texture, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
+	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
 	{
 		GAL::MemoryRequirements memoryRequirements;
@@ -46,7 +46,7 @@ public:
 		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
 		testMutex.Unlock();
 		
-		texture->Initialize(GetRenderDevice(), memory, offset);
+		texture->Initialize(GetRenderDevice(), name, memory, offset);
 	}
 	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
 	{
@@ -323,6 +323,7 @@ private:
 	GAL::VulkanQueue graphicsQueue;
 	//GAL::VulkanQueue transferQueue;
 	GAL::Device accelerationStructureBuildDevice;
+	bool breakOnError = true;
 
 	struct Mesh
 	{

@@ -232,16 +232,13 @@ namespace GAL
 		}
 
 		template<class ALLOCATOR>
-		void AddPipelineBarrier(const VulkanRenderDevice* renderDevice, GTSL::Range<const BarrierData*> barriers, PipelineStage initialStage, PipelineStage finalStage, const ALLOCATOR& allocator) const
-		{
+		void AddPipelineBarrier(const VulkanRenderDevice* renderDevice, GTSL::Range<const BarrierData*> barriers, PipelineStage initialStage, PipelineStage finalStage, const ALLOCATOR& allocator) const {
 			GTSL::Vector<VkImageMemoryBarrier, ALLOCATOR> imageMemoryBarriers(4, allocator);
 			GTSL::Vector<VkMemoryBarrier, ALLOCATOR> memoryBarriers(4, allocator);
 			GTSL::Vector<VkBufferMemoryBarrier, ALLOCATOR> bufferBarriers(4, allocator);
 
-			for(auto& b : barriers)
-			{
-				switch (b.Type)
-				{
+			for(auto& b : barriers) {
+				switch (b.Type) {
 				case BarrierType::MEMORY: {
 					auto& barrier = b.Memory;
 					auto& memoryBarrier = memoryBarriers.EmplaceBack();
@@ -306,8 +303,7 @@ namespace GAL
 		}
 
 		template<typename ALLOCATOR>
-		void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<BuildAccelerationStructureInfo*> infos, const ALLOCATOR& allocator) const
-		{
+		void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<BuildAccelerationStructureInfo*> infos, const ALLOCATOR& allocator) const {
 			GTSL::Vector<VkAccelerationStructureBuildGeometryInfoKHR, ALLOCATOR> buildGeometryInfos(infos.ElementCount(), allocator);
 			GTSL::Vector<GTSL::Vector<VkAccelerationStructureGeometryKHR, ALLOCATOR>, ALLOCATOR> geoPerAccStructure(infos.ElementCount(), allocator);
 			GTSL::Vector<GTSL::Vector<VkAccelerationStructureBuildRangeInfoKHR, ALLOCATOR>, ALLOCATOR> buildRangesPerAccelerationStructure(infos.ElementCount(), allocator);
@@ -320,8 +316,7 @@ namespace GAL
 				buildRangesPerAccelerationStructure.EmplaceBack(source.Geometries.ElementCount(), allocator);
 				buildRangesRangePerAccelerationStructure.EmplaceBack(buildRangesPerAccelerationStructure[accStrInfoIndex].begin());
 
-				for (GTSL::uint32 i = 0; i < source.Geometries.ElementCount(); ++i)
-				{
+				for (GTSL::uint32 i = 0; i < source.Geometries.ElementCount(); ++i) {
 					VkAccelerationStructureGeometryKHR accelerationStructureGeometry; VkAccelerationStructureBuildRangeInfoKHR buildRange;
 					buildGeometryAndRange(source.Geometries[i], accelerationStructureGeometry, buildRange);
 					geoPerAccStructure[accStrInfoIndex].EmplaceBack(accelerationStructureGeometry);

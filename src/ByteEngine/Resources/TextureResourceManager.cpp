@@ -12,6 +12,8 @@
 //#define STBI_NO_GIF
 #include "stb_image.h"
 
+#include <GTSL/JSON.hpp>
+
 #undef Extract
 
 TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
@@ -23,6 +25,10 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	query_path += u8"/resources/*.png";
 	auto index_path = GetResourcePath(GTSL::ShortString<32>(u8"Textures"), GTSL::ShortString<32>(u8"beidx"));
 	auto package_path = GetResourcePath(GTSL::ShortString<32>(u8"Textures"), GTSL::ShortString<32>(u8"bepkg"));
+
+	GTSL::String indexFileString(5192, GetTransientAllocator());
+	auto serializer = GTSL::MakeSerializer(indexFileString);
+	GTSL::StartArray(serializer, indexFileString, u8"textures");
 
 	switch (indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true)) {
 	case GTSL::File::OpenResult::OK: break;
@@ -59,6 +65,17 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 
 				texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 
+				GTSL::StartObject(serializer, indexFileString);
+					GTSL::Insert(serializer, indexFileString, u8"name", fileName);
+					GTSL::Insert(serializer, indexFileString, u8"format", GTSL::StringView(u8"INT_4_8_C_0123"));
+					GTSL::Insert(serializer, indexFileString, u8"byteOffset", packageFile.GetSize());
+					GTSL::StartArray(serializer, indexFileString, u8"extent");
+						GTSL::Insert(serializer, indexFileString, x);
+						GTSL::Insert(serializer, indexFileString, y);
+						GTSL::Insert(serializer, indexFileString, 1);
+					GTSL::EndArray(serializer, indexFileString);
+				GTSL::EndObject(serializer, indexFileString);
+
 				packageFile.Write(GTSL::Range<byte*>(size, data));
 
 				textureInfos.Emplace(hashed_name, texture_info);
@@ -80,11 +97,15 @@ TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureRes
 	default: ;
 	}
 
+	GTSL::EndArray(serializer, indexFileString);
+
 	GTSL::Buffer<BE::TAR> indexFileBuffer(2048, 32, GetTransientAllocator());
 	indexFile.Read(indexFileBuffer);
 	Extract(textureInfos, indexFileBuffer);
 
 	mappedFile.Open(GetResourcePath(u8"Textures.bepkg"), 1024*1024*1024, GTSL::File::READ);
+
+	GTSL::EndSerializer(indexFileString, serializer);
 }
 
 TextureResourceManager::~TextureResourceManager()

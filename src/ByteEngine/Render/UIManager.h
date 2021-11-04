@@ -4,7 +4,7 @@
 
 #include <GTSL/Extent.h>
 #include <GTSL/HashMap.hpp>
-#include <GTSL/FixedVector.h>
+#include <GTSL/FixedVector.hpp>
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vectors.h>
@@ -175,8 +175,8 @@ public:
 	
 	//[[nodiscard]] auto GetOrganizersAspectRatio() const { return organizerAspectRatios.GetRange(); }
 
-	[[nodiscard]] auto& GetOrganizers() const { return organizers; }
-	[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
+	//[[nodiscard]] auto& GetOrganizers() const { return organizers; }
+	//[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
 	void SetSquarePosition(uint16 square, GTSL::Vector2 pos)
 	{
 		BE_ASSERT(pos.X() >= -1.f && pos.X() <= 1.0f && pos.Y() >= -1.0f && pos.Y() <= 1.0f);
@@ -256,10 +256,10 @@ private:
 	};
 	GTSL::FixedVector<SizingParameters, BE::PAR> organizerSizingPolicies;
 	
-	GTSL::Tree<uint32, BE::PAR> organizerTree;
+	//GTSL::Tree<uint32, BE::PAR> organizerTree;
 	
 	GTSL::FixedVector<uint32, BE::PAR> organizersAsPrimitives;
-	GTSL::FixedVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
+	//GTSL::FixedVector<decltype(organizerTree)::Node*, BE::PAR> organizers;
 	
 	GTSL::Extent2D realExtent;
 

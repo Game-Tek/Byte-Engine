@@ -37,8 +37,8 @@ namespace GAL
 			memoryRequirements->MemoryTypes = vkMemoryRequirements.memoryTypeBits;
 		}
 		
-		void Initialize(const VulkanRenderDevice* renderDevice, const VulkanDeviceMemory deviceMemory, const GTSL::uint32 offset) {
-			//SET_NAME(image, VK_OBJECT_TYPE_IMAGE, createInfo);
+		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, const VulkanDeviceMemory deviceMemory, const GTSL::uint32 offset) {
+			setName(renderDevice, image, VK_OBJECT_TYPE_IMAGE, name);
 			renderDevice->VkBindImageMemory(renderDevice->GetVkDevice(), image, deviceMemory.GetVkDeviceMemory(), offset);
 		}
 		

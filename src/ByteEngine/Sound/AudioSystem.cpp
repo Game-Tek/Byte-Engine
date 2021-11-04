@@ -1,6 +1,6 @@
 #include "AudioSystem.h"
 
-#include <GTSL/Algorithm.h>
+#include <GTSL/Algorithm.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/Math/Math.hpp>
 

@@ -1,6 +1,6 @@
 #include "ByteEngine/Object.h"
 
-#include <GTSL/Thread.h>
+#include <GTSL/Thread.hpp>
 
 
 #include "ByteEngine/Application/Application.h"

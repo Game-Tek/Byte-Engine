@@ -1,7 +1,5 @@
 #pragma once
 
-#include <GAL/Vulkan/VulkanPipelines.h>
-
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Object.h"
 
@@ -9,12 +7,12 @@
 
 #include <GTSL/Vector.hpp>
 #include <GTSL/Atomic.hpp>
-#include <GTSL/Algorithm.h>
+#include <GTSL/Algorithm.hpp>
 #include <GTSL/Semaphore.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/BlockingQueue.h>
-#include <GTSL/Thread.h>
-#include <GTSL/Tuple.h>
+#include <GTSL/Thread.hpp>
+#include <GTSL/Tuple.hpp>
 
 //https://github.com/mvorbrodt/blog
 
@@ -56,9 +54,9 @@ public:
 			}
 		};
 
-		for (uint8 i = 0; i < threadCount; ++i) { //initialize all queues first, as threads try to access ALL queues on initialization
-			queues.EmplaceBack(); //don't remove we need to force initialization of blocking queues
-		}
+		//for (uint8 i = 0; i < threadCount; ++i) { //initialize all queues first, as threads try to access ALL queues on initialization
+		//	queues.EmplaceBack(); //don't remove we need to force initialization of blocking queues
+		//}
 		
 		for (uint8 i = 0; i < threadCount; ++i) {
 			//Constructing threads with function and I parameter. i + 1 is because we leave id 0 to the main thread
@@ -67,10 +65,12 @@ public:
 		}
 	}
 
+	ThreadPool(const ThreadPool&) = delete;
+
 	~ThreadPool()
 	{
-		for (auto& queue : queues) { queue.End(); }
-		for (auto& thread : threads) { thread.Join(GetPersistentAllocator()); }
+		for (uint32 i = 0; i < threadCount; ++i) { queues[i].End(); }
+		for (uint32 i = 0; i < threadCount; ++i) { threads[i].Join(GetPersistentAllocator()); }
 	}
 
 	template<typename F, typename... ARGS>
@@ -106,7 +106,7 @@ private:
 	const uint8 threadCount = 0;
 	GTSL::Atomic<uint32> index{ 0 }, runTasks{ 0 };
 	
-	GTSL::StaticVector<GTSL::BlockingQueue<Task>, 32> queues;
+	std::array<GTSL::BlockingQueue<Task>, 32> queues;
 	GTSL::StaticVector<GTSL::Thread, 32> threads;
 
 	template<typename T, typename... ARGS>

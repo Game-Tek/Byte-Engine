@@ -3,12 +3,13 @@
 #include <GTSL/String.hpp>
 #include "ByteEngine/Application/AllocatorReferences.h"
 #include <GAL/RenderCore.h>
-#include <locale>
+//#include <locale>
 #include <GTSL/HashMap.hpp>
 #include <ByteEngine/Id.h>
 #include <GTSL/Vector.hpp>
 #include <GAL/Pipelines.h>
 
+//Object types are always stored ass the interface types, not the end target's name
 using StructElement = GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>;
 
 struct Node {
@@ -53,7 +54,7 @@ struct Shader {
 
 	Shader(const GTSL::ShortString<32> name, const Class clss) : Name(name), Class(clss) {}
 
-	void AddTexture(const GTSL::ShortString<32> element) { Textures.EmplaceBack(element); }
+	void AddShaderParameter(const StructElement element) { ShaderParameters.EmplaceBack(element); }
 
 	void AddInput(const Node& node) { Inputs.EmplaceBack(&node); }
 	void AddLayer(const StructElement element) {
@@ -80,7 +81,7 @@ struct Shader {
 	GTSL::StaticVector<StructElement, 8> Layers;
 	GAL::ShaderType TargetSemantics;
 
-	GTSL::StaticVector<GTSL::ShortString<32>, 8> Textures;
+	GTSL::StaticVector<StructElement, 8> ShaderParameters;
 	GTSL::StaticVector<StructElement, 8> Outputs;
 
 	//vertex
@@ -124,10 +125,10 @@ void AddDefaults(GTSL::String<T>& string, GAL::ShaderType shaderType) {
 
 template<typename T>
 void AddDataTypesAndDescriptors(GTSL::String<T>& string) {	
-	string += u8"layout(set = 0, binding = 0) uniform sampler2D textures[];\n"; //textures descriptor
-	string += u8"layout(set = 0, binding = 1) uniform image2D images[];\n"; //textures descriptor	
-	string += u8"#define ptr_t uint64_t\n";
+	string += u8"layout(set=0, binding=0) uniform sampler2D textures[];\n"; //textures descriptor
+	string += u8"layout(set=0, binding=1) uniform image2D images[];\n"; //textures descriptor
 	string += u8"struct TextureReference { uint Instance; };\n"; //basic datatypes
+	string += u8"struct ImageReference { uint Instance; };\n"; //basic datatypes
 }
 
 inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
@@ -147,21 +148,57 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	GTSL::HashMap<Id, ShaderFunction, GTSL::DefaultAllocatorReference> functions(16, 1.0f);
 	GTSL::HashMap<Id, GTSL::StaticVector<StructElement, 32>, GTSL::DefaultAllocatorReference> structs(16, 1.0f);
 
+	auto resolveTypeName = [&](const GTSL::StringView name) {
+		switch (Hash(name)) {
+		case GTSL::Hash(u8"float32"): return GTSL::StringView(u8"float");
+		case GTSL::Hash(u8"vec2f"): return GTSL::StringView(u8"vec2");
+		case GTSL::Hash(u8"vec3f"): return GTSL::StringView(u8"vec3");
+		case GTSL::Hash(u8"vec4f"): return GTSL::StringView(u8"vec4");
+		case GTSL::Hash(u8"uint64"): return GTSL::StringView(u8"uint64_t");
+		case GTSL::Hash(u8"uint32"): return GTSL::StringView(u8"uint");
+		case GTSL::Hash(u8"uint16"): return GTSL::StringView(u8"uint16_t");
+		case GTSL::Hash(u8"ptr_t"): return GTSL::StringView(u8"uint64_t");
+		}
+
+		return name;
+	};
+
 	auto declFunc = [&](const GTSL::StringView ret, const GTSL::StringView name, GTSL::Range<const StructElement*> parameters, const GTSL::StringView impl) {
 		auto functionByName = functions.TryEmplace(Id(name));
-		BE_ASSERT(functionByName, u8"Already exists");
-		auto& functionVersion = functionByName.Get().FunctionVersions.EmplaceBack(); //TODO: check if function sig. exists
-		functionVersion.ReturnType = ret;
-		functionVersion.Parameters.PushBack(parameters);
 
-		string += ret; string += u8' ';  string += name;
+		if(!functionByName) {
+			auto eq = true;
+
+			for(uint32 f = 0; f < functionByName.Get().FunctionVersions.GetLength(); ++f) {
+				bool et = true;
+
+				if (parameters.ElementCount() == GTSL::Range<const StructElement*>(functionByName.Get().FunctionVersions[f].Parameters).ElementCount()) {
+					for (uint64 i = 0; i < parameters.ElementCount(); ++i) {
+						if (parameters[i].First != functionByName.Get().FunctionVersions[f].Parameters[i].First or parameters[i].Second != functionByName.Get().FunctionVersions[f].Parameters[i].Second) { et = false; break; }
+					}
+				} else {
+					et = false;
+				}
+
+				BE_ASSERT(!et, u8"Already exists");
+			}
+		}
+
+		auto& functionVersion = functionByName.Get().FunctionVersions.EmplaceBack();
+		functionVersion.ReturnType = ret;
+
+		for(auto& e : parameters) {
+			functionVersion.Parameters.EmplaceBack(e.First, e.Second);
+		}
+
+		string += resolveTypeName(ret); string += u8' ';  string += name;
 
 		string += u8"(";
 
 		uint32 paramCount = parameters.ElementCount();
 
 		for(uint32 i = 0; i < paramCount; ++i) {
-			string += parameters[i].First; string += u8' '; string += parameters[i].Second;
+			string += resolveTypeName(parameters[i].First); string += u8' '; string += parameters[i].Second;
 			if (i != paramCount - 1) { string += u8", "; }
 		}
 
@@ -173,12 +210,19 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	auto declStruct = [&](GTSL::ShortString<32> ne, GTSL::Range<const StructElement*> structElements, bool ref, bool readOnly = true) {
 		GTSL::StaticString<32> name(ne);
 
-		if (ref)
+		if (ref) {
 			name += u8"Pointer";
+		}
 
 		auto& st = structs.Emplace(Id(name));
 
-		if (!structElements.ElementCount()) { return; }
+		if (!structElements.ElementCount()) {
+			st.EmplaceBack(u8"uint32", u8"dummy");
+		} else {
+			for (auto& e : structElements) {
+				st.EmplaceBack(e);
+			}
+		}
 
 		if (ref) {
 			string += u8"layout(buffer_reference, scalar, buffer_reference_align = 4) ";
@@ -193,38 +237,19 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 		string += name; string += u8" { ";
 
-		for (auto& e : structElements) {
-			string += e.First; string += u8' '; string += e.Second; string += u8"; ";
-			st.EmplaceBack(e);
+		for (auto& e : st) {
+			string += resolveTypeName(e.First); string += u8' '; string += e.Second; string += u8"; ";
 		}
 
 		string += u8"};\n";
 	};
 
 	//global data
-	declStruct(u8"globalData", GTSL::StaticVector<StructElement, 32>{ { u8"uint", u8"dummy" }}, true);
+	declStruct(u8"globalData", {}, true);
 
-	if (shader.Textures.GetLength()) {
-		GTSL::StaticVector<StructElement, 32> strEl;
+	declStruct(u8"shaderParameters", shader.ShaderParameters, true);
+	shader.AddLayer({ u8"shaderParameters", u8"shader_parameters" });
 
-		for (auto& e : shader.Textures) {
-			strEl.EmplaceBack(u8"TextureReference", e);
-		}
-
-		declStruct(u8"shaderParameters", strEl, true);
-
-		shader.AddLayer({ u8"shaderParameters", u8"shader_parameters" });
-	}
-
-	auto evalNode = [&](const Node* node, uint32 offset, uint32* paramCount, auto&& self) -> GTSL::ShortString<32> {
-	};
-
-	// LEAF  LEAF  LEAF
-	//   \   /  \   /
-	//    MID    MID
-	//	    \   /
-	//       TOP
-	// Process leaves first, and emit code
 	auto placeNode = [&](const Node* node, auto&& self) -> GTSL::ShortString<32> {
 		switch (node->ValueType) {
 		case Node::Type::VARIABLE: {
@@ -233,32 +258,11 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 			return node->Type;
 		}
 		case Node::Type::VAR_DEC: {
-			string += node->Type; string += u8' '; string += node->Name;
+			string += resolveTypeName(node->Type); string += u8' '; string += node->Name;
 			for (auto& e : node->Inputs) { self(e.Other, self); }
 			break;
 		}
 		case Node::Type::FUNCTION: {			
-			//auto& functionCollection = functions[Id(node->Name)]; uint32 l = 0;
-			//
-			//for (; l < functionCollection.FunctionVersions.GetLength(); ++l) {
-			//	for (; p < functionCollection.FunctionVersions[l].Parameters.GetLength(); ++p) {
-			//		if (functionCollection.FunctionVersions[l].Parameters[p].First != self(node->Inputs[p].Other, p, nullptr, self)) { //todo: fix, will access node's inputs, when none are available
-			//			break;
-			//		}
-			//	}
-			//
-			//	if (p == functionCollection.FunctionVersions[l].Parameters.GetLength()) { break; }
-			//}
-			//if (l == functionCollection.FunctionVersions.GetLength()) { BE_ASSERT(false, u8"No compatible override found!"); }
-			//for(uint32 i = 0; i < t; ++i) {
-			//	string += node->Name; string += u8"("; }
-			//for (uint32 i = 0, pg = 0; auto & e : node->Inputs) {
-			//	self(e.Other, self);
-			//	if((i % (paramCount - 1) == 0 && i)) { string += u8")"; }
-			//	if (i != node->Inputs.GetLength() - 1) { string += u8", "; }
-			//	++i; pg = i / paramCount;
-			//}
-			
 			string += node->Name; string += u8"(";
 
 			for (uint32 i = 0; auto & e : node->Inputs) {
@@ -284,7 +288,21 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 			break;
 		}
 		case Node::Type::LITERAL: {
-			string += node->Type; string += u8'('; string += node->Name; string += u8')';
+			string += resolveTypeName(node->Type);
+			string += u8'(';
+
+			if (node->Inputs.GetLength()) {
+				for (auto& e : node->Inputs) {
+					self(e.Other, self);
+					string += u8", ";
+				}
+
+				DropLast(string, u8',');
+			} else {
+				string += node->Name;
+			}
+
+			string += u8')';
 			break;
 		}
 		case Node::Type::SHADER_RESULT: {
@@ -356,22 +374,18 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	};
 
 	if (shader.Class == Shader::Class::PIXEL) {
-		shader.VertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ u8"dummy", GAL::ShaderDataType::UINT32 });
+		//shader.VertexElements.EmplaceBack();
 	}
 
 	genVertexStruct();
 
 	if (shader.Class != Shader::Class::COMPUTE) {
 		GTSL::StaticVector<StructElement, 32> elements;
-		elements.EmplaceBack(u8"uint16_t", u8"i");
+		elements.EmplaceBack(u8"uint16", u8"i");
 		declStruct(u8"index", elements, true);
 	}
 
-	{
-		GTSL::StaticVector<StructElement, 32> elements;
-		elements.EmplaceBack(u8"uint", u8"dummy");
-		declStruct(u8"renderPass", elements, true);
-	}
+	declStruct(u8"renderPass", {}, true);
 
 	switch (shader.Class) {
 	case Shader::Class::VERTEX: {
@@ -379,7 +393,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		elements.EmplaceBack(u8"mat4", u8"ModelMatrix");
 		elements.EmplaceBack(u8"vertexPointer", u8"VertexBuffer");
 		elements.EmplaceBack(u8"indexPointer", u8"IndexBuffer");
-		elements.EmplaceBack(u8"uint", u8"MaterialInstance");
+		elements.EmplaceBack(u8"uint32", u8"MaterialInstance");
 		declStruct(u8"instanceData", elements, true);
 		shader.AddLayer({ u8"instanceData", u8"instance" });
 
@@ -388,7 +402,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 				const auto& att = shader.VertexElements[i];
 				GTSL::StaticString<64> name(u8"in_"); name += att.Identifier;
 
-				string += u8"layout(location = "; ToString(string, i); string += u8") in ";
+				string += u8"layout(location="; ToString(string, i); string += u8") in ";
 
 				switch (att.Type) {
 				case GAL::ShaderDataType::FLOAT:  string += u8"float"; break;
@@ -416,14 +430,14 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		elements.EmplaceBack(u8"mat4", u8"ModelMatrix");
 		elements.EmplaceBack(u8"vertexPointer", u8"VertexBuffer");
 		elements.EmplaceBack(u8"indexPointer", u8"IndexBuffer");
-		elements.EmplaceBack(u8"uint", u8"MaterialInstance");
+		elements.EmplaceBack(u8"uint32", u8"MaterialInstance");
 		declStruct(u8"instanceData", elements, true);
 		shader.AddLayer({ u8"instanceData", u8"instance" });
 
 		if (shader.TargetSemantics == GAL::ShaderType::FRAGMENT) {
 			for (uint8 i = 0; i < shader.Outputs.GetLength(); ++i) {
-				string += u8"layout(location ="; ToString(string, i); string += u8") out ";
-				string += shader.Outputs[i].First; string += u8" out_"; string += shader.Outputs[i].Second; string += u8";\n";
+				string += u8"layout(location="; ToString(string, i); string += u8") out ";
+				string += resolveTypeName(shader.Outputs[i].First); string += u8" out_"; string += shader.Outputs[i].Second; string += u8";\n";
 			}
 		}
 
@@ -437,7 +451,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 	{ //push constant
 		string += u8"layout(push_constant, scalar) uniform _invocationInfo { ";
-		for (auto& l : shader.Layers) { string += l.First; string += u8"Pointer"; string += u8' '; string += l.Second; string += u8"; "; }
+		for (auto& l : shader.Layers) { string += resolveTypeName(l.First); string += u8"Pointer"; string += u8' '; string += l.Second; string += u8"; "; }
 		string += u8"} invocationInfo;\n";
 	}
 
@@ -446,7 +460,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		declFunc(u8"mat4", u8"GetInstancePosition", {}, u8"return invocationInfo.instance.ModelMatrix;");
 		declFunc(u8"mat4", u8"GetCameraViewMatrix", {}, u8"return invocationInfo.camera.view;");
 		declFunc(u8"mat4", u8"GetCameraProjectionMatrix", {}, u8"return invocationInfo.camera.proj;");
-		declFunc(u8"vec4", u8"GetVertexPosition", {}, u8"return vec4(in_POSITION, 1.0);");
+		declFunc(u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(in_POSITION, 1.0);");
 		
 		break;
 	}
@@ -464,7 +478,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 	switch (shader.TargetSemantics) {
 	case GAL::ShaderType::VERTEX: {
-		string += u8"layout(location = 0) out vertexData { vec2 texture_coordinates; } vertexOut;\n";
+		string += u8"layout(location=0) out vertexData { vec2 texture_coordinates; } vertexOut;\n";
 		break;
 	}
 	case GAL::ShaderType::MESH:
@@ -472,7 +486,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	case GAL::ShaderType::ANY_HIT:
 	case GAL::ShaderType::INTERSECTION: {
 		GTSL::StaticVector<StructElement, 2> parameters{};
-		declFunc(GTSL::Range(u8"vec4"), GTSL::Range(u8"GetVertexPosition"), parameters, GTSL::Range(u8"return vec4(in_Position, 1.0);"));
+		declFunc(u8"vec4f", u8"GetVertexPosition", parameters, u8"return vec4(in_Position, 1.0);");
 
 		{
 			GTSL::StaticVector<StructElement, 32> elements;
@@ -484,12 +498,12 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 		{
 			GTSL::StaticVector<StructElement, 32> elements;
-			elements.EmplaceBack(u8"uint16_t", u8"i");
+			elements.EmplaceBack(u8"uint16", u8"i");
 			declStruct(u8"index", elements, true);
 		}
-		
+
 		string += u8"hitAttributeEXT vec2 hitBarycenter;\n";
-		string += u8"layout(location = 0) rayPayloadInEXT vec4 payload;\n";
+		string += u8"layout(location=0) rayPayloadInEXT vec4 payload;\n";
 
 		break;
 	}
@@ -497,17 +511,20 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	case GAL::ShaderType::TESSELLATION_EVALUATION: break;
 	case GAL::ShaderType::GEOMETRY: break;
 	case GAL::ShaderType::FRAGMENT: {
-		string += u8"layout(location = 0) in vertexData { vec2 texture_coordinates; } vertexIn;\n";
+		string += u8"layout(location=0) in vertexData { vec2 texture_coordinates; } vertexIn;\n";
 
-		declFunc(GTSL::Range(u8"vec2"), GTSL::Range(u8"GetFragmentPosition"), {}, GTSL::Range(u8"return gl_FragCoord.xy;"));
-		declFunc(GTSL::Range(u8"vec2"), GTSL::Range(u8"GetVertexTextureCoordinates"), {}, GTSL::Range(u8"return vertexIn.texture_coordinates;"));
+		declFunc(u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
+		declFunc(u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return vertexIn.texture_coordinates;");
 
 		break;
 	}
-	case GAL::ShaderType::COMPUTE: break;
+	case GAL::ShaderType::COMPUTE: {
+		declFunc(u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
+		break;
+	}
 	case GAL::ShaderType::TASK: break;
 	case GAL::ShaderType::RAY_GEN: {
-		string += u8"layout(location = 0) rayPayloadEXT vec4 payload;\n";
+		string += u8"layout(location=0) rayPayloadEXT vec4 payload;\n";
 
 		{
 			GTSL::StaticVector<StructElement, 32> elements;
@@ -517,56 +534,51 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		
 		{
 			GTSL::StaticVector<StructElement, 32> elements;
-			elements.EmplaceBack(u8"uint64_t", u8"AccelerationStructure");
-			elements.EmplaceBack(u8"uint", u8"RayFlags");
-			elements.EmplaceBack(u8"uint", u8"SBTRecordOffset"); elements.EmplaceBack(u8"uint", u8"SBTRecordStride"); elements.EmplaceBack(u8"uint", u8"MissIndex"); elements.EmplaceBack(u8"uint", u8"Payload");
-			elements.EmplaceBack(u8"float", u8"tMin");
-			elements.EmplaceBack(u8"float", u8"tMax");
+			elements.EmplaceBack(u8"uint64", u8"AccelerationStructure");
+			elements.EmplaceBack(u8"uint32", u8"RayFlags");
+			elements.EmplaceBack(u8"uint32", u8"SBTRecordOffset"); elements.EmplaceBack(u8"uint32", u8"SBTRecordStride"); elements.EmplaceBack(u8"uint32", u8"MissIndex"); elements.EmplaceBack(u8"uint32", u8"Payload");
+			elements.EmplaceBack(u8"float32", u8"tMin");
+			elements.EmplaceBack(u8"float32", u8"tMax");
 			declStruct(u8"_rayTrace", elements, true);
 		}
 
-		declFunc(GTSL::Range(u8"vec2"), GTSL::Range(u8"GetFragmentPosition"), {}, GTSL::Range(u8"const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5f);\nreturn pixelCenter / vec2(gl_LaunchSizeEXT.xy);"));
+		declFunc(u8"vec2f", u8"GetFragmentPosition", {}, u8"const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5f);\nreturn pixelCenter / vec2(gl_LaunchSizeEXT.xy);");
 
 		{
 			GTSL::StaticVector<StructElement, 2> parameters{ { u8"vec3", u8"origin" }, { u8"vec3", u8"direction" } };
-			declFunc(GTSL::Range(u8"void"), GTSL::Range(u8"TraceRay"), parameters, GTSL::Range(u8"_rayTrace r = _rayTrace(invocationInfo.RayDispatchData);\ntraceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, origin, r.tMin, direction, r.tMax, r.Payload);"));
+			declFunc(u8"void", u8"TraceRay", parameters, u8"_rayTrace r = _rayTrace(invocationInfo.RayDispatchData);\ntraceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, origin, r.tMin, direction, r.tMax, r.Payload);");
 		}
 
 		break;
 	}
 	case GAL::ShaderType::MISS: {
-		string += u8"layout(location = 0) rayPayloadInEXT vec4 payload;\n";
+		string += u8"layout(location=0) rayPayloadInEXT vec4 payload;\n";
 		break;
 	}
 	case GAL::ShaderType::CALLABLE: break;
 	}
 	
-	{
-		GTSL::StaticVector<StructElement, 2> parameters{ { u8"vec2", u8"coords" } };
-		declFunc(u8"vec3", u8"Barycenter", parameters, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
-	} {
-		GTSL::StaticVector<StructElement, 2> parameters{ { u8"TextureReference", u8"textureReference" }, { u8"vec2", u8"texCoord" } };
-		declFunc(u8"vec4", u8"Sample", parameters, u8"return texture(textures[nonuniformEXT(textureReference.Instance)], texCoord);");
-	} {
-		GTSL::StaticVector<StructElement, 2> parameters{ { u8"float", u8"cosTheta" }, { u8"vec3", u8"F0"} };
-		declFunc(u8"vec3", u8"FresnelSchlick", parameters, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
-	}
-	
+	declFunc(u8"vec3f", u8"Barycenter", GTSL::StaticVector<StructElement, 2>{ { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
+	declFunc(u8"vec4f", u8"Sample", GTSL::StaticVector<StructElement, 2>{ { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(textures[nonuniformEXT(tex.Instance)], texCoord);");
+	declFunc(u8"vec4f", u8"Sample", GTSL::StaticVector<StructElement, 4>{ { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(textures[nonuniformEXT(tex.Instance)], ivec2(pos), 0);");
+	declFunc(u8"vec4f", u8"Sample", GTSL::StaticVector<StructElement, 4>{ { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
+	declFunc(u8"void", u8"Write", GTSL::StaticVector<StructElement, 4>{ { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
+	declFunc(u8"float32", u8"X", GTSL::StaticVector<StructElement, 4>{ { u8"vec4f", u8"vec" } }, u8"return vec.x;");
+	declFunc(u8"float32", u8"Y", GTSL::StaticVector<StructElement, 4>{ { u8"vec4f", u8"vec" } }, u8"return vec.y;");
+	declFunc(u8"float32", u8"Z", GTSL::StaticVector<StructElement, 4>{ { u8"vec4f", u8"vec" } }, u8"return vec.z;");
+	declFunc(u8"vec3f", u8"FresnelSchlick", GTSL::StaticVector<StructElement, 2>{ { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
+	declFunc(u8"vec3f", u8"Normalize", GTSL::StaticVector<StructElement, 2>{ { u8"vec3f", u8"a" } }, u8"return normalize(a);");
+	declFunc(u8"float32", u8"Sigmoid", GTSL::StaticVector<StructElement, 4>{ { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
 	//{
 	//	GTSL::StaticVector<GTSL::Pair<GTSL::StaticString<32>, GTSL::StaticString<32>>, 3> parameters{ { u8"vec2", u8"texture_coordinate" }, { u8"float", u8"depth_from_depth_buffer" }, { u8"mat4", u8"inverse_projection_matrix" } };
 	//	declFunc(u8"vec3", u8"WorldPosFromDepth", parameters, u8"vec3 clip_space_position = vec3(texture_coordinate, depth_from_depth_buffer) * 2.0 - vec3(1.0);\nvec4 view_position = vec4(vec2(inverse_projection_matrix[0][0], inverse_projection_matrix[1][1]) * clip_space_position.xy, inverse_projection_matrix[2][3] * clip_space_position.z + inverse_projection_matrix[3][3]);\nreturn (view_position.xyz / view_position.w);\n");
-	//}
-	
-	{
-		GTSL::StaticVector<StructElement, 2> parameters{ { u8"vec3", u8"a" } };
-		declFunc(u8"vec3", u8"Normalize", parameters, u8"return normalize(a);");
-	}
+	//}	
 
 	{ //main
 		switch (shader.TargetSemantics) {
 		case GAL::ShaderType::COMPUTE: {
 			GTSL::Extent3D size = shader.threadSize;
-			string += u8"layout(local_size_x="; ToString(string, size.Height); string += u8", local_size_y="; ToString(string, size.Width); string += u8", local_size_z="; ToString(string, size.Depth); string += u8") in;\n";
+			string += u8"layout(local_size_x="; ToString(string, size.Width); string += u8", local_size_y="; ToString(string, size.Height); string += u8", local_size_z="; ToString(string, size.Depth); string += u8") in;\n";
 			break;
 		}
 		case GAL::ShaderType::MESH: {
@@ -620,4 +632,116 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 	}
 
 	return string;
+}
+
+#include <spirv-headers/spirv.hpp>
+
+inline void GenSPIRV() {
+	GTSL::StaticVector<uint32, 1024> spirv;
+
+	const bool debugMode = true; uint32 id = 0;
+
+	//first words
+	spirv.EmplaceBack(spv::MagicNumber); //SPIR-V magic num
+	spirv.EmplaceBack(0 << 24 | 1 << 16 | 5 << 8 | 0); //SPIR-V version number
+	spirv.EmplaceBack(0); //SPIR-V generator number
+	spirv.EmplaceBack(0); //bound
+	spirv.EmplaceBack(0); //instruction schema
+
+	auto addInst = [&]<typename... ARGS>(uint16 enumerant, ARGS&&... args) {
+		auto wordCount = uint16(1) + static_cast<uint16>(sizeof...(ARGS));
+		spirv.EmplaceBack(wordCount << 16 | enumerant);
+		(spirv.EmplaceBack(args), ...);
+	};
+
+	auto addInstVar = [&]<typename... ARGS>(uint16 enumerant, GTSL::Range<const uint32*> words) {
+		auto wordCount = uint16(1) + static_cast<uint16>(words.ElementCount());
+		spirv.EmplaceBack(wordCount << 16 | enumerant);
+		spirv.PushBack(words);
+	};
+
+	auto packString = [&](const GTSL::StringView string, auto& cont) {
+		for (uint32 u = 0; u < string.GetBytes(); ++u) {
+			uint32& ch = cont.EmplaceBack(0u);
+
+			for (uint32 t = 0; t < 4 && u < string.GetBytes(); ++t, ++u) {
+				ch |= static_cast<uint32>(string[u + t]) << (t * 8);
+			}
+		}
+
+		if(GTSL::ModuloByPowerOf2(string.GetBytes(), 4) == 0) { //if all non null terminator characters are a multiple of 4 bytes that means that all groups of four bytes where put in an int and no free byte was left to represent a null terminator
+			cont.EmplaceBack(0u);
+		}
+	};
+
+	//capability section
+	addInst(spv::OpCapability, spv::Capability::CapabilityInt64);
+	addInst(spv::OpCapability, spv::Capability::CapabilityInt16);
+	addInst(spv::OpCapability, spv::Capability::CapabilityImageReadWrite);
+	addInst(spv::OpCapability, spv::Capability::CapabilitySampledImageArrayDynamicIndexing);
+	addInst(spv::OpCapability, spv::Capability::CapabilitySampledImageArrayNonUniformIndexing);
+	addInst(spv::OpCapability, spv::Capability::CapabilityStorageImageArrayDynamicIndexing);
+	addInst(spv::OpCapability, spv::Capability::CapabilityStorageImageArrayNonUniformIndexing);
+	addInst(spv::OpCapability, spv::Capability::CapabilityVariablePointers);
+	addInst(spv::OpCapability, spv::Capability::CapabilityVariablePointersStorageBuffer);
+	addInst(spv::OpCapability, spv::Capability::CapabilityPhysicalStorageBufferAddresses);
+	
+	//extension section
+	//memory model section
+	addInst(spv::OpMemoryModel, spv::AddressingModel::AddressingModelPhysical64, spv::MemoryModel::MemoryModelVulkan);
+	//entry points section
+
+	//Interface is a list of <id> of global OpVariable instructions.
+	//These declare the set of global variables from a module that form the interface of this entry point.
+	//The set of Interface <id> must be equal to or a superset of the global OpVariable Result <id> referenced by the entry point’s static call tree,
+	//within the interface’s storage classes. Before version 1.4, the interface’s storage classes are limited to the Input and Output storage classes.
+	//Starting with version 1.4, the interface’s storage classes are all storage classes used in declaring all global variables
+	//referenced by the entry point’s call tree.
+	//Interface <id> are forward references.Before version 1.4, duplication of these <id> is tolerated.Starting with version 1.4,
+	//an <id> must not appear more than once.
+	addInst(spv::OpEntryPoint, spv::ExecutionModelVertex, 0/*Result<id> of an OpFunction*/, 0/*literal name*/);
+	//execution modes section
+
+	auto declStruct = [&](const GTSL::StringView name, const GTSL::Range<const StructElement*> params) {
+		auto structId = id++;
+
+		if(debugMode) {
+			GTSL::StaticVector<uint32, 32> chs;
+			chs.EmplaceBack(structId);
+			packString(name, chs);
+			addInstVar(spv::OpName, chs);
+		}
+
+		uint32 byteOffset = 0;
+		for (uint32 i = 0; auto & e : params) {
+			addInst(spv::OpMemberDecorate, structId, i, byteOffset);
+
+			if (debugMode) { //decorate struct members with name if compiling in debug
+				GTSL::StaticVector<uint32, 32> chs;
+
+				chs.EmplaceBack(structId);
+				chs.EmplaceBack(i);
+
+				packString(e.Second, chs);
+
+				addInstVar(spv::OpMemberName, chs);
+			}
+
+			byteOffset += 1;
+			i += 1;
+		}
+	};
+
+	auto declFunc = [&](const GTSL::StringView ret, const GTSL::Range<const StructElement*> params) {
+		auto functionId = id++;
+
+		addInst(spv::OpFunction);
+
+		for(auto& e : params) {
+			addInst(spv::OpFunctionParameter);
+		}
+
+		addInst(spv::OpReturn);
+		addInst(spv::OpFunctionEnd);
+	};
 }

@@ -42,40 +42,40 @@ bool GameApplication::Initialize()
 void GameApplication::PostInitialize()
 {
 	//FRAME START
-	gameInstance->AddStage(u8"FrameStart");
+	applicationManager->AddStage(u8"FrameStart");
 
 	//GAMEPLAY CODE BEGINS
-	gameInstance->AddStage(u8"GameplayStart");
+	applicationManager->AddStage(u8"GameplayStart");
 	//GAMEPLAY CODE ENDS
-	gameInstance->AddStage(u8"GameplayEnd");
+	applicationManager->AddStage(u8"GameplayEnd");
 	
 	//RENDER CODE BEGINS
-	gameInstance->AddStage(u8"RenderStart");
+	applicationManager->AddStage(u8"RenderStart");
 	//RENDER SETUP BEGINS
-	gameInstance->AddStage(u8"RenderStartSetup");
+	applicationManager->AddStage(u8"RenderStartSetup");
 	//RENDER SETUP ENDS
-	gameInstance->AddStage(u8"RenderEndSetup");
+	applicationManager->AddStage(u8"RenderEndSetup");
 	//RENDER IS DISPATCHED
-	gameInstance->AddStage(u8"RenderDo");
+	applicationManager->AddStage(u8"RenderDo");
 	//RENDER DISPATCH IS DONE
-	gameInstance->AddStage(u8"RenderFinished");
+	applicationManager->AddStage(u8"RenderFinished");
 	//RENDER CODE ENDS
-	gameInstance->AddStage(u8"RenderEnd");
+	applicationManager->AddStage(u8"RenderEnd");
 	
 	//FRAME ENDS
-	gameInstance->AddStage(u8"FrameEnd");
+	applicationManager->AddStage(u8"FrameEnd");
 
-	gameInstance->AddEvent(u8"Application", EventHandle(u8"OnFocusGain"));
-	gameInstance->AddEvent(u8"Application", EventHandle(u8"OnFocusLoss"));
+	applicationManager->AddEvent(u8"Application", EventHandle(u8"OnFocusGain"));
+	applicationManager->AddEvent(u8"Application", EventHandle(u8"OnFocusLoss"));
 	
-	auto* renderSystem = gameInstance->AddSystem<RenderSystem>(u8"RenderSystem");
-	auto* renderOrchestrator = gameInstance->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
+	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	gameInstance->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
-	gameInstance->AddSystem<AudioSystem>(u8"AudioSystem");
+	applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
 
 	{
-		bool fullscreen = GetOption(u8"fullscreen");
+		bool fullscreen = GetOption(u8"fullScreen");
 		GTSL::Extent2D screenSize;
 
 		if(fullscreen) {
@@ -96,7 +96,7 @@ void GameApplication::PostInitialize()
 
 	window.SetWindowVisibility(true);
 	
-	gameInstance->AddSystem<CameraSystem>(u8"CameraSystem");
+	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
 	
 	{
 		renderOrchestrator->AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
@@ -110,12 +110,14 @@ void GameApplication::PostInitialize()
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" } );
-		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass);
+		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, applicationManager, GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager"));
 
 		RenderOrchestrator::PassData colorGrading{};
 		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
 		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
-		renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading);
+		if (GetOption(u8"ColorGradingRenderPass")) {
+			auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager"));
+		}
 
 		RenderOrchestrator::PassData rtRenderPass{};
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
@@ -129,20 +131,22 @@ void GameApplication::PostInitialize()
 	}
 
 	
-	auto* uiManager = gameInstance->AddSystem<UIManager>(u8"UIManager");
-	gameInstance->AddSystem<CanvasSystem>(u8"CanvasSystem");
+	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
+	applicationManager->AddSystem<CanvasSystem>(u8"CanvasSystem");
 	
-	gameInstance->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
-	gameInstance->AddSystem<UIRenderManager>(u8"UIRenderManager");
-	gameInstance->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
+	applicationManager->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
+	applicationManager->AddSystem<UIRenderManager>(u8"UIRenderManager");
+	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
 	
-	renderOrchestrator->AddRenderManager(gameInstance, u8"StaticMeshRenderManager", gameInstance->GetSystemReference(u8"StaticMeshRenderManager"));
-	renderOrchestrator->AddRenderManager(gameInstance, u8"UIRenderManager", gameInstance->GetSystemReference(u8"UIRenderManager"));
+	renderOrchestrator->AddRenderManager(applicationManager, u8"StaticMeshRenderManager", applicationManager->GetSystemReference(u8"StaticMeshRenderManager"));
+	renderOrchestrator->AddRenderManager(applicationManager, u8"UIRenderManager", applicationManager->GetSystemReference(u8"UIRenderManager"));
 }	
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
 	Application::OnUpdate(updateInfo);
+
+	mouseCount = 0;
 
 	window.Update(this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this));
 
@@ -322,7 +326,7 @@ void GameApplication::onWindowResize(const Extent2D extent)
 	};
 	
 	if (extent != 0 && extent != oldSize) {
-		gameInstance->AddDynamicTask(u8"windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, u8"FrameStart", u8"RenderStart", MoveRef(ext));
+		applicationManager->AddDynamicTask(u8"windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, u8"FrameStart", u8"RenderStart", MoveRef(ext));
 		oldSize = extent;
 	}
 }
@@ -388,9 +392,9 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	case Window::WindowEvents::FOCUS: {
 		auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
 		if(focusEventData->Focus) {
-			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
+			app->applicationManager->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
 		} else {
-			app->gameInstance->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
+			app->applicationManager->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
 		}
 		break;
 	}
@@ -408,8 +412,10 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	}
 	case GTSL::Window::WindowEvents::MOVING: break;
 	case GTSL::Window::WindowEvents::MOUSE_MOVE: {
-		auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
-		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
+		if (mouseCount++ < GetOption(u8"mouse")) {
+			auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
+			app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
+		}
 		break;
 	}
 	case GTSL::Window::WindowEvents::MOUSE_WHEEL: {

@@ -92,7 +92,7 @@ namespace BE
 		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
 		[[nodiscard]] Logger* GetLogger() const { return logger.GetData(); }
 		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
-		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return gameInstance; }
+		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return applicationManager; }
 
 		template<typename RM>
 		RM* CreateResourceManager()
@@ -128,7 +128,7 @@ namespace BE
 		GTSL::Mutex crashLogMutex;
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
-		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> gameInstance;
+		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> applicationManager;
 
 		GTSL::HashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 

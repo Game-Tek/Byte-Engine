@@ -2,10 +2,10 @@
 
 #include <GTSL/Math/Math.hpp>
 
-Canvas::Canvas() : Object(u8"Canvas"), organizers(4, GetPersistentAllocator()), organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
+Canvas::Canvas() : Object(u8"Canvas"), /*organizers(4, GetPersistentAllocator()),*/ organizerDepth(4, GetPersistentAllocator()), organizersAsPrimitives(4, GetPersistentAllocator()),
 squares(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), organizersPrimitives(4, GetPersistentAllocator()),
 organizerSizingPolicies(4, GetPersistentAllocator()), organizerAlignments(4, GetPersistentAllocator()), organizersPerOrganizer(4, GetPersistentAllocator()),
-queuedUpdates(8, GetPersistentAllocator()), organizerTree(GetPersistentAllocator())
+queuedUpdates(8, GetPersistentAllocator())//, organizerTree(GetPersistentAllocator())
 {
 }
 
@@ -18,10 +18,10 @@ uint16 Canvas::AddOrganizer(const Id organizerName)
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 
-	auto* node = organizerTree.AddChild(nullptr);
-	node->Data = organizer;
-	
-	organizers.EmplaceAt(organizer, node);
+	//auto* node = organizerTree.AddChild(nullptr);
+	//node->Data = organizer;
+	//
+	//organizers.EmplaceAt(organizer, node);
 
 	return organizer;
 }
@@ -34,10 +34,10 @@ uint16 Canvas::AddOrganizer(const Id organizerName, const uint16 parentOrganizer
 	organizersPrimitives.Emplace(4, GetPersistentAllocator());
 	organizersPerOrganizer.Emplace(4, GetPersistentAllocator());
 	
-	auto* child = organizerTree.AddChild(organizers[parentOrganizer]);
-	child->Data = organizer;
-	
-	organizers.EmplaceAt(organizer, child);
+	//auto* child = organizerTree.AddChild(organizers[parentOrganizer]);
+	//child->Data = organizer;
+	//
+	//organizers.EmplaceAt(organizer, child);
 
 	return organizer;
 }

@@ -2,7 +2,7 @@
 
 #include <GAL/Pipelines.h>
 #include <GAL/RenderCore.h>
-#include <GTSL/Algorithm.h>
+#include <GTSL/Algorithm.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
@@ -76,74 +76,34 @@ public:
 	}
 	
 	~ShaderResourceManager() = default;
-
-	enum class ParameterType : uint8
-	{
-		UINT32, FVEC4,
-		TEXTURE_REFERENCE, BUFFER_REFERENCE
-	};
 	
 	struct Parameter {
-		GTSL::StaticString<32> Name;
-		ParameterType Type;
+		GTSL::StaticString<32> Type, Name, Value;
 
 		Parameter() = default;
-		Parameter(const GTSL::Range<const char8_t*> name, const ParameterType type) : Name(name), Type(type) {}
+		Parameter(const GTSL::StringView type, const GTSL::StringView name, const GTSL::StringView val) : Type(type), Name(name), Value(val) {}
 
 		template<class ALLOC>
-		friend void Insert(const Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer)
-		{
+		friend void Insert(const Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer) {
 			Insert(parameterInfo.Name, buffer);
 			Insert(parameterInfo.Type, buffer);
+			Insert(parameterInfo.Value, buffer);
 		}
 		
 		template<class ALLOC>
-		friend void Extract(Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer)
-		{
+		friend void Extract(Parameter& parameterInfo, GTSL::Buffer<ALLOC>& buffer) {
 			Extract(parameterInfo.Name, buffer);
 			Extract(parameterInfo.Type, buffer);
+			Extract(parameterInfo.Value, buffer);
 		}
 	};
 	
 	struct ShaderGroupInstance
 	{
 		ShaderGroupInstance() = default;
-		
-		struct ParameterData {
-			ParameterData(const GTSL::Range<const char8_t*> name, GTSL::Range<const char8_t*> textureName) : Name(name), TextureReference(textureName) {}
-
-			GTSL::StaticString<32> Name;
-
-			//union {
-			//	uint32 uint32 = 0;
-			//	GTSL::Vector4 Vector4;
-				GTSL::StaticString<32> TextureReference;
-//				uint64 BufferReference;
-			//};
-
-			ParameterData& operator=(const ParameterData& parameter_data) {
-				Name = parameter_data.Name;
-				TextureReference = parameter_data.TextureReference;
-				return *this;
-			}
-
-			template<class ALLOCATOR>
-			friend void Insert(const ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer)
-			{
-				Insert(uni.Name, buffer);
-				Insert(uni.TextureReference, buffer);
-			}
-
-			template<class ALLOCATOR>
-			friend void Extract(ParameterData& uni, GTSL::Buffer<ALLOCATOR>& buffer)
-			{
-				Extract(uni.Name, buffer);
-				Extract(uni.TextureReference, buffer);
-			}
-		};
 
 		GTSL::ShortString<32> Name;
-		GTSL::StaticVector<ParameterData, 16> Parameters;
+		GTSL::StaticVector<Parameter, 16> Parameters;
 
 		ShaderGroupInstance& operator=(const ShaderGroupInstance& shader_group_instance) {
 			Name = shader_group_instance.Name; Parameters = shader_group_instance.Parameters;
@@ -245,15 +205,47 @@ public:
 			CallableShader CallableShader;
 		};
 
-		ShaderInfo()
-		{			
+		ShaderInfo(const GTSL::ShortString<32>& string, GAL::ShaderType type) : Name(string), Type(type), Parameters(1) {
+			switch (Type) {
+			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(); break;
+			case GAL::ShaderType::TESSELLATION_CONTROL: break;
+			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+			case GAL::ShaderType::GEOMETRY: break;
+			case GAL::ShaderType::FRAGMENT: break;
+			case GAL::ShaderType::COMPUTE: ::new(&ComputeShader) struct ComputeShader(); break;
+			case GAL::ShaderType::TASK: break;
+			case GAL::ShaderType::MESH: break;
+			case GAL::ShaderType::RAY_GEN: break;
+			case GAL::ShaderType::ANY_HIT: break;
+			case GAL::ShaderType::CLOSEST_HIT: break;
+			case GAL::ShaderType::MISS: break;
+			case GAL::ShaderType::INTERSECTION: break;
+			case GAL::ShaderType::CALLABLE: break;
+			default: __debugbreak();
+			}
 		}
 
-		ShaderInfo(const GTSL::ShortString<32>& string, GAL::ShaderType type) : Name(string), Type(type) {}
-		
+		ShaderInfo(const ShaderInfo& shader_info) : Name(shader_info.Name), Type(shader_info.Type), Parameters(shader_info.Parameters) {
+			switch (Type) {
+			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(shader_info.VertexShader); break;
+			case GAL::ShaderType::TESSELLATION_CONTROL: break;
+			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+			case GAL::ShaderType::GEOMETRY: break;
+			case GAL::ShaderType::FRAGMENT: ::new(&FragmentShader) struct FragmentShader(shader_info.FragmentShader); break;
+			case GAL::ShaderType::COMPUTE: ::new(&ComputeShader) struct ComputeShader(shader_info.ComputeShader); break;
+			case GAL::ShaderType::TASK: break;
+			case GAL::ShaderType::MESH: break;
+			case GAL::ShaderType::RAY_GEN: break;
+			case GAL::ShaderType::ANY_HIT: break;
+			case GAL::ShaderType::CLOSEST_HIT: break;
+			case GAL::ShaderType::MISS: break;
+			case GAL::ShaderType::INTERSECTION: break;
+			case GAL::ShaderType::CALLABLE: break;
+			}
+		}
+
 		~ShaderInfo() {
-			switch (Type)
-			{
+			switch (Type) {
 			case GAL::ShaderType::VERTEX: GTSL::Destroy(VertexShader); break;
 			case GAL::ShaderType::TESSELLATION_CONTROL: break;
 			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
@@ -283,11 +275,12 @@ public:
 			Insert(shader.Type, buffer);
 			Insert(shader.Size, buffer);
 			Insert(shader.Offset, buffer);
+			Insert(shader.Parameters, buffer);
 
-			switch (shader.Type)
-			{
+			switch (shader.Type) {
 			case GAL::ShaderType::VERTEX: Insert(shader.VertexShader, buffer); break;
 			case GAL::ShaderType::FRAGMENT: Insert(shader.FragmentShader, buffer); break;
+			case GAL::ShaderType::COMPUTE: Insert(shader.ComputeShader, buffer); break;
 			}
 		}
 
@@ -298,70 +291,37 @@ public:
 			Extract(shader.Type, buffer);
 			Extract(shader.Size, buffer);
 			Extract(shader.Offset, buffer);
+			Extract(shader.Parameters, buffer);
 
-			switch (shader.Type)
-			{
+			switch (shader.Type) {
 			case GAL::ShaderType::VERTEX: Extract(shader.VertexShader, buffer); break;
 			case GAL::ShaderType::FRAGMENT: Extract(shader.FragmentShader, buffer); break;
+			case GAL::ShaderType::COMPUTE: Extract(shader.ComputeShader, buffer); break;
 			}
 		}
 
 		Shader(const GTSL::ShortString<32> name, const GAL::ShaderType type) : ShaderInfo(name, type) {
-			switch (Type) {
-			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(); break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: break;
-			case GAL::ShaderType::COMPUTE: break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
-			case GAL::ShaderType::RAY_GEN: break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
-			default: __debugbreak();
-			}
+
 		}
 		
-		Shader(const Shader& shader) : ShaderInfo(shader.Name, shader.Type), Size(shader.Size), Offset(shader.Offset)
-		{
-			switch (Type)
-			{
-			case GAL::ShaderType::VERTEX: VertexShader = shader.VertexShader; break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: FragmentShader = shader.FragmentShader; break;
-			case GAL::ShaderType::COMPUTE: break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
-			case GAL::ShaderType::RAY_GEN: break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
-			}
+		Shader(const Shader& shader) : ShaderInfo(shader), Size(shader.Size), Offset(shader.Offset) {
 		}
 		
-		Shader& operator =(const Shader& other)
+		Shader& operator=(const Shader& other)
 		{
 			Offset = other.Offset;
 			Size = other.Size;
 			Name = other.Name;
 			Type = other.Type;
+			Parameters = other.Parameters;
 			
-			switch (Type)
-			{
+			switch (Type) {
 			case GAL::ShaderType::VERTEX: VertexShader = other.VertexShader; break;
 			case GAL::ShaderType::TESSELLATION_CONTROL: break;
 			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
 			case GAL::ShaderType::GEOMETRY: break;
 			case GAL::ShaderType::FRAGMENT: FragmentShader = other.FragmentShader; break;
-			case GAL::ShaderType::COMPUTE: break;
+			case GAL::ShaderType::COMPUTE: ComputeShader = other.ComputeShader; break;
 			case GAL::ShaderType::TASK: break;
 			case GAL::ShaderType::MESH: break;
 			case GAL::ShaderType::RAY_GEN: break;
@@ -417,8 +377,7 @@ public:
 		}
 	};
 
-	struct ShaderGroupInfo
-	{
+	struct ShaderGroupInfo {
 		GTSL::ShortString<32> Name;
 		GAL::ShaderStage Stages;
 		bool Valid = true;
@@ -429,8 +388,7 @@ public:
 		GTSL::StaticVector<Parameter, 16> Parameters;
 	};
 	
-	struct ShaderGroupCreateInfo
-	{		
+	struct ShaderGroupCreateInfo {
 		GTSL::StaticString<32> Name;
 		GTSL::StaticString<32> RenderPass;
 		GTSL::StaticVector<::Shader*, 16> Shaders;
@@ -438,8 +396,7 @@ public:
 		GTSL::StaticVector<Parameter, 8> PerInstanceParameters;
 		GTSL::StaticVector<ShaderGroupInstance, 16> MaterialInstances;
 	};
-	void CreateShaderGroup(const ShaderGroupCreateInfo& shader_group_create_info)
-	{
+	void CreateShaderGroup(const ShaderGroupCreateInfo& shader_group_create_info) {
 		Id hashedName(shader_group_create_info.Name);
 		if (shaderGroupsMap.Find(hashedName)) { return; }
 
@@ -455,8 +412,8 @@ public:
 			auto shaderTryEmplace = shaderInfosMap.TryEmplace(Id(shaderCreateInfo->Name), shaderCreateInfo->Name, shaderCreateInfo->TargetSemantics);
 			if (!shaderTryEmplace) { continue; }
 
-			for (auto& e : shaderCreateInfo->Textures) {
-				shaderGroupDataSerialize.Parameters.EmplaceBack(e, ParameterType::TEXTURE_REFERENCE);
+			for (auto& e : shaderCreateInfo->ShaderParameters) {
+				shaderGroupDataSerialize.Parameters.EmplaceBack(e.First, e.Second, u8"");
 			}
 			
 			auto shaderCode = GenerateShader(*shaderCreateInfo);
@@ -479,22 +436,18 @@ public:
 			
 			GTSL::MemCopy(shader.Size, shaderBuffer.begin(), shaderPackageFile.GetData() + size);
 
-			switch (shaderCreateInfo->TargetSemantics)
-			{
+			switch (shaderCreateInfo->TargetSemantics) {
 			case GAL::ShaderType::VERTEX: shader.VertexShader.VertexElements = shaderCreateInfo->VertexElements; shaderGroupDataSerialize.Stages |= GAL::ShaderStages::VERTEX; break;
 			case GAL::ShaderType::FRAGMENT: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::FRAGMENT; break;
-			case GAL::ShaderType::COMPUTE: break;
-			case GAL::ShaderType::RAY_GEN: break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
+			case GAL::ShaderType::COMPUTE: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::COMPUTE; break;
+			case GAL::ShaderType::RAY_GEN: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::RAY_GEN; break;
+			case GAL::ShaderType::ANY_HIT: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::ANY_HIT; break;
+			case GAL::ShaderType::CLOSEST_HIT: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::CLOSEST_HIT; break;
+			case GAL::ShaderType::MISS: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::MISS; break;
+			case GAL::ShaderType::INTERSECTION: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::INTERSECTION; break;
+			case GAL::ShaderType::CALLABLE: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::CALLABLE; break;
+			case GAL::ShaderType::TASK: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::TASK; break;
+			case GAL::ShaderType::MESH: shaderGroupDataSerialize.Stages |= GAL::ShaderStages::MESH; break;
 			}
 
 			size += shaderBuffer.GetLength();
@@ -539,7 +492,7 @@ public:
 			shaderGroupInfo.Parameters = shaderGroup.Parameters;
 			
 			for (auto& e : materialResourceManager->shaderGroupsMap[shaderGroupName].Shaders) {
-				auto& shader = materialResourceManager->shaderInfosMap[Id(e)];
+				const auto& shader = materialResourceManager->shaderInfosMap[Id(e)];
 				shaderGroupInfo.Shaders.EmplaceBack(shader);
 			}
 

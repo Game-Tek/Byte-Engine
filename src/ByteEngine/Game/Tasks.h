@@ -4,7 +4,7 @@
 
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
-#include <GTSL/FixedVector.h>
+#include <GTSL/FixedVector.hpp>
 #include <GTSL/Result.h>
 #include <GTSL/Vector.hpp>
 
@@ -58,22 +58,10 @@ struct Stage
 	tasksInfos(other.tasksInfos, allocatorReference),
 	tasks(other.tasks, allocatorReference)
 	{
-		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i)
-		{
+		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i) {
 			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocatorReference);
 			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocatorReference);
 		}
-	}
-
-	template<class OALLOC>
-	Stage& operator=(const Stage<TASK, OALLOC>& other)
-	{
-		taskAccessedObjects = other.taskAccessedObjects;
-		taskAccessTypes = other.taskAccessTypes;
-		taskGoalIndex = other.taskGoalIndex;
-		taskNames = other.taskNames;
-		tasks = other.tasks;
-		return *this;
 	}
 	
 	void AddTask(Id name, TASK task, GTSL::Range<const uint16*> offsets, const GTSL::Range<const AccessType*> accessTypes, uint16 goalIndex, void* taskInfo, const ALLOCATOR& allocator)
@@ -88,20 +76,6 @@ struct Stage
 		taskGoalIndex.EmplaceBack(goalIndex);
 		tasksInfos.EmplaceBack(taskInfo);
 		tasks.EmplaceBack(task);
-	}
-
-	template<class ALLOC>
-	void AddTask(const Stage<TASK, ALLOC>& other, const uint16 taskS, const uint16 taskE, const ALLOCATOR& allocator)
-	{
-		for (uint32 i = taskS; i < taskE; ++i)
-		{
-			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocator);
-			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocator);
-		}
-		
-		taskNames.PushBack(GTSL::Range<const Id>(taskE - taskS, other.taskNames.begin() + taskS));
-		taskGoalIndex.PushBack(GTSL::Range<const uint16>(taskE - taskS, other.taskGoalIndex.begin() + taskS));
-		tasks.PushBack(GTSL::Range<const TASK>(taskE - taskS, other.tasks.begin() + taskS));
 	}
 
 	void RemoveTask(const Id name)
@@ -176,7 +150,7 @@ struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), inUseSystems(32, allocator), objectNames(num, allocator)
+	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), objectNames(num, allocator)
 	{
 	}
 
@@ -199,7 +173,6 @@ struct TaskSorter
 			{
 				currentObjectAccessState[objects[i]] = accesses[i];
 				++currentObjectAccessCount[objects[i]];
-				inUseSystems.EmplaceBack(objectNames[objects[i]]);
 			}
 			
 			auto i = ongoingTasksAccesses.Emplace(accesses);
@@ -227,7 +200,6 @@ struct TaskSorter
 				currentObjectAccessState[objects[i]] = AccessType();
 			}
 
-			inUseSystems.Pop(inUseSystems.Find(objectNames[objects[i]]).Get(), 1);
 		}
 		
 		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);
@@ -248,7 +220,6 @@ private:
 	GTSL::FixedVector<GTSL::StaticVector<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
 	GTSL::FixedVector<GTSL::StaticVector<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
 
-	GTSL::Vector<Id, ALLOCATOR> inUseSystems;
 	GTSL::FixedVector<Id, ALLOCATOR> objectNames;
 
 	GTSL::ReadWriteMutex mutex;

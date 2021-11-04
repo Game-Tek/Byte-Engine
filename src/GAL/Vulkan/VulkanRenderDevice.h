@@ -12,11 +12,17 @@
 #include "GTSL/DLL.h"
 #include "GTSL/HashMap.hpp"
 #include "GTSL/Vector.hpp"
+#include <GTSL/Id.h>
+#include <GTSL/HashMap.hpp>
 
 namespace GAL
 {
+	class VulkanRenderDevice;
 #undef ERROR
-	
+
+	template<typename T>
+	void setName(const VulkanRenderDevice* renderDevice, T handle, const VkObjectType objectType, const GTSL::Range<const char8_t*> text);
+
 	class VulkanRenderDevice final : public RenderDevice
 	{
 	public:
@@ -28,13 +34,16 @@ namespace GAL
 
 		VulkanRenderDevice() = default;
 
-		[[nodiscard]] bool Initialize(const CreateInfo& createInfo) {
+		using InitRes = GTSL::Result<GTSL::StaticString<256>>;
+
+		template<class ALLOC>
+		[[nodiscard]] InitRes Initialize(const CreateInfo& createInfo, const ALLOC& alloc) {
 			debugPrintFunction = createInfo.DebugPrintFunction;
 			
-			if (!vulkanDLL.LoadLibrary(u8"vulkan-1")) { return false; }
+			if (!vulkanDLL.LoadLibrary(u8"vulkan-1")) { return InitRes(GTSL::Range(u8"Dynamic library could not be loaded."), false); }
 
 			vulkanDLL.LoadDynamicFunction(u8"vkGetInstanceProcAddr", &VkGetInstanceProcAddr);
-			if (!VkGetInstanceProcAddr) { return false; }
+			if (!VkGetInstanceProcAddr) { return InitRes(GTSL::Range(u8"vkGetInstanceProcAddr function could not be loaded."), false); }
 			
 			auto vkAllocate = [](void* data, GTSL::uint64 size, GTSL::uint64 alignment, VkSystemAllocationScope) {
 				auto* allocation_info = static_cast<AllocationInfo*>(data);
@@ -69,21 +78,28 @@ namespace GAL
 
 			allocationInfo = createInfo.AllocationInfo; debug = createInfo.Debug;
 
-			VkDeviceCreateInfo vkDeviceCreateInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-
 			{
+				GTSL::HashMap<uint64, uint32, ALLOC> availableInstanceExtensions(32, alloc);
+				VkExtensionProperties extension_properties[64];
+				
+				uint32 extensionCount = 64;
+				getInstanceProcAddr<PFN_vkEnumerateInstanceExtensionProperties>(u8"vkEnumerateInstanceExtensionProperties")(nullptr, &extensionCount, extension_properties);
+
+				for (uint32 i = 0; i < extensionCount; ++i) {
+					availableInstanceExtensions.Emplace(GTSL::Hash(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
+				}				
+
 				VkApplicationInfo vkApplicationInfo{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
 				//vkEnumerateInstanceVersion(&vkApplicationInfo.apiVersion);
 				vkApplicationInfo.apiVersion = VK_MAKE_VERSION(1, 2, 0);
 				vkApplicationInfo.applicationVersion = VK_MAKE_VERSION(createInfo.ApplicationVersion[0], createInfo.ApplicationVersion[1], createInfo.ApplicationVersion[2]);
 				vkApplicationInfo.engineVersion = VK_MAKE_VERSION(0, 0, 1);
 				//vkApplicationInfo.pApplicationName = createInfo.ApplicationName.begin(); //todo: translate
-				vkApplicationInfo.pEngineName = "Game-Tek | GAL";
+				vkApplicationInfo.pEngineName = "Game-Tek | ByteEngine";
 
 				VkInstanceCreateInfo vkInstanceCreateInfo{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 
-				auto setInstancepNext = [&](void* newPointer)
-				{
+				auto setInstancepNext = [&](void* newPointer) {
 					if (vkInstanceCreateInfo.pNext) {
 						//pointer to last structure now extending vkInstanceCreateInfo
 						auto* str = static_cast<GTSL::byte*>(const_cast<void*>(vkInstanceCreateInfo.pNext)); //constness is only there to guarantee VK will not touch it, WE can do it with no problem
@@ -107,20 +123,29 @@ namespace GAL
 			#endif
 				};
 
-				for (auto e : createInfo.Extensions)
-				{
-					switch (e.First)
-					{
+				auto tryAddExtension = [&](const GTSL::StringView extensionName) {
+					if (auto searchResult = availableInstanceExtensions.TryGet(Hash(extensionName))) {
+						instanceExtensions.EmplaceBack(extension_properties[searchResult.Get()].extensionName);
+						return true;
+					}
+
+					return false;
+				};
+
+				for (auto e : createInfo.Extensions) {
+					switch (e.First) {
 					case Extension::RAY_TRACING: break;
 					case Extension::PIPELINE_CACHE_EXTERNAL_SYNC: break;
 					case Extension::SCALAR_LAYOUT: break;
-					case Extension::SWAPCHAIN_RENDERING:
-					{
-						instanceExtensions.EmplaceBack(VK_KHR_SURFACE_EXTENSION_NAME);
+					case Extension::SWAPCHAIN_RENDERING: {
+						if(!tryAddExtension(u8"VK_KHR_surface")) {
+							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_surface\" is not available."), false);
+						}
 #if (_WIN32)
-						instanceExtensions.EmplaceBack("VK_KHR_win32_surface");
+						if(!tryAddExtension(u8"VK_KHR_win32_surface")) {
+							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_win32_surface\" is not available."), false);
+						}
 #endif
-
 						break;
 					}
 					default:;
@@ -180,7 +205,9 @@ namespace GAL
 				vkInstanceCreateInfo.enabledExtensionCount = instanceExtensions.GetLength();
 				vkInstanceCreateInfo.ppEnabledExtensionNames = instanceExtensions.begin();
 
-				if (getInstanceProcAddr<PFN_vkCreateInstance>(u8"vkCreateInstance")(&vkInstanceCreateInfo, GetVkAllocationCallbacks(), &instance) != VK_SUCCESS) { return false; }
+				if (getInstanceProcAddr<PFN_vkCreateInstance>(u8"vkCreateInstance")(&vkInstanceCreateInfo, GetVkAllocationCallbacks(), &instance) != VK_SUCCESS) {
+					return InitRes(GTSL::Range(u8"Failed to create instance."), false);
+				}
 				
 #if (_DEBUG)
 				if (debug) {
@@ -192,7 +219,52 @@ namespace GAL
 			{
 				uint32_t physicalDeviceCount{ 16 }; VkPhysicalDevice vkPhysicalDevices[16];
 				getInstanceProcAddr<PFN_vkEnumeratePhysicalDevices>(u8"vkEnumeratePhysicalDevices")(instance, &physicalDeviceCount, vkPhysicalDevices);
-				physicalDevice = vkPhysicalDevices[0];
+
+				if (!physicalDeviceCount) { return InitRes(GTSL::Range(u8"Physical device count returned was 0."), false); }
+
+				uint32 bestScore = 0, bestPhysicalDevice = ~0U;
+
+				for(uint32 i = 0; i < physicalDeviceCount; ++i) {
+					VkPhysicalDeviceProperties physical_device_properties;
+					getInstanceProcAddr<PFN_vkGetPhysicalDeviceProperties>(u8"vkGetPhysicalDeviceProperties")(vkPhysicalDevices[i], &physical_device_properties);
+					VkPhysicalDeviceFeatures physical_device_features;
+					getInstanceProcAddr<PFN_vkGetPhysicalDeviceFeatures>(u8"vkGetPhysicalDeviceFeatures")(vkPhysicalDevices[i], &physical_device_features);
+
+					uint64 currentScore = 0;
+
+					switch (physical_device_properties.deviceType) {
+					case VK_PHYSICAL_DEVICE_TYPE_OTHER: currentScore += 1000; break;
+					case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: currentScore += 4000; break;
+					case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: currentScore += 5000; break;
+					case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: currentScore += 3000; break;
+					case VK_PHYSICAL_DEVICE_TYPE_CPU: currentScore += 2000; break;
+					default: return InitRes(GTSL::Range(u8"Driver returned unhandled value."), false);
+					}
+
+					currentScore += physical_device_properties.limits.maxImageDimension2D / 1024;
+					currentScore += physical_device_features.textureCompressionBC;
+
+					if(currentScore > bestScore) {
+						bestPhysicalDevice = i;
+					}
+				}
+
+				if (bestPhysicalDevice == ~0U) { return InitRes(GTSL::Range(u8"No suitable physical device could be chosen."), false); }
+
+				physicalDevice = vkPhysicalDevices[bestPhysicalDevice];
+			}
+
+			GTSL::HashMap<uint64, uint32, ALLOC> availableDeviceExtensions(256, 0.25f, alloc);
+			VkExtensionProperties extension_properties[256];
+			GTSL::StaticVector<const char*, 32> deviceExtensions;
+
+			{
+				uint32 extensionCount = 256;
+				getInstanceProcAddr<PFN_vkEnumerateDeviceExtensionProperties>(u8"vkEnumerateDeviceExtensionProperties")(physicalDevice, nullptr, &extensionCount, extension_properties);
+
+				for (uint32 i = 0; i < extensionCount; ++i) {
+					availableDeviceExtensions.Emplace(GTSL::Hash(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
+				}
 			}
 
 			{
@@ -255,8 +327,7 @@ namespace GAL
 				void** lastProperty = &properties2.pNext; void** lastFeature = &features2.pNext;
 
 				{
-					GTSL::Buffer buffer(8192, 8, GTSL::StaticAllocator<8192>());
-					GTSL::StaticVector<GTSL::StaticString<32>, 32> deviceExtensions;
+					GTSL::Buffer buffer(8192, 8, alloc);
 
 					auto placePropertiesStructure = [&]<typename T>(T** structure, VkStructureType structureType) {
 						auto* newStructure = buffer.AllocateStructure<T>(); *lastProperty = static_cast<void*>(newStructure);
@@ -282,10 +353,11 @@ namespace GAL
 						getInstanceProcAddr<PFN_vkGetPhysicalDeviceFeatures2>(u8"vkGetPhysicalDeviceFeatures2")(physicalDevice, &feats);
 					};
 
-					auto tryAddExtension = [&](const char8_t* extensionName) {
-						GTSL::StaticString<32> name(extensionName);
-						auto searchResult = deviceExtensions.Find(name);
-						if (!searchResult.State()) { deviceExtensions.EmplaceBack(name); return true; }
+					auto tryAddExtension = [&](const GTSL::StringView extensionName) {
+						if(auto searchResult = availableDeviceExtensions.TryGet(Hash(extensionName))) {
+							deviceExtensions.EmplaceBack(extension_properties[searchResult.Get()].extensionName);
+							return true;
+						}
 						return false;
 					};
 
@@ -307,12 +379,16 @@ namespace GAL
 						structure->shaderUniformBufferArrayNonUniformIndexing = true;
 					}
 
-					tryAddExtension(u8"VK_KHR_swapchain");
+					if(!tryAddExtension(u8"VK_KHR_swapchain")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_swapchain\" is not available."), false);
+					}
 
-					for (GTSL::uint32 extension = 0; extension < static_cast<GTSL::uint32>(createInfo.Extensions.ElementCount()); ++extension)
-					{
-						switch (createInfo.Extensions[extension].First)
-						{
+					if(!tryAddExtension(u8"VK_KHR_maintenance4")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_maintenance4\" is not available."), false);
+					}
+
+					for (GTSL::uint32 extension = 0; extension < static_cast<GTSL::uint32>(createInfo.Extensions.ElementCount()); ++extension) {
+						switch (createInfo.Extensions[extension].First) {
 						case Extension::RAY_TRACING: {
 							if (tryAddExtension(u8"VK_KHR_acceleration_structure")) {
 								{
@@ -335,9 +411,15 @@ namespace GAL
 								auto* capabilities = static_cast<RayTracingCapabilities*>(createInfo.Extensions[extension].Second);
 								capabilities->BuildDevice = features.accelerationStructureHostCommands ? Device::CPU : Device::GPU;
 								capabilities->ScratchBuildOffsetAlignment = properties.minAccelerationStructureScratchOffsetAlignment;
+							} else{
+								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_acceleration_structure\" is not available."), false);
 							}
 
-							tryAddExtension(u8"VK_KHR_ray_query");
+							if(tryAddExtension(u8"VK_KHR_ray_query")) {
+								
+							} else {
+								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_ray_query\" is not available."), false);
+							}
 
 							if (tryAddExtension(u8"VK_KHR_ray_tracing_pipeline")) {
 								{
@@ -360,16 +442,25 @@ namespace GAL
 								capabilities->ShaderGroupHandleAlignment = properties.shaderGroupHandleAlignment;
 								capabilities->ShaderGroupBaseAlignment = properties.shaderGroupBaseAlignment;
 								capabilities->ShaderGroupHandleSize = properties.shaderGroupHandleSize;
+							} else {
+								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_ray_tracing_pipeline\" is not available."), false);
 							}
 
-							if (tryAddExtension(u8"VK_KHR_pipeline_library")) {}
+							if (tryAddExtension(u8"VK_KHR_pipeline_library")) {
+								
+							} else {
+								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_pipeline_library\" is not available."), false);
+							}
 
-							if (tryAddExtension(u8"VK_KHR_deferred_host_operations")) {}
+							if (tryAddExtension(u8"VK_KHR_deferred_host_operations")) {
+								
+							} else {
+								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_deferred_host_operations\" is not available."), false);
+							}
 
 							break;
 						}
-						case Extension::PIPELINE_CACHE_EXTERNAL_SYNC:
-						{
+						case Extension::PIPELINE_CACHE_EXTERNAL_SYNC: {
 							VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT* pipelineCacheSyncControl;
 							placeFeaturesStructure(&pipelineCacheSyncControl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT);
 							pipelineCacheSyncControl->pipelineCreationCacheControl = true;
@@ -380,19 +471,17 @@ namespace GAL
 						}
 					}
 
+					VkDeviceCreateInfo vkDeviceCreateInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 					vkDeviceCreateInfo.pNext = &features2; //extended features
 					vkDeviceCreateInfo.queueCreateInfoCount = vkDeviceQueueCreateInfos.GetLength();
 					vkDeviceCreateInfo.pQueueCreateInfos = vkDeviceQueueCreateInfos.begin();
 					vkDeviceCreateInfo.pEnabledFeatures = nullptr;
 					vkDeviceCreateInfo.enabledExtensionCount = deviceExtensions.GetLength();
+					vkDeviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.begin();
 
-					GTSL::StaticVector<const char*, 32> strings; {
-						for (GTSL::uint32 i = 0; i < deviceExtensions.GetLength(); ++i) { strings.EmplaceBack(reinterpret_cast<const char*>(deviceExtensions[i].c_str())); }
+					if (getInstanceProcAddr<PFN_vkCreateDevice>(u8"vkCreateDevice")(physicalDevice, &vkDeviceCreateInfo, GetVkAllocationCallbacks(), &device) != VK_SUCCESS) {
+						return InitRes(GTSL::Range(u8"Failed to create device."), false);
 					}
-
-					vkDeviceCreateInfo.ppEnabledExtensionNames = strings.begin();
-
-					if (getInstanceProcAddr<PFN_vkCreateDevice>(u8"vkCreateDevice")(physicalDevice, &vkDeviceCreateInfo, GetVkAllocationCallbacks(), &device) != VK_SUCCESS) { return false; }
 
 					getInstanceProcAddr(u8"vkGetDeviceProcAddr", &VkGetDeviceProcAddr);
 					
@@ -501,8 +590,14 @@ namespace GAL
 			getDeviceProcAddr(u8"vkCmdSetEvent", &VkCmdSetEvent);
 			getDeviceProcAddr(u8"vkCmdResetEvent", &VkCmdResetEvent);
 
-			//if(extensionSupported())
-			getDeviceProcAddr(u8"vkCmdDrawMeshTasksNV", &VkCmdDrawMeshTasks);
+			//getDeviceProcAddr(u8"vkGetDeviceBufferMemoryRequirementsKHR", &VkGetDeviceBufferMemoryRequirements);
+			//getDeviceProcAddr(u8"vkGetDeviceImageMemoryRequirementsKHR", &VkGetDeviceImageMemoryRequirements);
+
+			if (availableDeviceExtensions.Find(GTSL::Hash(u8"VK_NV_mesh_shader"))) {
+				getDeviceProcAddr(u8"vkCmdDrawMeshTasksNV", &VkCmdDrawMeshTasks);
+			} else {
+				return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);
+			}
 			
 			for (auto e : createInfo.Extensions) {
 				switch (e.First) {
@@ -541,46 +636,26 @@ namespace GAL
 				getInstanceProcAddr(u8"vkCmdBeginDebugUtilsLabelEXT", &vkCmdBeginDebugUtilsLabelEXT);
 				getInstanceProcAddr(u8"vkCmdEndDebugUtilsLabelEXT", &vkCmdEndDebugUtilsLabelEXT);
 
+				VkPhysicalDeviceProperties physicalDeviceProperties;
+				getInstanceProcAddr<PFN_vkGetPhysicalDeviceProperties>(u8"vkGetPhysicalDeviceProperties")(physicalDevice, &physicalDeviceProperties);
+
 				//NVIDIA's driver have a bug when setting the name for this 3 object types, TODO. fix in the future
-				//{
-				//	StaticString<128> name(createInfo.ApplicationName);
-				//	name += " instance"; name += '\0';
-				//
-				//	VkDebugUtilsObjectNameInfoEXT debug_utils_object_name_info_ext{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
-				//	debug_utils_object_name_info_ext.objectHandle = reinterpret_cast<uint64>(instance);
-				//	debug_utils_object_name_info_ext.objectType = VK_OBJECT_TYPE_INSTANCE;
-				//	debug_utils_object_name_info_ext.pObjectName = name.begin();
-				//	//debug_utils_object_name_info_ext.pObjectName = "Instance";
-				//	vkSetDebugUtilsObjectNameEXT(device, &debug_utils_object_name_info_ext);
-				//}
-				//
-				//{
-				//	StaticString<128> name(createInfo.ApplicationName);
-				//	name += " physical device"; name += '\0';
-				//
-				//	VkDebugUtilsObjectNameInfoEXT debug_utils_object_name_info_ext{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
-				//	debug_utils_object_name_info_ext.objectHandle = reinterpret_cast<uint64>(physicalDevice);
-				//	debug_utils_object_name_info_ext.objectType = VK_OBJECT_TYPE_PHYSICAL_DEVICE;
-				//	debug_utils_object_name_info_ext.pObjectName = name.begin();
-				//	//debug_utils_object_name_info_ext.pObjectName = "PhysicalDevice";
-				//	vkSetDebugUtilsObjectNameEXT(device, &debug_utils_object_name_info_ext);
-				//}
-				//
-				//{
-				//	StaticString<128> name(createInfo.ApplicationName);
-				//	name += " device"; name += '\0';
-				//	
-				//	VkDebugUtilsObjectNameInfoEXT debug_utils_object_name_info_ext{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
-				//	debug_utils_object_name_info_ext.objectHandle = reinterpret_cast<uint64>(device);
-				//	debug_utils_object_name_info_ext.objectType = VK_OBJECT_TYPE_DEVICE;
-				//	debug_utils_object_name_info_ext.pObjectName = name.begin();
-				//	//debug_utils_object_name_info_ext.pObjectName = "Device";
-				//	vkSetDebugUtilsObjectNameEXT(device, &debug_utils_object_name_info_ext);
-				//}
+				if (physicalDeviceProperties.vendorID != NVIDIA_VENDOR_ID) {					
+					GTSL::StaticString<128> instanceName(createInfo.ApplicationName); instanceName += u8" instance";
+					setName(this, instance, VK_OBJECT_TYPE_INSTANCE, instanceName);
+					
+					GTSL::StaticString<128> physicalDeviceName(createInfo.ApplicationName); physicalDeviceName += u8" physical device";
+					setName(this, physicalDevice, VK_OBJECT_TYPE_PHYSICAL_DEVICE, physicalDeviceName);
+
+					GTSL::StaticString<128> deviceName(createInfo.ApplicationName); deviceName += u8" device";
+					setName(this, device, VK_OBJECT_TYPE_DEVICE, deviceName);					
+				}
 			}
 
-			return true;
+			return InitRes(true);
 		}
+
+		static constexpr uint32 NVIDIA_VENDOR_ID = 0x10DE;
 
 		void Wait() const { getDeviceProcAddr<PFN_vkDeviceWaitIdle>(u8"vkDeviceWaitIdle")(device); }
 		
@@ -653,19 +728,15 @@ namespace GAL
 			for (auto e : findSupportedImageFormat.Candidates) {
 				getInstanceProcAddr<PFN_vkGetPhysicalDeviceFormatProperties>(u8"vkGetPhysicalDeviceFormatProperties")(physicalDevice, ToVulkan(MakeFormatFromFormatDescriptor(e)), &format_properties);
 
-				switch (static_cast<VkImageTiling>(findSupportedImageFormat.TextureTiling))
-				{
-				case VK_IMAGE_TILING_LINEAR:
-				{
+				switch (static_cast<VkImageTiling>(findSupportedImageFormat.TextureTiling)) {
+				case VK_IMAGE_TILING_LINEAR: {
 					if (format_properties.linearTilingFeatures & features) { return e; }
 					break;
 				}
-				case VK_IMAGE_TILING_OPTIMAL:
-				{
+				case VK_IMAGE_TILING_OPTIMAL: {
 					if (format_properties.optimalTilingFeatures & features) { return e; }
 					break;
 				}
-
 				default: __debugbreak();
 				}
 			}
@@ -690,8 +761,7 @@ namespace GAL
 		[[nodiscard]] GTSL::uint32 GetUniformBufferBindingOffsetAlignment() const { return static_cast<GTSL::uint32>(uniformBufferMinOffset); }
 		[[nodiscard]] GTSL::uint32 GetStorageBufferBindingOffsetAlignment() const { return static_cast<GTSL::uint32>(storageBufferMinOffset); }
 
-		struct MemoryHeap
-		{
+		struct MemoryHeap {
 			GTSL::Byte Size;
 			MemoryType HeapType;
 
@@ -792,6 +862,11 @@ namespace GAL
 		PFN_vkGetQueryPoolResults VkGetQueryPoolResults;
 		PFN_vkQueueSubmit VkQueueSubmit;
 		PFN_vkQueuePresentKHR VkQueuePresent;
+
+		//PFN_vkGetDeviceBuffer
+		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceBufferMemoryRequirements;
+		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceImageMemoryRequirements;
+
 #if (_WIN64)
 		PFN_vkCreateWin32SurfaceKHR VkCreateWin32Surface;
 #endif

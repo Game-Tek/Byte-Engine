@@ -28,7 +28,7 @@ public:
 	Id& operator=(const GTSL::Id64 other) { hashedName = other; return *this; }
 	
 	bool operator==(const Id other) const { return hashedName == other.hashedName; }
-	bool operator==(const GTSL::Id64 other) const { return hashedName == other; }
+	//bool operator==(const GTSL::Id64 other) const { return hashedName == other; }
 
 	uint64 operator()() const { return hashedName.GetID(); }
 	explicit operator uint64() const { return hashedName(); }

@@ -4,7 +4,7 @@
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Mutex.h>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Algorithm.h>
+#include <GTSL/Algorithm.hpp>
 #include <GTSL/Allocator.h>
 #include <GTSL/Semaphore.h>
 
@@ -270,7 +270,7 @@ public:
 
 		auto* taskInfo = GTSL::New<DispatchTaskInfo<TaskInfo, ARGS...>>(GetPersistentAllocator(), GTSL::Delegate<void(TaskInfo, ARGS...)>(storedDynamicTask.AnonymousFunction), TaskInfo(), GTSL::ForwardRef<ARGS>(args)...);
 		taskInfo->Name = GTSL::StringView(storedDynamicTask.Name);
-		
+
 		{
 			GTSL::WriteLock lock(asyncTasksMutex);
 			asyncTasks.AddTask(storedDynamicTask.Name, storedDynamicTask.GameInstanceFunction, storedDynamicTask.Objects, storedDynamicTask.Access, 0xFFFFFFFF, (void*)taskInfo, GetPersistentAllocator());
@@ -384,7 +384,7 @@ private:
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 	
-	GTSL::Vector<GTSL::Semaphore, BE::PAR> semaphores;
+	GTSL::Semaphore semaphores[64];
 
 	uint32 scalingFactor = 16;
 
@@ -432,7 +432,7 @@ private:
 	}
 
 	uint16 getStageIndex(const Id stageName) const {
-		auto findRes = GTSL::LookFor(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
+		auto findRes = GTSL::Find(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
 		BE_ASSERT(findRes, "No stage found with that name!")
 		return findRes.Get() - stagesNames.begin();
 	}

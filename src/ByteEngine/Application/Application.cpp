@@ -26,7 +26,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), resourceManagers(8, systemAllocatorReference),
+	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()),
 	settings(32, systemAllocatorReference), systemApplication(GTSL::Application::ApplicationCreateInfo{}),
 	transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4)
 	{
@@ -89,8 +89,9 @@ namespace BE
 		return true;
 	}
 
-	bool Application::Initialize()
-	{
+	bool Application::Initialize() {
+		applicationManager = GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference>(systemAllocatorReference);
+
 		return true;
 	}
 
@@ -103,22 +104,17 @@ namespace BE
 			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
 			inputManagerInstance.TryFree();
 			
-			if (closeMode != CloseMode::OK)
-			{
-				if (closeMode == CloseMode::WARNING)
-				{
+			if (closeMode != CloseMode::OK) {
+				if (closeMode == CloseMode::WARNING) {
 					BE_LOG_WARNING(u8"Shutting down application!\nReason: ", closeReason)
 				}
 
 				BE_LOG_ERROR(u8"Shutting down application!\nReason: ", closeReason)
-			}
-			else
-			{
+			} else {
 				BE_LOG_SUCCESS(u8"Shutting down application. No reported errors.")
 			}
 
 			settings.Free();
-			resourceManagers.Free();
 			
 			transientAllocator.LockedClear();
 			transientAllocator.Free();

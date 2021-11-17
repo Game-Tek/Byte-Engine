@@ -3,7 +3,7 @@
 #include "DX12.h"
 #include "DX12Buffer.h"
 #include "DX12Framebuffer.h"
-#include "DX12Pipeline.h"
+#include "DX12Pipelines.h"
 #include "DX12Texture.h"
 #include "DX12RenderDevice.h"
 #include "GAL/CommandList.h"
@@ -20,10 +20,9 @@ namespace GAL
 	class DX12Pipeline;
 	class DX12Queue;
 
-	class DX12CommandBuffer final : public CommandList
-	{
+	class DX12CommandList final : public CommandList {
 	public:
-		DX12CommandBuffer() = default;
+		DX12CommandList() = default;
 
 		void BeginRecording(const DX12RenderDevice* renderDevice) { DX_CHECK(commandAllocator->Reset()) }
 
@@ -177,20 +176,20 @@ namespace GAL
 			D3D12_DISPATCH_RAYS_DESC dispatchRaysDesc;
 			dispatchRaysDesc.Width = dispatchSize.Width; dispatchRaysDesc.Height = dispatchSize.Height; dispatchRaysDesc.Depth = dispatchSize.Depth;
 			
-			dispatchRaysDesc.RayGenerationShaderRecord.StartAddress = shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Address;
-			dispatchRaysDesc.RayGenerationShaderRecord.SizeInBytes = shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].EntrySize;
+			dispatchRaysDesc.RayGenerationShaderRecord.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Address);
+			dispatchRaysDesc.RayGenerationShaderRecord.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.HitGroupTable.StartAddress = shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Address;
-			dispatchRaysDesc.HitGroupTable.SizeInBytes = shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize;
-			dispatchRaysDesc.HitGroupTable.StrideInBytes = shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize;
+			dispatchRaysDesc.HitGroupTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Address);
+			dispatchRaysDesc.HitGroupTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.HitGroupTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.MissShaderTable.StartAddress = shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Address;
-			dispatchRaysDesc.MissShaderTable.SizeInBytes = shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize;
-			dispatchRaysDesc.MissShaderTable.StrideInBytes = shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize;
+			dispatchRaysDesc.MissShaderTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Address);
+			dispatchRaysDesc.MissShaderTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.MissShaderTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.CallableShaderTable.StartAddress = shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Address;
-			dispatchRaysDesc.CallableShaderTable.SizeInBytes = shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize;
-			dispatchRaysDesc.CallableShaderTable.StrideInBytes = shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize;
+			dispatchRaysDesc.CallableShaderTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Address);
+			dispatchRaysDesc.CallableShaderTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.CallableShaderTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
 			
 			t->DispatchRays(&dispatchRaysDesc);
 
@@ -254,9 +253,9 @@ namespace GAL
 
 		void BuildAccelerationStructure(const DX12RenderDevice* renderDevice, const BuildAccelerationStructuresInfo& info) const;
 		
-		~DX12CommandBuffer() = default;
+		~DX12CommandList() = default;
 
-		void Initialize(const DX12RenderDevice* renderDevice, DX12Queue queue, bool isPrimary = true) {
+		void Initialize(const DX12RenderDevice* renderDevice, DX12RenderDevice::QueueKey queue, bool isPrimary = true) {
 			const D3D12_COMMAND_LIST_TYPE type = isPrimary ? D3D12_COMMAND_LIST_TYPE_DIRECT : D3D12_COMMAND_LIST_TYPE_BUNDLE;
 
 			DX_CHECK(renderDevice->GetID3D12Device2()->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(commandAllocator)))

@@ -47,57 +47,57 @@ namespace GAL
 		}
 	}
 
-	inline VkAccessFlags ToVulkan(const AccessType access, const PipelineStage pipelineStage) {
-		VkAccessFlags vkAccessFlags = 0;
+	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage) {
+		VkAccessFlags2KHR vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
-			TranslateMask<PipelineStages::TRANSFER, VK_ACCESS_TRANSFER_WRITE_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::TOP_OF_PIPE, VK_ACCESS_MEMORY_WRITE_BIT>(pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 		} else {
-			TranslateMask<PipelineStages::TRANSFER, VK_ACCESS_TRANSFER_READ_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::TOP_OF_PIPE, VK_ACCESS_MEMORY_READ_BIT>(pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 		}
 		return vkAccessFlags;
 	}
 
-	inline VkAccessFlags ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor) {
-		VkAccessFlags vkAccessFlags = 0;
+	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor) {
+		VkAccessFlags2KHR vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
-			TranslateMask<PipelineStages::TRANSFER, VK_ACCESS_TRANSFER_WRITE_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::TOP_OF_PIPE, VK_ACCESS_MEMORY_WRITE_BIT>(pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 		} else {
-			TranslateMask<PipelineStages::TRANSFER, VK_ACCESS_TRANSFER_READ_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR>(pipelineStage, vkAccessFlags);
-			TranslateMask<PipelineStages::TOP_OF_PIPE, VK_ACCESS_MEMORY_READ_BIT>(pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR, pipelineStage, vkAccessFlags);
+			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 		}
 		return vkAccessFlags;
 	}
 
-	inline VkAccessFlags ToVulkan(const AccessType access, const FormatDescriptor formatDescriptor) {
+	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const FormatDescriptor formatDescriptor) {
 		if (access & AccessTypes::WRITE) {
 			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			case TextureType::DEPTH: return VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR;
+			case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR;
 			}
 		} else { //read
 			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: return VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-			case TextureType::DEPTH: return VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+			case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT_KHR;
+			case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT_KHR;
 			}
 		}
 	}
 
 	inline VkQueueFlags ToVulkan(const QueueType queueType) {
 		VkQueueFlags vkQueueFlags = 0;
-		TranslateMask<QueueTypes::GRAPHICS, VK_QUEUE_GRAPHICS_BIT>(queueType, vkQueueFlags);
-		TranslateMask<QueueTypes::COMPUTE, VK_QUEUE_COMPUTE_BIT>(queueType, vkQueueFlags);
-		TranslateMask<QueueTypes::TRANSFER, VK_QUEUE_TRANSFER_BIT>(queueType, vkQueueFlags);
+		TranslateMask(QueueTypes::GRAPHICS, VK_QUEUE_GRAPHICS_BIT, queueType, vkQueueFlags);
+		TranslateMask(QueueTypes::COMPUTE, VK_QUEUE_COMPUTE_BIT, queueType, vkQueueFlags);
+		TranslateMask(QueueTypes::TRANSFER, VK_QUEUE_TRANSFER_BIT, queueType, vkQueueFlags);
 		return vkQueueFlags;
 	}
 
@@ -111,31 +111,31 @@ namespace GAL
 
 	inline VkMemoryAllocateFlags ToVulkan(const AllocationFlag allocationFlag) {
 		VkMemoryAllocateFlags vkMemoryAllocateFlags = 0;
-		TranslateMask<AllocationFlags::DEVICE_ADDRESS, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT>(allocationFlag, vkMemoryAllocateFlags);
-		TranslateMask<AllocationFlags::DEVICE_ADDRESS_CAPTURE_REPLAY, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT>(allocationFlag, vkMemoryAllocateFlags);
+		TranslateMask(AllocationFlags::DEVICE_ADDRESS, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, allocationFlag, vkMemoryAllocateFlags);
+		TranslateMask(AllocationFlags::DEVICE_ADDRESS_CAPTURE_REPLAY, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT, allocationFlag, vkMemoryAllocateFlags);
 		return vkMemoryAllocateFlags;
 	}
 
 	inline VkAccessFlags ToVulkanBufferAccessFlags(const AccessFlag accessFlag) {
 		VkAccessFlags vkAccessFlags = 0;
-		TranslateMask<AccessFlags::INDIRECT_COMMAND_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::INDEX_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::VERTEX_ATTRIBUTE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::UNIFORM_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::INPUT_ATTACHMENT_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::SHADER_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::SHADER_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::ATTACHMENT_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::ATTACHMENT_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::TRANSFER_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::TRANSFER_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::HOST_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::HOST_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::MEMORY_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::MEMORY_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::ACCELERATION_STRUCTURE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::ACCELERATION_STRUCTURE_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
-		TranslateMask<AccessFlags::SHADING_RATE_IMAGE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT>(accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::INDIRECT_COMMAND_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::INDEX_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::VERTEX_ATTRIBUTE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::UNIFORM_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::INPUT_ATTACHMENT_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::SHADER_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::SHADER_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::ATTACHMENT_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::ATTACHMENT_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::TRANSFER_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::TRANSFER_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::HOST_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::HOST_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::MEMORY_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::MEMORY_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::ACCELERATION_STRUCTURE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::ACCELERATION_STRUCTURE_WRITE, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
+		TranslateMask(AccessFlags::SHADING_RATE_IMAGE_READ, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, accessFlag, vkAccessFlags);
 		return vkAccessFlags;
 	}
 
@@ -179,45 +179,44 @@ namespace GAL
 		}
 	}
 
-	inline VkAccelerationStructureCreateFlagsKHR ToVulkan(const AccelerationStructureFlag accelerationStructureFlag) {
-		VkAccelerationStructureCreateFlagsKHR vkAccelerationStructureCreateFlagsKhr = 0;
-		TranslateMask<AccelerationStructureFlags::ALLOW_COMPACTION, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR>(accelerationStructureFlag, vkAccelerationStructureCreateFlagsKhr);
-		TranslateMask<AccelerationStructureFlags::ALLOW_UPDATE, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR>(accelerationStructureFlag, vkAccelerationStructureCreateFlagsKhr);
-		TranslateMask<AccelerationStructureFlags::LOW_MEMORY, VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR>(accelerationStructureFlag, vkAccelerationStructureCreateFlagsKhr);
-		TranslateMask<AccelerationStructureFlags::PREFER_FAST_BUILD, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR>(accelerationStructureFlag, vkAccelerationStructureCreateFlagsKhr);
-		TranslateMask<AccelerationStructureFlags::PREFER_FAST_TRACE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR>(accelerationStructureFlag, vkAccelerationStructureCreateFlagsKhr);
-		return vkAccelerationStructureCreateFlagsKhr;
-
+	inline VkBuildAccelerationStructureFlagsKHR ToVulkan(const AccelerationStructureFlag accelerationStructureFlag) {
+		VkBuildAccelerationStructureFlagsKHR vk_build_acceleration_structure_flags_khr{};
+		TranslateMask(AccelerationStructureFlags::ALLOW_COMPACTION, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR, accelerationStructureFlag, vk_build_acceleration_structure_flags_khr);
+		TranslateMask(AccelerationStructureFlags::ALLOW_UPDATE, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR, accelerationStructureFlag, vk_build_acceleration_structure_flags_khr);
+		TranslateMask(AccelerationStructureFlags::LOW_MEMORY, VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR, accelerationStructureFlag, vk_build_acceleration_structure_flags_khr);
+		TranslateMask(AccelerationStructureFlags::PREFER_FAST_BUILD, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, accelerationStructureFlag, vk_build_acceleration_structure_flags_khr);
+		TranslateMask(AccelerationStructureFlags::PREFER_FAST_TRACE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, accelerationStructureFlag, vk_build_acceleration_structure_flags_khr);
+		return vk_build_acceleration_structure_flags_khr;
+	
 	}
 
-	inline VkPipelineStageFlags ToVulkan(const PipelineStage pipelineStage) {
-		VkPipelineStageFlags vkPipelineStageFlags = 0;
-		TranslateMask<PipelineStages::TOP_OF_PIPE, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::DRAW_INDIRECT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::VERTEX_INPUT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::VERTEX, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::TESSELLATION_CONTROL, VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::TESSELLATION_EVALUATION, VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::GEOMETRY, VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::FRAGMENT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::EARLY_FRAGMENT_TESTS, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::LATE_FRAGMENT_TESTS, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::COMPUTE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::TRANSFER, VK_PIPELINE_STAGE_TRANSFER_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::BOTTOM_OF_PIPE, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::HOST, VK_PIPELINE_STAGE_HOST_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::ALL_GRAPHICS, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::RAY_TRACING, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::TASK, VK_PIPELINE_STAGE_TASK_SHADER_BIT_NV>(pipelineStage, vkPipelineStageFlags);
-		TranslateMask<PipelineStages::MESH, VK_PIPELINE_STAGE_MESH_SHADER_BIT_NV>(pipelineStage, vkPipelineStageFlags);
+	inline VkPipelineStageFlags2KHR ToVulkan(const PipelineStage pipelineStage) {
+		VkPipelineStageFlags2KHR vkPipelineStageFlags = 0;
+		TranslateMask(PipelineStages::TOP_OF_PIPE,					VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::DRAW_INDIRECT,					VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::VERTEX_INPUT,					VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::VERTEX,							VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::TESSELLATION_CONTROL,			VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::TESSELLATION_EVALUATION,		VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::GEOMETRY,						VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::FRAGMENT,						VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::EARLY_FRAGMENT_TESTS,			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::LATE_FRAGMENT_TESTS,			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT,		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::COMPUTE,						VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::TRANSFER,						VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::BOTTOM_OF_PIPE,					VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::HOST,							VK_PIPELINE_STAGE_2_HOST_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::ALL_GRAPHICS,					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::RAY_TRACING,					VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD,	VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::TASK,							VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_NV, pipelineStage, vkPipelineStageFlags);
+		TranslateMask(PipelineStages::MESH,							VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_NV, pipelineStage, vkPipelineStageFlags);
 		return vkPipelineStageFlags;
 	}
 
 	inline VkDescriptorType ToVulkan(const BindingType bindingType) {
 		switch (bindingType) {
-
 		case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
 		case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		case BindingType::SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -290,16 +289,16 @@ namespace GAL
 
 	inline VkBufferUsageFlags ToVulkan(const BufferUse bufferUses) {
 		VkBufferUsageFlags vkBufferUsageFlags = 0;
-		TranslateMask<BufferUses::STORAGE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::TRANSFER_SOURCE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::TRANSFER_DESTINATION, VK_BUFFER_USAGE_TRANSFER_DST_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::ADDRESS, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::ACCELERATION_STRUCTURE, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::UNIFORM, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::VERTEX, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::INDEX, VK_BUFFER_USAGE_INDEX_BUFFER_BIT>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::SHADER_BINDING_TABLE, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR>(bufferUses, vkBufferUsageFlags);
-		TranslateMask<BufferUses::BUILD_INPUT_READ, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR>(bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::STORAGE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::TRANSFER_SOURCE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::TRANSFER_DESTINATION, VK_BUFFER_USAGE_TRANSFER_DST_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::ADDRESS, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::ACCELERATION_STRUCTURE, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::UNIFORM, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::VERTEX, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::INDEX, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::SHADER_BINDING_TABLE, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR, bufferUses, vkBufferUsageFlags);
+		TranslateMask(BufferUses::BUILD_INPUT_READ, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, bufferUses, vkBufferUsageFlags);
 		return vkBufferUsageFlags;
 	}
 
@@ -424,12 +423,12 @@ namespace GAL
 			case TextureType::DEPTH: vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; break;
 			}
 		}
-		TranslateMask<TextureUses::INPUT_ATTACHMENT, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT>(uses, vkUsage);
-		TranslateMask<TextureUses::SAMPLE, VK_IMAGE_USAGE_SAMPLED_BIT>(uses, vkUsage);
-		TranslateMask<TextureUses::STORAGE, VK_IMAGE_USAGE_STORAGE_BIT>(uses, vkUsage);
-		TranslateMask<TextureUses::TRANSFER_DESTINATION, VK_IMAGE_USAGE_TRANSFER_DST_BIT>(uses, vkUsage);
-		TranslateMask<TextureUses::TRANSFER_SOURCE, VK_IMAGE_USAGE_TRANSFER_SRC_BIT>(uses, vkUsage);
-		TranslateMask<TextureUses::TRANSIENT_ATTACHMENT, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT>(uses, vkUsage);
+		TranslateMask(TextureUses::INPUT_ATTACHMENT, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, uses, vkUsage);
+		TranslateMask(TextureUses::SAMPLE, VK_IMAGE_USAGE_SAMPLED_BIT, uses, vkUsage);
+		TranslateMask(TextureUses::STORAGE, VK_IMAGE_USAGE_STORAGE_BIT, uses, vkUsage);
+		TranslateMask(TextureUses::TRANSFER_DESTINATION, VK_IMAGE_USAGE_TRANSFER_DST_BIT, uses, vkUsage);
+		TranslateMask(TextureUses::TRANSFER_SOURCE, VK_IMAGE_USAGE_TRANSFER_SRC_BIT, uses, vkUsage);
+		TranslateMask(TextureUses::TRANSIENT_ATTACHMENT, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT, uses, vkUsage);
 
 		return vkUsage;
 	}
@@ -451,32 +450,32 @@ namespace GAL
 
 	inline VkShaderStageFlags ToVulkan(const ShaderStage shaderStage) {
 		VkShaderStageFlags vkShaderStageFlags = 0;
-		TranslateMask<ShaderStages::VERTEX, VK_SHADER_STAGE_VERTEX_BIT>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::FRAGMENT, VK_SHADER_STAGE_FRAGMENT_BIT>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::RAY_GEN, VK_SHADER_STAGE_RAYGEN_BIT_KHR>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::CLOSEST_HIT, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::ANY_HIT, VK_SHADER_STAGE_ANY_HIT_BIT_KHR>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::MISS, VK_SHADER_STAGE_MISS_BIT_KHR>(shaderStage, vkShaderStageFlags);
-		TranslateMask<ShaderStages::CALLABLE, VK_SHADER_STAGE_CALLABLE_BIT_KHR>(shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::VERTEX, VK_SHADER_STAGE_VERTEX_BIT, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::FRAGMENT, VK_SHADER_STAGE_FRAGMENT_BIT, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::RAY_GEN, VK_SHADER_STAGE_RAYGEN_BIT_KHR, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::CLOSEST_HIT, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::ANY_HIT, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::MISS, VK_SHADER_STAGE_MISS_BIT_KHR, shaderStage, vkShaderStageFlags);
+		TranslateMask(ShaderStages::CALLABLE, VK_SHADER_STAGE_CALLABLE_BIT_KHR, shaderStage, vkShaderStageFlags);
 		return vkShaderStageFlags;
 	}
 
 	inline VkDescriptorBindingFlags ToVulkan(const BindingFlag bindingFlag) {
 		VkDescriptorBindingFlags vkDescriptorBindingFlags = 0;
-		TranslateMask<BindingFlags::PARTIALLY_BOUND, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT>(bindingFlag, vkDescriptorBindingFlags);
+		TranslateMask(BindingFlags::PARTIALLY_BOUND, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, bindingFlag, vkDescriptorBindingFlags);
 		return vkDescriptorBindingFlags;
 	}
 
 	inline VkGeometryFlagsKHR ToVkGeometryFlagsKHR(const GeometryFlag geometryFlag) {
 		VkGeometryFlagsKHR vkGeometryFlagsKhr = 0;
-		TranslateMask<GeometryFlags::OPAQUE, VK_GEOMETRY_OPAQUE_BIT_KHR>(geometryFlag, vkGeometryFlagsKhr);
+		TranslateMask(GeometryFlags::OPAQUE, VK_GEOMETRY_OPAQUE_BIT_KHR, geometryFlag, vkGeometryFlagsKhr);
 		return vkGeometryFlagsKhr;
 	}
 
 	inline VkGeometryInstanceFlagsKHR ToVkGeometryInstanceFlagsKHR(const GeometryFlag geometryFlag) {
 		VkGeometryInstanceFlagsKHR vkGeometryFlagsKhr = 0;
-		TranslateMask<GeometryFlags::OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR>(geometryFlag, vkGeometryFlagsKhr);
+		TranslateMask(GeometryFlags::OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, geometryFlag, vkGeometryFlagsKhr);
 		return vkGeometryFlagsKhr;
 	}
 
@@ -521,11 +520,11 @@ namespace GAL
 
 	inline MemoryType ToGAL(const VkMemoryPropertyFlags memoryPropertyFlags) {
 		MemoryType memoryType;
-		TranslateMask<VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, MemoryTypes::GPU>(memoryPropertyFlags, memoryType);
-		TranslateMask<VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, MemoryTypes::HOST_VISIBLE>(memoryPropertyFlags, memoryType);
-		TranslateMask<VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, MemoryTypes::HOST_COHERENT>(memoryPropertyFlags, memoryType);
-		TranslateMask<VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemoryTypes::HOST_CACHED>(memoryPropertyFlags, memoryType);
-		TranslateMask<VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, 0>(memoryPropertyFlags, memoryType);
+		TranslateMask(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryPropertyFlags, MemoryTypes::GPU, memoryType);
+		TranslateMask(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, memoryPropertyFlags, MemoryTypes::HOST_VISIBLE, memoryType);
+		TranslateMask(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, memoryPropertyFlags, MemoryTypes::HOST_COHERENT, memoryType);
+		TranslateMask(VK_MEMORY_PROPERTY_HOST_CACHED_BIT, memoryPropertyFlags, MemoryTypes::HOST_CACHED, memoryType);
+		if (VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT & memoryPropertyFlags) { __debugbreak(); }
 		return memoryType;
 	}
 

@@ -22,20 +22,15 @@ namespace GAL
 	
 	constexpr GTSL::uint8 MAX_SHADER_STAGES = 8;
 
-	template<GTSL::uint32 FV, GTSL::uint32 TV, typename FVR, typename TVR>
-	void TranslateMask(const FVR fromVar, TVR& toVar) {
-		GTSL::SetBitAs(GTSL::FFSB(TV), static_cast<GTSL::uint32>(fromVar) & FV, static_cast<GTSL::uint32&>(toVar));
+	template<typename FVR, class FVT, typename Y, typename Z>
+	void TranslateMask(const GTSL::Flags<FVR, FVT> fromValue, const Y toValue, const GTSL::Flags<FVR, FVT> fromVar, Z& toVar) {
+		GTSL::SetBitAs(GTSL::FFSB(toValue), static_cast<FVR>(fromVar) & static_cast<FVR>(fromValue), toVar);
 	}
 
-	template<GTSL::uint32 FV, GTSL::uint32 TV, typename FVR, typename T>
-	void TranslateMask(const FVR fromVar, GTSL::Flags<GTSL::uint8, T>& toVar) {
-		GTSL::SetBitAs(GTSL::FFSB(TV), static_cast<GTSL::uint8>(static_cast<GTSL::uint32>(fromVar) & FV), static_cast<GTSL::uint8&>(toVar));
+	template<typename FVR, class FVT, typename Y, typename Z>
+	void TranslateMask(const Y fromValue, Z fromVar, const GTSL::Flags<FVR, FVT> toValue, GTSL::Flags<FVR, FVT>& toVariable) {
+		GTSL::SetBitAs(GTSL::FFSB(toValue), fromVar & fromValue, static_cast<FVR&>(toVariable));
 	}
-	
-	//template<typename FV, typename TV, typename FVR, typename TVR>
-	//void TranslateMask(const FV fromValue, const TV toValue, const FVR fromVar, TVR& toVar) {
-	//	GTSL::SetBitAs(GTSL::FindFirstSetBit(toValue), fromVar & fromValue, toVar);
-	//}
 	
 	enum class RenderAPI : GTSL::uint8 {
 		VULKAN,

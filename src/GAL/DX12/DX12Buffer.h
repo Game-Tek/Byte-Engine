@@ -10,8 +10,7 @@ namespace GAL
 {
 	struct MemoryRequirements;
 
-	class DX12Buffer final
-	{
+	class DX12Buffer final {
 	public:
 		DX12Buffer() = default;
 		
@@ -51,5 +50,10 @@ namespace GAL
 		
 	private:
 		ID3D12Resource* resource = nullptr;
+	};
+
+	class DX12DeviceMemory
+	{
+		
 	};
 }

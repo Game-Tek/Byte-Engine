@@ -25,8 +25,7 @@ namespace BE
 {	
 	class Logger;
 	
-	class Application : public Object
-	{
+	class Application : public Object {
 	public:
 		[[nodiscard]] static const char* GetEngineName() { return "Byte Engine"; }
 		static const char* GetEngineVersion() { return "0.0.1"; }
@@ -43,14 +42,11 @@ namespace BE
 		uint8 GetNumberOfThreads();
 		const GTSL::Application& GetApplication() const { return systemApplication; }
 
-		enum class UpdateContext : uint8
-		{
+		enum class UpdateContext : uint8 {
 			NORMAL, BACKGROUND
 		};
 		
-		struct OnUpdateInfo
-		{
-		};
+		struct OnUpdateInfo {};
 		virtual void OnUpdate(const OnUpdateInfo& updateInfo);
 		
 		int Run(int argc, char** argv);
@@ -60,8 +56,7 @@ namespace BE
 		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();
 
-		enum class CloseMode : uint8
-		{
+		enum class CloseMode : uint8 {
 			OK, WARNING, ERROR
 		};
 		//Flags the application to close on the next update.
@@ -82,8 +77,7 @@ namespace BE
 			//todo: open dialog box?
 		}
 		
-		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const
-		{
+		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const {
 			auto path = systemApplication.GetPathToExecutable();
 			path.Drop(FindLast(path, u8'/').Get()); return path;
 		}
@@ -93,20 +87,8 @@ namespace BE
 		[[nodiscard]] Logger* GetLogger() const { return logger.GetData(); }
 		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
 		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return applicationManager; }
-
-		template<typename RM>
-		RM* CreateResourceManager()
-		{
-			auto resource_manager = GTSL::SmartPointer<RM, SystemAllocatorReference>(systemAllocatorReference);
-			auto* pointer = resource_manager.GetData();
-			resourceManagers.Emplace(GTSL::Id64(resource_manager->GetName()), MoveRef(resource_manager));
-			return pointer;
-		}
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
-		
-		template<class T>
-		T* GetResourceManager(const Id name) { return static_cast<T*>(resourceManagers.At(name).GetData()); }
 		
 		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		
@@ -129,8 +111,6 @@ namespace BE
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> applicationManager;
-
-		GTSL::HashMap<Id, GTSL::SmartPointer<ResourceManager, SystemAllocatorReference>, SystemAllocatorReference> resourceManagers;
 
 		GTSL::HashMap<Id, uint32, SystemAllocatorReference> settings;
 		

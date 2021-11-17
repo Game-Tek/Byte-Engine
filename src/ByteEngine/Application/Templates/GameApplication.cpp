@@ -29,12 +29,11 @@ bool GameApplication::Initialize()
 	
 	SetupInputSources();
 	
-	CreateResourceManager<StaticMeshResourceManager>();
-	CreateResourceManager<TextureResourceManager>();
-	CreateResourceManager<ShaderResourceManager>();
-	CreateResourceManager<AudioResourceManager>();
-	CreateResourceManager<PipelineCacheResourceManager>();
-	//CreateResourceManager<AnimationResourceManager>();
+	applicationManager->AddSystem<StaticMeshResourceManager>(u8"StaticMeshResourceManager");
+	applicationManager->AddSystem<TextureResourceManager>(u8"TextureResourceManager");
+	applicationManager->AddSystem<ShaderResourceManager>(u8"ShaderResourceManager");
+	applicationManager->AddSystem<AudioResourceManager>(u8"AudioResourceManager");
+	applicationManager->AddSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 
 	return true;
 }
@@ -71,7 +70,11 @@ void GameApplication::PostInitialize()
 	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	auto* smrg = applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	auto* smrm = applicationManager->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
+
+	smrg->Init(smrm);
+
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
 
 	{
@@ -110,13 +113,13 @@ void GameApplication::PostInitialize()
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" } );
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" } );
-		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, applicationManager, GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager"));
+		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
 
 		RenderOrchestrator::PassData colorGrading{};
 		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
 		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
 		if (GetOption(u8"ColorGradingRenderPass")) {
-			auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, GetResourceManager<ShaderResourceManager>(u8"ShaderResourceManager"));
+			auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
 		}
 
 		RenderOrchestrator::PassData rtRenderPass{};
@@ -133,13 +136,9 @@ void GameApplication::PostInitialize()
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
 	applicationManager->AddSystem<CanvasSystem>(u8"CanvasSystem");
-	
-	applicationManager->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
+
 	applicationManager->AddSystem<UIRenderManager>(u8"UIRenderManager");
 	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
-	
-	renderOrchestrator->AddRenderManager(applicationManager, u8"StaticMeshRenderManager", applicationManager->GetSystemReference(u8"StaticMeshRenderManager"));
-	renderOrchestrator->AddRenderManager(applicationManager, u8"UIRenderManager", applicationManager->GetSystemReference(u8"UIRenderManager"));
 }	
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
@@ -313,20 +312,9 @@ void GameApplication::RegisterControllers()
 
 using namespace GTSL;
 
-void GameApplication::onWindowResize(const Extent2D extent)
-{
-	GTSL::StaticVector<TaskDependency, 10> taskDependencies = { { u8"RenderSystem", AccessTypes::READ_WRITE } };
-
-	auto ext = extent;
-
-	auto resize = [](TaskInfo info, Extent2D newSize) {
-		auto* renderSystem = info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
-
-		renderSystem->OnResize(newSize);
-	};
-	
+void GameApplication::onWindowResize(Extent2D extent) {
 	if (extent != 0 && extent != oldSize) {
-		applicationManager->AddDynamicTask(u8"windowResize", Delegate<void(TaskInfo, Extent2D)>::Create(resize), taskDependencies, u8"FrameStart", u8"RenderStart", MoveRef(ext));
+		applicationManager->AddStoredDynamicTask(applicationManager->GetSystem<RenderSystem>(u8"RenderSystem")->GetResizeHandle(),  MoveRef(extent));
 		oldSize = extent;
 	}
 }

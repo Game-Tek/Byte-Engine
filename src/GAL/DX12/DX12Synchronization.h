@@ -31,11 +31,11 @@ namespace GAL
 		ID3D12Fence* fence = nullptr;
 	};
 
-	//class DX12Semaphore
-	//{
-	//public:
-	//
-	//private:
-	//	ID3D12Semaphore* semaphore = nullptr;
-	//};
+	class DX12Semaphore
+	{
+	public:
+	
+	private:
+		ID3D12Fence* semaphore = nullptr;
+	};
 }

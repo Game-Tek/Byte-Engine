@@ -21,6 +21,8 @@ namespace AccessTypes {
 
 struct TaskInfo
 {
+	TaskInfo(ApplicationManager* application_manager) : ApplicationManager(application_manager) {}
+
 	class ApplicationManager* ApplicationManager = nullptr;
 	uint8 InvocationID = 0;
 };
@@ -29,7 +31,7 @@ struct TaskDependency
 {
 	TaskDependency() = default;
 	TaskDependency(const Id object, const AccessType access) : AccessedObject(object), Access(access) {}
-	
+
 	Id AccessedObject;
 	AccessType Access;
 };

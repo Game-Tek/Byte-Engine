@@ -61,7 +61,7 @@ public:
 	};
 
 
-	static constexpr bool USE_MALLOC = true;
+	static constexpr bool USE_MALLOC = false;
 	static constexpr bool MEMORY_PATTERN = false;
 	static constexpr bool DEALLOC_COUNT = false;
 

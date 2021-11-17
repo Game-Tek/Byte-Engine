@@ -31,7 +31,7 @@ namespace GTSL {
 class FontResourceManager : public ResourceManager
 {
 public:
-	FontResourceManager();
+	FontResourceManager(const InitializeInfo&);
 	
 	struct Character
 	{

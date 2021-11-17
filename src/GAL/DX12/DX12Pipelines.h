@@ -37,8 +37,7 @@ namespace GAL
 		GTSL::Range<const GTSL::byte*> ShaderData;
 	};
 
-	class DX12PipelineLayout final
-	{
+	class DX12PipelineLayout final {
 	public:
 		DX12PipelineLayout() = default;
 
@@ -64,28 +63,27 @@ namespace GAL
 			GTSL::Range<const GTSL::uint32*> Sizes;
 		};
 
-		void Initialize(const CreateInfo& info) {
+		void Initialize(const DX12RenderDevice* renderDevice, const PushConstant* pushConstant, const GTSL::Range<const DX12BindingsSetLayout*> bindingsSetLayouts) {
 			GTSL::StaticVector<D3D12_ROOT_PARAMETER, 12> rootParameters;
 
-			if (info.PushConstant) {
-				auto& pushConstant = rootParameters.EmplaceBack();
-				pushConstant.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-				pushConstant.ShaderVisibility = ToDX12(info.PushConstant->Stage);
-				pushConstant.Constants.Num32BitValues = info.PushConstant->NumberOf4ByteSlots;
-				pushConstant.Constants.RegisterSpace = 0;
-				pushConstant.Constants.ShaderRegister = 0;
-			}
-			
-			for (GTSL::uint32 i = 0; i < info.BindingsDescriptors.ElementCount(); ++i)
-			{
-				D3D12_ROOT_PARAMETER rootParameter;
-				rootParameter.ParameterType;
-				rootParameter.ShaderVisibility;
-				rootParameter.Constants;
-				rootParameter.Descriptor;
-				rootParameter.DescriptorTable;
-				rootParameters.EmplaceBack(rootParameter);
-			}
+			//if (pushConstant) {
+			//	auto& pushConstant = rootParameters.EmplaceBack();
+			//	pushConstant.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			//	pushConstant.ShaderVisibility = ToDX12(pushConstant->Stage);
+			//	pushConstant.Constants.Num32BitValues = pushConstant->NumberOf4ByteSlots;
+			//	pushConstant.Constants.RegisterSpace = 0;
+			//	pushConstant.Constants.ShaderRegister = 0;
+			//}
+			//
+			//for (GTSL::uint32 i = 0; i < info.BindingsDescriptors.ElementCount(); ++i) {
+			//	D3D12_ROOT_PARAMETER rootParameter;
+			//	rootParameter.ParameterType;
+			//	rootParameter.ShaderVisibility;
+			//	rootParameter.Constants;
+			//	rootParameter.Descriptor;
+			//	rootParameter.DescriptorTable;
+			//	rootParameters.EmplaceBack(rootParameter);
+			//}
 
 			D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
 			rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
@@ -94,7 +92,7 @@ namespace GAL
 			rootSignatureDesc.NumStaticSamplers = 0;
 			rootSignatureDesc.pStaticSamplers = nullptr;
 			DX_CHECK(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, nullptr, nullptr));
-			DX_CHECK(info.RenderDevice->GetID3D12Device2()->CreateRootSignature(0, nullptr, 0, __uuidof(ID3D12RootSignature), nullptr));
+			DX_CHECK(renderDevice->GetID3D12Device2()->CreateRootSignature(0, nullptr, 0, __uuidof(ID3D12RootSignature), nullptr));
 			setName(rootSignature, {});
 		}
 
@@ -107,6 +105,10 @@ namespace GAL
 		
 	private:
 		ID3D12RootSignature* rootSignature = nullptr;
+	};
+
+	class DX12PipelineCache : public PipelineCache {
+		
 	};
 
 	class DX12Pipeline : public Pipeline {
@@ -127,8 +129,7 @@ namespace GAL
 	public:
 		DX12RasterPipeline() = default;
 
-		struct CreateInfo final : DX12CreateInfo
-		{
+		struct CreateInfo final {
 			const class VulkanRenderPass* RenderPass = nullptr;
 			GTSL::Extent2D SurfaceExtent;
 			GTSL::Range<const VertexElement*> VertexDescriptor;
@@ -140,7 +141,7 @@ namespace GAL
 			const class DX12PipelineCache* PipelineCache = nullptr;
 			GTSL::uint32 SubPass = 0;
 		};
-		void Initialize(const CreateInfo& info) {
+		void Initialize(const DX12RenderDevice* render_device, const CreateInfo& info) {
 			GTSL::Buffer<GTSL::StaticAllocator<1024>> buffer(1024, 16);
 			//buffer.Allocate(1024, 8, allocator);
 
@@ -193,7 +194,7 @@ namespace GAL
 
 						offset += ShaderDataTypesSize(info.VertexDescriptor[i].Type);
 
-						elementDesc.SemanticName = info.VertexDescriptor[i].Identifier.begin();
+						elementDesc.SemanticName = reinterpret_cast<const char*>(info.VertexDescriptor[i].Identifier.begin());
 						vertexElements.EmplaceBack(elementDesc);
 					}
 
@@ -206,8 +207,8 @@ namespace GAL
 			pipelineStateStream.SizeInBytes = buffer.GetLength();
 			pipelineStateStream.pPipelineStateSubobjectStream = buffer.GetData();
 
-			info.RenderDevice->GetID3D12Device2()->CreatePipelineState(&pipelineStateStream, __uuidof(ID3D12PipelineState), reinterpret_cast<void**>(&pipelineState));
-			setName(pipelineState, info.Name);
+			render_device->GetID3D12Device2()->CreatePipelineState(&pipelineStateStream, __uuidof(ID3D12PipelineState), reinterpret_cast<void**>(&pipelineState));
+			//setName(pipelineState, info.Name);
 		}
 		
 		~DX12RasterPipeline() = default;

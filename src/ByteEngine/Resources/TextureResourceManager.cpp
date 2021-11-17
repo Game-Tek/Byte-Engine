@@ -16,7 +16,7 @@
 
 #undef Extract
 
-TextureResourceManager::TextureResourceManager() : ResourceManager(u8"TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
+TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"TextureResourceManager"), textureInfos(8, 0.25, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, resources_path;
 	query_path += BE::Application::Get()->GetPathToApplication();

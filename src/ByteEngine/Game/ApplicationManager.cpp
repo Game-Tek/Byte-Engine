@@ -19,17 +19,12 @@ stagesNames(8, GetPersistentAllocator()), recurringTasksInfo(32, GetPersistentAl
 {
 }
 
-ApplicationManager::~ApplicationManager()
-{
+ApplicationManager::~ApplicationManager() {
 	{
-		System::ShutdownInfo shutdownInfo;
-		shutdownInfo.GameInstance = this;
-
 		//Call shutdown in reverse order since systems initialized last during application start
 		//may depend on those created before them also for shutdown
-		auto shutdownSystem = [&](System* system) -> void
-		{
-			system->Shutdown(shutdownInfo);
+		auto shutdownSystem = [&](GTSL::SmartPointer<System, BE::PAR>& system) -> void {
+			system.TryFree();
 		};
 		
 		GTSL::ReverseForEach(systems, shutdownSystem);
@@ -40,13 +35,12 @@ ApplicationManager::~ApplicationManager()
 	for (auto& world : worlds) { world->DestroyWorld(destroy_info); }
 }
 
-void ApplicationManager::OnUpdate(BE::Application* application)
-{
+void ApplicationManager::OnUpdate(BE::Application* application) {
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localRecurringTasksPerStage(64, GetTransientAllocator());
 	GTSL::Vector<Stage<FunctionType, BE::TAR>, BE::TAR> localDynamicTasksPerStage(64, GetTransientAllocator());
 	
 	asyncTasksMutex.WriteLock();
-	Stage<FunctionType, BE::TAR> localAsyncTasks(asyncTasks, GetTransientAllocator());
+	Stage localAsyncTasks(asyncTasks, GetTransientAllocator());
 	asyncTasks.Clear();
 	asyncTasksMutex.WriteUnlock();
 	
@@ -66,9 +60,6 @@ void ApplicationManager::OnUpdate(BE::Application* application)
 	}
 	
 	GTSL::Mutex waitWhenNoChange;
-
-	TaskInfo task_info;
-	task_info.ApplicationManager = this;
 
 	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
 	{

@@ -22,8 +22,6 @@ class AudioSystem : public System
 public:
 	AudioSystem(const InitializeInfo& initializeInfo);
 	~AudioSystem();
-	
-	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	AudioListenerHandle CreateAudioListener();
 	AudioEmitterHandle CreateAudioEmitter();
@@ -99,8 +97,8 @@ private:
 	GTSL::StaticVector<AudioEmitterHandle, 8> onHoldEmitters;
 	
 	GTSL::Buffer<BE::PAR> audioBuffer;
-	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
-	DynamicTaskHandle<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
+	DynamicTaskHandle<AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
+	DynamicTaskHandle<AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
 
 	AudioListenerHandle activeAudioListenerHandle;
 

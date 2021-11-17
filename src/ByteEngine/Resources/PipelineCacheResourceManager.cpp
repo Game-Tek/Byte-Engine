@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Application/Application.h"
 
-PipelineCacheResourceManager::PipelineCacheResourceManager() : ResourceManager(u8"PipelineCacheResourceManager")
+PipelineCacheResourceManager::PipelineCacheResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"PipelineCacheResourceManager")
 {
 	GTSL::StaticString<256> resources_path;
 	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += u8"/resources/PipelineCache.bepkg";

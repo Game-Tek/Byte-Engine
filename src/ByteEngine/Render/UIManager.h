@@ -75,38 +75,6 @@ private:
 	float32 rotation = 0.0f;
 };
 
-//class TexturePrimitive : public Primitive
-//{
-//public:
-//	TexturePrimitive() = default;
-//
-//	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
-//	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
-//	
-//	void SetTexture(const ComponentReference newTexture) { textureHandle = newTexture; }
-//	
-//private:
-//	GTSL::RGBA color;
-//
-//	ComponentReference textureHandle;
-//};
-
-//class TextPrimitive : public Primitive
-//{
-//public:
-//	TextPrimitive() = default;
-//
-//	void SetColor(const GTSL::RGBA newColor) { color = newColor; }
-//	[[nodiscard]] GTSL::RGBA GetColor() const { return color; }
-//	
-//	void SetString(const GTSL::Range<const utf8*> newText) { rawString = newText; }
-//	
-//private:	
-//	GTSL::RGBA color;
-//	
-//	GTSL::String<BE::PAR> rawString;
-//};
-
 class Canvas : public Object
 {
 public:
@@ -117,38 +85,34 @@ public:
 	uint16 AddOrganizer(const Id organizerName);
 	uint16 AddOrganizer(const Id organizerName, const uint16 parentOrganizer);
 
-	uint16 AddSquare()
-	{
+	uint16 AddSquare() {
 		const auto primitiveIndex = primitives.Emplace();
 		const auto place = squares.Emplace();
 		squares[place].PrimitiveIndex = primitiveIndex;
+		auto& primitive = primitives[primitiveIndex];
+		primitive.AspectRatio = 1.f;
 		return static_cast<uint16>(place);
 	}
 
-	void SetSquareAspectRatio(const uint16 square, const GTSL::Vector2 aspectRatio)
-	{
+	void SetSquareAspectRatio(const uint16 square, const GTSL::Vector2 aspectRatio) {
 		primitives[squares[square].PrimitiveIndex].AspectRatio = aspectRatio;
 	}
 
-	void SetSquareColor(const uint16 square, const Id color)
-	{
+	void SetSquareColor(const uint16 square, const Id color) {
 		squares[square].SetColor(color);
 	}
 
-	void SetSquareMaterial(const uint16 square, const MaterialInstanceHandle material)
-	{
+	void SetSquareMaterial(const uint16 square, const MaterialInstanceHandle material) {
 		primitives[squares[square].PrimitiveIndex].Material = material;
 	}
 	
-	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio)
-	{
+	void SetOrganizerAspectRatio(const uint16 organizer, GTSL::Vector2 aspectRatio) {
 		primitives[organizersAsPrimitives[organizer]].AspectRatio = aspectRatio;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
 	}
 
-	void SetOrganizerAlignment(const uint16 organizer, Alignment alignment)
-	{
+	void SetOrganizerAlignment(const uint16 organizer, Alignment alignment) {
 		organizerAlignments[organizer] = alignment;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
@@ -156,12 +120,10 @@ public:
 
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
 
-	bool CheckHit(GTSL::Vector2 point)
-	{
+	bool CheckHit(GTSL::Vector2 point) {
 		uint32 i = 0;
 		
-		for(auto e : organizersAsPrimitives)
-		{
+		for(auto e : organizersAsPrimitives) {
 			const auto top = (primitives[e].AspectRatio * 0.5f) + primitives[e].RelativeLocation;
 			const auto bottom = primitives[e].RelativeLocation - (primitives[e].AspectRatio * 0.5f);
 			
@@ -177,8 +139,7 @@ public:
 
 	//[[nodiscard]] auto& GetOrganizers() const { return organizers; }
 	//[[nodiscard]] auto& GetOrganizersTree() const { return organizerTree; }
-	void SetSquarePosition(uint16 square, GTSL::Vector2 pos)
-	{
+	void SetSquarePosition(uint16 square, GTSL::Vector2 pos) {
 		BE_ASSERT(pos.X() >= -1.f && pos.X() <= 1.0f && pos.Y() >= -1.0f && pos.Y() <= 1.0f);
 		primitives[squares[square].PrimitiveIndex].RelativeLocation = pos;
 	}
@@ -186,42 +147,36 @@ public:
 	auto& GetSquares() const { return squares; }
 	auto& GetPrimitives() const { return primitives; }
 	
-	void AddSquareToOrganizer(uint16 organizer, uint16 square)
-	{
+	void AddSquareToOrganizer(uint16 organizer, uint16 square) {
 		organizersPrimitives[organizer].EmplaceBack(squares[square].PrimitiveIndex);
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
 	}
 
-	void AddOrganizerToOrganizer(uint16 organizer, uint16 to)
-	{
+	void AddOrganizerToOrganizer(uint16 organizer, uint16 to) {
 		organizersPerOrganizer[to].EmplaceBack(organizer);
 		queueUpdateAndCull(organizer);
 	}
 	
-	void SetOrganizerPosition(uint16 organizer, GTSL::Vector2 pos)
-	{
+	void SetOrganizerPosition(uint16 organizer, GTSL::Vector2 pos) {
 		primitives[organizersAsPrimitives[organizer]].RelativeLocation = pos;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
 	}
 
-	void SetOrganizerSizingPolicy(uint16 organizer, SizingPolicy sizingPolicy)
-	{
+	void SetOrganizerSizingPolicy(uint16 organizer, SizingPolicy sizingPolicy) {
 		organizerSizingPolicies[organizer].SizingPolicy = sizingPolicy;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
 	}
 
-	void SetOrganizerScalingPolicy(uint16 organizer, ScalingPolicy scalingPolicy)
-	{
+	void SetOrganizerScalingPolicy(uint16 organizer, ScalingPolicy scalingPolicy) {
 		organizerSizingPolicies[organizer].ScalingPolicy = scalingPolicy;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
 	}
 
-	void SetOrganizerSpacingPolicy(uint16 organizer, SpacingPolicy spacingPolicy)
-	{
+	void SetOrganizerSpacingPolicy(uint16 organizer, SpacingPolicy spacingPolicy) {
 		organizerSizingPolicies[organizer].SpacingPolicy = spacingPolicy;
 		updateBranch(organizer);
 		queueUpdateAndCull(organizer);
@@ -229,26 +184,15 @@ public:
 
 	void ProcessUpdates();
 	
-	//auto GetPrimitivesPerOrganizer() const
-	//{
-	//	return primitivesPerOrganizer.begin();
-	//}
-	
-	//Button& GetButton(const ComponentReference button) { return buttons[button.Component]; }
-	
 private:
-	//GTSL::FixedVector<GTSL::FixedVector<PrimitiveData, BE::PAR>, BE::PAR> primitivesPerOrganizer;
 	GTSL::FixedVector<PrimitiveData, BE::PAR> primitives;
 	GTSL::FixedVector<Square, BE::PAR> squares;
 	GTSL::FixedVector<uint32, BE::PAR> organizerDepth;
 	GTSL::FixedVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPrimitives;
 	GTSL::FixedVector<GTSL::Vector<uint32, BE::PAR>, BE::PAR> organizersPerOrganizer;
-	//GTSL::FixedVector<GTSL::Vector2, BE::PAR> organizerAspectRatios;
-	//GTSL::FixedVector<GTSL::Vector2, BE::PAR> organizersPosition;
 	GTSL::FixedVector<Alignment, BE::PAR> organizerAlignments;
 
-	struct SizingParameters
-	{
+	struct SizingParameters {
 		SizingPolicy SizingPolicy;
 		ScalingPolicy ScalingPolicy;
 		SpacingPolicy SpacingPolicy;
@@ -281,8 +225,6 @@ class CanvasSystem : public System
 {
 public:
 	CanvasSystem(const InitializeInfo& initializeInfo);
-	
-	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 	
 	CanvasHandle CreateCanvas(const Id) {
 		return CanvasHandle(canvases.Emplace());
@@ -322,7 +264,6 @@ class UIManager : public System
 {
 public:
 	explicit UIManager(const InitializeInfo& initializeInfo);
-	void Shutdown(const ShutdownInfo& shutdownInfo) override;
 
 	void AddCanvas(const CanvasHandle system)
 	{

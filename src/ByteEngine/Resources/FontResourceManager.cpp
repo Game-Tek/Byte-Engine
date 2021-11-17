@@ -11,7 +11,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-FontResourceManager::FontResourceManager(): ResourceManager(u8"FontResourceManager")
+FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceManager(info, u8"FontResourceManager")
 {
 	auto path = GetResourcePath(GTSL::StaticString<64>(u8"Fonts"), GTSL::ShortString<32>(u8"bepkg"));
 	

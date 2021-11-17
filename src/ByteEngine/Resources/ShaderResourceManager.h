@@ -38,7 +38,7 @@ class ShaderResourceManager final : public ResourceManager
 	}
 	
 public:
-	ShaderResourceManager() : ResourceManager(u8"ShaderResourceManager"), shaderGroupsMap(8, GetPersistentAllocator()), shaderInfosMap(8, GetPersistentAllocator())
+	ShaderResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"ShaderResourceManager"), shaderGroupsMap(8, GetPersistentAllocator()), shaderInfosMap(8, GetPersistentAllocator())
 	{
 		shaderPackageFile.Open(GetResourcePath(GTSL::ShortString<32>(u8"Shaders"), GTSL::ShortString<32>(u8"bepkg")), 1 * 1024 * 1024, GTSL::File::READ | GTSL::File::WRITE);
 		
@@ -477,45 +477,13 @@ public:
 	}
 
 	template<typename... ARGS>
-	void LoadShaderGroupInfo(ApplicationManager* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		auto loadShaderGroup = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, Id shaderGroupName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args) {
-			auto& shaderGroup = materialResourceManager->shaderGroupsMap[shaderGroupName];
-			
-			ShaderGroupInfo shaderGroupInfo;
-
-			shaderGroupInfo.Name = shaderGroup.Name;
-			shaderGroupInfo.Size = shaderGroup.Size;
-			shaderGroupInfo.Valid = shaderGroup.Valid;
-			shaderGroupInfo.RenderPass = shaderGroup.RenderPass;
-			shaderGroupInfo.Stages = shaderGroup.Stages;
-			shaderGroupInfo.Instances = shaderGroup.Instances;
-			shaderGroupInfo.Parameters = shaderGroup.Parameters;
-			
-			for (auto& e : materialResourceManager->shaderGroupsMap[shaderGroupName].Shaders) {
-				const auto& shader = materialResourceManager->shaderInfosMap[Id(e)];
-				shaderGroupInfo.Shaders.EmplaceBack(shader);
-			}
-
-			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
-		};
-		
-		gameInstance->AddDynamicTask(u8"loadShaderInfosFromDisk", Task<ShaderResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaderGroup), GTSL::Range<TaskDependency*>(), this, GTSL::MoveRef(shaderGroupName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadShaderGroupInfo(ApplicationManager* gameInstance, Id shaderGroupName, DynamicTaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->AddDynamicTask(this, u8"loadShaderInfosFromDisk", {}, &ShaderResourceManager::loadShaderGroup<ARGS...>, {}, {}, GTSL::MoveRef(shaderGroupName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
-
+	
 	template<typename... ARGS>
-	void LoadShaderGroup(ApplicationManager* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args) {
-		auto loadShaders = [](TaskInfo taskInfo, ShaderResourceManager* materialResourceManager, ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args) {
-			uint32 offset = 0;
-
-			for (auto& e : shader_group_info.Shaders) {
-				GTSL::MemCopy(e.Size, materialResourceManager->shaderPackageFile.GetData() + e.Offset, buffer.begin() + offset);
-				offset += e.Size;
-			}
-
-			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(materialResourceManager), GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
-		};
-		
-		gameInstance->AddDynamicTask(u8"loadShadersFromDisk", Task<ShaderResourceManager*, ShaderGroupInfo, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadShaders), GTSL::Range<TaskDependency*>(), this, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadShaderGroup(ApplicationManager* gameInstance, ShaderGroupInfo shader_group_info, DynamicTaskHandle<ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, GTSL::Range<byte*> buffer, ARGS&&... args) {
+		gameInstance->AddDynamicTask(this, u8"loadShadersFromDisk", {}, &ShaderResourceManager::loadShaders<ARGS...>, {}, {}, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 private:
@@ -527,4 +495,38 @@ private:
 	GTSL::MappedFile shaderPackageFile;
 
 	uint64 size = 0;
+
+	template<typename... ARGS>
+	void loadShaderGroup(TaskInfo taskInfo, Id shaderGroupName, DynamicTaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS... args) { //TODO: check why can't use ARGS&&
+		auto& shaderGroup = shaderGroupsMap[shaderGroupName];
+
+		ShaderGroupInfo shaderGroupInfo;
+
+		shaderGroupInfo.Name = shaderGroup.Name;
+		shaderGroupInfo.Size = shaderGroup.Size;
+		shaderGroupInfo.Valid = shaderGroup.Valid;
+		shaderGroupInfo.RenderPass = shaderGroup.RenderPass;
+		shaderGroupInfo.Stages = shaderGroup.Stages;
+		shaderGroupInfo.Instances = shaderGroup.Instances;
+		shaderGroupInfo.Parameters = shaderGroup.Parameters;
+
+		for (auto& e : shaderGroupsMap[shaderGroupName].Shaders) {
+			const auto& shader = shaderInfosMap[Id(e)];
+			shaderGroupInfo.Shaders.EmplaceBack(shader);
+		}
+
+		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
+	};
+
+	template<typename... ARGS>
+	void loadShaders(TaskInfo taskInfo, ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, DynamicTaskHandle<ShaderGroupInfo, GTSL::Range<byte*>, ARGS...> dynamicTaskHandle, ARGS... args) {
+		uint32 offset = 0;
+
+		for (auto& e : shader_group_info.Shaders) {
+			GTSL::MemCopy(e.Size, shaderPackageFile.GetData() + e.Offset, buffer.begin() + offset);
+			offset += e.Size;
+		}
+
+		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+	};
 };

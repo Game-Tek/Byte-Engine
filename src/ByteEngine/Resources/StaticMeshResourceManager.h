@@ -25,7 +25,7 @@ namespace GTSL {
 class StaticMeshResourceManager final : public ResourceManager
 {
 public:
-	StaticMeshResourceManager();
+	StaticMeshResourceManager(const InitializeInfo&);
 	~StaticMeshResourceManager();
 
 	struct StaticMeshData : Data
@@ -91,46 +91,13 @@ public:
 	};
 
 	template<typename... ARGS>
-	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
-	{
-		auto loadStaticMeshInfo = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, Id meshName, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
-		{
-			if constexpr (BE_DEBUG) {
-				if (!resourceManager->meshInfos.Find(meshName)) {
-					resourceManager->getLogger()->PrintObjectLog(resourceManager, BE::Logger::VerbosityLevel::FATAL, u8"Mesh with name ", GTSL::StringView(meshName), u8" could not be found. ", BE::FIX_OR_CRASH_STRING);
-					return;
-				}
-			}
-
-			auto &staticMeshInfoSerialize = resourceManager->meshInfos.At(meshName);
-
-			StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
-			
-			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
-		};
-
-		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMeshInfo", Task<StaticMeshResourceManager*, Id, decltype(dynamicTaskHandle), ARGS...>::Create(loadStaticMeshInfo), {}, this, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->AddDynamicTask(this, u8"StaticMeshResourceManager::loadStaticMeshInfo", {}, &StaticMeshResourceManager::loadStaticMeshInfo<ARGS...>, {}, {}, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
-	void LoadStaticMesh(ApplicationManager* gameInstance, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args)
-	{
-		auto loadMesh = [](TaskInfo taskInfo, StaticMeshResourceManager* resourceManager, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, decltype(dynamicTaskHandle) dynamicTaskHandle, ARGS&&... args)
-		{
-			auto verticesSize = staticMeshInfo.GetVerticesSize(); auto indicesSize = staticMeshInfo.GetIndicesSize();
-			
-			BE_ASSERT(buffer.Bytes() >= GTSL::Math::RoundUpByPowerOf2(verticesSize, indicesAlignment) + indicesSize, u8"")
-			
-			byte* vertices = buffer.begin();
-			byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
-			
-			GTSL::MemCopy(verticesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset, vertices);
-			GTSL::MemCopy(indicesSize, resourceManager->mappedFile.GetData() + staticMeshInfo.ByteOffset + verticesSize, indices);
-			
-			taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(resourceManager), GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
-		};
-
-		gameInstance->AddDynamicTask(u8"StaticMeshResourceManager::loadStaticMesh", Task<StaticMeshResourceManager*, StaticMeshInfo, uint32, GTSL::Range<byte*>, decltype(dynamicTaskHandle), ARGS...>::Create(loadMesh), {}, this, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadStaticMesh(ApplicationManager* gameInstance, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->AddDynamicTask(this, u8"StaticMeshResourceManager::loadStaticMesh", {}, &StaticMeshResourceManager::loadMesh<ARGS...>, {}, {}, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(indicesAlignment), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
 private:
@@ -138,6 +105,39 @@ private:
 	GTSL::MappedFile mappedFile;
 	
 	GTSL::HashMap<Id, StaticMeshDataSerialize, BE::PersistentAllocatorReference> meshInfos;
+
+	template<typename... ARGS>
+	void loadStaticMeshInfo(TaskInfo taskInfo, Id meshName, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
+	{
+		if constexpr (BE_DEBUG) {
+			if (!meshInfos.Find(meshName)) {
+				getLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, u8"Mesh with name ", GTSL::StringView(meshName), u8" could not be found. ", BE::FIX_OR_CRASH_STRING);
+				return;
+			}
+		}
+
+		auto& staticMeshInfoSerialize = meshInfos.At(meshName);
+
+		StaticMeshInfo staticMeshInfo(meshName, staticMeshInfoSerialize);
+
+		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+	};
+
+	template<typename... ARGS>
+	void loadMesh(TaskInfo taskInfo, StaticMeshInfo staticMeshInfo, uint32 indicesAlignment, GTSL::Range<byte*> buffer, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
+	{
+		auto verticesSize = staticMeshInfo.GetVerticesSize(); auto indicesSize = staticMeshInfo.GetIndicesSize();
+
+		BE_ASSERT(buffer.Bytes() >= GTSL::Math::RoundUpByPowerOf2(verticesSize, indicesAlignment) + indicesSize, u8"")
+
+			byte* vertices = buffer.begin();
+		byte* indices = GTSL::AlignPointer(indicesAlignment, vertices + verticesSize);
+
+		GTSL::MemCopy(verticesSize, mappedFile.GetData() + staticMeshInfo.ByteOffset, vertices);
+		GTSL::MemCopy(indicesSize, mappedFile.GetData() + staticMeshInfo.ByteOffset + verticesSize, indices);
+
+		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+	};
 
 	void loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
 };

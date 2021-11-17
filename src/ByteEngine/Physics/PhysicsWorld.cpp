@@ -8,7 +8,7 @@ PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInsta
 {
 	auto objectIndex = physicsObjects.Emplace();
 	
-	staticMeshResourceManager->LoadStaticMeshInfo(gameInstance, meshName, onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
+	//staticMeshResourceManager->LoadStaticMeshInfo(gameInstance, meshName, onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
 	
 	return PhysicsObjectHandle(objectIndex);
 }
@@ -21,10 +21,33 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo)
 
 	GTSL::Vector4 accumulatedUnboundedForces;
 	for (auto f : boundlessForces) { accumulatedUnboundedForces += f; }
-	
+
+	//for(auto& a : physicsObjects) {
+	//	for(auto& b : physicsObjects) {
+	//		if (auto hit = intersect(a, b); hit.WasHit) {
+	//			const auto totalInverseMass = a.inverseMass + b.inverseMass;
+	//			const auto totalElasticity = a.restitutionFactor * b.restitutionFactor;
+	//
+	//			const auto vAB = a.velocity - b.velocity;
+	//			const auto impulseJ = -(1.0f + totalElasticity) * GTSL::Math::DotProduct(vAB, hit.Normal) / totalInverseMass;
+	//			const auto vecImpulse = hit.Normal * impulseJ;
+	//
+	//			applyImpulseLinear(&a, vecImpulse);
+	//			applyImpulseLinear(&b, -vecImpulse);
+	//
+	//			const auto tA = a.inverseMass / totalInverseMass;
+	//			const auto tB = b.inverseMass / totalInverseMass;
+	//
+	//			const auto ds = hit.PointOnB - hit.PointOnA;
+	//			a.position += ds * tA;
+	//			b.position -= ds * tB;
+	//		}
+	//	}
+	//}
+
 	for(auto& e : physicsObjects) { //semi implicit euler
-		e.Velocity += e.Acceleration * deltaSeconds;
-		e.Position += e.Velocity * deltaSeconds;
+		e.velocity += accumulatedUnboundedForces * deltaSeconds;
+		e.position += e.velocity * deltaSeconds;
 	}
 
 	updatedObjects.Resize(0);

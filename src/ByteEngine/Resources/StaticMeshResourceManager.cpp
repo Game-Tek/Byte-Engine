@@ -29,7 +29,7 @@ static GTSL::Vector2 toAssimp(const aiVector2D assimpVector) {
 
 using ShaderDataTypeType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 
-StaticMeshResourceManager::StaticMeshResourceManager() : ResourceManager(u8"StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
+StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"StaticMeshResourceManager"), meshInfos(4, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication();

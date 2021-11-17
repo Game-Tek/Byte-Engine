@@ -1,7 +1,7 @@
 #pragma once
 
 #include "GAL/Queue.h"
-#include "DX12CommandBuffer.h"
+#include "DX12CommandList.h"
 #include "DX12Synchronization.h"
 
 namespace GAL {
@@ -12,7 +12,7 @@ namespace GAL {
 
 		void Initialize(const DX12RenderDevice* renderDevice, DX12RenderDevice::QueueKey queueKey) {
 			D3D12_COMMAND_QUEUE_DESC desc;
-			desc.Type = ToDX12(queueKey.QueueType);
+			desc.Type = ToDX12(queueKey.Type);
 			desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
 			desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 			desc.NodeMask = 0;
@@ -25,7 +25,7 @@ namespace GAL {
 				GTSL::StaticVector<ID3D12CommandList*, 16> commandLists;
 
 				for(auto& e : s) {
-					commandLists.EmplaceBack(static_cast<const DX12CommandBuffer*>(e.CommandBuffer)->GetID3D12CommandList());
+					commandLists.EmplaceBack(static_cast<const DX12CommandList*>(e.CommandBuffer)->GetID3D12CommandList());
 				}
 				
 				commandQueue->ExecuteCommandLists(commandLists.GetLength(), commandLists.begin());

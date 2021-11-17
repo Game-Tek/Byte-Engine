@@ -33,6 +33,7 @@ public:
 	explicit Handle(uint32 value) noexcept : handle(value) {}
 
 	explicit operator uint32() const { return handle; }
+	explicit operator uint64() const { return handle; }
 
 	uint32 operator()() const { return handle; }
 

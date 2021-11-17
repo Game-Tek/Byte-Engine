@@ -7,6 +7,7 @@
 
 #include "GAL/RenderCore.h"
 #include "GTSL/Flags.h"
+#include "GTSL/StringCommon.h"
 
 #if (_DEBUG)
 #define DX_CHECK(func) if (func < 0) { __debugbreak(); }
@@ -17,10 +18,10 @@
 namespace GAL
 {
 	template<typename T>
-	void setName(T* handle, const GTSL::Range<const char8_t*> name) {
+	void setName(T* handle, const GTSL::StringView name) {
 		if constexpr (_DEBUG) {
-			if (name.ElementCount() != 0)
-				handle->SetPrivateData(WKPDID_D3DDebugObjectName, name.ElementCount(), name.begin());
+			if (name.GetBytes() != 0)
+				handle->SetPrivateData(WKPDID_D3DDebugObjectName, name.GetBytes(), name.begin());
 		}
 	}
 	

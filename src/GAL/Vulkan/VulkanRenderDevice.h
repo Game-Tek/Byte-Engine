@@ -23,8 +23,7 @@ namespace GAL
 	template<typename T>
 	void setName(const VulkanRenderDevice* renderDevice, T handle, const VkObjectType objectType, const GTSL::Range<const char8_t*> text);
 
-	class VulkanRenderDevice final : public RenderDevice
-	{
+	class VulkanRenderDevice final : public RenderDevice {
 	public:
 		struct RayTracingCapabilities
 		{
@@ -379,8 +378,22 @@ namespace GAL
 						structure->shaderUniformBufferArrayNonUniformIndexing = true;
 					}
 
+					if (!tryAddExtension(u8"VK_KHR_synchronization2")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_synchronization2\" is not available."), false);
+					}
+
+					{
+						VkPhysicalDeviceSynchronization2FeaturesKHR* structure;
+						placeFeaturesStructure(&structure, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR);
+						structure->synchronization2 = true;
+					}
+
 					if(!tryAddExtension(u8"VK_KHR_swapchain")) {
 						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_swapchain\" is not available."), false);
+					}
+
+					if (!tryAddExtension(u8"VK_NV_mesh_shader")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);
 					}
 
 					if(!tryAddExtension(u8"VK_KHR_maintenance4")) {
@@ -390,23 +403,20 @@ namespace GAL
 					for (GTSL::uint32 extension = 0; extension < static_cast<GTSL::uint32>(createInfo.Extensions.ElementCount()); ++extension) {
 						switch (createInfo.Extensions[extension].First) {
 						case Extension::RAY_TRACING: {
-							if (tryAddExtension(u8"VK_KHR_acceleration_structure")) {
-								{
-									VkPhysicalDeviceAccelerationStructureFeaturesKHR* features;
-									VkPhysicalDeviceAccelerationStructurePropertiesKHR* properties;
+							if (tryAddExtension(u8"VK_KHR_acceleration_structure")) {								
+								VkPhysicalDeviceAccelerationStructureFeaturesKHR* acceleration_structure_features;
+								VkPhysicalDeviceAccelerationStructurePropertiesKHR* acceleration_structure_properties;
 
-									placePropertiesStructure(&properties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR);
-									placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+								placeFeaturesStructure(&acceleration_structure_features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+								placePropertiesStructure(&acceleration_structure_properties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR);
 
-									features->accelerationStructure = true;
-									features->accelerationStructureHostCommands;
-								}
+								acceleration_structure_features->accelerationStructure = true;
 
 								VkPhysicalDeviceAccelerationStructureFeaturesKHR features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
 								VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
 
-								getProperties(&properties);
 								getFeatures(&features);
+								getProperties(&properties);
 
 								auto* capabilities = static_cast<RayTracingCapabilities*>(createInfo.Extensions[extension].Second);
 								capabilities->BuildDevice = features.accelerationStructureHostCommands ? Device::CPU : Device::GPU;
@@ -415,22 +425,19 @@ namespace GAL
 								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_acceleration_structure\" is not available."), false);
 							}
 
-							if(tryAddExtension(u8"VK_KHR_ray_query")) {
-								
+							if(tryAddExtension(u8"VK_KHR_ray_query")) {								
 							} else {
 								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_ray_query\" is not available."), false);
 							}
 
-							if (tryAddExtension(u8"VK_KHR_ray_tracing_pipeline")) {
-								{
-									VkPhysicalDeviceRayTracingPipelineFeaturesKHR* features;
-									VkPhysicalDeviceRayTracingPipelinePropertiesKHR* properties;
+							if (tryAddExtension(u8"VK_KHR_ray_tracing_pipeline")) {								
+								VkPhysicalDeviceRayTracingPipelineFeaturesKHR* ray_tracing_pipeline_features;
+								VkPhysicalDeviceRayTracingPipelinePropertiesKHR* ray_tracing_pipeline_properties;
 
-									placePropertiesStructure(&properties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR);
-									placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR);
+								placeFeaturesStructure(&ray_tracing_pipeline_features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR);
+								placePropertiesStructure(&ray_tracing_pipeline_properties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR);
 
-									features->rayTracingPipeline = true;
-								}
+								ray_tracing_pipeline_features->rayTracingPipeline = true;								
 
 								VkPhysicalDeviceRayTracingPipelineFeaturesKHR features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR };
 								VkPhysicalDeviceRayTracingPipelinePropertiesKHR properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
@@ -446,14 +453,12 @@ namespace GAL
 								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_ray_tracing_pipeline\" is not available."), false);
 							}
 
-							if (tryAddExtension(u8"VK_KHR_pipeline_library")) {
-								
+							if (tryAddExtension(u8"VK_KHR_pipeline_library")) {								
 							} else {
 								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_pipeline_library\" is not available."), false);
 							}
 
-							if (tryAddExtension(u8"VK_KHR_deferred_host_operations")) {
-								
+							if (tryAddExtension(u8"VK_KHR_deferred_host_operations")) {								
 							} else {
 								return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_deferred_host_operations\" is not available."), false);
 							}
@@ -464,7 +469,6 @@ namespace GAL
 							VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT* pipelineCacheSyncControl;
 							placeFeaturesStructure(&pipelineCacheSyncControl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT);
 							pipelineCacheSyncControl->pipelineCreationCacheControl = true;
-
 							break;
 						}
 						case Extension::SWAPCHAIN_RENDERING: break;
@@ -587,6 +591,7 @@ namespace GAL
 			getDeviceProcAddr(u8"vkCmdCopyBufferToImage", &VkCmdCopyBufferToImage);
 			getDeviceProcAddr(u8"vkCmdCopyImage", &VkCmdCopyImage);
 			getDeviceProcAddr(u8"vkCmdPipelineBarrier", &VkCmdPipelineBarrier);
+			getDeviceProcAddr(u8"vkCmdPipelineBarrier2KHR", &VkCmdPipelineBarrier2);
 			getDeviceProcAddr(u8"vkCmdSetEvent", &VkCmdSetEvent);
 			getDeviceProcAddr(u8"vkCmdResetEvent", &VkCmdResetEvent);
 
@@ -714,10 +719,10 @@ namespace GAL
 
 			VkFormatFeatureFlags features{};
 
-			TranslateMask<TextureUses::TRANSFER_SOURCE, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT>(findSupportedImageFormat.TextureUses, features);
-			TranslateMask<TextureUses::TRANSFER_DESTINATION, VK_FORMAT_FEATURE_TRANSFER_DST_BIT>(findSupportedImageFormat.TextureUses, features);
-			TranslateMask<TextureUses::SAMPLE, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT>(findSupportedImageFormat.TextureUses, features);
-			TranslateMask<TextureUses::STORAGE, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT>(findSupportedImageFormat.TextureUses, features);
+			TranslateMask(TextureUses::TRANSFER_SOURCE, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT, findSupportedImageFormat.TextureUses, features);
+			TranslateMask(TextureUses::TRANSFER_DESTINATION, VK_FORMAT_FEATURE_TRANSFER_DST_BIT, findSupportedImageFormat.TextureUses, features);
+			TranslateMask(TextureUses::SAMPLE, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, findSupportedImageFormat.TextureUses, features);
+			TranslateMask(TextureUses::STORAGE, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, findSupportedImageFormat.TextureUses, features);
 			if(findSupportedImageFormat.TextureUses & TextureUses::ATTACHMENT) {
 				switch (findSupportedImageFormat.FormatDescriptor.Type) {
 				case TextureType::COLOR: features |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT; break;
@@ -775,7 +780,7 @@ namespace GAL
 				MemoryHeap memoryHeap;
 				memoryHeap.Size = GTSL::Byte(memoryProperties.memoryHeaps[heapIndex].size);
 				
-				TranslateMask<VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, MemoryTypes::GPU>(memoryProperties.memoryHeaps[heapIndex].flags, memoryHeap.HeapType);
+				TranslateMask(VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, memoryProperties.memoryHeaps[heapIndex].flags, MemoryTypes::GPU, memoryHeap.HeapType);
 
 				for (GTSL::uint8 memType = 0; memType < memoryProperties.memoryTypeCount; ++memType) {
 					if (memoryProperties.memoryTypes[memType].heapIndex == heapIndex) {
@@ -850,6 +855,7 @@ namespace GAL
 		PFN_vkCmdCopyBufferToImage VkCmdCopyBufferToImage;
 		PFN_vkCmdCopyImage VkCmdCopyImage;
 		PFN_vkCmdPipelineBarrier VkCmdPipelineBarrier;
+		PFN_vkCmdPipelineBarrier2KHR VkCmdPipelineBarrier2;
 		PFN_vkCmdBindDescriptorSets VkCmdBindDescriptorSets;
 		PFN_vkCmdPushConstants VkCmdPushConstants;
 		PFN_vkCmdBindVertexBuffers VkCmdBindVertexBuffers;

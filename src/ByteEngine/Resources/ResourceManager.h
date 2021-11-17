@@ -4,6 +4,7 @@
 
 #include <GTSL/Vector.hpp>
 
+#include "ByteEngine/Game/System.h"
 #include "ByteEngine/Game/Tasks.h"
 
 /**
@@ -13,12 +14,12 @@
  *
  * Every extension will allow for loading of 1 type of resource.
  */
-class ResourceManager : public Object
+class ResourceManager : public System
 {
 public:
 	ResourceManager() = default;
 
-	ResourceManager(const utf8* name) : Object(name) {}
+	ResourceManager(const InitializeInfo& info, const utf8* name) : System(info, name) {}
 	
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension);

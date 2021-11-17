@@ -8,7 +8,7 @@
 class PipelineCacheResourceManager : public ResourceManager
 {
 public:
-	PipelineCacheResourceManager();
+	PipelineCacheResourceManager(const InitializeInfo&);
 	~PipelineCacheResourceManager();
 
 	void DoesCacheExist(bool& doesExist) const { doesExist = cache.GetSize(); }

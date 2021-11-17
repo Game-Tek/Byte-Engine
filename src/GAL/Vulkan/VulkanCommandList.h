@@ -232,41 +232,45 @@ namespace GAL
 		}
 
 		template<class ALLOCATOR>
-		void AddPipelineBarrier(const VulkanRenderDevice* renderDevice, GTSL::Range<const BarrierData*> barriers, PipelineStage initialStage, PipelineStage finalStage, const ALLOCATOR& allocator) const {
-			GTSL::Vector<VkImageMemoryBarrier, ALLOCATOR> imageMemoryBarriers(4, allocator);
-			GTSL::Vector<VkMemoryBarrier, ALLOCATOR> memoryBarriers(4, allocator);
-			GTSL::Vector<VkBufferMemoryBarrier, ALLOCATOR> bufferBarriers(4, allocator);
+		void AddPipelineBarrier(const VulkanRenderDevice* renderDevice, GTSL::Range<const BarrierData*> barriers, const ALLOCATOR& allocator) const {
+			GTSL::Vector<VkImageMemoryBarrier2KHR, ALLOCATOR> imageMemoryBarriers(4, allocator);
+			GTSL::Vector<VkMemoryBarrier2KHR, ALLOCATOR> memoryBarriers(4, allocator);
+			GTSL::Vector<VkBufferMemoryBarrier2KHR, ALLOCATOR> bufferBarriers(4, allocator);
 
 			for(auto& b : barriers) {
 				switch (b.Type) {
 				case BarrierType::MEMORY: {
 					auto& barrier = b.Memory;
-					auto& memoryBarrier = memoryBarriers.EmplaceBack();
+					VkMemoryBarrier2KHR& memoryBarrier = memoryBarriers.EmplaceBack();
 
-					memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER; memoryBarrier.pNext = nullptr;
-					memoryBarrier.srcAccessMask = ToVulkan(barrier.SourceAccess, initialStage);
-					memoryBarrier.dstAccessMask = ToVulkan(barrier.DestinationAccess, finalStage);
+					memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR; memoryBarrier.pNext = nullptr;
+					memoryBarrier.srcAccessMask = ToVulkan(b.SourceAccess, b.SourceStage);
+					memoryBarrier.dstAccessMask = ToVulkan(b.DestinationAccess, b.DestinationStage);
+					memoryBarrier.srcStageMask = ToVulkan(b.SourceStage);
+					memoryBarrier.dstStageMask = ToVulkan(b.DestinationStage);
 						
 					break;
 				}
 				case BarrierType::BUFFER: {
 					auto& barrier = b.Buffer;
-					auto& bufferBarrier = bufferBarriers.EmplaceBack();
+					VkBufferMemoryBarrier2KHR& bufferBarrier = bufferBarriers.EmplaceBack();
 
-					bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; bufferBarrier.pNext = nullptr;
+					bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR; bufferBarrier.pNext = nullptr;
 					bufferBarrier.size = barrier.Size;
 					bufferBarrier.buffer = static_cast<const VulkanBuffer*>(barrier.Buffer)->GetVkBuffer();
-					bufferBarrier.srcAccessMask = ToVulkan(barrier.SourceAccess, initialStage);
-					bufferBarrier.dstAccessMask = ToVulkan(barrier.DestinationAccess, finalStage);
+					bufferBarrier.srcAccessMask = ToVulkan(b.SourceAccess, b.SourceStage);
+					bufferBarrier.dstAccessMask = ToVulkan(b.DestinationAccess, b.DestinationStage);
 					bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 					bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferBarrier.srcStageMask = ToVulkan(b.SourceStage);
+					bufferBarrier.dstStageMask = ToVulkan(b.DestinationStage);
 					break;
 				}
 				case BarrierType::TEXTURE: {
 					auto& barrier = b.Texture;
-					auto& textureBarrier = imageMemoryBarriers.EmplaceBack();
+					VkImageMemoryBarrier2KHR& textureBarrier = imageMemoryBarriers.EmplaceBack();
 						
-					textureBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; textureBarrier.pNext = nullptr;
+					textureBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR; textureBarrier.pNext = nullptr;
 					textureBarrier.oldLayout = ToVulkan(barrier.CurrentLayout, barrier.Format);
 					textureBarrier.newLayout = ToVulkan(barrier.TargetLayout, barrier.Format);
 					textureBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -277,17 +281,25 @@ namespace GAL
 					textureBarrier.subresourceRange.levelCount = 1;
 					textureBarrier.subresourceRange.baseArrayLayer = 0;
 					textureBarrier.subresourceRange.layerCount = 1;
-					textureBarrier.srcAccessMask = ToVulkan(barrier.SourceAccess, initialStage, barrier.Format);
-					textureBarrier.dstAccessMask = ToVulkan(barrier.DestinationAccess, finalStage, barrier.Format);
+					textureBarrier.srcStageMask = ToVulkan(b.SourceStage);
+					textureBarrier.dstStageMask = ToVulkan(b.DestinationStage);
+					textureBarrier.srcAccessMask = ToVulkan(b.SourceAccess, b.SourceStage, barrier.Format);
+					textureBarrier.dstAccessMask = ToVulkan(b.DestinationAccess, b.DestinationStage, barrier.Format);
 					break;
 				}
 				}
 			}
 
-			renderDevice->VkCmdPipelineBarrier(commandBuffer, ToVulkan(initialStage), ToVulkan(finalStage), 0,
-				memoryBarriers.GetLength(), memoryBarriers.begin(),
-				bufferBarriers.GetLength(), bufferBarriers.begin(),
-				imageMemoryBarriers.GetLength(), imageMemoryBarriers.begin());
+			VkDependencyInfoKHR vk_dependency_info_khr{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR };
+			vk_dependency_info_khr.bufferMemoryBarrierCount = bufferBarriers.GetLength();
+			vk_dependency_info_khr.pBufferMemoryBarriers = bufferBarriers.GetData();
+			vk_dependency_info_khr.imageMemoryBarrierCount = imageMemoryBarriers.GetLength();
+			vk_dependency_info_khr.pImageMemoryBarriers = imageMemoryBarriers.GetData();
+			vk_dependency_info_khr.memoryBarrierCount = memoryBarriers.GetLength();
+			vk_dependency_info_khr.pMemoryBarriers = memoryBarriers.GetData();
+			vk_dependency_info_khr.dependencyFlags = 0;
+
+			renderDevice->VkCmdPipelineBarrier2(commandBuffer, &vk_dependency_info_khr);
 		}
 		
 		void CopyBuffer(const VulkanRenderDevice* renderDevice, VulkanBuffer source, VulkanBuffer destination, const GTSL::uint32 size) const {

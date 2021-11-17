@@ -21,15 +21,15 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		mixFormat.NumberOfChannels = 2;
 		mixFormat.SamplesPerSecond = 48000;
 
-		onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
-		onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
+		//onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
+		//onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 
 		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
 		{
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
-					initializeInfo.GameInstance->AddTask(u8"renderAudio", Task<>::Create<AudioSystem, &AudioSystem::render>(this), GTSL::StaticVector<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
+					//initializeInfo.GameInstance->AddTask(u8"renderAudio", &AudioSystem::render, GTSL::StaticVector<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
 
 					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
@@ -43,16 +43,11 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		BE_LOG_WARNING(u8"Unable to start audio device with requested parameters:\n Stream share mode: Shared\n Bits per sample: ", mixFormat.BitsPerSample, u8"\nNumber of channels: ", mixFormat.NumberOfChannels, u8"\nSamples per second: ", mixFormat.SamplesPerSecond);
 }
 
-AudioSystem::~AudioSystem()
-{
-}
+AudioSystem::~AudioSystem() {
+	if (!audioDevice.Stop()) {
 
-void AudioSystem::Shutdown(const ShutdownInfo& shutdownInfo)
-{
-	if(!audioDevice.Stop()) {
-		
 	}
-	
+
 	audioDevice.Destroy();
 }
 
@@ -88,16 +83,15 @@ void AudioSystem::PlayAudio(AudioEmitterHandle audioEmitter)
 	}
 }
 
-void AudioSystem::requestAudioStreams()
-{
-	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
-
-	for(uint8 i = 0; i < lastRequestedAudios.GetLength(); ++i)
-	{
-		audioResourceManager->LoadAudioInfo(BE::Application::Get()->GetGameInstance(), lastRequestedAudios[i], onAudioInfoLoadHandle);
-	}
-
-	lastRequestedAudios.Resize(0);
+void AudioSystem::requestAudioStreams() {
+	//auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
+	//
+	//for(uint8 i = 0; i < lastRequestedAudios.GetLength(); ++i)
+	//{
+	//	audioResourceManager->LoadAudioInfo(BE::Application::Get()->GetGameInstance(), lastRequestedAudios[i], onAudioInfoLoadHandle);
+	//}
+	//
+	//lastRequestedAudios.Resize(0);
 }
 
 void AudioSystem::render(TaskInfo)
@@ -122,7 +116,7 @@ void AudioSystem::render(TaskInfo)
 	
 	GTSL::StaticVector<uint32, 16> emittersToStop;
 	
-	auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
+	//auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
 	
 	uint32 availableAudioFrames = 0;
 	if(!audioDevice.GetAvailableBufferFrames(availableAudioFrames)) {
@@ -160,37 +154,37 @@ void AudioSystem::render(TaskInfo)
 			auto& emmitter = audioEmittersSettings[playingEmitters[pe]()];
 			auto playedSamples = emmitter.Samples;
 			
-			byte* audio = audioResourceManager->GetAssetPointer(emmitter.Name);
-			
-			auto audioFrames = audioResourceManager->GetFrameCount(emmitter.Name);
-			auto remainingFrames = audioFrames - playedSamples;
-			auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
-
-			if (audioResourceManager->GetChannelCount(emmitter.Name) == 1) {
-				for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
-					auto sample = getSample<int16>(audio, 1, s + playedSamples, 0);
-					
-					getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += sample * leftPercentange;
-					getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += sample * rightPercentage;
-				}
-			} else {
-				for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
-					auto lSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::LEFT_CHANNEL);
-					auto rSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::RIGHT_CHANNEL);
-
-					getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += lSample * leftPercentange;
-					getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += rSample * rightPercentage;
-				}
-			}
-				
-			if ((emmitter.Samples += clampedFrames) == audioFrames) {
-				if (!GetLooping(playingEmitters[pe])) {
-					emittersToStop.EmplaceBack(pe);
-				}
-				else {
-					emmitter.Samples = 0;
-				}
-			}
+			//byte* audio = audioResourceManager->GetAssetPointer(emmitter.Name);
+			//
+			//auto audioFrames = audioResourceManager->GetFrameCount(emmitter.Name);
+			//auto remainingFrames = audioFrames - playedSamples;
+			//auto clampedFrames = GTSL::Math::Limit(availableAudioFrames, remainingFrames);
+			//
+			//if (audioResourceManager->GetChannelCount(emmitter.Name) == 1) {
+			//	for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
+			//		auto sample = getSample<int16>(audio, 1, s + playedSamples, 0);
+			//		
+			//		getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += sample * leftPercentange;
+			//		getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += sample * rightPercentage;
+			//	}
+			//} else {
+			//	for (uint32 s = 0; s < clampedFrames; ++s) { //left channel
+			//		auto lSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::LEFT_CHANNEL);
+			//		auto rSample = getSample<int16>(audio, 2, s + playedSamples, AudioDevice::RIGHT_CHANNEL);
+			//
+			//		getSample<int16>(buffer, 2, s, AudioDevice::LEFT_CHANNEL) += lSample * leftPercentange;
+			//		getSample<int16>(buffer, 2, s, AudioDevice::RIGHT_CHANNEL) += rSample * rightPercentage;
+			//	}
+			//}
+			//	
+			//if ((emmitter.Samples += clampedFrames) == audioFrames) {
+			//	if (!GetLooping(playingEmitters[pe])) {
+			//		emittersToStop.EmplaceBack(pe);
+			//	}
+			//	else {
+			//		emmitter.Samples = 0;
+			//	}
+			//}
 		}
 	}
 

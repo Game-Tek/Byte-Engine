@@ -16,8 +16,6 @@ public:
 	LightsRenderGroup(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"LightsRenderGroup"), directionalLights(8, GetPersistentAllocator()), pointLights(16, GetPersistentAllocator())
 	{
 	}
-
-	void Shutdown(const ShutdownInfo&) override {}
 	
 	DirectionalLightHandle CreateDirectionalLight() {
 		return DirectionalLightHandle(directionalLights.Emplace());

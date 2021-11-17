@@ -17,8 +17,6 @@ public:
 
 	MAKE_HANDLE(uint32, Camera);
 	
-	void Shutdown(const ShutdownInfo& shutdownInfo) override {}
-	
 	CameraHandle AddCamera(const GTSL::Vector3 pos)
 	{
 		rotationMatrices.EmplaceBack();

@@ -9,6 +9,8 @@
 #include <GTSL/Vector.hpp>
 #include <GAL/Pipelines.h>
 
+#include <GTSL/JSON.hpp>
+
 //Object types are always stored ass the interface types, not the end target's name
 using StructElement = GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>;
 
@@ -52,7 +54,7 @@ struct Node {
 struct Shader {
 	enum class Class { VERTEX, PIXEL, COMPUTE };
 
-	Shader(const GTSL::ShortString<32> name, const Class clss) : Name(name), Class(clss) {}
+	Shader(const GTSL::StringView name, const Class clss) : Name(name), Typpe(clss) {}
 
 	void AddShaderParameter(const StructElement element) { ShaderParameters.EmplaceBack(element); }
 
@@ -76,7 +78,7 @@ struct Shader {
 	}
 
 	GTSL::ShortString<32> Name;
-	Class Class;
+	Class Typpe;
 	GTSL::StaticVector<const Node*, 8> Inputs;
 	GTSL::StaticVector<StructElement, 8> Layers;
 	GAL::ShaderType TargetSemantics;
@@ -129,6 +131,43 @@ void AddDataTypesAndDescriptors(GTSL::String<T>& string) {
 	string += u8"layout(set=0, binding=1) uniform image2D images[];\n"; //textures descriptor
 	string += u8"struct TextureReference { uint Instance; };\n"; //basic datatypes
 	string += u8"struct ImageReference { uint Instance; };\n"; //basic datatypes
+}
+
+inline GTSL::StaticString<8192> GenerateShader(const GTSL::StringView jsonShader) {
+	GTSL::JSONDeserializer json_deserializer;
+	GTSL::Parse(jsonShader, json_deserializer);
+
+
+	GTSL::String<GTSL::DefaultAllocatorReference> shaderName, shaderType, outputSemantics;
+	json_deserializer(u8"name", shaderName);
+
+	json_deserializer(u8"type", shaderName);
+	json_deserializer(u8"outputSemantics", shaderName);
+
+	Shader::Class type;
+
+	switch (Hash(shaderType)) {
+	case GTSL::Hash(u8"Compute"): type = Shader::Class::COMPUTE; break;
+	}
+
+	Shader shader(shaderName, type);
+
+	switch (Hash(outputSemantics)) {
+	case GTSL::Hash(u8"Compute"): {
+		GTSL::StaticVector<uint16, 3> localSize;
+
+		if(json_deserializer(u8"localSize", localSize)) {
+			shader.SetThreadSize({ localSize[0], localSize[1], localSize[2] });
+		} else {
+			shader.SetThreadSize({ 1, 1, 1 });
+		}
+
+		type = Shader::Class::COMPUTE;
+		break;
+	}
+	}
+
+	//get member pointer to statements
 }
 
 inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
@@ -373,13 +412,13 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		declStruct(u8"vertex", vertexElements, true);
 	};
 
-	if (shader.Class == Shader::Class::PIXEL) {
+	if (shader.Typpe == Shader::Class::PIXEL) {
 		//shader.VertexElements.EmplaceBack();
 	}
 
 	genVertexStruct();
 
-	if (shader.Class != Shader::Class::COMPUTE) {
+	if (shader.Typpe != Shader::Class::COMPUTE) {
 		GTSL::StaticVector<StructElement, 32> elements;
 		elements.EmplaceBack(u8"uint16", u8"i");
 		declStruct(u8"index", elements, true);
@@ -387,7 +426,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 
 	declStruct(u8"renderPass", {}, true);
 
-	switch (shader.Class) {
+	switch (shader.Typpe) {
 	case Shader::Class::VERTEX: {
 		GTSL::StaticVector<StructElement, 32> elements;
 		elements.EmplaceBack(u8"mat4", u8"ModelMatrix");
@@ -455,7 +494,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader) {
 		string += u8"} invocationInfo;\n";
 	}
 
-	switch (shader.Class) {
+	switch (shader.Typpe) {
 	case Shader::Class::VERTEX: {		
 		declFunc(u8"mat4", u8"GetInstancePosition", {}, u8"return invocationInfo.instance.ModelMatrix;");
 		declFunc(u8"mat4", u8"GetCameraViewMatrix", {}, u8"return invocationInfo.camera.view;");

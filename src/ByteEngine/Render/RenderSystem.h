@@ -26,11 +26,12 @@ public:
 	MAKE_HANDLE(uint32, Buffer)
 	
 	explicit RenderSystem(const InitializeInfo& initializeInfo);
-	void Shutdown(const ShutdownInfo& shutdownInfo) override;
+	~RenderSystem();
 	[[nodiscard]] uint8 GetCurrentFrame() const { return currentFrameIndex; }
 	[[nodiscard]] uint8 GetFrameIndex(int32 frameDelta) const { return static_cast<uint8>(frameDelta % pipelinedFrames); }
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
+	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
 
 	MAKE_HANDLE(uint32, Texture);
 	
@@ -48,8 +49,8 @@ public:
 		
 		texture->Initialize(GetRenderDevice(), name, memory, offset);
 	}
-	void DeallocateLocalTextureMemory(const RenderAllocation allocation)
-	{
+
+	void DeallocateLocalTextureMemory(const RenderAllocation allocation) {
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
 	}
 
@@ -95,8 +96,7 @@ public:
 		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
 
-	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation)
-	{
+	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation) {
 		localMemoryAllocator.DeallocateLinearMemory(renderDevice, renderAllocation);
 	}
 	
@@ -104,8 +104,7 @@ public:
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
 	//CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 
-	struct BufferCopyData
-	{
+	struct BufferCopyData {
 		BufferHandle Buffer;
 		/* Offset from start of buffer.
 		 */
@@ -183,12 +182,12 @@ public:
 	
 	void CreateRayTracedMesh(const MeshHandle meshHandle);
 	
-	MeshHandle CreateMesh(Id name, uint32 customIndex);
+	MeshHandle CreateMesh(Id name);
 	//MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
 
 	void UpdateRayTraceMesh(const MeshHandle meshHandle);
 	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout);
-	void UpdateMesh(MeshHandle meshHandle);
+	void SignalMeshDataUpdate(MeshHandle meshHandle);
 	void SetWillWriteMesh(MeshHandle meshHandle, bool willUpdate) {
 		SetBufferWillWriteFromHost(meshes[meshHandle()].Buffer, willUpdate);
 	}
@@ -207,8 +206,7 @@ public:
 		--buffers[handle()].references;
 	}
 
-	void DestroyMesh(MeshHandle meshHandle)
-	{
+	void DestroyMesh(MeshHandle meshHandle) {
 		DestroyBuffer(meshes[meshHandle()].Buffer);
 	}
 	
@@ -217,8 +215,7 @@ public:
 		return GetBufferPointer(mesh.Buffer);
 	}
 
-	uint32 GetMeshSize(MeshHandle meshHandle) const
-	{
+	uint32 GetMeshSize(MeshHandle meshHandle) const {
 		const auto& mesh = meshes[meshHandle()];
 		return GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()) + mesh.IndexSize * mesh.IndicesCount;
 	}
@@ -230,7 +227,7 @@ public:
 	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix3x4& matrix);
 	void SetMeshOffset(const MeshHandle meshHandle, const uint32 offset);
 	
-	void OnResize(GTSL::Extent2D extent) { renderArea = extent; }
+	void onResize(TaskInfo, GTSL::Extent2D extent) { renderArea = extent; }
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
@@ -238,13 +235,11 @@ public:
 
 	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
 	
-	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const
-	{
+	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const {
 		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice());
 	}
 	
-	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const
-	{
+	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const {
 		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment());
 	}
 
@@ -268,7 +263,7 @@ public:
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
 		size *= texture.FormatDescriptor.GetSize();
-		return GTSL::Range<const byte*>(size, static_cast<const byte*>(texture.ScratchAllocation.Data));
+		return GTSL::Range(size, static_cast<const byte*>(texture.ScratchAllocation.Data));
 	}
 
 	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].Texture; }
@@ -279,16 +274,15 @@ public:
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
 	bool AcquireImage();
-	void SetHasRendered(const bool state) { hasRenderTasks = state; }
 
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
+
 private:
 	GTSL::Window* window;
 	
 	GTSL::Mutex testMutex;
-
-	bool hasRenderTasks = false;
+	
 	bool needsStagingBuffer = true;
 	uint8 imageIndex = 0;
 
@@ -317,19 +311,18 @@ private:
 	//Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
 	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
-	
-	//CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];
+	//CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];	
 	
 	GAL::VulkanQueue graphicsQueue;
 	//GAL::VulkanQueue transferQueue;
 	GAL::Device accelerationStructureBuildDevice;
 	bool breakOnError = true;
+	DynamicTaskHandle<GTSL::Extent2D> resizeHandle;
 
-	struct Mesh
-	{
+	struct Mesh {
 		BufferHandle Buffer;
 		uint32 IndicesCount, VertexCount;
-		uint32 DerivedTypeIndex, CustomMeshIndex;
+		uint32 DerivedTypeIndex;
 		uint8 IndexSize, VertexSize;
 		GTSL::StaticVector<GAL::ShaderDataType, 20> VertexDescriptor;
 	};
@@ -343,8 +336,7 @@ private:
 	GTSL::FixedVector<Mesh, BE::PersistentAllocatorReference> meshes;
 	GTSL::FixedVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
-	struct BufferData
-	{
+	struct BufferData {
 		GPUBuffer Buffer[MAX_CONCURRENT_FRAMES];
 		uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
@@ -421,11 +413,10 @@ private:
 	void* reallocateApiMemory(void* data, void* allocation, uint64 size, uint64 alignment);
 	void deallocateApiMemory(void* data, void* allocation);
 
-//	GTSL::StaticMap<uint64, GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> vertexFormats;
+	//GTSL::StaticMap<uint64, GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> vertexFormats;
 	
-	//GTSL::HashMap<GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
-	std::unordered_map<uint64, GTSL::Pair<uint64, uint64>> apiAllocations;
 	GTSL::Mutex allocationsMutex;
+	GTSL::HashMap<uint64, GTSL::Pair<uint64, uint64>, BE::PersistentAllocatorReference> apiAllocations;
 	
 	ScratchMemoryAllocator scratchMemoryAllocator;
 	LocalMemoryAllocator localMemoryAllocator;
@@ -449,4 +440,7 @@ private:
 		GTSL::Extent3D Extent;
 	};
 	GTSL::FixedVector<TextureComponent, BE::PersistentAllocatorReference> textures;
+
+	void initializeFrameResources(const uint8 frameIndex);
+	void freeFrameResources(const uint8 frameIndex);
 };

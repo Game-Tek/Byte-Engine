@@ -90,7 +90,7 @@ namespace GAL
 			shader_resource_view_desc.Texture2D.MostDetailedMip = 0;
 			shader_resource_view_desc.Texture2D.ResourceMinLODClamp = 0.0f;
 			
-			renderDevice->GetID3D12Device2()->CreateShaderResourceView(texture.GetID3D12Resource(), &shader_resource_view_desc, );
+			renderDevice->GetID3D12Device2()->CreateShaderResourceView(texture.GetID3D12Resource(), &shader_resource_view_desc, {});
 		}
 	
 	private:

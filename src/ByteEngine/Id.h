@@ -23,6 +23,7 @@ public:
 	explicit operator GTSL::Id64() const { return hashedName; }
 	//explicit operator const utf8* () const { return GTSL::Range<const utf8*>(stringName).(); }
 	explicit operator GTSL::Range<const utf8*>() const { return stringName; }
+	explicit operator bool() const { return hashedName.GetID(); }
 
 	Id& operator=(const utf8* name) { hashedName = name; stringName = GTSL::Range(name); return *this; }
 	Id& operator=(const GTSL::Id64 other) { hashedName = other; return *this; }

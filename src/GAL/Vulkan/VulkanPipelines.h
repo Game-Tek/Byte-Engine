@@ -101,8 +101,7 @@ namespace GAL
 	//	return true;
 	//}
 	
-	class VulkanPipelineCache : public PipelineCache
-	{
+	class VulkanPipelineCache : public PipelineCache {
 	public:
 		VulkanPipelineCache() = default;
 
@@ -149,8 +148,7 @@ namespace GAL
 		VkPipelineCache pipelineCache = nullptr;
 	};
 
-	class VulkanShader final : public Shader
-	{
+	class VulkanShader final : public Shader {
 	public:
 		VulkanShader() = default;
 		void Initialize(const VulkanRenderDevice* renderDevice, GTSL::Range<const GTSL::byte*> blob) {
@@ -171,8 +169,7 @@ namespace GAL
 		VkShaderModule vkShaderModule;
 	};
 
-	class VulkanPipelineLayout final
-	{
+	class VulkanPipelineLayout final {
 	public:
 		VulkanPipelineLayout() = default;
 		
@@ -212,8 +209,7 @@ namespace GAL
 		VkPipelineLayout pipelineLayout = nullptr;
 	};
 	
-	class VulkanPipeline : public Pipeline
-	{
+	class VulkanPipeline : public Pipeline {
 	public:
 		struct ShaderInfo
 		{
@@ -242,10 +238,8 @@ namespace GAL
 
 			GTSL::Buffer<GTSL::StaticAllocator<8192>> buffer(8192, 8);
 
-			for (GTSL::uint8 ps = 0; ps < static_cast<GTSL::uint8>(pipelineStates.ElementCount()); ++ps)
-			{
-				switch (const auto& pipelineState = pipelineStates[ps]; pipelineState.Type)
-				{
+			for (GTSL::uint8 ps = 0; ps < static_cast<GTSL::uint8>(pipelineStates.ElementCount()); ++ps) {
+				switch (const auto& pipelineState = pipelineStates[ps]; pipelineState.Type) {
 				case PipelineStateBlock::StateType::VIEWPORT_STATE: {
 					auto* vkViewport = buffer.AllocateStructure<VkViewport>();
 					vkViewport->x = 0;

@@ -48,18 +48,15 @@ namespace GAL
 		//Adds a AdvanceSubPass command to the command buffer.
 		
 		struct MemoryBarrier {
-			AccessType SourceAccess, DestinationAccess;
 		};
 
 		struct BufferBarrier {
 			const Buffer* Buffer; GTSL::uint32 Size;
-			AccessType SourceAccess, DestinationAccess;
 		};
 
 		struct TextureBarrier {
 			const Texture* Texture;
 			TextureLayout CurrentLayout, TargetLayout;
-			AccessType SourceAccess, DestinationAccess;
 			FormatDescriptor Format;
 		};
 
@@ -69,9 +66,9 @@ namespace GAL
 
 		struct BarrierData
 		{
-			BarrierData(const MemoryBarrier memoryBarrier) : Type(BarrierType::MEMORY), Memory(memoryBarrier) {}
-			BarrierData(const BufferBarrier bufferBarrier) : Type(BarrierType::BUFFER), Buffer(bufferBarrier) {}
-			BarrierData(const TextureBarrier textureBarrier) : Type(BarrierType::TEXTURE), Texture(textureBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const MemoryBarrier memoryBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::MEMORY), Memory(memoryBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const BufferBarrier bufferBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::BUFFER), Buffer(bufferBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const TextureBarrier textureBarrier) : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::TEXTURE),Texture(textureBarrier) {}
 
 			BarrierData(const BarrierData& other) : Type(other.Type) {
 				switch (Type) {
@@ -88,6 +85,9 @@ namespace GAL
 				BufferBarrier Buffer;
 				TextureBarrier Texture;
 			};
+
+			AccessType SourceAccess, DestinationAccess;
+			PipelineStage SourceStage, DestinationStage;
 
 			void SetMemoryBarrier(MemoryBarrier memoryBarrier) { Type = BarrierType::MEMORY; Memory = memoryBarrier; }
 			void SetTextureBarrier(TextureBarrier textureBarrier) { Type = BarrierType::TEXTURE; Texture = textureBarrier; }

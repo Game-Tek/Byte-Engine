@@ -2,6 +2,7 @@
 
 #include "ByteEngine/Core.h"
 
+#if (BE_VULKAN)
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
 #include <GAL/Vulkan/VulkanBuffer.h>
@@ -15,6 +16,21 @@
 #include <GAL/Vulkan/VulkanRenderContext.h>
 #include <GAL/Vulkan/VulkanSynchronization.h>
 #include <GAL/Vulkan/VulkanAccelerationStructures.h>
+#elif (BE_DX12)
+#include <GAL/DX12/DX12.h>
+#include <GAL/DX12/DX12Memory.h>
+#include <GAL/DX12/DX12Buffer.h>
+#include <GAL/DX12/DX12Bindings.h>
+#include <GAL/DX12/DX12Pipelines.h>
+#include <GAL/DX12/DX12QueryPool.h>
+#include <GAL/DX12/DX12RenderPass.h>
+#include <GAL/DX12/DX12Framebuffer.h>
+#include <GAL/DX12/DX12RenderDevice.h>
+#include <GAL/DX12/DX12CommandList.h>
+#include <GAL/DX12/DX12RenderContext.h>
+#include <GAL/DX12/DX12Synchronization.h>
+#include <GAL/DX12/DX12AccelerationStructure.hpp>
+#endif
 
 struct MaterialInstanceHandle {
 	uint32 MaterialIndex, MaterialInstanceIndex;
@@ -70,6 +86,29 @@ using PipelineCache = GAL::VulkanPipelineCache;
 using PipelineLayout = GAL::VulkanPipelineLayout;
 using BindingsSetLayout = GAL::VulkanBindingsSetLayout;
 using AccelerationStructure = GAL::VulkanAccelerationStructure;
+#elif (BE_DX12)
+using Queue = GAL::DX12Queue;
+using Fence = GAL::DX12Fence;
+using GPUBuffer = GAL::DX12Buffer;
+using Texture = GAL::DX12Texture;
+using Surface = GAL::DX12Surface;
+using Pipeline = GAL::DX12Pipeline;
+using GPUSemaphore = GAL::DX12Semaphore;
+using QueryPool = GAL::DX12QueryPool;
+using RenderPass = GAL::DX12RenderPass;
+using TextureSampler = GAL::DX12Sampler;
+using TextureView = GAL::DX12TextureView;
+using CommandList = GAL::DX12CommandList;
+using BindingsSet = GAL::DX12BindingsSet;
+using FrameBuffer = GAL::DX12Framebuffer;
+using DeviceMemory = GAL::DX12DeviceMemory;
+using RenderDevice = GAL::DX12RenderDevice;
+using BindingsPool = GAL::DX12BindingsPool;
+using RenderContext = GAL::DX12RenderContext;
+using PipelineCache = GAL::DX12PipelineCache;
+using PipelineLayout = GAL::DX12PipelineLayout;
+using BindingsSetLayout = GAL::DX12BindingsSetLayout;
+using AccelerationStructure = GAL::DX12AccelerationStructure;
 #endif
 
 constexpr GAL::RenderAPI API = GAL::RenderAPI::VULKAN;

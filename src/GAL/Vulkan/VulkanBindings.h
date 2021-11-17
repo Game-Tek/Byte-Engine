@@ -95,24 +95,21 @@ namespace GAL
 	class VulkanBindingsSetLayout final
 	{
 	public:
-		struct BindingDescriptor
-		{
+		struct BindingDescriptor {
 			BindingType BindingType;
 			ShaderStage ShaderStage;
 			GTSL::uint32 BindingsCount;
 			BindingFlag Flags;
+			GTSL::Range<const VulkanSampler*> Samplers;
 		};
 
-		struct ImageBindingDescriptor : BindingDescriptor
-		{
-			GTSL::Range<const class VulkanTextureView*> ImageViews;
-			GTSL::Range<const class VulkanSampler*> Samplers;
+		struct ImageBindingDescriptor : BindingDescriptor {
+			GTSL::Range<const VulkanTextureView*> ImageViews;
 			GTSL::Range<const TextureLayout*> Layouts;
 		};
 
-		struct BufferBindingDescriptor : BindingDescriptor
-		{
-			GTSL::Range<const class VulkanBuffer*> Buffers;
+		struct BufferBindingDescriptor : BindingDescriptor {
+			GTSL::Range<const VulkanBuffer*> Buffers;
 			GTSL::Range<const GTSL::uint32*> Offsets;
 			GTSL::Range<const GTSL::uint32*> Sizes;
 		};
@@ -128,6 +125,8 @@ namespace GAL
 			GTSL::StaticVector<VkDescriptorBindingFlags, 16> vkDescriptorBindingFlags;
 			GTSL::StaticVector<VkDescriptorSetLayoutBinding, MAX_BINDINGS_PER_SET> vkDescriptorSetLayoutBindings;
 
+			GTSL::StaticVector<VkSampler, 16> staticSamplers;
+
 			for (GTSL::uint32 i = 0; i < static_cast<GTSL::uint32>(bindingsDescriptors.ElementCount()); ++i) {
 				vkDescriptorBindingFlags.EmplaceBack(ToVulkan(bindingsDescriptors[i].Flags));
 
@@ -136,7 +135,16 @@ namespace GAL
 				binding.descriptorCount = bindingsDescriptors[i].BindingsCount;
 				binding.descriptorType = ToVulkan(bindingsDescriptors[i].BindingType);
 				binding.stageFlags = ToVulkan(bindingsDescriptors[i].ShaderStage);
-				binding.pImmutableSamplers = nullptr;
+
+				if(bindingsDescriptors[i].Samplers.ElementCount()) {
+					for(auto& e : bindingsDescriptors[i].Samplers) {
+						staticSamplers.EmplaceBack(e.GetVkSampler());
+					}
+
+					binding.pImmutableSamplers = staticSamplers.GetData();
+				} else {
+					binding.pImmutableSamplers = nullptr;
+				}
 			}
 
 			vkDescriptorSetLayoutBindingFlagsCreateInfo.bindingCount = vkDescriptorSetLayoutBindings.GetLength();

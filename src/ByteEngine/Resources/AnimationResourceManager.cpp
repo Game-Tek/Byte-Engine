@@ -30,7 +30,7 @@ static GTSL::Quaternion aiQuaternionToQuaternion(const aiQuaternion assimpQuater
 	return GTSL::Quaternion(assimpQuaternion.x, assimpQuaternion.y, assimpQuaternion.z, assimpQuaternion.w);
 }
 
-AnimationResourceManager::AnimationResourceManager(): ResourceManager(u8"AnimationResourceManager"), animations(32, 0.3f, GetPersistentAllocator())
+AnimationResourceManager::AnimationResourceManager(const InitializeInfo& initialize_info): ResourceManager(initialize_info, u8"AnimationResourceManager"), animations(32, 0.3f, GetPersistentAllocator())
 {
 	initializePackageFiles(packageFiles, GetResourcePath(GTSL::StaticString<32>(u8"Animations"), GTSL::ShortString<32>(u8"bepkg")));
 

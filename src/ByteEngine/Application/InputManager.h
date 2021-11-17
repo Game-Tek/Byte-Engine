@@ -171,11 +171,11 @@ public:
 	};
 
 	template<typename T>
-	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, DynamicTaskHandle<T> function) {
+	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, DynamicTaskHandle<T> dynamicTaskHandle) {
 		auto inputEventIndex = inputEvents.GetLength();
 		auto& inputEvent = inputEvents.EmplaceBack();
 
-		inputEvent.Handle = function.Reference;
+		inputEvent.Handle = dynamicTaskHandle.Reference;
 		inputEvent.EventType = GetType<Type, typename T::type>();
 
 		for (const auto& action : inputSourceNames) {

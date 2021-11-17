@@ -19,7 +19,7 @@ namespace GAL
 	private:
 	};
 	
-	class DX12BindingsLayout final
+	class DX12BindingsSetLayout final
 	{};
 
 	class DX12BindingsPool final : BindingsPool

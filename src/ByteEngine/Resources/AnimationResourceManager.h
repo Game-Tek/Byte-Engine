@@ -12,7 +12,7 @@
 class AnimationResourceManager : public ResourceManager
 {
 public:
-	AnimationResourceManager();
+	AnimationResourceManager(const InitializeInfo&);
 
 	struct Bone
 	{

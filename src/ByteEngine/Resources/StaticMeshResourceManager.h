@@ -9,7 +9,7 @@
 #include <GTSL/HashMap.hpp>
 #include <GTSL/File.h>
 #include <GTSL/MappedFile.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 
 #include "ByteEngine/Game/ApplicationManager.h"

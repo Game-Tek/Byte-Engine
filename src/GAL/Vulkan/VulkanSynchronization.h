@@ -80,7 +80,7 @@ namespace GAL
 		[[nodiscard]] VkSemaphore GetVkSemaphore() const { return semaphore; }
 
 		void Signal() { ++counter; }
-		void Reset() { --counter; }
+		void Unsignal() { --counter; }
 		bool IsSignaled() const { return counter; }
 	private:
 		VkSemaphore semaphore{ nullptr };

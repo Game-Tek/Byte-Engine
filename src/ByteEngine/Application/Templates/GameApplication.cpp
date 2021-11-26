@@ -4,6 +4,7 @@
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/ApplicationManager.h"
+#include "ByteEngine/Physics/PhysicsWorld.h"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -73,6 +74,8 @@ void GameApplication::PostInitialize()
 	auto* smrg = applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
 	auto* smrm = applicationManager->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
 
+	applicationManager->AddSystem<PhysicsWorld>(u8"PhysicsWorld");
+
 	smrg->Init(smrm);
 
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
@@ -100,39 +103,6 @@ void GameApplication::PostInitialize()
 	window.SetWindowVisibility(true);
 	
 	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
-	
-	{
-		renderOrchestrator->AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, GTSL::RGBA(0, 0, 0, 0));
-		renderOrchestrator->AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, GTSL::RGBA(1.0f, 0, 0, 0));
-
-		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" } ); //result attachment
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" } );
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" } );
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" } );
-		renderOrchestrator->AddPass(u8"SceneRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
-
-		RenderOrchestrator::PassData colorGrading{};
-		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
-		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
-		if (GetOption(u8"ColorGradingRenderPass")) {
-			auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
-		}
-
-		RenderOrchestrator::PassData rtRenderPass{};
-		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Position" });
-		rtRenderPass.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
-		rtRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
-		
-		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
-		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
-		//renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
-	}
-
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
 	applicationManager->AddSystem<CanvasSystem>(u8"CanvasSystem");
@@ -314,7 +284,7 @@ using namespace GTSL;
 
 void GameApplication::onWindowResize(Extent2D extent) {
 	if (extent != 0 && extent != oldSize) {
-		applicationManager->AddStoredDynamicTask(applicationManager->GetSystem<RenderSystem>(u8"RenderSystem")->GetResizeHandle(),  MoveRef(extent));
+		//applicationManager->AddStoredDynamicTask(applicationManager->GetSystem<RenderSystem>(u8"RenderSystem")->GetResizeHandle(),  MoveRef(extent));
 		oldSize = extent;
 	}
 }

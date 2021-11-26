@@ -2,12 +2,13 @@
 
 #include <GTSL/Bitfield.h>
 #include <GTSL/FixedVector.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 #include "HitResult.h"
 #include "ByteEngine/Game/System.h"
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
+#include "ByteEngine/Render/StaticMeshRenderGroup.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
 class StaticMeshResourceManager;
@@ -15,18 +16,18 @@ MAKE_HANDLE(uint32, PhysicsObject);
 
 class PhysicsWorld : public System {
 public:
-	PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"), updatedObjects(32, GetPersistentAllocator()),
+	PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"),
 		physicsObjects(32, GetPersistentAllocator())
 	{
-		//initialize_info.GameInstance->AddTask(u8"onUpdate", &PhysicsWorld::onUpdate, {}, u8"FrameUpdate", u8"RenderStart");
+		initialize_info.GameInstance->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"RenderStart");
 
-		//onStaticMeshInfoLoadedHandle = initialize_info.GameInstance->StoreDynamicTask(u8"onStaticMeshInfoLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshInfoLoaded>(this), {});
-		//onStaticMeshLoadedHandle = initialize_info.GameInstance->StoreDynamicTask(u8"onStaticMeshLoad", Task<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32>::Create<PhysicsWorld, &PhysicsWorld::onStaticMeshLoaded>(this), {});
+		onStaticMeshInfoLoadedHandle = initialize_info.GameInstance->StoreDynamicTask(this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
+		onStaticMeshLoadedHandle = initialize_info.GameInstance->StoreDynamicTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
 
 		boundlessForces.EmplaceBack(0, -10, 0, 0);
 	}
 
-	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager);
+	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshHandle);
 
 	GTSL::Vector4 GetPosition(const PhysicsObjectHandle physics_object_handle) const { return physicsObjects[physics_object_handle()].position; }
 
@@ -49,8 +50,6 @@ private:
 	 * \brief Defines the number of substeps used for simulation. Default is 1, which mean only one iteration will run each frame.
 	 */
 	uint16 simSubSteps = 1;
-
-	GTSL::Vector<PhysicsObjectHandle, BE::PAR> updatedObjects;
 	
 	void doBroadPhase();
 	void doNarrowPhase();
@@ -64,7 +63,7 @@ private:
 		bitfield[0] = pos.X() > 0.0f; bitfield[1] = pos.Y() > 0.0f; bitfield[2] = pos.Z() > 0.0f;
 	}
 	
-	void onUpdate(TaskInfo taskInfo);
+	void onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup*);
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
@@ -79,13 +78,22 @@ private:
 
 		//shape
 		float32 radius = 1.0f;
+
+		StaticMeshHandle Handle;
+		GTSL::Vector3 aabb;
+
+		PhysicsObject(const BE::PAR& allocator) : Buffer(allocator) {}
+
+		GTSL::Buffer<BE::PAR> Buffer;
 	};
 	GTSL::FixedVector<PhysicsObject, BE::PAR> physicsObjects;
 
 	GTSL::StaticVector<GTSL::Vector4, 8> boundlessForces;
-	
-	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
-	DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;
+
+	GTSL::StaticVector<uint32, 8> loaded;
+
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;
 
 	void applyImpulseLinear(PhysicsObject* a, const GTSL::Vector4 impulse) {
 		a->velocity += impulse * a->inverseMass;

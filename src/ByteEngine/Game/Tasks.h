@@ -14,6 +14,7 @@
 //enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
 
 using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
+using TaskAccess = GTSL::Pair<uint16, AccessType>;
 
 namespace AccessTypes {
 	static constexpr AccessType READ(1), READ_WRITE(4);
@@ -37,13 +38,11 @@ struct TaskDependency
 };
 
 template<typename TASK, class ALLOCATOR>
-struct Stage
-{
+struct Stage {
 	Stage() = default;
 
 	Stage(uint32 num, const ALLOCATOR& allocatorReference) :
-	taskAccessedObjects(num, allocatorReference),
-	taskAccessTypes(num, allocatorReference),
+	taskAccesses(num, allocatorReference),
 	taskGoalIndex(num, allocatorReference),
 	taskNames(num, allocatorReference),
 	tasksInfos(num, allocatorReference),
@@ -53,26 +52,22 @@ struct Stage
 
 	template<class OALLOC>
 	Stage(const Stage<TASK, OALLOC>& other, const ALLOCATOR& allocatorReference) :
-	taskAccessedObjects(other.taskAccessedObjects.GetLength(), allocatorReference),
-	taskAccessTypes(other.taskAccessTypes.GetLength(), allocatorReference),
+	taskAccesses(other.taskAccesses.GetLength(), allocatorReference),
 	taskGoalIndex(other.taskGoalIndex, allocatorReference),
 	taskNames(other.taskNames, allocatorReference),
 	tasksInfos(other.tasksInfos, allocatorReference),
 	tasks(other.tasks, allocatorReference)
 	{
-		for(uint32 i = 0; i < other.taskAccessedObjects.GetLength(); ++i) {
-			taskAccessedObjects.EmplaceBack(other.taskAccessedObjects[i], allocatorReference);
-			taskAccessTypes.EmplaceBack(other.taskAccessTypes[i], allocatorReference);
+		for(uint32 i = 0; i < other.taskAccesses.GetLength(); ++i) {
+			taskAccesses.EmplaceBack(other.taskAccesses[i], allocatorReference);
 		}
 	}
 	
-	void AddTask(Id name, TASK task, GTSL::Range<const uint16*> offsets, const GTSL::Range<const AccessType*> accessTypes, uint16 goalIndex, void* taskInfo, const ALLOCATOR& allocator)
+	void AddTask(Id name, TASK task, GTSL::Range<const TaskAccess*> accesses, uint16 goalIndex, void* taskInfo, const ALLOCATOR& allocator)
 	{
-		auto task_n = taskAccessedObjects.EmplaceBack(16, allocator);
-		taskAccessTypes.EmplaceBack(16, allocator);
+		auto task_n = taskAccesses.EmplaceBack(16, allocator);
 		
-		taskAccessedObjects.back().PushBack(offsets);
-		taskAccessTypes.back().PushBack(accessTypes);
+		taskAccesses.back().PushBack(accesses);
 		
 		taskNames.EmplaceBack(name);
 		taskGoalIndex.EmplaceBack(goalIndex);
@@ -87,8 +82,7 @@ struct Stage
 
 		uint32 i = res.Get();
 		
-		taskAccessedObjects.Pop(i);
-		taskAccessTypes.Pop(i);
+		taskAccesses.Pop(i);
 		taskGoalIndex.Pop(i);
 		tasksInfos.Pop(i);
 		taskNames.Pop(i);
@@ -98,9 +92,7 @@ struct Stage
 	[[nodiscard]] TASK GetTask(const uint32 i) const { return tasks[i]; }
 	[[nodiscard]] void* GetTaskInfo(const uint16 task) const { return tasksInfos[task]; }
 
-	[[nodiscard]] GTSL::Range<const uint16*> GetTaskAccessedObjects(uint16 task) const { return taskAccessedObjects[task]; }
-
-	[[nodiscard]] GTSL::Range<const AccessType*> GetTaskAccessTypes(uint16 task) const { return taskAccessTypes[task]; }
+	[[nodiscard]] GTSL::Range<const TaskAccess*> GetTaskAccesses(uint16 task) const { return taskAccesses[task]; }
 
 	[[nodiscard]] Id GetTaskName(const uint16 task) const { return taskNames[task]; }
 
@@ -110,10 +102,8 @@ struct Stage
 
 	void Clear()
 	{
-		for (auto& e : taskAccessedObjects) { e.Resize(0); }
-		taskAccessedObjects.Resize(0);
-		for (auto& e : taskAccessTypes) { e.Resize(0); }
-		taskAccessTypes.Resize(0);
+		for (auto& e : taskAccesses) { e.Resize(0); }
+		taskAccesses.Resize(0);
 
 		taskGoalIndex.Resize(0);
 
@@ -126,8 +116,7 @@ struct Stage
 	
 	void Pop(const uint32 from, const uint32 range)
 	{
-		taskAccessedObjects.Pop(from, range);
-		taskAccessTypes.Pop(from, range);
+		taskAccesses.Pop(from, range);
 		taskGoalIndex.Pop(from, range);
 		tasksInfos.Pop(from, range);
 		taskNames.Pop(from, range);
@@ -135,8 +124,7 @@ struct Stage
 	}
 
 private:
-	GTSL::Vector<GTSL::Vector<uint16, ALLOCATOR>, ALLOCATOR> taskAccessedObjects;
-	GTSL::Vector<GTSL::Vector<AccessType, ALLOCATOR>, ALLOCATOR> taskAccessTypes;
+	GTSL::Vector<GTSL::Vector<TaskAccess, ALLOCATOR>, ALLOCATOR> taskAccesses;
 	
 	GTSL::Vector<uint16, ALLOCATOR> taskGoalIndex;
 	
@@ -152,63 +140,52 @@ struct TaskSorter
 {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), ongoingTasksObjects(num, allocator), objectNames(num, allocator)
+	ongoingTasksAccesses(num, allocator), objectNames(num, allocator)
 	{
 	}
 
-	GTSL::Result<uint32> CanRunTask(const GTSL::Range<const uint16*> objects, const GTSL::Range<const AccessType*> accesses)
-	{
-		BE_ASSERT(objects.ElementCount() == accesses.ElementCount(), "Bad data, shold be equal");
+	GTSL::Result<uint32> CanRunTask(const GTSL::Range<const TaskAccess*> accesses) {
+		const auto elementCount = accesses.ElementCount();
 
-		const auto elementCount = objects.ElementCount();
-		
+		uint32 res = 0;
+
 		{
 			GTSL::WriteLock lock(mutex);
 			
-			for (uint32 i = 0; i < elementCount; ++i)
-			{
-				if (currentObjectAccessState[objects[i]] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
-				if (currentObjectAccessState[objects[i]] == AccessTypes::READ && accesses[i] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
+			for (uint32 i = 0; i < elementCount; ++i) {
+				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
+				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ && accesses[i].Second == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
 			}
 			
-			for (uint32 i = 0; i < elementCount; ++i)
-			{
-				currentObjectAccessState[objects[i]] = accesses[i];
-				++currentObjectAccessCount[objects[i]];
+			for (uint32 i = 0; i < elementCount; ++i) {
+				currentObjectAccessState[accesses[i].First] = accesses[i].Second;
+				++currentObjectAccessCount[accesses[i].First];
 			}
 			
-			auto i = ongoingTasksAccesses.Emplace(accesses);
-			auto j = ongoingTasksObjects.Emplace(objects);
-
-
-			BE_ASSERT(i == j, "Error")
-			return GTSL::Result<uint32>(GTSL::MoveRef(i), true);
+			res = ongoingTasksAccesses.Emplace(accesses);
 		}
+
+		return GTSL::Result(GTSL::MoveRef(res), true);
 	}
 
-	void ReleaseResources(const uint32 taskIndex)
-	{
+	void ReleaseResources(const uint32 taskIndex) {
 		GTSL::WriteLock lock(mutex);
 
 		const auto count = ongoingTasksAccesses[taskIndex].GetLength();
-		auto& objects = ongoingTasksObjects[taskIndex];
 		auto& accesses = ongoingTasksAccesses[taskIndex];
 		
 		for (uint32 i = 0; i < count; ++i)
 		{
-			BE_ASSERT(currentObjectAccessCount[objects[i]] != 0, "Oops :/");
-			BE_ASSERT(accesses[i] == AccessTypes::READ || accesses[i] == AccessTypes::READ_WRITE, "Unexpected value");
-			if (--currentObjectAccessCount[objects[i]] == 0) { //if object is no longer accessed
-				currentObjectAccessState[objects[i]] = AccessType();
+			BE_ASSERT(currentObjectAccessCount[accesses[i].First] != 0, "Oops :/");
+			if (--currentObjectAccessCount[accesses[i].First] == 0) { //if object is no longer accessed
+				currentObjectAccessState[accesses[i].First] = AccessType();
 			}
-
 		}
 		
-		ongoingTasksAccesses.Pop(taskIndex); ongoingTasksObjects.Pop(taskIndex);
+		ongoingTasksAccesses.Pop(taskIndex);
 	}
 
-	void AddSystem(Id objectName)
-	{
+	void AddSystem(Id objectName) {
 		GTSL::WriteLock lock(mutex);
 		objectNames.Emplace(objectName);
 		currentObjectAccessState.Emplace(0);
@@ -219,8 +196,7 @@ private:
 	GTSL::FixedVector<AccessType, ALLOCATOR> currentObjectAccessState;
 	GTSL::FixedVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	GTSL::FixedVector<GTSL::StaticVector<AccessType, 64>, ALLOCATOR> ongoingTasksAccesses;
-	GTSL::FixedVector<GTSL::StaticVector<uint16, 64>, ALLOCATOR> ongoingTasksObjects;
+	GTSL::FixedVector<GTSL::StaticVector<TaskAccess, 64>, ALLOCATOR> ongoingTasksAccesses;
 
 	GTSL::FixedVector<Id, ALLOCATOR> objectNames;
 

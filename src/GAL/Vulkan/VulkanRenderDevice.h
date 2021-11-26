@@ -4,7 +4,7 @@
 
 #include "Vulkan.h"
 
-#include <GTSL/Pair.h>
+#include <GTSL/Pair.hpp>
 
 #include "GTSL/Buffer.hpp"
 #include "GTSL/Allocator.h"
@@ -502,6 +502,7 @@ namespace GAL
 
 			getDeviceProcAddr(u8"vkQueueSubmit", &VkQueueSubmit);
 			getDeviceProcAddr(u8"vkQueuePresentKHR", &VkQueuePresent);
+			getDeviceProcAddr(u8"vkQueueWaitIdle", &VkQueueWaitIdle);
 			getInstanceProcAddr(u8"vkCreateSwapchainKHR", &VkCreateSwapchain);
 			getInstanceProcAddr(u8"vkGetSwapchainImagesKHR", &VkGetSwapchainImages);
 			getInstanceProcAddr(u8"vkAcquireNextImageKHR", &VkAcquireNextImage);
@@ -868,6 +869,7 @@ namespace GAL
 		PFN_vkGetQueryPoolResults VkGetQueryPoolResults;
 		PFN_vkQueueSubmit VkQueueSubmit;
 		PFN_vkQueuePresentKHR VkQueuePresent;
+		PFN_vkQueueWaitIdle VkQueueWaitIdle;
 
 		//PFN_vkGetDeviceBuffer
 		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceBufferMemoryRequirements;

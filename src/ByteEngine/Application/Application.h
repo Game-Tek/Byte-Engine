@@ -97,7 +97,11 @@ namespace BE
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
 		uint32 GetOption(const Id optionName) const {
-			return settings.At(optionName);
+			if(const auto res = settings.TryGet(optionName)) {
+				return res.Get();
+			} else {
+				return 0;
+			}
 		}
 		
 	protected:

@@ -64,6 +64,8 @@ namespace BE
 		
 		mutable utf8* data{ nullptr };
 
+		bool trace = false;
+
 		mutable std::atomic<uint32> counter{ 0 };
 		
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
@@ -77,6 +79,7 @@ namespace BE
 
 		struct LoggerCreateInfo {
 			GTSL::Range<const utf8*> AbsolutePathToLogDirectory;
+			bool Trace = false;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
 
@@ -103,6 +106,30 @@ namespace BE
 			logMutex.Lock();
 			minLogLevel = level;
 			logMutex.Unlock();
+		}
+
+		void InstantEvent(GTSL::StringView name, uint64 time) {
+			if (!trace) { return; }
+
+			GTSL::StaticString<1024> string;
+
+			{
+				GTSL::Lock lock(traceMutex);
+
+				if (profileCount++ > 0)
+					string += u8",";
+
+				string += u8"{";
+				string += u8"\"name\":\""; string += name; string += u8"\",";
+				string += u8"\"ph\":\"i\",";
+				string += u8"\"ts\":"; ToString(string, time); string += u8",";
+				string += u8"\"pid\":0,";
+				string += u8"\"tid\":"; ToString(string, getThread()); string += u8",";
+				string += u8"\"s\":\"g\"";
+				string += u8"}";
+
+				graphFile.Write(GTSL::Range(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
+			}
 		}
 	};
 }

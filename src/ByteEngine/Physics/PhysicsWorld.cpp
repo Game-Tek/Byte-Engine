@@ -4,16 +4,17 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
-PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager)
+PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshHandle static_mesh_handle)
 {
-	auto objectIndex = physicsObjects.Emplace();
+	auto objectIndex = physicsObjects.Emplace(GetPersistentAllocator());
+	physicsObjects[objectIndex].Handle = static_mesh_handle;
 	
-	//staticMeshResourceManager->LoadStaticMeshInfo(gameInstance, meshName, onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
+	staticMeshResourceManager->LoadStaticMeshInfo(gameInstance, meshName, onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
 	
 	return PhysicsObjectHandle(objectIndex);
 }
 
-void PhysicsWorld::onUpdate(TaskInfo taskInfo)
+void PhysicsWorld::onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup* static_mesh_render_group)
 {
 	auto deltaMicroseconds = BE::Application::Get()->GetClock()->GetDeltaTime();
 
@@ -45,25 +46,29 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo)
 	//	}
 	//}
 
-	for(auto& e : physicsObjects) { //semi implicit euler
+	for (auto i : loaded) {
+		auto& e = physicsObjects[i]; //semi implicit euler
+
 		e.velocity += accumulatedUnboundedForces * deltaSeconds;
 		e.position += e.velocity * deltaSeconds;
-	}
 
-	updatedObjects.Resize(0);
+		static_mesh_render_group->SetPosition(taskInfo.ApplicationManager, e.Handle, GTSL::Vector3(e.position));
+	}
 }
 
 void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32 buffer)
 {
-	staticMeshInfo.BoundingBox;
-	staticMeshInfo.BoundingRadius;
+	auto& mesh = physicsObjects[buffer];
 
-	//physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize(), 16, GetPersistentAllocator());
+	mesh.aabb = staticMeshInfo.BoundingBox;
+	mesh.radius = staticMeshInfo.BoundingRadius;
+
+	physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize() + 32, 16);
 	
-	//staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 16, physicsObjects[buffer].Buffer, onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
+	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 2, GTSL::Range<byte*>(physicsObjects[buffer].Buffer.GetCapacity(), physicsObjects[buffer].Buffer.GetData()), onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
 }
 
-void PhysicsWorld::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32)
+void PhysicsWorld::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32 index)
 {
-	
+	loaded.EmplaceBack(index);
 }

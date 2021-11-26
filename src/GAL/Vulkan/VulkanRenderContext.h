@@ -3,7 +3,7 @@
 #include "GAL/RenderContext.h"
 
 #include "VulkanTexture.h"
-#include <GTSL/Pair.h>
+#include <GTSL/Pair.hpp>
 
 #include "VulkanQueue.h"
 #include "VulkanSynchronization.h"
@@ -149,28 +149,30 @@ namespace GAL
 
 			auto state = result == VK_SUCCESS ? AcquireState::OK : result == VK_SUBOPTIMAL_KHR ? AcquireState::SUBOPTIMAL : AcquireState::BAD;
 
-			if(state != AcquireState::BAD) {
-				fence.Signal();
-				semaphore.Signal();
-			}
+			fence.Signal();
+			semaphore.Signal();
 			
 			return GTSL::Result(static_cast<GTSL::uint8>(image_index), state);
 		}
 		
-		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSemaphore& semaphore) {
+		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSemaphore* semaphore) {
 			GTSL::uint32 image_index = 0;
 
-			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore.GetVkSemaphore(), nullptr, &image_index);
+			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore->GetVkSemaphore(), nullptr, &image_index);
 
-			auto state = result == VK_SUCCESS ? AcquireState::OK : result == VK_SUBOPTIMAL_KHR ? AcquireState::SUBOPTIMAL : AcquireState::BAD;
+			AcquireState acquire_state;
 
-			if (state != AcquireState::BAD) {
-				if (!semaphore.IsSignaled()) {
-					semaphore.Signal();
-				}
+			switch (result) {
+			case VK_SUCCESS: acquire_state = AcquireState::OK; break;
+			case VK_SUBOPTIMAL_KHR: acquire_state = AcquireState::SUBOPTIMAL; break;
+			case VK_ERROR_OUT_OF_DATE_KHR: acquire_state = AcquireState::BAD; break;
 			}
+
+			//if (!semaphore.IsSignaled()) {
+				semaphore->Signal();
+			//}
 			
-			return GTSL::Result(static_cast<GTSL::uint8>(image_index), state);
+			return GTSL::Result(static_cast<GTSL::uint8>(image_index), acquire_state);
 		}
 		
 		bool Present(const VulkanRenderDevice* renderDevice, GTSL::Range<VulkanSemaphore**> waitSemaphores, GTSL::uint32 index, VulkanQueue queue) {
@@ -179,10 +181,10 @@ namespace GAL
 			GTSL::StaticVector<VkSemaphore, 16> semaphores;
 
 			for (auto& s : waitSemaphores) {
-				if (s->IsSignaled()) {
-					s->Reset();
+				//if (s->IsSignaled()) {
+					s->Unsignal();
 					semaphores.EmplaceBack(s->GetVkSemaphore());
-				}
+				//}
 			}
 			
 			vkPresentInfoKhr.waitSemaphoreCount = semaphores.GetLength();

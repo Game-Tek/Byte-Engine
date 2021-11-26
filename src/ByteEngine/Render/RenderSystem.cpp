@@ -150,7 +150,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::frameStart", &RenderSystem::frameStart, DependencyBlock(), u8"FrameStart", u8"RenderStart");
 		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::beginCommandLists", &RenderSystem::beginGraphicsCommandLists, DependencyBlock(), u8"RenderEndSetup", u8"RenderDo");
 		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"RenderFinished", u8"RenderEnd");
-		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"RenderSystem::onnResize", {}, & RenderSystem::onResize);
+		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"RenderSystem::onResize", {}, & RenderSystem::onResize);
 	}
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
@@ -360,73 +360,6 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffe
 	geometries[GetCurrentFrame()].Resize(0);
 }
 
-bool RenderSystem::resize()
-{
-	if (renderArea == 0) { return false; }
-	//graphicsQueue.Wait(GetRenderDevice());
-
-	if (!surface.GetHandle()) {	
-		surface.Initialize(GetRenderDevice(), BE::Application::Get()->GetApplication(), *window);
-	}
-
-	Surface::SurfaceCapabilities surfaceCapabilities;
-	auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
-
-	renderArea = surfaceCapabilities.CurrentExtent;
-	
-	if (!isSupported) {
-		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>(u8"No supported surface found!"));
-	}
-
-	auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
-	swapchainPresentMode = supportedPresentModes[0];
-
-	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
-
-	{
-		GTSL::Pair<GAL::ColorSpace, GAL::FormatDescriptor> bestColorSpaceFormat;
-
-		for (uint8 topScore = 0; const auto& e : supportedSurfaceFormats) {
-			uint8 score = 0;
-			
-			if (useHDR && e.First == GAL::ColorSpace::HDR10_ST2048) {
-				score += 2;
-			} else {
-				score += 1;
-			}
-
-			if(score > topScore) {
-				bestColorSpaceFormat = e;
-				topScore = score;
-			}
-		}
-
-		swapchainColorSpace = bestColorSpaceFormat.First; swapchainFormat = bestColorSpaceFormat.Second;
-	}	
-
-	renderContext.InitializeOrRecreate(GetRenderDevice(), graphicsQueue, &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
-
-	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
-
-	//imageIndex = 0;
-
-	{
-		auto newSwapchainTextures = renderContext.GetTextures(GetRenderDevice());
-		for (uint8 f = 0; f < pipelinedFrames; ++f) {
-			swapchainTextures[f] = newSwapchainTextures[f];
-			swapchainTextureViews[f].Destroy(GetRenderDevice());
-
-			GTSL::StaticString<64> name(u8"Swapchain ImageView "); name += f;
-			
-			swapchainTextureViews[f].Initialize(GetRenderDevice(), name, swapchainTextures[f], swapchainFormat, renderArea, 1);
-		}
-	}
-
-	lastRenderArea = renderArea;
-	
-	return true;
-}
-
 void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 {	
 	auto& commandBuffer = graphicsCommandBuffers[GetCurrentFrame()];
@@ -487,8 +420,7 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 	}
 }
 
-void RenderSystem::renderFlush(TaskInfo taskInfo)
-{
+void RenderSystem::renderFlush(TaskInfo taskInfo) {
 	auto& commandBuffer = graphicsCommandBuffers[GetCurrentFrame()];
 
 	auto beforeFrame = uint8(currentFrameIndex - uint8(1)) % GetPipelinedFrames();
@@ -516,8 +448,7 @@ void RenderSystem::renderFlush(TaskInfo taskInfo)
 		graphicsWork.SignalSemaphore = &renderFinishedSemaphore[GetCurrentFrame()];
 		graphicsWork.CommandBuffer = &graphicsCommandBuffers[GetCurrentFrame()];		
 		
-		if (surface.GetHandle())
-		{
+		if (surface.GetHandle()) {
 			graphicsWork.WaitPipelineStage |= GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 		}
 
@@ -527,11 +458,14 @@ void RenderSystem::renderFlush(TaskInfo taskInfo)
 
 		if(surface.GetHandle()) {
 			presentWaitSemaphores.EmplaceBack(&renderFinishedSemaphore[GetCurrentFrame()]);
-			renderContext.Present(GetRenderDevice(), presentWaitSemaphores, imageIndex, graphicsQueue);
+
+			if(!renderContext.Present(GetRenderDevice(), presentWaitSemaphores, imageIndex, graphicsQueue)) {
+				resize();
+			}
 		}
 	}
 
-	currentFrameIndex = (currentFrameIndex + 1) % pipelinedFrames;
+	++currentFrameIndex %= pipelinedFrames;
 }
 
 void RenderSystem::frameStart(TaskInfo taskInfo)
@@ -685,29 +619,87 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 	}
 }
 
-bool RenderSystem::AcquireImage()
+GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage()
 {
 	bool result = false;
 	
-	if(surface.GetHandle()) {
-		auto acquireResult = renderContext.AcquireNextImage(&renderDevice, imageAvailableSemaphore[GetCurrentFrame()]);
-
-		imageIndex = acquireResult.Get();
-
-		switch (acquireResult.State())
-		{
-		case GAL::VulkanRenderContext::AcquireState::OK: break;
-		case GAL::VulkanRenderContext::AcquireState::SUBOPTIMAL:
-		case GAL::VulkanRenderContext::AcquireState::BAD: resize(); result = true; break;
-		default:;
-		}
-	} else {
-		resize(); result = true; AcquireImage();
+	if(!surface.GetHandle()) {
+		resize(); result = true;
 	}
 
-	if (lastRenderArea != renderArea) { resize(); result = true; }
+	const auto acquireResult = renderContext.AcquireNextImage(&renderDevice, &imageAvailableSemaphore[GetCurrentFrame()]);
+
+	imageIndex = acquireResult.Get();
+
+	switch (acquireResult.State()) {
+	case GAL::VulkanRenderContext::AcquireState::OK: break;
+	case GAL::VulkanRenderContext::AcquireState::SUBOPTIMAL:
+	case GAL::VulkanRenderContext::AcquireState::BAD: resize(); result = true; break;
+	}
+
+	if (lastRenderArea != renderArea) { lastRenderArea = renderArea; result = true; }
 	
-	return result;
+	return { GTSL::MoveRef(renderArea), result };
+}
+
+void RenderSystem::resize() {
+	if (!surface.GetHandle()) {
+		surface.Initialize(GetRenderDevice(), BE::Application::Get()->GetApplication(), *window);
+	}
+
+	Surface::SurfaceCapabilities surfaceCapabilities;
+	auto isSupported = surface.IsSupported(&renderDevice, &surfaceCapabilities);
+
+	renderArea = surfaceCapabilities.CurrentExtent;
+
+	if (!isSupported) {
+		BE::Application::Get()->Close(BE::Application::CloseMode::ERROR, GTSL::StaticString<64>(u8"No supported surface found!"));
+	}
+
+	auto supportedPresentModes = surface.GetSupportedPresentModes(&renderDevice);
+	swapchainPresentMode = supportedPresentModes[0];
+
+	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
+
+	{
+		GTSL::Pair<GAL::ColorSpace, GAL::FormatDescriptor> bestColorSpaceFormat;
+
+		for (uint8 topScore = 0; const auto & e : supportedSurfaceFormats) {
+			uint8 score = 0;
+
+			if (useHDR && e.First == GAL::ColorSpace::HDR10_ST2048) {
+				score += 2;
+			}
+			else {
+				score += 1;
+			}
+
+			if (score > topScore) {
+				bestColorSpaceFormat = e;
+				topScore = score;
+			}
+		}
+
+		swapchainColorSpace = bestColorSpaceFormat.First; swapchainFormat = bestColorSpaceFormat.Second;
+	}
+
+	renderContext.InitializeOrRecreate(GetRenderDevice(), graphicsQueue, &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
+
+	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
+
+	//imageIndex = 0; keep index of last acquired image
+
+	{
+		auto newSwapchainTextures = renderContext.GetTextures(GetRenderDevice());
+		for (uint8 f = 0; f < pipelinedFrames; ++f) {
+			swapchainTextures[f] = newSwapchainTextures[f];
+			swapchainTextureViews[f].Destroy(GetRenderDevice());
+
+			GTSL::StaticString<64> name(u8"Swapchain ImageView "); name += f;
+
+			swapchainTextureViews[f].Initialize(GetRenderDevice(), name, swapchainTextures[f], swapchainFormat, renderArea, 1);
+		}
+	}
 }
 
 RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable)

@@ -51,6 +51,31 @@ public:
 	};
 };
 
+/**
+ * \brief Renders a frame according to a specfied model/pipeline.
+ * E.J: Forward Rendering, Deferred Rendering, Ray Tracing, etc.
+ */
+class RenderPipeline {
+};
+
+class WorldRendererPipeline : RenderPipeline {
+public:
+	auto GetOnAddMeshHandle() const { return OnAddMesh; }
+
+private:
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddMesh;
+	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
+
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddInfiniteLight;
+
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddBackdrop;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddParticleSystem;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddVolume;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddSkinnedMesh;
+};
+
 class RenderOrchestrator : public System {
 public:
 	enum class PassType : uint8 {
@@ -183,7 +208,7 @@ public:
 	};
 	[[nodiscard]] MaterialInstanceHandle CreateMaterial(const CreateMaterialInfo& info);
 
-	void AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor);
+	void AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type);
 	
 	struct PassData {
 		struct AttachmentReference {

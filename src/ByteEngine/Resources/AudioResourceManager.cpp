@@ -59,12 +59,12 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 				uint8 data_chunk_header[4];        // DATA string or FLLR string
 				uint32 data_size = 0;                     // NumSamples * NumChannels * BitsPerSample/8 - size of the next chunk that will be read
 
-				wavBuffer.ReadBytes(4, riff);
+				wavBuffer >> riff[0] >> riff[1] >> riff[2] >> riff[3];
 				BE_ASSERT(riff[0] == 'R' && riff[1] == 'I' && riff[2] == 'F' && riff[3] == 'F', "No RIFF");
 
 				Extract(overall_size, wavBuffer);
-				wavBuffer.ReadBytes(4, wave); BE_ASSERT(wave[0] == 'W' && wave[1] == 'A' && wave[2] == 'V' && wave[3] == 'E', "No WAVE");
-				wavBuffer.ReadBytes(4, fmt_chunk_marker); BE_ASSERT(fmt_chunk_marker[0] == 'f' && fmt_chunk_marker[1] == 'm' && fmt_chunk_marker[2] == 't' && fmt_chunk_marker[3] == 32, "No fmt");
+				wavBuffer.Read(4, wave); BE_ASSERT(wave[0] == 'W' && wave[1] == 'A' && wave[2] == 'V' && wave[3] == 'E', "No WAVE");
+				wavBuffer.Read(4, fmt_chunk_marker); BE_ASSERT(fmt_chunk_marker[0] == 'f' && fmt_chunk_marker[1] == 'm' && fmt_chunk_marker[2] == 't' && fmt_chunk_marker[3] == 32, "No fmt");
 				Extract(length_of_fmt, wavBuffer); BE_ASSERT(length_of_fmt == 16, "Unsupported");
 				Extract(format_type, wavBuffer); BE_ASSERT(format_type == 1, "Format is not PCM, unsupported!");
 				Extract(channels, wavBuffer);
@@ -77,7 +77,7 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 				data.SampleRate = sample_rate;
 				data.BitDepth = static_cast<uint8>(bits_per_sample);
 
-				wavBuffer.ReadBytes(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
+				wavBuffer.Read(4, data_chunk_header); BE_ASSERT(data_chunk_header[0] == 'd' && data_chunk_header[1] == 'a' && data_chunk_header[2] == 't' && data_chunk_header[3] == 'a', "No data");
 				Extract(data_size, wavBuffer);
 
 				data.Frames = data_size / channels / (bits_per_sample / 8);

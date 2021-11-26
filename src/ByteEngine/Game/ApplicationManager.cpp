@@ -61,34 +61,17 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 	
 	GTSL::Mutex waitWhenNoChange;
 
-	auto tryDispatchGoalTask = [&](uint16 goalIndex, Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
-	{
-		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
-		{
-			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(taskIndex), stage.GetTaskAccessTypes(taskIndex));
+	auto tryDispatchTask = [&](uint16 goalIndex, Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t) {
+		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex) {
+			auto result = taskSorter.CanRunTask(stage.GetTaskAccesses(taskIndex));
 			if (result.State()) {
 				const uint16 targetGoalIndex = stage.GetTaskGoalIndex(taskIndex);
-				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, GTSL::MoveRef(targetGoalIndex), GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
-				//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[stage].GetTaskName(recurringGoalTask), stagesNames[stage], localRecurringGoals[stage].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[stage].GetTaskAccessedObjects(recurringGoalTask)));
-				semaphores[targetGoalIndex].Add();
-			}
-			else {
-				return;
-			}
-		}
+				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
+				//BE_LOG_MESSAGE(genTaskLog("Dispatched task ", stage.GetTaskName(taskIndex), stagesNames[goalIndex], stage.GetTaskAccessTypes(taskIndex), stage.GetTaskAccessedObjects(taskIndex)));
 
-		t = true;
-	};
-
-	auto tryDispatchTask = [&](Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t)
-	{
-		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex)
-		{
-			auto result = taskSorter.CanRunTask(stage.GetTaskAccessedObjects(taskIndex), stage.GetTaskAccessTypes(taskIndex));
-			
-			if (result.State()) {
-				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, 0xFFFF, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
-				//BE_LOG_MESSAGE(genTaskLog("Dispatched recurring task ", localRecurringGoals[stage].GetTaskName(recurringGoalTask), stagesNames[stage], localRecurringGoals[stage].GetTaskAccessTypes(recurringGoalTask), localRecurringGoals[stage].GetTaskAccessedObjects(recurringGoalTask)));
+				if (targetGoalIndex != 0xFFFF) {
+					semaphores[targetGoalIndex].Add();
+				}
 			}
 			else {
 				return;
@@ -107,15 +90,17 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			localDynamicTasksPerStage.EmplaceBack(dynamicTasksPerStage[stageIndex], GetTransientAllocator());
 			dynamicTasksPerStage[stageIndex].Clear();
 		}
-		
+
+		getLogger()->InstantEvent(GTSL::StringView(stagesNames[stageIndex]), application->GetClock()->GetCurrentMicroseconds().GetCount()); //TODO: USE LOCK ON STAGE NAME
+
 		uint16 recurringTasksIndex = 0, dynamicTasksIndex = 0;
 
 		bool r = false, d = false, a = false;
 		
 		while (!(r && d && a)) {
-			tryDispatchGoalTask(stageIndex, localRecurringTasksPerStage[stageIndex], recurringTasksIndex, r);
-			tryDispatchGoalTask(stageIndex, localDynamicTasksPerStage[stageIndex], dynamicTasksIndex, d);
-			tryDispatchTask(localAsyncTasks, asyncTasksIndex, a);
+			tryDispatchTask(stageIndex, localRecurringTasksPerStage[stageIndex], recurringTasksIndex, r);
+			tryDispatchTask(stageIndex, localDynamicTasksPerStage[stageIndex], dynamicTasksIndex, d);
+			tryDispatchTask(stageIndex, localAsyncTasks, asyncTasksIndex, a);
 		}
 
 		//waitWhenNoChange.Lock();

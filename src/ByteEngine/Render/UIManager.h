@@ -7,7 +7,7 @@
 #include <GTSL/FixedVector.hpp>
 #include <GTSL/RGB.h>
 #include <GTSL/String.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 #include <GTSL/Tree.hpp>
 
 #include "RenderTypes.h"

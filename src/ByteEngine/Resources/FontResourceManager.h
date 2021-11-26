@@ -7,7 +7,7 @@
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Serialize.hpp>
 #include <GTSL/Vector.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 
 #include "ResourceManager.h"

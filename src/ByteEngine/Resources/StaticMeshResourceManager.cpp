@@ -13,7 +13,7 @@
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.hpp>
 #include <GTSL/Math/Math.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 static GTSL::Vector4 toAssimp(const aiColor4D assimpVector) {
 	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);
@@ -284,7 +284,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 			for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 				for (uint32 index = 0; index < 3; ++index) {
-					meshDataBuffer.CopyBytes(indexSize, reinterpret_cast<byte*>(&inMesh->mFaces[face].mIndices[index]));
+					meshDataBuffer.Write(indexSize, reinterpret_cast<byte*>(&inMesh->mFaces[face].mIndices[index]));
 				}
 			}
 		//}
@@ -295,7 +295,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 		for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 			for (uint32 index = 0; index < 3; ++index) {
-				meshDataBuffer.CopyBytes(indexSize, reinterpret_cast<byte*>(inMesh->mFaces[face].mIndices + index));
+				meshDataBuffer.Write(indexSize, reinterpret_cast<byte*>(inMesh->mFaces[face].mIndices + index));
 			}
 		}
 	}

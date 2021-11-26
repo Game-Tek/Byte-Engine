@@ -30,10 +30,12 @@ public:
 		 * Can be used for initialization of data structures to allocate "enough" space during start as to avoid as many re-allocations further down the line.
 		 */
 		uint32 ScalingFactor = 0;
+		uint16 SystemId;
+		Id InstanceName;
 
 		ApplicationManager* operator->() { return GameInstance; }
 	};	
-	System(const InitializeInfo& initializeInfo, const utf8* name) : Object(name)
+	System(const InitializeInfo& initializeInfo, const utf8* name) : Object(name), systemId(initializeInfo.SystemId), instanceName(initializeInfo.InstanceName)
 	{
 	}
 
@@ -49,6 +51,7 @@ protected:
 	
 private:
 	uint16 systemId;
+	Id instanceName;
 
 	friend class ApplicationManager;
 };

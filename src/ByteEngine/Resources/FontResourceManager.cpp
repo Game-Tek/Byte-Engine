@@ -5,7 +5,7 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
 #include <GTSL/Serialize.hpp>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 #include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"

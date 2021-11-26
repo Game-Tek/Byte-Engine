@@ -1,7 +1,7 @@
 #pragma once
 
 #include <unordered_map>
-#include <GTSL/Pair.h>
+#include <GTSL/Pair.hpp>
 #include <GTSL/FunctionPointer.hpp>
 
 #include "ByteEngine/Game/System.h"
@@ -273,7 +273,7 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
-	bool AcquireImage();
+	GTSL::Result<GTSL::Extent2D> AcquireImage();
 
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
@@ -401,7 +401,7 @@ private:
 	GAL::FormatDescriptor swapchainFormat;
 	GAL::ColorSpace swapchainColorSpace;
 
-	bool resize();
+	void resize();
 	
 	void beginGraphicsCommandLists(TaskInfo taskInfo);
 	void renderFlush(TaskInfo taskInfo);

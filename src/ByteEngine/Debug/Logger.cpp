@@ -7,7 +7,7 @@
 
 using namespace BE;
 
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), logFile()//, allowedLoggers(32, GetSyste())
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), trace(loggerCreateInfo.Trace), logFile()//, allowedLoggers(32, GetSyste())
 {
 	uint64 allocated_size{ 0 };
 	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
@@ -23,25 +23,27 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), l
 		}
 	}
 
-	GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
-	path += u8"/trace.txt";
-	switch (graphFile.Open(path, GTSL::File::WRITE, true)) {
-	case GTSL::File::OpenResult::OK: break;
-	case GTSL::File::OpenResult::CREATED: break;
-	case GTSL::File::OpenResult::ERROR: break;
-	default: ;
+	if (trace) {
+		GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
+		path += u8"/trace.txt";
+		switch (graphFile.Open(path, GTSL::File::WRITE, true)) {
+		case GTSL::File::OpenResult::OK: break;
+		case GTSL::File::OpenResult::CREATED: break;
+		case GTSL::File::OpenResult::ERROR: break;
+		default:;
+		}
+		graphFile.Resize(0);
+
+		{
+			GTSL::StaticString<512> string;
+
+			string += u8"{\"otherData\": {},\"traceEvents\":[";
+
+			graphFile.Write(GTSL::Range(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
+		}
 	}
 	
 	logFile.Resize(0);
-	graphFile.Resize(0);
-
-	{
-		GTSL::StaticString<512> string;
-		
-		string += u8"{\"otherData\": {},\"traceEvents\":[";
-		
-		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
-	}
 
 	GTSL::Console::SetConsoleInputModeAsUTF8();
 }
@@ -81,6 +83,8 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const ch
 
 void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
 {
+	if (!trace) { return; }
+
 	GTSL::StaticString<1024> string;
 
 	{

@@ -7,7 +7,7 @@
 
 #include <GTSL/String.hpp>
 
-#include "GTSL/Pair.h"
+#include <GTSL/Pair.hpp>
 
 #undef ERROR
 

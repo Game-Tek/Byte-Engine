@@ -3,7 +3,7 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Application/AllocatorReferences.h"
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 #include <GTSL/TTF.hpp>
 
 struct LinearBezier

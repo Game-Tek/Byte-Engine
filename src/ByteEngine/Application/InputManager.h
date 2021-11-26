@@ -9,7 +9,7 @@
 #include <GTSL/Time.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 #include "ByteEngine/Id.h"
 
@@ -412,7 +412,7 @@ protected:
 						}
 						}
 
-						if (GTSL::Math::MagnitudeGreater(newValue, GTSL::Vector2(inputSource.Threshold))) {
+						if (GTSL::Math::LengthGreater(newValue, GTSL::Vector2(inputSource.Threshold))) {
 							application_manager->AddStoredDynamicTask(DynamicTaskHandle<InputEvent<GTSL::Vector2>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
 						}
 						break;

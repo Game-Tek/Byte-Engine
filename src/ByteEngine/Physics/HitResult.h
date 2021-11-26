@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 #include <ByteEngine/Core.h>
 
 struct HitResult {

@@ -145,7 +145,7 @@ void AudioSystem::render(TaskInfo)
 			auto rightPercentage = reMap;
 			
 			{
-				auto distanceFactor = GTSL::Math::Length(emitterPosition, listenerPosition);
+				auto distanceFactor = GTSL::Math::Distance(emitterPosition, listenerPosition);
 				distanceFactor = GTSL::Math::Clamp(-(distanceFactor / 15) + 1, 0.0f, 1.0f);
 				//leftPercentange = GTSL::Math::InvertRange(leftPercentange * distanceFactor, 1.0f); rightPercentage = GTSL::Math::InvertRange(rightPercentage * distanceFactor, 1.0f);
 				//leftPercentange *= distanceFactor; rightPercentage *= distanceFactor;

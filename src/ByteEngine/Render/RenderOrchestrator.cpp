@@ -303,6 +303,36 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 
 		sampler.Initialize(renderSystem->GetRenderDevice(), 0);
 	}
+
+	{
+		AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+		AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+		AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
+
+		PassData geoRenderPass;
+		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Color" }); //result attachment
+		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Position" });
+		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Normal" });
+		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"RenderDepth" });
+		AddPass(u8"SceneRenderPass", GetCameraDataLayer(), renderSystem, geoRenderPass, initializeInfo.GameInstance, initializeInfo.GameInstance->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
+
+		RenderOrchestrator::PassData colorGrading{};
+		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
+		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
+		//auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
+
+		RenderOrchestrator::PassData rtRenderPass{};
+		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
+		rtRenderPass.ReadAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Position" });
+		rtRenderPass.ReadAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Normal" });
+		rtRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Color" }); //result attachment
+
+		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
+		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
+		//renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
+	}
 }
 
 void RenderOrchestrator::Setup(TaskInfo taskInfo) {
@@ -311,12 +341,14 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo) {
 void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	//renderSystem->SetHasRendered(renderingEnabled);
 	//if (!renderingEnabled) { return; }
-	auto renderArea = renderSystem->GetRenderExtent();
 	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
-	
-	if (renderArea == 0) { return; }
 
-	if (renderSystem->AcquireImage() || sizeHistory[currentFrame] != renderArea || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) { OnResize(renderSystem, renderArea); }
+	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
+
+	if (auto res = renderSystem->AcquireImage(); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
+		OnResize(renderSystem, res.Get());
+		renderArea = res.Get();
+	}
 
 	updateDescriptors(taskInfo);
 	
@@ -367,7 +399,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 		}
 
-		if (baseData.Offset != 0xFFFFFFFF) { //if node has an asocciated data entry, bind it
+		if (baseData.Offset != 0xFFFFFFFF) { //if node has an associated data entry, bind it
 			dataStreamHandle = renderState.AddDataStream();
 			le[level] = true;
 			auto& setLayout = setLayoutDatas[globalSetLayout()];
@@ -561,27 +593,24 @@ MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialIn
 	return { materialIndex, materialInstanceIndex };
 }
 
-void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, GTSL::RGBA clearColor)
-{
+void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
 	Attachment attachment;
 	attachment.Name = attachmentName;
 	attachment.Uses = GAL::TextureUse();
-	
-	GAL::FormatDescriptor formatDescriptor;
 
 	attachment.Uses |= GAL::TextureUses::ATTACHMENT;
 	attachment.Uses |= GAL::TextureUses::SAMPLE;
 	
 	if (type == GAL::TextureType::COLOR) {		
-		formatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, 1, 2, 3);
+		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, 1, 2, 3);
 		attachment.Uses |= GAL::TextureUses::STORAGE;
 		attachment.Uses |= GAL::TextureUses::TRANSFER_SOURCE;
+		attachment.ClearColor = GTSL::RGBA(0, 0, 0, 0);
 	} else {
-		formatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
+		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
+		attachment.ClearColor = GTSL::RGBA(1, 0, 0, 0);
 	}
 	
-	attachment.FormatDescriptor = formatDescriptor;
-	attachment.ClearColor = clearColor;
 	attachment.Layout = GAL::TextureLayout::UNDEFINED;
 	attachment.AccessType = GAL::AccessTypes::READ;
 	attachment.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
@@ -1048,7 +1077,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	
 	GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock, 32> pipelineStates;
 
-	GTSL::StaticMap<Id, uint32, 4> parameters;
+	GTSL::StaticMap<Id, GTSL::ShortString<128>, 4> parametersTypes;
+	GTSL::StaticMap<Id, GTSL::ShortString<128>, 4> parametersDefaultValues;
 
 	MemberHandle textureReferences[8];
 
@@ -1056,7 +1086,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	for (uint8 i = 0; i < shader_group_info.Parameters; ++i) {
 		members.EmplaceBack(&textureReferences[i], 1u, Id(shader_group_info.Parameters[i].Type));
-		parameters.Emplace(Id(shader_group_info.Parameters[i].Name));
+		parametersTypes.Emplace(Id(shader_group_info.Parameters[i].Name), shader_group_info.Parameters[i].Type);
+		parametersDefaultValues.Emplace(Id(shader_group_info.Parameters[i].Name), shader_group_info.Parameters[i].Value);
 	}
 
 	for (uint8 instance_index = 0; instance_index < shader_group_info.Instances; ++instance_index) {
@@ -1067,22 +1098,30 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	for (uint8 instance_index = 0; instance_index < shader_group_info.Instances; ++instance_index) {
 		auto& instance = shader_group_info.Instances[instance_index];
 		for (uint32 p = 0; p < instance.Parameters; ++p) {
-			switch (Hash(instance.Parameters[p].Type)) {
+			Id parameterValue;
+
+			//if shader instance has specialized value for param, use that, else, fallback to shader group default value for param
+			if (instance.Parameters[p].Second) {
+				parameterValue = Id(instance.Parameters[p].Second);
+			} else {
+				parameterValue = Id(parametersDefaultValues[Id(instance.Parameters[p].First)]);
+			}
+
+			switch (Hash(parametersTypes[Id(instance.Parameters[p].First)])) {
 			case GTSL::Hash(u8"TextureReference"): {
 				uint32 textureComponentIndex;
 
-				auto textureReference = texturesRefTable.TryGet(Id(instance.Parameters[p].Value));
+				auto textureReference = texturesRefTable.TryGet(parameterValue);
 
 				if (!textureReference) {
 					CreateTextureInfo createTextureInfo;
 					createTextureInfo.RenderSystem = renderSystem;
 					createTextureInfo.GameInstance = taskInfo.ApplicationManager;
 					createTextureInfo.TextureResourceManager = taskInfo.ApplicationManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
-					createTextureInfo.TextureName = instance.Parameters[p].Value;
+					createTextureInfo.TextureName = static_cast<GTSL::StringView>(parameterValue);
 					textureReference.Get() = createTexture(createTextureInfo);
 					textureComponentIndex = textureReference.Get();
-				}
-				else {
+				} else {
 					textureComponentIndex = textureReference.Get();
 				}
 
@@ -1093,14 +1132,14 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				break;
 			}
 			case GTSL::Hash(u8"ImageReference"): {
-				auto textureReference = attachments.TryGet(Id(instance.Parameters[p].Value));
+				auto textureReference = attachments.TryGet(parameterValue);
 
 				if (textureReference) {
 					uint32 textureComponentIndex = textureReference.Get().ImageIndex;
 
 					Write(renderSystem, GetBufferWriteKey(renderSystem, pipelines[shaderLoadInfo.PipelineStart + instance_index].ResourceHandle, textureReferences[p]), textureReferences[p], textureComponentIndex);
 				} else {
-					BE_LOG_WARNING(u8"Default parameter value of ", instance.Parameters[p].Value, u8" for shader group ", shader_group_info.Name, u8" parameter ", instance.Parameters[p].Name, u8" could not be found.");
+					BE_LOG_WARNING(u8"Default parameter value of ", GTSL::StringView(parameterValue), u8" for shader group ", shader_group_info.Name, u8" parameter ", instance.Parameters[p].First, u8" could not be found.");
 				}
 
 				break;

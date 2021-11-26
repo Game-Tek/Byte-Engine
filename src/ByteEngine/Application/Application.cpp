@@ -50,18 +50,19 @@ namespace BE
 
 		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
+		if (!parseConfig()) {
+			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
+			return false;
+		}
+
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = systemApplication.GetPathToExecutable();
 		DropLast(path, u8'/');
 		logger_create_info.AbsolutePathToLogDirectory = path;
+		logger_create_info.Trace = static_cast<bool>(GetOption(u8"trace"));
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
 		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
-
-		if (!parseConfig())	{
-			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
-			return false;
-		}
 
 		{
 			auto threadCount = GetOption(u8"threadCount");
@@ -171,7 +172,10 @@ namespace BE
 		auto path = GetPathToApplication();
 		path += u8"/settings.ini";
 		
-		GTSL::File settingsFile; settingsFile.Open(path, GTSL::File::READ, false);
+		GTSL::File settingsFile;
+		switch (settingsFile.Open(path, GTSL::File::READ, false)) {
+		case GTSL::File::OpenResult::ERROR: return false;
+		}
 
 		//don't try parsing if file is empty
 		if(settingsFile.GetSize() == 0) { return false; }

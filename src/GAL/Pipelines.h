@@ -161,8 +161,8 @@ namespace GAL
 	public:
 	};
 
-	template<class BUF, class STR>
-	bool CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, BUF& result, STR& stringResult) {
+	template<class ALLOCATOR>
+	std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, const ALLOCATOR& allocator) {
 		shaderc_shader_kind shaderc_stage;
 
 		switch (shaderType) {
@@ -200,12 +200,12 @@ namespace GAL
 
 		if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
 			auto errorString = shaderc_module.GetErrorMessage();
-			stringResult += GTSL::Range(reinterpret_cast<const char8_t*>(errorString.c_str()));
-			return false;
+			return { false, GTSL::String<ALLOCATOR>{ GTSL::Range(GTSL::Byte(errorString.size()), reinterpret_cast<const char8_t*>(errorString.c_str())), allocator }, GTSL::Buffer<ALLOCATOR>{ allocator } };
 		}
 
-		result.CopyBytes((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), reinterpret_cast<const GTSL::byte*>(shaderc_module.begin()));
+		GTSL::Buffer<ALLOCATOR> buffer((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), 16, allocator);
+		buffer.Write((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), reinterpret_cast<const GTSL::byte*>(shaderc_module.begin()));
 
-		return true;
+		return { true, GTSL::String<ALLOCATOR>{ allocator }, GTSL::Buffer<ALLOCATOR>{ GTSL::MoveRef(buffer) } };
 	}
 }

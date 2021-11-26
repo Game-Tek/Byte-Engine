@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/PagedVector.h>
-#include <GTSL/Math/Vectors.h>
+#include <GTSL/Math/Vectors.hpp>
 
 #include "RenderSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"

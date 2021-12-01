@@ -502,7 +502,7 @@ namespace GAL
 		vkMatrix.matrix[2][0] = matrix3X4[2][0]; vkMatrix.matrix[2][1] = matrix3X4[2][1]; vkMatrix.matrix[2][2] = matrix3X4[2][2]; vkMatrix.matrix[2][3] = matrix3X4[2][3];
 		return vkMatrix;
 	}
-	
+
 	//TO GAL
 
 	inline PresentModes ToGAL(const VkPresentModeKHR presentModes) {

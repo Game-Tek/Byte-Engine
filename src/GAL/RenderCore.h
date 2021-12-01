@@ -414,7 +414,11 @@ namespace GAL
 		GENERAL, TRIANGLES, PROCEDURAL
 	};
 
-	enum class IndexType { UINT8, UINT16, UINT32 };
+	enum class IndexType { UINT8 = 1, UINT16 = 2, UINT32 = 4 };
+
+	inline uint32 IndexSize(const IndexType indexType) {
+		return static_cast<uint32>(indexType);
+	}
 
 	struct RenderPassTargetDescription {
 		//AccessType AccessType;

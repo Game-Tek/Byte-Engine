@@ -21,9 +21,9 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem*
 	return StaticMeshHandle(index);
 }
 
-void StaticMeshRenderGroup::Init(StaticMeshRenderManager* s) {
-	OnAddMesh = s->OnAddMesh;
-	OnUpdateMesh = s->OnUpdateMesh;
+void StaticMeshRenderGroup::Init(WorldRendererPipeline* s) {
+	OnAddMesh = s->GetOnAddMeshHandle();
+	OnUpdateMesh = s->GetOnMeshUpdateHandle();
 }
 
 GTSL::ShortString<64> ToString(const GAL::ShaderDataType type)

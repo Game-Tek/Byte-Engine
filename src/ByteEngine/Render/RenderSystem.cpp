@@ -15,22 +15,6 @@ class RenderStaticMeshCollection;
 
 PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
-void RenderSystem::CreateRayTracedMesh(const MeshHandle meshHandle)
-{
-	auto& mesh = meshes[meshHandle()];
-	
-	mesh.DerivedTypeIndex = rayTracingMeshes.Emplace();
-
-	BE_ASSERT(mesh.DerivedTypeIndex < MAX_INSTANCES_COUNT);
-}
-
-RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name)
-{
-	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
-
-	return MeshHandle(meshIndex);
-}
-
 //RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
 //{
 //	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
@@ -43,114 +27,20 @@ RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name)
 //	return meshHandle;
 //}
 
-void RenderSystem::UpdateRayTraceMesh(const MeshHandle meshHandle)
-{
-	auto& mesh = meshes[meshHandle()];
-	auto& rayTracingMesh = rayTracingMeshes[mesh.DerivedTypeIndex];
-	auto& buffer = buffers[mesh.Buffer()];
-
-	GAL::DeviceAddress meshDataAddress;
-
-	meshDataAddress = GetBufferDeviceAddress(mesh.Buffer);
-	
-	uint32 scratchSize;
-	
-	{
-		GAL::GeometryTriangles geometryTriangles;
-		geometryTriangles.IndexType = GAL::SizeToIndexType(mesh.IndexSize);
-		geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
-		geometryTriangles.MaxVertices = mesh.VertexCount;
-		geometryTriangles.VertexData = meshDataAddress;
-		geometryTriangles.IndexData = meshDataAddress + GTSL::Math::RoundUpByPowerOf2(mesh.VertexCount * mesh.VertexSize, GetBufferSubDataAlignment());
-		geometryTriangles.VertexStride = mesh.VertexSize;
-		geometryTriangles.FirstVertex = 0;
-
-		GAL::Geometry geometry(geometryTriangles, GAL::GeometryFlags::OPAQUE, mesh.IndicesCount / 3, 0);
-
-		AllocateAccelerationStructureMemory(&rayTracingMesh.AccelerationStructure, &rayTracingMesh.StructureBuffer,
-			GTSL::Range<const GAL::Geometry*>(1, &geometry), &rayTracingMesh.StructureBufferAllocation, &scratchSize);
-		AccelerationStructureBuildData buildData;
-		buildData.ScratchBuildSize = scratchSize;
-		buildData.Destination = rayTracingMesh.AccelerationStructure;
-
-		addRayTracingInstance(geometry, buildData);
-	}
-
-	for (uint8 f = 0; f < pipelinedFrames; ++f) {
-		GAL::WriteInstance(rayTracingMesh.AccelerationStructure, mesh.DerivedTypeIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), instancesAllocation[f].Data, mesh.DerivedTypeIndex, accelerationStructureBuildDevice);
-		GAL::WriteInstanceBindingTableRecordOffset(0, instancesAllocation[f].Data, mesh.DerivedTypeIndex);
-	}
-}
-
-void RenderSystem::UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout)
-{
-	auto& mesh = meshes[meshHandle()];
-
-	mesh.VertexSize = vertexSize; mesh.VertexCount = vertexCount; mesh.IndexSize = indexSize; mesh.IndicesCount = indexCount;
-
-	auto verticesSize = vertexCount * vertexSize; auto indecesSize = indexCount * indexSize;
-	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
-
-	mesh.VertexDescriptor.PushBack(vertexLayout);
-	
-	mesh.Buffer = CreateBuffer(meshSize, GAL::BufferUses::VERTEX | GAL::BufferUses::INDEX, true, false);
-}
-
-void RenderSystem::SignalMeshDataUpdate(MeshHandle meshHandle)
-{
-	auto& mesh = meshes[meshHandle()];
-
-	auto verticesSize = mesh.VertexSize * mesh.VertexCount; auto indecesSize = mesh.IndexSize * mesh.IndicesCount;
-	auto meshSize = GTSL::Math::RoundUpByPowerOf2(verticesSize, GetBufferSubDataAlignment()) + indecesSize;
-
-	++buffers[mesh.Buffer()].references;
-	
-	BufferCopyData bufferCopyData;
-	bufferCopyData.Buffer = mesh.Buffer;
-	bufferCopyData.Offset = 0;
-	AddBufferUpdate(bufferCopyData);
-}
-
-void RenderSystem::RenderMesh(MeshHandle handle, const uint32 instanceCount)
-{
-	auto& mesh = meshes[handle()];
-	auto& buffer = buffers[mesh.Buffer()];
-
-	//todo: is multi
-	
-	graphicsCommandBuffers[GetCurrentFrame()].BindVertexBuffer(GetRenderDevice(), buffer.Buffer[0], mesh.VertexSize * mesh.VertexCount, 0, mesh.VertexSize);
-	graphicsCommandBuffers[GetCurrentFrame()].BindIndexBuffer(GetRenderDevice(), buffer.Buffer[0], mesh.IndexSize * mesh.IndicesCount, GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()), GAL::SizeToIndexType(mesh.IndexSize));
-	graphicsCommandBuffers[GetCurrentFrame()].DrawIndexed(GetRenderDevice(), mesh.IndicesCount, instanceCount);
-}
-
-void RenderSystem::SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix3x4& matrix)
-{
-	const auto& mesh = meshes[meshHandle()];
-	GAL::WriteInstanceMatrix(matrix, instancesAllocation[GetCurrentFrame()].Data, mesh.DerivedTypeIndex);
-}
-
-void RenderSystem::SetMeshOffset(const MeshHandle meshHandle, const uint32 offset)
-{
-	const auto& mesh = meshes[meshHandle()];
-	GAL::WriteInstanceBindingTableRecordOffset(offset, instancesAllocation[GetCurrentFrame()].Data, mesh.DerivedTypeIndex);
-}
-
 RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderSystem"),
 	bufferCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
-	textureCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } }, meshes(16, GetPersistentAllocator()),
-	rayTracingMeshes(GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
+	textureCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
+	bottomLevelAccelerationStructures(GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
 	buildDatas{ GetPersistentAllocator(), GetPersistentAllocator(), GetPersistentAllocator() }, geometries{ GetPersistentAllocator(), GetPersistentAllocator(), GetPersistentAllocator() }, pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),
 	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator())
 {
 	{
-
-		const GTSL::StaticVector<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
 		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
 		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::waitForFences", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::waitForFences>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
-		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::frameStart", &RenderSystem::frameStart, DependencyBlock(), u8"FrameStart", u8"RenderStart");
-		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::beginCommandLists", &RenderSystem::beginGraphicsCommandLists, DependencyBlock(), u8"RenderEndSetup", u8"RenderDo");
-		initializeInfo.GameInstance->AddTask(this, u8"RenderSystem::endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"RenderFinished", u8"RenderEnd");
-		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"RenderSystem::onResize", {}, & RenderSystem::onResize);
+		initializeInfo.GameInstance->AddTask(this, u8"frameStart", &RenderSystem::frameStart, DependencyBlock(), u8"FrameStart", u8"RenderStart");
+		initializeInfo.GameInstance->AddTask(this, u8"beginCommandLists", &RenderSystem::beginGraphicsCommandLists, DependencyBlock(), u8"RenderEndSetup", u8"RenderDo");
+		initializeInfo.GameInstance->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"RenderFinished", u8"RenderEnd");
+		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onResize", {}, & RenderSystem::onResize);
 	}
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
@@ -222,16 +112,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 		if (rayTracing) {
-			GAL::Geometry geometry(GAL::GeometryInstances(), GAL::GeometryFlag(), MAX_INSTANCES_COUNT, 0);
-
-			for (uint8 f = 0; f < pipelinedFrames; ++f) {
-				AllocateAccelerationStructureMemory(&topLevelAccelerationStructure[f], &topLevelAccelerationStructureBuffer[f],
-					GTSL::Range(1, &geometry), &topLevelAccelerationStructureAllocation[f],
-					&topLevelStructureScratchSize);
-
-				AllocateScratchBufferMemory(MAX_INSTANCES_COUNT * GetRenderDevice()->GetAccelerationStructureInstanceSize(), GAL::BufferUses::ADDRESS | GAL::BufferUses::BUILD_INPUT_READ, &instancesBuffer[f], &instancesAllocation[f]);
-				AllocateLocalBufferMemory(GTSL::Byte(GTSL::MegaByte(1)), GAL::BufferUses::ADDRESS | GAL::BufferUses::BUILD_INPUT_READ, &accelerationStructureScratchBuffer[f], &scratchBufferAllocation[f]);
-			}
+			CreateBuffer(GTSL::Byte(GTSL::MegaByte(1)), GAL::BufferUses::BUILD_INPUT_READ, true, false);
 
 			shaderGroupHandleAlignment = rayTracingCapabilities.ShaderGroupHandleAlignment;
 			shaderGroupHandleSize = rayTracingCapabilities.ShaderGroupHandleSize;
@@ -369,15 +250,14 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 	
 	commandBuffer.BeginRecording(GetRenderDevice());
 
-	if (BE::Application::Get()->GetOption(u8"rayTracing")) {
-		GAL::Geometry geometry(GAL::GeometryInstances{ instancesBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice()) }, GAL::GeometryFlag(), rayTracingInstancesCount, 0);
-		//TODO: WHAT HAPPENS IF MESH IS REMOVED FROM THE MIDDLE OF THE COLLECTION, maybe: keep index of highest element in the colection		
+	for (auto& e : topLevelAccelerationStructures) {
+		GAL::Geometry geometry(GAL::GeometryInstances{ GetBufferDeviceAddress(e.InstancesBuffer) }, GAL::GeometryFlag(), e.ScratchSize, 0); //TODO
 		geometries[GetCurrentFrame()].EmplaceBack(geometry);
 
 		AccelerationStructureBuildData buildData;
 		buildData.BuildFlags = 0;
-		buildData.Destination = topLevelAccelerationStructure[GetCurrentFrame()];
-		buildData.ScratchBuildSize = topLevelStructureScratchSize;
+		buildData.Destination = e.AccelerationStructures[GetCurrentFrame()];
+		buildData.ScratchBuildSize = e.ScratchSize;
 		buildDatas[GetCurrentFrame()].EmplaceBack(buildData);
 
 		buildAccelerationStructures(this, commandBuffer);
@@ -387,7 +267,7 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 		auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 
 		for (auto& e : bufferCopyData) {
-			auto& buffer = buffers[e.Buffer()];
+			auto& buffer = buffers[e.BufferHandle()];
 
 			if (buffer.isMulti) {
 				__debugbreak();
@@ -565,7 +445,6 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_
 		1, &textureComponent.Allocation);
 	
 	textureComponent.TextureView.Initialize(GetRenderDevice(), name, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
-	textureComponent.TextureSampler.Initialize(GetRenderDevice(), 0);
 	
 	auto textureIndex = textures.Emplace(textureComponent);
 
@@ -826,9 +705,6 @@ void RenderSystem::deallocateApiMemory(void* data, void* allocation) {
 
 void RenderSystem::initializeFrameResources(const uint8 frame_index) {	
 	if constexpr (_DEBUG) { GTSL::StaticString<32> name(u8"Transfer semaphore. Frame: "); name += frame_index; }
-	//transferDoneSemaphores[i].Initialize(GetRenderDevice());
-
-	//processedTextureCopies.EmplaceBack(0);
 	processedBufferCopies[frame_index] = 0;
 
 	if constexpr (_DEBUG) {
@@ -846,25 +722,12 @@ void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 	}
 
 	graphicsFences[frame_index].Initialize(GetRenderDevice(), true);
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<32> name(u8"TrasferFence #"); name += i;
-	}
-	//transferFences[i].Initialize(GetRenderDevice(), true);
-
-
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
-		//commandPoolCreateInfo.Name = commandPoolName;
-	}
 
 	graphicsCommandBuffers[frame_index].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
 
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<64> commandPoolName(u8"Transfer command pool #"); commandPoolName += i;
-		//commandPoolCreateInfo.Name = commandPoolName;
+	for(auto& e : topLevelAccelerationStructures) {
+		e.AccelerationStructures[frame_index];
 	}
-
-	//transferCommandBuffers[i].Initialize(GetRenderDevice(), transferQueue.GetQueueKey())
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {
@@ -873,5 +736,4 @@ void RenderSystem::freeFrameResources(const uint8 frameIndex) {
 	imageAvailableSemaphore[frameIndex].Destroy(&renderDevice);
 	renderFinishedSemaphore[frameIndex].Destroy(&renderDevice);
 	graphicsFences[frameIndex].Destroy(&renderDevice);
-	//for(auto& e : transferFences) { e.Destroy(&renderDevice); }
 }

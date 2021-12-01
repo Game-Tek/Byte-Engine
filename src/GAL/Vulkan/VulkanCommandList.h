@@ -110,7 +110,7 @@ namespace GAL
 			renderDevice->VkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline.GetVkPipeline());
 		}
 
-		void BindIndexBuffer(const VulkanRenderDevice* renderDevice, const VulkanBuffer buffer, [[maybe_unused]] GTSL::uint32 size, const GTSL::uint32 offset, const IndexType indexType) const {
+		void BindIndexBuffer(const VulkanRenderDevice* renderDevice, const VulkanBuffer buffer, GTSL::uint32 offset, [[maybe_unused]] const GTSL::uint32 indexCount, const IndexType indexType) const {
 			renderDevice->VkCmdBindIndexBuffer(commandBuffer, buffer.GetVkBuffer(), offset, ToVulkan(indexType));
 		}
 

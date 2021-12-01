@@ -24,8 +24,7 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		//onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
 		//onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 
-		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat))
-		{
+		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat)) {
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
@@ -51,22 +50,19 @@ AudioSystem::~AudioSystem() {
 	audioDevice.Destroy();
 }
 
-AudioListenerHandle AudioSystem::CreateAudioListener()
-{
+AudioListenerHandle AudioSystem::CreateAudioListener() {
 	audioListenersLocation.EmplaceBack(); audioListenersOrientation.EmplaceBack();
 	return AudioListenerHandle(audioListeners.EmplaceBack());
 }
 
-AudioEmitterHandle AudioSystem::CreateAudioEmitter()
-{
+AudioEmitterHandle AudioSystem::CreateAudioEmitter() {
 	auto index = audioEmittersSettings.GetLength();
 	audioEmittersSettings.EmplaceBack();
 	audioEmittersLocation.EmplaceBack();
 	return AudioEmitterHandle(index);
 }
 
-void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay)
-{
+void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay) {
 	lastRequestedAudios.EmplaceBack(audioToPlay);
 	audioEmittersSettings[audioEmitter()].Name = audioToPlay;
 }
@@ -94,8 +90,7 @@ void AudioSystem::requestAudioStreams() {
 	//lastRequestedAudios.Resize(0);
 }
 
-void AudioSystem::render(TaskInfo)
-{
+void AudioSystem::render(TaskInfo) {
 	requestAudioStreams();
 
 	if(!activeAudioListenerHandle) { return; }

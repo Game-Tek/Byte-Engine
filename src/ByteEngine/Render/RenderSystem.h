@@ -24,6 +24,7 @@ class RenderSystem : public System
 {
 public:
 	MAKE_HANDLE(uint32, Buffer)
+	MAKE_HANDLE(uint32, Texture);
 	
 	explicit RenderSystem(const InitializeInfo& initializeInfo);
 	~RenderSystem();
@@ -32,8 +33,6 @@ public:
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
-
-	MAKE_HANDLE(uint32, Texture);
 	
 	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
@@ -102,18 +101,16 @@ public:
 	
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
+	GPUBuffer GetBuffer(const RenderSystem::BufferHandle buffer_handle) const {
+		return buffers[buffer_handle()].Buffer[0];
+		//TODO: is multi
+	}
 	//CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
-
-	struct BufferCopyData {
-		BufferHandle Buffer;
-		/* Offset from start of buffer.
-		 */
-		uint32 Offset = 0;
-	};
-	void AddBufferUpdate(const BufferCopyData& bufferCopyData)
+	
+	void AddBufferUpdate(const BufferHandle buffer_handle, uint32 offset = 0)
 	{
 		if(needsStagingBuffer)
-			bufferCopyDatas[currentFrameIndex].EmplaceBack(bufferCopyData);
+			bufferCopyDatas[currentFrameIndex].EmplaceBack(buffer_handle, offset);
 	}
 	
 	struct TextureCopyData {
@@ -139,10 +136,6 @@ public:
 
 	[[nodiscard]] const Texture* GetSwapchainTexture() const { return &swapchainTextures[imageIndex]; }
 
-	MAKE_HANDLE(uint32, Mesh);
-
-	GTSL::Range<const GAL::ShaderDataType*> GetMeshVertexLayout(const MeshHandle meshHandle) const { return meshes[meshHandle()].VertexDescriptor; }
-
 	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
 		if (needsStagingBuffer) {
 			if (buffers[bufferHandle()].isMulti) {
@@ -150,9 +143,12 @@ public:
 			} else {
 				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[0].Data);
 			}
-		}
-		else {
-			return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
+		} else {
+			if (buffers[bufferHandle()].isMulti) {
+				return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
+			} else {
+				return static_cast<byte*>(buffers[bufferHandle()].Allocation[0].Data);
+			}
 		}
 	}
 
@@ -163,69 +159,34 @@ public:
 			} else {
 				return buffers[bufferHandle()].Staging[0].GetAddress(GetRenderDevice());
 			}
+		} else {
+			if (buffers[bufferHandle()].isMulti) {
+				return buffers[bufferHandle()].Buffer[GetCurrentFrame()].GetAddress(GetRenderDevice());
+			} else {
+				return buffers[bufferHandle()].Buffer[0].GetAddress(GetRenderDevice());
+			}
 		}
-		else {
-			//return buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data;
-		}
 	}
-	
-	void AddVolume(const GTSL::Matrix3x4& position, const GTSL::Vector3 size) {
-		auto volume = CreateBuffer(sizeof(float32) * 6, GAL::BufferUses::BUILD_INPUT_READ, true, false);
-		auto bufferDeviceAddress = GetBufferDeviceAddress(volume);
-		auto bufferPointer = GetBufferPointer(volume);
-
-		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
-		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
-
-		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(bufferDeviceAddress, sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
-	}
-	
-	void CreateRayTracedMesh(const MeshHandle meshHandle);
-	
-	MeshHandle CreateMesh(Id name);
-	//MeshHandle CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle);
-
-	void UpdateRayTraceMesh(const MeshHandle meshHandle);
-	void UpdateMesh(MeshHandle meshHandle, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, GTSL::Range<const GAL::ShaderDataType*> vertexLayout);
-	void SignalMeshDataUpdate(MeshHandle meshHandle);
-	void SetWillWriteMesh(MeshHandle meshHandle, bool willUpdate) {
-		SetBufferWillWriteFromHost(meshes[meshHandle()].Buffer, willUpdate);
-	}
-	
-	void RenderMesh(MeshHandle handle, const uint32 instanceCount = 1);
 
 	void SignalBufferWrite(const BufferHandle buffer_handle) {
 		auto& buffer = buffers[buffer_handle()];
-		
+
+		++buffer.references;
+
 		if(buffer.isMulti) {
 			buffer.writeMask[currentFrameIndex] = true;
 		}
+
+		AddBufferUpdate(buffer_handle);
 	}
 	
 	void DestroyBuffer(const BufferHandle handle) {
 		--buffers[handle()].references;
 	}
-
-	void DestroyMesh(MeshHandle meshHandle) {
-		DestroyBuffer(meshes[meshHandle()].Buffer);
-	}
-	
-	byte* GetMeshPointer(MeshHandle sharedMesh) const {
-		const auto& mesh = meshes[sharedMesh()];
-		return GetBufferPointer(mesh.Buffer);
-	}
-
-	uint32 GetMeshSize(MeshHandle meshHandle) const {
-		const auto& mesh = meshes[meshHandle()];
-		return GTSL::Math::RoundUpByPowerOf2(mesh.VertexSize * mesh.VertexCount, GetBufferSubDataAlignment()) + mesh.IndexSize * mesh.IndicesCount;
-	}
 	
 	CommandList* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
 	const CommandList* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
-
-	void SetMeshMatrix(const MeshHandle meshHandle, const GTSL::Matrix3x4& matrix);
-	void SetMeshOffset(const MeshHandle meshHandle, const uint32 offset);
 	
 	void onResize(TaskInfo, GTSL::Extent2D extent) { renderArea = extent; }
 
@@ -233,14 +194,8 @@ public:
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
 	uint32 GetShaderGroupHandleAlignment() const { return shaderGroupHandleAlignment; }
 
-	AccelerationStructure GetTopLevelAccelerationStructure(uint8 frame) const { return topLevelAccelerationStructure[frame]; }
-	
-	GAL::DeviceAddress GetVertexBufferAddress(MeshHandle meshHandle) const {
-		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice());
-	}
-	
-	GAL::DeviceAddress GetIndexBufferAddress(MeshHandle meshHandle) const {
-		return buffers[meshes[meshHandle()].Buffer()].Buffer[0].GetAddress(GetRenderDevice()) + GTSL::Math::RoundUpByPowerOf2(meshes[meshHandle()].VertexSize * meshes[meshHandle()].VertexCount, GetBufferSubDataAlignment());
+	AccelerationStructure GetTopLevelAccelerationStructure(uint32 topLevelAccelerationStructureIndex, uint8 frame) const {
+		return topLevelAccelerationStructures[topLevelAccelerationStructureIndex].AccelerationStructures[frame];
 	}
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
@@ -268,7 +223,6 @@ public:
 
 	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].Texture; }
 	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
-	TextureSampler GetTextureSampler(const TextureHandle handle) const { return textures[handle()].TextureSampler; }
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
@@ -277,6 +231,97 @@ public:
 
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
+
+	uint32 CreateTopLevelAccelerationStructure(uint32 estimatedMaxInstances) {
+		uint32 tlasi = topLevelAccelerationStructures.GetLength();
+		auto& t = topLevelAccelerationStructures.EmplaceBack();
+
+		t.InstanceCapacity = estimatedMaxInstances;
+
+		GAL::Geometry geometry(GAL::GeometryInstances(), GAL::GeometryFlag(), estimatedMaxInstances, 0);
+
+		for (uint8 f = 0; f < pipelinedFrames; ++f) {
+			AllocateAccelerationStructureMemory(&t.AccelerationStructures[f], &t.AccelerationStructureBuffer[f],
+				GTSL::Range(1, &geometry), &t.AccelerationStructureAllocation[f], &t.ScratchSize);
+
+			t.AccelerationStructures[f].Initialize(&renderDevice, GTSL::Range(1, &geometry), t.AccelerationStructureBuffer[f], t.ScratchSize, 0);
+		}
+
+		t.InstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, true);
+
+		return tlasi;
+	}
+
+	uint32 CreateBottomLevelAccelerationStructure(uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType,  BufferHandle sourceBuffer, uint32 offset = 0) {
+		uint32 blasi = bottomLevelAccelerationStructures.Emplace();
+
+		auto& blas = bottomLevelAccelerationStructures[blasi];
+
+		GAL::DeviceAddress meshDataAddress;
+
+		meshDataAddress = GetBufferDeviceAddress(sourceBuffer) + offset;
+
+		uint32 scratchSize;
+
+		{
+			GAL::GeometryTriangles geometryTriangles;
+			geometryTriangles.IndexType = indexType;
+			geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
+			geometryTriangles.MaxVertices = vertexCount;
+			geometryTriangles.VertexData = meshDataAddress;
+			geometryTriangles.IndexData = meshDataAddress + GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, GetBufferSubDataAlignment());
+			geometryTriangles.VertexStride = vertexSize;
+			geometryTriangles.FirstVertex = 0;
+
+			GAL::Geometry geometry(geometryTriangles, GAL::GeometryFlags::OPAQUE, indexCount / 3, 0);
+
+			AllocateAccelerationStructureMemory(&blas.AccelerationStructure, &blas.AccelerationStructureBuffer,
+				GTSL::Range(1, &geometry), &blas.AccelerationStructureAllocation, &scratchSize);
+
+			AccelerationStructureBuildData buildData;
+			buildData.ScratchBuildSize = scratchSize;
+			buildData.Destination = blas.AccelerationStructure;
+			addRayTracingInstance(geometry, buildData);
+		}
+
+		return blasi;
+	}
+
+	uint32 CreateAABB(const GTSL::Matrix4& position, const GTSL::Vector3 size) {
+		auto volume = CreateBuffer(sizeof(float32) * 6, GAL::BufferUses::BUILD_INPUT_READ, true, false);
+		auto bufferDeviceAddress = GetBufferDeviceAddress(volume);
+		auto bufferPointer = GetBufferPointer(volume);
+
+		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
+		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
+
+		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(bufferDeviceAddress, sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
+		return 0;
+	}
+
+	uint32 AddBLASToTLAS(const uint32 tlasi, const uint32 blasi) {
+		auto& tlas = topLevelAccelerationStructures[tlasi];
+		auto& blas = bottomLevelAccelerationStructures[blasi];
+
+		uint32 instanceIndex = 0;
+
+		if(tlas.freeSlots) {
+			instanceIndex = tlas.freeSlots.back();
+		} else {
+			instanceIndex = tlas.Instances++;
+		}
+
+		GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), 0, accelerationStructureBuildDevice);
+		return instanceIndex;
+	}
+
+	void SetInstancePosition(uint32 instanceIndex, const GTSL::Matrix4& matrix4) {
+		GAL::WriteInstanceMatrix(GTSL::Matrix3x4(matrix4), GetBufferPointer(topLevelAccelerationStructures.back().InstancesBuffer), instanceIndex);
+	}
+
+	void SetInstanceBindingTableRecordOffset(uint32 instanceIndex, const uint32 offset) {
+		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(topLevelAccelerationStructures.back().InstancesBuffer), instanceIndex);
+	}
 
 private:
 	GTSL::Window* window;
@@ -296,45 +341,26 @@ private:
 	
 	GTSL::Extent2D renderArea, lastRenderArea;
 
+	struct BufferCopyData
+	{
+		BufferHandle BufferHandle; uint32 Offset = 0;
+	};
 	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas[MAX_CONCURRENT_FRAMES];
 	uint32 processedBufferCopies[MAX_CONCURRENT_FRAMES];
 	GTSL::Vector<TextureCopyData, BE::PersistentAllocatorReference> textureCopyDatas[MAX_CONCURRENT_FRAMES];
-	//GTSL::StaticVector<uint32, MAX_CONCURRENT_FRAMES> processedTextureCopies;
 	
 	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
 	GPUSemaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
-	//GPUSemaphore transferDoneSemaphores[MAX_CONCURRENT_FRAMES];
 	GPUSemaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
 	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
-	//Fence transferFences[MAX_CONCURRENT_FRAMES];
 	
 	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
-	//CommandList transferCommandBuffers[MAX_CONCURRENT_FRAMES];	
 	
 	GAL::VulkanQueue graphicsQueue;
-	//GAL::VulkanQueue transferQueue;
-	GAL::Device accelerationStructureBuildDevice;
 	bool breakOnError = true;
 	DynamicTaskHandle<GTSL::Extent2D> resizeHandle;
-
-	struct Mesh {
-		BufferHandle Buffer;
-		uint32 IndicesCount, VertexCount;
-		uint32 DerivedTypeIndex;
-		uint8 IndexSize, VertexSize;
-		GTSL::StaticVector<GAL::ShaderDataType, 20> VertexDescriptor;
-	};
-	
-	struct RayTracingMesh {
-		GPUBuffer StructureBuffer;
-		RenderAllocation StructureBufferAllocation;
-		AccelerationStructure AccelerationStructure;
-	};
-	
-	GTSL::FixedVector<Mesh, BE::PersistentAllocatorReference> meshes;
-	GTSL::FixedVector<RayTracingMesh, BE::PersistentAllocatorReference> rayTracingMeshes;
 
 	struct BufferData {
 		GPUBuffer Buffer[MAX_CONCURRENT_FRAMES];
@@ -361,30 +387,35 @@ private:
 	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
 	GPUBuffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
 
-	AccelerationStructure topLevelAccelerationStructure[MAX_CONCURRENT_FRAMES];
-	RenderAllocation topLevelAccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
-	GPUBuffer topLevelAccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
+	struct TopLevelAccelerationStructure {
+		AccelerationStructure AccelerationStructures[MAX_CONCURRENT_FRAMES];
+		RenderAllocation AccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
+		GPUBuffer AccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
+		uint32 ScratchSize = 0, InstanceCapacity = 0;
+		BufferHandle InstancesBuffer;
+		GTSL::StaticVector<uint32, 8> freeSlots;
+		uint32 Instances = 0;
+	};
+	GTSL::StaticVector<TopLevelAccelerationStructure, 8> topLevelAccelerationStructures;
 
-	/**
-	* \brief Keeps track of created instances. Mesh / Material combo.
-	*/
-	uint32 rayTracingInstancesCount = 0;
+	struct BottomLevelAccelerationStructure {
+		GPUBuffer AccelerationStructureBuffer;
+		RenderAllocation AccelerationStructureAllocation;
+		AccelerationStructure AccelerationStructure;
+	};
+	GTSL::FixedVector<BottomLevelAccelerationStructure, BE::PersistentAllocatorReference> bottomLevelAccelerationStructures;
+
+
+	GAL::Device accelerationStructureBuildDevice;
 
 	void addRayTracingInstance(GAL::Geometry geometry, AccelerationStructureBuildData buildData) {
-		++rayTracingInstancesCount;
+		//++rayTracingInstancesCount;
 
 		for (uint8 f = 0; f < pipelinedFrames; ++f) {
 			geometries[f].EmplaceBack(geometry);
 			buildDatas[f].EmplaceBack(buildData);
 		}
 	}
-	
-	static constexpr uint8 MAX_INSTANCES_COUNT = 16;
-
-	uint32 topLevelStructureScratchSize;
-	
-	RenderAllocation instancesAllocation[MAX_CONCURRENT_FRAMES];
-	GPUBuffer instancesBuffer[MAX_CONCURRENT_FRAMES];
 	
 	/**
 	 * \brief Pointer to the implementation for acceleration structures build.
@@ -426,11 +457,9 @@ private:
 	uint32 shaderGroupHandleAlignment = 0, shaderGroupBaseAlignment = 0, shaderGroupHandleSize = 0;
 	uint32 scratchBufferOffsetAlignment = 0;
 
-	struct TextureComponent
-	{
+	struct TextureComponent {
 		Texture Texture;
 		TextureView TextureView;
-		TextureSampler TextureSampler;
 		RenderAllocation Allocation, ScratchAllocation;
 
 		GAL::FormatDescriptor FormatDescriptor;

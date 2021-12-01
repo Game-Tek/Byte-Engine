@@ -187,7 +187,7 @@ namespace GAL
 		shaderc_compile_options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
 		shaderc_compile_options.SetGenerateDebugInfo();
 
-		shaderc_source_language shaderc_source_language;
+		shaderc_source_language shaderc_source_language = shaderc_source_language_glsl;
 		switch (shaderLanguage) {
 		case ShaderLanguage::GLSL: shaderc_source_language = shaderc_source_language_glsl; break;
 		case ShaderLanguage::HLSL: shaderc_source_language = shaderc_source_language_hlsl; break;
@@ -196,7 +196,9 @@ namespace GAL
 
 		shaderc_compile_options.SetSourceLanguage(shaderc_source_language);
 		shaderc_compile_options.SetOptimizationLevel(shaderc_optimization_level_performance);
-		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes(), shaderc_stage, reinterpret_cast<const char*>(shaderName.GetData()), shaderc_compile_options);
+
+		GTSL::String<ALLOCATOR> shaderNameNullTerminator(shaderName, allocator); //String guarantees null terminator, while StringView doesn't and shaderc needs it
+		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes(), shaderc_stage, reinterpret_cast<const char*>(shaderNameNullTerminator.c_str()), shaderc_compile_options);
 
 		if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
 			auto errorString = shaderc_module.GetErrorMessage();

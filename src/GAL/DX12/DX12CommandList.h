@@ -138,11 +138,11 @@ namespace GAL
 			commandList->SetPipelineState(pipeline.GetID3D12PipelineState());
 		}
 
-		void BindIndexBuffer(const DX12RenderDevice* renderDevice, DX12Buffer buffer, const GTSL::uint32 size, const GTSL::uint32 offset, IndexType indexType) const {
+		void BindIndexBuffer(const DX12RenderDevice* renderDevice, DX12Buffer buffer, const GTSL::uint32 offset, const GTSL::uint32 indexCount, IndexType indexType) const {
 			D3D12_INDEX_BUFFER_VIEW indexBufferView;
 			indexBufferView.Format = ToDX12(indexType);
 			indexBufferView.BufferLocation = buffer.GetID3D12Resource()->GetGPUVirtualAddress() + offset;
-			indexBufferView.SizeInBytes = size;
+			indexBufferView.SizeInBytes = GAL::IndexSize(indexType);
 			commandList->IASetIndexBuffer(&indexBufferView);
 		}
 

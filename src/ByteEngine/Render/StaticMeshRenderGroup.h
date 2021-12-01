@@ -8,7 +8,7 @@
 
 #include "ByteEngine/Handle.hpp"
 
-class StaticMeshRenderManager;
+class WorldRendererPipeline;
 MAKE_HANDLE(uint32, StaticMesh)
 
 class StaticMeshRenderGroup final : public ::System
@@ -33,7 +33,7 @@ public:
 		application_manager->AddStoredDynamicTask(OnUpdateMesh, GTSL::MoveRef(staticMeshHandle));
 	}
 
-	void Init(StaticMeshRenderManager*);
+	void Init(WorldRendererPipeline*);
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
 	DynamicTaskHandle<Handle<unsigned, StaticMesh_tag>, Id, MaterialInstanceHandle> OnAddMesh;

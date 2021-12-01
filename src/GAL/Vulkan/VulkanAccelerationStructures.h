@@ -215,12 +215,14 @@ namespace GAL {
 		                                               buildRangesRangePerAccelerationStructure.begin());
 	}
 
-	inline void WriteInstance(const VulkanAccelerationStructure accelerationStructure, GTSL::uint32 instanceIndex, GeometryFlag geometryFlags, const VulkanRenderDevice* renderDevice, void* data, GTSL::uint32 index, Device device) {
-		auto& inst = *(static_cast<VkAccelerationStructureInstanceKHR*>(data) + index);
+	inline void WriteInstance(const VulkanAccelerationStructure accelerationStructure, GTSL::uint32 instanceIndex, GeometryFlag geometryFlags, const VulkanRenderDevice* renderDevice, void* data, GTSL::uint32 instanceCustomIndex, Device device) {
+		auto& inst = *(static_cast<VkAccelerationStructureInstanceKHR*>(data) + instanceIndex);
 		inst.flags = ToVkGeometryInstanceFlagsKHR(geometryFlags);
 		inst.accelerationStructureReference = device == Device::CPU ? accelerationStructure.GetHandle() : static_cast<GTSL::uint64>(accelerationStructure.GetAddress(renderDevice));
-		inst.instanceCustomIndex = instanceIndex;
+		inst.instanceCustomIndex = instanceCustomIndex;
 		inst.mask = 0xFF;
+		inst.instanceShaderBindingTableRecordOffset = 0;
+		inst.transform = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	}
 
 	inline void WriteInstanceMatrix(const GTSL::Matrix3x4& matrix3X4, void* data, GTSL::uint32 index) {

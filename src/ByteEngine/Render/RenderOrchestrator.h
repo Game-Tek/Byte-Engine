@@ -55,25 +55,9 @@ public:
  * \brief Renders a frame according to a specfied model/pipeline.
  * E.J: Forward Rendering, Deferred Rendering, Ray Tracing, etc.
  */
-class RenderPipeline {
-};
-
-class WorldRendererPipeline : RenderPipeline {
+class RenderPipeline : public System {
 public:
-	auto GetOnAddMeshHandle() const { return OnAddMesh; }
-
-private:
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddMesh;
-	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
-
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddInfiniteLight;
-
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddBackdrop;
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddParticleSystem;
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddVolume;
-	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddSkinnedMesh;
+	RenderPipeline(const InitializeInfo& initialize_info, const char8_t* name) : System(initialize_info, name) {}
 };
 
 class RenderOrchestrator : public System {
@@ -309,14 +293,18 @@ public:
 		return publicNodeHandle;
 	}
 
-	NodeHandle AddMesh(const RenderSystem::MeshHandle handle, const NodeHandle parentNodeHandle) {
-		auto publicNodeHandle = addNode(handle(), parentNodeHandle, NodeType::MESHES);
-		auto internalNodeHandle = addInternalNode<MeshData>(handle(), publicNodeHandle, parentNodeHandle, InternalNodeType::MESH);
+	uint32 meshCount = 0;
+
+	NodeHandle AddMesh(const NodeHandle parentNodeHandle) {
+		auto publicNodeHandle = addNode(meshCount, parentNodeHandle, NodeType::MESHES);
+		auto internalNodeHandle = addInternalNode<MeshData>(meshCount, publicNodeHandle, parentNodeHandle, InternalNodeType::MESH);
 		SetNodeState(internalNodeHandle, false);
+		getInternalNode(internalNodeHandle).Name = GTSL::ShortString<32>(u8"Render Mesh");
+		++meshCount;
 		return publicNodeHandle;
 	}
 
-	void AddMesh(NodeHandle node_handle, RenderSystem::MeshHandle meshHandle, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout, MemberHandle handle) {
+	void AddMesh(NodeHandle node_handle, RenderSystem::BufferHandle meshHandle, uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout) {
 		bool foundLayout = false; uint8 layoutIndex = 0;
 
 		for (; layoutIndex < vertexLayouts.GetLength(); ++layoutIndex) {
@@ -343,7 +331,12 @@ public:
 			}
 		}
 
-		getPrivateNodeFromPublicHandle<MeshData>(node_handle).Handle = meshHandle;
+		auto& meshNode = getPrivateNodeFromPublicHandle<MeshData>(node_handle);
+		meshNode.Handle = meshHandle;
+		meshNode.IndexCount = indexCount;
+		meshNode.IndexType = indexType;
+		meshNode.VertexCount = vertexCount;
+		meshNode.VertexSize = vertexSize;
 
 		SetNodeState(getInternalNodeHandleFromPublicHandle(node_handle), true);
 	}
@@ -423,13 +416,12 @@ public:
 			bindingType = GAL::BindingType::STORAGE_IMAGE;
 		} else {
 			layout = GAL::TextureLayout::SHADER_READ;
-			bindingType = GAL::BindingType::COMBINED_IMAGE_SAMPLER;
+			bindingType = GAL::BindingType::SAMPLED_IMAGE;
 		}
 
 		for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 			BindingsPool::TextureBindingUpdateInfo info;
 			info.TextureView = renderSystem->GetTextureView(textureHandle);
-			info.Sampler = renderSystem->GetTextureSampler(textureHandle);
 			info.TextureLayout = layout;
 			info.FormatDescriptor;
 
@@ -438,7 +430,7 @@ public:
 	}
 
 	enum class SubSetType : uint8 {
-		BUFFER, READ_TEXTURES, WRITE_TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE
+		BUFFER, READ_TEXTURES, WRITE_TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE, SAMPLER
 	};
 
 	static unsigned long long quickhash64(const GTSL::Range<const byte*> range)
@@ -456,9 +448,11 @@ public:
 	
 	struct SubSetDescriptor {
 		SubSetType SubSetType; uint32 BindingsCount;
+		SubSetHandle* Handle;
+		GTSL::Range<const TextureSampler*> Sampler;
 	};
 	SetLayoutHandle AddSetLayout(RenderSystem* renderSystem, SetLayoutHandle parentName, const GTSL::Range<SubSetDescriptor*> subsets) {
-		uint64 hash = quickhash64(GTSL::Range<const byte*>(subsets.Bytes(), reinterpret_cast<const byte*>(subsets.begin())));
+		uint64 hash = quickhash64(GTSL::Range(subsets.Bytes(), reinterpret_cast<const byte*>(subsets.begin())));
 		
 		SetLayoutHandle parentHandle;
 		uint32 level;
@@ -496,31 +490,37 @@ public:
 
 		GTSL::StaticVector<BindingsSetLayout::BindingDescriptor, 10> subSetDescriptors;
 
-		for (auto e : subsets) {
-			GAL::ShaderStage shaderStage = setLayoutData.Stage;
-			GAL::BindingFlag bindingFlags;
+		for (const auto& e : subsets) {
+			BindingsSetLayout::BindingDescriptor binding_descriptor;
 
-			GAL::BindingType bindingType = {};
-
-			if (e.BindingsCount != 1) { bindingFlags = GAL::BindingFlags::PARTIALLY_BOUND; }
+			if (e.BindingsCount != 1) { binding_descriptor.Flags = GAL::BindingFlags::PARTIALLY_BOUND; }
+			binding_descriptor.BindingsCount = e.BindingsCount;
 
 			switch (e.SubSetType) {
-			case SubSetType::BUFFER: bindingType = GAL::BindingType::STORAGE_BUFFER; break;
-			case SubSetType::READ_TEXTURES: bindingType = GAL::BindingType::COMBINED_IMAGE_SAMPLER; break;
-			case SubSetType::WRITE_TEXTURES: bindingType = GAL::BindingType::STORAGE_IMAGE; break;
-			case SubSetType::RENDER_ATTACHMENT: bindingType = GAL::BindingType::INPUT_ATTACHMENT; break;
+			case SubSetType::BUFFER: binding_descriptor.BindingType = GAL::BindingType::STORAGE_BUFFER; break;
+			case SubSetType::READ_TEXTURES: binding_descriptor.BindingType = GAL::BindingType::SAMPLED_IMAGE; break;
+			case SubSetType::WRITE_TEXTURES: binding_descriptor.BindingType = GAL::BindingType::STORAGE_IMAGE; break;
+			case SubSetType::RENDER_ATTACHMENT: binding_descriptor.BindingType = GAL::BindingType::INPUT_ATTACHMENT; break;
+			case SubSetType::SAMPLER: {
+				binding_descriptor.BindingType = GAL::BindingType::SAMPLER;
+				binding_descriptor.Samplers = e.Sampler;
+				binding_descriptor.BindingsCount = e.Sampler.ElementCount();
+				break;
+			}
 			case SubSetType::ACCELERATION_STRUCTURE:
-				bindingType = GAL::BindingType::ACCELERATION_STRUCTURE;
-				shaderStage = GAL::ShaderStages::RAY_GEN;
-				setLayoutData.Stage |= shaderStage;
+				binding_descriptor.BindingType = GAL::BindingType::ACCELERATION_STRUCTURE;
+				binding_descriptor.ShaderStage = GAL::ShaderStages::RAY_GEN;
+				setLayoutData.Stage |= binding_descriptor.ShaderStage;
 				break;
 			}
 
-			subSetDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ bindingType, shaderStage, e.BindingsCount, bindingFlags });
+			binding_descriptor.ShaderStage = setLayoutData.Stage;
+
+			subSetDescriptors.EmplaceBack(binding_descriptor);
 		}
 
 		setLayoutData.BindingsSetLayout.Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
-		bindingsSetLayouts.EmplaceBack().Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
+		bindingsSetLayouts.EmplaceBack(setLayoutData.BindingsSetLayout);
 
 		if constexpr (_DEBUG) {
 			//GTSL::StaticString<128> name("Pipeline layout: "); name += layoutName.GetString();
@@ -535,44 +535,32 @@ public:
 		return SetLayoutHandle(hash);
 	}
 
-	struct SubSetInfo {
-		SubSetType Type;
-		SubSetHandle* Handle;
-		uint32 Count;
-	};
-	SetLayoutHandle AddSetLayout(RenderSystem* renderSystem, SetLayoutHandle parent, const GTSL::Range<SubSetInfo*> subsets) {
-		GTSL::StaticVector<SubSetDescriptor, 16> subSetInfos;
-		for (auto e : subsets) { subSetInfos.EmplaceBack(e.Type, e.Count); }
-		return AddSetLayout(renderSystem, parent, subSetInfos);
-	}
-
-	SetHandle AddSet(RenderSystem* renderSystem, Id setName, SetLayoutHandle setLayoutHandle, const GTSL::Range<SubSetInfo*> setInfo) {
+	SetHandle AddSet(RenderSystem* renderSystem, Id setName, SetLayoutHandle setLayoutHandle, const GTSL::Range<SubSetDescriptor*> setInfo) {
 		GTSL::StaticVector<BindingsSetLayout::BindingDescriptor, 16> bindingDescriptors;
 
 		for (auto& ss : setInfo) {
 			GAL::ShaderStage enabledShaderStages = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::ANY_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::CALLABLE | GAL::ShaderStages::COMPUTE;
 
-			switch (ss.Type) {
-			case SubSetType::BUFFER: {
-				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+			switch (ss.SubSetType) {
+			case SubSetType::BUFFER:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
-			}
-			case SubSetType::READ_TEXTURES: {
-				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::COMBINED_IMAGE_SAMPLER, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+			case SubSetType::READ_TEXTURES:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::SAMPLED_IMAGE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
-			}
-			case SubSetType::WRITE_TEXTURES: {
-				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+			case SubSetType::WRITE_TEXTURES:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
-			}
-			case SubSetType::RENDER_ATTACHMENT: {
-				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.Count, GAL::BindingFlags::PARTIALLY_BOUND });
+			case SubSetType::RENDER_ATTACHMENT:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND });
 				break;
-			}
-			case SubSetType::ACCELERATION_STRUCTURE: {
-				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.Count, GAL::BindingFlag() });
+			case SubSetType::ACCELERATION_STRUCTURE:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlag() });
 				break;
-			}
+			case SubSetType::SAMPLER:
+				bindingDescriptors.EmplaceBack(BindingsSetLayout::BindingDescriptor{ GAL::BindingType::SAMPLER, enabledShaderStages, ss.BindingsCount, GAL::BindingFlag() });
+				break;
+			default: ;
 			}
 		}
 
@@ -600,19 +588,6 @@ public:
 		}
 		
 		return BufferHandle(bufferIndex);
-	}
-
-	void AddMesh(RenderSystem* render_system, const NodeHandle parent_handle, const RenderSystem::MeshHandle mesh_handle, const MaterialInstanceHandle material_instance_handle, DataKeyHandle data_key) {
-		auto rtmi = rayTracingMaterials[getMaterialHash(material_instance_handle)];
-
-		auto& material = materials[material_instance_handle.MaterialIndex];
-		
-		auto& rt = rayTracingPipelines[rtmi.pipeline];
-		auto& sg = rt.ShaderGroups[rtmi.sg];
-		
-		auto swk = GetBufferWriteKey(render_system, sg.Buffer, sg.ShaderEntryMemberHandle[sg.ObjectCount++]);
-		Write(render_system, swk, sg.MaterialDataHandle, render_system->GetBufferDeviceAddress(renderBuffers[0].BufferHandle) + getDataKeyOffset(material.DataKey)); //get material data
-		Write(render_system, swk, sg.ObjectDataHandle, render_system->GetBufferDeviceAddress(renderBuffers[0].BufferHandle) + getDataKeyOffset(data_key)); //get object data
 	}
 
 	struct BindingsSetData {
@@ -650,8 +625,6 @@ private:
 	uint32 renderDataOffset = 0;
 	SetLayoutHandle globalSetLayout;
 	SetHandle globalBindingsSet;
-	RenderAllocation allocation;
-	GPUBuffer buffer;
 	NodeHandle rayTraceNode;
 
 	SubSetHandle renderGroupsSubSet;
@@ -663,6 +636,7 @@ private:
 	MemberHandle globalDataHandle;
 	SubSetHandle textureSubsetsHandle;
 	SubSetHandle imagesSubsetHandle;
+	SubSetHandle samplersSubsetHandle;
 	SubSetHandle topLevelAsHandle;
 
 	GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 24>, 32> vertexLayouts;
@@ -688,6 +662,8 @@ private:
 	};
 	GTSL::StaticVector<RenderDataBuffer, 32> renderBuffers;
 
+	GTSL::HashMap<Id, GAL::VulkanShader, BE::PAR> shaders;
+
 	struct InternalNode {
 		//InternalNodeType Type;
 		uint32 Offset = ~0U;
@@ -695,7 +671,9 @@ private:
 	};
 
 	struct MeshData {
-		RenderSystem::MeshHandle Handle;
+		RenderSystem::BufferHandle Handle;
+		uint32 VertexCount = 0, VertexSize = 0, IndexCount = 0;
+		GAL::IndexType IndexType;
 		uint32 InstanceCount = 0;
 	};
 
@@ -789,8 +767,6 @@ private:
 	T& getPrivateNodeFromPublicHandle(NodeHandle layer_handle) {
 		return renderingTree.GetClass<T>(renderingTree.GetBetaHandleFromAlpha(layer_handle(), 0xFFFFFFFF));
 	}
-
-	Id resultAttachment;
 	
 	NodeHandle globalData, cameraDataNode;
 
@@ -919,6 +895,7 @@ private:
 
 		::Pipeline pipeline;
 		ResourceHandle ResourceHandle;
+		RenderSystem::BufferHandle ShaderBindingTableBuffer;
 	};
 	GTSL::FixedVector<Pipeline, BE::PAR> pipelines;
 
@@ -940,17 +917,13 @@ private:
 		} ShaderGroups[4];
 		
 		uint32 PipelineIndex;
+		MemberHandle BufferMemberHandle;
 	};
 	GTSL::FixedVector<RayTracingPipelineData, BE::PAR> rayTracingPipelines;
 
 	static uint64 getMaterialHash(const MaterialInstanceHandle material_instance_handle) {
 		return (uint64)material_instance_handle.MaterialInstanceIndex << 32 | material_instance_handle.MaterialIndex;
 	}
-	
-	struct RTMI {
-		uint32 pipeline = 0, sg = 0, instance = 0;
-	};
-	GTSL::StaticMap<uint64, RTMI, 16> rayTracingMaterials;
 	
 	uint32 textureIndex = 0, imageIndex = 0;
 	
@@ -1248,18 +1221,32 @@ private:
 	//	return nodesByName[(uint64)InternalNodeType::MATERIAL_INSTANCE << 60 | pipelineIndex];
 	//}
 
+	friend WorldRendererPipeline;
+
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
 #endif
 };
 
-class StaticMeshRenderManager : public RenderManager
-{
+class WorldRendererPipeline : public RenderPipeline {
 public:
-	StaticMeshRenderManager(const InitializeInfo& initializeInfo);
+	WorldRendererPipeline(const InitializeInfo& initialize_info);
 
+	auto GetOnAddMeshHandle() const { return OnAddMesh; }
+	auto GetOnMeshUpdateHandle() const { return OnUpdateMesh; }
+
+private:
 	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddMesh;
 	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
+
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddInfiniteLight;
+
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddBackdrop;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddParticleSystem;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddVolume;
+	DynamicTaskHandle<StaticMeshHandle, Id, MaterialInstanceHandle> OnAddSkinnedMesh;
 
 private:
 	RenderOrchestrator::MemberHandle staticMeshStruct;
@@ -1271,46 +1258,58 @@ private:
 	RenderOrchestrator::MemberHandle staticMeshInstanceDataStruct;
 
 	bool rayTracing = false;
+	uint32 topLevelAccelerationStructureIndex = 0;
 
 	struct Mesh {
 		RenderOrchestrator::NodeHandle NodeHandle;
 		MaterialInstanceHandle MaterialHandle;
+		uint32 InstanceIndex = 0;
 	};
 	GTSL::HashMap<StaticMeshHandle, Mesh, BE::PAR> meshes;
 
 	struct Resource {
-		RenderSystem::MeshHandle RenderMesh;
+		RenderSystem::BufferHandle BufferHandle;
+		GTSL::StaticVector<GAL::ShaderDataType, 32> VertexElements;
 		GTSL::Range<byte*> Buffer;
 		GTSL::StaticVector<StaticMeshHandle, 8> Meshes;
 		bool Loaded = false;
+		uint32 VertexSize, VertexCount = 0, IndexCount = 0;
+		GAL::IndexType IndexType;
+		uint32 BLAS = 0;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
-	//DynamicTaskHandle<StaticMeshResourceManager*, StaticMeshResourceManager::StaticMeshInfo, MeshLoadInfo> onStaticMeshInfoLoadHandle;
+	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
+		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 8) + indexCount * indexSize;
+	}
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
-		auto& res = resources[staticMeshInfo.Name];
+		auto& res = resources[staticMeshInfo.Name];		
 
-		render_system->UpdateMesh(res.RenderMesh, staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize, staticMeshInfo.VertexDescriptor);
+		uint32 meshSize = calculateMeshSize(staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize);
+		res.BufferHandle = render_system->CreateBuffer(meshSize, GAL::BufferUses::VERTEX | GAL::BufferUses::INDEX, true, false);
+		res.Buffer = GTSL::Range<byte*>(meshSize, render_system->GetBufferPointer(res.BufferHandle));
 
-		auto renderMeshHandle = res.RenderMesh;
-
-		res.Buffer = GTSL::Range<byte*>(render_system->GetMeshSize(renderMeshHandle), render_system->GetMeshPointer(renderMeshHandle));
+		res.VertexSize = staticMeshInfo.VertexSize;
+		res.VertexCount = staticMeshInfo.VertexCount;
+		res.VertexElements = static_cast<const decltype(staticMeshInfo.VertexDescriptor)&>(staticMeshInfo.VertexDescriptor).GetRange();
+		res.IndexCount = staticMeshInfo.IndexCount;
+		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 
 		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle);
 	}
 
-	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo){
+	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
 		auto& res = resources[staticMeshInfo.Name];
 
-		render_system->SignalMeshDataUpdate(res.RenderMesh);
-		if (rayTracing) { render_system->UpdateRayTraceMesh(res.RenderMesh); }
+		render_system->SignalBufferWrite(res.BufferHandle);
 
-		for(const auto e : res.Meshes) {
-			onMeshLoad(render_system, render_group, render_orchestrator, res.RenderMesh, e);
-			//meshLoadInfo.RenderSystem->SetWillWriteMesh(meshLoadInfo.MeshHandle, false);
+		if (rayTracing) {
+			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), res.BufferHandle);
+		}
+
+		for (const auto e : res.Meshes) {
+			onMeshLoad(render_system, render_group, render_orchestrator, res, e);
 		}
 
 		res.Loaded = true;
@@ -1323,39 +1322,38 @@ private:
 
 		auto res = resources.TryEmplace(resourceName);
 
-		if (res) {
-			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
-			res.Get().RenderMesh = render_system->CreateMesh(resourceName);
-		} else {
-			if (res.Get().Loaded) {
-				onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, res.Get().RenderMesh, static_mesh_handle);
-			}
-		}
-
 		auto materialLayer = render_orchestrator->AddMaterial(render_orchestrator->GetSceneRenderPass(), material_instance_handle);
-		auto meshNode = render_orchestrator->AddMesh(res.Get().RenderMesh, materialLayer);
+		auto meshNode = render_orchestrator->AddMesh(materialLayer);
 		auto dataKey = render_orchestrator->MakeDataKey(staticMeshInstanceDataStruct);
 		render_orchestrator->BindDataKey(meshNode, dataKey);
 
 		mesh.NodeHandle = meshNode;
 
 		res.Get().Meshes.EmplaceBack(static_mesh_handle);
+
+		if (res) {
+			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
+		} else {
+			if (res.Get().Loaded) {
+				onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, res.Get(), static_mesh_handle);
+			}
+		}
 	}
 
-	void onMeshLoad(RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* renderOrchestrator, RenderSystem::MeshHandle mesh_handle, StaticMeshHandle static_mesh_handle) {
+	void onMeshLoad(RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* renderOrchestrator, const Resource& res, StaticMeshHandle static_mesh_handle) {
 		auto& mesh = meshes[static_mesh_handle];
 
 		auto key = renderOrchestrator->GetBufferWriteKey(renderSystem, mesh.NodeHandle, staticMeshInstanceDataStruct);
 		renderOrchestrator->Write(renderSystem, key, matrixUniformBufferMemberHandle, renderGroup->GetMeshTransform(static_mesh_handle));
-		renderOrchestrator->Write(renderSystem, key, vertexBufferReferenceHandle, renderSystem->GetVertexBufferAddress(mesh_handle));
-		renderOrchestrator->Write(renderSystem, key, indexBufferReferenceHandle, renderSystem->GetIndexBufferAddress(mesh_handle));
+		renderOrchestrator->Write(renderSystem, key, vertexBufferReferenceHandle, renderSystem->GetBufferDeviceAddress(res.BufferHandle));
+		renderOrchestrator->Write(renderSystem, key, indexBufferReferenceHandle, renderSystem->GetBufferDeviceAddress(res.BufferHandle) + GTSL::Math::RoundUpByPowerOf2(res.VertexSize * res.VertexCount, 8));
 		renderOrchestrator->Write(renderSystem, key, materialInstance, mesh.MaterialHandle.MaterialInstanceIndex);
 
 		if (rayTracing) {
-			//info.RenderOrchestrator->AddMesh(info.RenderSystem, info.RenderOrchestrator->GetSceneReference(), e.MeshHandle, materialHandle, dataKey);
+			mesh.InstanceIndex = renderSystem->AddBLASToTLAS(topLevelAccelerationStructureIndex, res.BLAS);
 		}
 
-		renderOrchestrator->AddMesh(mesh.NodeHandle, mesh_handle, renderSystem->GetMeshVertexLayout(mesh_handle), staticMeshInstanceDataStruct);
+		renderOrchestrator->AddMesh(mesh.NodeHandle, res.BufferHandle, res.VertexCount, res.VertexSize, res.IndexCount, res.IndexType, res.VertexElements);
 	}
 
 	void updateMesh(TaskInfo, RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* renderOrchestrator, StaticMeshHandle static_mesh_handle) {
@@ -1365,11 +1363,12 @@ private:
 		//info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, renderGroup->GetMeshIndex(e));
 		renderOrchestrator->Write(renderSystem, key, matrixUniformBufferMemberHandle, pos);
 
-		//if (rayTracing) { renderSystem->SetMeshMatrix(meshes[static_mesh_handle].RenderMesh, GTSL::Matrix3x4(pos)); }
+		if (rayTracing) {
+			renderSystem->SetInstancePosition(meshes[static_mesh_handle].InstanceIndex, pos);
+		}
 		//TODO: MESHES ARE ONE THING, ACCELERATION STRUCTURE INSTANCES ARE OTHER
 	}
 };
-
 class UIRenderManager : public RenderManager
 {
 public:
@@ -1406,13 +1405,10 @@ public:
 		//materialSystem->BindBufferToName(bufferHandle, "UIRenderGroup");
 		//renderOrchestrator->AddToRenderPass("UIRenderPass", "UIRenderGroup");
 	}
-	
-	RenderSystem::MeshHandle GetSquareMesh() const { return square; }
+
 	MaterialInstanceHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
-	RenderSystem::MeshHandle square;
-
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
 

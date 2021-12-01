@@ -72,7 +72,7 @@ void GameApplication::PostInitialize()
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
 	auto* smrg = applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
-	auto* smrm = applicationManager->AddSystem<StaticMeshRenderManager>(u8"StaticMeshRenderManager");
+	auto* smrm = applicationManager->AddSystem<WorldRendererPipeline>(u8"WorldRendererPipeline");
 
 	applicationManager->AddSystem<PhysicsWorld>(u8"PhysicsWorld");
 
@@ -370,10 +370,8 @@ void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowE
 	}
 	case GTSL::Window::WindowEvents::MOVING: break;
 	case GTSL::Window::WindowEvents::MOUSE_MOVE: {
-		if (mouseCount++ < GetOption(u8"mouse")) {
-			auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
-			app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
-		}
+		auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
+		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
 		break;
 	}
 	case GTSL::Window::WindowEvents::MOUSE_WHEEL: {

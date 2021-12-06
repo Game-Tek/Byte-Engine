@@ -273,6 +273,10 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
 		//renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
 	}
+
+	for(uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
+		commandLists[f] = renderSystem->CreateCommandList(u8"Command List");
+	}
 }
 
 void RenderOrchestrator::Setup(TaskInfo taskInfo) {
@@ -291,8 +295,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	}
 
 	updateDescriptors(taskInfo);
-	
-	auto& commandBuffer = *renderSystem->GetCurrentCommandBuffer();
+
+	renderSystem->StartCommandList(commandLists[currentFrame]);
+
+	auto& commandBuffer = *renderSystem->GetCommandList(commandLists[currentFrame]);
 
 	BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
 
@@ -368,15 +374,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			const auto& pipelineData = pipelines[rayTraceData.PipelineIndex];
 			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, GAL::ShaderStages::RAY_GEN);
 			CommandList::ShaderTableDescriptor shaderTableDescriptors[4];
-			for (uint8 i = 0; i < 4; ++i) {
-				//shaderTableDescriptor.Entries = pipelineData.ShaderGroups[i].ShaderCount;
-				//shaderTableDescriptor.EntrySize = pipelineData.ShaderGroups[i].RoundedEntrySize;
-				//shaderTableDescriptor.Address = renderSystem->GetBufferDeviceAddress(pipelineData.ShaderGroups[i].Buffer);
+			for (uint32 i = 0, offset = 0; i < 4; ++i) {
+				shaderTableDescriptors[i].Entries = 1;
+				shaderTableDescriptors[i].EntrySize = 64;
+				shaderTableDescriptors[i].Address = renderSystem->GetBufferDeviceAddress(pipelineData.ShaderBindingTableBuffer);
+
+				offset += 64;
 			}
 			commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), sizeHistory[currentFrame]);
-			break;
-		}
-		case 7/*no*/: {
 			break;
 		}
 		case 1: {
@@ -399,48 +404,39 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		case 5: {
 			const RenderPassData& renderPassData = renderingTree.GetClass<RenderPassData>(key);
 
+			transitionImages(commandBuffer, renderSystem, &renderPassData);
+
 			switch (renderPassData.Type) {
 			case PassType::RASTER: {
-				if (!renderState.MaxAPIPass) {
-					for (const auto& e : renderPassData.Attachments) {
-						updateImage(attachments.At(e.Name), e.Layout, renderPassData.PipelineStages, e.Access);
+				updateRenderStages(GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT);
+
+				GTSL::StaticVector<GAL::RenderPassTargetDescription, 8> renderPassTargetDescriptions;
+				for (uint8 i = 0; i < renderPassData.Attachments.GetLength(); ++i) {
+					if (renderPassData.Attachments[i].Access & GAL::AccessTypes::WRITE) {
+						auto& e = renderPassTargetDescriptions.EmplaceBack();
+						const auto& attachment = attachments.At(renderPassData.Attachments[i].Name);
+						e.ClearValue = attachment.ClearColor;
+						e.Start = renderPassData.Attachments[i].Layout;
+						e.End = renderPassData.Attachments[i].Layout;
+						e.LoadOperation = GAL::Operations::CLEAR;
+						e.StoreOperation = GAL::Operations::DO;
+						e.FormatDescriptor = attachment.FormatDescriptor;
+						e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
+						e.TextureView = renderSystem->GetTextureView(attachment.TextureHandle[currentFrame]);
 					}
-
-					updateRenderStages(GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT);
-
-					GTSL::StaticVector<GAL::RenderPassTargetDescription, 8> renderPassTargetDescriptions;
-					for (uint8 i = 0; i < renderPassData.Attachments.GetLength(); ++i) {
-						if (renderPassData.Attachments[i].Access & GAL::AccessTypes::WRITE) {
-							auto& e = renderPassTargetDescriptions.EmplaceBack();
-							const auto& attachment = attachments.At(renderPassData.Attachments[i].Name);
-							e.ClearValue = attachment.ClearColor;
-							e.Start = renderPassData.Attachments[i].Layout;
-							e.End = renderPassData.Attachments[i].Layout;
-							e.FormatDescriptor = attachment.FormatDescriptor;
-							e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
-						}
-					}
-
-					commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderPassData.APIRenderPass.RenderPass, renderPassData.APIRenderPass.FrameBuffer[renderSystem->GetCurrentFrame()],
-						renderArea, renderPassTargetDescriptions);
-
-					renderState.MaxAPIPass = renderPassData.APIRenderPass.SubPassCount;
-					resultAttachment = renderPassData.Attachments[0].Name;
-				} else {
-					commandBuffer.AdvanceSubPass(renderSystem->GetRenderDevice());
-					++renderState.APISubPass;
 				}
 
+				commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderArea, renderPassTargetDescriptions);
+
+				resultAttachment = renderPassData.Attachments[0].Name;
 				break;
 			}
 			case PassType::COMPUTE: {
 				updateRenderStages(GAL::ShaderStages::COMPUTE);
-				transitionImages(commandBuffer, renderSystem, &renderPassData);
 				break;
 			}
 			case PassType::RAY_TRACING: {
 				updateRenderStages(GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::INTERSECTION | GAL::ShaderStages::CALLABLE);
-				transitionImages(commandBuffer, renderSystem, &renderPassData);
 				break;
 			}
 			}
@@ -457,10 +453,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		switch (renderingTree.GetBetaNodeType(key)) {
 		case RTT::GetTypeIndex<RenderPassData>(): {
 			auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
-			if (renderPassData.Type == PassType::RASTER && renderState.MaxAPIPass - 1 == renderState.APISubPass) {
+			if (renderPassData.Type == PassType::RASTER) {
 				commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
-				renderState.APISubPass = 0;
-				renderState.MaxAPIPass = 0;
 			}
 
 			break;
@@ -486,10 +480,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 	
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
-		GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout,
+		GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
 		GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
 
-	updateImage(attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
+	updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 		
 	commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle[currentFrame]),
 	*renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_SOURCE, GAL::TextureLayout::TRANSFER_DESTINATION, 
@@ -498,6 +492,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
 		GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+
+	renderSystem->EndCommandList(commandLists[currentFrame]);
+	renderSystem->SubmitAndPresent(commandLists[currentFrame]);
 }
 
 MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialInfo& info) {
@@ -558,7 +555,7 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 		attachment.ClearColor = GTSL::RGBA(1, 0, 0, 0);
 	}
 	
-	attachment.Layout = GAL::TextureLayout::UNDEFINED;
+	attachment.Layout[0] = GAL::TextureLayout::UNDEFINED; attachment.Layout[1] = GAL::TextureLayout::UNDEFINED; attachment.Layout[2] = GAL::TextureLayout::UNDEFINED;
 	attachment.AccessType = GAL::AccessTypes::READ;
 	attachment.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
 
@@ -566,8 +563,6 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 }
 
 RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView renderPassName, NodeHandle parent, RenderSystem* renderSystem, PassData passData, ApplicationManager* am, ShaderResourceManager* srm) {	
-	uint32 currentPassIndex = renderPassesInOrder.GetLength();
-	
 	NodeHandle renderPassNodeHandle = addNode(Id(renderPassName), parent, NodeType::RENDER_PASS);
 	InternalNodeHandle internalNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassNodeHandle, parent, InternalNodeType::RENDER_PASS);
 	RenderPassData& renderPass = getPrivateNode<RenderPassData>(internalNodeHandle);
@@ -586,21 +581,6 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView rend
 
 	if(passData.WriteAttachments.GetLength())
 		resultAttachment = passData.WriteAttachments[0].Name;
-
-	GTSL::StaticMap<Id, uint32, 16> attachmentsRead;
-	
-	attachmentsRead.Emplace(resultAttachment, 0xFFFFFFFF); //set result attachment last read as "infinte" so it will always be stored
-
-	for (uint32 i = renderPassesInOrder.GetLength() - 1; i < renderPassesInOrder.GetLength(); --i) {
-		auto& rp = getPrivateNode<RenderPassData>(renderPassesInOrder[i]);
-		for(auto& e : rp.Attachments) {
-			if(e.Access & GAL::AccessTypes::READ) {
-				if(!attachmentsRead.Find(e.Name)) {
-					attachmentsRead.Emplace(e.Name, i);
-				}
-			}			
-		}		
-	}
 	
 	{
 		auto& finalAttachment = attachments.At(resultAttachment);
@@ -608,146 +588,21 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView rend
 	}
 	
 	switch (passData.PassType) {
-	case PassType::RASTER: {	
-		//uint32 contiguousRasterPassCount = passIndex;
-		//while (contiguousRasterPassCount < passesData.ElementCount() && passesData[contiguousRasterPassCount].PassType == PassType::RASTER) {
-		//	++contiguousRasterPassCount;
-		//}
-		//	
-		//uint32 lastContiguousRasterPassIndex = contiguousRasterPassCount - 1;
-			
-		if constexpr (BE_DEBUG) {
-			//auto name = GTSL::StaticString<32>(u8"RenderPass");
-			//renderPassCreateInfo.Name = renderPassName;
-		}
-
-		GTSL::StaticVector<Id, 16> renderPassUsedAttachments; GTSL::StaticVector<GTSL::StaticVector<Id, 16>, 16> usedAttachmentsPerSubPass;
-
-		usedAttachmentsPerSubPass.EmplaceBack();
+	case PassType::RASTER: {
+		renderPass.Type = PassType::RASTER;
+		renderPass.PipelineStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 		
-		for (auto& ra : passData.ReadAttachments) {
-			if (!renderPassUsedAttachments.Find(ra.Name).State()) { renderPassUsedAttachments.EmplaceBack(ra.Name); }
-			if (!usedAttachmentsPerSubPass[0].Find(ra.Name).State()) { usedAttachmentsPerSubPass[0].EmplaceBack(ra.Name); }
-		}
-		
-		for (auto& wa : passData.WriteAttachments) {
-			if (!renderPassUsedAttachments.Find(wa.Name).State()) { renderPassUsedAttachments.EmplaceBack(wa.Name); }
-			if (!usedAttachmentsPerSubPass[0].Find(wa.Name).State()) { usedAttachmentsPerSubPass[0].EmplaceBack(wa.Name); }
+		for (const auto& e : passData.ReadAttachments) {
+			auto& attachmentData = renderPass.Attachments.EmplaceBack();
+			attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::SHADER_READ; attachmentData.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
+			attachmentData.Access = GAL::AccessTypes::READ;
 		}
 
-		GTSL::StaticVector<GAL::RenderPassTargetDescription, 16> attachmentDescriptors;
-
-		for (auto e : renderPassUsedAttachments) {
-			auto& attachment = attachments.At(e);
-
-			auto& attachmentDescriptor = attachmentDescriptors.EmplaceBack();
-			attachmentDescriptor.FormatDescriptor = attachment.FormatDescriptor;
-			attachmentDescriptor.LoadOperation = GAL::Operations::CLEAR;
-			attachmentDescriptor.StoreOperation = GAL::Operations::DO;
-			//if(attachmentReadsPerPass[0].At(e) > lastContiguousRasterPassIndex) {
-			//	attachmentDescriptor.StoreOperation = GAL::Operations::DO;
-			//} else {
-			//	attachmentDescriptor.StoreOperation = GAL::Operations::UNDEFINED;
-			//}
-			attachmentDescriptor.Start = GAL::TextureLayout::UNDEFINED;
-			attachmentDescriptor.End = GAL::TextureLayout::ATTACHMENT; //TODO: SELECT CORRECT END LAYOUT
+		for (const auto& e : passData.WriteAttachments) {
+			auto& attachmentData = renderPass.Attachments.EmplaceBack();
+			attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::ATTACHMENT; attachmentData.ConsumingStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+			attachmentData.Access = GAL::AccessTypes::WRITE;
 		}
-
-		GTSL::StaticVector<RenderPass::SubPassDescriptor, 8> subPassDescriptors;
-		GTSL::StaticVector<GTSL::StaticVector<RenderPass::AttachmentReference, 16>, 8> attachmentReferences;
-		GTSL::StaticVector<GTSL::StaticVector<uint8, 8>, 8> preserveAttachmentReferences;
-
-		GAL::AccessType sourceAccessFlags = GAL::AccessTypes::READ, destinationAccessFlags = GAL::AccessTypes::READ;
-		GAL::PipelineStage sourcePipelineStages = GAL::PipelineStages::TOP_OF_PIPE, destinationPipelineStages = GAL::PipelineStages::TOP_OF_PIPE;
-
-		for (uint32 s = 0; s < 1/*contiguousRasterPassCount*/; ++s) {
-			attachmentReferences.EmplaceBack();
-			preserveAttachmentReferences.EmplaceBack();
-
-			renderPass.Type = PassType::RASTER;
-			renderPass.PipelineStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-
-			RenderPass::SubPassDescriptor subPassDescriptor;
-
-			auto getAttachmentIndex = [&](const Id name) {
-				auto res = renderPassUsedAttachments.Find(name); return res.State() ? res.Get() : GAL::ATTACHMENT_UNUSED;
-			};
-			
-			for (const auto& e : passData.ReadAttachments) {
-				RenderPass::AttachmentReference attachmentReference;
-				attachmentReference.Index = getAttachmentIndex(e.Name);
-				attachmentReference.Layout = GAL::TextureLayout::SHADER_READ;
-				attachmentReference.Access = GAL::AccessTypes::READ;
-				destinationAccessFlags = GAL::AccessTypes::READ;
-				
-				if (attachments.At(e.Name).FormatDescriptor.Type == GAL::TextureType::COLOR) {
-					destinationPipelineStages |= GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-				} else {
-					destinationPipelineStages |= GAL::PipelineStages::EARLY_FRAGMENT_TESTS | GAL::PipelineStages::LATE_FRAGMENT_TESTS;
-				}
-				
-				auto& attachmentData = renderPass.Attachments.EmplaceBack();
-				attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::SHADER_READ; attachmentData.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
-				attachmentData.Access = GAL::AccessTypes::READ;
-				attachmentReferences[s].EmplaceBack(attachmentReference);
-			}
-
-			for (const auto& e : passData.WriteAttachments) {
-				RenderPass::AttachmentReference attachmentReference;
-				attachmentReference.Layout = GAL::TextureLayout::ATTACHMENT;
-				attachmentReference.Index = getAttachmentIndex(e.Name);
-				attachmentReference.Access = GAL::AccessTypes::WRITE;
-				destinationAccessFlags = GAL::AccessTypes::WRITE;
-				
-				if (attachments.At(e.Name).FormatDescriptor.Type == GAL::TextureType::COLOR) {
-					destinationPipelineStages |= GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-				} else {
-					destinationPipelineStages |= GAL::PipelineStages::EARLY_FRAGMENT_TESTS | GAL::PipelineStages::LATE_FRAGMENT_TESTS;
-				}
-
-				auto& attachmentData = renderPass.Attachments.EmplaceBack();
-				attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::ATTACHMENT; attachmentData.ConsumingStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-				attachmentData.Access = GAL::AccessTypes::WRITE;
-				attachmentReferences[s].EmplaceBack(attachmentReference);
-			}
-
-			subPassDescriptor.Attachments = attachmentReferences[s];
-
-			for (auto b : renderPassUsedAttachments) {
-				if (!usedAttachmentsPerSubPass[s].Find(b).State()) { // If attachment is not used this sub pass
-					if (attachmentsRead.At(b) > currentPassIndex + s) { // And attachment is read after this pass
-						preserveAttachmentReferences[s].EmplaceBack(getAttachmentIndex(b));
-					}
-				}
-			}
-			
-			subPassDescriptor.PreserveAttachments = preserveAttachmentReferences[s];
-
-			subPassDescriptors.EmplaceBack(subPassDescriptor);
-			renderPass.APIRenderPass.APISubPass = 0;
-			renderPass.APIRenderPass.SubPassCount++;
-
-			sourceAccessFlags = destinationAccessFlags;
-			sourcePipelineStages = destinationPipelineStages;
-		}
-
-		GTSL::StaticVector<RenderPass::SubPassDependency, 16> subPassDependencies;
-
-		for (uint8 i = 0; i < subPassDescriptors.GetLength() / 2; ++i) {
-			RenderPass::SubPassDependency e;
-			e.SourcePipelineStage = sourcePipelineStages;
-			e.DestinationPipelineStage = destinationPipelineStages;
-			
-			e.SourceSubPass = i;
-			e.DestinationSubPass = i + 1;
-			e.SourceAccessType = sourceAccessFlags;
-			e.DestinationAccessType = destinationAccessFlags;
-
-			subPassDependencies.EmplaceBack(e);
-		}
-
-		//for(uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f)
-		renderPass.APIRenderPass.RenderPass.Initialize(renderSystem->GetRenderDevice(), attachmentDescriptors, subPassDescriptors, subPassDependencies);
 		
 		break;
 	}
@@ -862,41 +717,8 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 
 	for (const auto apiRenderPassData : renderPasses) {
 		auto& layer = getPrivateNode<RenderPassData>(apiRenderPassData.Second);
-
-		if (layer.Type == PassType::RASTER) {
-			if (layer.APIRenderPass.FrameBuffer[renderSystem->GetCurrentFrame()].GetHandle())
-				layer.APIRenderPass.FrameBuffer[renderSystem->GetCurrentFrame()].Destroy(renderSystem->GetRenderDevice());
-
-			GTSL::StaticVector<TextureView, 16> textureViews;
-			for (auto& e : layer.Attachments) {
-				textureViews.EmplaceBack(renderSystem->GetTextureView(attachments.At(e.Name).TextureHandle[currentFrame]));
-			}
-
-			layer.APIRenderPass.FrameBuffer[renderSystem->GetCurrentFrame()].Initialize(renderSystem->GetRenderDevice(), layer.APIRenderPass.RenderPass, newSize, textureViews);
-		}
-
 		signalDependencyToResource(layer.ResourceHandle);
 	}
-
-	//for (auto rp : renderPasses) {
-	//	auto& renderPass = rp->Data.RenderPass;
-	//
-	//	MaterialSystem::BufferIterator bufferIterator; uint8 attachmentIndex = 0;
-	//	
-	//	for (uint8 r = 0; r < renderPass.ReadAttachments.GetLength(); ++r) {
-	//		auto& attachment = attachments.At(renderPass.ReadAttachments[r].Name);
-	//		auto name = attachment.Name;
-	//		materialSystem->WriteMultiBuffer(bufferIterator, renderPass.AttachmentsIndicesHandle, &attachment.ImageIndex, attachmentIndex++);
-	//	}
-	//	
-	//	for (uint8 w = 0; w < renderPass.WriteAttachments.GetLength(); ++w) {
-	//		auto& attachment = attachments.At(renderPass.WriteAttachments[w].Name);
-	//		auto name = attachment.Name;
-	//		if (attachment.FormatDescriptor.Type == GAL::TextureType::COLOR) {
-	//			materialSystem->WriteMultiBuffer(bufferIterator, renderPass.AttachmentsIndicesHandle, &attachment.ImageIndex, attachmentIndex++);
-	//		}
-	//	}
-	//}
 }
 
 void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable)
@@ -966,18 +788,14 @@ void RenderOrchestrator::transitionImages(CommandList commandBuffer, RenderSyste
 
 		CommandList::TextureBarrier textureBarrier;
 		textureBarrier.Texture = renderSystem->GetTexture(attachment.TextureHandle[renderSystem->GetCurrentFrame()]);
-		textureBarrier.CurrentLayout = attachment.Layout;
+		textureBarrier.CurrentLayout = attachment.Layout[renderSystem->GetCurrentFrame()];
 		textureBarrier.Format = attachment.FormatDescriptor;
 		textureBarrier.TargetLayout = attachmentData.Layout;
 		barriers.EmplaceBack(initialStage, renderPass->PipelineStages, attachment.AccessType, access, textureBarrier);
 
 		initialStage |= attachment.ConsumingStages;
-
-		if constexpr (BE_DEBUG) {
-			initialStage |= pipelineStages;
-		}
 		
-		updateImage(attachment, attachmentData.Layout, renderPass->PipelineStages, access);
+		updateImage(renderSystem->GetCurrentFrame(), attachment, attachmentData.Layout, renderPass->PipelineStages, access);
 	};
 	
 	for (auto& e : renderPass->Attachments) { buildTextureBarrier(e, e.ConsumingStages, e.Access); }
@@ -1146,8 +964,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 
 			context.Attachments = att;
-			context.RenderPass = &renderPassNode.APIRenderPass.RenderPass;
-			context.SubPassIndex = renderPassNode.APIRenderPass.APISubPass;
+			//context.RenderPass = &renderPassNode.APIRenderPass.RenderPass;
+			//context.SubPassIndex = renderPassNode.APIRenderPass.APISubPass;
 			pipelineStates.EmplaceBack(context);
 
 			GAL::Pipeline::PipelineStateBlock::DepthState depth;
@@ -1231,7 +1049,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 				groups.EmplaceBack(group);
 
-				++rtPipelineData.ShaderGroups[shaderGroup].ShaderCount;
+				//++rtPipelineData.ShaderGroups[shaderGroup].ShaderCount;
 			}
 
 			rtInfo.Groups = groups;
@@ -1243,10 +1061,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			pipelineData.pipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), shaderGroupHandlesBuffer);
 
-			pipelineData.ShaderBindingTableBuffer = renderSystem->CreateBuffer(0, GAL::BufferUses::SHADER_BINDING_TABLE, true, false);
-
-			byte* pointer = renderSystem->GetBufferPointer(pipelineData.ShaderBindingTableBuffer);
-
 			//
 			// RG{ shaderHandles[] } ... CH{ { shaderHandle, materialInstanceData }[] } ... M
 			//
@@ -1254,24 +1068,25 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			GTSL::StaticVector<MemberInfo, 8> tablePerGroup[4];
 
 			for(uint8 i = 0; i < 4; ++i) {
-				tablePerGroup[i].EmplaceBack(&rtPipelineData.ShaderGroups[i].ShaderHandle, 1, u8"ShaderHandle");
+				//for
+				//tablePerGroup[i].EmplaceBack(&rtPipelineData.ShaderGroups[i].ShaderHandle, 1, u8"ShaderHandle");
+
 			}
 
 			GTSL::StaticVector<MemberInfo, 4> tables{
-				{ &rtPipelineData.ShaderGroups[0].ShaderGroupDataHandle, 1, tablePerGroup[0], u8"RayGenTable" },
-				{ &rtPipelineData.ShaderGroups[1].ShaderGroupDataHandle, 1, tablePerGroup[1], u8"ClosestHitTable" },
-				{ &rtPipelineData.ShaderGroups[2].ShaderGroupDataHandle, 1, tablePerGroup[2], u8"MissTable" },
-				{ &rtPipelineData.ShaderGroups[3].ShaderGroupDataHandle, 1, tablePerGroup[3], u8"CallableTable" },
+				{ &rtPipelineData.ShaderGroups[0].TableHandle, 1, tablePerGroup[0], u8"RayGenTable" },
+				{ &rtPipelineData.ShaderGroups[1].TableHandle, 1, tablePerGroup[1], u8"ClosestHitTable" },
+				{ &rtPipelineData.ShaderGroups[2].TableHandle, 1, tablePerGroup[2], u8"MissTable" },
+				{ &rtPipelineData.ShaderGroups[3].TableHandle, 1, tablePerGroup[3], u8"CallableTable" },
 			};
-			GTSL::StaticVector<MemberInfo, 2> groupsMember{ { &rtPipelineData.BufferMemberHandle, 1, tables, u8"sssssss" } };
-			CreateBuffer(renderSystem, MakeMember(u8"sssss", groupsMember));
+			pipelineData.ShaderBindingTableBuffer = CreateBuffer(renderSystem, MakeMember(u8"sssss", tables));
 
 			for (uint32 shaderGroupIndex = 0, shaderCount = 0, offset = 0; shaderGroupIndex < 4; ++shaderGroupIndex) {
 				auto& groupData = rtPipelineData.ShaderGroups[shaderGroupIndex];
 
-				for (auto bWK = GetBufferWriteKey(renderSystem, groupData.Buffer, groupData.ShaderEntryMemberHandle); bWK < groupData.ShaderCount; ++shaderCount, ++bWK) {
-					Write(renderSystem, bWK, groupData.ShaderHandle, shaderGroupHandlesBuffer[shaderCount]);
-				}
+				//for (auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer, groupData.TableHandle); bWK < groupData.ShaderCount; ++shaderCount, ++bWK) {
+					//Write(renderSystem, bWK, groupData.ShaderHandle, shaderGroupHandlesBuffer[shaderCount]);
+				//}
 			}
 		}
 		else {
@@ -1322,7 +1137,7 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 	}
 }
 
-WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()) {
+WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), spherePositionsAndRadius(16, GetPersistentAllocator()) {
 	auto* renderSystem = initialize_info.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = initialize_info.GameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 

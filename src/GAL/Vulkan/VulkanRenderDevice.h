@@ -161,33 +161,6 @@ namespace GAL
 				features.pEnabledValidationFeatures = enables.begin();
 
 				setInstancepNext(&features);
-
-				auto debugCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) -> VkBool32 {
-					auto* deviceCallback = static_cast<VulkanRenderDevice*>(pUserData);
-
-					switch (messageSeverity) {
-					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
-						break;
-					}
-					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
-						break;
-					}
-					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::WARNING);
-						break;
-					}
-					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: {
-						deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::ERROR);
-						break;
-					}
-					case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT: break;
-					default: __debugbreak(); break;
-					}
-
-					return VK_FALSE;
-				};
 				
 				VkDebugUtilsMessengerCreateInfoEXT vkDebugUtilsMessengerCreateInfoExt{ VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
 				vkDebugUtilsMessengerCreateInfoExt.pNext = nullptr;
@@ -274,41 +247,39 @@ namespace GAL
 					//Get the amount of queue families there are in the physical device.
 					getInstanceProcAddr<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(u8"vkGetPhysicalDeviceQueueFamilyProperties")(physicalDevice, &queueFamiliesCount, vkQueueFamiliesProperties);
 
-					VkQueueFlags vkQueuesFlagBits[16];
-					for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(createInfo.Queues.ElementCount()); ++i) {
-						vkQueuesFlagBits[i] = ToVulkan(createInfo.Queues[i]);
-					}
-
-					GTSL::float32 familiesPriorities[8][8]{ 0.0f };
-
-					GTSL::uint8 queuesPerFamily[16]{ 0 };
+					GTSL::float32 familiesPriorities[8][8]{ 0.5f };
 
 					GTSL::StaticMap<GTSL::uint64, GTSL::uint8, 16> familyMap;
 						
-					for (GTSL::uint8 queue = 0; queue < static_cast<GTSL::uint8>(createInfo.Queues.ElementCount()); ++queue) {
-						for (GTSL::uint8 family = 0; family < queueFamiliesCount; ++family) {
-							if (vkQueueFamiliesProperties[family].queueCount > 0 && vkQueueFamiliesProperties[family].queueFlags & vkQueuesFlagBits[queue]) { //if family has vk_queue_flags_bits[FAMILY] create queue from this family
-								auto res = familyMap.TryEmplace(family, vkDeviceQueueCreateInfos.GetLength());
+					for (GTSL::uint8 queueIndex = 0; auto & queue : createInfo.Queues) {
+						uint32 bestFamilyIndex = 0xFFFFFFFF, lessSetBits = 0xFFFFFFFF;
 
-								if (res) {
-									auto& queueCreateInfo = vkDeviceQueueCreateInfos.EmplaceBack();
-
-									queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-									queueCreateInfo.pNext = nullptr;
-									queueCreateInfo.flags = 0;
-									queueCreateInfo.queueFamilyIndex = family;
-									queueCreateInfo.queueCount = 0;
-									queueCreateInfo.pQueuePriorities = familiesPriorities[res.Get()];
-								}
-								
-								createInfo.QueueKeys[queue].Queue = queuesPerFamily[family];
-								createInfo.QueueKeys[queue].Family = family;
-								++vkDeviceQueueCreateInfos[res.Get()].queueCount;
-								++queuesPerFamily[family];
-								
-								break;
+						for (uint32 i = 0; i < queueFamiliesCount; ++i) {
+							auto setBits = GTSL::NumberOfSetBits(vkQueueFamiliesProperties[i].queueFlags);
+							if (setBits < lessSetBits && vkQueueFamiliesProperties[i].queueFlags & ToVulkan(queue) && vkQueueFamiliesProperties[i].queueCount) {
+								bestFamilyIndex = i;
+								lessSetBits = setBits;
 							}
 						}
+
+						auto res = familyMap.TryEmplace(bestFamilyIndex, vkDeviceQueueCreateInfos.GetLength());
+
+						if (res) {
+							auto& queueCreateInfo = vkDeviceQueueCreateInfos.EmplaceBack();
+							queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+							queueCreateInfo.pNext = nullptr;
+							queueCreateInfo.flags = 0;
+							queueCreateInfo.queueFamilyIndex = bestFamilyIndex;
+							queueCreateInfo.queueCount = 0;
+							queueCreateInfo.pQueuePriorities = familiesPriorities[res.Get()];
+						}
+
+						createInfo.QueueKeys[queueIndex].Queue = res.Get();
+						createInfo.QueueKeys[queueIndex].Family = bestFamilyIndex;
+						familiesPriorities[bestFamilyIndex][vkDeviceQueueCreateInfos[res.Get()].queueCount] = 1.0f;
+						++vkDeviceQueueCreateInfos[res.Get()].queueCount;
+
+						++queueIndex;
 					}
 				}
 
@@ -398,6 +369,14 @@ namespace GAL
 
 					if(!tryAddExtension(u8"VK_KHR_maintenance4")) {
 						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_maintenance4\" is not available."), false);
+					}
+
+					if (!tryAddExtension(u8"VK_KHR_dynamic_rendering")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_dynamic_rendering\" is not available."), false);
+					} else {
+						VkPhysicalDeviceDynamicRenderingFeaturesKHR* features;
+						placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
+						features->dynamicRendering = true;
 					}
 
 					for (GTSL::uint32 extension = 0; extension < static_cast<GTSL::uint32>(createInfo.Extensions.ElementCount()); ++extension) {
@@ -604,7 +583,10 @@ namespace GAL
 			} else {
 				return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);
 			}
-			
+
+			getDeviceProcAddr(u8"vkCmdBeginRenderingKHR", &VkCmdBeginRendering);
+			getDeviceProcAddr(u8"vkCmdEndRenderingKHR", &VkCmdEndRendering);
+
 			for (auto e : createInfo.Extensions) {
 				switch (e.First) {
 				case Extension::RAY_TRACING: {
@@ -626,6 +608,8 @@ namespace GAL
 					getDeviceProcAddr(u8"vkCmdCopyMemoryToAccelerationStructureKHR", &vkCmdCopyMemoryToAccelerationStructureKHR);
 					getDeviceProcAddr(u8"vkCmdWriteAccelerationStructuresPropertiesKHR", &vkCmdWriteAccelerationStructuresPropertiesKHR);
 					getDeviceProcAddr(u8"vkCmdTraceRaysKHR", &vkCmdTraceRaysKHR);
+					getDeviceProcAddr(u8"vkCmdSetRayTracingPipelineStackSizeKHR", &vkCmdSetRayTracingPipelineStackSizeKHR);
+					getDeviceProcAddr(u8"vkGetRayTracingShaderGroupStackSizeKHR", &vkGetRayTracingShaderGroupStackSizeKHR);
 					break;
 				}
 				default:;
@@ -794,7 +778,38 @@ namespace GAL
 
 			return memoryHeaps;
 		}
-	
+
+		void Log(const GTSL::StringView message, MessageSeverity severity) const {
+			GetDebugPrintFunction()(message, severity);
+		}
+
+		static auto debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) -> VkBool32 {
+			auto* deviceCallback = static_cast<VulkanRenderDevice*>(pUserData);
+
+			switch (messageSeverity) {
+			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: {
+				deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
+				break;
+			}
+			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: {
+				deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::MESSAGE);
+				break;
+			}
+			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: {
+				deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::WARNING);
+				break;
+			}
+			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: {
+				deviceCallback->GetDebugPrintFunction()(GTSL::StringView(reinterpret_cast<const char8_t*>(pCallbackData->pMessage)), MessageSeverity::ERROR);
+				break;
+			}
+			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT: break;
+			default: __debugbreak(); break;
+			}
+
+			return VK_FALSE;
+		};
+
 
 		[[nodiscard]] const VkAllocationCallbacks* GetVkAllocationCallbacks() const { return nullptr; }
 
@@ -870,6 +885,9 @@ namespace GAL
 		PFN_vkQueueSubmit VkQueueSubmit;
 		PFN_vkQueuePresentKHR VkQueuePresent;
 		PFN_vkQueueWaitIdle VkQueueWaitIdle;
+		
+		PFN_vkCmdBeginRenderingKHR VkCmdBeginRendering;
+		PFN_vkCmdEndRenderingKHR VkCmdEndRendering;
 
 		//PFN_vkGetDeviceBuffer
 		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceBufferMemoryRequirements;
@@ -908,6 +926,8 @@ namespace GAL
 		PFN_vkCmdCopyMemoryToAccelerationStructureKHR vkCmdCopyMemoryToAccelerationStructureKHR = nullptr;
 		PFN_vkCmdWriteAccelerationStructuresPropertiesKHR vkCmdWriteAccelerationStructuresPropertiesKHR = nullptr;
 		PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKHR = nullptr;
+		PFN_vkCmdSetRayTracingPipelineStackSizeKHR vkCmdSetRayTracingPipelineStackSizeKHR = nullptr;
+		PFN_vkGetRayTracingShaderGroupStackSizeKHR vkGetRayTracingShaderGroupStackSizeKHR = nullptr;
 
 		PFN_vkCmdDrawMeshTasksNV VkCmdDrawMeshTasks;
 		

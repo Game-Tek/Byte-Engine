@@ -13,9 +13,9 @@
 
 #undef OPAQUE
 
-namespace GAL
-{
+namespace GAL {
 	class Texture;
+	class TextureView;
 
 	template<typename T>
 	constexpr void debugClear(T& handle) { if constexpr (_DEBUG) { handle = reinterpret_cast<T>(0); } }
@@ -426,6 +426,7 @@ namespace GAL
 		TextureLayout Start, End;
 		FormatDescriptor FormatDescriptor;
 		const Texture* Texture = nullptr;
+		const TextureView* TextureView = nullptr;
 		GTSL::RGBA ClearValue;
 	};
 

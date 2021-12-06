@@ -80,7 +80,7 @@ namespace GAL
 		{
 		}
 
-		GTSL::Delegate<void(GTSL::StringView, MessageSeverity)>& GetDebugPrintFunction() { return debugPrintFunction; }
+		GTSL::Delegate<void(GTSL::StringView, MessageSeverity)> GetDebugPrintFunction() const { return debugPrintFunction; }
 		
 	protected:
 		RenderDevice() = default;

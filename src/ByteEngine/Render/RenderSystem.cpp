@@ -37,8 +37,6 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	{
 		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
 		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::waitForFences", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::waitForFences>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
-		initializeInfo.GameInstance->AddTask(this, u8"frameStart", &RenderSystem::frameStart, DependencyBlock(), u8"FrameStart", u8"RenderStart");
-		initializeInfo.GameInstance->AddTask(this, u8"beginCommandLists", &RenderSystem::beginGraphicsCommandLists, DependencyBlock(), u8"RenderEndSetup", u8"RenderDo");
 		initializeInfo.GameInstance->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"RenderFinished", u8"RenderEnd");
 		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onResize", {}, & RenderSystem::onResize);
 	}
@@ -241,28 +239,8 @@ void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffe
 	geometries[GetCurrentFrame()].Resize(0);
 }
 
-void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
-{	
-	auto& commandBuffer = graphicsCommandBuffers[GetCurrentFrame()];
-
-	graphicsFences[GetCurrentFrame()].Wait(GetRenderDevice());
-	graphicsFences[GetCurrentFrame()].Reset(GetRenderDevice());
-	
-	commandBuffer.BeginRecording(GetRenderDevice());
-
-	for (auto& e : topLevelAccelerationStructures) {
-		GAL::Geometry geometry(GAL::GeometryInstances{ GetBufferDeviceAddress(e.InstancesBuffer) }, GAL::GeometryFlag(), e.ScratchSize, 0); //TODO
-		geometries[GetCurrentFrame()].EmplaceBack(geometry);
-
-		AccelerationStructureBuildData buildData;
-		buildData.BuildFlags = 0;
-		buildData.Destination = e.AccelerationStructures[GetCurrentFrame()];
-		buildData.ScratchBuildSize = e.ScratchSize;
-		buildDatas[GetCurrentFrame()].EmplaceBack(buildData);
-
-		buildAccelerationStructures(this, commandBuffer);
-	}
-
+void RenderSystem::beginGraphicsCommandLists(CommandListData& command_list_data)
+{
 	{
 		auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
 
@@ -272,12 +250,13 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 			if (buffer.isMulti) {
 				__debugbreak();
 			} else {
-				commandBuffer.CopyBuffer(GetRenderDevice(), buffer.Staging[0], e.Offset, buffer.Buffer[0], 0, buffer.Size); //TODO: offset
+				command_list_data.CommandList.CopyBuffer(GetRenderDevice(), buffer.Staging[0], e.Offset, buffer.Buffer[0], 0, buffer.Size); //TODO: offset
 				--buffer.references;
 			}
 		}
 
 		processedBufferCopies[GetCurrentFrame()] = bufferCopyData.GetLength();
+		bufferCopyData.Resize(0);
 	}
 
 	if (auto& textureCopyData = textureCopyDatas[GetCurrentFrame()]; textureCopyData) {
@@ -289,20 +268,18 @@ void RenderSystem::beginGraphicsCommandLists(TaskInfo taskInfo)
 			destinationTextureBarriers.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::FRAGMENT, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, textureCopyData[i].Format });
 		}
 
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GetTransientAllocator());
+		command_list_data.CommandList.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GetTransientAllocator());
 
 		for (uint32 i = 0; i < textureCopyData.GetLength(); ++i) {
-			commandBuffer.CopyBufferToTexture(GetRenderDevice(), textureCopyData[i].SourceBuffer, textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, textureCopyData[i].Format, textureCopyData[i].Extent);
+			command_list_data.CommandList.CopyBufferToTexture(GetRenderDevice(), textureCopyData[i].SourceBuffer, textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, textureCopyData[i].Format, textureCopyData[i].Extent);
 		}
 
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GetTransientAllocator());
+		command_list_data.CommandList.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GetTransientAllocator());
 		textureCopyDatas[GetCurrentFrame()].Resize(0);
 	}
 }
 
 void RenderSystem::renderFlush(TaskInfo taskInfo) {
-	auto& commandBuffer = graphicsCommandBuffers[GetCurrentFrame()];
-
 	auto beforeFrame = uint8(currentFrameIndex - uint8(1)) % GetPipelinedFrames();
 	
 	for(auto& e : buffers) {
@@ -314,44 +291,8 @@ void RenderSystem::renderFlush(TaskInfo taskInfo) {
 		
 		e.writeMask[GetCurrentFrame()] = false;
 	}
-	
-	commandBuffer.EndRecording(GetRenderDevice());
-
-	{
-		GTSL::StaticVector<Queue::WorkUnit, 8> workUnits;
-
-		auto& graphicsWork = workUnits.EmplaceBack();
-
-		graphicsWork.WaitSemaphore = &imageAvailableSemaphore[GetCurrentFrame()];
-
-		graphicsWork.WaitPipelineStage = GAL::PipelineStages::TRANSFER;
-		graphicsWork.SignalSemaphore = &renderFinishedSemaphore[GetCurrentFrame()];
-		graphicsWork.CommandBuffer = &graphicsCommandBuffers[GetCurrentFrame()];		
-		
-		if (surface.GetHandle()) {
-			graphicsWork.WaitPipelineStage |= GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-		}
-
-		graphicsQueue.Submit(GetRenderDevice(), workUnits, graphicsFences[GetCurrentFrame()]);
-		
-		GTSL::StaticVector<GPUSemaphore*, 8> presentWaitSemaphores;
-
-		if(surface.GetHandle()) {
-			presentWaitSemaphores.EmplaceBack(&renderFinishedSemaphore[GetCurrentFrame()]);
-
-			if(!renderContext.Present(GetRenderDevice(), presentWaitSemaphores, imageIndex, graphicsQueue)) {
-				resize();
-			}
-		}
-	}
 
 	++currentFrameIndex %= pipelinedFrames;
-}
-
-void RenderSystem::frameStart(TaskInfo taskInfo)
-{
-	auto& bufferCopyData = bufferCopyDatas[GetCurrentFrame()];
-	auto& textureCopyData = textureCopyDatas[GetCurrentFrame()];
 }
 
 void RenderSystem::executeTransfers(TaskInfo taskInfo)
@@ -712,28 +653,11 @@ void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 	}
 	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice());
 
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<32> renderFinishedSe(u8"RenderFinishedSemaphore #"); renderFinishedSe += i;
-	}
-	renderFinishedSemaphore[frame_index].Initialize(GetRenderDevice());
-
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<32> name(u8"InFlightFence #"); name += i;
-	}
-
-	graphicsFences[frame_index].Initialize(GetRenderDevice(), true);
-
-	graphicsCommandBuffers[frame_index].Initialize(GetRenderDevice(), graphicsQueue.GetQueueKey());
-
 	for(auto& e : topLevelAccelerationStructures) {
 		e.AccelerationStructures[frame_index];
 	}
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {
-	graphicsCommandBuffers[frameIndex].Destroy(&renderDevice);
-
 	imageAvailableSemaphore[frameIndex].Destroy(&renderDevice);
-	renderFinishedSemaphore[frameIndex].Destroy(&renderDevice);
-	graphicsFences[frameIndex].Destroy(&renderDevice);
 }

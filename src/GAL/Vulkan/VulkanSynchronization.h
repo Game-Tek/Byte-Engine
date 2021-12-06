@@ -29,7 +29,10 @@ namespace GAL
 
 		void Wait(const VulkanRenderDevice* renderDevice) {
 			if (State()) {
-				renderDevice->VkWaitForFences(renderDevice->GetVkDevice(), 1u, &fence, true, 0xFFFFFFFFFFFFFFFF);
+				auto result = renderDevice->VkWaitForFences(renderDevice->GetVkDevice(), 1u, &fence, true, 0xFFFFFFFFFFFFFFFF);
+				if (result == VK_ERROR_DEVICE_LOST) {
+					renderDevice->Log(u8"Error: device lost", RenderDevice::MessageSeverity::ERROR);
+				}
 			}
 		}
 

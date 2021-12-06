@@ -17,6 +17,8 @@
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "GTSL/Tree.hpp"
 
+#include "Culling.h"
+
 class RenderOrchestrator;
 class RenderState;
 class RenderGroup;
@@ -295,6 +297,8 @@ public:
 
 	uint32 meshCount = 0;
 
+	RenderSystem::CommandListHandle commandLists[MAX_CONCURRENT_FRAMES];
+
 	NodeHandle AddMesh(const NodeHandle parentNodeHandle) {
 		auto publicNodeHandle = addNode(meshCount, parentNodeHandle, NodeType::MESHES);
 		auto internalNodeHandle = addInternalNode<MeshData>(meshCount, publicNodeHandle, parentNodeHandle, InternalNodeType::MESH);
@@ -421,7 +425,7 @@ public:
 
 		for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 			BindingsPool::TextureBindingUpdateInfo info;
-			info.TextureView = renderSystem->GetTextureView(textureHandle);
+			info.TextureView = *renderSystem->GetTextureView(textureHandle);
 			info.TextureLayout = layout;
 			info.FormatDescriptor;
 
@@ -642,7 +646,6 @@ private:
 	GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 24>, 32> vertexLayouts;
 	
 	struct RenderState {
-		uint8 APISubPass = 0, MaxAPIPass = 0;
 		GAL::ShaderStage ShaderStages;
 		uint8 streamsCount = 0, buffersCount = 0;
 
@@ -698,12 +701,12 @@ private:
 		MemberHandle RenderTargetReferences;
 		ResourceHandle ResourceHandle;
 
-		RenderPassData() : Type(PassType::RASTER), Attachments(), PipelineStages(), APIRenderPass() {
+		RenderPassData() : Type(PassType::RASTER), Attachments(), PipelineStages() {
 		}
 
-		union {
-			APIRenderPassData APIRenderPass;
-		};
+		//union {
+		//	APIRenderPassData APIRenderPass;
+		//};
 	};
 
 	struct LayerData {
@@ -895,29 +898,24 @@ private:
 
 		::Pipeline pipeline;
 		ResourceHandle ResourceHandle;
-		RenderSystem::BufferHandle ShaderBindingTableBuffer;
+		RenderOrchestrator::BufferHandle ShaderBindingTableBuffer;
 	};
 	GTSL::FixedVector<Pipeline, BE::PAR> pipelines;
 
 	//MATERIAL STUFF
 	struct RayTracingPipelineData {
-		struct ShaderGroupData {
-			uint32 RoundedEntrySize = 0;
-			BufferHandle Buffer;
-			uint32 ShaderCount = 0;
+		struct ShaderGroupData {			
+			MemberHandle TableHandle;
 
-			uint32 ObjectCount = 0;
-			
-			MemberHandle ShaderGroupDataHandle;
+			struct InstanceData {
 				MemberHandle ShaderHandle;
-				MemberHandle ShaderEntryMemberHandle;
-					MemberHandle MaterialDataHandle, ObjectDataHandle;
+				GTSL::StaticVector<MemberHandle, 8> Elements;				
+			};
 
-			//GTSL::Vector<ShaderRegisterData, BE::PAR> Shaders;
+			GTSL::StaticVector<InstanceData, 8> Instances;
 		} ShaderGroups[4];
 		
 		uint32 PipelineIndex;
-		MemberHandle BufferMemberHandle;
 	};
 	GTSL::FixedVector<RayTracingPipelineData, BE::PAR> rayTracingPipelines;
 
@@ -990,15 +988,15 @@ private:
 		RenderSystem::TextureHandle TextureHandle[MAX_CONCURRENT_FRAMES];
 
 		Id Name;
-		GAL::TextureUse Uses; GAL::TextureLayout Layout;
+		GAL::TextureUse Uses; GAL::TextureLayout Layout[MAX_CONCURRENT_FRAMES];
 		GAL::PipelineStage ConsumingStages; GAL::AccessType AccessType;
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndex;
 	};
 	GTSL::HashMap<Id, Attachment, BE::PAR> attachments;
 
-	void updateImage(Attachment& attachment, GAL::TextureLayout textureLayout, GAL::PipelineStage stages, GAL::AccessType writeAccess) {
-		attachment.Layout = textureLayout; attachment.ConsumingStages = stages; attachment.AccessType = writeAccess;
+	void updateImage(uint8 frameIndex, Attachment& attachment, GAL::TextureLayout textureLayout, GAL::PipelineStage stages, GAL::AccessType writeAccess) {
+		attachment.Layout[frameIndex] = textureLayout; attachment.ConsumingStages = stages; attachment.AccessType = writeAccess;
 	}
 
 	DynamicTaskHandle<TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureInfoLoadHandle;
@@ -1006,13 +1004,13 @@ private:
 	DynamicTaskHandle<ShaderResourceManager::ShaderGroupInfo, ShaderLoadInfo> onShaderInfosLoadHandle;
 	DynamicTaskHandle<ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*>, ShaderLoadInfo> onShaderGroupLoadHandle;
 
-	[[nodiscard]] const RenderPass* getAPIRenderPass(const Id renderPassName) {
-		return &getPrivateNode<RenderPassData>(renderPasses.At(renderPassName).Second).APIRenderPass.RenderPass;
-	}
-	
-	[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPassName) {
-		return getPrivateNode<RenderPassData>(renderPasses.At(renderPassName).Second).APIRenderPass.APISubPass;
-	}
+	//[[nodiscard]] const RenderPass* getAPIRenderPass(const Id renderPassName) {
+	//	return &getPrivateNode<RenderPassData>(renderPasses.At(renderPassName).Second).APIRenderPass.RenderPass;
+	//}
+	//
+	//[[nodiscard]] uint8 getAPISubPassIndex(const Id renderPassName) {
+	//	return getPrivateNode<RenderPassData>(renderPasses.At(renderPassName).Second).APIRenderPass.APISubPass;
+	//}
 
 	uint16 dataTypeSize(Id type) {
 		return sizes[type];
@@ -1257,6 +1255,8 @@ private:
 	RenderOrchestrator::BufferHandle bufferHandle;
 	RenderOrchestrator::MemberHandle staticMeshInstanceDataStruct;
 
+	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
+
 	bool rayTracing = false;
 	uint32 topLevelAccelerationStructureIndex = 0;
 
@@ -1295,6 +1295,8 @@ private:
 		res.VertexElements = static_cast<const decltype(staticMeshInfo.VertexDescriptor)&>(staticMeshInfo.VertexDescriptor).GetRange();
 		res.IndexCount = staticMeshInfo.IndexCount;
 		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
+
+		spherePositionsAndRadius.EmplaceBack(0, 0, 0, GTSL::MoveRef(staticMeshInfo.BoundingRadius));
 
 		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle);
 	}
@@ -1362,11 +1364,19 @@ private:
 
 		//info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, renderGroup->GetMeshIndex(e));
 		renderOrchestrator->Write(renderSystem, key, matrixUniformBufferMemberHandle, pos);
+		*spherePositionsAndRadius.GetPointer<0>(0) = pos[0][0];
+		*spherePositionsAndRadius.GetPointer<1>(0) = pos[0][1];
+		*spherePositionsAndRadius.GetPointer<2>(0) = pos[0][2];
 
 		if (rayTracing) {
 			renderSystem->SetInstancePosition(meshes[static_mesh_handle].InstanceIndex, pos);
 		}
 		//TODO: MESHES ARE ONE THING, ACCELERATION STRUCTURE INSTANCES ARE OTHER
+	}
+
+	void preRender() {
+		GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
+		projectSpheres({0}, spherePositionsAndRadius, results);
 	}
 };
 class UIRenderManager : public RenderManager

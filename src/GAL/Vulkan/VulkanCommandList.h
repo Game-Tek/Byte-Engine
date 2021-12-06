@@ -19,14 +19,13 @@
 
 namespace GAL
 {
-	class VulkanCommandList final : public CommandList
-	{
+	class VulkanCommandList final : public CommandList {
 	public:
 		VulkanCommandList() = default;
 		
 		explicit VulkanCommandList(const VkCommandBuffer commandBuffer) : commandBuffer(commandBuffer) {}
 
-		void Initialize(const VulkanRenderDevice* renderDevice, VulkanRenderDevice::QueueKey queueKey, const bool isPrimary = true) {
+		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, VulkanRenderDevice::QueueKey queueKey, const bool isPrimary = true) {
 			VkCommandPoolCreateInfo vkCommandPoolCreateInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 			vkCommandPoolCreateInfo.queueFamilyIndex = queueKey.Family;
 			renderDevice->VkCreateCommandPool(renderDevice->GetVkDevice(), &vkCommandPoolCreateInfo, renderDevice->GetVkAllocationCallbacks(), &commandPool);
@@ -38,7 +37,7 @@ namespace GAL
 			vkCommandBufferAllocateInfo.commandBufferCount = 1;
 
 			renderDevice->VkAllocateCommandBuffers(renderDevice->GetVkDevice(), &vkCommandBufferAllocateInfo, &commandBuffer);
-			//setName(allocateCommandBuffersInfo.RenderDevice, vkCommandBuffer[i], VK_OBJECT_TYPE_COMMAND_BUFFER, allocateCommandBuffersInfo.CommandBufferCreateInfos[i].Name);
+			setName(renderDevice, commandBuffer, VK_OBJECT_TYPE_COMMAND_BUFFER, name);
 		}
 		
 		void BeginRecording(const VulkanRenderDevice* renderDevice) const {
@@ -54,25 +53,66 @@ namespace GAL
 
 		void EndRecording(const VulkanRenderDevice* renderDevice) const { renderDevice->VkEndCommandBuffer(commandBuffer); }
 
-		void BeginRenderPass(const VulkanRenderDevice* renderDevice, VulkanRenderPass renderPass, VulkanFramebuffer framebuffer,
-			GTSL::Extent2D renderArea, GTSL::Range<const RenderPassTargetDescription*> renderPassTargetDescriptions) {
-			VkRenderPassBeginInfo vkRenderPassBeginInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-			vkRenderPassBeginInfo.renderPass = renderPass.GetVkRenderPass();
+		//void BeginRenderPass(const VulkanRenderDevice* renderDevice, VulkanRenderPass renderPass, VulkanFramebuffer framebuffer,
+		//	GTSL::Extent2D renderArea, GTSL::Range<const RenderPassTargetDescription*> renderPassTargetDescriptions) {
+		//	VkRenderPassBeginInfo vkRenderPassBeginInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		//	vkRenderPassBeginInfo.renderPass = renderPass.GetVkRenderPass();
+		//
+		//	VkClearValue vkClearValues[32];
+		//
+		//	for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(renderPassTargetDescriptions.ElementCount()); ++i) {
+		//		const auto& color = renderPassTargetDescriptions[i].ClearValue;
+		//		vkClearValues[i] = VkClearValue{ color.R(), color.G(), color.B(), color.A() };
+		//	}
+		//
+		//	vkRenderPassBeginInfo.pClearValues = vkClearValues;
+		//	vkRenderPassBeginInfo.clearValueCount = static_cast<GTSL::uint32>(renderPassTargetDescriptions.ElementCount());
+		//	vkRenderPassBeginInfo.framebuffer = framebuffer.GetVkFramebuffer();
+		//	vkRenderPassBeginInfo.renderArea.extent = ToVulkan(renderArea);
+		//	vkRenderPassBeginInfo.renderArea.offset = { 0, 0 };
+		//
+		//	renderDevice->VkCmdBeginRenderPass(commandBuffer, &vkRenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+		//}
+		//
+		//void AdvanceSubPass(const VulkanRenderDevice* renderDevice) { renderDevice->VkCmdNextSubpass(commandBuffer, VK_SUBPASS_CONTENTS_INLINE); }
+		//
+		//void EndRenderPass(const VulkanRenderDevice* renderDevice) { renderDevice->VkCmdEndRenderPass(commandBuffer); }
 
-			VkClearValue vkClearValues[32];
+		void BeginRenderPass(const VulkanRenderDevice* renderDevice, GTSL::Extent2D renderArea, GTSL::Range<const RenderPassTargetDescription*> renderPassTargetDescriptions) {
+			GTSL::StaticVector<VkRenderingAttachmentInfoKHR, 16> colorAttachmentInfos; VkRenderingAttachmentInfoKHR depthAttachmentInfo;
 
-			for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(renderPassTargetDescriptions.ElementCount()); ++i) {
-				const auto& color = renderPassTargetDescriptions[i].ClearValue;
-				vkClearValues[i] = VkClearValue{ color.R(), color.G(), color.B(), color.A() };
+			VkRenderingInfoKHR vk_rendering_info_khr{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+			vk_rendering_info_khr.flags = 0;
+			vk_rendering_info_khr.layerCount = 1; //TODO: if 0 device lost, validation layers?
+
+			for(auto& e : renderPassTargetDescriptions) {
+				VkRenderingAttachmentInfoKHR* attachmentInfo;
+
+				if (e.FormatDescriptor.Type == TextureType::COLOR) {
+					attachmentInfo = &colorAttachmentInfos.EmplaceBack();
+				} else {
+					attachmentInfo = &depthAttachmentInfo;
+				}
+
+				attachmentInfo->sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+				attachmentInfo->pNext = nullptr;
+				attachmentInfo->clearValue = { e.ClearValue.R(), e.ClearValue.G(), e.ClearValue.B(), e.ClearValue.A() };
+				attachmentInfo->imageLayout = ToVulkan(e.Start, e.FormatDescriptor);
+				attachmentInfo->imageView = reinterpret_cast<const VulkanTextureView*>(e.TextureView)->GetVkImageView();
+				attachmentInfo->loadOp = ToVkAttachmentLoadOp(e.LoadOperation);
+				attachmentInfo->storeOp = ToVkAttachmentStoreOp(e.StoreOperation);
+				attachmentInfo->resolveMode = VK_RESOLVE_MODE_NONE;
+				attachmentInfo->resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				attachmentInfo->resolveImageView = nullptr;
 			}
 
-			vkRenderPassBeginInfo.pClearValues = vkClearValues;
-			vkRenderPassBeginInfo.clearValueCount = static_cast<GTSL::uint32>(renderPassTargetDescriptions.ElementCount());
-			vkRenderPassBeginInfo.framebuffer = framebuffer.GetVkFramebuffer();
-			vkRenderPassBeginInfo.renderArea.extent = ToVulkan(renderArea);
-			vkRenderPassBeginInfo.renderArea.offset = { 0, 0 };
-
-			renderDevice->VkCmdBeginRenderPass(commandBuffer, &vkRenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vk_rendering_info_khr.colorAttachmentCount = colorAttachmentInfos.GetLength();
+			vk_rendering_info_khr.pColorAttachments = colorAttachmentInfos.GetData();
+			vk_rendering_info_khr.pDepthAttachment = &depthAttachmentInfo;
+			vk_rendering_info_khr.pStencilAttachment = nullptr;
+			vk_rendering_info_khr.renderArea = { { 0, 0 }, { renderArea.Width, renderArea.Height } };
+			vk_rendering_info_khr.viewMask = 0; //multiview
+			renderDevice->VkCmdBeginRendering(commandBuffer, &vk_rendering_info_khr);
 
 			VkViewport viewport;
 			viewport.x = 0;
@@ -90,10 +130,10 @@ namespace GAL
 			renderDevice->VkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 		}
 
-		void AdvanceSubPass(const VulkanRenderDevice* renderDevice) { renderDevice->VkCmdNextSubpass(commandBuffer, VK_SUBPASS_CONTENTS_INLINE); }
+		void EndRenderPass(const VulkanRenderDevice* renderDevice) {
+			renderDevice->VkCmdEndRendering(commandBuffer);
+		}
 
-		void EndRenderPass(const VulkanRenderDevice* renderDevice) { renderDevice->VkCmdEndRenderPass(commandBuffer); }
-		
 		void BindPipeline(const VulkanRenderDevice* renderDevice, VulkanPipeline pipeline, ShaderStage shaderStage) const {
 			VkPipelineBindPoint pipelineBindPoint;
 			

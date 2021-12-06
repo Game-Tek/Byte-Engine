@@ -92,7 +92,7 @@ void GameApplication::PostInitialize()
 		}
 
 		window.BindToOS(GetApplicationName(), screenSize, systemApplication, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this)); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
-		//queues a function that depends on these elements existing
+		//queues a function that depends on these map existing
 	}
 
 	window.AddDevice(GTSL::Window::DeviceType::MOUSE);

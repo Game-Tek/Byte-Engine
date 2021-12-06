@@ -33,7 +33,80 @@ public:
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
-	
+
+	MAKE_HANDLE(uint32, CommandList);
+
+	CommandListHandle CreateCommandList(const GTSL::StringView name, bool isSingleFrame = true) {
+		uint32 index = commandLists.GetLength();
+		auto& commandList = commandLists.EmplaceBack();
+		commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey());
+		commandList.Fence.Initialize(GetRenderDevice(), true);
+		commandList.Semaphore.Initialize(GetRenderDevice());
+		return CommandListHandle(index);
+	}
+
+	void StartCommandList(const CommandListHandle command_list_handle) {
+		auto& commandListData = commandLists[command_list_handle()];
+
+		commandListData.Fence.Wait(GetRenderDevice());
+		commandListData.Fence.Reset(GetRenderDevice());
+		commandListData.CommandList.BeginRecording(GetRenderDevice());
+
+		beginGraphicsCommandLists(commandListData);
+	}
+
+	void DispatchBuild(const CommandListHandle command_list_handle) {
+		auto& commandListData = commandLists[command_list_handle()];
+
+		for (auto& e : topLevelAccelerationStructures) {
+			GAL::Geometry geometry(GAL::GeometryInstances{ GetBufferDeviceAddress(e.InstancesBuffer) }, GAL::GeometryFlag(), e.ScratchSize, 0); //TODO
+			geometries[GetCurrentFrame()].EmplaceBack(geometry);
+
+			AccelerationStructureBuildData buildData;
+			buildData.BuildFlags = 0;
+			buildData.Destination = e.AccelerationStructures[GetCurrentFrame()];
+			buildData.ScratchBuildSize = e.ScratchSize;
+			buildDatas[GetCurrentFrame()].EmplaceBack(buildData);
+
+			buildAccelerationStructures(this, commandListData.CommandList);
+		}
+	}
+
+	void EndCommandList(const CommandListHandle command_list_handle) {
+		auto& commandListData = commandLists[command_list_handle()];
+		commandListData.CommandList.EndRecording(GetRenderDevice());
+	}
+
+	void SubmitAndPresent(const CommandListHandle command_list_handle) {
+		auto& commandListData = commandLists[command_list_handle()];
+
+		GTSL::StaticVector<Queue::WorkUnit, 8> workUnits;
+
+		auto& graphicsWork = workUnits.EmplaceBack();
+
+		graphicsWork.WaitSemaphore = &imageAvailableSemaphore[GetCurrentFrame()];
+
+		graphicsWork.WaitPipelineStage = GAL::PipelineStages::TRANSFER;
+		graphicsWork.SignalSemaphore = &commandListData.Semaphore;
+		graphicsWork.CommandBuffer = &commandListData.CommandList;
+
+		if (surface.GetHandle()) {
+			graphicsWork.WaitPipelineStage |= GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+		}
+
+		graphicsQueue.Submit(GetRenderDevice(), workUnits, commandListData.Fence);
+
+		GTSL::StaticVector<GPUSemaphore*, 8> presentWaitSemaphores;
+
+		if (surface.GetHandle()) {
+			presentWaitSemaphores.EmplaceBack(&commandListData.Semaphore);
+
+			if (!renderContext.Present(GetRenderDevice(), presentWaitSemaphores, imageIndex, graphicsQueue)) {
+				resize();
+			}
+		}
+	}
+
 	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
 	{
@@ -184,8 +257,9 @@ public:
 		--buffers[handle()].references;
 	}
 	
-	CommandList* GetCurrentCommandBuffer() { return &graphicsCommandBuffers[currentFrameIndex]; }
-	const CommandList* GetCurrentCommandBuffer() const { return &graphicsCommandBuffers[currentFrameIndex]; }
+	CommandList* GetCommandList(const CommandListHandle handle) { return &commandLists[handle()].CommandList; }
+	const CommandList* GetCommandList(const CommandListHandle handle) const { return &commandLists[handle()].CommandList; }
+
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
 	
 	void onResize(TaskInfo, GTSL::Extent2D extent) { renderArea = extent; }
@@ -222,7 +296,7 @@ public:
 	}
 
 	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].Texture; }
-	TextureView GetTextureView(const TextureHandle textureHandle) const { return textures[textureHandle()].TextureView; }
+	const TextureView* GetTextureView(const TextureHandle textureHandle) const { return &textures[textureHandle()].TextureView; }
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
@@ -341,8 +415,7 @@ private:
 	
 	GTSL::Extent2D renderArea, lastRenderArea;
 
-	struct BufferCopyData
-	{
+	struct BufferCopyData {
 		BufferHandle BufferHandle; uint32 Offset = 0;
 	};
 	GTSL::Vector<BufferCopyData, BE::PersistentAllocatorReference> bufferCopyDatas[MAX_CONCURRENT_FRAMES];
@@ -353,10 +426,6 @@ private:
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
 	GPUSemaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
-	GPUSemaphore renderFinishedSemaphore[MAX_CONCURRENT_FRAMES];
-	Fence graphicsFences[MAX_CONCURRENT_FRAMES];
-	
-	CommandList graphicsCommandBuffers[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue;
 	bool breakOnError = true;
@@ -405,6 +474,12 @@ private:
 	};
 	GTSL::FixedVector<BottomLevelAccelerationStructure, BE::PersistentAllocatorReference> bottomLevelAccelerationStructures;
 
+	struct CommandListData {
+		CommandList CommandList;
+		Fence Fence;
+		GPUSemaphore Semaphore;
+	};
+	GTSL::StaticVector<CommandListData, 8> commandLists;
 
 	GAL::Device accelerationStructureBuildDevice;
 
@@ -434,9 +509,8 @@ private:
 
 	void resize();
 	
-	void beginGraphicsCommandLists(TaskInfo taskInfo);
+	void beginGraphicsCommandLists(CommandListData& command_list_data);
 	void renderFlush(TaskInfo taskInfo);
-	void frameStart(TaskInfo taskInfo);
 	void executeTransfers(TaskInfo taskInfo);
 
 	void printError(const GTSL::StringView message, RenderDevice::MessageSeverity messageSeverity) const;

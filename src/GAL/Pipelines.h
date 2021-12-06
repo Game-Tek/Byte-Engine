@@ -88,8 +88,8 @@ namespace GAL
 				};
 
 				GTSL::Range<const AttachmentState*> Attachments;
-				const RenderPass* RenderPass = nullptr;
-				GTSL::uint8 SubPassIndex = 0;
+				//const RenderPass* RenderPass = nullptr;
+				//GTSL::uint8 SubPassIndex = 0;
 			};
 
 			struct VertexState {

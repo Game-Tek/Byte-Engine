@@ -3,7 +3,6 @@
 #include <GTSL/String.hpp>
 #include "ByteEngine/Application/AllocatorReferences.h"
 #include <GAL/RenderCore.h>
-//#include <locale>
 #include <GTSL/HashMap.hpp>
 #include <ByteEngine/Id.h>
 #include <GTSL/Vector.hpp>
@@ -23,10 +22,13 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		VARIABLE, VAR_DEC, FUNCTION, SHADER_RESULT, OPERATOR, LITERAL, SHADER_PARAMETER, RETURN, RVALUE
+		ID, OP, LITERAL, LPAREN, RPAREN, COMMA
 	} ValueType;
 
-	GTSL::ShortString<64> Name, TypeName;
+	GTSL::StaticString<64> Name;
+
+	ShaderNode() = default;
+	ShaderNode(Type t, const GTSL::StringView na) : ValueType(t), Name(na) {}
 
 	auto GetName() const -> GTSL::StringView {
 		return Name;
@@ -37,66 +39,68 @@ bool IsAnyOf(const auto& a, const auto&... elems) {
 	return ((a == elems) or ...);
 }
 
-inline auto parseStatement(GTSL::JSONMember parent, GTSL::Tree<ShaderNode, BE::PAR>& tree, uint32 parentHandle) -> uint32 {
-	auto handle = tree.Emplace(parentHandle);
-	auto& node = tree[handle];
-
-	if (auto nameMember = parent[u8"name"]) { //var || var decl || func || operator
-		node.Name = GTSL::StringView(nameMember);
-
-		if (auto paramsMember = parent[u8"params"]) { //function, var decl
-			if (auto typeMember = parent[u8"type"]) { //name ^ params ^ type -> var decl
-				node.ValueType = ShaderNode::Type::VAR_DEC;
-				node.TypeName = GTSL::StringView(typeMember);
-			}
-			else { //name ^ params ^ ~type -> function
-				if (GTSL::IsSymbol(nameMember.GetStringView()[0])) {
-					node.ValueType = ShaderNode::Type::OPERATOR;
-				}
-				else if (nameMember.GetStringView() == u8"return") {
-					node.ValueType = ShaderNode::Type::RETURN;
-				}
-				else {
-					node.ValueType = ShaderNode::Type::FUNCTION;
-				}
-			}
-
-			for (auto e : parent[u8"params"]) {
-				parseStatement(e, tree, handle);
-			}
-		}
-		else { //name and no params -> var
-			node.ValueType = ShaderNode::Type::VARIABLE;
-		}
-	}
-	else if (auto outputMember = parent[u8"output"]) {
-		node.Name = outputMember;
-		node.ValueType = ShaderNode::Type::SHADER_RESULT;
-		for (auto e : parent[u8"params"]) {
-			parseStatement(e, tree, handle);
-		}
-	}
-	else { //no name -> literal
-		if (auto valueMember = parent[u8"value"]) {
-			node.Name = valueMember;
-			node.ValueType = ShaderNode::Type::LITERAL;
-		}
-		else {
-			node.TypeName = parent[u8"type"];
-			node.ValueType = ShaderNode::Type::RVALUE;
-			for (auto e : parent[u8"params"]) {
-				parseStatement(e, tree, handle);
-			}
-		}
-	}
-
-	return handle;
-}
+//inline auto parseStatement(GTSL::JSONMember parent, GTSL::Tree<ShaderNode, BE::PAR>& tree, uint32 parentHandle) -> uint32 {
+//	auto handle = tree.Emplace(parentHandle);
+//	auto& node = tree[handle];
+//
+//	if (auto nameMember = parent[u8"name"]) { //var || var decl || func || operator
+//		node.Name = GTSL::StringView(nameMember);
+//
+//		if (auto paramsMember = parent[u8"params"]) { //function, var decl
+//			if (auto typeMember = parent[u8"type"]) { //name ^ params ^ type -> var decl
+//				//node.ValueType = ShaderNode::Type::VAR_DEC;
+//				//node.TypeName = GTSL::StringView(typeMember);
+//			}
+//			else { //name ^ params ^ ~type -> function
+//				if (GTSL::IsSymbol(nameMember.GetStringView()[0])) {
+//					node.ValueType = ShaderNode::Type::OPERATOR;
+//				}
+//				else if (nameMember.GetStringView() == u8"return") {
+//					node.ValueType = ShaderNode::Type::RETURN;
+//				}
+//				else {
+//					node.ValueType = ShaderNode::Type::FUNCTION;
+//				}
+//			}
+//
+//			for (auto e : parent[u8"params"]) {
+//				parseStatement(e, tree, handle);
+//			}
+//		}
+//		else { //name and no params -> var
+//			node.ValueType = ShaderNode::Type::VARIABLE;
+//		}
+//	}
+//	else if (auto outputMember = parent[u8"output"]) {
+//		node.Name = outputMember;
+//		//node.ValueType = ShaderNode::Type::SHADER_RESULT;
+//		for (auto e : parent[u8"params"]) {
+//			parseStatement(e, tree, handle);
+//		}
+//	}
+//	else { //no name -> literal
+//		if (auto valueMember = parent[u8"value"]) {
+//			node.Name = valueMember;
+//			node.ValueType = ShaderNode::Type::LITERAL;
+//		}
+//		else {
+//			//node.TypeName = parent[u8"type"];
+//			node.ValueType = ShaderNode::Type::RVALUE;
+//			for (auto e : parent[u8"params"]) {
+//				parseStatement(e, tree, handle);
+//			}
+//		}
+//	}
+//
+//	return handle;
+//}
 
 struct Shader {
 	enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
 
-	Shader(const GTSL::StringView name, const Class clss) : Name(name), Type(clss) {}
+	Shader(const GTSL::StringView name, const Class clss) : Name(name), Type(clss) {
+
+	}
 
 	void AddShaderParameter(const StructElement element) { ShaderParameters.EmplaceBack(element); }
 
@@ -110,22 +114,17 @@ struct Shader {
 	//compute
 	GTSL::Extent3D threadSize;
 
-	GTSL::StaticVector<GTSL::Tree<ShaderNode, BE::PAR>, 8> statements;
-	GAL::ShaderType TargetSemantics;
-	bool Transparency = false
-	;
+	bool Transparency = false;
 
 	struct FunctionDefinition {
 		GTSL::StaticString<32> Return, Name;
 		GTSL::StaticVector<StructElement, 8> Parameters;
-		GTSL::StaticVector<GTSL::Tree<ShaderNode, BE::PAR>, 8> Statements;
+		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 32>, 8> Statements;
 	};
 	GTSL::StaticVector<FunctionDefinition, 8> Functions;
 };
 
-struct GPipeline
-{
-	GTSL::StaticVector<GAL::Pipeline::VertexElement, 32> VertexElements;
+struct GPipeline {
 	GTSL::StaticVector<StructElement, 16> Interface;
 
 	GTSL::StaticVector<GTSL::StaticVector<GTSL::StaticString<64>, 8>, 8> descriptors;
@@ -145,45 +144,300 @@ struct GPipeline
 	struct FunctionDefinition {
 		GTSL::StaticString<32> Return, Name;
 		GTSL::StaticVector<StructElement, 8> Parameters;
-		GTSL::StaticVector<GTSL::Tree<ShaderNode, BE::PAR>, 8> Statements;
+		GTSL::StaticString<512> Code;
+		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 32>, 8> Statements;
+		bool IsRaw = false, Inline = false;
+
+		//Every function gets assigned an id which is unique per pipeline
+		//It aides in identifying functions when dealing with overloads, which share name and thus does not allow to uniquely identify them
+		//Id can also be used to access the element which represents this function
+		uint32 Id = 0;
 	};
-	GTSL::StaticVector<FunctionDefinition, 8> Functions;
+	GTSL::Vector<FunctionDefinition, BE::TAR> Functions;
 
 	GTSL::ShortString<32> TargetSemantics;
 
 	GAL::IndexType IndexType = GAL::IndexType::UINT16;
+
+	struct LanguageElement {
+		LanguageElement(const BE::TAR& allocator) : map(16, allocator) {}
+
+		enum class Type {
+			NULL, SCOPE, KEYWORD, TYPE, MEMBER, FUNCTION
+		} T = Type::NULL;
+
+		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
+
+		uint32 Reference = 0xFFFFFFFF;
+	};
+	GTSL::Tree<LanguageElement, BE::TAR> elements;
+
+	struct ElementHandle { uint32 Handle = 1; };
+
+	ElementHandle VertexShaderScope, FragmentShaderScope, ComputeShaderScope, RayGenShaderScope, ClosestHitShaderScope, MissShaderScope;
+
+	GTSL::StaticVector<GTSL::StaticString<64>, 16> DS;
+
+	GPipeline() : elements(32, BE::TAR(u8"Shader")), Functions(BE::TAR(u8"Shader")) {
+		elements.Emplace(0, BE::TAR(u8"Shader"));
+
+		Add(ElementHandle(), u8"=", LanguageElement::Type::FUNCTION);
+		Add(ElementHandle(), u8"*", LanguageElement::Type::FUNCTION);
+		Add(ElementHandle(), u8"return", LanguageElement::Type::KEYWORD);
+		Add(ElementHandle(), u8"uint32", LanguageElement::Type::TYPE);
+		Add(ElementHandle(), u8"float32", LanguageElement::Type::TYPE);
+		Add(ElementHandle(), u8"vec2f", LanguageElement::Type::TYPE);
+		Add(ElementHandle(), u8"vec3f", LanguageElement::Type::TYPE);
+		Add(ElementHandle(), u8"vec4f", LanguageElement::Type::TYPE);
+	}
+
+	auto& GetElement(ElementHandle parent, const GTSL::StringView name) {
+		return elements[elements[parent.Handle].map[Id(name)].back()];
+	}
+
+	auto& GetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
+		for (auto& p : parents) {
+			if (auto res = TryGetElement(p, name)) {
+				return res.Get();
+			}
+		}
+
+		return elements[0];
+	}
+
+	ElementHandle Add(ElementHandle parent, const GTSL::StringView name, LanguageElement::Type type) {
+		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
+		elements[parent.Handle].map.Emplace(Id(name)).EmplaceBack(handle);
+		auto& e = elements[handle];
+		e.T = type;
+		return ElementHandle(handle);
+	}
+
+	ElementHandle addConditional(ElementHandle parent, const GTSL::StringView name, LanguageElement::Type type) {
+		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
+		elements[parent.Handle].map.TryEmplace(Id(name)).Get().EmplaceBack(handle);
+		auto& e = elements[handle];
+		e.T = type;
+		return ElementHandle(handle);
+	}
+
+	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
+		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
+			return { elements[res.Get().back()], true };
+		} else {
+			return { elements[0], false };
+		}
+	}
+
+	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
+		for (auto& p : parents) {
+			if (auto res = TryGetElement(p, name)) {
+				return res;
+			}
+		}
+
+		return { elements[0], false };
+	}
+
+	auto& DeclareVertexElement(GAL::Pipeline::VertexElement vertex_element) {
+		GTSL::StaticString<64> name(u8"in_"); name += vertex_element.Identifier;
+		auto handle = Add({}, name, LanguageElement::Type::MEMBER);
+		return VertexElements.EmplaceBack(vertex_element);
+	}
+
+	auto& DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name) {
+		auto handle = addConditional(parent, name, LanguageElement::Type::FUNCTION);
+		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& function = Functions.EmplaceBack();
+		function.Name = name;
+		function.Return = returnType;
+		function.Id = handle.Handle;
+		return function;
+	}
+
+	auto& DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
+		auto handle = addConditional(parent, name, LanguageElement::Type::FUNCTION);
+		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& function = Functions.EmplaceBack();
+		function.Name = name;
+		function.Return = returnType;
+		function.Parameters = parameters;
+		function.Code = code;
+		function.Id = handle.Handle;
+		return function;
+	}
+
+	auto& DeclareRawFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
+		auto handle = addConditional(parent, name, LanguageElement::Type::FUNCTION);
+		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& function = Functions.EmplaceBack();
+		function.Name = name;
+		function.Return = returnType;
+		function.Parameters = parameters;
+		function.Code = code;
+		function.IsRaw = true;
+		function.Id = handle.Handle;
+		return function;
+	}
+
+	auto& GetFunction(uint32 id) {
+		return Functions[elements[id].Reference];
+	}
+
+	auto& GetFunction(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
+		for (auto& p : parents) {
+			if (auto res = TryGetElement(p, name)) {
+				return Functions[res.Get().Reference];
+			}
+		}
+
+		return Functions[0];
+	}
+
+	auto GetFunctionOverloads(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
+		for (auto& p : parents) {
+			if (auto res = TryGetElement(p, name)) {
+				GTSL::StaticVector<FunctionDefinition*, 8> overloads;
+
+				for (auto& e : elements[p.Handle].map[name]) {
+					overloads.EmplaceBack(&Functions[elements[e].Reference]);
+				}
+
+				return overloads;
+			}
+		}
+
+		return GTSL::StaticVector<FunctionDefinition*, 8>();
+	}
+
+	auto GetVertexElements() const { return VertexElements.GetRange(); }
+
+	void DeclareStruct(const ElementHandle parent, const GTSL::StringView name, GTSL::Range<const StructElement*> members) {
+		auto handle = Add(parent, name, LanguageElement::Type::TYPE);
+
+		for(auto& e : members) {
+			Add(handle, e.Name, LanguageElement::Type::MEMBER);
+		}
+	}
+
+	void DeclareVariable(const ElementHandle parentHandle, const GTSL::StringView interfaceName, const GTSL::StringView fullString) {
+		auto handle = Add(parentHandle, interfaceName, LanguageElement::Type::MEMBER);
+		elements[handle.Handle].Reference = DS.GetLength();
+		DS.EmplaceBack(fullString);
+	}
+
+	GTSL::StringView GetDS(const GTSL::Range<const ElementHandle*> element_handles, const GTSL::StringView name) {
+		for(uint32 i = 0, j = element_handles.ElementCount() - 1; i < element_handles.ElementCount(); ++i, --j) {
+			if (auto res = TryGetElement(element_handles[j], name)) { return DS[res.Get().Reference]; }
+		}
+
+		return {};
+	}
+
+private:
+	GTSL::StaticVector<GAL::Pipeline::VertexElement, 32> VertexElements;
 };
 
-inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& pipeline) {
-	GTSL::StaticString<2048> headerBlock, structBlock, functionBlock, declarationBlock, mainBlock;
+inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& statements, const GTSL::Range<const GPipeline::ElementHandle*> scopes) {
+	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, COMMA, END };
+	GTSL::StaticVector<GTSL::StaticString<64>, 128> tokens;
+	GTSL::StaticVector<TokenTypes, 128> tokenTypes;
+
+	auto codeString = code;
+
+	for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
+		auto c = code[i];
+
+		TokenTypes type;
+
+		if (GTSL::IsWhitespace(c)) { continue; }
+
+		GTSL::StaticString<64> str;
+
+		if (GTSL::IsSymbol(c) and c != U'.' and c != U'_') {
+			if (c == U'(') {
+				type = TokenTypes::LPAREN;
+			} else if (c == U')') {
+				type = TokenTypes::RPAREN;
+			} else if (c == U',') {
+				type = TokenTypes::COMMA;
+			} else if (c == U';') {
+				type = TokenTypes::END;
+			} else if (IsAnyOf(c, U'=', U'*')) {
+				type = TokenTypes::OP;
+			}
+
+			str += c;
+
+			tokens.EmplaceBack(str);
+			tokenTypes.EmplaceBack(type);
+		} else {
+			while(GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'.' or code[i] == U'_') {
+				str += code[i];
+				++i;
+			}
+
+			if (IsNumber(str)) {
+				type = TokenTypes::NUM;
+			} else {
+				type = TokenTypes::ID;
+			}
+
+			tokens.EmplaceBack(str);
+			tokenTypes.EmplaceBack(type);
+
+			--i;
+		}
+
+	}
+
+	for (uint32 i = 0, s = 0; i < tokens; ++i) {
+		if (tokenTypes[i] != TokenTypes::END) { continue; }
+
+		auto& statement = statements.EmplaceBack();
+
+		for (uint32 j = s; j < i; ++j) {
+			if (tokenTypes[j] == TokenTypes::ID or tokenTypes[j] == TokenTypes::OP) {
+				const auto& element = pipeline.GetElement(scopes, tokens[j]);
+
+				if (tokenTypes[j] == TokenTypes::ID) {
+					statement.EmplaceBack(ShaderNode::Type::ID, tokens[j]);
+				}
+				else {
+					statement.EmplaceBack(ShaderNode::Type::OP, tokens[j]);
+				}
+			}
+			else {
+				ShaderNode::Type type;
+
+				switch (tokenTypes[j]) {
+				case TokenTypes::NUM: type = ShaderNode::Type::LITERAL; break;
+				case TokenTypes::LPAREN: type = ShaderNode::Type::LPAREN; break;
+				case TokenTypes::RPAREN: type = ShaderNode::Type::RPAREN; break;
+				case TokenTypes::COMMA: type = ShaderNode::Type::COMMA; break;
+				case TokenTypes::END: break;
+				}
+
+				statement.EmplaceBack(type, tokens[j]);
+			}
+		}
+
+		s = i + 1;
+	}
+}
+
+inline GTSL::StaticString<8192> GenerateShader(Shader& shader, GPipeline& pipeline, GPipeline::ElementHandle scope, GAL::ShaderType targetSemantics) {
+	GTSL::StaticString<2048> headerBlock, structBlock, functionBlock, declarationBlock;
 
 	headerBlock += u8"#version 460 core\n"; //push version
 
 	switch (Hash(pipeline.TargetSemantics)) {
 	case GTSL::Hash(u8"raster"): {
-		switch (shader.Type) {
-		case Shader::Class::VERTEX: shader.TargetSemantics = GAL::ShaderType::VERTEX; break;
-		case Shader::Class::SURFACE: shader.TargetSemantics = GAL::ShaderType::FRAGMENT; break;
-		case Shader::Class::COMPUTE: break;
-		}
-		break;
 	}
 	case GTSL::Hash(u8"compute"): {
-		switch (shader.Type) {
-		case Shader::Class::VERTEX: shader.TargetSemantics = GAL::ShaderType::COMPUTE; break;
-		case Shader::Class::SURFACE: shader.TargetSemantics = GAL::ShaderType::COMPUTE; break;
-		case Shader::Class::COMPUTE: shader.TargetSemantics = GAL::ShaderType::COMPUTE; break;
-		}
-		break;
 	}
 	case GTSL::Hash(u8"rayTrace"):
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
-		switch (shader.Type) {
-		case Shader::Class::VERTEX: shader.TargetSemantics = GAL::ShaderType::COMPUTE; break;
-		case Shader::Class::SURFACE: shader.TargetSemantics = shader.Transparency ? GAL::ShaderType::ANY_HIT : GAL::ShaderType::CLOSEST_HIT; break;
-		case Shader::Class::COMPUTE: shader.TargetSemantics = GAL::ShaderType::RAY_GEN; break;
-		}
-		break;
 	}
 
 	headerBlock += u8"#extension GL_EXT_shader_16bit_storage : enable\n";
@@ -220,15 +474,12 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 		GTSL::StaticVector<FunctionSignature, 8> FunctionVersions;
 	};
 
-	GTSL::HashMap<Id, ShaderFunction, GTSL::DefaultAllocatorReference> functions(16, 1.0f);
-	GTSL::HashMap<Id, GTSL::StaticVector<StructElement, 32>, GTSL::DefaultAllocatorReference> structs(16, 1.0f);
-
 	struct VariableDeclaration {
 		StructElement Element;
 	};
 	GTSL::HashMap<Id, VariableDeclaration, GTSL::DefaultAllocatorReference> variables(16, 1.0f);
 
-	auto resolveTypeName = [&](const GTSL::StringView name) -> GTSL::StaticString<32> {
+	auto resolveTypeName = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
 		switch (Hash(name)) {
 		case GTSL::Hash(u8"float32"): return GTSL::StringView(u8"float");
 		case GTSL::Hash(u8"vec2f"): return GTSL::StringView(u8"vec2");
@@ -242,7 +493,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 		}
 
 		if (*(name.end() - 1) == u8'*') {
-			GTSL::StaticString<32> n(name);
+			GTSL::StaticString<64> n(name);
 			DropLast(n, u8'*');
 			n += u8"Pointer";
 			return n;
@@ -263,49 +514,21 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 		variables.Emplace(interfaceName, element);
 	};
 
-	auto declareFunction = [&](const GTSL::StringView ret, const GTSL::StringView name, GTSL::Range<const StructElement*> parameters, const GTSL::StringView impl) {
-		auto functionByName = functions.TryEmplace(Id(name));
-
-		if (!functionByName) {
-			auto eq = true;
-
-			for (uint32 f = 0; f < functionByName.Get().FunctionVersions.GetLength(); ++f) {
-				bool et = true;
-
-				if (parameters.ElementCount() == GTSL::Range<const StructElement*>(functionByName.Get().FunctionVersions[f].Parameters).ElementCount()) {
-					for (uint64 i = 0; i < parameters.ElementCount(); ++i) {
-						if (parameters[i].Type != functionByName.Get().FunctionVersions[f].Parameters[i].Type or parameters[i].Name != functionByName.Get().FunctionVersions[f].Parameters[i].Name) { et = false; break; }
-					}
-				}
-				else {
-					et = false;
-				}
-
-				BE_ASSERT(!et, u8"Already exists");
-			}
-		}
-
-		auto& functionVersion = functionByName.Get().FunctionVersions.EmplaceBack();
-		functionVersion.ReturnType = ret;
-
-		for (auto& e : parameters) { functionVersion.Parameters.EmplaceBack(e); }
-
-		functionVersion.Body = impl;
-	};
-
 	auto declareStruct = [&](GTSL::StringView ne, GTSL::Range<const StructElement*> structElements, bool ref, bool readOnly = true) {
 		GTSL::StaticString<32> name(ne);
 
 		if (ref) { name += u8"Pointer"; }
 
-		auto& st = structs.Emplace(Id(name));
+		GTSL::StaticVector<StructElement, 16> stt;
 
-		for (auto& e : structElements) {
-			st.EmplaceBack(e);
+		if (!pipeline.TryGetElement(scope, name)) {
+			pipeline.DeclareStruct(scope, name, structElements);
 		}
 
 		if (!structElements.ElementCount()) {
-			st.EmplaceBack(u8"uint32", u8"dummy");
+			stt.EmplaceBack(u8"uint32", u8"dummy");
+		} else {
+			stt.PushBack(structElements);
 		}
 
 		if (ref) {
@@ -321,118 +544,110 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 
 		structBlock += name; structBlock += u8" { ";
 
-		for (auto& e : st) {
+		for (auto& e : stt) {
 			structBlock += resolveTypeName(e.Type); structBlock += u8' '; structBlock += e.Name; structBlock += u8"; ";
 		}
 
 		structBlock += u8"};\n";
 	};
 
-	auto useFunction = [&](const GTSL::StringView name) {
-		auto& function = functions[name].FunctionVersions[0];
+	GTSL::StaticMap<uint32, bool, 32> usedFunctions(16); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
 
-		if (!function.Used) {
-			functionBlock += resolveTypeName(function.ReturnType); functionBlock += u8' ';  functionBlock += name;
+	auto useFunction = [&pipeline, scope, &usedFunctions, resolveTypeName](auto& resultString, const uint32 id, auto&& self) -> void {
+		auto& function = pipeline.GetFunction(id);
 
-			functionBlock += u8"(";
+		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
+
+		GTSL::StaticString<512> string;
+
+		if (!functionUsed.Get()) {
+			string += resolveTypeName(function.Return); string += u8' ';  string += function.Name;
+
+			string += u8"(";
 
 			uint32 paramCount = function.Parameters.GetLength();
 
 			for (uint32 i = 0; i < paramCount; ++i) {
-				functionBlock += resolveTypeName(function.Parameters[i].Type); functionBlock += u8' '; functionBlock += function.Parameters[i].Name;
-				if (i != paramCount - 1) { functionBlock += u8", "; }
+				string += resolveTypeName(function.Parameters[i].Type); string += u8' '; string += function.Parameters[i].Name;
+				if (i != paramCount - 1) { string += u8", "; }
 			}
 
-			functionBlock += u8") { ";
-			functionBlock += function.Body;
-			functionBlock += u8" }\n";
+			string += u8") { ";
 
-			function.Used = true;
+			if(!function.IsRaw) {
+				if (!function.Statements) {
+					parseCode(function.Code, pipeline, function.Statements, { {}, scope });
+				}
+
+				for(auto& s : function.Statements) {
+					for(auto& node : s) {
+						switch (node.ValueType) {
+						case ShaderNode::Type::ID: {
+							auto element = pipeline.GetElement({ {}, scope }, node.Name);
+
+							if (element.T == GPipeline::LanguageElement::Type::MEMBER) {
+								auto r = pipeline.GetDS({ {}, scope }, node.Name);
+
+								if (r.GetBytes()) {
+									string += r;
+								}
+							}
+							else {
+								if (auto res = pipeline.TryGetElement({ {}, scope }, node.Name)) {
+									if (res.Get().T == GPipeline::LanguageElement::Type::FUNCTION) {
+										for (auto e : pipeline.GetFunctionOverloads({ {}, scope }, node.Name)) { //for every overload, TODO: type deduction?
+											self(resultString, e->Id, self); //add function
+										}
+									}
+								}
+
+								if (node.Name == u8"return") {
+									string += u8"return ";
+								} else {
+									string += resolveTypeName(node.Name);
+								}
+							}
+
+							break;
+						}
+						case ShaderNode::Type::LPAREN: {
+							string += u8"(";
+							break;
+						}
+						case ShaderNode::Type::RPAREN: {
+							string += u8")";
+							break;
+						}
+						case ShaderNode::Type::LITERAL: {
+							string += node.Name;
+							break;
+						}
+						case ShaderNode::Type::OP: {
+							string += u8' '; string += node.Name; string += u8' ';
+							break;
+						}
+						case ShaderNode::Type::COMMA: {
+							string += u8", ";
+							break;
+						}
+						}
+					}
+
+					string += u8"; ";
+				}
+			} else {
+				string += function.Code;
+			}
+
+			string += u8" }\n";
+
+			functionUsed.Get() = true;
 		}
+
+		resultString += string;
 	};
 
-	using TTT = decltype(static_cast<const GTSL::Tree<ShaderNode, BE::PAR>&>(shader.statements[0]).begin());
-
-	auto placeNode = [resolveTypeName, useFunction, &shader](GTSL::StaticString<2048>& string, TTT nodeHandle, uint32_t level, auto&& self) -> void {
-		ShaderNode* node = &nodeHandle.Get();
-
-		auto genFuncCall = [&](GTSL::StringView name, GTSL::StringView opener, GTSL::StringView divider, GTSL::StringView closer) {
-			string += name; string += opener;
-
-			for (uint32 i = 0; auto e : nodeHandle) {
-				self(string, e, level + 1, self);
-				if (i < nodeHandle.GetLength() - 1) { string += divider; }
-				++i;
-			}
-
-			string += closer;
-		};
-
-		switch (node->ValueType) {
-		case ShaderNode::Type::VARIABLE: {
-			string += node->Name;
-			break;
-		}
-		case ShaderNode::Type::VAR_DEC: {
-			string += resolveTypeName(node->TypeName); string += u8' '; string += node->Name;
-			break;
-		}
-		case ShaderNode::Type::FUNCTION: {
-			useFunction(node->Name);
-			genFuncCall(node->Name, u8"(", u8", ", u8")");
-			break;
-		}
-		case ShaderNode::Type::OPERATOR: {
-			genFuncCall(u8"", u8"", node->Name, u8"");
-			break;
-		}
-		case ShaderNode::Type::LITERAL: {
-			string += node->Name;
-			break;
-		}
-		case ShaderNode::Type::RVALUE: {
-			genFuncCall(resolveTypeName(node->TypeName), u8"(", u8", ", u8")");
-			break;
-		}
-		case ShaderNode::Type::SHADER_RESULT: {
-			GTSL::StaticMap<Id, GTSL::StaticString<64>, 8> results(8);
-
-			if (shader.TargetSemantics == GAL::ShaderType::VERTEX) {
-				results.Emplace(u8"vertexPosition", u8"gl_Position");
-			}
-
-			results.Emplace(u8"surfaceColor", u8"out_Color");
-			results.Emplace(u8"surfaceNormal", u8"out_Normal");
-			results.Emplace(u8"surfacePosition", u8"out_Position");
-
-			//navigate by interface name
-			//variableByInterface(u8"surfaceColor") = out_Color;
-
-			string += results[Id(node->Name)]; string += u8" = ";
-
-			for (uint32 i = 0; auto e : nodeHandle) {
-				self(string, e, level + 1, self);
-				++i;
-			}
-
-			break;
-		}
-		case ShaderNode::Type::SHADER_PARAMETER: {
-			string += u8"invocationInfo.shader_parameters."; string += node->Name;
-			break;
-		}
-		case ShaderNode::Type::RETURN: {
-			string += u8"return ";
-
-			for (uint32 i = 0; auto e : nodeHandle) {
-				self(string, e, level + 1, self);
-				++i;
-			}
-
-			break;
-		}
-		}
-	};
+	//using TTT = decltype(static_cast<const GTSL::Tree<ShaderNode, BE::PAR>&>(shader.statements[0]).begin());
 
 	auto shaderDataTypeToType = [](const GAL::ShaderDataType type) -> GTSL::ShortString<32> {
 		switch (type) {
@@ -455,7 +670,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 
 	GTSL::StaticVector<StructElement, 32> vertexElements;
 
-	for (const auto& e : pipeline.VertexElements) {
+	for (const auto& e : pipeline.GetVertexElements()) {
 		vertexElements.EmplaceBack(shaderDataTypeToType(e.Type), e.Identifier);
 	}
 
@@ -464,42 +679,6 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 
 	declareStruct(u8"index", { { u8"uint16", u8"i" } }, true);
 
-	switch (shader.Type) {
-	case Shader::Class::VERTEX: {
-		declareFunction(u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(in_POSITION, 1.0);");
-
-		if (shader.TargetSemantics == GAL::ShaderType::VERTEX) {
-			for (uint8 i = 0; const auto & ve : pipeline.VertexElements) {
-				GTSL::StaticString<64> name(u8"in_"); name += ve.Identifier;
-
-				declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") in ";
-				declarationBlock += resolveTypeName(shaderDataTypeToType(ve.Type));
-				declarationBlock += u8' '; declarationBlock += name; declarationBlock += u8";\n";
-				++i;
-
-				addVariable(name, { shaderDataTypeToType(ve.Type), name });
-			}
-		}
-
-		break;
-	}
-	case Shader::Class::SURFACE: {
-		if (shader.TargetSemantics == GAL::ShaderType::FRAGMENT) {
-			for (uint32 i = 0; auto & o : pipeline.Outputs) {
-				GTSL::StaticString<64> name(u8"out_"); name += o.Name;
-
-				declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") out ";
-				addStructElement(declarationBlock, { o.Type, name, o.DefaultValue }); declarationBlock += u8'\n';
-				++i;
-
-				addVariable(name, o);
-			}
-		}
-
-		break;
-	}
-	}
-
 	for (const auto& s : pipeline.Structs) {
 		declareStruct(s.Name, s.Members, false);
 		declareStruct(s.Name, s.Members, true);
@@ -507,20 +686,10 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 
 	declareStruct(u8"shaderParametersData", pipeline.parameters, true);
 
-	for (const auto& f : pipeline.Functions) {
-		GTSL::StaticString<2048> fImpl;
-
-		for (auto& s : f.Statements) {
-			placeNode(fImpl, s.begin(), 0, placeNode); fImpl += u8";";
-		}
-
-		declareFunction(f.Return, f.Name, f.Parameters, fImpl);
-	}
-
 	{ //push constant
 		declarationBlock += u8"layout(push_constant, scalar) uniform _invocationInfo { ";
 
-		addVariable(u8"invocationInfo", { u8"push_constant", u8"invocationInfo"});
+		addVariable(u8"invocationInfo", { u8"push_constant", u8"invocationInfo" });
 
 		for (const auto& l : pipeline.Layers) {
 			declarationBlock += resolveTypeName(l.Type); declarationBlock += u8' '; declarationBlock += l.Name; declarationBlock += u8"; ";
@@ -535,7 +704,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 	break; case GTSL::Hash(u8"rayTrace"): {
 		for (uint32 i = 0; auto & e : pipeline.Interface) {
 			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") ";
-			declarationBlock += shader.TargetSemantics == GAL::ShaderType::RAY_GEN ? u8"rayPayloadEXT " : u8"rayPayloadInEXT ";
+			declarationBlock += targetSemantics == GAL::ShaderType::RAY_GEN ? u8"rayPayloadEXT " : u8"rayPayloadInEXT ";
 			declarationBlock += resolveTypeName(e.Type); declarationBlock += e.Name; declarationBlock += u8";\n";
 			++i;
 		}
@@ -545,7 +714,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 	auto addShaderRecordDeclaration = [&](const uint8 index) {
 		declarationBlock += u8"layout(shaderRecordEXT, scalar) buffer shader { ";
 
-		addVariable(u8"shaderRecordEXT", { u8"shader", u8"invocationInfo"});
+		addVariable(u8"shaderRecordEXT", { u8"shader", u8"invocationInfo" });
 
 		for (auto& e : pipeline.ShaderRecord[index]) {
 			addStructElement(declarationBlock, e);
@@ -554,51 +723,37 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 		declarationBlock += u8" };\n";
 	};
 
-	declareFunction(u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
-	declareFunction(u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
-	declareFunction(u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
-	declareFunction(u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
-	declareFunction(u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
-	declareFunction(u8"float32", u8"X", { { u8"vec4f", u8"vec" } }, u8"return vec.x;");
-	declareFunction(u8"float32", u8"Y", { { u8"vec4f", u8"vec" } }, u8"return vec.y;");
-	declareFunction(u8"float32", u8"Z", { { u8"vec4f", u8"vec" } }, u8"return vec.z;");
-	declareFunction(u8"vec3f", u8"FresnelSchlick", { { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
-	declareFunction(u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
-	declareFunction(u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
-	declareFunction(u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth_from_depth_buffer" }, { u8"mat4f", u8"inverse_projection_matrix" } }, u8"vec4 p = inverse_projection_matrix * vec4(vec3(texture_coordinate * 2.0 - vec2(1.0), depth_from_depth_buffer), 1.0); return p.xyz / p.w;\n");
-
-	switch (shader.TargetSemantics) {
+	switch (targetSemantics) {
 	case GAL::ShaderType::VERTEX: {
 		declarationBlock += u8"layout(location=0) out vertexData { ";
 		for (auto& e : pipeline.Interface) {
 			addStructElement(declarationBlock, e);
 		}
 		declarationBlock += u8" } vertexOut;\n";
+
+		for (uint8 i = 0; const auto & ve : pipeline.GetVertexElements()) {
+			GTSL::StaticString<64> name(u8"in_"); name += ve.Identifier;
+
+			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") in ";
+			declarationBlock += resolveTypeName(shaderDataTypeToType(ve.Type));
+			declarationBlock += u8' '; declarationBlock += name; declarationBlock += u8";\n";
+			++i;
+			addVariable(name, { shaderDataTypeToType(ve.Type), name });
+		}
+
 		break;
 	}
 	case GAL::ShaderType::MESH:
-		mainBlock += u8"layout(local_size_x="; ToString(mainBlock, 32); mainBlock += u8") in;\n";
-		mainBlock += u8"layout(triangles) out;\n";
-		mainBlock += u8"layout(max_vertices=64, max_primitives=126) out;\n";
+		declarationBlock += u8"layout(local_size_x="; ToString(declarationBlock, 32); declarationBlock += u8") in;\n";
+		declarationBlock += u8"layout(triangles) out;\n";
+		declarationBlock += u8"layout(max_vertices=64, max_primitives=126) out;\n";
 		break;
 	case GAL::ShaderType::CLOSEST_HIT:
 		declarationBlock += u8"hitAttributeEXT vec2 hitBarycenter;\n";
-		declareFunction(u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
-
-		declareFunction(u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"StaticMeshPointer instance = shaderEntries[gl_InstanceCustomIndexEXT]; uint16_t indices[3] = instance.IndexBuffer[3 * gl_PrimitiveID]; vertex vertices[3] = vertex[](instance.VertexBuffer[indeces[0]], instance.VertexBuffer[indeces[1]], instance.VertexBuffer[indeces[2]]); vec2 barycenter = GetVertexBarycenter(); return vertices[0].TexCoords * barycenter.x + vertices[1].TexCoords * barycenter.y + vertices[2].TexCoords * barycenter.z;");
-
 		break;
 	case GAL::ShaderType::ANY_HIT:
 		break;
 	case GAL::ShaderType::INTERSECTION: {
-		declareFunction(u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(in_Position, 1.0);");
-
-		{
-			GTSL::StaticVector<StructElement, 32> elements;
-			elements.EmplaceBack(u8"ptr_t", u8"MaterialData"); elements.EmplaceBack(u8"ptr_t", u8"InstanceData");
-			declareStruct(u8"shaderEntry", elements, false);
-		}
-
 		addShaderRecordDeclaration(GAL::HIT_TABLE_INDEX);
 
 		declareStruct(u8"index", { { pipeline.IndexType == GAL::IndexType::UINT16 ? u8"uint16" : u8"uint32", u8"i" } }, true);
@@ -617,35 +772,30 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 
 		declarationBlock += u8" } vertexIn;\n";
 
-		declareFunction(u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
-		declareFunction(u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");
-		declareFunction(u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return vertexIn.textureCoordinates;");
-		declareFunction(u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return invocationInfo.camera.projInverse;");
-		declareFunction(u8"vec3f", u8"GetVertexViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
-		declareFunction(u8"vec3f", u8"GetVertexViewSpaceNormal", {}, u8"return vertexIn.viewSpaceNormal;");
+		for (uint32 i = 0; auto & o : pipeline.Outputs) {
+			GTSL::StaticString<64> name(u8"out_"); name += o.Name;
+
+			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") out ";
+			addStructElement(declarationBlock, { o.Type, name, o.DefaultValue }); declarationBlock += u8'\n';
+			++i;
+
+			addVariable(name, o);
+		}
+
 		break;
 	}
 	case GAL::ShaderType::COMPUTE: {
-		declareFunction(u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
-
 		GTSL::Extent3D size = shader.threadSize;
-		mainBlock += u8"layout(local_size_x="; ToString(mainBlock, size.Width);
-		mainBlock += u8",local_size_y="; ToString(mainBlock, size.Height);
-		mainBlock += u8",local_size_z="; ToString(mainBlock, size.Depth);
-		mainBlock += u8") in;\n";
+		declarationBlock += u8"layout(local_size_x="; ToString(declarationBlock, size.Width);
+		declarationBlock += u8",local_size_y="; ToString(declarationBlock, size.Height);
+		declarationBlock += u8",local_size_z="; ToString(declarationBlock, size.Depth);
+		declarationBlock += u8") in;\n";
 
 		break;
 	}
 	case GAL::ShaderType::TASK:
 		break;
 	case GAL::ShaderType::RAY_GEN: {
-		declareFunction(u8"vec2f", u8"GetFragmentPosition", {}, u8"const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5f);\nreturn pixelCenter / vec2(gl_LaunchSizeEXT.xy);");
-
-		{
-			GTSL::StaticVector<StructElement, 2> parameters{ { u8"vec3", u8"origin" }, { u8"vec3", u8"direction" } };
-			declareFunction(u8"void", u8"TraceRay", parameters, u8"rayTraceDataPointer r = invocationInfo.RayDispatchData;\ntraceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, origin, r.tMin, direction, r.tMax, 0);");
-		}
-
 		addShaderRecordDeclaration(GAL::RAY_GEN_TABLE_INDEX);
 
 		break;
@@ -660,40 +810,7 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 		break;
 	}
 
-	{ //main
-		mainBlock += u8"void main() {\n";
-
-		switch (shader.TargetSemantics) {
-		break; case GAL::ShaderType::VERTEX: {
-			mainBlock += u8"vertexOut.textureCoordinates = in_TEXTURE_COORDINATES;\n";
-			mainBlock += u8"vertexOut.viewSpacePosition = vec3(GetCameraViewMatrix() * vec4(in_POSITION, 0));\n";
-			mainBlock += u8"vertexOut.viewSpaceNormal = vec3(GetCameraViewMatrix() * vec4(in_NORMAL, 0));\n";
-		}
-		break; case GAL::ShaderType::FRAGMENT:
-		break; case GAL::ShaderType::COMPUTE:
-		break; case GAL::ShaderType::TASK:
-		break; case GAL::ShaderType::MESH:
-		break; case GAL::ShaderType::RAY_GEN:
-		break; case GAL::ShaderType::ANY_HIT:
-		break; case GAL::ShaderType::CLOSEST_HIT:
-		break; case GAL::ShaderType::MISS:
-		break; case GAL::ShaderType::INTERSECTION:
-		break; case GAL::ShaderType::CALLABLE: break;
-		}
-
-		for (auto& e : pipeline.parameters) {
-			mainBlock += resolveTypeName(e.Type); mainBlock += u8' ';
-			mainBlock += e.Name; mainBlock += u8" = ";
-			mainBlock += u8"invocationInfo.shader_parameters."; mainBlock += e.Name; mainBlock += u8";\n";
-		}
-
-		for (uint32 i = 0; i < shader.statements.GetLength(); ++i) {
-			placeNode(mainBlock, static_cast<const Shader&>(shader).statements[i].begin(), 0, placeNode);
-			mainBlock += u8";\n";
-		}
-
-		mainBlock += u8"}";
-	}
+	useFunction(functionBlock, pipeline.GetFunction({ {}, scope }, u8"main").Id, useFunction);
 
 	GTSL::StaticString<8192> fin;
 
@@ -701,7 +818,6 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 	fin += structBlock;
 	fin += declarationBlock;
 	fin += functionBlock;
-	fin += mainBlock;
 
 	return fin;
 }
@@ -711,74 +827,6 @@ inline GTSL::StaticString<8192> GenerateShader(Shader& shader, const GPipeline& 
 // TargetSemantics: target shader stage, (Vertex, Fragment, ClosestHit, AnyHit, Miss, Compute, Etc)
 // GPipeline: defines environment for shader to operate in. Defines how common data is accessed so that the shader generator knows how to
 // seamlessly translate Classes to TargetSemantics
-
-inline GTSL::Pair<GTSL::StaticString<8192>, Shader> GenerateShader(const GTSL::StringView jsonShader, const GPipeline& pipeline) {
-	GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
-	auto json = Parse(jsonShader, json_deserializer);
-
-	Shader::Class shaderClass;
-
-	switch (Hash(json[u8"class"])) {
-	case GTSL::Hash(u8"Vertex"): shaderClass = Shader::Class::VERTEX; break;
-	case GTSL::Hash(u8"Surface"): shaderClass = Shader::Class::SURFACE; break;
-	case GTSL::Hash(u8"Compute"): shaderClass = Shader::Class::COMPUTE; break;
-	case GTSL::Hash(u8"RayGen"): shaderClass = Shader::Class::RAY_GEN; break;
-	case GTSL::Hash(u8"Miss"): shaderClass = Shader::Class::MISS; break;
-	}
-
-	Shader shader(json[u8"name"], shaderClass);
-
-	if (shaderClass == Shader::Class::COMPUTE) {
-		if (auto res = json[u8"localSize"]) {
-			shader.SetThreadSize({ static_cast<uint16>(res[0].GetUint()), static_cast<uint16>(res[1].GetUint()), static_cast<uint16>(res[2].GetUint()) });
-		} else {
-			shader.SetThreadSize({ 1, 1, 1 });
-		}
-	}
-
-	if (auto sv = json[u8"shaderVariables"]) {
-		for (auto e : sv) {
-			StructElement struct_element(e[u8"type"], e[u8"name"]);
-
-			if (auto res = e[u8"defaultValue"]) {
-				struct_element.DefaultValue = res;
-			}
-
-			shader.ShaderParameters.EmplaceBack(struct_element);
-		}
-	}
-
-	if(auto tr = json[u8"transparency"]) {
-		shader.Transparency = tr.GetBool();
-	}
-
-	if (auto fs = json[u8"functions"]) {
-		for (auto f : fs) {
-			auto& fd = shader.Functions.EmplaceBack();
-
-			fd.Return = f[u8"return"];
-			fd.Name = f[u8"name"];
-
-			for (auto p : f[u8"params"]) {
-				fd.Parameters.EmplaceBack(p[u8"type"], p[u8"name"]);
-			}
-
-			for (auto s : f[u8"statements"]) {
-				auto& st = fd.Statements.EmplaceBack(BE::PAR(u8"ShaderGenerator"));
-				parseStatement(s, st, 0);
-			}
-		}
-	}
-
-	{
-		for (auto e : json[u8"statements"]) {
-			shader.statements.EmplaceBack(BE::PAR(u8"ShaderGenerator"));
-			parseStatement(e, shader.statements.back(), 0);
-		}
-	}
-
-	return { GenerateShader(shader, pipeline), GTSL::MoveRef(shader) };
-}
 
 #include <spirv-headers/spirv.hpp>
 
@@ -891,3 +939,132 @@ inline void GenSPIRV() {
 		addInst(spv::OpFunctionEnd);
 	};
 }
+
+//GTSL::StaticVector<uint32, 16> stack, queue;
+//
+//auto infixToPostfix = [&] {
+//	while (true) {
+//		const auto& token = tokens[i]; const auto tokenType = tokenTypes[i];
+//		auto& statement = shader.statements.back();
+//
+//		uint32 currentIndex = i;
+//
+//		++i;
+//
+//		switch (tokenType) {
+//		case TokenTypes::ID:
+//			queue.EmplaceBack(currentIndex);
+//			break;
+//		case TokenTypes::OP:
+//
+//			if (stack) {
+//				if (PRECEDENCE[Id(tokens[stack.back()])] > PRECEDENCE[Id(token)]) {
+//					queue.EmplaceBack(stack.back());
+//					stack.PopBack();
+//				}
+//			}
+//
+//			stack.EmplaceBack(currentIndex);
+//			break;
+//		case TokenTypes::NUM:
+//			queue.EmplaceBack(currentIndex);
+//			break;
+//		case TokenTypes::LPAREN:
+//			stack.EmplaceBack(currentIndex);
+//			break;
+//		case TokenTypes::RPAREN:
+//			while(tokenTypes[stack.back()] != TokenTypes::LPAREN) {
+//				queue.EmplaceBack(stack.back());
+//				stack.PopBack();
+//			}
+//
+//			stack.PopBack();
+//			break;
+//		case TokenTypes::COMMA:
+//			break;
+//		case TokenTypes::END: return;
+//		default: ;
+//		}
+//
+//	}
+//};
+//
+//shader.statements.EmplaceBack(BE::PAR(u8"ShaderGenerator"));
+//infixToPostfix();
+//
+//while(stack) { //transfer all remaining map
+//	queue.EmplaceBack(stack.back());
+//	stack.PopBack();
+//}
+
+//if (tokenTypes[i] != TokenTypes::END) { continue; }
+//
+//auto& statement = shader.statements.EmplaceBack(BE::PAR(u8"ShaderGenerator"));
+//
+//auto evalExpression = [&](uint32 start, uint32 p, uint32 parentHandle, uint32* l, auto&& self) -> uint32 {
+//	if (tokenTypes[start] == TokenTypes::LPAREN) { ++*l; return p + 1; }
+//	if (tokenTypes[start] == TokenTypes::RPAREN) { ++*l; return p - 1; }
+//	if (tokenTypes[start] == TokenTypes::COMMA) { ++*l; return p; }
+//
+//	uint32 minPrecedence = 0xFFFFFFFF, index = 0;
+//
+//	for (uint32 x = start; x < i; ++x) {
+//		auto currentTokenType = tokenTypes[x];
+//
+//		if (auto precedence = getPrecedence(tokens[x]); precedence < minPrecedence) {
+//			minPrecedence = precedence;
+//			index = x;
+//		}
+//	}
+//
+//	bool isOperator = IsAnyOf(tokens[index], u8"=");
+//	uint32 handle = 0;
+//	const auto& element = shader.GetElement(Shader::ElementHandle(), tokens[index]);
+//
+//	switch (element.T) {
+//	break; case Shader::LanguageElement::Type::TYPE: handle = statement.Emplace(parentHandle, ShaderNode::Type::RVALUE, tokens[index]);
+//	break; case Shader::LanguageElement::Type::MEMBER: handle = statement.Emplace(parentHandle, ShaderNode::Type::VARIABLE, tokens[index]);
+//	break; case Shader::LanguageElement::Type::FUNCTION:
+//		handle = statement.Emplace(parentHandle, isOperator ? ShaderNode::Type::OPERATOR : ShaderNode::Type::FUNCTION, tokens[index]);
+//	break; default:;
+//	}
+//
+//	if (element.T == Shader::LanguageElement::Type::FUNCTION) {
+//		if (isOperator) {
+//			std::swap(tokens[index], tokens[index - 1]);
+//			std::swap(tokenTypes[index], tokenTypes[index - 1]);
+//			index -= 1;
+//			++p;
+//		}
+//
+//		uint32 t = 0;
+//
+//		while (true) {
+//			if (self(index + 1 + t, p + 1, handle, &t, self) == p) { break; }
+//		}
+//	}
+//
+//	++* l;
+//
+//	return p;
+//};
+//
+//uint32 l = 0;
+//evalExpression(lastStatement, 0, 0, &l, evalExpression);
+//lastStatement = i;
+
+//GTSL::StaticMap<Id, uint8, 16> PRECEDENCE(16);
+//PRECEDENCE.Emplace(u8"=", 1);
+//PRECEDENCE.Emplace(u8"||", 2);
+//PRECEDENCE.Emplace(u8"<", 7); PRECEDENCE.Emplace(u8">", 7); PRECEDENCE.Emplace(u8"<=", 7); PRECEDENCE.Emplace(u8">=", 7); PRECEDENCE.Emplace(u8"==", 7); PRECEDENCE.Emplace(u8"!=", 7);
+//PRECEDENCE.Emplace(u8"+", 10); PRECEDENCE.Emplace(u8"-", 10);
+//PRECEDENCE.Emplace(u8"*", 20); PRECEDENCE.Emplace(u8"/", 20); PRECEDENCE.Emplace(u8"%", 20);
+//
+//auto getPrecedence = [&](const GTSL::StringView name) -> uint32 {
+//	if (auto pre = PRECEDENCE.TryGet(Id(name))) {
+//		return pre.Get();
+//	}
+//	else {
+//		return 30;
+//	}
+//};

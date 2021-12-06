@@ -316,7 +316,7 @@ namespace GAL
 					vkPipelineColorblendStateCreateInfo.logicOp = VK_LOGIC_OP_COPY; // Optional
 					vkPipelineColorblendStateCreateInfo.pAttachments = reinterpret_cast<const VkPipelineColorBlendAttachmentState*>(buffer.GetData() + buffer.GetLength());
 
-					GTSL::uint8 attachmentCount = 0;
+					GTSL::uint8 colorAttachmentCount = 0, depthAttachmentIndex = 0xFF;
 					for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(pipelineState.Context.Attachments.ElementCount()); ++i) {
 						if (pipelineState.Context.Attachments[i].FormatDescriptor.Type == TextureType::COLOR) {
 							auto* state = buffer.AllocateStructure<VkPipelineColorBlendAttachmentState>();
@@ -325,11 +325,13 @@ namespace GAL
 							state->srcColorBlendFactor = VK_BLEND_FACTOR_ONE; state->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
 							state->colorBlendOp = VK_BLEND_OP_ADD; state->alphaBlendOp = VK_BLEND_OP_ADD;
 							state->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; state->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-							++attachmentCount;
+							++colorAttachmentCount;
+						} else {
+							depthAttachmentIndex = i;
 						}
 					}
 
-					vkPipelineColorblendStateCreateInfo.attachmentCount = attachmentCount;
+					vkPipelineColorblendStateCreateInfo.attachmentCount = colorAttachmentCount;
 					vkPipelineColorblendStateCreateInfo.blendConstants[0] = 0.0f; // Optional
 					vkPipelineColorblendStateCreateInfo.blendConstants[1] = 0.0f; // Optional
 					vkPipelineColorblendStateCreateInfo.blendConstants[2] = 0.0f; // Optional
@@ -337,8 +339,18 @@ namespace GAL
 
 					vkGraphicsPipelineCreateInfo.pColorBlendState = pointer;
 
-					vkGraphicsPipelineCreateInfo.renderPass = static_cast<const VulkanRenderPass*>(pipelineState.Context.RenderPass)->GetVkRenderPass();
-					vkGraphicsPipelineCreateInfo.subpass = pipelineState.Context.SubPassIndex;
+					auto* pipeline_rendering_create_info = buffer.AllocateStructure<VkPipelineRenderingCreateInfoKHR>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR);
+					pipeline_rendering_create_info->pColorAttachmentFormats = reinterpret_cast<const VkFormat*>(buffer.GetData() + buffer.GetLength());
+					for(auto i = 0; i < colorAttachmentCount; ++i) { buffer.AllocateStructure<VkFormat>(ToVulkan(MakeFormatFromFormatDescriptor(pipelineState.Context.Attachments[i].FormatDescriptor))); }
+					pipeline_rendering_create_info->colorAttachmentCount = colorAttachmentCount;
+					pipeline_rendering_create_info->depthAttachmentFormat = ToVulkan(MakeFormatFromFormatDescriptor(pipelineState.Context.Attachments[depthAttachmentIndex].FormatDescriptor));
+					pipeline_rendering_create_info->stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+					pipeline_rendering_create_info->viewMask = 0;
+
+					vkGraphicsPipelineCreateInfo.pNext = pipeline_rendering_create_info;
+
+					vkGraphicsPipelineCreateInfo.renderPass = nullptr;
+					vkGraphicsPipelineCreateInfo.subpass = 0;
 
 					break;
 				}

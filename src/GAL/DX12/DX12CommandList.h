@@ -8,13 +8,16 @@
 #include "DX12RenderDevice.h"
 #include "GAL/CommandList.h"
 
+//#include <pix3.h>
+
+#include "GAL/RenderCore.h"
+
 #include <GTSL/RGB.h>
 #include <GTSL/Vector.hpp>
 
 #undef MemoryBarrier
 
-namespace GAL
-{
+namespace GAL {
 	class DX12PipelineLayout;
 	struct BuildAccelerationStructuresInfo;
 	class DX12Pipeline;
@@ -57,34 +60,25 @@ namespace GAL
 					renderPassDepthStencilDesc.cpuDescriptor;
 				}
 			}
-			
-			ID3D12GraphicsCommandList4* renderPassCapableCommandList = nullptr;
-			commandList->QueryInterface(__uuidof(ID3D12GraphicsCommandList4), reinterpret_cast<void**>(&renderPassCapableCommandList));
-			renderPassCapableCommandList->BeginRenderPass(renderPassRenderTargetDescs.GetLength(), renderPassRenderTargetDescs.begin(),
+
+			commandList->BeginRenderPass(renderPassRenderTargetDescs.GetLength(), renderPassRenderTargetDescs.begin(),
 				&renderPassDepthStencilDesc, D3D12_RENDER_PASS_FLAG_NONE);
-			renderPassCapableCommandList->Release();
 		}
 
 		void EndRenderPass(const DX12RenderDevice* renderDevice) {
-			ID3D12GraphicsCommandList4* renderPassCapableCommandList = nullptr;
-			commandList->QueryInterface(__uuidof(ID3D12GraphicsCommandList4), reinterpret_cast<void**>(&renderPassCapableCommandList));
-			renderPassCapableCommandList->EndRenderPass();
-			renderPassCapableCommandList->Release();
+			commandList->EndRenderPass();
 		}
 		
-		struct MemoryBarrier
-		{
+		struct MemoryBarrier {
 			GTSL::uint32 SourceAccessFlags, DestinationAccessFlags;
 		};
 
-		struct BufferBarrier
-		{
+		struct BufferBarrier {
 			DX12Buffer Buffer;
 			AccessType SourceAccessFlags, DestinationAccessFlags;
 		};
 
-		struct TextureBarrier
-		{
+		struct TextureBarrier {
 			DX12Texture Texture;
 
 			TextureLayout CurrentLayout, TargetLayout;
@@ -97,7 +91,6 @@ namespace GAL
 
 			for(auto& e : barriers) {
 				switch (e.Type) {
-
 				case BarrierType::MEMORY: {
 					break;
 				}
@@ -127,7 +120,6 @@ namespace GAL
 					resourceBarrier.Transition.pResource = static_cast<DX12Texture*>(e.Barrier.TextureBarrier.Texture)->GetID3D12Resource();
 					break;
 				}
-				default: ;
 				}
 			}
 
@@ -148,14 +140,14 @@ namespace GAL
 
 		void BindVertexBuffer(const DX12RenderDevice* renderDevice, const DX12Buffer buffer, const GTSL::uint32 size, const GTSL::uint32 offset, const GTSL::uint32 stride) const {
 			D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
-			vertexBufferView.SizeInBytes =size;
+			vertexBufferView.SizeInBytes = size;
 			vertexBufferView.BufferLocation = buffer.GetID3D12Resource()->GetGPUVirtualAddress() + offset;
 			vertexBufferView.StrideInBytes = stride;
 			commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
 		}
 		
 		void UpdatePushConstant(const DX12RenderDevice* renderDevice, DX12PipelineLayout pipelineLayout, GTSL::uint32 offset, GTSL::Range<const GTSL::byte*> data, ShaderStage shaderStages) {
-			if (shaderStages & (ShaderStages::VERTEX | ShaderStages::FRAGMENT)) {
+			if (shaderStages & (ShaderStages::VERTEX | ShaderStages::FRAGMENT | ShaderStages::RAY_GEN)) {
 				commandList->SetComputeRoot32BitConstants(0, data.Bytes() / 4, data.begin(), offset / 4);
 				return;
 			}
@@ -166,49 +158,54 @@ namespace GAL
 			}
 		}
 		
-		void DrawIndexed(const DX12RenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount = 0) const {
+		void DrawIndexed(const DX12RenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount = 1) const {
 			commandList->DrawIndexedInstanced(indexCount, instanceCount, 0, 0, 0);
 		}
 
 		void TraceRays(const DX12RenderDevice* renderDevice, GTSL::StaticVector<ShaderTableDescriptor, 4> shaderTableDescriptors, GTSL::Extent3D dispatchSize) {
-			ID3D12GraphicsCommandList4* t = nullptr;
-			commandList->QueryInterface(__uuidof(ID3D12GraphicsCommandList4), reinterpret_cast<void**>(&t));
 			D3D12_DISPATCH_RAYS_DESC dispatchRaysDesc;
 			dispatchRaysDesc.Width = dispatchSize.Width; dispatchRaysDesc.Height = dispatchSize.Height; dispatchRaysDesc.Depth = dispatchSize.Depth;
 			
-			dispatchRaysDesc.RayGenerationShaderRecord.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Address);
-			dispatchRaysDesc.RayGenerationShaderRecord.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.RayGenerationShaderRecord.StartAddress = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Address);
+			dispatchRaysDesc.RayGenerationShaderRecord.SizeInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::RAY_GEN_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.HitGroupTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Address);
-			dispatchRaysDesc.HitGroupTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
-			dispatchRaysDesc.HitGroupTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.HitGroupTable.StartAddress = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Address);
+			dispatchRaysDesc.HitGroupTable.SizeInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.HitGroupTable.StrideInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::HIT_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.MissShaderTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Address);
-			dispatchRaysDesc.MissShaderTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
-			dispatchRaysDesc.MissShaderTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.MissShaderTable.StartAddress = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Address);
+			dispatchRaysDesc.MissShaderTable.SizeInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.MissShaderTable.StrideInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::MISS_TABLE_INDEX].EntrySize);
 			
-			dispatchRaysDesc.CallableShaderTable.StartAddress = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Address);
-			dispatchRaysDesc.CallableShaderTable.SizeInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
-			dispatchRaysDesc.CallableShaderTable.StrideInBytes = static_cast<uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.CallableShaderTable.StartAddress = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Address);
+			dispatchRaysDesc.CallableShaderTable.SizeInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].Entries * shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
+			dispatchRaysDesc.CallableShaderTable.StrideInBytes = static_cast<GTSL::uint64>(shaderTableDescriptors[GAL::CALLABLE_TABLE_INDEX].EntrySize);
 			
-			t->DispatchRays(&dispatchRaysDesc);
-
-			t->Release();
+			commandList->DispatchRays(&dispatchRaysDesc);
 		}
 
-		void AddLabel(const DX12RenderDevice* renderDevice, GTSL::Range<const char8_t*> name) {
-			//commandList->SetMarker(METADA)
-		}
+		void AddLabel(const DX12RenderDevice* renderDevice, GTSL::Range<const char8_t*> name) {}
 
-		void BeginRegion(const DX12RenderDevice* renderDevice) const;
+		void BeginRegion(const DX12RenderDevice* renderDevice) const {}
 
-		void EndRegion(const DX12RenderDevice* renderDevice) const;
+		void EndRegion(const DX12RenderDevice* renderDevice) const {}
 		
 		void Dispatch(const DX12RenderDevice* renderDevice, GTSL::Extent3D workGroups) {
 			commandList->Dispatch(workGroups.Width, workGroups.Height, workGroups.Depth);
 		}
 
 		void BindBindingsSets(const DX12RenderDevice* renderDevice) {
+			commandList->SetComputeRootDescriptorTable(0, { 0 });
+			commandList->SetComputeRootUnorderedAccessView(0, 0);
+			commandList->SetComputeRootConstantBufferView(0, 0);
+			commandList->SetComputeRootShaderResourceView(0, 0);
+			commandList->SetComputeRootSignature(nullptr);
+
+			commandList->SetGraphicsRootDescriptorTable(0, { 0 });
+			commandList->SetGraphicsRootUnorderedAccessView(0, 0);
+			commandList->SetGraphicsRootConstantBufferView(0, 0);
+			commandList->SetGraphicsRootShaderResourceView(0, 0);
+			commandList->SetGraphicsRootSignature(nullptr);
 		}
 
 		void CopyTextureToTexture(const DX12RenderDevice* renderDevice, const DX12Texture source, const DX12Texture destination, const GTSL::Extent3D extent, const FormatDescriptor format) {
@@ -247,11 +244,32 @@ namespace GAL
 		}
 
 		void CopyBuffers(const DX12RenderDevice* renderDevice, const DX12Buffer source, const DX12Buffer destination, const GTSL::uint32 size) {
-			commandList->CopyBufferRegion(destination.GetID3D12Resource(), 0, source.GetID3D12Resource(),
-				0, size);
+			commandList->CopyBufferRegion(destination.GetID3D12Resource(), 0, source.GetID3D12Resource(), 0, size);
 		}
 
-		void BuildAccelerationStructure(const DX12RenderDevice* renderDevice, const BuildAccelerationStructuresInfo& info) const;
+		template<class ALLOCATOR>
+		void BuildAccelerationStructure(const DX12RenderDevice* renderDevice, const BuildAccelerationStructuresInfo& info) const {
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc;
+			UINT NumPostbuildInfoDescs = 0;
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postbuildInfoDescs;
+
+			GTSL::Vector<D3D12_RAYTRACING_GEOMETRY_DESC, ALLOCATOR> geomDesc;
+
+			desc.DestAccelerationStructureData;
+			desc.Inputs.DescsLayout;
+			desc.Inputs.Flags;
+			desc.Inputs.InstanceDescs;
+			desc.Inputs.NumDescs = geomDesc.GetLength();
+			desc.Inputs.pGeometryDescs = geomDesc.GetData();
+			desc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+			desc.ScratchAccelerationStructureData;
+			desc.SourceAccelerationStructureData;
+
+			postbuildInfoDescs.DestBuffer;
+			postbuildInfoDescs.InfoType;
+
+			commandList->BuildRaytracingAccelerationStructure(&desc, NumPostbuildInfoDescs, &postbuildInfoDescs);
+		}
 		
 		~DX12CommandList() = default;
 
@@ -276,6 +294,6 @@ namespace GAL
 		
 	private:
 		ID3D12CommandAllocator* commandAllocator = nullptr;
-		ID3D12GraphicsCommandList* commandList = nullptr;
+		ID3D12GraphicsCommandList5* commandList = nullptr;
 	};
 }

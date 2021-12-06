@@ -17,8 +17,7 @@ class Sound;
 MAKE_HANDLE(uint32, AudioListener)
 MAKE_HANDLE(uint32, AudioEmitter)
 
-class AudioSystem : public System
-{
+class AudioSystem : public System {
 public:
 	AudioSystem(const InitializeInfo& initializeInfo);
 	~AudioSystem();

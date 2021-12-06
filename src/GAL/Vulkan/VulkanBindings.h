@@ -190,18 +190,17 @@ namespace GAL
 		VkDescriptorSet descriptorSet;
 	};
 
-	template <class ALLOCATOR>
-	void VulkanBindingsPool::Update(const VulkanRenderDevice* renderDevice, GTSL::Range<const BindingsUpdateInfo*> bindingsUpdateInfos, const ALLOCATOR& allocator)
-	{
-		GTSL::Vector<VkWriteDescriptorSet, ALLOCATOR> vkWriteDescriptorSets(static_cast<uint32_t>(bindingsUpdateInfos.ElementCount()), allocator);
+	//TODO: fix up potential pointer errors
 
-		VkWriteDescriptorSetAccelerationStructureKHR as{
-			VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR
-		};
+	template <class ALLOCATOR>
+	void VulkanBindingsPool::Update(const VulkanRenderDevice* renderDevice, GTSL::Range<const BindingsUpdateInfo*> bindingsUpdateInfos, const ALLOCATOR& allocator) {
+		GTSL::Vector<VkWriteDescriptorSet, ALLOCATOR> vkWriteDescriptorSets(static_cast<uint32_t>(bindingsUpdateInfos.ElementCount()), allocator);
+		GTSL::Vector<VkWriteDescriptorSetAccelerationStructureKHR, ALLOCATOR> vkWriteDescriptorSetsAcc(2, allocator);
 
 		GTSL::Vector<GTSL::Vector<VkAccelerationStructureKHR, ALLOCATOR>, ALLOCATOR> accelerationStructuresPerSubSetUpdate(8, allocator);
 		GTSL::Vector<GTSL::Vector<VkDescriptorBufferInfo, ALLOCATOR>, ALLOCATOR> buffersPerSubSetUpdate(8, allocator);
 		GTSL::Vector<GTSL::Vector<VkDescriptorImageInfo, ALLOCATOR>, ALLOCATOR> imagesPerSubSetUpdate(8, allocator);
+		GTSL::Vector<GTSL::Vector<VulkanAccelerationStructure, ALLOCATOR>, ALLOCATOR> accPerSubSetUpdate(8, allocator);
 
 		for (GTSL::uint32 index = 0; index < static_cast<GTSL::uint32>(bindingsUpdateInfos.ElementCount()); ++index) {
 			VkWriteDescriptorSet& writeSet = vkWriteDescriptorSets.EmplaceBack();
@@ -218,18 +217,15 @@ namespace GAL
 			writeSet.pBufferInfo = nullptr;
 			writeSet.pTexelBufferView = nullptr;
 
-			switch (info.Type)
-			{
+			switch (info.Type) {
 			case BindingType::SAMPLER:
 			case BindingType::COMBINED_IMAGE_SAMPLER:
 			case BindingType::SAMPLED_IMAGE:
 			case BindingType::STORAGE_IMAGE:
-			case BindingType::INPUT_ATTACHMENT:
-			{
+			case BindingType::INPUT_ATTACHMENT: {
 				imagesPerSubSetUpdate.EmplaceBack(8, allocator);
 
-				for (auto e : info.BindingUpdateInfos)
-				{
+				for (auto e : info.BindingUpdateInfos) {
 					auto& vkDescriptorImageInfo = imagesPerSubSetUpdate.back().EmplaceBack();
 					vkDescriptorImageInfo.sampler = e.TextureBindingUpdateInfo.Sampler.GetVkSampler();
 					vkDescriptorImageInfo.imageView = e.TextureBindingUpdateInfo.TextureView.GetVkImageView();
@@ -240,19 +236,15 @@ namespace GAL
 
 				break;
 			}
-
 			case BindingType::UNIFORM_TEXEL_BUFFER: GAL_DEBUG_BREAK;
 			case BindingType::STORAGE_TEXEL_BUFFER: GAL_DEBUG_BREAK;
-
 			case BindingType::UNIFORM_BUFFER:
 			case BindingType::STORAGE_BUFFER:
 			case BindingType::UNIFORM_BUFFER_DYNAMIC:
-			case BindingType::STORAGE_BUFFER_DYNAMIC:
-			{
+			case BindingType::STORAGE_BUFFER_DYNAMIC: {
 				buffersPerSubSetUpdate.EmplaceBack(8, allocator);
 
-				for (auto e : info.BindingUpdateInfos)
-				{
+				for (auto e : info.BindingUpdateInfos) {
 					auto& vkDescriptorBufferInfo = buffersPerSubSetUpdate.back().EmplaceBack();
 					vkDescriptorBufferInfo.buffer = e.BufferBindingUpdateInfo.Buffer.GetVkBuffer();
 					vkDescriptorBufferInfo.offset = e.BufferBindingUpdateInfo.Offset;
@@ -262,24 +254,24 @@ namespace GAL
 				writeSet.pBufferInfo = buffersPerSubSetUpdate.back().begin();
 				break;
 			}
+			case BindingType::ACCELERATION_STRUCTURE: {
+				auto& vkwds = vkWriteDescriptorSetsAcc.EmplaceBack();
 
-			case BindingType::ACCELERATION_STRUCTURE:
-			{
-				//BUG: IF THERE IS MORE THAN ONE ACC STRCUCT THIS WON'T WORK
-				writeSet.pNext = &as;
-				as.accelerationStructureCount = static_cast<GTSL::uint32>(info.BindingUpdateInfos.ElementCount());
+				vkwds.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+				vkwds.pNext = nullptr;
+
+				writeSet.pNext = &vkwds;
+
+				vkwds.accelerationStructureCount = static_cast<GTSL::uint32>(info.BindingUpdateInfos.ElementCount());
 				accelerationStructuresPerSubSetUpdate.EmplaceBack(8, allocator);
 
-				for (auto e : info.BindingUpdateInfos)
-				{
-					accelerationStructuresPerSubSetUpdate.back().EmplaceBack(
-						e.AccelerationStructureBindingUpdateInfo.AccelerationStructure.
-						GetVkAccelerationStructure());
+				for (auto e : info.BindingUpdateInfos) {
+					auto& vkAcc = accPerSubSetUpdate.back().EmplaceBack(e.AccelerationStructureBindingUpdateInfo.AccelerationStructure);
 				}
-				as.pAccelerationStructures = accelerationStructuresPerSubSetUpdate.back().begin();
+
+				vkwds.pAccelerationStructures = accelerationStructuresPerSubSetUpdate.back().GetData();
 				break;
 			}
-			default: __debugbreak();
 			}
 		}
 

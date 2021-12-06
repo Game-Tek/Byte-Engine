@@ -55,8 +55,14 @@ namespace GAL {
 			vkSubmitInfo.pWaitDstStageMask = waitPipelineStages.begin();
 
 			fence.Signal();
-			
-			return renderDevice->VkQueueSubmit(queue, 1, &vkSubmitInfo, fence.GetVkFence()) == VK_SUCCESS;
+
+			auto submitResult = renderDevice->VkQueueSubmit(queue, 1, &vkSubmitInfo, fence.GetVkFence());
+
+			if(submitResult == VK_ERROR_DEVICE_LOST) {
+				renderDevice->Log(u8"Error: Device lost", RenderDevice::MessageSeverity::ERROR);
+			}
+
+			return submitResult == VK_SUCCESS;
 		}
 
 		[[nodiscard]] VkQueue GetVkQueue() const { return queue; }

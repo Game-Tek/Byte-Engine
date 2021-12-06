@@ -4,11 +4,11 @@
 #include "VulkanMemory.h"
 #include "VulkanRenderDevice.h"
 #include "GAL/Texture.h"
+#include "GAL/Texture.h"
 
 namespace GAL
 {	
-	class VulkanTexture final : public Texture
-	{
+	class VulkanTexture final : public Texture {
 	public:
 		VulkanTexture() = default;
 		VulkanTexture(VkImage i) : image(i) {}
@@ -53,8 +53,7 @@ namespace GAL
 		VkImage image = nullptr;		
 	};
 
-	class VulkanTextureView final
-	{
+	class VulkanTextureView final : public TextureView {
 	public:
 		VulkanTextureView() = default;
 

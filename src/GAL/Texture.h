@@ -9,8 +9,7 @@
 namespace GAL
 {
 	//Represents a resource utilized by the rendering API for storing and referencing textures. Which are images which hold some information loaded from memory.
-	class Texture
-	{
+	class Texture {
 	public:
 		Texture() = default;
 		~Texture() = default;
@@ -116,11 +115,10 @@ namespace GAL
 		}
 	};
 
-	class ImageView
-	{
+	class TextureView {
 	public:
-		ImageView() = default;
-		~ImageView() = default;
+		TextureView() = default;
+		~TextureView() = default;
 	};
 
 	class Sampler

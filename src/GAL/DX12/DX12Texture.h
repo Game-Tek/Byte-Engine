@@ -66,13 +66,11 @@ namespace GAL
 		ID3D12Resource* resource = nullptr;
 	};
 
-	class DX12TextureView final
-	{
+	class DX12TextureView final {
 	public:
 		DX12TextureView() = default;
 
-		void Initialize(const DX12RenderDevice* renderDevice, const GTSL::Range<const char8_t*> name, const DX12Texture texture, const FormatDescriptor formatDescriptor, const GTSL::Extent3D extent, const GTSL::uint8 mipLevels)
-		{
+		void Initialize(const DX12RenderDevice* renderDevice, const GTSL::Range<const char8_t*> name, const DX12Texture texture, const FormatDescriptor formatDescriptor, const GTSL::Extent3D extent, const GTSL::uint8 mipLevels) {
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle;
 			
 			D3D12_UNORDERED_ACCESS_VIEW_DESC unordered_access_view_desc;
@@ -97,8 +95,7 @@ namespace GAL
 		ID3D12Resource* tex_2d = nullptr;
 	};
 
-	class DX12Sampler final
-	{
+	class DX12Sampler final {
 	public:
 		DX12Sampler() = default;
 
@@ -117,7 +114,6 @@ namespace GAL
 			samplerDesc.MaxLOD = 0.0f;
 			samplerDesc.MinLOD = 0.0f;
 			samplerDesc.MipLODBias = 0.0f;
-
 			renderDevice->GetID3D12Device2()->CreateSampler(&samplerDesc, sampler);
 		}
 		

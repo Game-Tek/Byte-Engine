@@ -18,6 +18,7 @@
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 #include "ByteEngine/Resources/FontResourceManager.h"
+#include "ByteEngine/Resources/CurvesResourceManager.hpp"
 
 #include "ByteEngine/Sound/AudioSystem.h"
 #include "GTSL/System.h"

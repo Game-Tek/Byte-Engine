@@ -1360,8 +1360,8 @@ private:
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {
-		GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
-		projectSpheres({0}, spherePositionsAndRadius, results);
+		//GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
+		//projectSpheres({0}, spherePositionsAndRadius, results);
 
 		{ // Add BLAS instances to TLAS only if dependencies were fulfilled
 			auto i = 0;

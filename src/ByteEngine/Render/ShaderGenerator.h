@@ -93,6 +93,7 @@ struct GPipeline {
 		} Type = ElementType::NULL;
 
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
+		GTSL::StaticVector<uint32, 32> symbols;
 		GTSL::StaticString<64> Name;
 		uint32 Reference = 0xFFFFFFFF;
 	};
@@ -130,6 +131,7 @@ struct GPipeline {
 	ElementHandle Add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
 		elements[parent.Handle].map.Emplace(Id(name)).EmplaceBack(handle);
+		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
 		return ElementHandle(handle);
@@ -189,10 +191,8 @@ struct GPipeline {
 
 	auto GetChildren(const ElementHandle element_handle) {
 		GTSL::StaticVector<ElementHandle, 64> children;
-		for(auto& e : GetElement(element_handle).map) {
-			for(auto& f : e) {
-				children.EmplaceBack(f);
-			}
+		for(auto& e : GetElement(element_handle).symbols) {
+			children.EmplaceBack(e);
 		}
 
 		return children;
@@ -330,10 +330,10 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 				type = TokenTypes::RPAREN;
 			}
 			else if (c == U'[') {
-				type = TokenTypes::RSQBRACKETS;
+				type = TokenTypes::LSQBRACKETS;
 			}
 			else if (c == U']') {
-				type = TokenTypes::LSQBRACKETS;
+				type = TokenTypes::RSQBRACKETS;
 			}
 			else if (c == U'.') {
 				type = TokenTypes::DOT;
@@ -484,14 +484,12 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	auto resolveTypeName = [&](const StructElement struct_element) -> StructElement {
 		StructElement result = struct_element;
 
-		GTSL::StringView peeledName;
-
-		if (*(struct_element.Type.end() - 2) == U'[') {
-			GTSL::StaticString<64> n(result.Type);
-			DropLast(n, u8'['); //todo; copy argument count
-			result.Type = n;
-
-			result.Name += u8"[]";
+		if (auto res = FindFirst(struct_element.Type, U'[')) {
+			result.Type.Drop(res.Get());
+			auto last = FindLast(struct_element.Type, U']'); //TODO: boom no bracket pair
+			for(uint32 o = res.Get(); o < last.Get() + 1; ++o) {
+				result.Name += struct_element.Type[o];
+			}
 		}
 
 		result.Type = resolve(result.Type);
@@ -557,7 +555,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 
 		for (auto& e : stt) { writeStructElement(statementString, e); }
 
-		statementString += u8"}\n";
+		statementString += u8"};\n";
 
 		structBlock += statementString;
 	};
@@ -693,7 +691,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		if (!pushConstantBlockHandle) { addErrorCode(u8"Push constant block declaration was not found."); return; }
 		for (const auto& l : pipeline.GetChildren(pushConstantBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
 	}();
-	declarationBlock += u8"} invocationInfo;\n";
+	declarationBlock += u8"} pushConstantBlock;\n";
 
 	if(isRayTracing) {
 		[&] {
@@ -762,7 +760,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 			}
 		}();
 
-		declarationBlock += u8" } vertexOut;\n";
+		declarationBlock += u8" } vertexSurfaceInterface;\n";
 
 		[&] {
 			auto vertexBlockHandle = pipeline.TryGetElementHandle(scopes, u8"vertex");
@@ -772,7 +770,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 				writeStructElement(declarationBlock, pipeline.GetMember(ve)); declarationBlock += u8'\n';
 				++i;
 			}
-		};
+		}();
 
 		break;
 	}

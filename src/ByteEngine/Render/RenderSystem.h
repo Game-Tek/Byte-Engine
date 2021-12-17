@@ -495,6 +495,14 @@ private:
 	struct AccelerationStructureData {
 		AccelerationStructureData() {}
 
+		AccelerationStructureData(AccelerationStructureData&& other) : isTop(other.isTop), PrimitiveCount(other.PrimitiveCount) {
+			if(isTop) {
+				GTSL::Move(&other.TopLevel, &TopLevel);
+			} else {
+				GTSL::Move(&other.BottomLevel, &BottomLevel);				
+			}
+		}
+
 		bool isTop = false;
 		GTSL::uint32 PrimitiveCount = 0;
 

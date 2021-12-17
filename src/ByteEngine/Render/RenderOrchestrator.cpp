@@ -805,7 +805,17 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	GTSL::StaticVector<ShaderBundleData, 4> shaderBundles;
 	GTSL::StaticVector<MemberInfo, 16> members;
 
-	for (auto& e : shader_group_info.VertexElements) { vertexElements.EmplaceBack(e); }
+	for (auto& e : shader_group_info.VertexElements) {
+		GAL::ShaderDataType type;
+
+		switch (Hash(e.Type)) {
+		case GTSL::Hash(u8"vec2f"): type = GAL::ShaderDataType::FLOAT2; break;
+		case GTSL::Hash(u8"vec3f"): type = GAL::ShaderDataType::FLOAT3; break;
+		case GTSL::Hash(u8"vec4f"): type = GAL::ShaderDataType::FLOAT4; break;
+		}
+
+		vertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GTSL::ShortString<32>(e.Name.c_str()), type });
+	}
 
 	for (uint32 offset = 0, si = 0; const auto & s : shader_group_info.Shaders) {
 		if (auto shader = shaders.TryEmplace(s.Hash)) {

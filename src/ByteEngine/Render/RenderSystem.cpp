@@ -15,7 +15,7 @@ class RenderStaticMeshCollection;
 
 PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
-//RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, MaterialInstanceHandle materialHandle)
+//RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, ShaderGroupHandle materialHandle)
 //{
 //	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
 //	mesh.CustomMeshIndex = customIndex;
@@ -30,15 +30,13 @@ PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTS
 RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderSystem"),
 	bufferCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
 	textureCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
-	bottomLevelAccelerationStructures(GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
-	buildDatas{ GetPersistentAllocator(), GetPersistentAllocator(), GetPersistentAllocator() }, geometries{ GetPersistentAllocator(), GetPersistentAllocator(), GetPersistentAllocator() }, pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),
+	accelerationStructures(GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
+	pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),
 	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator())
 {
 	{
-		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
-		//initializeInfo.ApplicationManager->AddTask(u8"RenderSystem::waitForFences", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::waitForFences>(this), actsOn, u8"RenderStart", u8"RenderStartSetup");
-		initializeInfo.GameInstance->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"RenderFinished", u8"RenderEnd");
-		resizeHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onResize", {}, & RenderSystem::onResize);
+		initializeInfo.ApplicationManager->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"FrameEnd", u8"FrameEnd");
+		resizeHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"onResize", {}, & RenderSystem::onResize);
 	}
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
@@ -84,7 +82,6 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		}
 
 		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]);
-		//transferQueue.Initialize(GetRenderDevice(), queueKeys[1]);
 
 		{
 			needsStagingBuffer = true;
@@ -110,23 +107,12 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		localMemoryAllocator.Initialize(renderDevice, GetPersistentAllocator());
 
 		if (rayTracing) {
-			CreateBuffer(GTSL::Byte(GTSL::MegaByte(1)), GAL::BufferUses::BUILD_INPUT_READ, true, false);
-
 			shaderGroupHandleAlignment = rayTracingCapabilities.ShaderGroupHandleAlignment;
 			shaderGroupHandleSize = rayTracingCapabilities.ShaderGroupHandleSize;
 			scratchBufferOffsetAlignment = rayTracingCapabilities.ScratchBuildOffsetAlignment;
 			shaderGroupBaseAlignment = rayTracingCapabilities.ShaderGroupBaseAlignment;
 
 			accelerationStructureBuildDevice = rayTracingCapabilities.BuildDevice;
-
-			switch (rayTracingCapabilities.BuildDevice) {
-			case GAL::Device::CPU: break;
-			case GAL::Device::GPU:
-			case GAL::Device::GPU_OR_CPU:
-				buildAccelerationStructures = decltype(buildAccelerationStructures)::Create<RenderSystem, &RenderSystem::buildAccelerationStructuresOnDevice>();
-				break;
-			default:;
-			}
 		}
 	}
 
@@ -135,7 +121,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	}
 
 	bool pipelineCacheAvailable;
-	auto* pipelineCacheManager = initializeInfo.GameInstance->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
+	auto* pipelineCacheManager = initializeInfo.ApplicationManager->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 	pipelineCacheManager->DoesCacheExist(pipelineCacheAvailable);
 
 	if (pipelineCacheAvailable) {
@@ -148,7 +134,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
 			if constexpr (_DEBUG) {
-				//GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
+				//GTSL::StaticString<32> name(u8"GPUPipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, static_cast<GTSL::Range<const GTSL::byte*>>(pipelineCacheBuffer));
@@ -156,7 +142,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	} else {
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
 			if constexpr (_DEBUG) {
-				//GTSL::StaticString<32> name(u8"Pipeline cache. Thread: "); name += i;
+				//GTSL::StaticString<32> name(u8"GPUPipeline cache. Thread: "); name += i;
 			}
 
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, {});
@@ -166,8 +152,12 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	BE_LOG_MESSAGE(u8"Initialized successfully");
 }
 
+class PresentKey {
+	Fence Fence;
+	uint8 ImageIndex = 0;
+};
+
 RenderSystem::~RenderSystem() {
-	//graphicsQueue.Wait(GetRenderDevice()); transferQueue.Wait(GetRenderDevice());
 	renderDevice.Wait();
 
 	for (uint32 i = 0; i < pipelinedFrames; ++i) {
@@ -194,49 +184,13 @@ RenderSystem::~RenderSystem() {
 		pipelineCache.GetCacheSize(GetRenderDevice(), cacheSize);
 
 		if (cacheSize) {
-			//auto* pipelineCacheResourceManager = shutdownInfo.GameInstance->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
+			//auto* pipelineCacheResourceManager = shutdownInfo.ApplicationManager->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 			//
 			//GTSL::Buffer pipelineCacheBuffer(cacheSize, 32, GetTransientAllocator());
 			//pipelineCache.GetCache(&renderDevice, pipelineCacheBuffer);
 			//pipelineCacheResourceManager->WriteCache(pipelineCacheBuffer);
 		}
 	}
-}
-
-void RenderSystem::buildAccelerationStructuresOnDevice(CommandList& commandBuffer)
-{
-	if (buildDatas[GetCurrentFrame()].GetLength()) {
-		GTSL::StaticVector<GAL::BuildAccelerationStructureInfo, 8> accelerationStructureBuildInfos;
-		GTSL::StaticVector<GTSL::StaticVector<GAL::Geometry, 8>, 16> geometryDescriptors;
-
-		uint32 offset = 0; auto scratchBufferAddress = accelerationStructureScratchBuffer[GetCurrentFrame()].GetAddress(GetRenderDevice());
-		
-		for (uint32 i = 0; i < buildDatas[GetCurrentFrame()].GetLength(); ++i) {
-			geometryDescriptors.EmplaceBack();
-			geometryDescriptors[i].EmplaceBack(geometries[GetCurrentFrame()][i]);
-			
-			GAL::BuildAccelerationStructureInfo buildAccelerationStructureInfo;
-			buildAccelerationStructureInfo.ScratchBufferAddress = scratchBufferAddress + offset; //TODO: ENSURE CURRENT BUILDS SCRATCH BUFFER AREN'T OVERWRITTEN ON TURN OF FRAME
-			buildAccelerationStructureInfo.SourceAccelerationStructure = AccelerationStructure();
-			buildAccelerationStructureInfo.DestinationAccelerationStructure = buildDatas[GetCurrentFrame()][i].Destination;
-			buildAccelerationStructureInfo.Geometries = geometryDescriptors[i];
-			buildAccelerationStructureInfo.Flags = buildDatas[GetCurrentFrame()][i].BuildFlags;
-
-			accelerationStructureBuildInfos.EmplaceBack(buildAccelerationStructureInfo);
-			
-			offset += GTSL::Math::RoundUpByPowerOf2(buildDatas[GetCurrentFrame()][i].ScratchBuildSize, scratchBufferOffsetAlignment);
-		}
-		
-		commandBuffer.BuildAccelerationStructure(GetRenderDevice(), accelerationStructureBuildInfos, GetTransientAllocator());
-		
-		GTSL::StaticVector<CommandList::BarrierData, 1> barriers;
-		barriers.EmplaceBack(GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::MemoryBarrier{});
-		
-		commandBuffer.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
-	}
-	
-	buildDatas[GetCurrentFrame()].Resize(0);
-	geometries[GetCurrentFrame()].Resize(0);
 }
 
 void RenderSystem::beginGraphicsCommandLists(CommandListData& command_list_data)
@@ -411,14 +365,7 @@ void RenderSystem::UpdateTexture(const TextureHandle textureHandle)
 
 void RenderSystem::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 {
-	if(!oldFocus)
-	{
-		//const GTSL::StaticVector<TaskDependency, 8> actsOn{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
-		//taskInfo.ApplicationManager->AddTask(u8"frameStart", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::frameStart>(this), actsOn, u8"FrameStart", u8"RenderStart");
-		//taskInfo.ApplicationManager->AddTask(u8"executeTransfers", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::executeTransfers>(this), actsOn, u8"GameplayEnd", u8"RenderStart");
-		//taskInfo.ApplicationManager->AddTask(u8"renderSetup", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::beginGraphicsCommandLists>(this), actsOn, u8"RenderEndSetup", u8"RenderDo");
-		//taskInfo.ApplicationManager->AddTask(u8"renderFinished", GTSL::Delegate<void(TaskInfo)>::Create<RenderSystem, &RenderSystem::renderFlush>(this), actsOn, u8"RenderFinished", u8"RenderEnd");
-
+	if(!oldFocus) {
 		BE_LOG_SUCCESS(u8"Enabled rendering")
 	}
 
@@ -427,14 +374,7 @@ void RenderSystem::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
 
 void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 {
-	if (oldFocus)
-	{
-		//taskInfo.ApplicationManager->RemoveTask(u8"frameStart", u8"FrameStart");
-		//taskInfo.ApplicationManager->RemoveTask(u8"executeTransfers", u8"GameplayEnd");
-		//taskInfo.ApplicationManager->RemoveTask(u8"waitForFences", u8"RenderStart");
-		//taskInfo.ApplicationManager->RemoveTask(u8"renderSetup", u8"RenderEndSetup");
-		//taskInfo.ApplicationManager->RemoveTask(u8"renderFinished", u8"RenderFinished");
-
+	if (oldFocus) {
 		BE_LOG_SUCCESS(u8"Disabled rendering")
 	}
 }
@@ -535,8 +475,7 @@ RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUs
 	for (uint8 f = 0; f < frames; ++f) {
 		if (willWriteFromHost) {
 			if (needsStagingBuffer) { //create staging buffer			
-				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE,
-					&buffer.Staging[f], &buffer.StagingAllocation[f]);
+				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Staging[f], &buffer.StagingAllocation[f]);
 
 				flags |= GAL::BufferUses::TRANSFER_DESTINATION;
 			}
@@ -652,10 +591,6 @@ void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 		//GTSL::StaticString<32> name("ImageAvailableSemaphore #"); name += i;
 	}
 	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice());
-
-	for(auto& e : topLevelAccelerationStructures) {
-		e.AccelerationStructures[frame_index];
-	}
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {

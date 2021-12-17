@@ -36,9 +36,9 @@ public:
 	struct Character
 	{
 		GTSL::Extent2D Size;       // Size of glyph
-		IVector2D Bearing;    // Offset from baseline to left/top of glyph
+		IVector2D Bearing;    // Address from baseline to left/top of glyph
 		GTSL::Extent2D Position;
-		uint32 Advance;    // Offset to advance to next glyph
+		uint32 Advance;    // Address to advance to next glyph
 	};
 
 	struct FontData : Data

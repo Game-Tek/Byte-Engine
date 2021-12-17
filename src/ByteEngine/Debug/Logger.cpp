@@ -81,32 +81,6 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const ch
 	logMutex.Unlock();
 }
 
-void Logger::logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken)
-{
-	if (!trace) { return; }
-
-	GTSL::StaticString<1024> string;
-
-	{
-		GTSL::Lock lock(traceMutex);
-
-		if (profileCount++ > 0)
-			string += u8",";
-
-		string += u8"{";
-		string += u8"\"cat\":\"function\",";
-		string += u8"\"dur\":"; ToString(string, timeTaken.GetCount()); string += u8",";
-		string += u8"\"name\":\""; string += functionTimer->Name; string += u8"\",";
-		string += u8"\"ph\":\"X\",";
-		string += u8"\"pid\":0,";
-		string += u8"\"tid\":"; ToString(string, getThread()); string += u8",";
-		string += u8"\"ts\":"; ToString(string, functionTimer->StartingTime.GetCount());
-		string += u8"}";
-
-		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
-	}
-}
-
 void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 {
 	switch (level) {

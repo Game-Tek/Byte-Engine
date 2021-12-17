@@ -17,6 +17,8 @@
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Debug/FunctionTimer.h"
 
+#include "ByteEngine/Application/Handle.hpp"
+
 class World;
 class ComponentCollection;
 class System;
@@ -74,14 +76,18 @@ struct EventHandle {
 
 MAKE_HANDLE(uint32, System)
 
+//#define Q(x) #x
+//#define MAKE_TASK(am, className, functionName, startStage, endStage, dependencies, ...) am->AddTask(this, u8 Q(functionName), &className::functionName, dependencies, startStage, endStage, __VA_ARGS__)
+
+#include "ByteEngine/Application/Application.h"
+
 class ApplicationManager : public Object {
-	using FunctionType = GTSL::Delegate<void(ApplicationManager*, uint32, void*)>;
+	using FunctionType = GTSL::Delegate<void(ApplicationManager*, DispatchedTaskHandle, void*)>;
 public:
 	ApplicationManager();
 	~ApplicationManager();
 	
 	void OnUpdate(BE::Application* application);
-
 	
 	using WorldReference = uint8;
 	
@@ -95,7 +101,11 @@ public:
 	}
 
 	void UnloadWorld(WorldReference worldId);
-	
+
+	void DestroyEntity(const BE::Handle handle) {
+		//systems[handle.Identifier.SystemId]->Destroy(handle.Handle);
+	}
+
 	template<class T>
 	T* GetSystem(const Id systemName) {
 		GTSL::Lock lock(systemsMutex);
@@ -113,17 +123,26 @@ public:
 		return SystemHandle(systemsIndirectionTable.At(systemName));
 	}
 
-#define BE_TASK(doDelete) auto task = [](ApplicationManager* gameInstance, const uint32 dynamicTaskIndex, void* data) {\
-		DTI* info = static_cast<DTI*>(data);\
-		{\
-			FunctionTimer f(info->Name);\
-			call<T, typename ACC::type...>(static_cast<T*>(info->Callee), TaskInfo(gameInstance), info);\
-		}\
-		if(info->endStageIndex != 0xFFFF) { gameInstance->semaphores[info->endStageIndex].Post(); }\
-		if constexpr (doDelete) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); }\
-		gameInstance->resourcesUpdated.NotifyAll();\
-		gameInstance->taskSorter.ReleaseResources(dynamicTaskIndex);\
-	}\
+	template<typename DTI, typename T, bool doDelete, typename... ACC>
+	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, void* data) {
+		DTI* info = static_cast<DTI*>(data);
+		
+		auto startTime = BE::Application::Get()->GetClock()->GetCurrentMicroseconds();
+		call<T, typename ACC::type...>(static_cast<T*>(info->Callee), TaskInfo(gameInstance), info);
+		GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, info->StartStage); args += u8"\", \"Index\":"; ToString(args, info->startStageIndex); args += u8" },";
+		args += u8"\"End stage\":{ "; args += u8"\"Name\":\""; ToString(args, info->EndStage); args += u8"\", \"Index\":"; ToString(args, info->endStageIndex); args += u8" },";
+		args += u8"\"Accesses\":[ ";
+		for(auto&[name, access] : info->Accesses) {
+			args += u8"\"System\":{ "; args += u8"\"Name\":\""; args += name; args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
+		}
+		args += u8" ]";
+		BE::Application::Get()->GetLogger()->logFunction(info->Name, startTime, BE::Application::Get()->GetClock()->GetCurrentMicroseconds(), args);
+		
+		if(info->endStageIndex != 0xFFFF) { gameInstance->semaphores[info->endStageIndex].Post(); }
+		if constexpr (doDelete) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); }
+		gameInstance->resourcesUpdated.NotifyAll();
+		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
+	}
 
 	template<class T, typename F, typename... ACC, typename... FARGS>
 	void AddTask(T* caller, const Id name, F delegate, DependencyBlock<ACC...> dependencies, const Id startStage, const Id endStage, FARGS&&... args) {
@@ -148,20 +167,22 @@ public:
 			taskInfo->startStageIndex = startStageIndex; taskInfo->endStageIndex = endStageIndex;
 
 			if constexpr (BE_DEBUG) {
-				taskInfo->Name = GTSL::StringView(name);
-				taskInfo->StartStage = startStage; taskInfo->EndStage = endStage;
+				GTSL::ShortString<128> n(caller->GetName()); n += u8"::"; n += GTSL::StringView(name);
+				taskInfo->Name = n;
+				taskInfo->StartStage = GTSL::StringView(startStage); taskInfo->EndStage = GTSL::StringView(endStage);
+				for (uint32 i = 0; i < dependencies.Length + 1; ++i) {
+					taskInfo->Accesses.EmplaceBack(GTSL::StringView(dependencies.Names[i]), dependencies.AccessTypes[i]);
+				}
 			}
 
 			for(uint32 i = 0; i < dependencies.Length; ++i) {
 				taskInfo->SetResource(i, systemsMap[dependencies.Names[1 + i]]);
 			}
 
-			BE_TASK(false);
-
 			{
 				GTSL::WriteLock lock(recurringTasksInfoMutex);
 				GTSL::WriteLock lock2(recurringTasksMutex);
-				recurringTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create(task), accesses, endStageIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
+				recurringTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, false, ACC...>>(), accesses, endStageIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
 				recurringTasksInfo[startStageIndex].EmplaceBack(GTSL::MoveRef(taskInfo));
 			}
 		}(delegate);
@@ -186,14 +207,15 @@ public:
 
 			if constexpr (BE_DEBUG) {
 				taskInfo->Name = GTSL::StringView(name);
-				taskInfo->StartStage = startStage; taskInfo->EndStage = endStage;
+				taskInfo->StartStage = GTSL::StringView(startStage); taskInfo->EndStage = GTSL::StringView(endStage);
+				for (uint32 i = 0; i < dependencies.Length + 1; ++i) {
+					taskInfo->Accesses.EmplaceBack(GTSL::StringView(dependencies.Names[i]), dependencies.AccessTypes[i]);
+				}
 			}
 
 			for (uint32 i = 0; i < dependencies.Length; ++i) {
 				taskInfo->SetResource(i, systemsMap[dependencies.Names[1 + i]]);
 			}
-
-			BE_TASK(true);
 
 			GTSL::StaticVector<TaskAccess, 32> accesses;
 
@@ -207,7 +229,7 @@ public:
 
 				{
 					GTSL::WriteLock lock2(dynamicTasksPerStageMutex);
-					dynamicTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create(task), accesses, endStageIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
+					dynamicTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), accesses, endStageIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
 				}
 			}
 			else { //no dependecies
@@ -218,7 +240,7 @@ public:
 
 				{
 					GTSL::WriteLock lock(asyncTasksMutex);
-					asyncTasks.AddTask(name, FunctionType::Create(task), accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
+					asyncTasks.AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
 				}
 			}
 
@@ -244,11 +266,9 @@ public:
 		return[&]<typename... ARGS>(void(T:: * d)(TaskInfo, typename ACC::type*..., ARGS...)) {
 			using DTI = DispatchTaskInfo<ARGS...>;
 
-			BE_TASK(true);
-
 			{
 				GTSL::WriteLock lock(storedDynamicTasksMutex);
-				index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ taskName, accesses, FunctionType::Create(task), caller });
+				index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ taskName, accesses, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), caller });
 				auto& sdt = storedDynamicTasks[index];
 				sdt.SetDelegate(d);
 			}
@@ -279,6 +299,9 @@ public:
 		if constexpr (BE_DEBUG) {
 			taskInfo->Name = GTSL::StringView(storedDynamicTask.Name);
 			taskInfo->StartStage = storedDynamicTask.StartStage; taskInfo->EndStage = storedDynamicTask.EndStage;
+			for (uint32 i = 0; i < storedDynamicTask.Access.GetLength(); ++i) {
+				taskInfo->Accesses.EmplaceBack(GTSL::StringView(systemNames[storedDynamicTask.Access[i].First]), storedDynamicTask.Access[i].Second);
+			}
 		}
 
 		for (uint32 i = 0; i < storedDynamicTask.Access.GetLength() - 1; ++i) {
@@ -389,8 +412,8 @@ private:
 		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
 #if BE_DEBUG
-		GTSL::StaticString<64> Name = u8"null";
-		Id StartStage, EndStage;
+		GTSL::StaticString<64> Name = u8"null", StartStage, EndStage;
+		GTSL::StaticVector<GTSL::Pair<GTSL::ShortString<32>, AccessType>, 8> Accesses;
 #endif
 
 		byte Delegate[8];
@@ -454,7 +477,7 @@ private:
 		byte TaskFunction[8];
 
 		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
-		Id StartStage, EndStage;
+		GTSL::StaticString<64> StartStage, EndStage;
 
 		template<typename F>
 		void SetDelegate(F delegate) {
@@ -500,24 +523,6 @@ private:
 
 	uint64 frameNumber = 0;
 
-	GTSL::StaticString<1024> genTaskLog(Id taskName)
-	{
-		GTSL::StaticString<1024> log;
-
-		//log += from;
-		//log += GTSL::StringView(taskName);
-		//
-		//log += u8'\n';
-		//
-		//log += u8"Accessed objects: \n	";
-		//for (uint16 i = 0; i < objects.ElementCount(); ++i) {
-		//	log += u8"Obj: "; log += GTSL::StringView(systemNames[objects[i]]);
-		//	log += u8". Access: "; log += AccessTypeToString(accesses[i]); log += u8"\n	";
-		//}
-
-		return log;
-	}
-
 	uint16 getStageIndex(const Id stageName) const {
 		auto findRes = GTSL::Find(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
 		BE_ASSERT(findRes, "No stage found with that name!")
@@ -531,19 +536,18 @@ private:
 		}
 	}
 
-	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const uint64 len, const Id* names, const AccessType* access) const
-	{
+	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const uint64 len, const Id* names, const AccessType* access) const {
 		{
 			GTSL::ReadLock lock(stagesNamesMutex);
 			
 			if (!stagesNames.Find(startGoal).State()) {
-				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 
 			//assert done for exists
 			if (!stagesNames.Find(endGoal).State()) {
-				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" ending for stage ", GTSL::StringView(endGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" ending on stage ", GTSL::StringView(endGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -552,7 +556,7 @@ private:
 			GTSL::ReadLock lock(recurringTasksMutex);
 			
 			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(taskName)) {
-				BE_LOG_WARNING(u8"Tried to add task ", GTSL::StringView(taskName), u8" which already exists to stage ", GTSL::StringView(startGoal), u8". Resolve this issue as it leads to undefined behavior in release builds!")
+				BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" which already exists to stage ", GTSL::StringView(startGoal), u8". Resolve this issue as it leads to undefined behavior in release builds!")
 				return true;
 			}
 		}
@@ -601,7 +605,7 @@ public:
 		
 		{
 			System::InitializeInfo initializeInfo;
-			initializeInfo.GameInstance = this;
+			initializeInfo.ApplicationManager = this;
 			initializeInfo.ScalingFactor = scalingFactor;
 			initializeInfo.InstanceName = systemName;
 

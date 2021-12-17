@@ -93,6 +93,7 @@ namespace GAL {
 		explicit DeviceAddress(const GTSL::uint64 add) : address(add) {}
 		
 		explicit operator GTSL::uint64() const { return address; }
+		explicit operator bool() const { return address; }
 		DeviceAddress operator+(const GTSL::uint64 add) const { return DeviceAddress(address + add); }
 	private:
 		GTSL::uint64 address = 0;
@@ -465,7 +466,25 @@ namespace GAL {
 		case 4: return IndexType::UINT32;
 		}
 	}
-	
+
+	inline ShaderStage ShaderTypeToShaderStageFlag(ShaderType type) {
+		switch (type) {
+		case ShaderType::VERTEX: return ShaderStages::VERTEX;
+		case ShaderType::FRAGMENT: return ShaderStages::FRAGMENT;
+		case ShaderType::COMPUTE: return ShaderStages::COMPUTE;
+		case ShaderType::TASK: return ShaderStages::TASK;
+		case ShaderType::MESH: return ShaderStages::MESH;
+		case ShaderType::RAY_GEN: return ShaderStages::RAY_GEN;
+		case ShaderType::ANY_HIT: return ShaderStages::ANY_HIT;
+		case ShaderType::CLOSEST_HIT: return ShaderStages::CLOSEST_HIT;
+		case ShaderType::MISS: return ShaderStages::MISS;
+		case ShaderType::INTERSECTION: return ShaderStages::INTERSECTION;
+		case ShaderType::CALLABLE: return ShaderStages::CALLABLE;
+		}
+
+		return ShaderStage();
+	}
+
 #if (_WIN32)
 #define GAL_DEBUG_BREAK __debugbreak();
 #endif

@@ -71,8 +71,6 @@ namespace BE
 		void SetTextColorOnLogLevel(VerbosityLevel level) const;
 		void log(VerbosityLevel verbosityLevel, const GTSL::Range<const char8_t*> text) const;
 
-		friend class FunctionTimer;
-		void logFunctionTimer(FunctionTimer* functionTimer, GTSL::Microseconds timeTaken);
 	public:
 		Logger() = default;
 		~Logger();
@@ -106,6 +104,34 @@ namespace BE
 			logMutex.Lock();
 			minLogLevel = level;
 			logMutex.Unlock();
+		}
+
+		void logFunction(const GTSL::StringView name, GTSL::Microseconds startTime, GTSL::Microseconds endTime, const GTSL::StringView args) {
+			if (!trace) { return; }
+
+			GTSL::StaticString<1024> string;
+
+			{
+				GTSL::Lock lock(traceMutex);
+
+				if (profileCount++ > 0)
+					string += u8",";
+
+				string += u8"{";
+				string += u8"\"cat\":\"function\",";
+				string += u8"\"dur\":"; ToString(string, (endTime - startTime).GetCount()); string += u8",";
+				string += u8"\"name\":\""; string += name; string += u8"\",";
+				string += u8"\"ph\":\"X\",";
+				string += u8"\"pid\":0,";
+				string += u8"\"tid\":"; ToString(string, getThread()); string += u8",";
+				string += u8"\"ts\":"; ToString(string, startTime.GetCount());
+				if (args.GetBytes()) {
+					string += u8','; string += u8"\"args\":{ "; string += args; string += u8"}";
+				}
+				string += u8"}";
+
+				graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
+			}
 		}
 
 		void InstantEvent(GTSL::StringView name, uint64 time) {

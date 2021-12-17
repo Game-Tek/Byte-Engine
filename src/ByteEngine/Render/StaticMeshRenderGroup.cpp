@@ -11,7 +11,7 @@ StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInf
 	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()) {
 }
 
-StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance, MaterialInstanceHandle Material) {
+StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance, ShaderGroupHandle Material) {
 	uint32 index = transformations.Emplace();
 
 	meshes.Emplace(Mesh{ Material });

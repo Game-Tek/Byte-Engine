@@ -67,15 +67,15 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			if (result.State()) {
 				const uint16 targetGoalIndex = stage.GetTaskGoalIndex(taskIndex);
 				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
-				//BE_LOG_MESSAGE(genTaskLog("Dispatched task ", stage.GetTaskName(taskIndex), stagesNames[goalIndex], stage.GetTaskAccessTypes(taskIndex), stage.GetTaskAccessedObjects(taskIndex)));
 
 				if (targetGoalIndex != 0xFFFF) {
 					semaphores[targetGoalIndex].Add();
 				}
+
+				continue;
 			}
-			else {
-				return;
-			}
+
+			return;
 		}
 
 		t = true;

@@ -142,18 +142,16 @@ static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 	////MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
 	////updateInfo.RenderGroup = "TextSystem";
 	////updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
-	////updateInfo.Offset = 0;
+	////updateInfo.Address = 0;
 	////info.MaterialSystem->UpdateRenderGroupData(updateInfo);
 
 RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderOrchestrator"),
-	renderingTree(128, GetPersistentAllocator()), resourceNodes(16, GetPersistentAllocator()), renderPasses(16),
-	pipelines(8, GetPersistentAllocator()), rayTracingPipelines(4, GetPersistentAllocator()), materials(16, GetPersistentAllocator()),
-	materialsByName(16, GetPersistentAllocator()), texturesRefTable(16, GetPersistentAllocator()),
-	pendingPipelinesPerTexture(4, GetPersistentAllocator()), buffers(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()),
-	sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()),
-	sizes(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()), shaders(16, GetPersistentAllocator())
+	shaders(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()),
+	renderingTree(128, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()),
+	textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()), sizes(16, GetPersistentAllocator()),
+	sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator())
 {
-	auto* renderSystem = initializeInfo.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 	renderBuffers.EmplaceBack().BufferHandle = renderSystem->CreateBuffer(RENDER_DATA_BUFFER_PAGE_SIZE, GAL::BufferUses::STORAGE, true, false);
 
@@ -162,43 +160,45 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 	}
 
 	uint32 a = 0;
-	//initializeInfo.GameInstance->AddDynamicTask(this, u8"", DependencyBlock{ TypedDependency<RenderSystem>(u8"") }, &RenderOrchestrator::goCrazy<uint32>, {}, {}, GTSL::MoveRef(a));
+	//initializeInfo.ApplicationManager->AddDynamicTask(this, u8"", DependencyBlock{ TypedDependency<RenderSystem>(u8"") }, &RenderOrchestrator::goCrazy<uint32>, {}, {}, GTSL::MoveRef(a));
 
+	sizes.Emplace(u8"uint8", 1);
+	sizes.Emplace(u8"uint16", 2);
 	sizes.Emplace(u8"uint32", 4);
 	sizes.Emplace(u8"uint64", 8);
 	sizes.Emplace(u8"float32", 4);
 	sizes.Emplace(u8"vec2f", 4 * 2);
 	sizes.Emplace(u8"vec3f", 4 * 3);
 	sizes.Emplace(u8"vec4f", 4 * 4);
-	sizes.Emplace(u8"Matrix4", 4 * 4 * 4);
+	sizes.Emplace(u8"matrix4f", 4 * 4 * 4);
 	sizes.Emplace(u8"TextureReference", 4);
 	sizes.Emplace(u8"ImageReference", 4);
 	sizes.Emplace(u8"ptr_t", 8);
 
 	// MATERIALS
 
-	onTextureInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
-	onTextureLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
+	onTextureInfoLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
+	onTextureLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
 
-	onShaderInfosLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onShaderGroupInfoLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager")),  &RenderOrchestrator::onShaderInfosLoaded);
-	onShaderGroupLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(this, u8"onShaderGroupLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onShadersLoaded);
+	onShaderInfosLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"onShaderGroupInfoLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager")),  &RenderOrchestrator::onShaderInfosLoaded);
+	onShaderGroupLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"onShaderGroupLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onShadersLoaded);
 
-	initializeInfo.GameInstance->AddTask(this, SETUP_TASK_NAME, &RenderOrchestrator::Setup, DependencyBlock(), u8"GameplayEnd", u8"RenderStart");
-	initializeInfo.GameInstance->AddTask(this, RENDER_TASK_NAME, &RenderOrchestrator::Render, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), u8"RenderDo", u8"RenderFinished");
+	initializeInfo.ApplicationManager->AddTask(this, SETUP_TASK_NAME, &RenderOrchestrator::Setup, DependencyBlock(), u8"GameplayEnd", u8"RenderSetup");
+	initializeInfo.ApplicationManager->AddTask(this, RENDER_TASK_NAME, &RenderOrchestrator::Render, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), u8"Render", u8"Render");
 
 	//{
 	//	GTSL::StaticVector<TaskDependency, 1> dependencies{ { u8"RenderOrchestrator", AccessTypes::READ_WRITE } };
 	//
-	//	auto renderEnableHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"RenderOrchestrator::OnRenderEnable", &RenderOrchestrator::OnRenderEnable, dependencies);
-	//	//initializeInfo.GameInstance->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
+	//	auto renderEnableHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"RenderOrchestrator::OnRenderEnable", &RenderOrchestrator::OnRenderEnable, dependencies);
+	//	//initializeInfo.ApplicationManager->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
 	//
-	//	auto renderDisableHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"RenderOrchestrator::OnRenderDisable", &RenderOrchestrator::OnRenderDisable, dependencies);
-	//	//initializeInfo.GameInstance->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusLossEventHandle(), renderDisableHandle);
+	//	auto renderDisableHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"RenderOrchestrator::OnRenderDisable", &RenderOrchestrator::OnRenderDisable, dependencies);
+	//	//initializeInfo.ApplicationManager->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusLossEventHandle(), renderDisableHandle);
 	//}
 
 	{
 		const auto taskDependencies = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"RenderOrchestrator", AccessTypes::READ_WRITE } };
-		onRenderEnable(initializeInfo.GameInstance, taskDependencies);
+		onRenderEnable(initializeInfo.ApplicationManager, taskDependencies);
 	}
 
 	{ //sampler must be built before set layouts, as it is used as inmutable sampler
@@ -216,11 +216,6 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 			MemberHandle AccelerationStructure;
 			MemberHandle RayFlags, SBTRecordOffset, SBTRecordStride, MissIndex, Payload;
 			MemberHandle tMin, tMax;
-
-			GTSL::StaticVector<MemberInfo, 16> member_infos;
-			member_infos.EmplaceBack(&AccelerationStructure, 1, u8"uint64");
-			member_infos.EmplaceBack(&RayFlags, 1, u8"uint32"); member_infos.EmplaceBack(&SBTRecordOffset, 1, u8"uint32"); member_infos.EmplaceBack(&SBTRecordStride, 1, u8"uint32"); member_infos.EmplaceBack(&MissIndex, 1, u8"uint32"); member_infos.EmplaceBack(&Payload, 1, u8"uint32");
-			member_infos.EmplaceBack(&tMin, 1, u8"float32"); member_infos.EmplaceBack(&tMax, 1, u8"float32");
 		}
 
 		globalSetLayout = AddSetLayout(renderSystem, SetLayoutHandle(), subSetInfos);
@@ -232,15 +227,15 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		members.EmplaceBack(&globalDataHandle, 4, u8"uint32");
 		auto d = MakeMember(u8"GlobalData", members);
 		globalData = AddLayer(u8"GlobalData", NodeHandle());
-		BindDataKey(globalData, MakeDataKey(d));
+		BindToNode(globalData, d);
 	}
 
 	{
 		GTSL::StaticVector<MemberInfo, 2> members;
-		members.EmplaceBack(&cameraMatricesHandle, 4, u8"Matrix4");
+		members.EmplaceBack(&cameraMatricesHandle, 4, u8"matrix4f");
 		auto d = MakeMember(u8"CameraData", members);
 		cameraDataNode = AddLayer(u8"CameraData", globalData);
-		BindDataKey(cameraDataNode, MakeDataKey(d));
+		BindToNode(cameraDataNode, d);
 	}
 
 	if constexpr (BE_DEBUG) {
@@ -253,25 +248,21 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
 
 		PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.PassType = PassType::RASTER;
 		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Color" }); //result attachment
 		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Normal" });
 		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"RenderDepth" });
-		AddPass(u8"SceneRenderPass", GetCameraDataLayer(), renderSystem, geoRenderPass, initializeInfo.GameInstance, initializeInfo.GameInstance->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
+		AddRenderPass(u8"SceneRenderPass", GetCameraDataLayer(), renderSystem, geoRenderPass, initializeInfo.ApplicationManager);
 
 		RenderOrchestrator::PassData colorGrading{};
 		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
 		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
-		//auto cgrp = renderOrchestrator->AddPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
+		//auto cgrp = renderOrchestrator->AddRenderPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
 
 		RenderOrchestrator::PassData rtRenderPass{};
 		rtRenderPass.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		rtRenderPass.ReadAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Normal" });
 		rtRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Color" }); //result attachment
-
-		//renderOrchestrator->ToggleRenderPass("SceneRenderPass", true);
-		//renderOrchestrator->ToggleRenderPass("UIRenderPass", false);
-		//renderOrchestrator->ToggleRenderPass("SceneRTRenderPass", true);
 	}
 
 	for(uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
@@ -319,10 +310,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			auto viewMatrix = cameraSystem->GetCameraTransform();
 
 			auto key = GetBufferWriteKey(renderSystem, cameraDataNode, cameraMatricesHandle);
-			Write(renderSystem, key, cameraMatricesHandle[0], viewMatrix);
-			Write(renderSystem, key, cameraMatricesHandle[1], projectionMatrix);
-			Write(renderSystem, key, cameraMatricesHandle[2], GTSL::Math::Inverse(viewMatrix));
-			Write(renderSystem, key, cameraMatricesHandle[3], GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f));
+			key[cameraMatricesHandle[0]] = viewMatrix;
+			key[cameraMatricesHandle[1]] = projectionMatrix;
+			key[cameraMatricesHandle[2]] = GTSL::Math::Inverse(viewMatrix);
+			key[cameraMatricesHandle[3]] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
 		} else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
 		}
@@ -347,51 +338,42 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 		}
 
-		if (baseData.Offset != 0xFFFFFFFF) { //if node has an associated data entry, bind it
+		if (baseData.BufferHandle) { //if node has an associated data entry, bind it
 			dataStreamHandle = renderState.AddDataStream();
 			le[level] = true;
+			auto address = renderSystem->GetBufferDeviceAddress(baseData.BufferHandle) + baseData.Offset;
 			auto& setLayout = setLayoutDatas[globalSetLayout()];
-			GAL::DeviceAddress bufferAddress = renderSystem->GetBufferDeviceAddress(renderBuffers[0].BufferHandle) + baseData.Offset;
-			auto buffAdd = renderSystem->GetBufferPointer(renderBuffers[0].BufferHandle) + baseData.Offset;
-			commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&bufferAddress)), setLayout.Stage);
+			commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 		}
 
-		//LayerData, MaterialInstanceData, RayTraceData, DispatchData, MeshData, RenderPassData
-
 		switch (renderingTree.GetBetaNodeType(key)) {
-		case 3: {
+		case RTT::GetTypeIndex<PipelineBindData>(): {
+			const PipelineBindData& pipeline_bind_data = renderingTree.GetClass<PipelineBindData>(key);
+			const auto& shaderGroup = shaderGroups[pipeline_bind_data.Handle.ShaderGroupIndex];
+			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[shaderGroup.RasterPipelineIndex].pipeline, renderState.ShaderStages);
+			break;
+		}
+		case RTT::GetTypeIndex<DispatchData>(): {
 			const DispatchData& dispatchData = renderingTree.GetClass<DispatchData>(key);
-
-			const auto& pipelineData = pipelines[dispatchData.pipelineIndex];
-			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, GAL::ShaderStages::COMPUTE);
-			//commandBuffer.Dispatch(renderSystem->GetRenderDevice(), data.Dispatch.DispatchSize);
 			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), renderArea); //todo: change
 			break;
 		}
-		case 2: {
+		case RTT::GetTypeIndex<RayTraceData>(): {
 			const RayTraceData& rayTraceData = renderingTree.GetClass<RayTraceData>(key);
 
 			const auto& pipelineData = pipelines[rayTraceData.PipelineIndex];
-			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, GAL::ShaderStages::RAY_GEN);
 			CommandList::ShaderTableDescriptor shaderTableDescriptors[4];
 			for (uint32 i = 0, offset = 0; i < 4; ++i) {
-				shaderTableDescriptors[i].Entries = 1;
-				shaderTableDescriptors[i].EntrySize = 64;
-				shaderTableDescriptors[i].Address = renderSystem->GetBufferDeviceAddress(pipelineData.ShaderBindingTableBuffer);
+				shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
+				shaderTableDescriptors[i].EntrySize = pipelineData.RayTracingData.ShaderGroups[i].TableHandle.Size;
+				shaderTableDescriptors[i].Address = renderSystem->GetBufferDeviceAddress(pipelineData.ShaderBindingTableBuffer) + offset;
 
-				offset += 64;
+				offset += pipelineData.RayTracingData.ShaderGroups[i].TableHandle.Size;
 			}
 			commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), sizeHistory[currentFrame]);
 			break;
 		}
-		case 1: {
-			const MaterialInstanceData& materialInstanceData = renderingTree.GetClass<MaterialInstanceData>(key);
-
-			const auto& pipelineData = pipelines[materials[materialInstanceData.MaterialHandle.MaterialIndex].PipelineStart];
-			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, renderState.ShaderStages);				
-			break;
-		}
-		case 4: {
+		case RTT::GetTypeIndex<MeshData>(): {
 			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
 
 			auto buffer = renderSystem->GetBuffer(meshData.Handle);
@@ -401,7 +383,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, 1);
 			break;
 		}
-		case 5: {
+		case RTT::GetTypeIndex<RenderPassData>(): {
 			const RenderPassData& renderPassData = renderingTree.GetClass<RenderPassData>(key);
 
 			transitionImages(commandBuffer, renderSystem, &renderPassData);
@@ -443,9 +425,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			break;
 		}
-		case 0: {
-			break;
-		}
 		}
 	};
 
@@ -474,67 +453,63 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	ForEachBeta(renderingTree, runLevel, endNode);
 
-	auto& attachment = attachments.At(resultAttachment);
-
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
-		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
-	
-	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
-		GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
-		GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
+	CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 
-	updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
-		
-	commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle[currentFrame]),
-	*renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_SOURCE, GAL::TextureLayout::TRANSFER_DESTINATION, 
-		attachments.At(resultAttachment).FormatDescriptor, renderSystem->GetSwapchainFormat(),
-		GTSL::Extent3D(renderSystem->GetRenderExtent()));
-	
+	if (resultAttachment) {
+		auto& attachment = attachments.At(resultAttachment);
+
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
+			GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
+			GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
+
+		updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
+
+		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle[currentFrame]),
+			*renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_SOURCE, GAL::TextureLayout::TRANSFER_DESTINATION,
+			attachments.At(resultAttachment).FormatDescriptor, renderSystem->GetSwapchainFormat(),
+			GTSL::Extent3D(renderSystem->GetRenderExtent()));
+	}
+
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
-		GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+	GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 
 	renderSystem->EndCommandList(commandLists[currentFrame]);
 	renderSystem->SubmitAndPresent(commandLists[currentFrame]);
 }
 
-MaterialInstanceHandle RenderOrchestrator::CreateMaterial(const CreateMaterialInfo& info) {
-	auto materialReference = materialsByName.TryEmplace(info.MaterialName);
+ShaderGroupHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_name) {
+	auto shaderGroupReference = shaderGroupsByName.TryEmplace(shader_group_name);
 
-	uint32 materialIndex = 0xFFFFFFFF, materialInstanceIndex = 0xFFFFFFFF;
-	
-	if(materialReference.State()) {
-		materialIndex = materials.Emplace(GetPersistentAllocator());
-		materialReference.Get() = materialIndex;
+	uint32 materialIndex = 0xFFFFFFFF;
 
-		auto pipelineStart = pipelines.Emplace(GetPersistentAllocator());
-		pipelines[pipelineStart].ResourceHandle = makeResource();
-
-		bindDataKey(pipelines[pipelineStart].ResourceHandle, MakeDataKey());
-		addDependencyCount(pipelines[pipelineStart].ResourceHandle); // Add dependency the pipeline itself
+	if (shaderGroupReference.State()) {
+		materialIndex = shaderGroups.Emplace();
+		shaderGroupReference.Get() = materialIndex;
 
 		ShaderLoadInfo sli(GetPersistentAllocator());
-		sli.PipelineStart = pipelineStart;
-		info.ShaderResourceManager->LoadShaderGroupInfo(info.GameInstance, info.MaterialName, onShaderInfosLoadHandle, GTSL::MoveRef(sli));
+		GetApplicationManager()->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager")->LoadShaderGroupInfo(GetApplicationManager(), shader_group_name, onShaderInfosLoadHandle, GTSL::MoveRef(sli));
 
-		auto& material = materials[materialIndex];
-		material.MaterialInstances.EmplaceBack();
-		material.PipelineStart = pipelineStart;
-		material.Name = info.MaterialName;
-		
-		materialInstanceIndex = 0;
-	} else {
-		auto& material = materials[materialReference.Get()];
-		materialIndex = materialReference.Get();
-		auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance) {
-			return materialInstance.Name == info.InstanceName;
-		});
-		
+		auto& shaderGroup = shaderGroups[materialIndex];
+
+		if constexpr (BE_DEBUG) { shaderGroup.Name = GTSL::StringView(shader_group_name); }
+		shaderGroup.ResourceHandle = makeResource();
+		addDependencyOnResource(shaderGroup.ResourceHandle); // Add dependency the pipeline itself
+		shaderGroup.DataKey = MakeDataKey();
+	}
+	else {
+		auto& material = shaderGroups[shaderGroupReference.Get()];
+		materialIndex = shaderGroupReference.Get();
+		//auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance) {
+		//	return materialInstance.Name == info.InstanceName;
+		//});
+
 		//TODO: ERROR CHECK
 
-		materialInstanceIndex = index.Get();
+		//materialInstanceIndex = index.Get();
 	}
-	
-	return { materialIndex, materialInstanceIndex };
+
+	return { materialIndex };
 }
 
 void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
@@ -562,20 +537,20 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	attachments.Emplace(attachmentName, attachment);
 }
 
-RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView renderPassName, NodeHandle parent, RenderSystem* renderSystem, PassData passData, ApplicationManager* am, ShaderResourceManager* srm) {	
+RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent, RenderSystem* renderSystem, PassData passData, ApplicationManager* am) {
 	NodeHandle renderPassNodeHandle = addNode(Id(renderPassName), parent, NodeType::RENDER_PASS);
-	InternalNodeHandle internalNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassNodeHandle, parent, InternalNodeType::RENDER_PASS);
+	InternalNodeHandle internalNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassNodeHandle, parent);
 	RenderPassData& renderPass = getPrivateNode<RenderPassData>(internalNodeHandle);
 
 	renderPasses.Emplace(renderPassName, renderPassNodeHandle, internalNodeHandle);
 	renderPassesInOrder.EmplaceBack(internalNodeHandle);
 
 	renderPass.ResourceHandle = makeResource();
-	addDependencyCount(renderPass.ResourceHandle); //add dependency on render pass texture creation
+	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
 
-	bindResourceToNode(internalNodeHandle, renderPass.ResourceHandle);
+	BindToNode(internalNodeHandle, renderPass.ResourceHandle);
 
-	getInternalNode(internalNodeHandle).Name = GTSL::StringView(renderPassName);
+	getNode(internalNodeHandle).Name = GTSL::StringView(renderPassName);
 
 	Id resultAttachment;
 
@@ -624,30 +599,17 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView rend
 			attachmentData.ConsumingStages = GAL::PipelineStages::COMPUTE;
 		}
 
-		auto dispatchNodeHandle = addInternalNode<DispatchData>(Hash(renderPassName), renderPassNodeHandle, parent, InternalNodeType::DISPATCH);
+		auto dispatchNodeHandle = addInternalNode<DispatchData>(Hash(renderPassName), renderPassNodeHandle, parent);
 
-		auto loadComputeShader = [&]() -> uint32 {
-			auto pipelineIndex = pipelines.Emplace(GetPersistentAllocator());
+		auto loadComputeShader = [&]() {
+			//auto shaderLoadInfo = ShaderLoadInfo(GetPersistentAllocator());
+			//shaderLoadInfo.handle = dispatchNodeHandle;
+			//srm->LoadShaderGroupInfo(am, renderPassName, onShaderInfosLoadHandle, GTSL::MoveRef(shaderLoadInfo));
+			//
+			//getNode(dispatchNodeHandle).Name = GTSL::StringView(renderPassName);
 
-			const auto acts_on = GTSL::StaticVector<TaskDependency, 16>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"RenderOrchestrator", AccessTypes::READ_WRITE } };
-
-			auto shaderLoadInfo = ShaderLoadInfo(GetPersistentAllocator());
-			shaderLoadInfo.handle = dispatchNodeHandle;
-			shaderLoadInfo.PipelineStart = pipelineIndex;
-			srm->LoadShaderGroupInfo(am, renderPassName, onShaderInfosLoadHandle, GTSL::MoveRef(shaderLoadInfo));
-
-			getInternalNode(dispatchNodeHandle).Name = GTSL::StringView(renderPassName);
-
-			pipelines[pipelineIndex].ResourceHandle = makeResource();
-			addDependencyCount(pipelines[pipelineIndex].ResourceHandle);
-			bindResourceToNode(dispatchNodeHandle, pipelines[pipelineIndex].ResourceHandle);
-
-			bindDataKey(pipelines[pipelineIndex].ResourceHandle, MakeDataKey());
-
-			return pipelineIndex;
+			return Id(renderPassName);
 		};
-
-		getPrivateNode<DispatchData>(dispatchNodeHandle).pipelineIndex = loadComputeShader();
 
 		break;
 	}
@@ -675,11 +637,10 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddPass(GTSL::StringView rend
 	
 	GTSL::StaticVector<MemberInfo, 16> members;
 	members.EmplaceBack(&renderPass.RenderTargetReferences, 16, u8"ImageReference");
-	
-	BindDataKey(renderPassNodeHandle, MakeDataKey(MakeMember(u8"RenderPassData", members)));
-
-	for(auto bwk = GetBufferWriteKey(renderSystem, renderPassNodeHandle, renderPass.RenderTargetReferences); bwk < renderPass.Attachments.GetLength(); ++bwk) {
-		Write(renderSystem, bwk, renderPass.RenderTargetReferences, attachments[renderPass.Attachments[bwk].Name].ImageIndex);
+	BindToNode(renderPassNodeHandle, MakeMember(u8"RenderPassData", members));
+	auto bwk = GetBufferWriteKey(renderSystem, renderPassNodeHandle, renderPass.RenderTargetReferences);
+	for(auto i = 0u; i < renderPass.Attachments.GetLength(); ++i) {
+		bwk[renderPass.RenderTargetReferences[i]] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
 
 	return renderPassNodeHandle;
@@ -810,11 +771,7 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 {
 	uint32 size = 0;
 
-	for(auto& g : shader_group_info.Groups) {
-		for(auto& s : g.Shaders) {
-			size += s.Size;
-		}
-	}
+	for(auto& s : shader_group_info.Shaders) { size += s.Size; }
 
 	shaderLoadInfo.Buffer.Allocate(size, 16);
 	shaderLoadInfo.Buffer.AddBytes(size);
@@ -822,9 +779,7 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 	materialResourceManager->LoadShaderGroup(taskInfo.ApplicationManager, shader_group_info, onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
 
-void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem* renderSystem,
-                                         ShaderResourceManager::ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer,
-                                         ShaderLoadInfo shaderLoadInfo)
+void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem* renderSystem, ShaderResourceManager::ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
 {
 	if constexpr (BE_DEBUG) {
 		//if (!shader_group_info.Valid) {
@@ -832,122 +787,82 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		//	return;
 		//}
 	}
-	
+
+	auto& sg = shaderGroups[shaderGroupsByName[Id(shader_group_info.Name)]];
+
 	GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock, 32> pipelineStates;
 
-	GTSL::StaticMap<Id, GTSL::ShortString<128>, 4> parametersTypes;
-	GTSL::StaticMap<Id, GTSL::ShortString<128>, 4> parametersDefaultValues;
+	GTSL::StaticMap<Id, StructElement, 8> parameters;
 
 	MemberHandle textureReferences[8];
 
+	GTSL::Vector<GAL::Pipeline::VertexElement, BE::TAR> vertexElements(GetTransientAllocator());
+	struct ShaderBundleData {
+		GTSL::StaticVector<uint32, 8> Shaders;
+		GAL::ShaderStage Stage;
+		uint32 PipelineIndex = 0;
+	};
+	GTSL::StaticVector<ShaderBundleData, 4> shaderBundles;
 	GTSL::StaticVector<MemberInfo, 16> members;
 
-	for (auto& g : shader_group_info.Groups) {
-		GTSL::Vector<::Pipeline::ShaderInfo, BE::TAR> shaderInfos(8, GetTransientAllocator());
+	for (auto& e : shader_group_info.VertexElements) { vertexElements.EmplaceBack(e); }
 
-		for (uint8 pi = 0; auto& p : g.Parameters) {
-			members.EmplaceBack(&textureReferences[pi], 1u, Id(p.Type));
-			parametersTypes.Emplace(Id(p.Name), p.Type);
-			parametersDefaultValues.Emplace(Id(p.Name), p.Value);
-			++pi;
+	for (uint32 offset = 0, si = 0; const auto & s : shader_group_info.Shaders) {
+		if (auto shader = shaders.TryEmplace(s.Hash)) {
+			shader.Get().Shader.Initialize(renderSystem->GetRenderDevice(), GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset));
+			shader.Get().Type = s.Type;
 		}
 
-		for (uint8 ii = 0; auto& i : g.Instances) {
-			GTSL::StaticString<64> structName; structName += shader_group_info.Name; structName += u8"ParametersData";
-			UpdateDataKey(pipelines[shaderLoadInfo.PipelineStart + ii].ResourceHandle, MakeMember(GTSL::StringView(structName), members));
-			++ii;
-		}
+		offset += s.Size;
 
-		for (uint8 ii = 0; const auto& i : g.Instances) {
-			for (uint32 pi = 0; auto& p : i.Parameters) {
-				Id parameterValue;
+		bool foundGroup = false;
+		auto shaderStageFlag = GAL::ShaderTypeToShaderStageFlag(s.Type);
 
-				//if shader instance has specialized value for param, use that, else, fallback to shader group default value for param
-				if (p.Second) {
-					parameterValue = Id(p.Second);
-				} else {
-					parameterValue = Id(parametersDefaultValues[Id(p.First)]);
-				}
-
-				switch (Hash(parametersTypes[Id(p.First)])) {
-				case GTSL::Hash(u8"TextureReference"): {
-					uint32 textureComponentIndex;
-
-					auto textureReference = texturesRefTable.TryGet(parameterValue);
-
-					if (!textureReference) {
-						CreateTextureInfo createTextureInfo;
-						createTextureInfo.RenderSystem = renderSystem;
-						createTextureInfo.GameInstance = taskInfo.ApplicationManager;
-						createTextureInfo.TextureResourceManager = taskInfo.ApplicationManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
-						createTextureInfo.TextureName = static_cast<GTSL::StringView>(parameterValue);
-						textureReference.Get() = createTexture(createTextureInfo);
-						textureComponentIndex = textureReference.Get();
-					} else {
-						textureComponentIndex = textureReference.Get();
-					}
-
-					Write(renderSystem, GetBufferWriteKey(renderSystem, pipelines[shaderLoadInfo.PipelineStart + ii].ResourceHandle, textureReferences[pi]), textureReferences[pi], textureComponentIndex);
-
-					addPendingPipelineToTexture(textureComponentIndex, shaderLoadInfo.PipelineStart);
-
-					break;
-				}
-				case GTSL::Hash(u8"ImageReference"): {
-					auto textureReference = attachments.TryGet(parameterValue);
-
-					if (textureReference) {
-						uint32 textureComponentIndex = textureReference.Get().ImageIndex;
-
-						Write(renderSystem, GetBufferWriteKey(renderSystem, pipelines[shaderLoadInfo.PipelineStart + ii].ResourceHandle, textureReferences[pi]), textureReferences[pi], textureComponentIndex);
-					} else {
-						BE_LOG_WARNING(u8"Default parameter value of ", GTSL::StringView(parameterValue), u8" for shader group ", shader_group_info.Name, u8" parameter ", p.First, u8" could not be found.");
-					}
-
-					break;
-				}
-				}
-
-				++pi;
-			}
-
-			++ii;
-		}
-
-		GTSL::Vector<GAL::Pipeline::VertexElement, BE::TAR> vertexElements(GetTransientAllocator());
-
-		for (uint32 offset = 0; const auto & s : g.Shaders) {
-			auto& shaderInfo = shaderInfos.EmplaceBack();
-			shaderInfo.Type = s.Type;
-			shaderInfo.Blob = GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset);
-
-			if (auto shader = shaders.TryEmplace(Id(s.Name))) {
-				shader.Get().Initialize(renderSystem->GetRenderDevice(), shaderInfo.Blob);
-				shaderInfo.Shader = shader.Get();
-			} else {
-				shaderInfo.Shader = shader.Get();
-			}
-
-			offset += s.Size;
-
-			switch (s.Type) {
-			case GAL::ShaderType::VERTEX: {
-				vertexElements.Resize(s.VertexShader.VertexElements.GetLength());
-
-				for (auto& e : s.VertexShader.VertexElements) {
-					vertexElements.EmplaceBack(e);
-				}
-
+		for (auto& e : shaderBundles) {
+			if (e.Stage & (GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT) && shaderStageFlag & (GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT)) {
+				e.Shaders.EmplaceBack(si);
+				e.Stage |= shaderStageFlag;
+				foundGroup = true;
 				break;
 			}
+
+			if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT) && shaderStageFlag & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
+				e.Shaders.EmplaceBack(si);
+				e.Stage |= shaderStageFlag;
+				foundGroup = true;
+				break;
 			}
 		}
 
-		if (g.Tags.Find(u8"shading")) { //TODO: NO
-			auto materialIndex = shaderLoadInfo.MaterialIndex;
+		if (!foundGroup) {
+			auto& sb = shaderBundles.EmplaceBack();
+			sb.Shaders.EmplaceBack(si);
+			sb.Stage = shaderStageFlag;
+		}
 
-			auto& materialData = materials[materialIndex];
-			materialData.Name = Id(shader_group_info.Name);
+		++si;
+	}
+
+	for (uint32 pi = 0; const auto & p : shader_group_info.Parameters) {
+		parameters.Emplace(Id(p.Name), p.Type, p.Name, p.Value);
+		members.EmplaceBack(MemberInfo{ &shaderGroups[shaderLoadInfo.MaterialIndex].ParametersHandles.Emplace(Id(p.Name)), 1, Id(p.Type) });
+	}
+
+	for(auto& e : shaderBundles) {
+		GTSL::Vector<GPUPipeline::ShaderInfo, BE::TAR> shaderInfos(8, GetTransientAllocator());
+
+		e.PipelineIndex = pipelines.Emplace(GetPersistentAllocator());
+
+		if(e.Stage & (GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT)) {
+			for (auto s : e.Shaders) {
+				auto& shaderInfo = shaderInfos.EmplaceBack();
+				auto& shader = shaders[shader_group_info.Shaders[s].Hash];
+				shaderInfo.Type = shader.Type;
+				shaderInfo.Shader = shader.Shader;
+				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
+			}
+
+			auto materialIndex = shaderLoadInfo.MaterialIndex;
 
 			GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock::RenderContext::AttachmentState, 8> att;
 
@@ -964,8 +879,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 
 			context.Attachments = att;
-			//context.RenderPass = &renderPassNode.APIRenderPass.RenderPass;
-			//context.SubPassIndex = renderPassNode.APIRenderPass.APISubPass;
 			pipelineStates.EmplaceBack(context);
 
 			GAL::Pipeline::PipelineStateBlock::DepthState depth;
@@ -984,39 +897,61 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			auto& vertexState = pipelineStates.EmplaceBack(GAL::Pipeline::PipelineStateBlock::VertexState{});
 			vertexState.Vertex.VertexDescriptor = vertexElements;
 
-			for (uint8 mii = 0; mii < g.Instances; ++mii) {
-				auto& rasterMaterialInstanceData = pipelines[shaderLoadInfo.PipelineStart + mii];
-				rasterMaterialInstanceData.pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+			sg.RasterPipelineIndex = e.PipelineIndex;
+
+			pipelines[e.PipelineIndex].pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+		}
+
+		if(e.Stage & GAL::PipelineStages::COMPUTE) {
+			auto& pipeline = pipelines[e.PipelineIndex];
+
+			for (auto s : e.Shaders) {
+				auto& shaderInfo = shaderInfos.EmplaceBack();
+				auto& shader = shaders[shader_group_info.Shaders[s].Hash];
+				shaderInfo.Type = shader.Type;
+				shaderInfo.Shader = shader.Shader;
+				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
 			}
-		} else if (g.Tags.Find(u8"compute") or g.Tags.Find(u8"vertex")) {
-			auto& pipeline = pipelines[shaderLoadInfo.PipelineStart];
+
+			sg.ComputePipelineIndex = e.PipelineIndex;
 			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
-		} else if (g.Tags.Find(u8"rayTrace")) {
-			auto rtPipelineIndex = rayTracingPipelines.Emplace();
-			auto& pipelineData = pipelines[shaderLoadInfo.PipelineStart];
-			auto& rtPipelineData = rayTracingPipelines[rtPipelineIndex];
+		}
 
-			GTSL::Vector<::Pipeline::RayTraceGroup, BE::TAR> groups(16, GetTransientAllocator());
+		if(e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
+			auto& rayTraceData = shader_group_info.RayTrace;
+			sg.RTPipelineIndex = e.PipelineIndex;
+			auto& pipelineData = pipelines[e.PipelineIndex]; auto& rtPipelineData = pipelineData.RayTracingData;
 
-			auto handleSize = renderSystem->GetShaderGroupHandleSize();
-			auto alignedHandleSize = GTSL::Math::RoundUpByPowerOf2(handleSize, renderSystem->GetShaderGroupHandleAlignment());
+			for(auto s : pipelineData.Shaders) {
+				auto& shaderInfo = shaderInfos.EmplaceBack();
+				shaderInfo.Type = shaders[s].Type;
+				shaderInfo.Shader = shaders[s].Shader;
+			}
 
-			::Pipeline::PipelineStateBlock::RayTracingState rtInfo;
-			rtInfo.MaxRecursionDepth = 0;
-
-			for (uint32 i = 0; i < g.Shaders.GetLength(); ++i) {
-				auto& rayTracingShaderInfo = g.Shaders[i];
-
-				uint8 shaderGroup = 0xFF; ::Pipeline::RayTraceGroup group{};
-				group.GeneralShader = ::Pipeline::RayTraceGroup::SHADER_UNUSED; group.ClosestHitShader = ::Pipeline::RayTraceGroup::SHADER_UNUSED;
-				group.AnyHitShader = ::Pipeline::RayTraceGroup::SHADER_UNUSED; group.IntersectionShader = ::Pipeline::RayTraceGroup::SHADER_UNUSED;
-
-				switch (rayTracingShaderInfo.Type) {
+			for (auto s : e.Shaders) {
+				auto& shaderInfo = shaderInfos.EmplaceBack();
+				auto& shader = shaders[shader_group_info.Shaders[s].Hash];
+				shaderInfo.Type = shader.Type;
+				shaderInfo.Shader = shader.Shader;
+				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
+			}
+			
+			GTSL::Vector<GPUPipeline::RayTraceGroup, BE::TAR> rayTracingGroups(16, GetTransientAllocator());
+			
+			GPUPipeline::PipelineStateBlock::RayTracingState rtInfo;
+			rtInfo.MaxRecursionDepth = 1;
+			
+			for (uint32 i = 0; i < shader_group_info.Shaders.GetLength(); ++i) {
+				auto& shaderInfo = shader_group_info.Shaders[i];
+			
+				GPUPipeline::RayTraceGroup group;
+				uint8 shaderGroup = 0xFF;
+			
+				switch (shaderInfo.Type) {
 				case GAL::ShaderType::RAY_GEN: {
 					group.ShaderGroup = GAL::ShaderGroupType::GENERAL; group.GeneralShader = i;
 					shaderGroup = GAL::RAY_GEN_TABLE_INDEX;
-
-					GTSL::Max(&rtInfo.MaxRecursionDepth, rayTracingShaderInfo.RayGenShader.Recursion);
+					GTSL::Max(&rtInfo.MaxRecursionDepth, shaderInfo.RayGenShader.Recursion);
 					break;
 				}
 				case GAL::ShaderType::MISS: {
@@ -1046,70 +981,137 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				}
 				default: BE_LOG_MESSAGE(u8"Non raytracing shader found in raytracing material");
 				}
-
-				groups.EmplaceBack(group);
-
-				//++rtPipelineData.ShaderGroups[shaderGroup].ShaderCount;
+			
+				rayTracingGroups.EmplaceBack(group);
+			
+				++pipelineData.RayTracingData.ShaderGroups[shaderGroup].ShaderCount;
 			}
-
-			rtInfo.Groups = groups;
+			
+			rtInfo.Groups = rayTracingGroups;
 			pipelineStates.EmplaceBack(rtInfo);
 
-			pipelineData.pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+			auto oldPipeline = pipelineData.pipeline;
 
-			GTSL::Vector<GAL::ShaderHandle, BE::TAR> shaderGroupHandlesBuffer(shaderInfos.GetLength(), GetTransientAllocator());
+			pipelineData.pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 
-			pipelineData.pipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, groups.GetLength(), shaderGroupHandlesBuffer);
+			if (oldPipeline.GetHandle()) { //TODO: defer deletion
+				oldPipeline.Destroy(renderSystem->GetRenderDevice());
+			}
+		}
 
-			//
-			// RG{ shaderHandles[] } ... CH{ { shaderHandle, materialInstanceData }[] } ... M
-			//
+		signalDependencyToResource(sg.ResourceHandle); //add ref count for pipeline load itself	
+	}
 
+	if (!sg.Loaded) {
+		sg.Loaded = true;
+
+		auto materialDataMember = MakeMember(u8"yuyehjgd", members);
+		sg.Buffer = CreateBuffer(renderSystem, materialDataMember);
+		sg.DataKey = MakeDataKey(sg.Buffer, sg.DataKey);
+
+		for (uint8 ii = 0; auto & i : shader_group_info.Instances) { //TODO: check parameters against stored layout to check if everythingg is still compatible
+			for (uint32 pi = 0; auto & p : i.Parameters) {
+				Id parameterValue;
+
+				//if shader instance has specialized value for param, use that, else, fallback to shader group default value for param
+				if (p.Second) {
+					parameterValue = Id(p.Second);
+				}
+				else {
+					parameterValue = Id(parameters[Id(p.First)].DefaultValue);
+				}
+
+				switch (Hash(parameters[Id(p.First)].Type)) {
+				case GTSL::Hash(u8"TextureReference"): {
+
+					CreateTextureInfo createTextureInfo;
+					createTextureInfo.RenderSystem = renderSystem;
+					createTextureInfo.GameInstance = taskInfo.ApplicationManager;
+					createTextureInfo.TextureResourceManager = taskInfo.ApplicationManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
+					createTextureInfo.TextureName = static_cast<GTSL::StringView>(parameterValue);
+					auto textureReference = createTexture(createTextureInfo);
+
+					GetBufferWriteKey(renderSystem, sg.Buffer, textureReferences[pi])[textureReferences[pi]] = textureReference;
+
+					for (auto& e : shaderBundles) {
+						addPendingResourceToTexture(parameterValue, sg.ResourceHandle);
+					}
+
+					break;
+				}
+				case GTSL::Hash(u8"ImageReference"): {
+					auto textureReference = attachments.TryGet(parameterValue);
+
+					if (textureReference) {
+						uint32 textureComponentIndex = textureReference.Get().ImageIndex;
+
+						GetBufferWriteKey(renderSystem, sg.Buffer, textureReferences[pi])[textureReferences[pi]] = textureComponentIndex;
+					}
+					else {
+						BE_LOG_WARNING(u8"Default parameter value of ", GTSL::StringView(parameterValue), u8" for shader group ", shader_group_info.Name, u8" parameter ", p.First, u8" could not be found.");
+					}
+
+					break;
+				}
+				}
+
+				++pi;
+			}
+
+			++ii;
+		}
+	}
+
+	for(auto& e : shaderBundles) {
+		if(e.Stage & GAL::ShaderStages::RAY_GEN) {
+			auto& pipelineData = pipelines[e.PipelineIndex]; auto& rtPipelineData = pipelineData.RayTracingData;
+
+			GTSL::Vector<GAL::ShaderHandle, BE::TAR> shaderGroupHandlesBuffer(e.Shaders.GetLength(), GetTransientAllocator());
+			pipelineData.pipeline.GetShaderGroupHandles(renderSystem->GetRenderDevice(), 0, shaderBundles.GetLength(), shaderGroupHandlesBuffer);
 			GTSL::StaticVector<MemberInfo, 8> tablePerGroup[4];
 
-			for(uint8 i = 0; i < 4; ++i) {
-				//for
-				//tablePerGroup[i].EmplaceBack(&rtPipelineData.ShaderGroups[i].ShaderHandle, 1, u8"ShaderHandle");
-
+			for (uint8 i = 0; i < 4; ++i) {
+				tablePerGroup[i].EmplaceBack(&rtPipelineData.ShaderGroups[i].ShaderHandle, 1, u8"ShaderHandle");
+				tablePerGroup[i].EmplaceBack(&rtPipelineData.ShaderGroups[i].MaterialDataPointer, 1, u8"ptr_t");
 			}
 
 			GTSL::StaticVector<MemberInfo, 4> tables{
-				{ &rtPipelineData.ShaderGroups[0].TableHandle, 1, tablePerGroup[0], u8"RayGenTable" },
-				{ &rtPipelineData.ShaderGroups[1].TableHandle, 1, tablePerGroup[1], u8"ClosestHitTable" },
-				{ &rtPipelineData.ShaderGroups[2].TableHandle, 1, tablePerGroup[2], u8"MissTable" },
-				{ &rtPipelineData.ShaderGroups[3].TableHandle, 1, tablePerGroup[3], u8"CallableTable" },
+				{ &rtPipelineData.ShaderGroups[0].TableHandle, 1, tablePerGroup[0], u8"RayGenTable", renderSystem->GetShaderGroupBaseAlignment() },
+				{ &rtPipelineData.ShaderGroups[1].TableHandle, 1, tablePerGroup[1], u8"ClosestHitTable", renderSystem->GetShaderGroupBaseAlignment() },
+				{ &rtPipelineData.ShaderGroups[2].TableHandle, 1, tablePerGroup[2], u8"MissTable", renderSystem->GetShaderGroupBaseAlignment() },
+				{ &rtPipelineData.ShaderGroups[3].TableHandle, 1, tablePerGroup[3], u8"CallableTable", renderSystem->GetShaderGroupBaseAlignment() },
 			};
-			pipelineData.ShaderBindingTableBuffer = CreateBuffer(renderSystem, MakeMember(u8"sssss", tables));
+			auto sbtMemeber = MakeMember(u8"sssss", tables);
+			pipelineData.ShaderBindingTableBuffer = CreateBuffer(renderSystem, sbtMemeber, pipelineData.ShaderBindingTableBuffer);
+
+			auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer, sbtMemeber);
 
 			for (uint32 shaderGroupIndex = 0, shaderCount = 0, offset = 0; shaderGroupIndex < 4; ++shaderGroupIndex) {
 				auto& groupData = rtPipelineData.ShaderGroups[shaderGroupIndex];
 
-				//for (auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer, groupData.TableHandle); bWK < groupData.ShaderCount; ++shaderCount, ++bWK) {
-					//Write(renderSystem, bWK, groupData.ShaderHandle, shaderGroupHandlesBuffer[shaderCount]);
-				//}
+				auto table = bWK[groupData.TableHandle];
+
+				for (uint32 i = 0; i < groupData.ShaderCount; ++i, ++shaderCount) {
+					table[groupData.ShaderHandle] = shaderGroupHandlesBuffer[shaderCount];
+					table[groupData.MaterialDataPointer] = renderSystem->GetBufferDeviceAddress(sg.Buffer);
+				}
 			}
 		}
-		else {
-			__debugbreak();
-		}
-
-		signalDependencyToResource(pipelines[shaderLoadInfo.PipelineStart].ResourceHandle); //add ref count for pipeline load itself
 	}
+
 }
 
-uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureInfo)
-{
-	auto component = textureIndex++;
+uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureInfo) {
 
-	pendingPipelinesPerTexture.EmplaceAt(component, GetPersistentAllocator());
-
-	texturesRefTable.Emplace(Id(createTextureInfo.TextureName), component);
-
-	auto textureLoadInfo = TextureLoadInfo(component, RenderAllocation());
-
-	createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
-
-	return component;
+	if (auto t = textures.TryEmplace(Id(createTextureInfo.TextureName))) {
+		t.Get().Index = textureIndex++;
+		auto textureLoadInfo = TextureLoadInfo(RenderAllocation());
+		createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
+		t.Get().Resource = makeResource();
+		return t.Get().Index;
+	} else {
+		return t.Get().Index;
+	}
 }
 
 void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem* renderSystem,
@@ -1129,62 +1131,80 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 {	
 	renderSystem->UpdateTexture(loadInfo.TextureHandle);
 
-	WriteBinding(renderSystem, textureSubsetsHandle, loadInfo.TextureHandle, loadInfo.Component);
+	auto& texture = textures[textureInfo.Name];
 
-	for (auto e : pendingPipelinesPerTexture[loadInfo.Component]) {
-		auto& l = pipelines[e];
-		signalDependencyToResource(pipelines[e].ResourceHandle);
-	}
+	WriteBinding(renderSystem, textureSubsetsHandle, loadInfo.TextureHandle, texture.Index);
+
+	signalDependencyToResource(texture.Resource);
 }
 
 WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), spherePositionsAndRadius(16, GetPersistentAllocator()) {
-	auto* renderSystem = initialize_info.GameInstance->GetSystem<RenderSystem>(u8"RenderSystem");
-	auto* renderOrchestrator = initialize_info.GameInstance->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
+	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
 	rayTracing = BE::Application::Get()->GetOption(u8"rayTracing");
 
-	onStaticMeshInfoLoadHandle = initialize_info.GameInstance->StoreDynamicTask(this, u8"OnStaticMeshInfoLoad",
+	onStaticMeshInfoLoadHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnStaticMeshInfoLoad",
 		DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE),
 			TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE)),
 		&WorldRendererPipeline::onStaticMeshInfoLoaded
 	);
 
-	onStaticMeshLoadHandle = initialize_info.GameInstance->StoreDynamicTask(this, u8"OnStaticMeshLoad",
+	onStaticMeshLoadHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnStaticMeshLoad",
 		DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE),
 			TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup"),
 			TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")),
 		&WorldRendererPipeline::onStaticMeshLoaded);
 
-	OnAddMesh = initialize_info.GameInstance->StoreDynamicTask(this, u8"OnAddMesh",
+	OnAddMesh = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnAddMesh",
 		DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"),
 			TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"),
 			TypedDependency<RenderSystem>(u8"RenderSystem"),
 			TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")),
 		&WorldRendererPipeline::onAddMesh);
-	OnUpdateMesh = initialize_info.GameInstance->StoreDynamicTask(this, u8"OnUpdateMesh",
+
+	OnUpdateMesh = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnUpdateMesh",
 		DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"))
 		, &WorldRendererPipeline::updateMesh);
 
+	initialize_info.ApplicationManager->AddTask(this, u8"renderSetup", &WorldRendererPipeline::preRender, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), u8"RenderSetup", u8"Render");
+
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
-	members.EmplaceBack(&matrixUniformBufferMemberHandle, 1, u8"Matrix4");
+	members.EmplaceBack(&matrixUniformBufferMemberHandle, 1, u8"matrix4f");
 	members.EmplaceBack(&vertexBufferReferenceHandle, 1, u8"ptr_t");
 	members.EmplaceBack(&indexBufferReferenceHandle, 1, u8"ptr_t");
 	members.EmplaceBack(&materialInstance, 1, u8"uint32");
 
 	staticMeshInstanceDataStruct = renderOrchestrator->MakeMember(u8"StaticMeshData", members);
+	meshDataBuffer = renderOrchestrator->CreateBuffer(renderSystem, staticMeshInstanceDataStruct); //TODO: multiple instances
 
 	if (rayTracing) {
-		topLevelAccelerationStructureIndex = renderSystem->CreateTopLevelAccelerationStructure(16);
+		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
+		
+		//add node
+		RenderOrchestrator::PassData pass_data;
+		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
+		pass_data.WriteAttachments.EmplaceBack(u8"Color");
+		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"RayTraceRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
 
-		{
-			//add node
-			auto renderPassLayerHandle = renderOrchestrator->AddPass(u8"RayTraceRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, {}, initialize_info.GameInstance, nullptr);
+		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"RayTrace");
+		renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, renderOrchestrator->GetCameraDataLayer(), rayTraceShaderGroupHandle); //TODO:
+		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, renderOrchestrator->GetCameraDataLayer(), rayTraceShaderGroupHandle); //TODO:
 
-			//renderOrchestrator->MakeDataKey(renderOrchestrator->MakeMember(u8"rayTraceData", { {  } }));
+		//r.AccelerationStructure r.RayFlags r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, r.tMin, r.tMax
+		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { &Acc, 1, u8"uint64" }, { &RayFlags, 1, u8"uint8" }, { &RecordOffset, 1, u8"uint32" }, { &RecordStride, 1, u8"uint32" }, { &MissIndex, 1, u8"uint32" }, { &tMin, 1, u8"float32" }, { &tMax, 1, u8"float32" } };
+		auto member = renderOrchestrator->MakeMember(u8"rtData", members);
+		renderOrchestrator->BindToNode(rayTraceNode, member);
 
-			auto rayTraceNode = renderOrchestrator->addInternalNode<RenderOrchestrator::RayTraceData>(Id(u8"RayTraceRenderPass").GetHash().GetID(), {}, renderPassLayerHandle, RenderOrchestrator::InternalNodeType::RAY_TRACE);
-			//getPrivateNodeFromPublicHandle<RayTraceData>(rayTraceNode).PipelineIndex = rtPipelineIndex;
-		}
+		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceNode, member);
+
+		bwk[Acc] = renderSystem->GetTopLevelAccelerationStructure(topLevelAccelerationStructure, 0); //TODO: per frame node data
+		bwk[RayFlags] = static_cast<uint8>(0); //TODO: per frame node data
+		bwk[RecordOffset] = 0u; //TODO: per frame node data
+		bwk[RecordStride] = 64u; //TODO: per frame node data
+		bwk[MissIndex] = 0u; //TODO: per frame node data
+		bwk[tMin] = 0.0f; //TODO: per frame node data
+		bwk[tMax] = 100.0f; //TODO: per frame node data
 	}
 
 	//for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {

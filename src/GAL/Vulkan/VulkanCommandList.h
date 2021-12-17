@@ -300,8 +300,8 @@ namespace GAL
 					bufferBarrier.buffer = static_cast<const VulkanBuffer*>(barrier.Buffer)->GetVkBuffer();
 					bufferBarrier.srcAccessMask = ToVulkan(b.SourceAccess, b.SourceStage);
 					bufferBarrier.dstAccessMask = ToVulkan(b.DestinationAccess, b.DestinationStage);
-					bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferBarrier.srcQueueFamilyIndex = b.From;
+					bufferBarrier.dstQueueFamilyIndex = b.To;
 					bufferBarrier.srcStageMask = ToVulkan(b.SourceStage);
 					bufferBarrier.dstStageMask = ToVulkan(b.DestinationStage);
 					break;
@@ -313,8 +313,8 @@ namespace GAL
 					textureBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR; textureBarrier.pNext = nullptr;
 					textureBarrier.oldLayout = ToVulkan(barrier.CurrentLayout, barrier.Format);
 					textureBarrier.newLayout = ToVulkan(barrier.TargetLayout, barrier.Format);
-					textureBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					textureBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					textureBarrier.srcQueueFamilyIndex = b.From;
+					textureBarrier.dstQueueFamilyIndex = b.To;
 					textureBarrier.image = static_cast<const VulkanTexture*>(barrier.Texture)->GetVkImage();
 					textureBarrier.subresourceRange.aspectMask = ToVulkan(barrier.Format.Type);
 					textureBarrier.subresourceRange.baseMipLevel = 0;
@@ -355,7 +355,7 @@ namespace GAL
 		}
 
 		template<typename ALLOCATOR>
-		void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<BuildAccelerationStructureInfo*> infos, const ALLOCATOR& allocator) const {
+		void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<const AccelerationStructureBuildInfo*> infos, const ALLOCATOR& allocator) const {
 			GTSL::Vector<VkAccelerationStructureBuildGeometryInfoKHR, ALLOCATOR> buildGeometryInfos(infos.ElementCount(), allocator);
 			GTSL::Vector<GTSL::Vector<VkAccelerationStructureGeometryKHR, ALLOCATOR>, ALLOCATOR> geoPerAccStructure(infos.ElementCount(), allocator);
 			GTSL::Vector<GTSL::Vector<VkAccelerationStructureBuildRangeInfoKHR, ALLOCATOR>, ALLOCATOR> buildRangesPerAccelerationStructure(infos.ElementCount(), allocator);

@@ -34,7 +34,34 @@ public:
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
 
+	void ResizeBuffer(BufferHandle buffer_handle, uint32 size) {
+		auto& buffer = buffers[buffer_handle()];
+		if(buffer.Size < size) {
+			if(buffer.isMulti) {
+				__debugbreak();
+			} else {
+				if(buffer.Buffer[0].GetVkBuffer()) {
+					buffer.Buffer[0].Destroy(GetRenderDevice());
+					DeallocateLocalBufferMemory(buffer.Allocation[0]);
+				}
+
+				AllocateLocalBufferMemory(size, buffer.Flags, &buffer.Buffer[0], &buffer.Allocation[0]);
+
+				if(needsStagingBuffer) {
+					if(buffer.Staging[0].GetVkBuffer()) {
+						buffer.Staging[0].Destroy(GetRenderDevice());
+						DeallocateLocalBufferMemory(buffer.StagingAllocation[0]);
+					}
+
+					AllocateScratchBufferMemory(size, buffer.Flags, &buffer.Staging[0], &buffer.StagingAllocation[0]);
+				}
+			}
+		}
+	}
+
 	MAKE_HANDLE(uint32, CommandList);
+	MAKE_HANDLE(uint32, AccelerationStructure);
+	MAKE_HANDLE(uint32, BLASInstance);
 
 	CommandListHandle CreateCommandList(const GTSL::StringView name, bool isSingleFrame = true) {
 		uint32 index = commandLists.GetLength();
@@ -55,21 +82,50 @@ public:
 		beginGraphicsCommandLists(commandListData);
 	}
 
-	void DispatchBuild(const CommandListHandle command_list_handle) {
+	void DispatchBuild(const CommandListHandle command_list_handle, const GTSL::Range<const AccelerationStructureHandle*> handles) {
 		auto& commandListData = commandLists[command_list_handle()];
 
-		for (auto& e : topLevelAccelerationStructures) {
-			GAL::Geometry geometry(GAL::GeometryInstances{ GetBufferDeviceAddress(e.InstancesBuffer) }, GAL::GeometryFlag(), e.ScratchSize, 0); //TODO
-			geometries[GetCurrentFrame()].EmplaceBack(geometry);
+		GTSL::StaticVector<GAL::AccelerationStructureBuildInfo, 8> build_datas;
+		GTSL::StaticVector<GAL::Geometry, 8> geometries;
 
-			AccelerationStructureBuildData buildData;
-			buildData.BuildFlags = 0;
-			buildData.Destination = e.AccelerationStructures[GetCurrentFrame()];
-			buildData.ScratchBuildSize = e.ScratchSize;
-			buildDatas[GetCurrentFrame()].EmplaceBack(buildData);
+		if (accelerationStructures[handles[0]()].isTop) {
+			auto& buildData = build_datas.EmplaceBack();
+			buildData.DestinationAccelerationStructure = accelerationStructures[handles[0]()].TopLevel.AccelerationStructures[GetCurrentFrame()];
+			buildData.ScratchBufferAddress = GetBufferDeviceAddress(accelerationStructures[handles[0]()].TopLevel.ScratchBuffer);
 
-			buildAccelerationStructures(this, commandListData.CommandList);
+			for (auto e : handles) {
+				auto& as = accelerationStructures[e()];
+				auto& tlas = accelerationStructures[e()].TopLevel;
+				geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferDeviceAddress(tlas.InstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
+			}
+
+			buildData.Geometries = geometries;
+		} else {
+			auto& buildData = build_datas.EmplaceBack();
+
+			for (auto e : handles) {
+				auto& as = accelerationStructures[e()];
+				auto& blas = accelerationStructures[e()].BottomLevel;
+				auto address = GetBufferDeviceAddress(blas.DataBuffer);
+				geometries.EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), address, address + GTSL::Math::RoundUpByPowerOf2(blas.VertexCount * blas.VertexSize, GetBufferSubDataAlignment()), 0, blas.VertexCount}, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0});
+			}
+
+			buildData.Geometries = geometries;
 		}
+
+		switch (accelerationStructureBuildDevice) {
+		case GAL::Device::CPU: break;
+		case GAL::Device::GPU:
+		case GAL::Device::GPU_OR_CPU: {
+			commandListData.CommandList.BuildAccelerationStructure(GetRenderDevice(), build_datas, GetTransientAllocator());
+			break;
+		}
+		default:;
+		}
+
+		GTSL::StaticVector<CommandList::BarrierData, 1> barriers;
+		barriers.EmplaceBack(GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::PipelineStages::RAY_TRACING, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::MemoryBarrier{});
+		commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
 	}
 
 	void EndCommandList(const CommandListHandle command_list_handle) {
@@ -124,18 +180,6 @@ public:
 
 	void DeallocateLocalTextureMemory(const RenderAllocation allocation) {
 		localMemoryAllocator.DeallocateNonLinearMemory(renderDevice, allocation);
-	}
-
-	void AllocateAccelerationStructureMemory(AccelerationStructure* accelerationStructure, GPUBuffer* buffer, GTSL::Range<const GAL::Geometry*> geometries, RenderAllocation* renderAllocation, uint32* scratchSize)
-	{
-		uint32 bufferSize, memoryScratchSize;
-		accelerationStructure->GetMemoryRequirements(GetRenderDevice(), geometries, GAL::Device::GPU, GAL::AccelerationStructureFlag(), &bufferSize, &memoryScratchSize);
-		
-		AllocateScratchBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, buffer, renderAllocation);
-
-		accelerationStructure->Initialize(GetRenderDevice(), geometries, *buffer, bufferSize, 0);
-
-		*scratchSize = memoryScratchSize;
 	}
 	
 	void AllocateScratchBufferMemory(uint32 size, GAL::BufferUse flags, GPUBuffer* buffer, RenderAllocation* allocation) {		
@@ -268,8 +312,8 @@ public:
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
 	uint32 GetShaderGroupHandleAlignment() const { return shaderGroupHandleAlignment; }
 
-	AccelerationStructure GetTopLevelAccelerationStructure(uint32 topLevelAccelerationStructureIndex, uint8 frame) const {
-		return topLevelAccelerationStructures[topLevelAccelerationStructureIndex].AccelerationStructures[frame];
+	AccelerationStructure GetTopLevelAccelerationStructure(AccelerationStructureHandle topLevelAccelerationStructureIndex, uint8 frame) const {
+		return accelerationStructures[topLevelAccelerationStructureIndex()].TopLevel.AccelerationStructures[frame];
 	}
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
@@ -279,8 +323,8 @@ public:
 	[[nodiscard]] TextureHandle CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable);
 	void UpdateTexture(const TextureHandle textureHandle);
 
-	//TODO: SELECT DATA POINTER BASED ON STAGING BUFFER NECESSITY
 	
+	//TODO: SELECT DATA POINTER BASED ON STAGING BUFFER NECESSITY
 	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle) {
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
@@ -306,59 +350,62 @@ public:
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
 
-	uint32 CreateTopLevelAccelerationStructure(uint32 estimatedMaxInstances) {
-		uint32 tlasi = topLevelAccelerationStructures.GetLength();
-		auto& t = topLevelAccelerationStructures.EmplaceBack();
-
-		t.InstanceCapacity = estimatedMaxInstances;
+	AccelerationStructureHandle CreateTopLevelAccelerationStructure(uint32 estimatedMaxInstances) {
+		uint32 tlasi = accelerationStructures.Emplace();
+		auto& t = accelerationStructures[tlasi].TopLevel;
+		
+		accelerationStructures[tlasi].PrimitiveCount = estimatedMaxInstances;
 
 		GAL::Geometry geometry(GAL::GeometryInstances(), GAL::GeometryFlag(), estimatedMaxInstances, 0);
 
-		for (uint8 f = 0; f < pipelinedFrames; ++f) {
-			AllocateAccelerationStructureMemory(&t.AccelerationStructures[f], &t.AccelerationStructureBuffer[f],
-				GTSL::Range(1, &geometry), &t.AccelerationStructureAllocation[f], &t.ScratchSize);
+		uint32 size;
 
-			t.AccelerationStructures[f].Initialize(&renderDevice, GTSL::Range(1, &geometry), t.AccelerationStructureBuffer[f], t.ScratchSize, 0);
+		t.AccelerationStructures[0].GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), accelerationStructureBuildDevice, GAL::AccelerationStructureFlags::PREFER_FAST_TRACE, &size, &t.ScratchSize);
+
+		for (uint8 f = 0; f < pipelinedFrames; ++f) {
+			AllocateLocalBufferMemory(size, GAL::BufferUses::ACCELERATION_STRUCTURE, &t.AccelerationStructureBuffer[f], &t.AccelerationStructureAllocation[f]);
+			t.AccelerationStructures[f].Initialize(&renderDevice, true, t.AccelerationStructureBuffer[f], t.ScratchSize, 0);
 		}
 
 		t.InstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, true);
+		t.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ, true, false);
 
-		return tlasi;
+		return AccelerationStructureHandle{ tlasi };
 	}
 
-	uint32 CreateBottomLevelAccelerationStructure(uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType,  BufferHandle sourceBuffer, uint32 offset = 0) {
-		uint32 blasi = bottomLevelAccelerationStructures.Emplace();
+	AccelerationStructureHandle CreateBottomLevelAccelerationStructure(uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType,  BufferHandle sourceBuffer, bool willUpdate = false, bool willRebuild = false, bool isOpaque = true, uint32 offset = 0) {
+		uint32 blasi = accelerationStructures.Emplace();
 
-		auto& blas = bottomLevelAccelerationStructures[blasi];
+		auto& blas = accelerationStructures[blasi].BottomLevel;
 
-		GAL::DeviceAddress meshDataAddress;
+		blas.VertexCount = vertexCount; blas.VertexSize = vertexSize; blas.DataBuffer = sourceBuffer;
+		accelerationStructures[blasi].PrimitiveCount = indexCount / 3;
 
-		meshDataAddress = GetBufferDeviceAddress(sourceBuffer) + offset;
+		GAL::GeometryTriangles geometryTriangles; //todo: add buffer references, so it can't be deleted while blas build consumes it
+		geometryTriangles.IndexType = indexType;
+		geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
+		geometryTriangles.MaxVertices = vertexCount;
+		geometryTriangles.VertexData = GAL::DeviceAddress();
+		geometryTriangles.IndexData = GAL::DeviceAddress();
+		geometryTriangles.VertexStride = vertexSize;
+		geometryTriangles.FirstVertex = 0;
 
-		uint32 scratchSize;
+		GAL::GeometryFlag geometry_flags; geometry_flags |= isOpaque ? GAL::GeometryFlags::OPAQUE : 0;
+		GAL::Geometry geometry(geometryTriangles, geometry_flags, indexCount / 3, 0);
 
-		{
-			GAL::GeometryTriangles geometryTriangles;
-			geometryTriangles.IndexType = indexType;
-			geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
-			geometryTriangles.MaxVertices = vertexCount;
-			geometryTriangles.VertexData = meshDataAddress;
-			geometryTriangles.IndexData = meshDataAddress + GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, GetBufferSubDataAlignment());
-			geometryTriangles.VertexStride = vertexSize;
-			geometryTriangles.FirstVertex = 0;
+		GAL::AccelerationStructureFlag acceleration_structure_flag;
+		acceleration_structure_flag |= !willRebuild ? GAL::AccelerationStructureFlags::ALLOW_COMPACTION : 0;
+		acceleration_structure_flag |= !willUpdate ? GAL::AccelerationStructureFlags::ALLOW_COMPACTION : 0;
+		acceleration_structure_flag |= willUpdate or willRebuild ? GAL::AccelerationStructureFlags::PREFER_FAST_BUILD : 0;
+		acceleration_structure_flag |= willUpdate ? GAL::AccelerationStructureFlags::ALLOW_UPDATE : 0;
+		acceleration_structure_flag |= !willUpdate and !willRebuild ? GAL::AccelerationStructureFlags::PREFER_FAST_TRACE : 0;
 
-			GAL::Geometry geometry(geometryTriangles, GAL::GeometryFlags::OPAQUE, indexCount / 3, 0);
+		uint32 bufferSize;
+		blas.AccelerationStructure.GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), GAL::Device::GPU, acceleration_structure_flag, &bufferSize, &blas.ScratchSize);
+		AllocateLocalBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, &blas.AccelerationStructureBuffer, &blas.AccelerationStructureAllocation);
+		blas.AccelerationStructure.Initialize(GetRenderDevice(), false, blas.AccelerationStructureBuffer, bufferSize, 0);
 
-			AllocateAccelerationStructureMemory(&blas.AccelerationStructure, &blas.AccelerationStructureBuffer,
-				GTSL::Range(1, &geometry), &blas.AccelerationStructureAllocation, &scratchSize);
-
-			AccelerationStructureBuildData buildData;
-			buildData.ScratchBuildSize = scratchSize;
-			buildData.Destination = blas.AccelerationStructure;
-			addRayTracingInstance(geometry, buildData);
-		}
-
-		return blasi;
+		return AccelerationStructureHandle{ blasi };
 	}
 
 	uint32 CreateAABB(const GTSL::Matrix4& position, const GTSL::Vector3 size) {
@@ -369,13 +416,13 @@ public:
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 0) = -size;
 		*(reinterpret_cast<GTSL::Vector3*>(bufferPointer) + 1) = size;
 
-		addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(bufferDeviceAddress, sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
+		//addRayTracingInstance(GAL::Geometry(GAL::GeometryAABB(bufferDeviceAddress, sizeof(float32) * 6), {}, 1, 0), AccelerationStructureBuildData{ 0,  {}, {} });
 		return 0;
 	}
 
-	uint32 AddBLASToTLAS(const uint32 tlasi, const uint32 blasi) {
-		auto& tlas = topLevelAccelerationStructures[tlasi];
-		auto& blas = bottomLevelAccelerationStructures[blasi];
+	BLASInstanceHandle AddBLASToTLAS(const AccelerationStructureHandle tlash, const AccelerationStructureHandle blash) {
+		auto& tlas = accelerationStructures[tlash()].TopLevel;
+		auto& blas = accelerationStructures[blash()].BottomLevel;
 
 		uint32 instanceIndex = 0;
 
@@ -386,15 +433,16 @@ public:
 		}
 
 		GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), 0, accelerationStructureBuildDevice);
-		return instanceIndex;
+
+		return BLASInstanceHandle(instanceIndex);
 	}
 
-	void SetInstancePosition(uint32 instanceIndex, const GTSL::Matrix4& matrix4) {
-		GAL::WriteInstanceMatrix(GTSL::Matrix3x4(matrix4), GetBufferPointer(topLevelAccelerationStructures.back().InstancesBuffer), instanceIndex);
+	void SetInstancePosition(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const GTSL::Matrix4& matrix4) {
+		GAL::WriteInstanceMatrix(GTSL::Matrix3x4(matrix4), GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 
-	void SetInstanceBindingTableRecordOffset(uint32 instanceIndex, const uint32 offset) {
-		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(topLevelAccelerationStructures.back().InstancesBuffer), instanceIndex);
+	void SetInstanceBindingTableRecordOffset(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const uint32 offset) {
+		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 
 private:
@@ -443,36 +491,44 @@ private:
 		RenderAllocation StagingAllocation[MAX_CONCURRENT_FRAMES];
 	};
 	GTSL::FixedVector<BufferData, BE::PAR> buffers;
-	
-	struct AccelerationStructureBuildData
-	{
-		uint32 ScratchBuildSize;
-		AccelerationStructure Destination;
-		uint32 BuildFlags = 0;
-	};
-	GTSL::Vector<AccelerationStructureBuildData, BE::PersistentAllocatorReference> buildDatas[MAX_CONCURRENT_FRAMES];
-	GTSL::Vector<GAL::Geometry, BE::PersistentAllocatorReference> geometries[MAX_CONCURRENT_FRAMES];
 
-	RenderAllocation scratchBufferAllocation[MAX_CONCURRENT_FRAMES];
-	GPUBuffer accelerationStructureScratchBuffer[MAX_CONCURRENT_FRAMES];
+	struct AccelerationStructureData {
+		AccelerationStructureData() {}
 
-	struct TopLevelAccelerationStructure {
-		AccelerationStructure AccelerationStructures[MAX_CONCURRENT_FRAMES];
-		RenderAllocation AccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
-		GPUBuffer AccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
-		uint32 ScratchSize = 0, InstanceCapacity = 0;
-		BufferHandle InstancesBuffer;
-		GTSL::StaticVector<uint32, 8> freeSlots;
-		uint32 Instances = 0;
-	};
-	GTSL::StaticVector<TopLevelAccelerationStructure, 8> topLevelAccelerationStructures;
+		bool isTop = false;
+		GTSL::uint32 PrimitiveCount = 0;
 
-	struct BottomLevelAccelerationStructure {
-		GPUBuffer AccelerationStructureBuffer;
-		RenderAllocation AccelerationStructureAllocation;
-		AccelerationStructure AccelerationStructure;
+		union {
+			struct TopLevelAccelerationStructure {
+				AccelerationStructure AccelerationStructures[MAX_CONCURRENT_FRAMES];
+				RenderAllocation AccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
+				GPUBuffer AccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
+				uint32 ScratchSize = 0;
+				BufferHandle InstancesBuffer;
+				GTSL::StaticVector<uint32, 8> freeSlots;
+				uint32 Instances = 0;
+				BufferHandle ScratchBuffer;
+			} TopLevel;
+
+			struct BottomLevelAccelerationStructure {
+				GPUBuffer AccelerationStructureBuffer;
+				RenderAllocation AccelerationStructureAllocation;
+				AccelerationStructure AccelerationStructure;
+				uint32 ScratchSize;
+				BufferHandle DataBuffer;
+				GTSL::uint32 VertexCount, VertexSize;
+			} BottomLevel;
+		};
+
+		~AccelerationStructureData() {
+			if(isTop) {
+				GTSL::Destroy(TopLevel);
+			} else {
+				GTSL::Destroy(BottomLevel);
+			}
+		}
 	};
-	GTSL::FixedVector<BottomLevelAccelerationStructure, BE::PersistentAllocatorReference> bottomLevelAccelerationStructures;
+	GTSL::FixedVector<AccelerationStructureData, BE::PAR> accelerationStructures;
 
 	struct CommandListData {
 		CommandList CommandList;
@@ -482,24 +538,6 @@ private:
 	GTSL::StaticVector<CommandListData, 8> commandLists;
 
 	GAL::Device accelerationStructureBuildDevice;
-
-	void addRayTracingInstance(GAL::Geometry geometry, AccelerationStructureBuildData buildData) {
-		//++rayTracingInstancesCount;
-
-		for (uint8 f = 0; f < pipelinedFrames; ++f) {
-			geometries[f].EmplaceBack(geometry);
-			buildDatas[f].EmplaceBack(buildData);
-		}
-	}
-	
-	/**
-	 * \brief Pointer to the implementation for acceleration structures build.
-	 * Since acc. structures can be built on the host or on the device depending on device capabilities
-	 * we determine which one we are able to do and cache it.
-	 */
-	GTSL::FunctionPointer<void(CommandList&)> buildAccelerationStructures;
-
-	void buildAccelerationStructuresOnDevice(CommandList&);
 	
 	uint8 currentFrameIndex = 0;
 

@@ -11,7 +11,7 @@
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
 
-//enum class AccessType : uint8 { READ = 1, READ_WRITE = 4 };
+#include "ByteEngine/Handle.hpp"
 
 using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
 using TaskAccess = GTSL::Pair<uint16, AccessType>;
@@ -135,16 +135,17 @@ private:
 	friend struct Stage;
 };
 
+MAKE_HANDLE(uint32, DispatchedTask);
+
 template<class ALLOCATOR>
-struct TaskSorter
-{
+struct TaskSorter {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
 	ongoingTasksAccesses(num, allocator), objectNames(num, allocator)
 	{
 	}
 
-	GTSL::Result<uint32> CanRunTask(const GTSL::Range<const TaskAccess*> accesses) {
+	GTSL::Result<DispatchedTaskHandle> CanRunTask(const GTSL::Range<const TaskAccess*> accesses) {
 		const auto elementCount = accesses.ElementCount();
 
 		uint32 res = 0;
@@ -153,8 +154,8 @@ struct TaskSorter
 			GTSL::WriteLock lock(mutex);
 			
 			for (uint32 i = 0; i < elementCount; ++i) {
-				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
-				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ && accesses[i].Second == AccessTypes::READ_WRITE) { return GTSL::Result<uint32>(false); }
+				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ_WRITE) { return GTSL::Result<DispatchedTaskHandle>(false); }
+				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ && accesses[i].Second == AccessTypes::READ_WRITE) { return GTSL::Result<DispatchedTaskHandle>(false); }
 			}
 			
 			for (uint32 i = 0; i < elementCount; ++i) {
@@ -165,24 +166,23 @@ struct TaskSorter
 			res = ongoingTasksAccesses.Emplace(accesses);
 		}
 
-		return GTSL::Result(GTSL::MoveRef(res), true);
+		return GTSL::Result(DispatchedTaskHandle(res), true);
 	}
 
-	void ReleaseResources(const uint32 taskIndex) {
+	void ReleaseResources(const DispatchedTaskHandle taskIndex) {
 		GTSL::WriteLock lock(mutex);
 
-		const auto count = ongoingTasksAccesses[taskIndex].GetLength();
-		auto& accesses = ongoingTasksAccesses[taskIndex];
+		const auto count = ongoingTasksAccesses[taskIndex()].GetLength();
+		auto& accesses = ongoingTasksAccesses[taskIndex()];
 		
-		for (uint32 i = 0; i < count; ++i)
-		{
+		for (uint32 i = 0; i < count; ++i) {
 			BE_ASSERT(currentObjectAccessCount[accesses[i].First] != 0, "Oops :/");
 			if (--currentObjectAccessCount[accesses[i].First] == 0) { //if object is no longer accessed
 				currentObjectAccessState[accesses[i].First] = AccessType();
 			}
 		}
 		
-		ongoingTasksAccesses.Pop(taskIndex);
+		ongoingTasksAccesses.Pop(taskIndex());
 	}
 
 	void AddSystem(Id objectName) {

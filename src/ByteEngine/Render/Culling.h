@@ -37,6 +37,7 @@ inline void projectSpheres(const GTSL::Vector3 cameraPosition, GTSL::MultiRange<
 		float8x distanceSquared = distanceX * distanceX + distanceY * distanceY + distanceZ * distanceZ;
 
 		auto result = (sphereRadiuses * sphereRadiuses) / distanceSquared;
+		//auto result = GTSL::Math::Tangent((sphereRadiuses * sphereRadiuses) / distanceSquared);
 
 		float32 res[8];
 		result.CopyTo(res);

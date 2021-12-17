@@ -50,17 +50,9 @@ void GameApplication::PostInitialize()
 	applicationManager->AddStage(u8"GameplayEnd");
 	
 	//RENDER CODE BEGINS
-	applicationManager->AddStage(u8"RenderStart");
-	//RENDER SETUP BEGINS
-	applicationManager->AddStage(u8"RenderStartSetup");
-	//RENDER SETUP ENDS
-	applicationManager->AddStage(u8"RenderEndSetup");
+	applicationManager->AddStage(u8"RenderSetup");
 	//RENDER IS DISPATCHED
-	applicationManager->AddStage(u8"RenderDo");
-	//RENDER DISPATCH IS DONE
-	applicationManager->AddStage(u8"RenderFinished");
-	//RENDER CODE ENDS
-	applicationManager->AddStage(u8"RenderEnd");
+	applicationManager->AddStage(u8"Render");
 	
 	//FRAME ENDS
 	applicationManager->AddStage(u8"FrameEnd");
@@ -105,7 +97,6 @@ void GameApplication::PostInitialize()
 	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
-	applicationManager->AddSystem<CanvasSystem>(u8"CanvasSystem");
 
 	applicationManager->AddSystem<UIRenderManager>(u8"UIRenderManager");
 	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");

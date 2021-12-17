@@ -12,5 +12,5 @@ FunctionTimer::FunctionTimer(const GTSL::StaticString<64>& name) : StartingTime(
 
 FunctionTimer::~FunctionTimer()
 {
-	BE::Application::Get()->GetLogger()->logFunctionTimer(this, BE::Application::Get()->GetClock()->GetCurrentMicroseconds() - StartingTime);
+	//BE::Application::Get()->GetLogger()->logFunctionTimer(this, BE::Application::Get()->GetClock()->GetCurrentMicroseconds() - StartingTime);
 }

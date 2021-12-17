@@ -433,7 +433,7 @@ namespace GAL
 			renderDevice->VkCreateComputePipelines(renderDevice->GetVkDevice(), pipelineCache.GetVkPipelineCache(), 1, &computePipelineCreateInfo, renderDevice->GetVkAllocationCallbacks(), &pipeline);
 		}
 		
-		void InitializeRayTracePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*> pipelineStates, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
+		void InitializeRayTracePipeline(const VulkanRenderDevice* renderDevice, const VulkanPipeline parentPipeline, const GTSL::Range<const PipelineStateBlock*> pipelineStates, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
 			GTSL::StaticVector<VkRayTracingShaderGroupCreateInfoKHR, 16> vkRayTracingShaderGroupCreateInfoKhrs;
 
 			VkRayTracingPipelineCreateInfoKHR vkRayTracingPipelineCreateInfo{ VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR };
@@ -444,10 +444,8 @@ namespace GAL
 			{
 				auto& pipelineState = pipelineStates[i];
 
-				switch (pipelineState.Type)
-				{
-				case PipelineStateBlock::StateType::RAY_TRACE_GROUPS:
-				{
+				switch (pipelineState.Type) {
+				case PipelineStateBlock::StateType::RAY_TRACE_GROUPS: {
 					for (const auto& e : pipelineState.RayTracing.Groups) {
 						auto& p = vkRayTracingShaderGroupCreateInfoKhrs.EmplaceBack();
 						p.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
@@ -473,8 +471,7 @@ namespace GAL
 
 			GTSL::StaticVector<VkPipelineShaderStageCreateInfo, 32> vkPipelineShaderStageCreateInfos;
 
-			for (GTSL::uint32 i = 0; i < static_cast<GTSL::uint32>(stages.ElementCount()); ++i)
-			{
+			for (GTSL::uint32 i = 0; i < static_cast<GTSL::uint32>(stages.ElementCount()); ++i) {
 				auto& stageCreateInfo = vkPipelineShaderStageCreateInfos.EmplaceBack();
 				stageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 				stageCreateInfo.pNext = nullptr;
@@ -492,6 +489,11 @@ namespace GAL
 
 			vkRayTracingPipelineCreateInfo.groupCount = vkRayTracingShaderGroupCreateInfoKhrs.GetLength();
 			vkRayTracingPipelineCreateInfo.pGroups = vkRayTracingShaderGroupCreateInfoKhrs.begin();
+
+			if (const auto h = parentPipeline.GetVkPipeline()) {
+				vkRayTracingPipelineCreateInfo.basePipelineIndex = 0;
+				vkRayTracingPipelineCreateInfo.basePipelineHandle = h;
+			}
 
 			renderDevice->vkCreateRayTracingPipelinesKHR(renderDevice->GetVkDevice(), nullptr, pipelineCache.GetVkPipelineCache(), 1, &vkRayTracingPipelineCreateInfo, renderDevice->GetVkAllocationCallbacks(), &pipeline);
 			//SET_NAME(pipeline, VK_OBJECT_TYPE_PIPELINE, createInfo)

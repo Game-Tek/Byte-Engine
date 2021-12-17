@@ -21,14 +21,14 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		mixFormat.NumberOfChannels = 2;
 		mixFormat.SamplesPerSecond = 48000;
 
-		//onAudioInfoLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
-		//onAudioLoadHandle = initializeInfo.GameInstance->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
+		//onAudioInfoLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
+		//onAudioLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
 
 		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat)) {
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
-					//initializeInfo.GameInstance->AddTask(u8"renderAudio", &AudioSystem::render, GTSL::StaticVector<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
+					//initializeInfo.ApplicationManager->AddTask(u8"renderAudio", &AudioSystem::render, GTSL::StaticVector<TaskDependency, 1>{ { u8"AudioSystem", AccessTypes::READ_WRITE } }, u8"RenderDo", u8"RenderEnd");
 
 					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 

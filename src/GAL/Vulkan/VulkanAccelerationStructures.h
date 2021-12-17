@@ -7,7 +7,7 @@
 #include "GTSL/Vector.hpp"
 
 namespace GAL {
-	struct BuildAccelerationStructureInfo;
+	struct AccelerationStructureBuildInfo;
 
 	struct GeometryTriangles {
 		ShaderDataType VertexPositionFormat; IndexType IndexType; GTSL::uint8 VertexStride;
@@ -125,10 +125,10 @@ namespace GAL {
 			*accStructureSize = static_cast<GTSL::uint32>(buildSizes.accelerationStructureSize); *scratchSize = static_cast<GTSL::uint32>(buildSizes.buildScratchSize);
 		}
 		
-		void Initialize(const VulkanRenderDevice* renderDevice, GTSL::Range<const Geometry*> geometries, VulkanBuffer buffer, GTSL::uint32 size, GTSL::uint32 offset) {
+		void Initialize(const VulkanRenderDevice* renderDevice, bool topLevel, VulkanBuffer buffer, GTSL::uint32 size, GTSL::uint32 offset) {
 			VkAccelerationStructureCreateInfoKHR vkAccelerationStructureCreateInfoKhr{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
 			vkAccelerationStructureCreateInfoKhr.createFlags = 0;
-			vkAccelerationStructureCreateInfoKhr.type = geometries[0].Type == GeometryType::INSTANCES ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+			vkAccelerationStructureCreateInfoKhr.type = topLevel ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 			vkAccelerationStructureCreateInfoKhr.offset = offset;
 			vkAccelerationStructureCreateInfoKhr.deviceAddress = 0;
 			vkAccelerationStructureCreateInfoKhr.buffer = buffer.GetVkBuffer();
@@ -154,7 +154,7 @@ namespace GAL {
 		
 		//UTILITY
 		static void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice,
-		                                       GTSL::Range<const BuildAccelerationStructureInfo*>
+		                                       GTSL::Range<const AccelerationStructureBuildInfo*>
 		                                       buildAccelerationStructureInfos);
 
 	protected:
@@ -162,7 +162,7 @@ namespace GAL {
 
 	};
 
-	struct BuildAccelerationStructureInfo {
+	struct AccelerationStructureBuildInfo {
 		VulkanAccelerationStructure SourceAccelerationStructure, DestinationAccelerationStructure;
 		GTSL::Range<const Geometry*> Geometries;
 		DeviceAddress ScratchBufferAddress;
@@ -170,7 +170,7 @@ namespace GAL {
 	};
 	
 	inline void VulkanAccelerationStructure::BuildAccelerationStructure(const VulkanRenderDevice* renderDevice,
-	                                                                    GTSL::Range<const BuildAccelerationStructureInfo*>
+	                                                                    GTSL::Range<const AccelerationStructureBuildInfo*>
 	                                                                    buildAccelerationStructureInfos) {
 		GTSL::StaticVector<VkAccelerationStructureBuildGeometryInfoKHR, 8> buildGeometryInfos;
 		GTSL::StaticVector<GTSL::StaticVector<VkAccelerationStructureGeometryKHR, 8>, 8> geometriesPerAccelerationStructure;

@@ -32,8 +32,8 @@
 #include <GAL/DX12/DX12AccelerationStructure.hpp>
 #endif
 
-struct MaterialInstanceHandle {
-	uint32 MaterialIndex, MaterialInstanceIndex;
+struct ShaderGroupHandle {
+	uint32 ShaderGroupIndex;
 };
 
 /**
@@ -69,7 +69,7 @@ using Fence = GAL::VulkanFence;
 using GPUBuffer = GAL::VulkanBuffer;
 using Texture = GAL::VulkanTexture;
 using Surface = GAL::VulkanSurface;
-using Pipeline = GAL::VulkanPipeline;
+using GPUPipeline = GAL::VulkanPipeline;
 using GPUSemaphore = GAL::VulkanSemaphore;
 using QueryPool = GAL::VulkanQueryPool;
 using RenderPass = GAL::VulkanRenderPass;
@@ -92,7 +92,7 @@ using Fence = GAL::DX12Fence;
 using GPUBuffer = GAL::DX12Buffer;
 using Texture = GAL::DX12Texture;
 using Surface = GAL::DX12Surface;
-using Pipeline = GAL::DX12Pipeline;
+using GPUPipeline = GAL::DX12Pipeline;
 using GPUSemaphore = GAL::DX12Semaphore;
 using QueryPool = GAL::DX12QueryPool;
 using RenderPass = GAL::DX12RenderPass;

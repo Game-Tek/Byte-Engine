@@ -32,14 +32,12 @@ namespace GAL
 	
 	class RenderPass;
 
-	struct PushConstant
-	{
+	struct PushConstant {
 		GTSL::uint32 NumberOf4ByteSlots = 0;
 		ShaderStage Stage;
 	};
 	
-	class Pipeline
-	{
+	class Pipeline {
 	public:
 
 		static constexpr GTSL::uint8 MAX_VERTEX_ELEMENTS = 20;
@@ -60,14 +58,13 @@ namespace GAL
 			static constexpr GTSL::uint32 SHADER_UNUSED = (~0U);
 			
 			ShaderGroupType ShaderGroup;
-			GTSL::uint32 GeneralShader;
-			GTSL::uint32 ClosestHitShader;
-			GTSL::uint32 AnyHitShader;
-			GTSL::uint32 IntersectionShader;
+			GTSL::uint32 GeneralShader = SHADER_UNUSED;
+			GTSL::uint32 ClosestHitShader = SHADER_UNUSED;
+			GTSL::uint32 AnyHitShader = SHADER_UNUSED;
+			GTSL::uint32 IntersectionShader = SHADER_UNUSED;
 		};
 		
-		struct PipelineStateBlock
-		{
+		struct PipelineStateBlock {
 			struct ViewportState {
 				GTSL::uint8 ViewportCount = 0;
 			};
@@ -110,8 +107,7 @@ namespace GAL
 				RayTracingState RayTracing;
 			};			
 
-			enum class StateType
-			{
+			enum class StateType {
 				VIEWPORT_STATE, RASTER_STATE, DEPTH_STATE, COLOR_BLEND_STATE, VERTEX_STATE, RAY_TRACE_GROUPS
 			} Type;
 			
@@ -131,14 +127,12 @@ namespace GAL
 		//};
 	};
 
-	class PipelineCache
-	{
+	class PipelineCache {
 	public:
 	private:
 	};
 	
-	class GraphicsPipeline : public Pipeline
-	{
+	class GraphicsPipeline : public Pipeline {
 	public:
 		
 		GraphicsPipeline() = default;
@@ -156,8 +150,7 @@ namespace GAL
 		}
 	};
 
-	class ComputePipeline : public Pipeline
-	{
+	class ComputePipeline : public Pipeline {
 	public:
 	};
 

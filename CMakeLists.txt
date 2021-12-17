@@ -63,6 +63,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Utility/Shapes/ConeWithFalloff.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/InputManager.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Debug/Logger.cpp"
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Scripting.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp")
 
@@ -73,6 +74,7 @@ target_compile_features(ByteEngine PUBLIC cxx_std_20)
 
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
+target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
 
 # assimp
 target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")

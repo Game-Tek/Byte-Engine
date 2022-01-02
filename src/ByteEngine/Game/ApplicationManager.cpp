@@ -1,7 +1,7 @@
 #include "ApplicationManager.h"
 
 #include "ByteEngine/Game/World.h"
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 #include "ByteEngine/Debug/FunctionTimer.h"
 
@@ -23,7 +23,7 @@ ApplicationManager::~ApplicationManager() {
 	{
 		//Call shutdown in reverse order since systems initialized last during application start
 		//may depend on those created before them also for shutdown
-		auto shutdownSystem = [&](GTSL::SmartPointer<System, BE::PAR>& system) -> void {
+		auto shutdownSystem = [&](GTSL::SmartPointer<BE::System, BE::PAR>& system) -> void {
 			system.TryFree();
 		};
 		
@@ -123,7 +123,7 @@ void ApplicationManager::UnloadWorld(const WorldReference worldId)
 void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 	uint16 i = 0;
 
-	if constexpr (_DEBUG) {
+	if constexpr (BE_DEBUG) {
 		GTSL::ReadLock lock(stagesNamesMutex);
 		GTSL::WriteLock lock2(recurringTasksMutex);
 		
@@ -155,7 +155,7 @@ void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 
 void ApplicationManager::AddStage(Id stageName)
 {
-	if constexpr (_DEBUG) {
+	if constexpr (BE_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
 		if (stagesNames.Find(stageName).State()) {
 			BE_LOG_ERROR(u8"Tried to add stage ", GTSL::StringView(stageName), u8" which already exists. Resolve this issue as it leads to undefined behavior in release builds!")

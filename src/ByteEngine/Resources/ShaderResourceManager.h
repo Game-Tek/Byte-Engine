@@ -145,7 +145,7 @@ public:
 		case GTSL::File::OpenResult::ERROR: break;
 		}
 
-		if(!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize())) {
+		if (!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize())) {
 			shaderPackageFile.Resize(0);
 			shaderGroupsTableFile.Resize(0);
 			shaderInfoTableFile.Resize(0);
@@ -153,7 +153,7 @@ public:
 			shaderInfosFile.Resize(0);
 			shaderGroupInfosFile.Resize(0);
 			created = true;
-		}		
+		}
 
 		if (created) {
 			GTSL::KeyMap<ShaderHash, BE::TAR> loadedShaders(128, GetTransientAllocator());
@@ -194,20 +194,27 @@ public:
 					}
 
 					pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"vertex", vertexElements);
-					pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"index", { { u8"uint16[3]", u8"indexTri" } });
+					pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"index", { { u8"u16vec3", u8"indexTri" } });
 				}
 
 				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"globalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
 				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"cameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"} });
-				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"renderPassData", {  });
-				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"instanceData", { { u8"mat4f", u8"ModelMatrix"}, {u8"vertex*", u8"VertexBuffer"}, {u8"index*", u8"IndexBuffer"}, { u8"uint32", u8"MaterialInstance"} });
+				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
+
+				for (auto e : { vertexShaderScope, fragmentShaderScope, closestHitShaderScope }) {
+					auto instanceDataStruct = pipeline.Add(e, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
+					pipeline.DeclareVariable(instanceDataStruct, { u8"mat4f", u8"ModelMatrix" });
+					auto instanceStructVertexBuffer = pipeline.DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
+					auto instanceStructIndexBuffer = pipeline.DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
+					pipeline.DeclareVariable(instanceDataStruct, { u8"uint32", u8"MaterialInstance" });
+				}
 
 				auto rasterPushConstantBlockHandle = pipeline.Add(rasterModelHandle, u8"pushConstantBlock", GPipeline::LanguageElement::ElementType::MEMBER);
 				pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"globalData*", u8"global" });
 				pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"cameraData*", u8"camera" });
 				pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
 				auto rasterPushConstantShaderParameters = pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
-				pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"instanceData*", u8"instance" });				
+				pipeline.DeclareVariable(rasterPushConstantBlockHandle, { u8"instanceData*", u8"instance" });
 
 				pipeline.DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
 				pipeline.DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
@@ -221,21 +228,23 @@ public:
 				pipeline.AddMemberDeductionGuide(vertexShaderScope, u8"vertexViewSpaceNormal", { { vertexSurfaceInterface }, { vertexViewSpaceNormalHandle } });
 				auto glPositionHandle = pipeline.DeclareVariable(vertexShaderScope, { u8"vec4f", u8"gl_Position" });
 				pipeline.AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
-				
-				pipeline.DeclareStruct(rayTraceModelHandle, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint8", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-				pipeline.DeclareStruct(rayTraceModelHandle, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"instanceData*", u8"instances" } });
-								
+
+				pipeline.DeclareStruct(rayGenShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+				pipeline.DeclareStruct(missShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+				pipeline.DeclareStruct(closestHitShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+
+				pipeline.DeclareStruct(rayGenShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
+				pipeline.DeclareStruct(missShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
+				pipeline.DeclareStruct(closestHitShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"instanceData*", u8"instances" } });
+
 				auto rayTracePushConstantBlockHandle = pipeline.Add(rayTraceModelHandle, u8"pushConstantBlock", GPipeline::LanguageElement::ElementType::MEMBER);
 				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"globalData*", u8"global" });
 				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"cameraData*", u8"camera" });
 				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
-				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"rayTraceData*", u8"rayTrace" });				
+				pipeline.DeclareVariable(rayTracePushConstantBlockHandle, { u8"rayTraceData*", u8"rayTrace" });
 
-				auto payloadBlockHandle = pipeline.Add(rayGenShaderScope, u8"payloadBlock", GPipeline::LanguageElement::ElementType::SCOPE);
+				auto payloadBlockHandle = pipeline.Add(rayTraceModelHandle, u8"payloadBlock", GPipeline::LanguageElement::ElementType::SCOPE);
 				auto payloadHandle = pipeline.DeclareVariable(payloadBlockHandle, { u8"vec4f", u8"payload" });
-
-				pipeline.DeclareShaderRecord(rayTraceModelHandle, { { u8"MaterialData*", u8"Material" } });
 
 				pipeline.DeclareRawFunction(fragmentShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
 				pipeline.DeclareRawFunction(fragmentShaderScope, u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");
@@ -258,14 +267,18 @@ public:
 
 				pipeline.DeclareRawFunction(computeShaderScope, u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
 
-				pipeline.DeclareRawFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec3", u8"origin" }, { u8"vec3", u8"direction" } }, u8"rayTraceDataPointer r = invocationInfo.RayDispatchData;\ntraceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, origin, r.tMin, direction, r.tMax, 0);");
-				pipeline.DeclareRawFunction(rayGenShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5f);\nreturn pixelCenter / vec2(gl_LaunchSizeEXT.xy);");
+				pipeline.DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
+				pipeline.DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+				pipeline.DeclareRawFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
+				pipeline.DeclareRawFunction(rayGenShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");
 
 				pipeline.DeclareVariable(closestHitShaderScope, { u8"vec2f", u8"hitBarycenter" });
+				auto shaderRecordBlockHandle = pipeline.Add(closestHitShaderScope, u8"shaderRecordBlock", GPipeline::LanguageElement::ElementType::MEMBER);
+				auto shaderRecordEntry = pipeline.DeclareVariable(shaderRecordBlockHandle, { u8"shaderParametersData*", u8"shaderEntries" });
 				pipeline.AddMemberDeductionGuide(closestHitShaderScope, u8"surfaceColor", { payloadHandle });
-
+				pipeline.Add(closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
 				pipeline.DeclareFunction(closestHitShaderScope, u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
-				pipeline.DeclareRawFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = shaderEntries[gl_InstanceCustomIndexEXT]; uint16 indices[3] = instance.IndexBuffer[3 * gl_PrimitiveID]; vertex vertices[3] = vertex[](instance.VertexBuffer[indeces[0]], instance.VertexBuffer[indeces[1]], instance.VertexBuffer[indeces[2]]); vec3f barycenter = GetVertexBarycenter(); return vertices[0].TexCoords * barycenter.x + vertices[1].TexCoords * barycenter.y + vertices[2].TexCoords * barycenter.z;");
+				pipeline.DeclareFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
 
 				GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
@@ -296,13 +309,14 @@ public:
 					}
 				}
 
-				bool rayTrace = false; ShaderGroupInfo::RayTraceData ray_trace_data;
+				for (auto p : json[u8"parameters"]) {
+					shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+				}
 
 				auto processShaderGroup = [&](GTSL::JSONMember json, ShaderGroupDataSerialize& shaderGroupDataSerialize, bool rayTrace) {
 					GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 					for (auto p : json[u8"parameters"]) {
-						shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
 						shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
 					}
 
@@ -335,11 +349,20 @@ public:
 							break;
 						case Shader::Class::COMPUTE: targetSemantics = GAL::ShaderType::COMPUTE; shaderSemanticsScope = computeShaderScope; break;
 						case Shader::Class::RENDER_PASS: break;
-						case Shader::Class::RAY_GEN: targetSemantics = GAL::ShaderType::RAY_GEN; shaderSemanticsScope = rayGenShaderScope; break;
+						case Shader::Class::RAY_GEN:
+							if (rayTrace) {
+								targetSemantics = GAL::ShaderType::RAY_GEN; shaderSemanticsScope = rayGenShaderScope;
+							}
+							else {
+								continue;
+							}
+							break;
 						case Shader::Class::MISS:
 							if (rayTrace) {
-								//targetSemantics = GAL::ShaderType::MISS; shaderSemanticsScope = missShaderScope;
-							} else {
+								targetSemantics = GAL::ShaderType::MISS; shaderSemanticsScope = missShaderScope;
+							}
+							else {
+								continue;
 								targetSemantics = GAL::ShaderType::COMPUTE; shaderSemanticsScope = computeShaderScope;
 							}
 							break;
@@ -351,17 +374,22 @@ public:
 							auto shaderParametersHandle = pipeline.DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
 							for (auto& e : shaderParameters) {
-								pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { rasterPushConstantBlockHandle, rasterPushConstantShaderParameters, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
+								if (rayTrace) {
+									pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { shaderRecordEntry, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
+								}
+								else {
+									pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { rasterPushConstantBlockHandle, rasterPushConstantShaderParameters, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
+								}
 							}
 						}
 
 						pipeline.DeclareFunction(shaderScope, u8"void", u8"main"); //main
 
-						auto shaderPermutationScopes = std::initializer_list<const GPipeline::ElementHandle>{ {}, rayTrace ? rayTraceModelHandle : rasterModelHandle, shaderSemanticsScope, shaderScope };
+						auto shaderPermutationScopes = std::initializer_list<const GPipeline::ElementHandle>{ {}, shaderSemanticsScope, rayTrace ? rayTraceModelHandle : rasterModelHandle, shaderScope };
 
 						evalShader(shaderFileBuffer, shader, pipeline, shaderPermutationScopes);
 						auto shaderResult = GenerateShader(shader, pipeline, shaderPermutationScopes, targetSemantics);
-						if (!shaderResult) { BE_LOG_ERROR(shaderResult.Get().Second); }
+						if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
 						auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
 
 						if (loadedShaders.Find(shaderHash)) { continue; }
@@ -385,10 +413,13 @@ public:
 					}
 				};
 
+				bool rayTrace = true; ShaderGroupInfo::RayTraceData ray_trace_data;
+
 				if (rayTrace) {
 					processShaderGroup(json, shaderGroupDataSerialize, false);
 					processShaderGroup(json, shaderGroupDataSerialize, true);
-				} else {
+				}
+				else {
 					processShaderGroup(json, shaderGroupDataSerialize, false);
 				}
 
@@ -398,7 +429,7 @@ public:
 					shaderGroupInfosFile << shaderGroupDataSerialize.Name;
 
 					shaderGroupInfosFile << shaderGroupUsedShaders.GetLength();
-					for(auto& e : shaderGroupUsedShaders) { shaderGroupInfosFile << e; }
+					for (auto& e : shaderGroupUsedShaders) { shaderGroupInfosFile << e; }
 
 					shaderGroupInfosFile << shaderGroupDataSerialize.Parameters.GetLength();
 					for (auto& p : shaderGroupDataSerialize.Parameters) {
@@ -417,13 +448,13 @@ public:
 
 					shaderGroupInfosFile << shaderGroupDataSerialize.VertexElements.GetLength();
 
-					for(auto& e : shaderGroupDataSerialize.VertexElements) {
+					for (auto& e : shaderGroupDataSerialize.VertexElements) {
 						shaderGroupInfosFile << e.Type << e.Name;
 					}
 
 					shaderGroupInfosFile << rayTrace;
 
-					if(rayTrace) {
+					if (rayTrace) {
 						shaderGroupInfosFile << ray_trace_data.Payload.Type << ray_trace_data.Payload.Name << ray_trace_data.Payload.DefaultValue;
 
 						for (uint32 i = 0; i < 4; ++i) {
@@ -825,14 +856,14 @@ private:
 		uint32 vertexElementCount = 0;
 		shaderGroupInfosFile >> vertexElementCount;
 
-		for(uint32 i = 0; i < vertexElementCount; ++i) {
+		for (uint32 i = 0; i < vertexElementCount; ++i) {
 			auto& vertexElement = shaderGroupInfo.VertexElements.EmplaceBack();
 			shaderGroupInfosFile >> vertexElement.Type >> vertexElement.Name;
 		}
 
 		bool rayTrace = false; shaderGroupInfosFile >> rayTrace;
 
-		if(rayTrace) {
+		if (rayTrace) {
 			shaderGroupInfosFile >> shaderGroupInfo.RayTrace.Payload.Type >> shaderGroupInfo.RayTrace.Payload.Name >> shaderGroupInfo.RayTrace.Payload.DefaultValue;
 
 			for (uint32 i = 0; i < 4; ++i) {
@@ -867,6 +898,9 @@ private:
 		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"texture2D[]", u8"textures" });
 		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"image2D[]", u8"images" });
 		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"sampler", u8"s" });
+
+		pipeline.DeclareStruct({}, u8"TextureReference", { { u8"uint32", u8"Instance" } });
+		pipeline.DeclareStruct({}, u8"ImageReference", { { u8"uint32", u8"Instance" } });
 
 		pipeline.DeclareRawFunction({}, u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
 		pipeline.DeclareRawFunction({}, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
@@ -903,7 +937,8 @@ private:
 		if (shaderClass == ::Shader::Class::COMPUTE) {
 			if (auto res = shaderJson[u8"localSize"]) {
 				shader.SetThreadSize({ static_cast<uint16>(res[0].GetUint()), static_cast<uint16>(res[1].GetUint()), static_cast<uint16>(res[2].GetUint()) });
-			} else {
+			}
+			else {
 				shader.SetThreadSize({ 1, 1, 1 });
 			}
 		}

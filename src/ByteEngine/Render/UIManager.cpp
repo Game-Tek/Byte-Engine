@@ -2,7 +2,7 @@
 
 #include <GTSL/Math/Math.hpp>
 
-Canvas::Canvas() : System({}, u8"Canvas"), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator())
+Canvas::Canvas() : BE::System({}, u8"Canvas"), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator())
 {
 }
 

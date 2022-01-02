@@ -3,7 +3,7 @@
 #include <GTSL/Network/Sockets.h>
 
 #include "ByteEngine/Game/ApplicationManager.h"
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 class EditorInterface : public System {
 public:

@@ -23,40 +23,90 @@ namespace GAL {
 		}
 
 		bool Submit(const VulkanRenderDevice* renderDevice, const GTSL::Range<const WorkUnit*> submitInfos, VulkanFence& fence) {
-			VkSubmitInfo vkSubmitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-			GTSL::StaticVector<VkCommandBuffer, 16> vkCommandBuffers;
-			GTSL::StaticVector<VkSemaphore, 16> signalSemaphores; GTSL::StaticVector<VkSemaphore, 16> waitSemaphores;
-			GTSL::StaticVector<GTSL::uint64, 16> signalValues; GTSL::StaticVector<GTSL::uint64, 16> waitValues;
-			GTSL::StaticVector<VkPipelineStageFlags, 16> waitPipelineStages;
+			VkResult submitResult;
 
-			for(auto& s : submitInfos) {
-				if (s.CommandBuffer) {
-					vkCommandBuffers.EmplaceBack(static_cast<const VulkanCommandList*>(s.CommandBuffer)->GetVkCommandBuffer());
-				}
-				
-				if (s.SignalSemaphore) {
-					signalSemaphores.EmplaceBack(static_cast<const VulkanSemaphore*>(s.SignalSemaphore)->GetVkSemaphore());
-					static_cast<VulkanSemaphore*>(s.SignalSemaphore)->Signal();
+			//{
+			//	GTSL::StaticVector<VkSubmitInfo2KHR, 8> vkSubmitInfos;
+			//
+			//	GTSL::StaticVector<GTSL::StaticVector<VkCommandBufferSubmitInfoKHR, 16>, 4> vkCommandBuffers;
+			//	GTSL::StaticVector<GTSL::StaticVector<VkSemaphoreSubmitInfoKHR, 16>, 4> signalSemaphores, waitSemaphores;
+			//
+			//	for (auto& si : submitInfos) {
+			//		auto& a = vkSubmitInfos.EmplaceBack(VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR);
+			//		auto& wucb = vkCommandBuffers.EmplaceBack();
+			//		auto& wuss = signalSemaphores.EmplaceBack(); auto& wuws = waitSemaphores.EmplaceBack();
+			//
+			//		for (auto cbi : si.CommandLists) {
+			//			auto& cb = wucb.EmplaceBack(VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR);
+			//			cb.commandBuffer = static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer();
+			//		}
+			//
+			//		for (auto& cbi : si.SignalSemaphores) {
+			//			auto& s = wuss.EmplaceBack(VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR);
+			//			s.semaphore = static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore();
+			//			s.stageMask = ToVulkan(cbi.PipelineStage);
+			//			static_cast<VulkanSemaphore*>(cbi.Semaphore)->Signal();
+			//		}
+			//
+			//		for (auto& cbi : si.WaitSemaphores) {
+			//			auto& s = wuws.EmplaceBack(VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR);
+			//			s.semaphore = static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore();
+			//			s.stageMask = ToVulkan(cbi.PipelineStage);
+			//			static_cast<VulkanSemaphore*>(cbi.Semaphore)->Unsignal();
+			//		}
+			//
+			//		a.commandBufferInfoCount = wucb.GetLength();
+			//		a.pCommandBufferInfos = wucb.begin();
+			//		a.waitSemaphoreInfoCount = wuws.GetLength();
+			//		a.pWaitSemaphoreInfos = wuws.begin();
+			//		a.signalSemaphoreInfoCount = wuss.GetLength();
+			//		a.pSignalSemaphoreInfos = wuss.begin();
+			//	}
+			//
+			//	submitResult = renderDevice->VkQueueSubmit2(queue, vkSubmitInfos.GetLength(), vkSubmitInfos.GetData(), fence.GetVkFence());
+			//}
+
+			{
+				GTSL::StaticVector<VkSubmitInfo, 8> vkSubmitInfos;
+
+				GTSL::StaticVector<GTSL::StaticVector<VkCommandBuffer, 16>, 4> vkCommandBuffers;
+				GTSL::StaticVector<GTSL::StaticVector<VkSemaphore, 16>, 4> signalSemaphores, waitSemaphores;
+				GTSL::StaticVector<GTSL::StaticVector<VkPipelineStageFlags, 16>, 4> vkPipelineStageFlags;
+
+				for (auto& si : submitInfos) {
+					auto& a = vkSubmitInfos.EmplaceBack(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+					auto& wucb = vkCommandBuffers.EmplaceBack();
+					auto& wuss = signalSemaphores.EmplaceBack(); auto& wuws = waitSemaphores.EmplaceBack();
+					auto& psfs = vkPipelineStageFlags.EmplaceBack();
+
+					for (auto cbi : si.CommandLists) {
+						auto& cb = wucb.EmplaceBack(static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer());
+					}
+
+					for (auto& cbi : si.SignalSemaphores) {
+						auto& s = wuss.EmplaceBack(static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore());
+						static_cast<VulkanSemaphore*>(cbi.Semaphore)->Signal();
+					}
+
+					for (auto& cbi : si.WaitSemaphores) {
+						auto& s = wuws.EmplaceBack(static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore());
+						psfs.EmplaceBack(ToVulkan(cbi.PipelineStage));
+						static_cast<VulkanSemaphore*>(cbi.Semaphore)->Unsignal();
+					}
+
+					a.commandBufferCount = wucb.GetLength();
+					a.pCommandBuffers = wucb.begin();
+					a.waitSemaphoreCount = wuws.GetLength();
+					a.pWaitSemaphores = wuws.begin();
+					a.signalSemaphoreCount = wuss.GetLength();
+					a.pSignalSemaphores = wuss.begin();
+					a.pWaitDstStageMask = psfs.GetData();
 				}
 
-				if (s.WaitSemaphore) {
-					waitSemaphores.EmplaceBack(static_cast<const VulkanSemaphore*>(s.WaitSemaphore)->GetVkSemaphore());
-					waitPipelineStages.EmplaceBack(ToVulkan(s.WaitPipelineStage));
-					static_cast<VulkanSemaphore*>(s.WaitSemaphore)->Unsignal();
-				}				
+				submitResult = renderDevice->VkQueueSubmit(queue, vkSubmitInfos.GetLength(), vkSubmitInfos.GetData(), fence.GetVkFence());
 			}
-			
-			vkSubmitInfo.commandBufferCount = vkCommandBuffers.GetLength();
-			vkSubmitInfo.pCommandBuffers = vkCommandBuffers.begin();
-			vkSubmitInfo.waitSemaphoreCount = waitSemaphores.GetLength();
-			vkSubmitInfo.pWaitSemaphores = waitSemaphores.begin();
-			vkSubmitInfo.signalSemaphoreCount = signalSemaphores.GetLength();
-			vkSubmitInfo.pSignalSemaphores = signalSemaphores.begin();
-			vkSubmitInfo.pWaitDstStageMask = waitPipelineStages.begin();
 
 			fence.Signal();
-
-			auto submitResult = renderDevice->VkQueueSubmit(queue, 1, &vkSubmitInfo, fence.GetVkFence());
 
 			if(submitResult == VK_ERROR_DEVICE_LOST) {
 				renderDevice->Log(u8"Error: Device lost", RenderDevice::MessageSeverity::ERROR);

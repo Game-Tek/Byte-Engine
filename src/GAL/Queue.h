@@ -10,14 +10,13 @@ namespace GAL {
 	class Queue {
 	public:
 		struct WorkUnit final {
-			const CommandList* CommandBuffer = nullptr;
-			Semaphore* SignalSemaphore = nullptr;
-			Semaphore* WaitSemaphore = nullptr;
-			GTSL::uint64 SignalValue = 0, WaitValue = 0;
-			/**
-			 * \brief Pipeline stages at which each corresponding semaphore wait will occur.
-			 */
-			PipelineStage WaitPipelineStage;
+			struct SemaphoreOperationInfo {
+				Semaphore* Semaphore = nullptr;
+				PipelineStage PipelineStage;
+			};
+
+			GTSL::Range<SemaphoreOperationInfo*> SignalSemaphores, WaitSemaphores;
+			GTSL::Range<const CommandList**> CommandLists;
 		};
 	};
 }

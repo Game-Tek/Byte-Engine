@@ -65,7 +65,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Debug/Logger.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Scripting.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp")
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp" "src/ByteEngine/Resources/BC7.cpp")
 
 set_target_properties(ByteEngine PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 set_target_properties(ByteEngine PROPERTIES PUBLIC_HEADER "${PROJECT_SOURCE_DIR}/src/ByteEngine.h")

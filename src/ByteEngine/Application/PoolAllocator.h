@@ -7,7 +7,7 @@
 #include <GTSL/Mutex.h>
 #include <GTSL/Range.hpp>
 
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 class PoolAllocator
 {

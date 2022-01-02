@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 #include <GTSL/Extent.h>
 #include <GTSL/HashMap.hpp>
@@ -77,7 +77,7 @@ private:
 	float32 rotation = 0.0f;
 };
 
-class Canvas : public System {
+class Canvas : public BE::System {
 public:
 	Canvas();
 
@@ -156,16 +156,16 @@ public:
 	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
 
 	GTSL::Result<UIElementHandle> FindPrimitiveUnderPoint(const GTSL::Vector2 point) {
-		//auto check = [&](const decltype(primitives.begin()) level, auto&& self) -> GTSL::Result<UIElementHandle> {
-		//	GTSL::Vector2 rect;
-		//	if (GTSL::Math::Abs(rect - point) <= *level.Bounds) { return GTSL::Result{ UIElementHandle(), true }; }
-		//
-		//	for(auto e : level) {
-		//		if (auto r = self(e)) { return r; }
-		//	}
-		//};
+		auto check = [&](decltype(primitives)::iterator level, auto&& self) -> GTSL::Result<UIElementHandle> {
+			GTSL::Vector2 rect;
+			if (GTSL::Math::Abs(rect - point) <= static_cast<const PrimitiveData&>(level).Bounds) { return GTSL::Result{ UIElementHandle(), true }; }
+		
+			for(auto e : level) {
+				if (auto r = self(e, self)) { return r; }
+			}
+		};
 
-		//check(primitives.begin(), check);
+		check(primitives.begin(), check);
 
 		return GTSL::Result<UIElementHandle>{ false };
 	}
@@ -236,7 +236,7 @@ private:
 	}
 };
 
-class UIManager : public System {
+class UIManager : public BE::System {
 public:
 	explicit UIManager(const InitializeInfo& initializeInfo);
 

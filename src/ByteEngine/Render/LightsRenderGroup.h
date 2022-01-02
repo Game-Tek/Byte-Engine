@@ -4,10 +4,10 @@
 #include <GTSL/Math/Rotator.h>
 
 
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 
-class LightsRenderGroup : public System
+class LightsRenderGroup : public BE::System
 {
 public:
 	MAKE_HANDLE(uint32, DirectionalLight)

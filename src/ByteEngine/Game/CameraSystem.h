@@ -2,14 +2,14 @@
 
 #include "ByteEngine/Core.h"
 #include "ByteEngine/Handle.hpp"
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 
 #include <GTSL/Math/Matrix4.h>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Vector.hpp>
 
 
-class CameraSystem : public System
+class CameraSystem : public BE::System
 {
 public:
 	CameraSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"CameraSystem"), positionMatrices(4, GetPersistentAllocator()), rotationMatrices(4, GetPersistentAllocator()), fovs(4, GetPersistentAllocator())

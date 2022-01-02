@@ -6,13 +6,13 @@
 #include <GTSL/Flags.h>
 #include <GTSL/FixedVector.hpp>
 #include <GTSL/Result.h>
-#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
 
 #include "ByteEngine/Handle.hpp"
 
+class ApplicationManager;
 using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
 using TaskAccess = GTSL::Pair<uint16, AccessType>;
 
@@ -20,8 +20,7 @@ namespace AccessTypes {
 	static constexpr AccessType READ(1), READ_WRITE(4);
 }
 
-struct TaskInfo
-{
+struct TaskInfo {
 	TaskInfo(ApplicationManager* application_manager) : ApplicationManager(application_manager) {}
 
 	class ApplicationManager* ApplicationManager = nullptr;

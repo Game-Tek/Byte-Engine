@@ -76,7 +76,7 @@ struct GPipeline {
 		GTSL::StaticString<32> Return, Name;
 		GTSL::StaticVector<StructElement, 8> Parameters;
 		GTSL::StaticString<512> Code;
-		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 32>, 8> Statements;
+		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 64>, 8> Statements;
 		bool IsRaw = false, Inline = false;
 
 		//Every function gets assigned an id which is unique per pipeline
@@ -89,7 +89,7 @@ struct GPipeline {
 		LanguageElement(const BE::TAR& allocator) : map(16, allocator) {}
 
 		enum class ElementType {
-			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE
+			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED
 		} Type = ElementType::NULL;
 
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
@@ -105,7 +105,10 @@ struct GPipeline {
 		e.Name = u8"global";
 
 		Add(ElementHandle(), u8"=", LanguageElement::ElementType::FUNCTION);
+		Add(ElementHandle(), u8"+", LanguageElement::ElementType::FUNCTION);
+		Add(ElementHandle(), u8"-", LanguageElement::ElementType::FUNCTION);
 		Add(ElementHandle(), u8"*", LanguageElement::ElementType::FUNCTION);
+		Add(ElementHandle(), u8"/", LanguageElement::ElementType::FUNCTION);
 		Add(ElementHandle(), u8"return", LanguageElement::ElementType::KEYWORD);
 		Add(ElementHandle(), u8"uint32", LanguageElement::ElementType::TYPE);
 		Add(ElementHandle(), u8"float32", LanguageElement::ElementType::TYPE);
@@ -156,7 +159,8 @@ struct GPipeline {
 	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
 		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
 			return { elements[res.Get().back()], true };
-		} else {
+		}
+		else {
 			return { elements[0], false };
 		}
 	}
@@ -166,7 +170,7 @@ struct GPipeline {
 			return { ElementHandle(res.Get().back()), true };
 		}
 
-		return { ElementHandle(), false};
+		return { ElementHandle(), false };
 	}
 
 	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
@@ -186,12 +190,12 @@ struct GPipeline {
 			}
 		}
 
-		return { ElementHandle(), false};
+		return { ElementHandle(), false };
 	}
 
 	auto GetChildren(const ElementHandle element_handle) {
 		GTSL::StaticVector<ElementHandle, 64> children;
-		for(auto& e : GetElement(element_handle).symbols) {
+		for (auto& e : GetElement(element_handle).symbols) {
 			children.EmplaceBack(e);
 		}
 
@@ -255,7 +259,7 @@ struct GPipeline {
 	ElementHandle DeclareStruct(const ElementHandle parent, const GTSL::StringView name, GTSL::Range<const StructElement*> members) {
 		auto handle = Add(parent, name, LanguageElement::ElementType::STRUCT);
 
-		for(auto& e : members) {
+		for (auto& e : members) {
 			DeclareVariable(handle, e);
 		}
 
@@ -269,21 +273,13 @@ struct GPipeline {
 		return { handle };
 	}
 
-	void DeclareShaderRecord(ElementHandle element_handle, const GTSL::Range<const StructElement*> struct_elements) {
-		auto shaderRecordHandle = Add(element_handle, u8"shaderRecordEXT", LanguageElement::ElementType::MEMBER);
-
-		for(auto& e : struct_elements) {
-			DeclareVariable(shaderRecordHandle, e);
-		}
-	}
-
 	void AddMemberDeductionGuide(const ElementHandle start_cope, const GTSL::StringView interface_name, const GTSL::Range<const ElementHandle*> access_chain) {
 		auto& element = GetElement(Add(start_cope, interface_name, LanguageElement::ElementType::DEDUCTION_GUIDE));
 		element.Reference = deductionGuides.GetLength();
 		deductionGuides.EmplaceBack().PushBack(access_chain);
 	}
 
-	GTSL::Range<const ElementHandle*> GetMemberDeductionGuide(const ElementHandle member_deduction_guide) {	
+	GTSL::Range<const ElementHandle*> GetMemberDeductionGuide(const ElementHandle member_deduction_guide) {
 		return GTSL::Range<const ElementHandle*>(deductionGuides[GetElement(member_deduction_guide).Reference]);
 	}
 
@@ -308,8 +304,8 @@ private:
 
 inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& statements, const GTSL::Range<const GPipeline::ElementHandle*> scopes) {
 	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, LSQBRACKETS, RSQBRACKETS, DOT, COMMA, END };
-	GTSL::StaticVector<GTSL::StaticString<64>, 128> tokens;
-	GTSL::StaticVector<TokenTypes, 128> tokenTypes;
+	GTSL::StaticVector<GTSL::StaticString<64>, 512> tokens;
+	GTSL::StaticVector<TokenTypes, 512> tokenTypes;
 
 	auto codeString = code;
 
@@ -317,8 +313,6 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 		auto c = code[i];
 
 		TokenTypes type;
-
-		if (GTSL::IsWhitespace(c)) { continue; }
 
 		GTSL::StaticString<64> str;
 
@@ -364,11 +358,13 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 			tokenTypes.EmplaceBack(type);
 
 			--i;
-		} else {
-			while(GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
+		} else if(GTSL::IsLetter(code[i])) {
+			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
 				str += code[i];
 				++i;
 			}
+
+			if (code[i] == U'*') { str += U'*'; ++i; }
 
 			type = TokenTypes::ID;
 
@@ -377,6 +373,8 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 
 			--i;
 		}
+
+		//anything else, new line, null, space, skip
 	}
 
 	for (uint32 i = 0, s = 0; i < tokens; ++i) {
@@ -386,10 +384,6 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 
 		for (uint32 j = s; j < i; ++j) {
 			if (tokenTypes[j] == TokenTypes::ID or tokenTypes[j] == TokenTypes::OP) {
-				if (!pipeline.TryGetElement(scopes, tokens[j])) { statement.EmplaceBack(ShaderNode::Type::ID, tokens[j]); continue; } //if can't find token simply place it in the new stream, it will be rejected later
-
-				const auto& element = pipeline.GetElement(scopes, tokens[j]);
-
 				if (tokenTypes[j] == TokenTypes::ID) {
 					statement.EmplaceBack(ShaderNode::Type::ID, tokens[j]);
 				}
@@ -420,7 +414,7 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 }
 
 inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024>>> GenerateShader(Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics) {
-	GTSL::StaticString<2048> headerBlock, structBlock, functionBlock, declarationBlock; GTSL::StaticString<1024> errorString;
+	GTSL::StaticString<4096> headerBlock, structBlock, functionBlock, declarationBlock; GTSL::StaticString<1024> errorString;
 
 	auto addErrorCode = [&errorString](const GTSL::StringView string) {
 		errorString += string; errorString += u8"\n";
@@ -441,6 +435,8 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	}
 
 	headerBlock += u8"#extension GL_EXT_shader_16bit_storage : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n";
 	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n";
 	headerBlock += u8"#extension GL_EXT_nonuniform_qualifier : enable\n";
 	headerBlock += u8"#extension GL_EXT_scalar_block_layout : enable\n";
@@ -448,12 +444,9 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	headerBlock += u8"#extension GL_EXT_buffer_reference2 : enable\n";
 	headerBlock += u8"#extension GL_EXT_shader_image_load_formatted : enable\n";
 	if (isRayTracing) {
-		headerBlock += u8"#extension GL_EXT_ray_tracing : required\n";
+		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
-
-	structBlock += u8"struct TextureReference { uint Instance; };\n"; //basic datatypes
-	structBlock += u8"struct ImageReference { uint Instance; };\n"; //basic datatypes
 
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<32> {
 		GTSL::StaticString<32> result = name;
@@ -464,6 +457,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
+		case GTSL::Hash(u8"uint8"):  result = u8"uint8_t"; break;
 		case GTSL::Hash(u8"uint64"):  result = u8"uint64_t"; break;
 		case GTSL::Hash(u8"uint32"):  result = u8"uint"; break;
 		case GTSL::Hash(u8"uint16"):  result = u8"uint16_t"; break;
@@ -487,7 +481,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		if (auto res = FindFirst(struct_element.Type, U'[')) {
 			result.Type.Drop(res.Get());
 			auto last = FindLast(struct_element.Type, U']'); //TODO: boom no bracket pair
-			for(uint32 o = res.Get(); o < last.Get() + 1; ++o) {
+			for (uint32 o = res.Get(); o < last.Get() + 1; ++o) {
 				result.Name += struct_element.Type[o];
 			}
 		}
@@ -506,7 +500,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		auto descriptorSetBlockHandle = pipeline.TryGetElementHandle(scopes, u8"descriptorSetBlock");
 		if (!descriptorSetBlockHandle) { addErrorCode(u8"Descriptor set block declaration was not found."); return; }
 
-		for (uint32 s = 0; const auto& l : pipeline.GetChildren(descriptorSetBlockHandle.Get())) {
+		for (uint32 s = 0; const auto & l : pipeline.GetChildren(descriptorSetBlockHandle.Get())) {
 			for (uint32 ss = 0; const auto & m : pipeline.GetChildren(l)) {
 				declarationBlock += u8"layout(set="; ToString(declarationBlock, s); declarationBlock += u8",binding="; ToString(declarationBlock, ss); declarationBlock += u8") uniform ";
 				writeStructElement(declarationBlock, pipeline.GetMember(m)); declarationBlock += u8"\n";
@@ -532,8 +526,13 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 
 		GTSL::StaticString<256> statementString;
 
-		for(auto& e : pipeline.GetChildren(structHandle)) {
-			stt.EmplaceBack(pipeline.GetMember(e));			
+		for (auto& e : pipeline.GetChildren(structHandle)) {
+			//if (pipeline.GetElement(e).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
+			//	writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
+			//	writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+			//}
+
+			stt.EmplaceBack(pipeline.GetMember(e));
 		}
 
 		if (!stt.GetLength()) {
@@ -547,7 +546,8 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 				statementString += u8"readonly ";
 
 			statementString += u8"buffer ";
-		} else {
+		}
+		else {
 			statementString += u8"struct ";
 		}
 
@@ -560,8 +560,8 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		structBlock += statementString;
 	};
 
-	for(auto& e : scopes) {
-		for(auto& r : pipeline.GetChildren(e)) {
+	for (auto& e : scopes) {
+		for (auto& r : pipeline.GetChildren(e)) {
 			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
 				writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
 				writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
@@ -577,7 +577,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		GTSL::StaticString<512> string;
 
 		if (!functionUsed.Get()) {
-			string += resolveTypeName({ function.Return, u8""}).Type; string += u8' ';  string += function.Name;
+			string += resolveTypeName({ function.Return, u8"" }).Type; string += u8' ';  string += function.Name;
 
 			string += u8"(";
 
@@ -590,46 +590,57 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 			}
 
 			string += u8") { ";
-			
+
 			if (!function.Statements) {
 				parseCode(function.Code, pipeline, function.Statements, scopes);
 			}
 
-			for(auto& s : function.Statements) {
+			for (auto& s : function.Statements) {
 				[&]() {
-					GTSL::StaticString<128> statementString;
+					GTSL::StaticString<512> statementString;
 
 					GPipeline::ElementHandle lastElement;
 
 					for (auto& node : s) {
 						switch (node.ValueType) {
 						case ShaderNode::Type::ID: {
+							if (statementString) {
+								if (GTSL::IsLetter(*(statementString.end() - 1)) || GTSL::IsNumber(*(statementString.end() - 1))) { statementString += U' '; }
+							}
+
 							if (function.IsRaw) { statementString += resolve(node.Name); break; }
 
 							auto elementResult = pipeline.TryGetElementHandle(scopes, node.Name);
 
-							if (!elementResult.State()) { addErrorCode(GTSL::StaticString<128>(u8"Rejected statement because of node name ") += node.Name); return; } //break out of lambda. don't place statement since it utilizes symbols which have culled
+							if (elementResult.State()) {
+								auto& element = pipeline.GetElement(elementResult.Get());
 
-							auto& element = pipeline.GetElement(elementResult.Get());
-
-							if (element.Type == GPipeline::LanguageElement::ElementType::MEMBER) {
-								lastElement = pipeline.TryGetElementHandle(scopes, node.GetName()).Get();
-								statementString += node.Name;
-							} else if (element.Type == GPipeline::LanguageElement::ElementType::DEDUCTION_GUIDE) {
-								for (uint32 i = 0; auto f : pipeline.GetMemberDeductionGuide(elementResult.Get())) {
-									statementString += resolve(pipeline.GetName(f));
-									if (i < pipeline.GetMemberDeductionGuide(elementResult.Get()).ElementCount() - 1) { statementString += u8"."; }
-									++i;
+								if (element.Type == GPipeline::LanguageElement::ElementType::MEMBER) {
+									lastElement = pipeline.TryGetElementHandle(scopes, node.GetName()).Get();
+									statementString += node.Name;
 								}
-							} else {
-								if (auto res = pipeline.TryGetElement(scopes, node.Name)) {
-									if (res.Get().Type == GPipeline::LanguageElement::ElementType::FUNCTION) {
+								else if (element.Type == GPipeline::LanguageElement::ElementType::DEDUCTION_GUIDE) {
+									for (uint32 i = 0; auto f : pipeline.GetMemberDeductionGuide(elementResult.Get())) {
+										statementString += resolve(pipeline.GetName(f));
+										if (i < pipeline.GetMemberDeductionGuide(elementResult.Get()).ElementCount() - 1) { statementString += u8"."; }
+										++i;
+									}
+								}
+								else if (element.Type == GPipeline::LanguageElement::ElementType::FUNCTION) {
+									if (auto res = pipeline.TryGetElement(scopes, node.Name)) {
 										for (auto e : pipeline.GetFunctionOverloads(scopes, node.Name)) { //for every overload, TODO: type deduction?
 											self(resultString, e->Id, self); //add function
 										}
 									}
-								}
 
+									statementString += node.Name;
+								} else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
+									return; //skip statement
+								} else {
+									statementString += resolve(node.Name);
+								}
+							}
+							else {
 								statementString += resolve(node.Name);
 							}
 
@@ -677,7 +688,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 				}();
 			}
 
-			string += u8" }\n";
+			string += u8"}\n";
 
 			functionUsed.Get() = true;
 		}
@@ -693,7 +704,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	}();
 	declarationBlock += u8"} pushConstantBlock;\n";
 
-	if(isRayTracing) {
+	if (isRayTracing) {
 		[&] {
 			auto payloadBlockHandle = pipeline.TryGetElementHandle(scopes, u8"payloadBlock");
 			if (!payloadBlockHandle) { addErrorCode(u8"Payload block declaration was not found."); return; }
@@ -708,6 +719,14 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 
 		auto& main = pipeline.GetFunction(scopes, u8"main");
 
+		[&] {
+			auto shaderRecordBlockHandle = pipeline.TryGetElementHandle(scopes, u8"shaderRecordBlock");
+			if (!shaderRecordBlockHandle) { return; }
+			declarationBlock += u8"layout(shaderRecordEXT, scalar) buffer shader { ";
+			for (const auto& l : pipeline.GetChildren(shaderRecordBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
+			declarationBlock += u8" };\n";
+		}();
+
 		[&]() {
 			for (uint32 l = 0; l < main.Statements; ++l) {
 				auto& s = main.Statements[l];
@@ -717,9 +736,16 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 							auto& newStatement = main.Statements.EmplaceBack();
 							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Write");
 							newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");
+							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"pushConstantBlock");
+							newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
+							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"renderPass");
+							newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
 							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Color");
 							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
+							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"uvec2");
+							newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");
 							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"GetFragmentPosition"); newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");	newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
+							newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
 							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
 
 							for (uint32 j = i + 2; j < s; ++j) {
@@ -735,18 +761,6 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 			}
 		}();
 	}
-
-	auto addShaderRecordDeclaration = [&](const uint8 index) {
-		declarationBlock += u8"layout(shaderRecordEXT, scalar) buffer shader { ";
-
-		[&] {
-			auto shaderRecordBlockHandle = pipeline.TryGetElementHandle(scopes, u8"shaderRecordEXT");
-			if (!shaderRecordBlockHandle) { addErrorCode(u8"Shader record block declaration was not found."); return; }
-			for (const auto& l : pipeline.GetChildren(shaderRecordBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
-		}();
-
-		declarationBlock += u8" }\n";
-	};
 
 	switch (targetSemantics) {
 	case GAL::ShaderType::VERTEX: {
@@ -781,13 +795,10 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		break;
 	case GAL::ShaderType::CLOSEST_HIT:
 		declarationBlock += u8"hitAttributeEXT vec2 hitBarycenter;\n";
-		addShaderRecordDeclaration(GAL::HIT_TABLE_INDEX);
 		break;
 	case GAL::ShaderType::ANY_HIT:
 		break;
 	case GAL::ShaderType::INTERSECTION: {
-		addShaderRecordDeclaration(GAL::HIT_TABLE_INDEX);
-
 		break;
 	}
 	case GAL::ShaderType::TESSELLATION_CONTROL: break;
@@ -830,15 +841,12 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	case GAL::ShaderType::TASK:
 		break;
 	case GAL::ShaderType::RAY_GEN: {
-		addShaderRecordDeclaration(GAL::RAY_GEN_TABLE_INDEX);
 		break;
 	}
 	case GAL::ShaderType::MISS: {
-		addShaderRecordDeclaration(GAL::MISS_TABLE_INDEX);
 		break;
 	}
 	case GAL::ShaderType::CALLABLE:
-		addShaderRecordDeclaration(GAL::CALLABLE_TABLE_INDEX);
 		break;
 	}
 
@@ -851,7 +859,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 	fin += declarationBlock;
 	fin += functionBlock;
 
-	return GTSL::Result(GTSL::Pair(GTSL::MoveRef(fin), GTSL::MoveRef(errorString)), errorString.IsEmpty());
+	return GTSL::Result(GTSL::Pair(MoveRef(fin), MoveRef(errorString)), errorString.IsEmpty());
 }
 
 // SHADER DOC

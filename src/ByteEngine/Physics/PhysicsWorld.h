@@ -5,7 +5,7 @@
 #include <GTSL/Math/Vectors.hpp>
 
 #include "HitResult.h"
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -14,7 +14,7 @@
 class StaticMeshResourceManager;
 MAKE_HANDLE(uint32, PhysicsObject);
 
-class PhysicsWorld : public System {
+class PhysicsWorld : public BE::System {
 public:
 	PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"),
 		physicsObjects(32, GetPersistentAllocator())

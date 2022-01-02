@@ -111,16 +111,12 @@ namespace GAL
 				};
 
 				GTSL::StaticVector<const char*, 8> instanceLayers;
+				GTSL::StaticVector<const char*, 16> instanceExtensions;
 
-				if constexpr (_DEBUG) {
-					if (debug) { instanceLayers.EmplaceBack("VK_LAYER_KHRONOS_validation"); }
+				if (debug) {
+					instanceLayers.EmplaceBack("VK_LAYER_KHRONOS_validation");
+					instanceExtensions.EmplaceBack(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 				}
-
-				GTSL::StaticVector<const char*, 16> instanceExtensions{
-			#if(_DEBUG)
-					VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-			#endif
-				};
 
 				auto tryAddExtension = [&](const GTSL::StringView extensionName) {
 					if (auto searchResult = availableInstanceExtensions.TryGet(Hash(extensionName))) {
@@ -168,9 +164,9 @@ namespace GAL
 				vkDebugUtilsMessengerCreateInfoExt.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 				vkDebugUtilsMessengerCreateInfoExt.pfnUserCallback = debugCallback;
 				vkDebugUtilsMessengerCreateInfoExt.pUserData = this;
+				vkInstanceCreateInfo.pNext = debug ? &vkDebugUtilsMessengerCreateInfoExt : nullptr;
 #endif
 
-				vkInstanceCreateInfo.pNext = debug ? &vkDebugUtilsMessengerCreateInfoExt : nullptr;
 				vkInstanceCreateInfo.pApplicationInfo = &vkApplicationInfo;
 				vkInstanceCreateInfo.enabledLayerCount = instanceLayers.GetLength();
 				vkInstanceCreateInfo.ppEnabledLayerNames = instanceLayers.begin();
@@ -480,6 +476,7 @@ namespace GAL
 			getInstanceProcAddr<PFN_vkGetPhysicalDeviceMemoryProperties>(u8"vkGetPhysicalDeviceMemoryProperties")(physicalDevice, &memoryProperties);
 
 			getDeviceProcAddr(u8"vkQueueSubmit", &VkQueueSubmit);
+			getDeviceProcAddr(u8"vkQueueSubmit2KHR", &VkQueueSubmit2);
 			getDeviceProcAddr(u8"vkQueuePresentKHR", &VkQueuePresent);
 			getDeviceProcAddr(u8"vkQueueWaitIdle", &VkQueueWaitIdle);
 			getInstanceProcAddr(u8"vkCreateSwapchainKHR", &VkCreateSwapchain);
@@ -620,7 +617,7 @@ namespace GAL
 				memoryTypes[i] = ToGAL(memoryProperties.memoryTypes[i].propertyFlags);
 			}
 
-			if constexpr (_DEBUG) {
+#if BE_DEBUG
 				getInstanceProcAddr(u8"vkSetDebugUtilsObjectNameEXT", &vkSetDebugUtilsObjectNameEXT);
 				getInstanceProcAddr(u8"vkCmdInsertDebugUtilsLabelEXT", &vkCmdInsertDebugUtilsLabelEXT);
 				getInstanceProcAddr(u8"vkCmdBeginDebugUtilsLabelEXT", &vkCmdBeginDebugUtilsLabelEXT);
@@ -640,7 +637,7 @@ namespace GAL
 					GTSL::StaticString<128> deviceName(createInfo.ApplicationName); deviceName += u8" device";
 					setName(this, device, VK_OBJECT_TYPE_DEVICE, deviceName);					
 				}
-			}
+#endif
 
 			return InitRes(true);
 		}
@@ -883,8 +880,10 @@ namespace GAL
 		PFN_vkCreateQueryPool VkCreateQueryPool; PFN_vkDestroyQueryPool VkDestroyQueryPool;
 		PFN_vkGetQueryPoolResults VkGetQueryPoolResults;
 		PFN_vkQueueSubmit VkQueueSubmit;
+		PFN_vkQueueSubmit2KHR VkQueueSubmit2;
 		PFN_vkQueuePresentKHR VkQueuePresent;
 		PFN_vkQueueWaitIdle VkQueueWaitIdle;
+		PFN_vkWaitSemaphores vkWaitSemaphores;
 		
 		PFN_vkCmdBeginRenderingKHR VkCmdBeginRendering;
 		PFN_vkCmdEndRenderingKHR VkCmdEndRendering;
@@ -941,8 +940,8 @@ namespace GAL
 	private:
 #if (_DEBUG)
 		VkDebugUtilsMessengerEXT debugMessenger = nullptr;
-		bool debug = false;
 #endif
+		bool debug = false;
 
 		GTSL::uint16 uniformBufferMinOffset, storageBufferMinOffset, linearNonLinearAlignment;
 		
@@ -958,12 +957,12 @@ namespace GAL
 
 	template<typename T>
 	void setName(const VulkanRenderDevice* renderDevice, T handle, const VkObjectType objectType, const GTSL::Range<const char8_t*> text) {
-		if constexpr (_DEBUG) {
+#if BE_DEBUG
 			VkDebugUtilsObjectNameInfoEXT vkDebugUtilsObjectNameInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
 			vkDebugUtilsObjectNameInfo.objectHandle = reinterpret_cast<GTSL::uint64>(handle);
 			vkDebugUtilsObjectNameInfo.objectType = objectType;
 			vkDebugUtilsObjectNameInfo.pObjectName = reinterpret_cast<const char*>(text.GetData());
 			renderDevice->vkSetDebugUtilsObjectNameEXT(renderDevice->GetVkDevice(), &vkDebugUtilsObjectNameInfo);
-		}
+#endif
 	}
 }

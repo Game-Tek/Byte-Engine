@@ -1,11 +1,9 @@
 #pragma once
 
-#include "ByteEngine/Object.h"
+#include "ByteEngine/Game/System.hpp"
+#include "ByteEngine/Game/Tasks.h"
 
 #include <GTSL/Vector.hpp>
-
-#include "ByteEngine/Game/System.h"
-#include "ByteEngine/Game/Tasks.h"
 
 /**
  * \brief Used to specify a type of resource loader.
@@ -14,8 +12,7 @@
  *
  * Every extension will allow for loading of 1 type of resource.
  */
-class ResourceManager : public System
-{
+class ResourceManager : public BE::System {
 public:
 	ResourceManager() = default;
 

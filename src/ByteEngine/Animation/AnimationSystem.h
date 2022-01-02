@@ -3,7 +3,7 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
 
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 #include "ByteEngine/Handle.hpp"
 
 MAKE_HANDLE(uint32, Skeleton)

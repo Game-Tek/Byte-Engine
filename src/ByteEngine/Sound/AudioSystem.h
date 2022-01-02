@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Handle.hpp"
 
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 #include <AAL/Platform/Windows/WindowsAudioDevice.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
@@ -17,7 +17,7 @@ class Sound;
 MAKE_HANDLE(uint32, AudioListener)
 MAKE_HANDLE(uint32, AudioEmitter)
 
-class AudioSystem : public System {
+class AudioSystem : public BE::System {
 public:
 	AudioSystem(const InitializeInfo& initializeInfo);
 	~AudioSystem();

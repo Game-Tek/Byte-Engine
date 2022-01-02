@@ -11,7 +11,7 @@
 class WorldRendererPipeline;
 MAKE_HANDLE(uint32, StaticMesh)
 
-class StaticMeshRenderGroup final : public ::System
+class StaticMeshRenderGroup final : public BE::System
 {
 public:
 	StaticMeshRenderGroup(const InitializeInfo& initializeInfo);

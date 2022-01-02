@@ -7,7 +7,7 @@
 
 #include "ByteEngine/Application/Application.h"
 
-AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator()), audioBytes(8, GetPersistentAllocator())
+AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator()), liveAudios(8, GetPersistentAllocator())
 {
 	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
 	query_path += BE::Application::Get()->GetPathToApplication(); query_path += u8"/resources/"; query_path += u8"*.wav";

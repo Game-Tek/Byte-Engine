@@ -476,7 +476,7 @@ namespace GAL
 				stageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 				stageCreateInfo.pNext = nullptr;
 				stageCreateInfo.flags = 0;
-				stageCreateInfo.stage = static_cast<VkShaderStageFlagBits>(stages[i].Type);
+				stageCreateInfo.stage = ToVulkan(stages[i].Type);
 				stageCreateInfo.pName = "main";
 				stageCreateInfo.pSpecializationInfo = nullptr;
 				stageCreateInfo.module = stages[i].Shader.GetVkShaderModule();

@@ -30,7 +30,7 @@ PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTS
 RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderSystem"),
 	bufferCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
 	textureCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
-	accelerationStructures(GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
+	accelerationStructures(16, GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
 	pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),
 	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator())
 {
@@ -133,18 +133,10 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		pipelineCacheManager->GetCache(pipelineCacheBuffer);
 
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
-			if constexpr (_DEBUG) {
-				//GTSL::StaticString<32> name(u8"GPUPipeline cache. Thread: "); name += i;
-			}
-
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, static_cast<GTSL::Range<const GTSL::byte*>>(pipelineCacheBuffer));
 		}
 	} else {
 		for (uint8 i = 0; i < BE::Application::Get()->GetNumberOfThreads(); ++i) {
-			if constexpr (_DEBUG) {
-				//GTSL::StaticString<32> name(u8"GPUPipeline cache. Thread: "); name += i;
-			}
-
 			pipelineCaches.EmplaceBack().Initialize(GetRenderDevice(), true, {});
 		}
 	}
@@ -235,16 +227,6 @@ void RenderSystem::beginGraphicsCommandLists(CommandListData& command_list_data)
 
 void RenderSystem::renderFlush(TaskInfo taskInfo) {
 	auto beforeFrame = uint8(currentFrameIndex - uint8(1)) % GetPipelinedFrames();
-	
-	for(auto& e : buffers) {
-		if (e.isMulti) {
-			if (e.writeMask[beforeFrame] && !e.writeMask[GetCurrentFrame()]) {
-				GTSL::MemCopy(e.Size, e.StagingAllocation[beforeFrame].Data, e.StagingAllocation[GetCurrentFrame()].Data);
-			}
-		}
-		
-		e.writeMask[GetCurrentFrame()] = false;
-	}
 
 	++currentFrameIndex %= pipelinedFrames;
 }
@@ -299,49 +281,60 @@ void RenderSystem::executeTransfers(TaskInfo taskInfo)
 	//	GTSL::StaticVector<GAL::Queue::WorkUnit, 8> workUnits;
 	//	auto& workUnit = workUnits.EmplaceBack();
 	//	workUnit.CommandBuffer = &commandBuffer;
-	//	workUnit.WaitPipelineStage = GAL::PipelineStages::TRANSFER;
+	//	workUnit.PipelineStage = GAL::PipelineStages::TRANSFER;
 	//	workUnit.SignalSemaphore = &transferDoneSemaphores[GetCurrentFrame()];
 	//
 	//	graphicsQueue.Submit(GetRenderDevice(), workUnits, transferFences[currentFrameIndex]);
 	////}
 }
 
-RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable)
+RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable, TextureHandle texture_handle)
 {
-	//RenderDevice::FindSupportedImageFormat findFormat;
-	//findFormat.TextureTiling = TextureTiling::OPTIMAL;
-	//findFormat.TextureUses = TextureUses::TRANSFER_DESTINATION | TextureUses::SAMPLE;
-	//GTSL::StaticVector<TextureFormat, 16> candidates; candidates.EmplaceBack(ConvertFormat(textureInfo.Format)); candidates.EmplaceBack(TextureFormat::RGBA_I8);
-	//findFormat.Candidates = candidates;
-	//auto supportedFormat = renderSystem->GetRenderDevice()->FindNearestSupportedImageFormat(findFormat);
+	auto doTexture = [&](TextureComponent& texture) {
+		const auto textureSize = extent.Width * extent.Height * extent.Depth * formatDescriptor.GetSize();
 
-	//GAL::Texture::ConvertTextureFormat(textureInfo.Format, GAL::TextureFormat::RGBA_I8, textureInfo.Extent, GTSL::AlignedPointer<byte, 16>(buffer.begin()), 1);
+		if (updatable && needsStagingBuffer) {
+			AllocateScratchBufferMemory(textureSize, GAL::BufferUses::TRANSFER_SOURCE, &texture.ScratchBuffer, &texture.ScratchAllocation);
+		}
 
-	static uint32 index = 0;
-	
-	TextureComponent textureComponent;
+		AllocateLocalTextureMemory(&texture.Texture, name, texture.Uses, texture.FormatDescriptor, extent, GAL::Tiling::OPTIMAL, 1, &texture.Allocation);
+		texture.TextureView.Initialize(GetRenderDevice(), name, texture.Texture, texture.FormatDescriptor, extent, 1);
+	};
 
-	textureComponent.Extent = extent;
-	
-	textureComponent.FormatDescriptor = formatDescriptor;
+	if(texture_handle) {
+		auto& texture = textures[texture_handle()];
 
-	textureComponent.Uses = textureUses;
-	if (updatable) { textureComponent.Uses |= GAL::TextureUses::TRANSFER_DESTINATION; }
+		if(extent != texture.Extent) {
+			if(texture.Texture.GetVkImage()) {
+				texture.Texture.Destroy(GetRenderDevice());
+				DeallocateLocalBufferMemory(texture.Allocation);
 
-	textureComponent.Layout = GAL::TextureLayout::UNDEFINED;
+				if (texture.ScratchAllocation.Data) {
+					DeallocateScratchBufferMemory(texture.ScratchAllocation);
+				}
+			}
 
-	const auto textureSize = extent.Width * extent.Height * extent.Depth * formatDescriptor.GetSize();
-	
-	if (updatable && needsStagingBuffer) {
-		AllocateScratchBufferMemory(textureSize, GAL::BufferUses::TRANSFER_SOURCE, &textureComponent.ScratchBuffer, &textureComponent.ScratchAllocation);
+			if(texture.TextureView.GetVkImageView()) {
+				texture.TextureView.Destroy(GetRenderDevice());
+			}
+
+			doTexture(texture);
+		}
+
+		return texture_handle;
 	}
+
+	const auto textureIndex = textures.Emplace();
+
+	auto& texture = textures[textureIndex];
 	
-	AllocateLocalTextureMemory(&textureComponent.Texture, name, textureComponent.Uses, textureComponent.FormatDescriptor, extent, GAL::Tiling::OPTIMAL,
-		1, &textureComponent.Allocation);
-	
-	textureComponent.TextureView.Initialize(GetRenderDevice(), name, textureComponent.Texture, textureComponent.FormatDescriptor, extent, 1);
-	
-	auto textureIndex = textures.Emplace(textureComponent);
+	texture.Extent = extent;	
+	texture.FormatDescriptor = formatDescriptor;
+	texture.Uses = textureUses;
+	if (updatable) { texture.Uses |= GAL::TextureUses::TRANSFER_DESTINATION; }
+	texture.Layout = GAL::TextureLayout::UNDEFINED;	
+
+	doTexture(texture);
 
 	return TextureHandle(textureIndex);
 }
@@ -462,29 +455,59 @@ void RenderSystem::resize() {
 	}
 }
 
-RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable)
-{
-	uint32 bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
+RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable, BufferHandle buffer_handle) {
+	auto doBuffer = [&] {
+		auto& buffer = buffers[buffer_handle()];
 
-	buffer.isMulti = updateable;
-	buffer.Size = size; buffer.Flags = flags;
-	++buffer.references;
+		if (buffer.Size < size) {
+			auto frames = updateable ? GetPipelinedFrames() : 1;
 
-	auto frames = updateable ? GetPipelinedFrames() : 1;
-	
-	for (uint8 f = 0; f < frames; ++f) {
-		if (willWriteFromHost) {
-			if (needsStagingBuffer) { //create staging buffer			
-				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Staging[f], &buffer.StagingAllocation[f]);
+			for (uint8 f = 0; f < frames; ++f) {
+				if (buffer.Buffer[f].GetVkBuffer()) {
+					buffer.Buffer[f].Destroy(GetRenderDevice());
+					DeallocateLocalBufferMemory(buffer.Allocation[f]);
+				}
 
-				flags |= GAL::BufferUses::TRANSFER_DESTINATION;
-			}
+				if (willWriteFromHost) {
+					if (needsStagingBuffer) { //create staging buffer
+						if (buffer.Staging[f].GetVkBuffer()) {
+							buffer.Staging[f].Destroy(GetRenderDevice());
+							DeallocateLocalBufferMemory(buffer.StagingAllocation[f]);
+						}
+
+						AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Staging[f], &buffer.StagingAllocation[f]);
+						buffer.StagingAddresses[f] = buffer.Staging[f].GetAddress(GetRenderDevice());
+
+						flags |= GAL::BufferUses::TRANSFER_DESTINATION;
+					}
+				}
+
+				AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer[f], &buffer.Allocation[f]);
+				buffer.Addresses[f] = buffer.Buffer[f].GetAddress(GetRenderDevice());
+			}			
+
+			buffer.Size = size;
 		}
+	};
 
-		AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer[f], &buffer.Allocation[f]);
+	if(buffer_handle) {
+		doBuffer();
+		return buffer_handle;
 	}
 
-	return BufferHandle(bufferIndex);
+	GTSL::Max(&size, 1024u); //force buffers to have a minimum size, so we always allocate and have valid data
+
+	uint32 bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
+
+	buffer_handle = BufferHandle(bufferIndex);
+
+	buffer.isMulti = updateable;
+	buffer.Flags = flags;
+	++buffer.references;
+
+	doBuffer();
+
+	return buffer_handle;
 }
 
 void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state)
@@ -583,16 +606,15 @@ void RenderSystem::deallocateApiMemory(void* data, void* allocation) {
 	}
 }
 
-void RenderSystem::initializeFrameResources(const uint8 frame_index) {	
-	if constexpr (_DEBUG) { GTSL::StaticString<32> name(u8"Transfer semaphore. Frame: "); name += frame_index; }
+void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 	processedBufferCopies[frame_index] = 0;
 
-	if constexpr (_DEBUG) {
-		//GTSL::StaticString<32> name("ImageAvailableSemaphore #"); name += i;
-	}
 	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice());
+
+	fences[frame_index].Initialize(GetRenderDevice(), true);
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {
 	imageAvailableSemaphore[frameIndex].Destroy(&renderDevice);
+	fences[frameIndex].Destroy(GetRenderDevice());
 }

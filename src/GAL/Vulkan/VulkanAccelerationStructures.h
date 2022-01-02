@@ -119,8 +119,7 @@ namespace GAL {
 			buildInfo.pGeometries = vkGeometries.begin();
 
 			VkAccelerationStructureBuildSizesInfoKHR buildSizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-			renderDevice->vkGetAccelerationStructureBuildSizesKHR(renderDevice->GetVkDevice(),
-				ToVulkan(buildDevice), &buildInfo, primitiveCounts.begin(), &buildSizes);
+			renderDevice->vkGetAccelerationStructureBuildSizesKHR(renderDevice->GetVkDevice(), ToVulkan(buildDevice), &buildInfo, primitiveCounts.begin(), &buildSizes);
 
 			*accStructureSize = static_cast<GTSL::uint32>(buildSizes.accelerationStructureSize); *scratchSize = static_cast<GTSL::uint32>(buildSizes.buildScratchSize);
 		}
@@ -153,13 +152,10 @@ namespace GAL {
 		[[nodiscard]] GTSL::uint64 GetHandle() const { return reinterpret_cast<GTSL::uint64>(accelerationStructure); }
 		
 		//UTILITY
-		static void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice,
-		                                       GTSL::Range<const AccelerationStructureBuildInfo*>
-		                                       buildAccelerationStructureInfos);
+		static void BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<const AccelerationStructureBuildInfo*> buildAccelerationStructureInfos);
 
 	protected:
 		VkAccelerationStructureKHR accelerationStructure = nullptr;
-
 	};
 
 	struct AccelerationStructureBuildInfo {
@@ -169,9 +165,7 @@ namespace GAL {
 		GTSL::uint32 Flags = 0;
 	};
 	
-	inline void VulkanAccelerationStructure::BuildAccelerationStructure(const VulkanRenderDevice* renderDevice,
-	                                                                    GTSL::Range<const AccelerationStructureBuildInfo*>
-	                                                                    buildAccelerationStructureInfos) {
+	inline void VulkanAccelerationStructure::BuildAccelerationStructure(const VulkanRenderDevice* renderDevice, GTSL::Range<const AccelerationStructureBuildInfo*> buildAccelerationStructureInfos) {
 		GTSL::StaticVector<VkAccelerationStructureBuildGeometryInfoKHR, 8> buildGeometryInfos;
 		GTSL::StaticVector<GTSL::StaticVector<VkAccelerationStructureGeometryKHR, 8>, 8> geometriesPerAccelerationStructure;
 		GTSL::StaticVector<GTSL::StaticVector<VkAccelerationStructureBuildRangeInfoKHR, 8>, 8> buildRangesPerAccelerationStructure;
@@ -196,23 +190,16 @@ namespace GAL {
 			buildGeometryInfo.flags = source.Flags;
 			buildGeometryInfo.srcAccelerationStructure = source.SourceAccelerationStructure.GetVkAccelerationStructure();
 			buildGeometryInfo.dstAccelerationStructure = source.DestinationAccelerationStructure.GetVkAccelerationStructure();
-			buildGeometryInfo.type = source.Geometries[0].Type == GeometryType::INSTANCES
-				                         ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
-				                         : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+			buildGeometryInfo.type = source.Geometries[0].Type == GeometryType::INSTANCES ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 			buildGeometryInfo.pGeometries = geometriesPerAccelerationStructure[accStrInfoIndex].begin();
 			buildGeometryInfo.ppGeometries = nullptr;
 			buildGeometryInfo.geometryCount = geometriesPerAccelerationStructure[accStrInfoIndex].GetLength();
 			buildGeometryInfo.scratchData.deviceAddress = static_cast<GTSL::uint64>(source.ScratchBufferAddress);
-			buildGeometryInfo.mode = source.SourceAccelerationStructure.GetVkAccelerationStructure()
-				                         ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
-				                         : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+			buildGeometryInfo.mode = source.SourceAccelerationStructure.GetVkAccelerationStructure() ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 			buildGeometryInfos.EmplaceBack(buildGeometryInfo);
 		}
 
-		renderDevice->vkBuildAccelerationStructuresKHR(renderDevice->GetVkDevice(), nullptr,
-		                                               static_cast<GTSL::uint32>(buildAccelerationStructureInfos.ElementCount()),
-		                                               buildGeometryInfos.begin(),
-		                                               buildRangesRangePerAccelerationStructure.begin());
+		renderDevice->vkBuildAccelerationStructuresKHR(renderDevice->GetVkDevice(), nullptr, static_cast<GTSL::uint32>(buildAccelerationStructureInfos.ElementCount()), buildGeometryInfos.begin(), buildRangesRangePerAccelerationStructure.begin());
 	}
 
 	inline void WriteInstance(const VulkanAccelerationStructure accelerationStructure, GTSL::uint32 instanceIndex, GeometryFlag geometryFlags, const VulkanRenderDevice* renderDevice, void* data, GTSL::uint32 instanceCustomIndex, Device device) {
@@ -222,7 +209,7 @@ namespace GAL {
 		inst.instanceCustomIndex = instanceCustomIndex;
 		inst.mask = 0xFF;
 		inst.instanceShaderBindingTableRecordOffset = 0;
-		inst.transform = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+		inst.transform = { 1.0f, 0, 0, 0, 0, 1.0f, 0, 0, 0, 0, 1.0f, 0 };
 	}
 
 	inline void WriteInstanceMatrix(const GTSL::Matrix3x4& matrix3X4, void* data, GTSL::uint32 index) {

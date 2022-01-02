@@ -93,14 +93,13 @@ public:
 
 				stacks[stack][block].AllocateBlock(blockSizes, allocatorReference, allocated_size);
 
-				if constexpr (BE_DEBUG)
-				{
+#if BE_DEBUG
 					GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
 					++allocatorAllocationsCount;
 					++totalAllocatorAllocationsCount;
 					allocatorAllocatedBytes += allocated_size;
 					totalAllocatorAllocatedBytes += allocated_size;
-				}
+#endif
 			}
 		}
 	}
@@ -198,13 +197,14 @@ public:
 		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 		BE_ASSERT(size <= blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.");
 
-		uint64 allocated_size { 0 };
+		uint64 allocated_size{ 0 };
 
-		if constexpr (BE_DEBUG)
+#if BE_DEBUG
 		{
 			GTSL::Lock lock(debugDataMutex);
 			perNameData.try_emplace(GTSL::Id64(name)()).first->second.Name = name;
 		}
+#endif
 
 		stacksMutexes[i].Lock();
 		for (auto& block : stacks[i])
@@ -214,7 +214,7 @@ public:
 				stacksMutexes[i].Unlock();
 				*allocatedSize = allocated_size;
 
-				if constexpr (BE_DEBUG)
+#if BE_DEBUG
 				{
 					GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
 					perNameData[GTSL::Id64(name)()].BytesAllocated += allocated_size;
@@ -224,16 +224,16 @@ public:
 					++allocationsCount;
 					++totalAllocationsCount;
 				}
+#endif
 
 				return;
 			}
 
-			if constexpr (BE_DEBUG)
-			{
-				debugDataMutex.Lock();
-				++blockMisses;
-				debugDataMutex.Unlock();
-			}
+#if BE_DEBUG
+			debugDataMutex.Lock();
+			++blockMisses;
+			debugDataMutex.Unlock();
+#endif
 		}
 
 		auto& lastBlock = stacks[i].EmplaceBack();
@@ -243,7 +243,7 @@ public:
 
 		*allocatedSize = allocated_size;
 
-		if constexpr (BE_DEBUG)
+#if BE_DEBUG
 		{
 			GTSL::Lock lock(debugDataMutex);
 			perNameData[GTSL::Id64(name)()].BytesAllocated += allocated_size;
@@ -257,6 +257,7 @@ public:
 			++allocationsCount;
 			++totalAllocationsCount;
 		}
+#endif
 	}
 
 	void Deallocate(uint64 size, uint64 alignment, void* memory, const GTSL::Range<const char8_t*> name)
@@ -264,8 +265,7 @@ public:
 		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 		BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!");
 
-		if constexpr (BE_DEBUG)
-		{
+#if BE_DEBUG
 			const auto bytes_deallocated{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
 
 			GTSL::Lock lock(debugDataMutex);
@@ -275,7 +275,7 @@ public:
 			totalBytesDeallocated += bytes_deallocated;
 			++deallocationsCount;
 			++totalDeallocationsCount;
-		}
+#endif
 	}
 
 	void Free()
@@ -287,19 +287,17 @@ public:
 			for (auto& block : stack)
 			{
 				block.DeallocateBlock(allocatorReference, freed_bytes);
-				if constexpr (BE_DEBUG)
-				{
+#if BE_DEBUG
 					++allocatorDeallocationsCount;
 					++totalAllocatorDeallocationsCount;
-				}
+#endif
 			}
 		}
 
-		if constexpr (BE_DEBUG)
-		{
+#if BE_DEBUG
 			allocatorDeallocatedBytes += freed_bytes;
 			totalAllocatorDeallocatedBytes += freed_bytes;
-		}
+#endif
 	}
 
 

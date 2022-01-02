@@ -1,12 +1,7 @@
-module;
-
-#include "ByteEngine/Game/System.h"
+#include "ByteEngine/Game/System.hpp"
 #include <GTSL/Network/Sockets.h>
 
-export module ConnectionHandler;
-
-export class ConnectionHandler : public System
-{
+class ConnectionHandler : public BE::System {
 public:
 	ConnectionHandler(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"ConnectionHandler")
 	{
@@ -17,10 +12,6 @@ public:
 		source.Port = 25565;
 
 		socket.Open(source, false);
-	}
-
-	void Shutdown(const ShutdownInfo& shutdownInfo)
-	{
 	}
 
 	void poll()

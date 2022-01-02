@@ -18,7 +18,7 @@ namespace GAL {
 	class TextureView;
 
 	template<typename T>
-	constexpr void debugClear(T& handle) { if constexpr (_DEBUG) { handle = reinterpret_cast<T>(0); } }
+	constexpr void debugClear(T& handle) { if constexpr (BE_DEBUG) { handle = reinterpret_cast<T>(0); } }
 	
 	constexpr GTSL::uint8 MAX_SHADER_STAGES = 8;
 
@@ -55,8 +55,12 @@ namespace GAL {
 		return static_cast<GTSL::uint16>(x * 65535);
 	}
 
-	inline GTSL::uint16 FloatToSNORM(const GTSL::float32 x) {
-		return x < 0.0f ? static_cast<GTSL::uint16>(x * 32768.f) : static_cast<GTSL::uint16>(x * 32767.f);
+	inline GTSL::int16 FloatToSNORM(const GTSL::float32 x) {
+		//According to D3D10 rules, the value "-1.0f" has two representations:
+		//  0x1000 and 0x10001
+		//This allows everyone to convert by just multiplying by 32767 instead
+		//of multiplying the negative values by 32768 and 32767 for positive.
+		return static_cast<int16>(GTSL::Math::Clamp(x >= 0.0f ? (x * 32767.0f + 0.5f) : (x * 32767.0f - 0.5f), -32768.0f, 32767.0f));
 	}
 	
 	namespace PipelineStages {
@@ -95,6 +99,7 @@ namespace GAL {
 		explicit operator GTSL::uint64() const { return address; }
 		explicit operator bool() const { return address; }
 		DeviceAddress operator+(const GTSL::uint64 add) const { return DeviceAddress(address + add); }
+		DeviceAddress& operator+=(uint32 offset) { address += offset; return *this; }
 	private:
 		GTSL::uint64 address = 0;
 	};
@@ -316,7 +321,7 @@ namespace GAL {
 
 		TASK, MESH,
 
-		RAY_GEN, ANY_HIT, CLOSEST_HIT, MISS, INTERSECTION, CALLABLE
+		RAY_GEN, CLOSEST_HIT, ANY_HIT, INTERSECTION, MISS, CALLABLE
 	};
 
 	enum class ShaderDataType : GTSL::uint8 {

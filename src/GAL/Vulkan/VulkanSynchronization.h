@@ -42,7 +42,7 @@ namespace GAL
 		}
 		
 		[[nodiscard]] bool GetStatus(const VulkanRenderDevice* renderDevice) const {
-			return renderDevice->VkGetFenceStatus(renderDevice->GetVkDevice(), fence) == VK_SUCCESS;
+			return counter;
 		}
 
 		void Signal() {
@@ -79,7 +79,18 @@ namespace GAL
 			renderDevice->VkDestroySemaphore(renderDevice->GetVkDevice(), semaphore, renderDevice->GetVkAllocationCallbacks());
 			debugClear(semaphore);
 		}
-		
+
+		static void Wait(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanSemaphore*> semaphores, const GTSL::Range<const uint64*> values) {
+			GTSL::StaticVector<VkSemaphore, 8> vk_semaphores;
+
+			for(auto& e : semaphores) {
+				vk_semaphores.EmplaceBack(e.GetVkSemaphore());
+			}
+
+			VkSemaphoreWaitInfo vk_semaphore_wait_info{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, nullptr, 0, vk_semaphores.GetLength(), vk_semaphores.GetData(), values.begin() };
+			render_device->vkWaitSemaphores(render_device->GetVkDevice(), &vk_semaphore_wait_info, ~0ULL);
+		}
+
 		[[nodiscard]] VkSemaphore GetVkSemaphore() const { return semaphore; }
 
 		void Signal() { ++counter; }

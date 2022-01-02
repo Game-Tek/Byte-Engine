@@ -8,7 +8,6 @@
 #include <GTSL/Allocator.h>
 #include <GTSL/Semaphore.h>
 
-#include "System.h"
 #include "Tasks.h"
 #include "ByteEngine/Id.h"
 
@@ -148,7 +147,7 @@ public:
 	void AddTask(T* caller, const Id name, F delegate, DependencyBlock<ACC...> dependencies, const Id startStage, const Id endStage, FARGS&&... args) {
 		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE;
 
-		if constexpr (_DEBUG) { if (assertTask(name, startStage, endStage, dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes)) { return; } }
+		if constexpr (BE_DEBUG) { if (assertTask(name, startStage, endStage, dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes)) { return; } }
 
 		GTSL::StaticVector<TaskAccess, 32> accesses;
 
@@ -319,7 +318,7 @@ public:
 	template<typename... ARGS>
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(eventHandle.Name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (BE_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(eventHandle.Name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
 
 		if(priority) {
@@ -330,7 +329,7 @@ public:
 	template<typename... ARGS>
 	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name).Functions;
 		vector.EmplaceBack(taskHandle.Reference);
 	}
@@ -338,7 +337,7 @@ public:
 	template<typename... ARGS>
 	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
-		if constexpr (_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
+		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 
 		Event& eventData = events.At(eventHandle.Name);
 
@@ -366,9 +365,9 @@ private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	
 	mutable GTSL::Mutex systemsMutex;
-	GTSL::FixedVector<GTSL::SmartPointer<System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
+	GTSL::FixedVector<GTSL::SmartPointer<BE::System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FixedVector<Id, BE::PersistentAllocatorReference> systemNames;
-	GTSL::HashMap<Id, System*, BE::PersistentAllocatorReference> systemsMap;
+	GTSL::HashMap<Id, BE::System*, BE::PersistentAllocatorReference> systemsMap;
 	GTSL::HashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	/**
@@ -402,10 +401,10 @@ private:
 		~DispatchTaskInfo() {
 			[&]<uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~ARGS(),...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
-			if constexpr (BE_DEBUG) {
+#if BE_DEBUG
 				Name = u8"deleted";
 				Callee = nullptr;
-			}
+#endif
 		}
 
 		uint32 TaskIndex = 0;
@@ -419,7 +418,7 @@ private:
 		byte Delegate[8];
 		void* Callee;
 		uint32 ResourceCount = 0;
-		byte Arguments[sizeof(System*) * 8 + GTSL::PackSize<ARGS...>()];
+		byte Arguments[sizeof(BE::System*) * 8 + GTSL::PackSize<ARGS...>()];
 
 		template<class T, typename... RS>
 		auto GetDelegate() -> void(T::*)(TaskInfo, RS*..., ARGS...) {
@@ -443,7 +442,7 @@ private:
 			for (uint64 i = 0; i < 8; ++i) { Delegate[i] = buffer[i]; }
 		}
 
-		void SetResource(const uint64 pos, System* pointer) { *reinterpret_cast<System**>(Arguments + pos * 8) = pointer; }
+		void SetResource(const uint64 pos, BE::System* pointer) { *reinterpret_cast<BE::System**>(Arguments + pos * 8) = pointer; }
 
 		template<uint64 POS, typename T>
 		T* GetResource() { return *reinterpret_cast<T**>(Arguments + POS * 8); }
@@ -594,7 +593,7 @@ public:
 	 */
 	template<typename T>
 	T* AddSystem(const Id systemName) {
-		if constexpr (_DEBUG) {
+		if constexpr (BE_DEBUG) {
 			if (doesSystemExist(systemName)) {
 				BE_LOG_ERROR(u8"System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
 				return reinterpret_cast<T*>(systemsMap.At(systemName));
@@ -604,7 +603,7 @@ public:
 		T* systemPointer = nullptr; uint16 systemIndex = 0xFFFF;
 		
 		{
-			System::InitializeInfo initializeInfo;
+			BE::System::InitializeInfo initializeInfo;
 			initializeInfo.ApplicationManager = this;
 			initializeInfo.ScalingFactor = scalingFactor;
 			initializeInfo.InstanceName = systemName;

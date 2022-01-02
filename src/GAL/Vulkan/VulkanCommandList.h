@@ -17,15 +17,14 @@
 
 #undef MemoryBarrier
 
-namespace GAL
-{
+namespace GAL {
 	class VulkanCommandList final : public CommandList {
 	public:
 		VulkanCommandList() = default;
 		
 		explicit VulkanCommandList(const VkCommandBuffer commandBuffer) : commandBuffer(commandBuffer) {}
 
-		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, VulkanRenderDevice::QueueKey queueKey, const bool isPrimary = true) {
+		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, VulkanRenderDevice::QueueKey queueKey, const bool isOptimized = false, const bool isPrimary = true) {
 			VkCommandPoolCreateInfo vkCommandPoolCreateInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 			vkCommandPoolCreateInfo.queueFamilyIndex = queueKey.Family;
 			renderDevice->VkCreateCommandPool(renderDevice->GetVkDevice(), &vkCommandPoolCreateInfo, renderDevice->GetVkAllocationCallbacks(), &commandPool);
@@ -36,16 +35,16 @@ namespace GAL
 			vkCommandBufferAllocateInfo.level = isPrimary ? VK_COMMAND_BUFFER_LEVEL_PRIMARY : VK_COMMAND_BUFFER_LEVEL_SECONDARY;
 			vkCommandBufferAllocateInfo.commandBufferCount = 1;
 
+			this->isOptimized = isOptimized;
+
 			renderDevice->VkAllocateCommandBuffers(renderDevice->GetVkDevice(), &vkCommandBufferAllocateInfo, &commandBuffer);
 			setName(renderDevice, commandBuffer, VK_OBJECT_TYPE_COMMAND_BUFFER, name);
 		}
 		
 		void BeginRecording(const VulkanRenderDevice* renderDevice) const {
 			VkCommandBufferBeginInfo vkCommandBufferBeginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-			//Hint to primary buffer if this is secondary.
-			//vk_command_buffer_begin_info.pInheritanceInfo = static_cast<VulkanCommandBuffer*>(beginRecordingInfo.PrimaryCommandBuffer)->GetVkCommandBuffer();
 			vkCommandBufferBeginInfo.pInheritanceInfo = nullptr;
-			vkCommandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+			vkCommandBufferBeginInfo.flags |= isOptimized ? 0 : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 			renderDevice->VkResetCommandPool(renderDevice->GetVkDevice(), commandPool, 0);
 			renderDevice->VkBeginCommandBuffer(commandBuffer, &vkCommandBufferBeginInfo);
@@ -195,21 +194,46 @@ namespace GAL
 		}		
 		
 		void AddLabel(const VulkanRenderDevice* renderDevice, GTSL::Range<const char8_t*> name) const {
+#if BE_DEBUG
 			VkDebugUtilsLabelEXT vkLabelInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
 			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.GetData());
 			renderDevice->vkCmdInsertDebugUtilsLabelEXT(commandBuffer, &vkLabelInfo);
+#endif
 		}
 
 		void BeginRegion(const VulkanRenderDevice* renderDevice, GTSL::Range<const char8_t*> name) const {
+#if BE_DEBUG
 			VkDebugUtilsLabelEXT vkLabelInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
 			vkLabelInfo.pLabelName = reinterpret_cast<const char*>(name.GetData());
 			renderDevice->vkCmdBeginDebugUtilsLabelEXT(commandBuffer, &vkLabelInfo);
+#endif
 		}
 
-		void EndRegion(const VulkanRenderDevice* renderDevice) const { renderDevice->vkCmdEndDebugUtilsLabelEXT(commandBuffer); }
+		void EndRegion(const VulkanRenderDevice* renderDevice) const {
+#if BE_DEBUG
+			renderDevice->vkCmdEndDebugUtilsLabelEXT(commandBuffer);
+#endif
+		}
 		
 		void Dispatch(const VulkanRenderDevice* renderDevice, GTSL::Extent3D workGroups) {
 			renderDevice->VkCmdDispatch(commandBuffer, workGroups.Width, workGroups.Height, workGroups.Depth);
+		}
+
+		void BindBindingsSets(const VulkanRenderDevice* renderDevice, ShaderStage shaderStage, GTSL::Range<const VulkanBindingsSet*> bindingsSets, VulkanPipelineLayout pipelineLayout, GTSL::uint32 firstSet) {
+			GTSL::StaticVector<VkDescriptorSet, 16> vkDescriptorSets;
+			for (auto e : bindingsSets) { vkDescriptorSets.EmplaceBack(e.GetVkDescriptorSet()); }
+
+			const GTSL::uint32 bindingSetCount = static_cast<GTSL::uint32>(bindingsSets.ElementCount());
+
+			if (shaderStage & (ShaderStages::VERTEX | ShaderStages::FRAGMENT | ShaderStages::MESH)) {
+				renderDevice->VkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout.GetVkPipelineLayout(), firstSet, bindingSetCount, vkDescriptorSets.begin(), 0, nullptr);
+			}
+			if (shaderStage & ShaderStages::COMPUTE) {
+				renderDevice->VkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout.GetVkPipelineLayout(), firstSet, bindingSetCount, vkDescriptorSets.begin(), 0, nullptr);
+			}
+			if (shaderStage & ShaderStages::RAY_GEN) {
+				renderDevice->VkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineLayout.GetVkPipelineLayout(), firstSet, bindingSetCount, vkDescriptorSets.begin(), 0, nullptr);
+			}
 		}
 
 		void BindBindingsSets(const VulkanRenderDevice* renderDevice, ShaderStage shaderStage, GTSL::Range<const VulkanBindingsSet*> bindingsSets, GTSL::Range<const GTSL::uint32*> offsets, VulkanPipelineLayout pipelineLayout, GTSL::uint32 firstSet) {
@@ -235,10 +259,7 @@ namespace GAL
 			}
 		}
 
-		void CopyTextureToTexture(const VulkanRenderDevice* renderDevice, VulkanTexture sourceTexture,
-		                          VulkanTexture destinationTexture, TextureLayout sourceLayout,
-		                          TextureLayout destinationLayout, FormatDescriptor sourceFormat,
-		                          FormatDescriptor destinationFormat, GTSL::Extent3D extent) {
+		void CopyTextureToTexture(const VulkanRenderDevice* renderDevice, VulkanTexture sourceTexture, VulkanTexture destinationTexture, TextureLayout sourceLayout, TextureLayout destinationLayout, FormatDescriptor sourceFormat, FormatDescriptor destinationFormat, GTSL::Extent3D extent) {
 			VkImageCopy vkImageCopy;
 			vkImageCopy.extent = ToVulkan(extent);
 			vkImageCopy.srcOffset = {};
@@ -253,8 +274,7 @@ namespace GAL
 			vkImageCopy.dstSubresource.layerCount = 1;
 			vkImageCopy.dstSubresource.mipLevel = 0;
 
-			renderDevice->VkCmdCopyImage(commandBuffer, sourceTexture.GetVkImage(), ToVulkan(sourceLayout, sourceFormat),
-				destinationTexture.GetVkImage(), ToVulkan(destinationLayout, destinationFormat), 1, &vkImageCopy);
+			renderDevice->VkCmdCopyImage(commandBuffer, sourceTexture.GetVkImage(), ToVulkan(sourceLayout, sourceFormat), destinationTexture.GetVkImage(), ToVulkan(destinationLayout, destinationFormat), 1, &vkImageCopy);
 		}
 
 		void CopyBufferToTexture(const VulkanRenderDevice* renderDevice, VulkanBuffer source, VulkanTexture destination, const TextureLayout layout, const FormatDescriptor format, GTSL::Extent3D extent) {
@@ -273,9 +293,7 @@ namespace GAL
 
 		template<class ALLOCATOR>
 		void AddPipelineBarrier(const VulkanRenderDevice* renderDevice, GTSL::Range<const BarrierData*> barriers, const ALLOCATOR& allocator) const {
-			GTSL::Vector<VkImageMemoryBarrier2KHR, ALLOCATOR> imageMemoryBarriers(4, allocator);
-			GTSL::Vector<VkMemoryBarrier2KHR, ALLOCATOR> memoryBarriers(4, allocator);
-			GTSL::Vector<VkBufferMemoryBarrier2KHR, ALLOCATOR> bufferBarriers(4, allocator);
+			GTSL::Vector<VkImageMemoryBarrier2KHR, ALLOCATOR> imageMemoryBarriers(4, allocator); GTSL::Vector<VkMemoryBarrier2KHR, ALLOCATOR> memoryBarriers(4, allocator); GTSL::Vector<VkBufferMemoryBarrier2KHR, ALLOCATOR> bufferBarriers(4, allocator);
 
 			for(auto& b : barriers) {
 				switch (b.Type) {
@@ -411,5 +429,6 @@ namespace GAL
 	private:
 		VkCommandPool commandPool = nullptr;
 		VkCommandBuffer commandBuffer = nullptr;
+		bool isOptimized = false;
 	};
 }

@@ -8,6 +8,7 @@
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Network/ConnectionHandler.hpp"
 
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/UIManager.h"

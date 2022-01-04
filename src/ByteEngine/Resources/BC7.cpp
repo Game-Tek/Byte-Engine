@@ -5,9 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BC7ENC_BLOCK_SIZE (16)
-#define BC7ENC_MAX_PARTITIONS (64)
-#define BC7ENC_MAX_UBER_LEVEL (4)
+#include "ByteEngine/Core.h"
+
+static constexpr uint8 BC7ENC_BLOCK_SIZE = 16;
+static constexpr uint8 BC7ENC_MAX_PARTITIONS = 64;
+static constexpr uint8 BC7ENC_MAX_UBER_LEVEL = 4;
 
 struct color_rgba { uint8_t m_c[4]; };
 
@@ -122,8 +124,7 @@ bool bc7enc_compress_block(void* pBlock, const void* pPixelsRGBA, const bc7enc_c
 
 // File: bc7enc.c - Richard Geldreich, Jr. 3/31/2020 - MIT license or public domain (see end of file)
 // Currently supports modes 1, 6 for RGB blocks, and modes 5, 6, 7 for RGBA blocks.
-#include <math.h>
-#include <memory.h>
+#include <cmath>
 #include <assert.h>
 #include <limits.h>
 #include <algorithm>

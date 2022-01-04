@@ -115,6 +115,7 @@ struct GPipeline {
 		Add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
 		Add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
 		Add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
+		Add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
 	}
 
 	auto& GetElement(ElementHandle parent, const GTSL::StringView name) {
@@ -454,6 +455,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		switch (Hash(name)) {
 		case GTSL::Hash(u8"float32"): result = u8"float"; break;
 		case GTSL::Hash(u8"vec2f"):   result = u8"vec2"; break;
+		case GTSL::Hash(u8"vec2u"):   result = u8"uvec2"; break;
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
@@ -742,10 +744,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 							newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
 							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Color");
 							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"uvec2");
-							newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");
 							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"GetFragmentPosition"); newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");	newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
-							newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
 							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
 
 							for (uint32 j = i + 2; j < s; ++j) {

@@ -15,15 +15,15 @@
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Vectors.hpp>
 
-static GTSL::Vector4 toAssimp(const aiColor4D assimpVector) {
+static GTSL::Vector4 ToGTSL(const aiColor4D assimpVector) {
 	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);
 }
 
-static GTSL::Vector3 toAssimp(const aiVector3D assimpVector) {
+static GTSL::Vector3 ToGTSL(const aiVector3D assimpVector) {
 	return GTSL::Vector3(assimpVector.x, assimpVector.y, assimpVector.z);
 }
 
-static GTSL::Vector2 toAssimp(const aiVector2D assimpVector) {
+static GTSL::Vector2 ToGTSL(const aiVector2D assimpVector) {
 	return GTSL::Vector2(assimpVector.x, assimpVector.y);
 }
 
@@ -106,6 +106,11 @@ StaticMeshResourceManager::~StaticMeshResourceManager()
 {
 }
 
+template<typename T, uint8 N>
+struct nEl {
+	T e[N];
+};
+
 void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshDataSerialize& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer)
 {
 	Assimp::Importer importer;
@@ -121,6 +126,8 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	aiMesh* inMesh = ai_scene->mMeshes[0];
 
+	if (!(inMesh->mPrimitiveTypes & aiPrimitiveType_TRIANGLE)) { BE_ASSERT(false, ""); return; }
+
 	meshInfo.VertexCount = inMesh->mNumVertices;
 
 	//MESH ALWAYS HAS POSITIONS
@@ -130,8 +137,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
 	}
 
-	if (inMesh->HasTangentsAndBitangents())
-	{
+	if (inMesh->HasTangentsAndBitangents()) {
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT3);
 	}
@@ -142,17 +148,6 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	for (uint8 colors = 0; colors < static_cast<uint8>(inMesh->GetNumColorChannels()); ++colors) {
 		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT4);
-	}
-
-	if (false) {
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::INT);
-		meshInfo.VertexDescriptor.EmplaceBack(GAL::ShaderDataType::FLOAT);
 	}
 
 	meshInfo.VertexSize = GAL::GraphicsPipeline::GetVertexSize(meshInfo.VertexDescriptor);
@@ -172,103 +167,91 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		*reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * meshInfo.VertexSize)) = obj;
 	};
 
-	{
-		auto* positions = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
-		
-		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex)
-		{
-			auto vertexPosition = toAssimp(inMesh->mVertices[vertex]);
-			meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(vertexPosition));
-			meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(vertexPosition));
-			writeElement(positions, vertexPosition, vertex);
+	auto doWrite = [writeElement]<typename T>(const GAL::ShaderDataType format, T value, byte* byteData, uint32 vertexIndex) {
+		switch (format) {
+		case GAL::ShaderDataType::FLOAT3: {
+			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
+				auto* positions = reinterpret_cast<GTSL::Vector3*>(byteData);
+				writeElement(positions, value, vertexIndex);
+			}
+			break;
 		}
-	}
+		case GAL::ShaderDataType::UINT16: {
+			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
+				auto* positions = reinterpret_cast<nEl<int16, 3>*>(byteData);
+				writeElement(positions, { GAL::FloatToSNORM(value[0]), GAL::FloatToSNORM(value[1]), GAL::FloatToSNORM(value[2]) }, vertexIndex);
+			}
+
+			break;
+		}
+		case GAL::ShaderDataType::UINT32: {
+			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
+				auto* positions = reinterpret_cast<nEl<uint16, 2>*>(byteData);
+				auto textureCoordinate = GTSL::Vector2(value);
+				writeElement(positions, { GAL::FloatToUNORM(textureCoordinate[0]), GAL::FloatToUNORM(textureCoordinate[1]) }, vertexIndex);
+			}
+			break;
+		}
+		case GAL::ShaderDataType::UINT64: {
+			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
+				auto* positions = reinterpret_cast<nEl<int8, 3>*>(byteData);
+				writeElement(positions, { static_cast<int8>(value[0] * static_cast<int8>(127)), static_cast<int8>(value[1] * static_cast<int8>(127)), static_cast<int8>(value[2] * static_cast<int8>(127)) }, vertexIndex);
+			}
+			break;
+		}
+		case GAL::ShaderDataType::FLOAT4: {
+			if constexpr (std::is_same_v<GTSL::Vector4, T>) {
+				auto* positions = reinterpret_cast<GTSL::Vector4*>(byteData);
+				writeElement(positions, value, vertexIndex);
+			}
+			break;
+		}
+		}
+	};
+
+	auto writeAndReadVertexComponent = [&]<typename T>(GAL::ShaderDataType format, T* assimpDataArray, auto&& perVertexFunc) {
+		auto* byteData = advanceVertexElement();
+
+		for (uint64 vertexIndex = 0; vertexIndex < inMesh->mNumVertices; ++vertexIndex) {
+			auto assimpAttribute = ToGTSL(assimpDataArray[vertexIndex]);
+			perVertexFunc(assimpAttribute);
+			doWrite(format, assimpAttribute, byteData, vertexIndex);
+		}
+	};
+
+	auto writeVertexComponent = [&]<typename T>(GAL::ShaderDataType format, T* assimpDataArray) -> void {
+		auto* byteData = advanceVertexElement();
+
+		for (uint64 vertexIndex = 0; vertexIndex < inMesh->mNumVertices; ++vertexIndex) {
+			doWrite(format, ToGTSL(assimpDataArray[vertexIndex]), byteData, vertexIndex);
+		}
+	};
+
+	writeAndReadVertexComponent(GAL::ShaderDataType::FLOAT3, inMesh->mVertices, [&](GTSL::Vector3 position) {
+		meshInfo.BoundingBox = GTSL::Math::Max(meshInfo.BoundingBox, GTSL::Math::Abs(position));
+		meshInfo.BoundingRadius = GTSL::Math::Max(meshInfo.BoundingRadius, GTSL::Math::Length(position));
+	});
 
 	if (inMesh->HasNormals()) {
-		GTSL::Vector3* normals = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
-		
-		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			writeElement(normals, toAssimp(inMesh->mNormals[vertex]), vertex);
-		}
+		writeVertexComponent(GAL::ShaderDataType::FLOAT3, inMesh->mNormals);
 	}
 
 	if (inMesh->HasTangentsAndBitangents()) {
-		GTSL::Vector3* tangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
-		
-		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			writeElement(tangents, toAssimp(inMesh->mTangents[vertex]), vertex);
-		}
-		
-		GTSL::Vector3* bitangents = reinterpret_cast<GTSL::Vector3*>(advanceVertexElement());
-
-		for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-			writeElement(bitangents, toAssimp(inMesh->mBitangents[vertex]), vertex);
-		}
+		writeVertexComponent(GAL::ShaderDataType::FLOAT3, inMesh->mTangents);
+		writeVertexComponent(GAL::ShaderDataType::FLOAT3, inMesh->mBitangents);
 	}
 
-	for(uint8 i = 0; i < 8; ++i) {
-		if (inMesh->HasTextureCoords(i)) {
-			GTSL::Vector2* textureCoordinates = reinterpret_cast<GTSL::Vector2*>(advanceVertexElement());
-			
-			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-				writeElement(textureCoordinates, GTSL::Vector2(toAssimp(inMesh->mTextureCoords[i][vertex])), vertex);
-			}
-		}
+	for(uint8 i = 0; i < 8 && inMesh->HasTextureCoords(i); ++i) {
+		writeVertexComponent(GAL::ShaderDataType::FLOAT2, inMesh->mTextureCoords[i]);
 	}
 
-	for(uint8 i = 0; i < 8; ++i) {
-		if (inMesh->HasVertexColors(i)) {
-			GTSL::Vector4* colors = reinterpret_cast<GTSL::Vector4*>(advanceVertexElement());
-			
-			for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-				writeElement(colors, toAssimp(inMesh->mColors[i][vertex]), vertex);
-			}
-		}
+	for(uint8 i = 0; i < 8 && inMesh->HasVertexColors(i); ++i) {
+		writeVertexComponent(GAL::ShaderDataType::FLOAT4, inMesh->mColors[i]);
 	}
-
-	//if(false) {
-	//	uint32* index[4];
-	//	float32* weight[4];
-	//	index[0] = reinterpret_cast<uint32*>(advanceVertexElement());
-	//	weight[0] = reinterpret_cast<float32*>(advanceVertexElement());
-	//	
-	//	index[1] = reinterpret_cast<uint32*>(advanceVertexElement());
-	//	weight[1] = reinterpret_cast<float32*>(advanceVertexElement());
-	//	
-	//	index[2] = reinterpret_cast<uint32*>(advanceVertexElement());
-	//	weight[2] = reinterpret_cast<float32*>(advanceVertexElement());
-	//	
-	//	index[3] = reinterpret_cast<uint32*>(advanceVertexElement());
-	//	weight[3] = reinterpret_cast<float32*>(advanceVertexElement());
-	//
-	//	for (uint64 vertex = 0; vertex < inMesh->mNumVertices; ++vertex) {
-	//		for (uint8 i = 0; i < 4; ++i) {
-	//			getElementPointer(index[i], 0xFFFFFFFF, vertex);
-	//			getElementPointer(weight[i], 0.0f, vertex);
-	//		}
-	//	}
-	//	
-	//	for (uint32 b = 0; b < inMesh->mNumBones; ++b) {
-	//		const auto& assimpBone = inMesh->mBones[b];
-	//	
-	//		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {
-	//			auto vertexIndex = assimpBone->mWeights[w].mVertexId;
-	//			
-	//			for (uint8 i = 0; i < 4; ++i) {
-	//				if (getElementPointer(index[i], vertexIndex) == 0xFFFFFFFF) {
-	//					getElementPointer(index[i], vertexIndex) = b;
-	//					getElementPointer(weight[i], vertexIndex) = assimpBone->mWeights[w].mWeight;
-	//					break;
-	//				}
-	//			}
-	//		}
-	//	}
-	//}
 	
 	uint16 indexSize = 0;
 	
-	if(inMesh->mNumFaces * 3 < 0xFFFF)
-	{
+	if(inMesh->mNumFaces * 3 < 0xFFFF) {
 		//if (inMesh->mNumFaces * 3 < 0xFF) {
 		//	indexSize = 1;
 		//
@@ -288,9 +271,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 				}
 			}
 		//}
-	}
-	else
-	{
+	} else {
 		indexSize = 4;
 
 		for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {

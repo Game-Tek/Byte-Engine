@@ -416,7 +416,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			auto buffer = renderSystem->GetBuffer(meshData.Handle);
 
 			commandBuffer.BindVertexBuffer(renderSystem->GetRenderDevice(), buffer, meshData.VertexSize * meshData.VertexCount, 0, meshData.VertexSize);
-			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(meshData.VertexSize * meshData.VertexCount, 8), meshData.IndexCount, meshData.IndexType);
+			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(meshData.VertexSize * meshData.VertexCount, renderSystem->GetBufferSubDataAlignment()), meshData.IndexCount, meshData.IndexType);
 			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, 1);
 			break;
 		}
@@ -1183,7 +1183,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				auto table = bWK[groupData.TableHandle];
 				for (uint32 i = 0; i < groupData.ShaderCount; ++i, ++shaderCount) {
 					table[groupData.Instances[i].ShaderHandle] = shaderGroupHandlesBuffer[shaderCount];
-					table[groupData.Instances[i].Elements[0]] = GAL::DeviceAddress(0); //todo: check updatability of buffer
+					table[groupData.Instances[i].Elements[0]] = sg.Buffer;
 
 					uint64 shaderHandleHash = 0; GTSL::StaticString<128> string(u8"S.H: "); string += shader_group_info.Name; string << u8", "; string += shaders[pipelineData.Shaders[shaderCount]].Name << u8": ";
 
@@ -1305,12 +1305,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, renderOrchestrator->GetCameraDataLayer(), rayTraceShaderGroupHandle); //TODO:
 
 		RenderOrchestrator::MemberHandle traceRayParameters, staticMeshDatas;
-
-		//r.AccelerationStructure r.RayFlags r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, r.tMin, r.tMax
+		
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> traceRayParameterDataMembers{ { &Acc, u8"uint64", u8"accelerationStructure" }, { &RayFlags, u8"uint32", u8"rayFlags" }, {&RecordOffset, u8"uint32", u8"recordOffset"}, {&RecordStride, u8"uint32", u8"recordStride"}, {&MissIndex, u8"uint32", u8"missIndex"}, {&tMin, u8"float32", u8"tMin"}, {&tMax, u8"float32", u8"tMax"} };
 		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember(u8"global", u8"TraceRayParameterData", traceRayParameterDataMembers);
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> rayTraceDataMembers{ { &traceRayParameters, u8"TraceRayParameterData", u8"traceRayParameters"}, {&staticMeshDatas, u8"StaticMeshData*", u8"staticMeshes"} };
 		auto rayTraceDataMember = renderOrchestrator->CreateMember(u8"global", u8"RayTraceData", rayTraceDataMembers);
+		rayTraceDataMember.Offset = renderOrchestrator->renderDataOffset;
 		renderOrchestrator->BindToNode(renderSystem, rayTraceNode, rayTraceDataMember);
 
 		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceNode, rayTraceDataMember);
@@ -1322,6 +1322,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		bwk[traceRayParameters][tMin] = 0.0f;
 		bwk[traceRayParameters][tMax] = 100.0f;
 		bwk[staticMeshDatas] = meshDataBuffer;
+
+		renderOrchestrator->PrintMember(rayTraceDataMember, renderOrchestrator->renderBuffers[0].BufferHandle, renderSystem);
 	}
 
 	//for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {

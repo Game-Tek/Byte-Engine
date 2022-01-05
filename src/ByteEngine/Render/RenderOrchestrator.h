@@ -1777,8 +1777,13 @@ private:
 		auto key = renderOrchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer, staticMeshInstanceDataStruct);
 		key[matrixUniformBufferMemberHandle] = renderGroup->GetMeshTransform(static_mesh_handle);
 		key[vertexBufferReferenceHandle] = renderSystem->GetBufferAddress(res.BufferHandle, true);
-		key[indexBufferReferenceHandle] = renderSystem->GetBufferAddress(res.BufferHandle, true) + GTSL::Math::RoundUpByPowerOf2(res.VertexSize * res.VertexCount, 8);
+		key[indexBufferReferenceHandle] = renderSystem->GetBufferAddress(res.BufferHandle, true) + GTSL::Math::RoundUpByPowerOf2(res.VertexSize * res.VertexCount, renderSystem->GetBufferSubDataAlignment());
 		key[materialInstance] = mesh.MaterialHandle.ShaderGroupIndex;
+
+		renderOrchestrator->PrintMember(staticMeshInstanceDataStruct, meshDataBuffer, renderSystem);
+
+		BE_LOG_SUCCESS(u8"Mesh data address: ", (uint64)renderSystem->GetBufferAddress(res.BufferHandle));
+		BE_LOG_SUCCESS(u8"Mesh data array address: ", (uint64)renderSystem->GetBufferAddress(meshDataBuffer));
 
 		if (rayTracing) {
 			pendingAdditions.EmplaceBack(resource_name);
@@ -1793,9 +1798,9 @@ private:
 
 		//info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, renderGroup->GetMeshIndex(e));
 		key[staticMeshInstanceDataStruct][matrixUniformBufferMemberHandle] = pos;
-		*spherePositionsAndRadius.GetPointer<0>(0) = pos[0][0];
-		*spherePositionsAndRadius.GetPointer<1>(0) = pos[0][1];
-		*spherePositionsAndRadius.GetPointer<2>(0) = pos[0][2];
+		*spherePositionsAndRadius.GetPointer<0>(0) = pos[0][3];
+		*spherePositionsAndRadius.GetPointer<1>(0) = pos[1][3];
+		*spherePositionsAndRadius.GetPointer<2>(0) = pos[2][3];
 
 		if (rayTracing) {
 			renderSystem->SetInstancePosition(topLevelAccelerationStructure, meshes[static_mesh_handle].InstanceHandle, pos);
@@ -1814,6 +1819,7 @@ private:
 				if (render_orchestrator->GetResourceState(render_orchestrator->GetResourceForShaderGroup(u8"beachBall"))) {
 					for (auto& f : resources[e].Meshes) {
 						meshes[f].InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[e].BLAS);
+						render_system->SetInstancePosition(topLevelAccelerationStructure, meshes[f].InstanceHandle, GTSL::Matrix4(GTSL::Vector3(spherePositionsAndRadius.At<0>(0), spherePositionsAndRadius.At<1>(0), spherePositionsAndRadius.At<2>(0))));
 					}
 
 					pendingAdditions.Pop(i);

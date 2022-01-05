@@ -542,7 +542,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		}
 
 		if (ref) {
-			statementString += u8"layout(buffer_reference,scalar,buffer_reference_align=4) ";
+			statementString += u8"layout(buffer_reference,scalar,buffer_reference_align=1) ";
 
 			if (readOnly)
 				statementString += u8"readonly ";
@@ -566,7 +566,10 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		for (auto& r : pipeline.GetChildren(e)) {
 			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
 				writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
-				writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+
+				if (pipeline.GetElement(r).Name != u8"index") {
+					writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+				}
 			}
 		}
 	}

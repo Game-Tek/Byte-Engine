@@ -203,10 +203,9 @@ public:
 
 				for (auto e : { vertexShaderScope, fragmentShaderScope, closestHitShaderScope }) {
 					auto instanceDataStruct = pipeline.Add(e, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
-					pipeline.DeclareVariable(instanceDataStruct, { u8"mat4f", u8"ModelMatrix" });
+					pipeline.DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
 					auto instanceStructVertexBuffer = pipeline.DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
 					auto instanceStructIndexBuffer = pipeline.DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
-					pipeline.DeclareVariable(instanceDataStruct, { u8"uint32", u8"MaterialInstance" });
 				}
 
 				auto rasterPushConstantBlockHandle = pipeline.Add(rasterModelHandle, u8"pushConstantBlock", GPipeline::LanguageElement::ElementType::MEMBER);
@@ -261,7 +260,7 @@ public:
 				pipeline.DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 				pipeline.DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
 				pipeline.DeclareRawFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-				pipeline.DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetInstancePosition", {}, u8"return pushConstantBlock.instance.ModelMatrix;");
+				pipeline.DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance.ModelMatrix);");
 				pipeline.DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
 				pipeline.DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
 
@@ -916,6 +915,11 @@ private:
 		pipeline.DeclareRawFunction({}, u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
 		pipeline.DeclareRawFunction({}, u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
 		pipeline.DeclareRawFunction({}, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth_from_depth_buffer" }, { u8"mat4f", u8"inverse_projection_matrix" } }, u8"vec4 p = inverse_projection_matrix * vec4(vec3(texture_coordinate * 2.0 - vec2(1.0), depth_from_depth_buffer), 1.0); return p.xyz / p.w;\n");
+		pipeline.DeclareRawFunction({}, u8"float32", u8"PI", { }, u8"return 3.14159265359f;");
+
+		//pipeline.DeclareRawFunction({}, u8"float32", u8"DistributionGGX", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"H"}, { u8"float32", u8"roughness"}}, u8"float32 a = roughness * roughness; float32 a2 = a * a; float32 NdotH = max(dot(N, H), 0.0); float32 NdotH2 = NdotH * NdotH; float32 num = a2; float32 denom = (NdotH2 * (a2 - 1.0) + 1.0); denom = PI() * denom * denom; return num / denom;");
+		//pipeline.DeclareRawFunction({}, u8"float32", u8"GeometrySchlickGGX", { { u8"float32", u8"NdotV"}, { u8"float32", u8"roughness"}}, u8"float32 r = (roughness + 1.0); float32 k = (r * r) / 8.0; float32 num = NdotV; float32 denom = NdotV * (1.0 - k) + k; return num / denom;");
+		//pipeline.DeclareRawFunction({}, u8"float32", u8"GeometrySmith", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"V"}, { u8"vec3f", u8"L"}, { u8"float32", u8"roughness" } }, u8"float32 NdotV = max(dot(N, V), 0.0); float32 NdotL = max(dot(N, L), 0.0); float32 ggx2 = GeometrySchlickGGX(NdotV, roughness); float32 ggx1 = GeometrySchlickGGX(NdotL, roughness); return ggx1 * ggx2;");
 
 		return pipeline;
 	}

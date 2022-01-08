@@ -167,6 +167,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	tryAddDataType(u8"global", u8"vec3f", 4 * 3);
 	tryAddDataType(u8"global", u8"vec4f", 4 * 4);
 	tryAddDataType(u8"global", u8"matrix4f", 4 * 4 * 4);
+	tryAddDataType(u8"global", u8"matrix3x4f", 4 * 3 * 4);
 	tryAddDataType(u8"global", u8"ptr_t", 8);
 	tryAddDataType(u8"global", u8"ShaderHandle", 32);
 
@@ -240,7 +241,6 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
 		cameraDataNode = AddLayer(u8"CameraData", globalData);
 		BindToNode(renderSystem, cameraDataNode, cameraMatricesHandle);
-		PrintMember(cameraMatricesHandle, renderBuffers[0].BufferHandle, renderSystem);
 	}
 
 	if constexpr (BE_DEBUG) {
@@ -331,11 +331,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto viewMatrix = cameraSystem->GetCameraTransform();
 
-			auto key = GetBufferWriteKey(renderSystem, cameraDataNode, cameraMatricesHandle);
-			key[u8"CameraData"][u8"view"] = viewMatrix;
-			key[u8"CameraData"][u8"proj"] = projectionMatrix;
-			key[u8"CameraData"][u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
-			key[u8"CameraData"][u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
+			auto key = GetBufferWriteKey(renderSystem, cameraDataNode);
+			key[u8"view"] = viewMatrix;
+			key[u8"proj"] = projectionMatrix;
+			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
+			key[u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
 		}
 		else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
@@ -361,11 +361,27 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 		}
 
-		if (auto address = baseData.Address[currentFrame]) { //if node has an associated data entry, bind it
+		//if (auto address = baseData.Address[currentFrame]) { //if node has an associated data entry, bind it
+		//	dataStreamHandle = renderState.AddDataStream();
+		//	le[level] = true;
+		//	auto& setLayout = setLayoutDatas[globalSetLayout()]; address += baseData.Offset;
+		//	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
+		//}
+
+		if(baseData.DataKey) {
 			dataStreamHandle = renderState.AddDataStream();
 			le[level] = true;
-			auto& setLayout = setLayoutDatas[globalSetLayout()]; address += baseData.Offset;
-			commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
+			GAL::DeviceAddress address;
+			const auto& dataKey = dataKeys[baseData.DataKey()];
+
+			if(renderSystem->IsUpdatable(dataKey.Buffer)) {
+				address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
+			} else {
+				address = renderSystem->GetBufferAddress(dataKey.Buffer);
+			}
+
+			auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
+			commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);			
 		}
 
 		switch (renderingTree.GetBetaNodeType(key)) {
@@ -401,7 +417,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			for (uint32 i = 0, offset = 0; i < 3; ++i) {
 				shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
 				shaderTableDescriptors[i].EntrySize = GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
-				shaderTableDescriptors[i].Address = renderSystem->GetBufferAddress(pipelineData.ShaderBindingTableBuffer) + offset;
+				shaderTableDescriptors[i].Address = GetAddress(renderSystem, pipelineData.ShaderBindingTableBuffer) + offset;
 
 				offset += GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
 			}
@@ -415,9 +431,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto buffer = renderSystem->GetBuffer(meshData.Handle);
 
-			commandBuffer.BindVertexBuffer(renderSystem->GetRenderDevice(), buffer, meshData.VertexSize * meshData.VertexCount, 0, meshData.VertexSize);
+			commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), { buffer }, { 0 }, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
 			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(meshData.VertexSize * meshData.VertexCount, renderSystem->GetBufferSubDataAlignment()), meshData.IndexCount, meshData.IndexType);
 			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, 1);
+			break;
+		}
+		case RTT::GetTypeIndex<DrawData>(): {
+			const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
+			commandBuffer.Draw(renderSystem->GetRenderDevice(), 6);
 			break;
 		}
 		case RTT::GetTypeIndex<RenderPassData>(): {
@@ -545,9 +566,8 @@ ShaderGroupHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_name) {
 		if constexpr (BE_DEBUG) { shaderGroup.Name = GTSL::StringView(shader_group_name); }
 		shaderGroup.ResourceHandle = makeResource();
 		addDependencyOnResource(shaderGroup.ResourceHandle); // Add dependency the pipeline itself
-		shaderGroup.DataKey = MakeDataKey();
-	}
-	else {
+		shaderGroup.Buffer = MakeDataKey();
+	} else {
 		auto& material = shaderGroups[shaderGroupReference.Get()];
 		materialIndex = shaderGroupReference.Get();
 		//auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance) {
@@ -695,12 +715,10 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 	auto member = CreateMember(u8"global", renderPassName, members);
 	BindToNode(renderSystem, renderPassNodeHandle, member);
-	auto bwk = GetBufferWriteKey(renderSystem, renderPassNodeHandle, renderPass.RenderTargetReferences);
+	auto bwk = GetBufferWriteKey(renderSystem, renderPassNodeHandle);
 	for (auto i = 0u; i < passData.WriteAttachments.GetLength(); ++i) {
-		bwk[renderPassName][GTSL::StringView(passData.WriteAttachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
+		bwk[GTSL::StringView(passData.WriteAttachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
-
-	PrintMember(member, renderBuffers[0].BufferHandle, renderSystem);
 
 	return renderPassNodeHandle;
 }
@@ -852,7 +870,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	MemberHandle textureReferences[8];
 
-	GTSL::Vector<GAL::Pipeline::VertexElement, BE::TAR> vertexElements(GetTransientAllocator());
+	GTSL::StaticVector<GTSL::StaticVector<GAL::Pipeline::VertexElement, 32>, 8> vertexStreams;
 	struct ShaderBundleData {
 		GTSL::StaticVector<uint32, 8> Shaders;
 		GAL::ShaderStage Stage;
@@ -862,7 +880,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	GTSL::StaticVector<MemberInfo, 16> members;
 	GTSL::KeyMap<uint64, BE::TAR> loadedShadersMap(8, GetTransientAllocator()); //todo: differentiate hash from hash + name, since a different hash could be interpreted as a different shader, when in reality it functionally represents the same shader but with different code
 
-	for (auto& e : shader_group_info.VertexElements) {
+	auto& vertexElements = vertexStreams.EmplaceBack();
+
+	for (uint8 l = 0;  auto & e : shader_group_info.VertexElements) {
 		GAL::ShaderDataType type;
 
 		switch (Hash(e.Type)) {
@@ -871,7 +891,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		case GTSL::Hash(u8"vec4f"): type = GAL::ShaderDataType::FLOAT4; break;
 		}
 
-		vertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GTSL::ShortString<32>(e.Name.c_str()), type });
+		vertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GTSL::ShortString<32>(e.Name.c_str()), type, l++ });
 	}
 
 	for (uint32 offset = 0, si = 0; const auto & s : shader_group_info.Shaders) {
@@ -967,7 +987,12 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			pipelineStates.EmplaceBack(viewportState);
 
 			auto& vertexState = pipelineStates.EmplaceBack(GAL::Pipeline::PipelineStateBlock::VertexState{});
-			vertexState.Vertex.VertexDescriptor = vertexElements;
+
+			GTSL::StaticVector<GTSL::Range<const GAL::Pipeline::VertexElement*>, 8> vertexStreamsRanges;
+
+			for(auto& e : vertexStreams) { vertexStreamsRanges.EmplaceBack(e); }
+
+			vertexState.Vertex.VertexStreams = vertexStreamsRanges;
 
 			pipelines[e.PipelineIndex].pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 		}
@@ -1094,19 +1119,17 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		GTSL::StaticString<64> scope(u8"global"); scope << u8"." << GTSL::StringView(shader_group_info.Name);
 
 		auto materialDataMember = CreateMember(scope, u8"ShaderParametersData", members);
-		sg.Buffer = CreateBuffer(renderSystem, materialDataMember);
-		sg.DataKey = MakeDataKey(renderSystem, sg.Buffer, sg.DataKey);
+		sg.Buffer = CreateDataKey(renderSystem, scope, u8"ShaderParametersData", sg.Buffer);
 
 		for (uint8 ii = 0; auto & i : shader_group_info.Instances) { //TODO: check parameters against stored layout to check if everything is still compatible
 			for (uint32 pi = 0; auto & p : i.Parameters) {
-				Id parameterValue;
+				GTSL::StaticString<32> parameterValue;
 
 				//if shader instance has specialized value for param, use that, else, fallback to shader group default value for param
 				if (p.Second) {
-					parameterValue = Id(p.Second);
-				}
-				else {
-					parameterValue = Id(parameters[Id(p.First)].DefaultValue);
+					parameterValue = p.Second;
+				} else {
+					parameterValue = parameters[Id(p.First)].DefaultValue;
 				}
 
 				switch (Hash(parameters[Id(p.First)].Type)) {
@@ -1115,24 +1138,24 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					createTextureInfo.RenderSystem = renderSystem;
 					createTextureInfo.GameInstance = taskInfo.ApplicationManager;
 					createTextureInfo.TextureResourceManager = taskInfo.ApplicationManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
-					createTextureInfo.TextureName = static_cast<GTSL::StringView>(parameterValue);
+					createTextureInfo.TextureName = parameterValue;
 					auto textureReference = createTexture(createTextureInfo);
 
-					GetBufferWriteKey(renderSystem, sg.Buffer, textureReferences[pi])[textureReferences[pi]] = textureReference;
+					GetBufferWriteKey(renderSystem, sg.Buffer)[p.First] = textureReference;
 
 					for (auto& e : shaderBundles) {
-						addPendingResourceToTexture(parameterValue, sg.ResourceHandle);
+						addPendingResourceToTexture(Id(parameterValue), sg.ResourceHandle);
 					}
 
 					break;
 				}
 				case GTSL::Hash(u8"ImageReference"): {
-					auto textureReference = attachments.TryGet(parameterValue);
+					auto textureReference = attachments.TryGet(Id(parameterValue));
 
 					if (textureReference) {
 						uint32 textureComponentIndex = textureReference.Get().ImageIndex;
 
-						GetBufferWriteKey(renderSystem, sg.Buffer, textureReferences[pi])[textureReferences[pi]] = textureComponentIndex;
+						GetBufferWriteKey(renderSystem, sg.Buffer)[p.First] = textureComponentIndex;
 					}
 					else {
 						BE_LOG_WARNING(u8"Default parameter value of ", GTSL::StringView(parameterValue), u8" for shader group ", shader_group_info.Name, u8" parameter ", p.First, u8" could not be found.");
@@ -1174,16 +1197,16 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				{ &rtPipelineData.ShaderGroups[3].TableHandle, tablePerGroup[3], u8"CallableTable", u8"callableTable", renderSystem->GetShaderGroupBaseAlignment()},
 			};
 			auto sbtMemeber = CreateMember(GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", tables);
-			pipelineData.ShaderBindingTableBuffer = renderSystem->CreateBuffer(GetSize(sbtMemeber), GAL::BufferUses::SHADER_BINDING_TABLE, true, false, pipelineData.ShaderBindingTableBuffer);
+			pipelineData.ShaderBindingTableBuffer = CreateDataKey(renderSystem, GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", pipelineData.ShaderBindingTableBuffer, GAL::BufferUses::SHADER_BINDING_TABLE);
 
-			auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer, sbtMemeber);
+			auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer);
 
 			for (uint32 shaderGroupIndex = 0, shaderCount = 0; shaderGroupIndex < 4; ++shaderGroupIndex) {
 				auto& groupData = rtPipelineData.ShaderGroups[shaderGroupIndex];
-				auto table = bWK[groupData.TableHandle];
+				auto table = bWK[tables[shaderGroupIndex].Name];
 				for (uint32 i = 0; i < groupData.ShaderCount; ++i, ++shaderCount) {
-					table[groupData.Instances[i].ShaderHandle] = shaderGroupHandlesBuffer[shaderCount];
-					table[groupData.Instances[i].Elements[0]] = sg.Buffer;
+					table[u8"shaderHandle"] = shaderGroupHandlesBuffer[shaderCount];
+					table[u8"materialData"] = GetAddress(renderSystem, sg.Buffer); //todo: wrong
 
 					uint64 shaderHandleHash = 0; GTSL::StaticString<128> string(u8"S.H: "); string += shader_group_info.Name; string << u8", "; string += shaders[pipelineData.Shaders[shaderCount]].Name << u8": ";
 
@@ -1201,8 +1224,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					}
 				}
 			}
-
-			PrintMember(sbtMemeber, pipelineData.ShaderBindingTableBuffer, renderSystem);
 		}
 	}
 }
@@ -1278,14 +1299,16 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	initialize_info.ApplicationManager->AddTask(this, u8"renderSetup", &WorldRendererPipeline::preRender, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), u8"RenderSetup", u8"Render");
 
+
+	RenderOrchestrator::MemberHandle bogus;
+
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
-	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix4f", u8"transform");
+	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
 	members.EmplaceBack(&vertexBufferReferenceHandle, u8"ptr_t", u8"vertexBuffer");
 	members.EmplaceBack(&indexBufferReferenceHandle, u8"ptr_t", u8"indexBuffer");
-	members.EmplaceBack(&materialInstance, u8"uint32", u8"materialInstanceIndex");
 
 	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
-	meshDataBuffer = renderOrchestrator->CreateBuffer(renderSystem, staticMeshInstanceDataStruct);
+	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
@@ -1310,23 +1333,24 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember(u8"global", u8"TraceRayParameterData", traceRayParameterDataMembers);
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> rayTraceDataMembers{ { &traceRayParameters, u8"TraceRayParameterData", u8"traceRayParameters"}, {&staticMeshDatas, u8"StaticMeshData*", u8"staticMeshes"} };
 		auto rayTraceDataMember = renderOrchestrator->CreateMember(u8"global", u8"RayTraceData", rayTraceDataMembers);
-		rayTraceDataMember.Offset = renderOrchestrator->renderDataOffset;
 		renderOrchestrator->BindToNode(renderSystem, rayTraceNode, rayTraceDataMember);
 
-		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceNode, rayTraceDataMember);
-		bwk[traceRayParameters][Acc] = topLevelAccelerationStructure;
-		bwk[traceRayParameters][RayFlags] = 0u;
-		bwk[traceRayParameters][RecordOffset] = 0u;
-		bwk[traceRayParameters][RecordStride] = 0u;
-		bwk[traceRayParameters][MissIndex] = 0u;
-		bwk[traceRayParameters][tMin] = 0.0f;
-		bwk[traceRayParameters][tMax] = 100.0f;
-		bwk[staticMeshDatas] = meshDataBuffer;
-
-		renderOrchestrator->PrintMember(rayTraceDataMember, renderOrchestrator->renderBuffers[0].BufferHandle, renderSystem);
+		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceNode);
+		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
+		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
+		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
+		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
+		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
+		bwk[u8"traceRayParameters"][u8"tMin"] = 0.0f;
+		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
+		bwk[u8"staticMeshes"] = meshDataBuffer;
 	}
 
-	//for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
-		//WriteBinding(topLevelAsHandle, 0, renderSystem->GetTopLevelAccelerationStructure(f), f);
-	//}
+	//add node
+	//RenderOrchestrator::PassData pass_data;
+	//pass_data.PassType = RenderOrchestrator::PassType::COMPUTE;
+	//pass_data.WriteAttachments.EmplaceBack(u8"Color");
+	//pass_data.ReadAttachments.EmplaceBack(u8"Normal");
+	//pass_data.ReadAttachments.EmplaceBack(u8"RenderDepth");
+	//auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"Lighting", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
 }

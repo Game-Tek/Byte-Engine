@@ -16,6 +16,9 @@ namespace GTSL {
 	class Window;
 }
 
+inline bool operator!=(const GTSL::Extent3D a, const GTSL::Extent3D b) {
+	return a.Width != b.Width || a.Height != b.Height || a.Depth != b.Depth;
+}
 
 class RenderSystem : public BE::System {
 public:
@@ -83,8 +86,8 @@ public:
 				buildData.DestinationAccelerationStructure = tlas.AccelerationStructures[GetCurrentFrame()];
 				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer, true);
 
-				GTSL::Skim(tlas.PendingUpdates, [&](decltype(tlas.PendingUpdates)::value_type& e) { bool val; e.Second.Get(GetCurrentFrame(), val); if (val) { GTSL::MemCopy(64ull, GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()) + e.First * 64, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()) + e.First * 64); return true; } return false; });
-
+				//GTSL::Skim(tlas.PendingUpdates, [&](decltype(tlas.PendingUpdates)::value_type& e) { bool val; e.Second.Get(GetCurrentFrame(), val); if (val) { GTSL::MemCopy(64ull, GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()) + e.First * 64, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()) + e.First * 64); return true; } return false; });
+				GTSL::MemCopy(64ull * as.PrimitiveCount, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()), GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()));
 				geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.InstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
 
 				buildData.Geometries = geometries;
@@ -460,7 +463,7 @@ public:
 		return 0;
 	}
 
-	BLASInstanceHandle AddBLASToTLAS(const AccelerationStructureHandle tlash, const AccelerationStructureHandle blash) {
+	BLASInstanceHandle AddBLASToTLAS(const AccelerationStructureHandle tlash, const AccelerationStructureHandle blash, uint32 instance_custom_index) {
 		auto& tlas = accelerationStructures[tlash()].TopLevel;
 		const auto& blas = accelerationStructures[blash()].BottomLevel;
 
@@ -472,7 +475,7 @@ public:
 			instanceIndex = accelerationStructures[tlash()].PrimitiveCount++;
 		}
 
-		GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), 0, accelerationStructureBuildDevice);
+		GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
 
 		auto& r = tlas.PendingUpdates.EmplaceBack(); //bug: only works if we update acc. str. every frame
 		r.First = instanceIndex;

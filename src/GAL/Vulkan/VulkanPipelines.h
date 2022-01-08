@@ -355,31 +355,38 @@ namespace GAL
 					break;
 				}
 				case PipelineStateBlock::StateType::VERTEX_STATE: {
-					auto* pointer = buffer.AllocateStructure<VkPipelineVertexInputStateCreateInfo>();
-					auto* binding = buffer.AllocateStructure<VkVertexInputBindingDescription>();
+					auto* vk_pipeline_vertex_input_state_create_info = buffer.AllocateStructure<VkPipelineVertexInputStateCreateInfo>();
 
-					binding->binding = 0; binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX; binding->stride = 0;
+					vk_pipeline_vertex_input_state_create_info->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO; vk_pipeline_vertex_input_state_create_info->pNext = nullptr;
+					vk_pipeline_vertex_input_state_create_info->vertexBindingDescriptionCount = 0;
+					vk_pipeline_vertex_input_state_create_info->pVertexBindingDescriptions = reinterpret_cast<const VkVertexInputBindingDescription*>(buffer.GetData() + buffer.GetLength());
 
-					pointer->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO; pointer->pNext = nullptr;
-					pointer->vertexBindingDescriptionCount = 1;
-					pointer->pVertexBindingDescriptions = binding;
-					pointer->vertexAttributeDescriptionCount = 0;
-					pointer->pVertexAttributeDescriptions = reinterpret_cast<const VkVertexInputAttributeDescription*>(buffer.GetData() + buffer.GetLength());;
+					auto* bindings = reinterpret_cast<VkVertexInputBindingDescription*>(buffer.GetData() + buffer.GetLength());
 
-					GTSL::uint16 offset = 0;
-
-					for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(pipelineState.Vertex.VertexDescriptor.ElementCount()); ++i) {
-						auto size = ShaderDataTypesSize(pipelineState.Vertex.VertexDescriptor[i].Type);
-
-						auto& vertex = *buffer.AllocateStructure<VkVertexInputAttributeDescription>();
-						vertex.binding = 0; vertex.location = i; vertex.format = ToVulkan(pipelineState.Vertex.VertexDescriptor[i].Type);
-						vertex.offset = offset;
-						offset += size;
-						binding->stride += size;
-						++pointer->vertexAttributeDescriptionCount;
+					for (uint32_t i = 0; i < pipelineState.Vertex.VertexStreams.ElementCount(); ++i) {
+						auto* binding = buffer.AllocateStructure<VkVertexInputBindingDescription>();
+						binding->binding = i; binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX; binding->stride = 0;
+						++vk_pipeline_vertex_input_state_create_info->vertexBindingDescriptionCount;
 					}
 
-					vkGraphicsPipelineCreateInfo.pVertexInputState = pointer;
+					vk_pipeline_vertex_input_state_create_info->vertexAttributeDescriptionCount = 0;
+					vk_pipeline_vertex_input_state_create_info->pVertexAttributeDescriptions = reinterpret_cast<const VkVertexInputAttributeDescription*>(buffer.GetData() + buffer.GetLength());
+
+					for (uint32_t i = 0; i < pipelineState.Vertex.VertexStreams.ElementCount(); ++i) {
+						for (GTSL::uint32 j = 0; j < static_cast<GTSL::uint32>(pipelineState.Vertex.VertexStreams[i].ElementCount()); ++j) {
+							auto size = ShaderDataTypesSize(pipelineState.Vertex.VertexStreams[i][j].Type);
+
+							auto& vertex = *buffer.AllocateStructure<VkVertexInputAttributeDescription>();
+							vertex.location = pipelineState.Vertex.VertexStreams[i][j].Location;
+							vertex.binding = i;
+							vertex.format = ToVulkan(pipelineState.Vertex.VertexStreams[i][j].Type);
+							vertex.offset = bindings[i].stride;
+							bindings[i].stride += size;
+							++vk_pipeline_vertex_input_state_create_info->vertexAttributeDescriptionCount;
+						}
+					}
+
+					vkGraphicsPipelineCreateInfo.pVertexInputState = vk_pipeline_vertex_input_state_create_info;
 
 					auto* inputAssemblyState = buffer.AllocateStructure<VkPipelineInputAssemblyStateCreateInfo>();
 					inputAssemblyState->sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO; inputAssemblyState->pNext = nullptr;

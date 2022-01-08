@@ -343,6 +343,9 @@ namespace GAL {
 
 		MAT3,
 		MAT4,
+
+		SNORM, SNORM2, SNORM3, SNORM4,
+		UNORM, UNORM2, UNORM3, UNORM4
 	};
 
 	// PIPELINE

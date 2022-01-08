@@ -169,6 +169,19 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	auto doWrite = [writeElement]<typename T>(const GAL::ShaderDataType format, T value, byte* byteData, uint32 vertexIndex) {
 		switch (format) {
+		case GAL::ShaderDataType::FLOAT2: {
+			if constexpr (std::is_same_v<GTSL::Vector2, T>) {
+				auto* positions = reinterpret_cast<GTSL::Vector2*>(byteData);
+				writeElement(positions, value, vertexIndex);
+			}
+
+			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
+				auto* positions = reinterpret_cast<GTSL::Vector2*>(byteData);
+				writeElement(positions, GTSL::Vector2(value[0], value[1]), vertexIndex);
+			}
+
+			break;
+		}
 		case GAL::ShaderDataType::FLOAT3: {
 			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
 				auto* positions = reinterpret_cast<GTSL::Vector3*>(byteData);
@@ -176,7 +189,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 			}
 			break;
 		}
-		case GAL::ShaderDataType::UINT16: {
+		case GAL::ShaderDataType::SNORM3: {
 			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
 				auto* positions = reinterpret_cast<nEl<int16, 3>*>(byteData);
 				writeElement(positions, { GAL::FloatToSNORM(value[0]), GAL::FloatToSNORM(value[1]), GAL::FloatToSNORM(value[2]) }, vertexIndex);
@@ -184,7 +197,7 @@ void StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 			break;
 		}
-		case GAL::ShaderDataType::UINT32: {
+		case GAL::ShaderDataType::UNORM2: {
 			if constexpr (std::is_same_v<GTSL::Vector3, T>) {
 				auto* positions = reinterpret_cast<nEl<uint16, 2>*>(byteData);
 				auto textureCoordinate = GTSL::Vector2(value);

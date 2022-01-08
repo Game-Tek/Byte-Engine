@@ -153,10 +153,16 @@ namespace GAL {
 			renderDevice->VkCmdBindIndexBuffer(commandBuffer, buffer.GetVkBuffer(), offset, ToVulkan(indexType));
 		}
 
-		void BindVertexBuffer(const VulkanRenderDevice* renderDevice, const VulkanBuffer buffer, [[maybe_unused]] GTSL::uint32 size, const GTSL::uint32 offset, [[maybe_unused]] GTSL::uint32 stride) const {
-			auto vkBuffer = buffer.GetVkBuffer();
-			GTSL::uint64 bigOffset = offset;
-			renderDevice->VkCmdBindVertexBuffers(commandBuffer, 0, 1, &vkBuffer, &bigOffset);
+		void BindVertexBuffers(const VulkanRenderDevice* renderDevice, GTSL::Range<const VulkanBuffer*> buffers, GTSL::Range<const GTSL::uint32*> offsets, [[maybe_unused]] GTSL::uint32 size, [[maybe_unused]] GTSL::uint32 stride) const {
+			GTSL::StaticVector<VkBuffer, 16> vkBuffers;
+			GTSL::StaticVector<uint64, 16> vkOffsets;
+
+			for(uint32 i = 0; i < buffers.ElementCount(); ++i) {
+				vkBuffers.EmplaceBack(buffers[i].GetVkBuffer());
+				vkOffsets.EmplaceBack(offsets[i]);
+			}
+
+			renderDevice->VkCmdBindVertexBuffers(commandBuffer, 0, vkBuffers.GetLength(), vkBuffers.GetData(), vkOffsets.GetData());
 		}
 
 		void UpdatePushConstant(const VulkanRenderDevice* renderDevice, VulkanPipelineLayout pipelineLayout, GTSL::uint32 offset, GTSL::Range<const GTSL::byte*> data, ShaderStage shaderStages) {
@@ -164,6 +170,10 @@ namespace GAL {
 			renderDevice->VkCmdPushConstants(commandBuffer, pipelineLayout.GetVkPipelineLayout(), ToVulkan(shaderStages), offset, static_cast<GTSL::uint32>(data.Bytes()), data.begin());
 		}
 		
+		void Draw(const VulkanRenderDevice* renderDevice, uint32_t vertex_count, uint32_t instance_count = 1) const {
+			renderDevice->VkCmdDraw(commandBuffer, vertex_count, instance_count, 0, 0);
+		}
+
 		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount = 0) const {
 			renderDevice->VkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, 0, 0, 0);
 		}

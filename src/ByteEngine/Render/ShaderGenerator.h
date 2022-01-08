@@ -459,7 +459,9 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
-		case GTSL::Hash(u8"uint8"):  result = u8"uint8_t"; break;
+		case GTSL::Hash(u8"mat3x4f"): result = u8"mat3x4"; break;
+		case GTSL::Hash(u8"mat4x3f"): result = u8"mat4x3"; break;
+		case GTSL::Hash(u8"uint8"):   result = u8"uint8_t"; break;
 		case GTSL::Hash(u8"uint64"):  result = u8"uint64_t"; break;
 		case GTSL::Hash(u8"uint32"):  result = u8"uint"; break;
 		case GTSL::Hash(u8"uint16"):  result = u8"uint16_t"; break;
@@ -542,7 +544,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		}
 
 		if (ref) {
-			statementString += u8"layout(buffer_reference,scalar,buffer_reference_align=1) ";
+			statementString += u8"layout(buffer_reference,scalar,buffer_reference_align=2) ";
 
 			if (readOnly)
 				statementString += u8"readonly ";
@@ -566,10 +568,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		for (auto& r : pipeline.GetChildren(e)) {
 			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
 				writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
-
-				if (pipeline.GetElement(r).Name != u8"index") {
-					writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
-				}
+				writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
 			}
 		}
 	}

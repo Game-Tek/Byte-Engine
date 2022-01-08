@@ -9,6 +9,9 @@
 #include "GTSL/Buffer.hpp"
 #include "GTSL/ShortString.hpp"
 
+#include <dxgi.h>
+#include <dxc/dxcapi.h>
+
 namespace GAL
 {
 	struct StencilOperations
@@ -45,6 +48,7 @@ namespace GAL
 		struct VertexElement {
 			GTSL::ShortString<32> Identifier;
 			ShaderDataType Type;
+			uint8 Location = 0xFF;
 		};
 
 		static constexpr auto POSITION = GTSL::ShortString<32>(u8"POSITION");
@@ -90,7 +94,7 @@ namespace GAL
 			};
 
 			struct VertexState {
-				GTSL::Range<const VertexElement*> VertexDescriptor;
+				GTSL::Range<const GTSL::Range<const VertexElement*>*> VertexStreams;
 			};
 
 			struct RayTracingState {
@@ -153,6 +157,59 @@ namespace GAL
 	class ComputePipeline : public Pipeline {
 	public:
 	};
+
+	template<class ALLOCATOR>
+	std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> CompileShader2(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, const ALLOCATOR& allocator) {
+		IDxcUtils* pUtils;
+		DxcCreateInstance(CLSID_DxcUtils, __uuidof(IDxcUtils), reinterpret_cast<void**>(&pUtils));
+		IDxcBlobEncoding* pSource;
+		//pUtils->CreateBlob(pShaderSource, shaderSourceSize, CP_UTF8, pSource.GetAddressOf());
+
+		GTSL::Vector<LPWSTR, ALLOCATOR> arguments;
+		//-E for the entry point (eg. PSMain)
+		arguments.EmplaceBack(L"-E");
+		arguments.EmplaceBack(L"main");
+
+		//-T for the target profile (eg. ps_6_2)
+		arguments.EmplaceBack(L"-T");
+
+		switch (shaderType) {
+		case ShaderType::VERTEX: arguments.EmplaceBack(L"vs_6_5"); break;
+		case ShaderType::TESSELLATION_CONTROL: break;
+		case ShaderType::TESSELLATION_EVALUATION: break;
+		case ShaderType::GEOMETRY: break;
+		case ShaderType::FRAGMENT: arguments.EmplaceBack(L"ps_6_5"); break;
+		case ShaderType::COMPUTE: arguments.EmplaceBack(L"cs_6_5"); break;
+		case ShaderType::TASK: arguments.EmplaceBack(L"ts_6_2"); break;
+		case ShaderType::MESH: arguments.EmplaceBack(L"ms_6_2"); break;
+		case ShaderType::RAY_GEN: arguments.EmplaceBack(L"lib_6_5"); break;
+		case ShaderType::CLOSEST_HIT: arguments.EmplaceBack(L"chs_6_2"); break;
+		case ShaderType::ANY_HIT: arguments.EmplaceBack(L"ahs_6_2"); break;
+		case ShaderType::INTERSECTION: arguments.EmplaceBack(L"is_6_2"); break;
+		case ShaderType::MISS: arguments.EmplaceBack(L"ms_6_2"); break;
+		case ShaderType::CALLABLE: break;
+		default: ;
+		}
+
+		//Strip reflection data and pdbs (see later)
+		arguments.EmplaceBack(L"-Qstrip_debug");
+		arguments.EmplaceBack(L"-Qstrip_reflect");
+
+		arguments.EmplaceBack(DXC_ARG_WARNINGS_ARE_ERRORS); //-WX
+		arguments.EmplaceBack(DXC_ARG_DEBUG); //-Zi
+		arguments.EmplaceBack(DXC_ARG_PACK_MATRIX_ROW_MAJOR); //-Zp
+
+		IDxcCompiler3* compiler3;
+		DxcCreateInstance(CLSID_DxcCompiler, __uuidof(IDxcCompiler3), reinterpret_cast<void**>(&compiler3));
+
+		IDxcResult* result;
+
+		DxcBuffer dxc_buffer;
+		dxc_buffer.Size = code.GetBytes();
+		dxc_buffer.Encoding = DXC_CP_UTF8;
+		dxc_buffer.Ptr = code.GetData();
+		compiler3->Compile(&dxc_buffer, arguments.GetData(), arguments.GetLength(), nullptr, __uuidof(IDxcResult), reinterpret_cast<void**>(&result));
+	}
 
 	template<class ALLOCATOR>
 	std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, const ALLOCATOR& allocator) {

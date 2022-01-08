@@ -399,7 +399,7 @@ private:
 		DispatchTaskInfo(DispatchTaskInfo&&) = delete;
 
 		~DispatchTaskInfo() {
-			[&]<uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~ARGS(),...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
+			[&]<uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~GTSL::template GetTypeAt<I, ARGS...>::type(), ...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
 #if BE_DEBUG
 				Name = u8"deleted";

@@ -21,25 +21,19 @@
   - [Accompanying Editor](https://github.com/Game-Tek/Byte-Engine-Editor)
   - Custom GPU font and vector rendering
   - Extensible renderer
+  - Linux Support
+  - Custom Physics Engine
 
 - **Intended features:**  :brain:
-  - Custom Physics Engine
   - AI Driven Animation
   - Console support (Nintendo™ Switch, Sony™ PS5, Microsoft™ Xbox X)
-  - Linux Support
 
 **You can check the project's roadmap [here](https://github.com/Game-Tek/Byte-Engine/projects).**
 
 ---
 
-# Getting Started :video_game:
-
-**Ready to try it out?** Please head on over to [Getting Started](https://github.com/Game-Tek/Byte-Engine/wiki/Getting-Started) for instructions.
-
----
-
 # Documentation :book:
-**Looking for documentation?** You can find it in the [repository's wiki](https://github.com/Game-Tek/Byte-Engine/wiki)
+**Ready to get started?** You can check out all of the documentation [here](https://game-tek.gitbook.io/byte-engine/)!
 
 ---
 

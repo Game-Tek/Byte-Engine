@@ -166,7 +166,16 @@ struct GPipeline {
 		}
 	}
 
-	auto TryGetElementHandle(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<ElementHandle> {
+	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) const -> GTSL::Result<const LanguageElement&> {
+		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
+			return { elements[res.Get().back()], true };
+		}
+		else {
+			return { elements[0], false };
+		}
+	}
+
+	auto TryGetElementHandle(ElementHandle parent, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
 		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
 			return { ElementHandle(res.Get().back()), true };
 		}
@@ -184,7 +193,17 @@ struct GPipeline {
 		return { elements[0], false };
 	}
 
-	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) -> GTSL::Result<ElementHandle> {
+	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const -> GTSL::Result<const LanguageElement&> {
+		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+			if (auto res = TryGetElement(parents[i], name)) {
+				return res;
+			}
+		}
+
+		return { elements[0], false };
+	}
+
+	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
 		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElementHandle(parents[i], name)) {
 				return res;
@@ -228,6 +247,10 @@ struct GPipeline {
 	}
 
 	auto& GetFunction(uint32 id) {
+		return Functions[elements[id].Reference];
+	}
+
+	auto& GetFunction(uint32 id) const {
 		return Functions[elements[id].Reference];
 	}
 
@@ -298,15 +321,19 @@ struct GPipeline {
 private:
 	GTSL::Tree<LanguageElement, BE::TAR> elements;
 	GTSL::Vector<GTSL::StaticVector<ElementHandle, 4>, BE::TAR> deductionGuides;
-	GTSL::StaticVector<GTSL::StaticVector<StructElement, 8>, 8> descriptors;
 	GTSL::Vector<StructElement, BE::TAR> members;
 	GTSL::Vector<FunctionDefinition, BE::TAR> Functions;
 };
 
-inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& statements, const GTSL::Range<const GPipeline::ElementHandle*> scopes) {
+/**
+ * \brief Turns code into a stream of tokens, every first dimension is an statements, all elements in tha array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)
+ * \param code String containing code to tokenize.
+ * \param statements Array container for statements.
+ */
+void tokenizeCode(const GTSL::StringView code, auto& statements) {
 	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, LSQBRACKETS, RSQBRACKETS, DOT, COMMA, END };
-	GTSL::StaticVector<GTSL::StaticString<64>, 512> tokens;
-	GTSL::StaticVector<TokenTypes, 512> tokenTypes;
+	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
+	GTSL::StaticVector<TokenTypes, 1024> tokenTypes;
 
 	auto codeString = code;
 
@@ -414,8 +441,9 @@ inline void parseCode(const GTSL::StringView code, GPipeline& pipeline, auto& st
 	}
 }
 
-inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024>>> GenerateShader(Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics) {
-	GTSL::StaticString<4096> headerBlock, structBlock, functionBlock, declarationBlock; GTSL::StaticString<1024> errorString;
+template<class ALLOCATOR>
+GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(const Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
+	GTSL::String<ALLOCATOR> headerBlock(allocator), structBlock(allocator), functionBlock(allocator), declarationBlock(allocator); GTSL::StaticString<1024> errorString;
 
 	auto addErrorCode = [&errorString](const GTSL::StringView string) {
 		errorString += string; errorString += u8"\n";
@@ -514,8 +542,8 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 		}
 	}();
 
-	GTSL::StaticMap<uint32, bool, 32> usedFunctions(16);
-	GTSL::StaticMap<Id, bool, 16> usedStructs(16); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
+	GTSL::HashMap<uint32, bool, ALLOCATOR> usedFunctions(16, allocator);
+	GTSL::HashMap<Id, bool, ALLOCATOR> usedStructs(16, allocator); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
 
 	auto writeStruct = [&](GTSL::StringView ne, const GPipeline::ElementHandle structHandle, bool ref, bool readOnly, auto&& self) {
 		if (usedStructs.Find(Id(ne))) { return; }
@@ -578,7 +606,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 
 		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
 
-		GTSL::StaticString<512> string;
+		GTSL::StaticString<1024> string;
 
 		if (!functionUsed.Get()) {
 			string += resolveTypeName({ function.Return, u8"" }).Type; string += u8' ';  string += function.Name;
@@ -596,7 +624,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 			string += u8") { ";
 
 			if (!function.Statements) {
-				parseCode(function.Code, pipeline, function.Statements, scopes);
+				tokenizeCode(function.Code, function.Statements);
 			}
 
 			for (auto& s : function.Statements) {
@@ -853,7 +881,7 @@ inline GTSL::Result<GTSL::Pair<GTSL::StaticString<8192>, GTSL::StaticString<1024
 
 	writeFunction(functionBlock, pipeline.GetFunction(scopes, u8"main").Id, writeFunction); //add main
 
-	GTSL::StaticString<8192> fin;
+	GTSL::String<ALLOCATOR> fin(allocator);
 
 	fin += headerBlock;
 	fin += structBlock;

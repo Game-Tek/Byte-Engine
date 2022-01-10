@@ -7,8 +7,7 @@
 #include "ByteEngine/Game/System.hpp"
 
 
-class LightsRenderGroup : public BE::System
-{
+class LightsRenderGroup : public BE::System {
 public:
 	MAKE_HANDLE(uint32, DirectionalLight)
 	MAKE_HANDLE(uint32, PointLight)

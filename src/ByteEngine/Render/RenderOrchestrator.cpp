@@ -1310,6 +1310,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
 	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
+	//renderOrchestrator->CreateMember(u8"global", u8"DirectionalLightData", { { nullptr, u8"vec3f", u8"direction" } });
+	//renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"DirectionalLightData[8]");
+
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
 			renderOrchestrator->buildCommandList[i] = renderSystem->CreateCommandList(u8"Acceleration structure build command list", GAL::QueueTypes::COMPUTE);

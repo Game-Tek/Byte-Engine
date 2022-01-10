@@ -63,7 +63,7 @@ void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceM
 	mesh.aabb = staticMeshInfo.BoundingBox;
 	mesh.radius = staticMeshInfo.BoundingRadius;
 
-	physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVerticesSize() + staticMeshInfo.GetIndicesSize() + 32, 16);
+	physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVertexSize() * staticMeshInfo.GetVertexCount() + staticMeshInfo.GetIndexSize() * staticMeshInfo.GetIndexCount() + 32, 16);
 	
 	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 2, GTSL::Range<byte*>(physicsObjects[buffer].Buffer.GetCapacity(), physicsObjects[buffer].Buffer.GetData()), onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
 }

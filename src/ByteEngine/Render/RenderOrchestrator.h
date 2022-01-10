@@ -1807,15 +1807,15 @@ private:
 	}
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
-		auto& res = resources[staticMeshInfo.Name];
+		auto& res = resources[Id(staticMeshInfo.GetName())];
 
-		uint32 meshSize = calculateMeshSize(staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, staticMeshInfo.IndexSize);
+		uint32 meshSize = calculateMeshSize(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, staticMeshInfo.IndexSize);
 		res.BufferHandle = render_system->CreateBuffer(meshSize, GAL::BufferUses::VERTEX | GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, res.BufferHandle);
 		res.Buffer = GTSL::Range<byte*>(meshSize, render_system->GetBufferPointer(res.BufferHandle));
 
-		res.VertexSize = staticMeshInfo.VertexSize;
+		res.VertexSize = staticMeshInfo.GetVertexSize();
 		res.VertexCount = staticMeshInfo.VertexCount;
-		res.VertexElements = static_cast<const decltype(staticMeshInfo.VertexDescriptor)&>(staticMeshInfo.VertexDescriptor).GetRange();
+		res.VertexElements = static_cast<const GTSL::Range<const GAL::ShaderDataType*>>(staticMeshInfo.VertexDescriptor);
 		res.IndexCount = staticMeshInfo.IndexCount;
 		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 
@@ -1823,18 +1823,18 @@ private:
 	}
 
 	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
-		auto& res = resources[staticMeshInfo.Name];
+		auto& res = resources[Id(staticMeshInfo.GetName())];
 
 		render_system->UpdateBuffer(res.BufferHandle);
 
 		if (rayTracing) {
-			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.VertexSize, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), res.BufferHandle);
+			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), res.BufferHandle);
 
 			pendingUpdates.EmplaceBack(res.BLAS);
 		}
 
 		for (const auto e : res.Meshes) {
-			onMeshLoad(render_system, render_group, render_orchestrator, res, staticMeshInfo.Name, e);
+			onMeshLoad(render_system, render_group, render_orchestrator, res, Id(staticMeshInfo.GetName()), e);
 			*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 		}
 

@@ -1,18 +1,11 @@
 #pragma once
 
-#include <string>
-#include <unordered_map>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Extent.h>
 #include <GTSL/HashMap.hpp>
-#include <GTSL/Serialize.hpp>
-#include <GTSL/Vector.hpp>
-#include <GTSL/Math/Vectors.hpp>
-
 
 #include "ResourceManager.h"
 #include "ByteEngine/Core.h"
-#include "ByteEngine/Application/AllocatorReferences.h"
 
 struct IVector2D
 {
@@ -41,31 +34,14 @@ public:
 		uint32 Advance;    // Address to advance to next glyph
 	};
 
-	struct FontData : Data
-	{
-		GTSL::HashMap<uint32, Character, BE::PAR> Characters;
+	static constexpr char8_t ALPHABET[] = u8"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	static constexpr uint64 SIZE = sizeof(ALPHABET);
+
+	struct FontData : SData {
+		DEFINE_ARRAY_MEMBER(Character, Characters, SIZE)
 	};
 
-	struct FontDataSerialize : DataSerialize<FontData>
-	{
-		INSERT_START(FontDataSerialize)
-		{
-			INSERT_BODY;
-			GTSL::Insert(insertInfo.Characters, buffer);
-		}
-
-		EXTRACT_START(FontDataSerialize)
-		{
-			EXTRACT_BODY;
-			GTSL::Extract(extractInfo.Characters, buffer);
-		}
-	};
-
-	struct FontInfo : Info<FontDataSerialize>
-	{
-		//DECL_INFO_CONSTRUCTOR(FontInfo, Info<FontDataSerialize>);
-	};
-	
 private:
+	ResourceFiles resource_files_;
 	//int8 parseData(const char* data, Font* fontData);
 };

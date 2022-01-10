@@ -1245,7 +1245,7 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem* renderSystem,
 	TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
 {
-	GTSL::StaticString<128> name(u8"Texture resource: "); name += GTSL::Range<const char8_t*>(textureInfo.Name);
+	GTSL::StaticString<128> name(u8"Texture resource: "); name += GTSL::Range(textureInfo.GetName());
 
 	loadInfo.TextureHandle = renderSystem->CreateTexture(name, textureInfo.Format, textureInfo.Extent, GAL::TextureUses::SAMPLE | GAL::TextureUses::ATTACHMENT, true);
 
@@ -1259,7 +1259,7 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 {
 	renderSystem->UpdateTexture(loadInfo.TextureHandle);
 
-	auto& texture = textures[textureInfo.Name];
+	auto& texture = textures[textureInfo.GetName()];
 
 	for(uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 		WriteBinding(renderSystem, textureSubsetsHandle, loadInfo.TextureHandle, texture.Index, f);

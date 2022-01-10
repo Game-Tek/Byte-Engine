@@ -4,36 +4,42 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Filesystem.h>
-#include <GTSL/Serialize.hpp>
+#include <GTSL/TTF.hpp>
 #include <GTSL/Math/Vectors.hpp>
 
 #include "TextRendering.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
-FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceManager(info, u8"FontResourceManager")
-{
-	auto path = GetResourcePath(GTSL::StaticString<64>(u8"Fonts"), GTSL::ShortString<32>(u8"bepkg"));
-	
-	GTSL::File beFontFile; beFontFile.Open(path, GTSL::File::WRITE, true);
+FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceManager(info, u8"FontResourceManager") {
+	resource_files_.Start({});
 
-	auto GetFont = [&](const GTSL::Range<const utf8*> fontName) {
-		GTSL::StaticString<255> path(BE::Application::Get()->GetPathToApplication()); path += u8"/resources/"; path += fontName; path += u8".ttf";
+	{
+		GTSL::FileQuery file_query;
 
-		GTSL::File fontFile; fontFile.Open(path, GTSL::File::READ, false);
-		GTSL::Buffer fileBuffer(fontFile.GetSize(), 8, GetTransientAllocator());
+		GTSL::Buffer pathBuffer(512 * 512, 16, GetTransientAllocator());
 
-		fontFile.Read(fileBuffer);
+		while(auto r = file_query.DoQuery(GetResourcePath(u8"*.ttf"))) {
+			GTSL::Font font({});
+			GTSL::MakeFont({}, &font); //process ttf file
 
-		//Font fontData(GetPersistentAllocator());
-	//	const auto result = parseData(reinterpret_cast<const char*>(fileBuffer.GetData()), &fontData);
+			FontData font_data;
 
-		//return fontData;
-	};
-	
-	//auto font = GetFont(GTSL::StaticString<64>(u8"FTLTLT"));
+			for(auto e : ALPHABET) {
+				auto& glyph = font.GetGlyph(e);
 
-	GTSL::Buffer<BE::TAR> data(1000000, 8, GetTransientAllocator());
+				GTSL::Vector<GTSL::Vector<GTSL::Segment<3>, GTSL::DefaultAllocatorReference>, GTSL::DefaultAllocatorReference> processedGlyph;
+
+				GTSL::MakePath(glyph, &processedGlyph); //generate N point bezier curves for glyph
+
+				for(auto& c : processedGlyph) {
+					//pathBuffer.Write(c.Points.GetLengthSize(), reinterpret_cast<const byte*>(c.Points.GetData()));
+				}
+			}
+
+			resource_files_.AddEntry({}, &font_data, pathBuffer.GetRange());
+		}
+	}
 
 	//glyf map
 	//glyfs

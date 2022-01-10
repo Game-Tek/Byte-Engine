@@ -47,10 +47,12 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup* static_mes
 	//}
 
 	for (auto i : loaded) {
-		auto& e = physicsObjects[i]; //semi implicit euler
+		auto& e = physicsObjects[i];
 
+		//semi implicit euler
 		e.velocity += accumulatedUnboundedForces * deltaSeconds;
 		e.position += e.velocity * deltaSeconds;
+		//semi implicit euler
 
 		static_mesh_render_group->SetPosition(taskInfo.ApplicationManager, e.Handle, GTSL::Vector3(e.position));
 	}

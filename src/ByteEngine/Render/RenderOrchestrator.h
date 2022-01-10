@@ -1819,6 +1819,20 @@ private:
 		res.IndexCount = staticMeshInfo.IndexCount;
 		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 
+		//if unorm or snorm is used to specify data, take that into account as some properties (such as positions) may need scaling as XNORM enconding is defined in the 0->1 / -1->1 range
+		bool usesxNorm = false;
+
+		for (uint32 i = 0; i < staticMeshInfo.GetVertexDescriptor().Length; ++i) {
+			auto e = staticMeshInfo.GetVertexDescriptor().array[i];
+			if (e == GAL::ShaderDataType::U16_UNORM or e == GAL::ShaderDataType::U16_UNORM2 or e == GAL::ShaderDataType::U16_UNORM3 or e == GAL::ShaderDataType::U16_UNORM4) {
+				usesxNorm = true;
+			}
+
+			if (e == GAL::ShaderDataType::U16_SNORM or e == GAL::ShaderDataType::U16_SNORM2 or e == GAL::ShaderDataType::U16_SNORM3 or e == GAL::ShaderDataType::U16_SNORM4) {
+				usesxNorm = true;
+			}
+		}
+
 		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle);
 	}
 

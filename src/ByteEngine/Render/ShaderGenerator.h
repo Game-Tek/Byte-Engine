@@ -290,6 +290,10 @@ struct GPipeline {
 		return handle;
 	}
 
+	ElementHandle DeclareScope(const ElementHandle parentHandle, const GTSL::StringView name) {
+		return Add(parentHandle, name, LanguageElement::ElementType::SCOPE);
+	}
+
 	ElementHandle DeclareVariable(const ElementHandle parentHandle, const StructElement member) {
 		auto handle = Add(parentHandle, member.Name, LanguageElement::ElementType::MEMBER);
 		elements[handle.Handle].Reference = members.GetLength();
@@ -326,12 +330,12 @@ private:
 };
 
 /**
- * \brief Turns code into a stream of tokens, every first dimension is an statements, all elements in tha array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)
+ * \brief Turns code into a stream of tokens, every first dimension is an statement, all elements in the array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)
  * \param code String containing code to tokenize.
  * \param statements Array container for statements.
  */
 void tokenizeCode(const GTSL::StringView code, auto& statements) {
-	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, LSQBRACKETS, RSQBRACKETS, DOT, COMMA, END };
+	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, LSQBRACKETS, RSQBRACKETS, LBRACE, RBRACE, DOT, COMMA, END };
 	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
 	GTSL::StaticVector<TokenTypes, 1024> tokenTypes;
 
@@ -356,6 +360,12 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 			}
 			else if (c == U']') {
 				type = TokenTypes::RSQBRACKETS;
+			}
+			else if (c == U'{') {
+				type = TokenTypes::LBRACE;
+			}
+			else if (c == U'}') {
+				type = TokenTypes::RBRACE;
 			}
 			else if (c == U'.') {
 				type = TokenTypes::DOT;
@@ -441,6 +451,16 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 	}
 }
 
+/**
+ * \brief Generates a shader string from a token stream to a target shader language.
+ * \tparam ALLOCATOR Allocator to allocate shader strings.
+ * \param shader Shader to generate code for.
+ * \param pipeline Pipeline which contains all elements needed for compilation.
+ * \param scopes Scopes in which to look for symbols, precedence grows from higher positions to lower, that is if a foo() declaration exists under scope[0] and another at scope[1], scope[1].foo will be used.
+ * \param targetSemantics Target shader language to generate code for.
+ * \param allocator Allocator to allocate shader strings from.
+ * \return Result containing an error code and two strings, one with shader code and one with all the error codes.
+ */
 template<class ALLOCATOR>
 GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(const Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
 	GTSL::String<ALLOCATOR> headerBlock(allocator), structBlock(allocator), functionBlock(allocator), declarationBlock(allocator); GTSL::StaticString<1024> errorString;
@@ -757,37 +777,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 			declarationBlock += u8"layout(shaderRecordEXT, scalar) buffer shader { ";
 			for (const auto& l : pipeline.GetChildren(shaderRecordBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
 			declarationBlock += u8" };\n";
-		}();
-
-		[&]() {
-			for (uint32 l = 0; l < main.Statements; ++l) {
-				auto& s = main.Statements[l];
-				for (uint32 i = 0; i < s; ++i) {
-					if (s[i].Name == u8"pixelColor") {
-						if (s[i + 1].Name == u8"=") {
-							auto& newStatement = main.Statements.EmplaceBack();
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Write");
-							newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"pushConstantBlock");
-							newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"renderPass");
-							newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Color");
-							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
-							newStatement.EmplaceBack(ShaderNode::Type::ID, u8"GetFragmentPosition"); newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");	newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
-							newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
-
-							for (uint32 j = i + 2; j < s; ++j) {
-								newStatement.EmplaceBack(s[j]);
-							}
-
-							newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
-							main.Statements.Pop(l);
-							return;
-						}
-					}
-				}
-			}
 		}();
 	}
 

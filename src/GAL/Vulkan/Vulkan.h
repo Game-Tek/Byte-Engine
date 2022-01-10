@@ -313,6 +313,14 @@ namespace GAL
 		case ShaderDataType::INT3: return VK_FORMAT_R32G32B32_SINT;
 		case ShaderDataType::INT4: return VK_FORMAT_R32G32B32A32_SINT;
 		case ShaderDataType::BOOL: return VK_FORMAT_R32_SINT;
+		case ShaderDataType::U16_SNORM: return VK_FORMAT_R16_SNORM;
+		case ShaderDataType::U16_SNORM2: return VK_FORMAT_R16G16_SNORM;
+		case ShaderDataType::U16_SNORM3: return VK_FORMAT_R16G16B16_SNORM;
+		case ShaderDataType::U16_SNORM4: return VK_FORMAT_R16G16B16A16_SNORM;
+		case ShaderDataType::U16_UNORM: return VK_FORMAT_R16_UNORM;
+		case ShaderDataType::U16_UNORM2: return VK_FORMAT_R16G16_UNORM;
+		case ShaderDataType::U16_UNORM3: return VK_FORMAT_R16G16B16_UNORM;
+		case ShaderDataType::U16_UNORM4: return VK_FORMAT_R16G16B16A16_UNORM;
 		default: return VK_FORMAT_MAX_ENUM;
 		}
 	}

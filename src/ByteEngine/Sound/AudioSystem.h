@@ -45,8 +45,6 @@ public:
 	MAKE_HANDLE(uint8, Channel);
 	MAKE_HANDLE(uint8, SoundSource);
 
-	ChannelHandle GetMasterChannel() const { return masterChannel; }
-
 private:
 	using AudioDevice = AAL::WindowsAudioDevice;
 	
@@ -69,8 +67,6 @@ private:
 		float32 Volume = 0.0f;
 	};
 	GTSL::StaticVector<MixerChannel, 16> channels;
-
-	ChannelHandle masterChannel;
 	
 	GTSL::StaticVector<uint8, 8> audioListeners;
 	GTSL::StaticVector<GTSL::Vector3, 8> audioListenersLocation;

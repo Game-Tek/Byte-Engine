@@ -548,158 +548,278 @@ private:
 		return pipeline;
 	}
 
-	GTSL::Pair<Shader, GPipeline::ElementHandle> makeShader(const GTSL::Buffer<BE::TAR>& shaderFileBuffer, GPipeline& pipeline) {
-		GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
-		auto shaderJson = Parse(GTSL::StringView(GTSL::Byte(shaderFileBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderFileBuffer.GetData())), json_deserializer);
+	//if (auto fs = shaderJson[u8"functions"]) {
+//	for (auto f : fs) {
+//		auto& fd = shader.Functions.EmplaceBack();
+//
+//		fd.Return = f[u8"return"];
+//		fd.Name = f[u8"name"];
+//
+//		pipeline.Add(GPipeline::ElementHandle(), fd.Name, GPipeline::LanguageElement::ElementType::FUNCTION);
+//
+//		for (auto p : f[u8"params"]) { fd.Parameters.EmplaceBack(p[u8"type"], p[u8"name"]); }
+//
+//		tokenizeCode(f[u8"code"].GetStringView(), fd.Statements);
+//	}
+//}
+};
 
-		Shader::Class shaderClass;
+struct PermutationManager : Object {
+	struct ShaderGenerationData {
+		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
+		GTSL::StaticVector<PermutationManager*, 16> Hierarchy;
+	};
 
-		switch (Hash(shaderJson[u8"class"])) {
-		case GTSL::Hash(u8"Vertex"): shaderClass = Shader::Class::VERTEX; break;
-		case GTSL::Hash(u8"Surface"): shaderClass = Shader::Class::SURFACE; break;
-		case GTSL::Hash(u8"Compute"): shaderClass = Shader::Class::COMPUTE; break;
-		case GTSL::Hash(u8"RayGen"): shaderClass = Shader::Class::RAY_GEN; break;
-		case GTSL::Hash(u8"Miss"): shaderClass = Shader::Class::MISS; break;
-		}
-
-		Shader shader(shaderJson[u8"name"], shaderClass);
-
-		if (shaderClass == ::Shader::Class::COMPUTE) {
-			if (auto res = shaderJson[u8"localSize"]) {
-				shader.SetThreadSize({ static_cast<uint16>(res[0].GetUint()), static_cast<uint16>(res[1].GetUint()), static_cast<uint16>(res[2].GetUint()) });
-			}
-			else {
-				shader.SetThreadSize({ 1, 1, 1 });
-			}
-		}
-
-		if (auto sv = shaderJson[u8"shaderVariables"]) {
-			for (auto e : sv) {
-				StructElement struct_element(e[u8"type"], e[u8"name"]);
-
-				pipeline.Add(GPipeline::ElementHandle(), struct_element.Name, GPipeline::LanguageElement::ElementType::MEMBER);
-
-				if (auto res = e[u8"defaultValue"]) {
-					struct_element.DefaultValue = res;
-				}
-
-				shader.ShaderParameters.EmplaceBack(struct_element);
-			}
-		}
-
-		if (auto tr = shaderJson[u8"transparency"]) {
-			shader.Transparency = tr.GetBool();
-		}
-
-		auto shaderScope = pipeline.Add(shaderSemanticsScope, shader.Name, GPipeline::LanguageElement::ElementType::SCOPE);
-		auto mainHandle = pipeline.DeclareFunction(shaderScope, u8"void", u8"main"); //main
-
-		return { shader, mainHandle };
+	PermutationManager(const GTSL::StringView instance_name, const GTSL::StringView class_name) : InstanceName(instance_name), ClassName(class_name) {
+		
 	}
 
-	void fillShader(const GTSL::Buffer<BE::TAR>& shaderFileBuffer, Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes) {
-		GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
-		auto shaderJson = Parse(GTSL::StringView(GTSL::Byte(shaderFileBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderFileBuffer.GetData())), json_deserializer);
+	void Process(GPipeline* pipeline){
+		ShaderGenerationData shader_generation_data;
 
-		if (auto fs = shaderJson[u8"functions"]) {
-			for (auto f : fs) {
-				auto& fd = shader.Functions.EmplaceBack();
+		Process2(pipeline, shader_generation_data);
+	}
 
-				fd.Return = f[u8"return"];
-				fd.Name = f[u8"name"];
+	virtual void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) = 0;
 
-				pipeline.Add(GPipeline::ElementHandle(), fd.Name, GPipeline::LanguageElement::ElementType::FUNCTION);
+	struct Result {
+		GAL::ShaderType TargetSemantics;
+		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
+	};
+	virtual GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy) = 0;
 
-				for (auto p : f[u8"params"]) { fd.Parameters.EmplaceBack(p[u8"type"], p[u8"name"]); }
+	template<class A>
+	PermutationManager* CreateChild(const GTSL::StringView name) {
+		return Children.EmplaceBack(GTSL::SmartPointer<A, BE::TAR>(GetTransientAllocator(), name));
+	}
 
-				tokenizeCode(f[u8"code"].GetStringView(), fd.Statements);
+	GTSL::StaticVector<Result, 8> ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json) {
+		return ProcessShader2(pipeline, shader_group_json, shader_json, {});
+	}
+
+	GTSL::StaticVector<GTSL::SmartPointer<PermutationManager, BE::TAR>, 8> Children;
+	GTSL::StaticString<64> InstanceName;
+	const GTSL::StaticString<64> ClassName;
+
+	template<typename T>
+	static T* Find(const GTSL::StringView class_name, const GTSL::Range<PermutationManager**> hierarchy) {
+		for (auto& e : hierarchy) {
+			if (e->ClassName == class_name) { //pseudo dynamic cast
+				return static_cast<T*>(e);
 			}
 		}
 
-		if (auto code = shaderJson[u8"code"]) {
-			tokenizeCode(code.GetStringView(), pipeline.GetFunction(scopes, u8"main").Statements);
-		}
+		return nullptr;
 	}
 };
 
-struct PermutationManager {
-	struct ShaderGenerationData {
-		GPipeline::ElementHandle vertexShaderScope, fragmentShaderScope, computeShaderScope, rayGenShaderScope, closestHitShaderScope, anyHitShaderScope, missShaderScope;
-		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
-	};
+struct CommonPermutation : PermutationManager {
+	CommonPermutation(const GTSL::StringView name) : PermutationManager(name, u8"CommonPermutation") {}
 
-	void Process(GPipeline* pipeline, ShaderGenerationData shader_generation_data){
-		for(auto& e : Children) {
+	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
+		vertexShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"VertexShader");
+		fragmentShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"FragmentShader");
+		computeShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ComputeShader");
+		rayGenShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"RayGenShader");
+		closestHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ClosestHitShader");
+		anyHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"AnyHitShader");
+		missShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"MissShader");
+
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");
+
+		pipeline->DeclareVariable(closestHitShaderScope, { u8"vec2f", u8"hitBarycenter" });
+		pipeline->DeclareFunction(closestHitShaderScope, u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
+
+		commonScope = pipeline->DeclareScope({}, u8"Common");
+		shader_generation_data.Scopes.EmplaceBack(commonScope);
+
+		pipeline->DeclareStruct(commonScope, u8"globalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
+		pipeline->DeclareStruct(commonScope, u8"cameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"} });
+		pipeline->DeclareStruct(commonScope, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
+
+		auto instanceDataStruct = pipeline->Add(commonScope, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
+		pipeline->DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
+		auto instanceStructVertexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
+		auto instanceStructIndexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
+
+		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
+		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
+
+		auto glPositionHandle = pipeline->DeclareVariable(vertexShaderScope, { u8"vec4f", u8"gl_Position" });
+		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
+
+		pipeline->DeclareStruct(rayGenShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+		pipeline->DeclareStruct(missShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+		pipeline->DeclareStruct(closestHitShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
+
+		pipeline->DeclareStruct(rayGenShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
+		pipeline->DeclareStruct(missShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
+		pipeline->DeclareStruct(closestHitShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"instanceData*", u8"instances" } });
+
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexIn.vertexTextureCoordinates;");
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec3f", u8"GetVertexViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
+		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(vertexIn.viewSpaceNormal, 0);");
+		auto fragmentOutputBlockHandle = pipeline->Add(fragmentShaderScope, u8"fragmentOutputBlock", GPipeline::LanguageElement::ElementType::MEMBER);
+		auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
+		auto outNormalHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
+		pipeline->AddMemberDeductionGuide(fragmentShaderScope, u8"surfaceColor", { outColorHandle });
+		pipeline->AddMemberDeductionGuide(fragmentShaderScope, u8"surfaceNormal", { outNormalHandle });
+
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance.ModelMatrix);");
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
+		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
+
+		pipeline->DeclareRawFunction(computeShaderScope, u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
+
+		pipeline->DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
+		pipeline->DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+		pipeline->DeclareRawFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
+		pipeline->DeclareRawFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
+		pipeline->DeclareRawFunction(rayGenShaderScope, u8"vec2f", u8"GetFragmentNormalizedPosition", {}, u8"vec2f pixelCenter = 1vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
+
+		auto shaderRecordBlockHandle = pipeline->Add(closestHitShaderScope, u8"shaderRecordBlock", GPipeline::LanguageElement::ElementType::MEMBER);
+		auto shaderRecordEntry = pipeline->DeclareVariable(shaderRecordBlockHandle, { u8"shaderParametersData*", u8"shaderEntries" });
+		pipeline->Add(closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
+		pipeline->DeclareFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
+
+		shader_generation_data.Hierarchy.EmplaceBack(this);
+
+		for (auto& e : Children) {
 			e->Process2(pipeline, shader_generation_data);
 		}
 	}
 
-	virtual void Process2(GPipeline* pipeline, ShaderGenerationData shader_generation_data) = 0;
+	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
+		GTSL::StaticVector<Result, 8> batches;
 
-	void ProcessShader() {
+		hierarchy.EmplaceBack(this);
+
 		for (auto& e : Children) {
-			e->ProcessShader();
-		}		
+			batches.PushBack(e->ProcessShader2(pipeline, shaderGroupJson, shaderJson, hierarchy));
+		}
+
+		return batches;
 	}
 
-	virtual void ProcessShader2() = 0;
-
-	template<class A>
-	PermutationManager* CreateChild(const GTSL::StringView name) {
-		return Children.EmplaceBack(GTSL::SmartPointer<A, BE::TAR>(transient_allocator_reference));
-	}
-
-	void emitShader() {
-		
-	}
-
-	BE::TAR transient_allocator_reference;
-	GTSL::StaticVector<GTSL::SmartPointer<PermutationManager, BE::PAR>, 8> Children;
+	GPipeline::ElementHandle commonScope;
+	GPipeline::ElementHandle vertexShaderScope, fragmentShaderScope, computeShaderScope, rayGenShaderScope, closestHitShaderScope, anyHitShaderScope, missShaderScope;
 };
 
 struct VisibilityRenderPassPermutation : PermutationManager {
-	void Process2(GPipeline* pipeline, ShaderGenerationData shader_generation_data) override {
-		const auto pushConstantBlockHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"pushConstantBlock");
+	VisibilityRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"VisibilityRenderPassPermutation") {}
+
+	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
+		visibilityHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"Visibility");
+
+		shader_generation_data.Scopes.EmplaceBack(visibilityHandle);
+
+		pushConstantBlockHandle = pipeline->DeclareScope(visibilityHandle, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
+		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instance" });
 
-		for(auto e : { shader_generation_data.vertexShaderScope, shader_generation_data.fragmentShaderScope }) {
-			auto vertexSurfaceInterface = pipeline->DeclareScope(e, u8"vertexSurfaceInterface");
+		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
+
+		if (common_permutation) {
+			auto vertexSurfaceInterface = pipeline->DeclareScope(visibilityHandle, u8"vertexSurfaceInterface");
 			auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });
-			pipeline->AddMemberDeductionGuide(shader_generation_data.vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
+			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
 			auto vertexViewSpacePositionHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpacePosition" });
-			pipeline->AddMemberDeductionGuide(shader_generation_data.vertexShaderScope, u8"vertexViewSpacePosition", { { vertexSurfaceInterface }, { vertexViewSpacePositionHandle } });
+			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexViewSpacePosition", { { vertexSurfaceInterface }, { vertexViewSpacePositionHandle } });
 			auto vertexViewSpaceNormalHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpaceNormal" });
-			pipeline->AddMemberDeductionGuide(shader_generation_data.vertexShaderScope, u8"vertexViewSpaceNormal", { { vertexSurfaceInterface }, { vertexViewSpaceNormalHandle } });
+			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexViewSpaceNormal", { { vertexSurfaceInterface }, { vertexViewSpaceNormalHandle } });
+		} else {
+			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
 		}
+
+		shader_generation_data.Hierarchy.EmplaceBack(this);
 	}
 
-	void ProcessShader2() override {
+	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
+		GTSL::StaticVector<StructElement, 8> shaderParameters;
+		GTSL::StaticVector<Result, 8> batches;
+
+		for (auto p : shader_group_json[u8"parameters"]) {
+			shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+		}
+
+		auto shaderScope = pipeline->DeclareScope(visibilityHandle, shader_json[u8"name"]);
+		auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
+
 		{ //add deduction guides for reaching shader parameters
-			auto shaderParametersHandle = pipeline.DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
+			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
 			for (auto& e : shaderParameters) {
-				pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { rasterPushConstantBlockHandle, rasterPushConstantShaderParameters, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
+				pipeline->AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
 			}			
 		}
 
-		switch (GTSL::Hash(u8"domain")) {
+		if (auto res = shader_json[u8"localSize"]) {
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
+		} else {
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
+		}
+
+		tokenizeCode(shader_json[u8"code"], pipeline->GetFunction({ shaderScope }, u8"main").Statements);
+
+		//if (auto sv = shader_group_json[u8"shaderVariables"]) {
+		//	for (auto e : sv) {
+		//		StructElement struct_element(e[u8"type"], e[u8"name"]);
+		//
+		//		//pipeline.Add(GPipeline::ElementHandle(), struct_element.Name, GPipeline::LanguageElement::ElementType::MEMBER);
+		//
+		//		if (auto res = e[u8"defaultValue"]) {
+		//			struct_element.DefaultValue = res;
+		//		}
+		//	}
+		//}
+
+		switch (Hash(shader_group_json[u8"domain"])) {
 		case GTSL::Hash(u8"World"): {
-			switch (Shader::Class::COMPUTE) {
-			case Shader::Class::VERTEX:
-				emitShader(json, shaderGroupDataSerialize, shader);
+			auto& batch = batches.EmplaceBack();
+
+			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
+
+			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
+			batch.Scopes.EmplaceBack(common_permutation->commonScope);
+			batch.Scopes.EmplaceBack(visibilityHandle);
+
+			switch (Hash(shader_json[u8"class"])) {
+			case GTSL::Hash(u8"Vertex"): {
+				batch.TargetSemantics = GAL::ShaderType::VERTEX;
+				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
 				//todo: analyze if we need to emit compute shader
 				break;
-			case Shader::Class::SURFACE:
-				emitShader(json, shaderGroupDataSerialize, shader); //fragment
+			}
+			case GTSL::Hash(u8"Surface"): {
+				batch.TargetSemantics = GAL::ShaderType::FRAGMENT;
+				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
 				break;
-			case Shader::Class::MISS:
+			}
+			case GTSL::Hash(u8"Miss"): {
+				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
+				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
 				//todo: emit compute shader for raster
 				break;
-				//BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")
+			}
+			default: {
+				batches.PopBack(); //remove added batch as no shader was created
+				BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")				
+			}
 			}
 			
 			break;
@@ -709,32 +829,61 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				break;
 		}
 		}
+
+		return batches;
 	}
+
+	GPipeline::ElementHandle visibilityHandle, pushConstantBlockHandle, shaderParametersHandle;
 };
 
 struct RayTraceRenderPassPermutation : PermutationManager {
-	void Process2(GPipeline* pipeline, ShaderGenerationData shader_generation_data) override {
-		const auto pushConstantBlockHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"pushConstantBlock");
+	RayTraceRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"RayTraceRenderPassPermutation") {}
+
+	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
+		rayTraceHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"RayTraceRenderPassPermutation");
+
+		shader_generation_data.Scopes.EmplaceBack(rayTraceHandle);
+
+		const auto pushConstantBlockHandle = pipeline->DeclareScope(rayTraceHandle, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"rayTraceData*", u8"rayTrace" });
 
-		auto payloadBlockHandle = pipeline->Add(shader_generation_data.rayTraceModelHandle, u8"payloadBlock", GPipeline::LanguageElement::ElementType::SCOPE);
-		auto payloadHandle = pipeline->DeclareVariable(payloadBlockHandle, { u8"vec4f", u8"payload" });
+		auto* commonPermutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
+
+		auto payloadBlockHandle = pipeline->Add(rayTraceHandle, u8"payloadBlock", GPipeline::LanguageElement::ElementType::SCOPE);
+		payloadHandle = pipeline->DeclareVariable(payloadBlockHandle, { u8"vec4f", u8"payload" });
+		pipeline->AddMemberDeductionGuide(commonPermutation->closestHitShaderScope, u8"surfaceColor", { payloadHandle });
+
+		shader_generation_data.Hierarchy.EmplaceBack(this);
 	}
 
-	void ProcessShader2() override {
-		{
-			auto shaderParametersHandle = pipeline.DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
+	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
+		GTSL::StaticVector<StructElement, 8> shaderParameters;
+		GTSL::StaticVector<Result, 8> batches;
 
-			for (auto& e : shaderParameters) {
-				pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { shaderRecordEntry, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
-			}
+		//for (auto p : json[u8"parameters"]) {
+		//	shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+		//}
+		//
+		//{
+		//	auto shaderParametersHandle = pipeline.DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
+		//
+		//	for (auto& e : shaderParameters) {
+		//		pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { shaderRecordEntry, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
+		//	}
+		//}
+		//
+		bool transparency = false;
+		
+		if (auto tr = shader_json[u8"transparency"]) {
+			transparency = tr.GetBool();
 		}
 
-		if constexpr (false) {
-			emitShader(json, shaderGroupDataSerialize, shader);
+		if (transparency) {
+			auto e = batches.EmplaceBack();
+			e.TargetSemantics = GAL::ShaderType::ANY_HIT;
 		} else {
 			////translate writes to pixelColor variable into Write() calls for ray gen shader 
 			//[&]() {
@@ -767,88 +916,13 @@ struct RayTraceRenderPassPermutation : PermutationManager {
 			//		}
 			//	}
 			//}();
-			
-			emitShader(json, shaderGroupDataSerialize, shader); //closest hit
+
+			auto e = batches.EmplaceBack();
+			e.TargetSemantics = GAL::ShaderType::CLOSEST_HIT;
 		}
-
-		//emitShader(json, shaderGroupDataSerialize, shader);
 	}
-};
 
-struct CommonPermutation : PermutationManager {
-	void Process2(GPipeline* pipeline, ShaderGenerationData shader_generation_data) override {
-		shader_generation_data.vertexShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"VertexShader");
-		shader_generation_data.fragmentShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"FragmentShader");
-		shader_generation_data.computeShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ComputeShader");
-		shader_generation_data.rayGenShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"RayGenShader");
-		shader_generation_data.closestHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ClosestHitShader");
-		shader_generation_data.anyHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"AnyHitShader");
-		shader_generation_data.missShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"MissShader");
-
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");
-
-		pipeline->DeclareVariable(shader_generation_data.closestHitShaderScope, { u8"vec2f", u8"hitBarycenter" });
-		pipeline->DeclareFunction(shader_generation_data.closestHitShaderScope, u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
-
-		auto commonScope = shader_generation_data.Scopes.EmplaceBack(pipeline->DeclareScope({}, u8"Common"));
-
-		pipeline->DeclareStruct(commonScope, u8"globalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
-		pipeline->DeclareStruct(commonScope, u8"cameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"} });
-		pipeline->DeclareStruct(commonScope, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
-
-		auto instanceDataStruct = pipeline->Add(commonScope, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
-		pipeline->DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
-		auto instanceStructVertexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
-		auto instanceStructIndexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
-
-		pipeline->DeclareVariable(shader_generation_data.fragmentShaderScope, { u8"vec4f", u8"Color" });
-		pipeline->DeclareVariable(shader_generation_data.fragmentShaderScope, { u8"vec4f", u8"Normal" });
-
-		auto glPositionHandle = pipeline->DeclareVariable(shader_generation_data.vertexShaderScope, { u8"vec4f", u8"gl_Position" });
-		pipeline->AddMemberDeductionGuide(shader_generation_data.vertexShaderScope, u8"vertexPosition", { glPositionHandle });
-
-		pipeline->DeclareStruct(shader_generation_data.rayGenShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-		pipeline->DeclareStruct(shader_generation_data.missShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-		pipeline->DeclareStruct(shader_generation_data.closestHitShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-
-		pipeline->DeclareStruct(shader_generation_data.rayGenShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
-		pipeline->DeclareStruct(shader_generation_data.missShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
-		pipeline->DeclareStruct(shader_generation_data.closestHitShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"instanceData*", u8"instances" } });
-
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexIn.vertexTextureCoordinates;");
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"vec3f", u8"GetVertexViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
-		pipeline->DeclareRawFunction(shader_generation_data.fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(vertexIn.viewSpaceNormal, 0);");
-		auto fragmentOutputBlockHandle = pipeline->Add(shader_generation_data.fragmentShaderScope, u8"fragmentOutputBlock", GPipeline::LanguageElement::ElementType::MEMBER);
-		auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
-		auto outNormalHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
-		pipeline->AddMemberDeductionGuide(shader_generation_data.fragmentShaderScope, u8"surfaceColor", { outColorHandle });
-		pipeline->AddMemberDeductionGuide(shader_generation_data.fragmentShaderScope, u8"surfaceNormal", { outNormalHandle });
-
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance.ModelMatrix);");
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
-		pipeline->DeclareRawFunction(shader_generation_data.vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
-
-		pipeline->DeclareRawFunction(shader_generation_data.computeShaderScope, u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
-
-		pipeline->DeclareRawFunction(shader_generation_data.rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
-		pipeline->DeclareRawFunction(shader_generation_data.rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareRawFunction(shader_generation_data.rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
-		pipeline->DeclareRawFunction(shader_generation_data.rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
-		pipeline->DeclareRawFunction(shader_generation_data.rayGenShaderScope, u8"vec2f", u8"GetFragmentNormalizedPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
-
-		auto shaderRecordBlockHandle = pipeline->Add(shader_generation_data.closestHitShaderScope, u8"shaderRecordBlock", GPipeline::LanguageElement::ElementType::MEMBER);
-		auto shaderRecordEntry = pipeline->DeclareVariable(shaderRecordBlockHandle, { u8"shaderParametersData*", u8"shaderEntries" });
-		pipeline->AddMemberDeductionGuide(shader_generation_data.closestHitShaderScope, u8"surfaceColor", { payloadHandle });
-		pipeline->Add(shader_generation_data.closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
-		pipeline->DeclareFunction(shader_generation_data.closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
-
-		Process(pipeline, shader_generation_data);
-	}
+	GPipeline::ElementHandle rayTraceHandle, payloadHandle;
 };
 
 inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"ShaderResourceManager"), shaderGroupInfoOffsets(8, GetPersistentAllocator()), shaderInfoOffsets(8, GetPersistentAllocator()), shaderOffsets(8, GetPersistentAllocator()) {
@@ -893,12 +967,11 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			GTSL::Buffer buffer(shaderGroupFile.GetSize(), 16, GetTransientAllocator()); shaderGroupFile.Read(buffer);
 
-			GTSL::SmartPointer<PermutationManager, BE::TAR> permutation_manager(GetTransientAllocator());
+			GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"Common");
 
 			{ //configure permutations
-				auto* commonPermutation = permutation_manager->CreateChild<CommonPermutation>(u8"CommonPermutation");
 				commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPass");
-				commonPermutation->CreateChild<RayTraceRenderPassPermutation>(u8"RayTraceRenderPass");
+				//commonPermutation->CreateChild<RayTraceRenderPassPermutation>(u8"RayTraceRenderPass");
 			} //todo: parametrize
 
 			GTSL::Buffer deserializer(GetTransientAllocator());
@@ -909,7 +982,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			auto pipeline = makeDefaultPipeline();
 
-			permutation_manager->Process(&pipeline, {});
+			commonPermutation->Process(&pipeline);
 
 			if (auto jsonVertex = json[u8"vertexElements"]) {
 				GTSL::StaticVector<StructElement, 8> vertexElements;
@@ -958,45 +1031,51 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			bool rayTrace = true; ShaderGroupInfo::RayTraceData ray_trace_data;
 
-			{
-				permutation_manager->ProcessShader();
+			for(auto s : json[u8"shaders"]) {
+				GTSL::File shaderFile; shaderFile.Open(GetResourcePath(s[u8"name"], u8"json"));
+				GTSL::Buffer shaderFileBuffer(shaderFile.GetSize(), 16, GetTransientAllocator()); shaderFile.Read(shaderFileBuffer);
 
-				GTSL::StaticVector<StructElement, 8> shaderParameters;
+				GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
+				auto shaderJson = Parse(GTSL::StringView(GTSL::Byte(shaderFileBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderFileBuffer.GetData())), json_deserializer);
 
-				for (auto p : json[u8"parameters"]) {
-					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+				Class shaderClass;
+
+				switch (GTSL::Hash(shaderJson[u8"class"])) {
+				case GTSL::Hash(u8"Vertex"): shaderClass = Class::VERTEX; break;
+				case GTSL::Hash(u8"Surface"): shaderClass = Class::SURFACE; break;
+				case GTSL::Hash(u8"Compute"): shaderClass = Class::COMPUTE; break;
+				case GTSL::Hash(u8"RayGen"): shaderClass = Class::RAY_GEN; break;
+				case GTSL::Hash(u8"Miss"): shaderClass = Class::MISS; break;
 				}
 
-				//auto shaderPermutationScopes = std::initializer_list<const GPipeline::ElementHandle>{ {}, shaderSemanticsScope, rayTrace ? rayTraceModelHandle : rasterModelHandle, shaderScope };
+				auto shaderBatch = commonPermutation->ProcessShader(&pipeline, json, shaderJson);
 
-				fillShader(shaderFileBuffer, shader, pipeline, shaderPermutationScopes);
-				auto shaderResult = GenerateShader(shader, pipeline, shaderPermutationScopes, targetSemantics, GetTransientAllocator());
-				if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
-				auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
+				for (auto& sb : shaderBatch) {
+					//fillShader(shaderFileBuffer, shader, pipeline, shaderPermutationScopes);
+					auto shaderResult = GenerateShader(pipeline, sb.Scopes, sb.TargetSemantics, GetTransientAllocator());
+					if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
+					auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
 
-				if (loadedShaders.Find(shaderHash)) { continue; }
-				loadedShaders.Emplace(shaderHash);
+					if (loadedShaders.Find(shaderHash)) { continue; }
+					loadedShaders.Emplace(shaderHash);
 
-				auto [compRes, resultString, shaderBuffer] = CompileShader(shaderResult.Get().First, s[u8"name"], targetSemantics, GAL::ShaderLanguage::GLSL, GetTransientAllocator());
+					auto [compRes, resultString, shaderBuffer] = CompileShader(shaderResult.Get().First, s[u8"name"], sb.TargetSemantics, GAL::ShaderLanguage::GLSL, GetTransientAllocator());
 
-				if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
+					if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
 
-				shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
-				shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
+					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
+					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
 
-				shaderInfosFile << GTSL::ShortString<32>(s[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
-				shaderInfosFile << 0; //0 params
-				shaderInfosFile << targetSemantics;
+					shaderInfosFile << GTSL::ShortString<32>(s[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
+					shaderInfosFile << 0; //0 params
+					shaderInfosFile << sb.TargetSemantics;
 
-				shaderPackageFile.Write(shaderBuffer);
+					shaderPackageFile.Write(shaderBuffer);
 
-				shaderGroupDataSerialize.Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
-				shaderGroupUsedShaders.EmplaceBack(shaderHash);
+					shaderGroupDataSerialize.Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
+					shaderGroupUsedShaders.EmplaceBack(shaderHash);
+				}
 			}
-
-			GTSL::File shaderFile; shaderFile.Open(GetResourcePath(s[u8"name"], u8"json"));
-			GTSL::Buffer shaderFileBuffer(shaderFile.GetSize(), 16, GetTransientAllocator()); shaderFile.Read(shaderFileBuffer);
-			auto [shader, shaderMainHandle] = makeShader(shaderFileBuffer, pipeline);
 
 			shaderGroupsTableFile << shaderGroupDataSerialize.Name << shaderGroupInfosFile.GetSize();
 

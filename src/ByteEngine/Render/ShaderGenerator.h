@@ -40,34 +40,7 @@ bool IsAnyOf(const auto& a, const auto&... elems) {
 	return ((a == elems) or ...);
 }
 
-struct Shader {
-	enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
-
-	Shader(const GTSL::StringView name, const Class clss) : Name(name), Type(clss) {
-
-	}
-
-	void AddShaderParameter(const StructElement element) { ShaderParameters.EmplaceBack(element); }
-
-	void SetThreadSize(const GTSL::Extent3D size) { threadSize = size; }
-
-	GTSL::ShortString<32> Name;
-	Class Type;
-
-	GTSL::StaticVector<StructElement, 8> ShaderParameters;
-
-	//compute
-	GTSL::Extent3D threadSize;
-
-	bool Transparency = false;
-
-	struct FunctionDefinition {
-		GTSL::StaticString<32> Return, Name;
-		GTSL::StaticVector<StructElement, 8> Parameters;
-		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 32>, 8> Statements;
-	};
-	GTSL::StaticVector<FunctionDefinition, 8> Functions;
-};
+enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
 
 struct GPipeline {
 	struct ElementHandle { uint32 Handle = 1; };
@@ -462,7 +435,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
  * \return Result containing an error code and two strings, one with shader code and one with all the error codes.
  */
 template<class ALLOCATOR>
-GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(const Shader& shader, GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
+GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
 	GTSL::String<ALLOCATOR> headerBlock(allocator), structBlock(allocator), functionBlock(allocator), declarationBlock(allocator); GTSL::StaticString<1024> errorString;
 
 	auto addErrorCode = [&errorString](const GTSL::StringView string) {
@@ -848,10 +821,12 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		break;
 	}
 	case GAL::ShaderType::COMPUTE: {
-		GTSL::Extent3D size = shader.threadSize;
-		declarationBlock += u8"layout(local_size_x="; ToString(declarationBlock, size.Width);
-		declarationBlock += u8",local_size_y="; ToString(declarationBlock, size.Height);
-		declarationBlock += u8",local_size_z="; ToString(declarationBlock, size.Depth);
+		auto xSize = pipeline.TryGetElement(scopes, u8"group_size_x");
+		auto ySize = pipeline.TryGetElement(scopes, u8"group_size_y");
+		auto zSize = pipeline.TryGetElement(scopes, u8"group_size_z");
+		declarationBlock += u8"layout(local_size_x="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(xSize.Get().Reference)).DefaultValue;
+		declarationBlock += u8",local_size_y="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(ySize.Get().Reference)).DefaultValue;
+		declarationBlock += u8",local_size_z="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(zSize.Get().Reference)).DefaultValue;
 		declarationBlock += u8") in;\n";
 
 		break;

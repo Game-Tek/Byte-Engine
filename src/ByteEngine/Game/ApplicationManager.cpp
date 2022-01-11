@@ -15,7 +15,7 @@ systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersist
 events(32, GetPersistentAllocator()),
 recurringTasksPerStage(16, GetPersistentAllocator()),
 dynamicTasksPerStage(32, GetPersistentAllocator()), asyncTasks(32, GetPersistentAllocator()),
-stagesNames(8, GetPersistentAllocator()), recurringTasksInfo(32, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator())
+stagesNames(8, GetPersistentAllocator()), recurringTasksInfo(32, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator())
 {
 }
 
@@ -118,6 +118,15 @@ void ApplicationManager::UnloadWorld(const WorldReference worldId)
 	destroy_info.GameInstance = this;
 	worlds[worldId]->DestroyWorld(destroy_info);
 	worlds.Pop(worldId);
+}
+
+BE::TypeIdentifer ApplicationManager::RegisterType(const BE::System* system, const GTSL::StringView type_name) {
+	uint16 id = system->systemId;
+	uint16 typeId = systemsData[id].RegisteredTypes.GetLength();
+
+	systemsData[id].RegisteredTypes.EmplaceBack(GetPersistentAllocator());
+
+	return { id, typeId };
 }
 
 void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {

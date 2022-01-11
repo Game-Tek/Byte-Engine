@@ -9,6 +9,11 @@ class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInfo): System(initializeInfo, u8"StaticMeshRenderGroup"),
 	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()) {
+
+	staticMeshEntityIdentifier = GetApplicationManager()->RegisterType(this, u8"StaticMesh");
+
+	DeleteStaticMeshes = GetApplicationManager()->StoreDynamicTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMeshes);
+	GetApplicationManager()->BindDeletionTaskToType(staticMeshEntityIdentifier, DeleteStaticMeshes);
 }
 
 StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance, ShaderGroupHandle Material) {
@@ -16,9 +21,11 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem*
 
 	meshes.Emplace(Mesh{ Material });
 
-	GameInstance->AddStoredDynamicTask(OnAddMesh, StaticMeshHandle(index), GTSL::MoveRef(MeshName), GTSL::MoveRef(Material));
+	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(staticMeshEntityIdentifier, index);
 
-	return StaticMeshHandle(index);
+	GameInstance->AddStoredDynamicTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName), GTSL::MoveRef(Material));
+
+	return handle;
 }
 
 void StaticMeshRenderGroup::Init(WorldRendererPipeline* s) {

@@ -97,6 +97,8 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	if (!ai_scene->mMeshes) { return false; }
 
+	bool interleavedStream = true;
+
 	//MESH ALWAYS HAS POSITIONS
 	static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT3);
 
@@ -177,7 +179,11 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 				auto& meshInfo = static_mesh_data.GetSubMeshes().array[meshIndex++];
 
 				auto advanceVertexElement = [&]() {
-					return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, static_mesh_data.GetVertexDescriptor());
+					if(interleavedStream) {						
+						return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, static_mesh_data.GetVertexDescriptor());
+					} else {
+						return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, static_mesh_data.GetVertexDescriptor()) * static_mesh_data.GetVertexCount();
+					}
 				};
 
 				auto writeElement = [&]<typename T>(T * elementPointer, const T & obj, const uint32 elementIndex) -> void {

@@ -20,10 +20,10 @@
 
 class World;
 class ComponentCollection;
-class System;
 
 namespace BE {
 	class Application;
+	class System;
 }
 
 template<typename... ARGS>
@@ -80,6 +80,37 @@ MAKE_HANDLE(uint32, System)
 
 #include "ByteEngine/Application/Application.h"
 
+namespace BE {
+	struct TypeIdentifer {
+		uint16 SystemId = 0xFFFF, TypeId = 0xFFFF;
+	};
+
+	template<typename T>
+	struct Handle {
+		Handle() = default;
+		Handle(TypeIdentifer type_identifier, uint32 handle) : Identifier(type_identifier), EntityIndex(handle) {}
+		Handle(const Handle&) = default;
+		//Handle& operator=(const Handle& other) {
+		//	Identifier.SystemId = other.Identifier.SystemId;
+		//	Identifier.TypeId = other.Identifier.TypeId;
+		//	EntityIndex = other.EntityIndex;
+		//}
+
+		uint32 operator()() const { return EntityIndex; }
+
+		explicit operator uint64() const { return EntityIndex; }
+		explicit operator bool() const { return EntityIndex != 0xFFFFFFFF; }
+
+		TypeIdentifer Identifier;
+		uint32 EntityIndex = 0xFFFFFFFF;
+	};
+
+	//static_assert(sizeof(Handle<struct RRRR {}> ) <= 8);
+
+#define MAKE_BE_HANDLE(name)\
+	using name##Handle = BE::Handle<struct name##_tag>;
+}
+
 class ApplicationManager : public Object {
 	using FunctionType = GTSL::Delegate<void(ApplicationManager*, DispatchedTaskHandle, void*)>;
 public:
@@ -101,8 +132,21 @@ public:
 
 	void UnloadWorld(WorldReference worldId);
 
-	void DestroyEntity(const BE::Handle handle) {
-		//systems[handle.Identifier.SystemId]->Destroy(handle.Handle);
+	template<typename T>
+	void DestroyEntity(const T handle) {
+		auto& typeData = systemsData[handle.Identifier.SystemId].RegisteredTypes[handle.Identifier.TypeId];
+
+		auto& ent = typeData.Entities[handle.EntityIndex];
+
+		if (!(--ent.Uses)) {
+			if (typeData.DeletionTaskHandle != ~0U) { //if we have a valid deletion handle
+				//AddStoredDynamicTask(DynamicTaskHandle<GTSL::Range<const T*>>(typeData.DeletionTaskHandle));
+				//enqueue and then call task
+			}
+			else {
+				BE_LOG_WARNING(u8"No deletion task available.");
+			}
+		}
 	}
 
 	template<class T>
@@ -120,6 +164,18 @@ public:
 	SystemHandle GetSystemReference(const Id systemName) {
 		GTSL::Lock lock(systemsMutex);
 		return SystemHandle(systemsIndirectionTable.At(systemName));
+	}
+
+	BE::TypeIdentifer RegisterType(const BE::System* system, const GTSL::StringView typeName);
+
+	template<typename... ARGS>
+	void BindTaskToType(const BE::TypeIdentifer type_identifer, const DynamicTaskHandle<ARGS...> handle) {
+		systemsData[type_identifer.SystemId].RegisteredTypes[type_identifer.TypeId].Target += 1;
+	}
+
+	template<typename T>
+	void BindDeletionTaskToType(const BE::TypeIdentifer handle, const DynamicTaskHandle<GTSL::Range<const T*>> deletion_task_handle) {
+		systemsData[handle.SystemId].RegisteredTypes[handle.TypeId].DeletionTaskHandle = deletion_task_handle.Reference;
 	}
 
 	template<typename DTI, typename T, bool doDelete, typename... ACC>
@@ -361,6 +417,15 @@ public:
 
 	void AddStage(Id stageName);
 
+	template<typename T>
+	T MakeHandle(BE::TypeIdentifer type_identifer, uint32 index) {
+		auto& s = systemsData[type_identifer.SystemId];
+		auto entI = s.RegisteredTypes[type_identifer.TypeId].Entities.Emplace();
+		auto& ent = s.RegisteredTypes[type_identifer.TypeId].Entities[entI];
+		++ent.Uses;
+		return T(type_identifer, index);
+	}
+
 private:
 	GTSL::Vector<GTSL::SmartPointer<World, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> worlds;
 	
@@ -584,6 +649,27 @@ private:
 		return systemsIndirectionTable.Find(systemName);
 	}
 
+	//struct EntityClassData {
+	//	
+	//};
+	//GTSL::Vector<EntityClassData, BE::PAR> entityClasses;
+
+	struct SystemData {
+		struct TypeData {
+			uint32 Target = 0;
+			uint32 DeletionTaskHandle = ~0U;
+
+			struct EntityData {
+				uint32 Uses = 0, ResourceCounter = 0;
+			};
+			GTSL::FixedVector<EntityData, BE::PAR> Entities;
+
+			TypeData(const BE::PAR& allocator) : Entities(32, allocator) {}
+		};
+		GTSL::StaticVector<TypeData, 32> RegisteredTypes;
+	};
+	GTSL::Vector<SystemData, BE::PAR> systemsData;
+
 public:
 	/**
 	 * \brief Create a system instance.
@@ -614,6 +700,7 @@ public:
 				systemIndex = systemNames.Emplace(systemName);
 				initializeInfo.SystemId = systemIndex;
 				systemsIndirectionTable.Emplace(systemName, systemIndex);
+				systemsData.EmplaceBack();
 
 				auto systemAllocation = GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo);
 				systemPointer = systemAllocation.GetData();

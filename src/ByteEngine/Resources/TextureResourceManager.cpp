@@ -48,7 +48,7 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 			int32 x = 0, y = 0, channel_count = 0;
 			stbi_info_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count);
 			auto finalChannelCount = GTSL::NextPowerOfTwo(static_cast<uint32>(channel_count));
-			const stbi_uc* data = nullptr;
+			byte* data = nullptr;
 
 			{
 				GTSL::StaticVector<GTSL::StaticString<128>, 8> substrings;
@@ -58,10 +58,10 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 				for(auto& e : substrings) {
 					switch (GTSL::Hash(e)) {
 					break; case GTSL::Hash(u8"png"): {
-						stbi_load_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);						
+						data = stbi_load_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);						
 					}
 					break; case GTSL::Hash(u8"hdr"): {
-						stbi_loadf_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
+						data = reinterpret_cast<byte*>(stbi_loadf_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount));
 					}
 					}
 				}

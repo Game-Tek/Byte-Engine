@@ -1799,6 +1799,7 @@ private:
 		uint32 VertexSize, VertexCount = 0, IndexCount = 0;
 		GAL::IndexType IndexType;
 		RenderSystem::AccelerationStructureHandle BLAS;
+		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
@@ -1831,6 +1832,12 @@ private:
 			if (e == GAL::ShaderDataType::U16_SNORM or e == GAL::ShaderDataType::U16_SNORM2 or e == GAL::ShaderDataType::U16_SNORM3 or e == GAL::ShaderDataType::U16_SNORM4) {
 				usesxNorm = true;
 			}
+		}
+
+		if(usesxNorm) {
+			//don't always assign bounding box as scaling factor, as even if we didn't need it bounding boxes usually have little errors which would cause the mesh to be scaled incorrectly
+			//even though we have the correct coordinates to begin with
+			res.ScalingFactor = staticMeshInfo.GetBoundingBox();
 		}
 
 		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle);
@@ -2053,8 +2060,6 @@ public:
 private:
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
-
-	GTSL::StaticVector<char32_t, 24> alphabet = { U'a', U'b', U'c' };
 
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;

@@ -17,9 +17,24 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 	bool error = false;
 
 	if (audioDevice.Initialize(createInfo)) {
-		mixFormat.BitsPerSample = 16;
-		mixFormat.NumberOfChannels = 2;
-		mixFormat.SamplesPerSecond = 48000;
+		auto bits = BE::Application::Get()->GetOption(u8"bitDepth");
+		bits = GTSL::Math::Clamp(bits, 8u, 32u);
+		bits = GTSL::NextPowerOfTwo(bits);
+
+		auto numChannels = BE::Application::Get()->GetOption(u8"channels");
+		numChannels = GTSL::Math::Clamp(numChannels, 1u, 8u);
+
+		auto samplesPerSecond = BE::Application::Get()->GetOption(u8"kHz");
+		samplesPerSecond = GTSL::Math::Clamp(samplesPerSecond, 41000u, 96000u);
+
+		if (samplesPerSecond != 41000 && samplesPerSecond != 48000 && samplesPerSecond != 96000 ) {
+			BE_LOG_WARNING(u8"User provided ", samplesPerSecond, u8" as audio system sample rate, which is invalid. Defaulting to 48KHz");
+			samplesPerSecond = 48000;
+		}
+
+		mixFormat.BitsPerSample = static_cast<uint8>(bits);
+		mixFormat.NumberOfChannels = static_cast<uint8>(numChannels);
+		mixFormat.SamplesPerSecond = samplesPerSecond;
 
 		//onAudioInfoLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"onAudioInfoLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo>::Create<AudioSystem, &AudioSystem::onAudioInfoLoad>(this), {});
 		//onAudioLoadHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"onAudioLoad", Task<AudioResourceManager*, AudioResourceManager::AudioInfo, GTSL::Range<const byte*>>::Create<AudioSystem, &AudioSystem::onAudioLoad>(this), {});
@@ -32,7 +47,11 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 
 					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
-						BE_ASSERT(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED, u8"Unsupported");
+					if(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED) {
+						BE_LOG_ERROR(u8"Create audio device requires interleaved sample placment, which isn't supported. Oudio output will be disabled.")
+						error = true;
+					}
+
 				} else { error = true; }
 			} else { error = true; }
 		} else { error = true; }
@@ -44,7 +63,7 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 
 AudioSystem::~AudioSystem() {
 	if (!audioDevice.Stop()) {
-
+		BE_LOG_ERROR(u8"Failed to stop audio device.")
 	}
 
 	audioDevice.Destroy();

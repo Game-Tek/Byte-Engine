@@ -9,7 +9,7 @@
 #include "ByteEngine/Handle.hpp"
 
 class WorldRendererPipeline;
-MAKE_HANDLE(uint32, StaticMesh)
+MAKE_BE_HANDLE(StaticMesh)
 
 class StaticMeshRenderGroup final : public BE::System
 {
@@ -36,12 +36,19 @@ public:
 	void Init(WorldRendererPipeline*);
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
-	DynamicTaskHandle<Handle<unsigned, StaticMesh_tag>, Id, ShaderGroupHandle> OnAddMesh;
-	DynamicTaskHandle<Handle<unsigned, StaticMesh_tag>> OnUpdateMesh;
+	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddMesh;
+	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
+	DynamicTaskHandle<GTSL::Range<const StaticMeshHandle*>> DeleteStaticMeshes;
+
+	void deleteMeshes(const TaskInfo, GTSL::Range<const StaticMeshHandle*> handles) {
+		for(auto e : handles) { meshes.Pop(e()); }
+	}
 
 	struct Mesh {
 		ShaderGroupHandle MaterialInstanceHandle;
 	};
 	
 	GTSL::FixedVector<Mesh, BE::PAR> meshes;
+
+	BE::TypeIdentifer staticMeshEntityIdentifier;
 };

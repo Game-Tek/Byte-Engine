@@ -76,6 +76,14 @@ namespace GAL
 		case ShaderDataType::BOOL: break;
 		case ShaderDataType::MAT3: break;
 		case ShaderDataType::MAT4: break;
+		case ShaderDataType::U16_SNORM: return DXGI_FORMAT_R16_SNORM;
+		case ShaderDataType::U16_SNORM2: return DXGI_FORMAT_R16G16_SNORM;
+		//case ShaderDataType::U16_SNORM3: return DXGI_FORMAT_R16G16B16_SNORM;
+		case ShaderDataType::U16_SNORM4: return DXGI_FORMAT_R16G16B16A16_SNORM;
+		case ShaderDataType::U16_UNORM: return DXGI_FORMAT_R16_UNORM;
+		case ShaderDataType::U16_UNORM2: return DXGI_FORMAT_R16G16_UNORM;
+			//case ShaderDataType::U16_SNORM3: return DXGI_FORMAT_R16G16B16_SNORM;
+		case ShaderDataType::U16_UNORM4: return DXGI_FORMAT_R16G16B16A16_UNORM;
 		default: return DXGI_FORMAT_UNKNOWN;
 		}
 	}

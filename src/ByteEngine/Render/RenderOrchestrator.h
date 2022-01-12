@@ -216,6 +216,10 @@ public:
 		return DataKeyHandle(newDataKeyIndex);
 	}
 
+	void AddInstance(NodeHandle node_handle) {
+		++getPrivateNode<MeshData>(getInternalNodeHandleFromPublicHandle(node_handle)).InstanceCount;
+	}
+
 	struct PassData {
 		struct AttachmentReference {
 			Id Name;
@@ -312,21 +316,19 @@ public:
 		return publicNodeHandle;
 	}
 
-	uint32 meshCount = 0;
-
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
 	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES];
 
-	NodeHandle AddMesh(const NodeHandle parentNodeHandle) {
-		auto publicNodeHandle = addNode(meshCount, parentNodeHandle, NodeType::MESHES);
-		auto internalNodeHandle = addInternalNode<MeshData>(meshCount, publicNodeHandle, parentNodeHandle);
+	NodeHandle AddMesh(const NodeHandle parentNodeHandle, uint32 meshId) {
+		auto publicNodeHandle = addNode(meshId, parentNodeHandle, NodeType::MESHES);
+		auto internalNodeHandle = addInternalNode<MeshData>(meshId, publicNodeHandle, parentNodeHandle);
 		SetNodeState(internalNodeHandle, false);
 		getNode(internalNodeHandle).Name = GTSL::ShortString<32>(u8"Render Mesh");
-		++meshCount;
+		++getPrivateNode<MeshData>(internalNodeHandle).InstanceCount;//for all meshes with same id under same tree branch add instance
 		return publicNodeHandle;
 	}
 
-	void AddMesh(NodeHandle node_handle, RenderSystem::BufferHandle meshHandle, uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType, GTSL::Range<const GAL::ShaderDataType*> meshVertexLayout) {
+	void AddMesh(NodeHandle node_handle, RenderSystem::BufferHandle meshHandle, uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType, GTSL::Range<const GTSL::Range<const GAL::ShaderDataType*>*> meshVertexLayout) {
 		bool foundLayout = false; uint8 layoutIndex = 0;
 
 		for (; layoutIndex < vertexLayouts.GetLength(); ++layoutIndex) {
@@ -359,6 +361,18 @@ public:
 		meshNode.IndexType = indexType;
 		meshNode.VertexCount = vertexCount;
 		meshNode.VertexSize = vertexSize;
+
+		{
+			uint32 offset = 0;
+
+			for(auto& i : meshVertexLayout) {
+				auto vertexSize = GAL::GraphicsPipeline::GetVertexSize(i);
+
+				meshNode.Offsets.EmplaceBack(offset);
+
+				offset += vertexSize * vertexCount;
+			}
+		}
 
 		SetNodeState(getInternalNodeHandleFromPublicHandle(node_handle), true);
 	}
@@ -910,7 +924,7 @@ private:
 
 	uint32 rayTracingPipelineIndex = 0xFFFFFFFF;
 
-	GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 24>, 32> vertexLayouts;
+	GTSL::StaticVector<GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8>, 16> vertexLayouts;
 
 	GTSL::HashMap<uint64, GTSL::StaticString<128>, BE::PAR> shaderHandlesDebugMap;
 
@@ -954,6 +968,7 @@ private:
 		uint32 VertexCount = 0, VertexSize = 0, IndexCount = 0;
 		GAL::IndexType IndexType;
 		uint32 InstanceCount = 0;
+		GTSL::StaticVector<uint32, 8> Offsets;
 	};
 
 	struct DispatchData {
@@ -1755,8 +1770,8 @@ public:
 private:
 	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddMesh;
 	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, ShaderGroupHandle> onStaticMeshLoadHandle;
+	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, ShaderGroupHandle> onStaticMeshInfoLoadHandle;
 
 	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddInfiniteLight;
 
@@ -1782,7 +1797,6 @@ private:
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
 
 	struct Mesh {
-		RenderOrchestrator::NodeHandle NodeHandle;
 		ShaderGroupHandle MaterialHandle;
 		RenderSystem::BLASInstanceHandle InstanceHandle;
 	};
@@ -1792,7 +1806,7 @@ private:
 
 	struct Resource {
 		RenderSystem::BufferHandle BufferHandle;
-		GTSL::StaticVector<GAL::ShaderDataType, 32> VertexElements;
+		GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> VertexElements;
 		GTSL::Range<byte*> Buffer;
 		GTSL::StaticVector<StaticMeshHandle, 8> Meshes;
 		bool Loaded = false;
@@ -1800,14 +1814,22 @@ private:
 		GAL::IndexType IndexType;
 		RenderSystem::AccelerationStructureHandle BLAS;
 		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
+		bool Interleaved = true;
+		RenderOrchestrator::NodeHandle nodeHandle;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
+
+	struct MaterialData {
+		RenderOrchestrator::NodeHandle Node;
+		ShaderGroupHandle SGHandle;
+	};
+	GTSL::HashMap<uint32, MaterialData, BE::PAR> materials;
 
 	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
 		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
 	}
 
-	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
+	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, ShaderGroupHandle shader_group_handle) {
 		auto& res = resources[Id(staticMeshInfo.GetName())];
 
 		uint32 meshSize = calculateMeshSize(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, staticMeshInfo.IndexSize);
@@ -1816,22 +1838,31 @@ private:
 
 		res.VertexSize = staticMeshInfo.GetVertexSize();
 		res.VertexCount = staticMeshInfo.VertexCount;
-		res.VertexElements = static_cast<const GTSL::Range<const GAL::ShaderDataType*>>(staticMeshInfo.VertexDescriptor);
 		res.IndexCount = staticMeshInfo.IndexCount;
 		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
+		res.Interleaved = staticMeshInfo.Interleaved;
 
 		//if unorm or snorm is used to specify data, take that into account as some properties (such as positions) may need scaling as XNORM enconding is defined in the 0->1 / -1->1 range
 		bool usesxNorm = false;
 
-		for (uint32 i = 0; i < staticMeshInfo.GetVertexDescriptor().Length; ++i) {
-			auto e = staticMeshInfo.GetVertexDescriptor().array[i];
-			if (e == GAL::ShaderDataType::U16_UNORM or e == GAL::ShaderDataType::U16_UNORM2 or e == GAL::ShaderDataType::U16_UNORM3 or e == GAL::ShaderDataType::U16_UNORM4) {
-				usesxNorm = true;
+		for (uint32 ai = 0; ai < staticMeshInfo.GetVertexDescriptor().Length; ++ai) {
+			auto& t = res.VertexElements.EmplaceBack();
+
+			auto& a = staticMeshInfo.GetVertexDescriptor().array[ai];
+			for (uint32 bi = 0; bi < a.Length; ++bi) {
+				auto& b = a.array[bi];
+
+				t.EmplaceBack(b);
+
+				if (b == GAL::ShaderDataType::U16_UNORM or b == GAL::ShaderDataType::U16_UNORM2 or b == GAL::ShaderDataType::U16_UNORM3 or b == GAL::ShaderDataType::U16_UNORM4) {
+					usesxNorm = true;
+				}
+
+				if (b == GAL::ShaderDataType::U16_SNORM or b == GAL::ShaderDataType::U16_SNORM2 or b == GAL::ShaderDataType::U16_SNORM3 or b == GAL::ShaderDataType::U16_SNORM4) {
+					usesxNorm = true;
+				}				
 			}
 
-			if (e == GAL::ShaderDataType::U16_SNORM or e == GAL::ShaderDataType::U16_SNORM2 or e == GAL::ShaderDataType::U16_SNORM3 or e == GAL::ShaderDataType::U16_SNORM4) {
-				usesxNorm = true;
-			}
 		}
 
 		if(usesxNorm) {
@@ -1840,10 +1871,10 @@ private:
 			res.ScalingFactor = staticMeshInfo.GetBoundingBox();
 		}
 
-		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle);
+		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, render_system->GetBufferSubDataAlignment(), res.Buffer, onStaticMeshLoadHandle, (ShaderGroupHandle&&)shader_group_handle);
 	}
 
-	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
+	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, ShaderGroupHandle shader_group_handle) {
 		auto& res = resources[Id(staticMeshInfo.GetName())];
 
 		render_system->UpdateBuffer(res.BufferHandle);
@@ -1859,32 +1890,51 @@ private:
 			*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 		}
 
-
 		res.Loaded = true;
+
+		GTSL::StaticVector<GTSL::Range<const GAL::ShaderDataType*>, 8> r;
+
+		for (auto& e : res.VertexElements) {
+			r.EmplaceBack(e.GetRange());
+		}
+
+		render_orchestrator->AddMesh(res.nodeHandle, res.BufferHandle, res.VertexCount, res.VertexSize, res.IndexCount, res.IndexType, r);
 	}
 
 	//BUG: WE HAVE AN IMPLICIT DEPENDENCY ON ORDERING OF TASK, AS WE REQUIRE onAddMesh TO BE RUN BEFORE updateMesh, THIS ORDERING IS NOT CURRENTLY GUARANTEED BY THE TASK SYSTEM
 
 	void onAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshHandle static_mesh_handle, Id resourceName, ShaderGroupHandle material_instance_handle) {
 		auto& mesh = meshes.Emplace(static_mesh_handle);
+		auto resource = resources.TryEmplace(resourceName);
 
-		auto res = resources.TryEmplace(resourceName);
+		RenderOrchestrator::NodeHandle materialNode;
 
-		auto materialLayer = render_orchestrator->AddMaterial(render_system, render_orchestrator->GetSceneRenderPass(), material_instance_handle);
-		auto meshNode = render_orchestrator->AddMesh(materialLayer);
-		render_orchestrator->BindToNode(render_system, meshNode, render_orchestrator->GetIndex(meshDataBuffer, static_mesh_handle()));
+		{ //temporal fix, this should be managed by resource manager
+			if(auto r = materials.TryEmplace(material_instance_handle.ShaderGroupIndex)) {
+				r.Get().Node = render_orchestrator->AddMaterial(render_system, render_orchestrator->GetSceneRenderPass(), material_instance_handle);
+				materialNode = r.Get().Node;
+			} else {
+				materialNode = r.Get().Node;
+			}
+		}				
 
-		mesh.NodeHandle = meshNode;
+		if(resource) {
+			auto meshNode = render_orchestrator->AddMesh(materialNode, 0); //will automatically add instances(instanced rendering)
+			resource.Get().nodeHandle = meshNode;
+			render_orchestrator->BindToNode(render_system, meshNode, render_orchestrator->GetIndex(meshDataBuffer, 0));
+		} else {
+			render_orchestrator->AddInstance(resource.Get().nodeHandle);
+		}
 
-		res.Get().Meshes.EmplaceBack(static_mesh_handle);
+		resource.Get().Meshes.EmplaceBack(static_mesh_handle);
 		spherePositionsAndRadius.EmplaceBack(0, 0, 0, 0);
 
-		if (res) {
-			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
+		if (resource) {
+			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle, (ShaderGroupHandle&&)material_instance_handle);
 		}
 		else {
-			if (res.Get().Loaded) {
-				onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, res.Get(), resourceName, static_mesh_handle);
+			if (resource.Get().Loaded) {
+				onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, resource.Get(), resourceName, static_mesh_handle);
 			}
 		}
 	}
@@ -1900,8 +1950,6 @@ private:
 		if (rayTracing) {
 			pendingAdditions.EmplaceBack(resource_name, static_mesh_handle);
 		}
-
-		renderOrchestrator->AddMesh(mesh.NodeHandle, res.BufferHandle, res.VertexCount, res.VertexSize, res.IndexCount, res.IndexType, res.VertexElements);
 	}
 
 	void updateMesh(TaskInfo, RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* renderOrchestrator, StaticMeshHandle static_mesh_handle) {

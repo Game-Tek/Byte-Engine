@@ -38,11 +38,10 @@ public:
 			DEFINE_MEMBER(uint32, MaterialIndex)
 			DEFINE_MEMBER(GTSL::Vector3, BoundingBox)
 			DEFINE_MEMBER(float32, BoundingRadius)
-		};;
+		};
 
 		DEFINE_MEMBER(uint32, VertexCount)
 		DEFINE_MEMBER(uint32, IndexCount)
-
 
 		/**
 		 * \brief Size of a single index to determine whether to use uint16 or uint32.
@@ -50,10 +49,22 @@ public:
 		DEFINE_MEMBER(uint8, IndexSize)
 		DEFINE_MEMBER(GTSL::Vector3, BoundingBox)
 		DEFINE_MEMBER(float32, BoundingRadius)
-		DEFINE_ARRAY_MEMBER(GAL::ShaderDataType, VertexDescriptor, 16)
+		Array<Array<GAL::ShaderDataType, 8>, 8> VertexDescriptor;
 		DEFINE_ARRAY_MEMBER(SubMeshData, SubMeshes, 16)
+		DEFINE_MEMBER(bool, Interleaved)
 
-		uint8 GetVertexSize() const { return GAL::GraphicsPipeline::GetVertexSize(GetVertexDescriptor()); }
+		auto& GetVertexDescriptor() { return VertexDescriptor; }
+		const auto& GetVertexDescriptor() const { return VertexDescriptor; }
+
+		uint32 GetVertexSize() const {
+			uint32 size = 0;
+
+			for (auto& element : GetVertexDescriptor().array) {
+				size += GAL::GraphicsPipeline::GetVertexSize(element);
+			}
+
+			return size;
+		}
 	};
 
 	template<typename... ARGS>

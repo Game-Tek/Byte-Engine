@@ -97,27 +97,53 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	if (!ai_scene->mMeshes) { return false; }
 
-	bool interleavedStream = true;
+	bool interleavedStream = false;
 
-	//MESH ALWAYS HAS POSITIONS
-	static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+	if (interleavedStream) {
+		auto& a = static_mesh_data.GetVertexDescriptor().EmplaceBack();
 
-	if (true) {
-		static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		//MESH ALWAYS HAS POSITIONS
+		a.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+
+		if (true) {
+			a.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		}
+
+		if (true) {
+			a.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+			a.EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		}
+
+		for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(1); ++tex_coords) {
+			a.EmplaceBack(GAL::ShaderDataType::FLOAT2);
+		}
+
+		for (uint8 colors = 0; colors < static_cast<uint8>(0); ++colors) {
+			a.EmplaceBack(GAL::ShaderDataType::FLOAT4);
+		}
+	} else {
+		//MESH ALWAYS HAS POSITIONS
+		static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+
+		if (true) {
+			static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		}
+
+		if (true) {
+			static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+			static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT3);
+		}
+
+		for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(1); ++tex_coords) {
+			static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT2);
+		}
+
+		for (uint8 colors = 0; colors < static_cast<uint8>(0); ++colors) {
+			static_mesh_data.GetVertexDescriptor().EmplaceBack().EmplaceBack(GAL::ShaderDataType::FLOAT4);
+		}
 	}
 
-	if (true) {
-		static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT3);
-		static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT3);
-	}
-
-	for (uint8 tex_coords = 0; tex_coords < static_cast<uint8>(1); ++tex_coords) {
-		static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT2);
-	}
-
-	for (uint8 colors = 0; colors < static_cast<uint8>(0); ++colors) {
-		static_mesh_data.GetVertexDescriptor().EmplaceBack(GAL::ShaderDataType::FLOAT4);
-	}
+	static_mesh_data.GetInterleaved() = interleavedStream;
 
 	static_mesh_data.GetVertexCount() = 0; static_mesh_data.GetIndexCount() = 0; static_mesh_data.GetBoundingRadius() = 0; static_mesh_data.GetBoundingBox() = GTSL::Vector3();
 
@@ -166,28 +192,51 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 	{
 		uint32 meshIndex = 0;
-		byte* dataPointer = meshDataBuffer.GetData();
+		byte* const dataPointer = meshDataBuffer.GetData();
+		uint64 offset = 0;
 
 		auto visitNodeAndLoadMesh = [&](aiNode* ai_node, auto&& self) -> void {
 			for (uint32 m = 0; m < ai_node->mNumMeshes; ++m) {
+				const uint64 vertexSize = static_mesh_data.GetVertexSize();
+
+				//set jump size as variable, since we can write array as interleaved or not
+				uint64 jumpSize = 0;
+
 				aiMesh* inMesh = ai_scene->mMeshes[ai_node->mMeshes[m]];
 
 				auto matrix = ToGTSL(ai_node->mTransformation); //TODO: are mesh coordinates relative to own origin or to scene ccenter
 
-				uint32 elementIndex = 0;
+				uint32 ai = 0, bi = 0;
 
 				auto& meshInfo = static_mesh_data.GetSubMeshes().array[meshIndex++];
 
+				uint64 accumulatedOffset = 0;
+
 				auto advanceVertexElement = [&]() {
-					if(interleavedStream) {						
-						return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, static_mesh_data.GetVertexDescriptor());
+					if(interleavedStream) {
+						jumpSize = vertexSize;
+						auto* po = dataPointer + offset + GAL::GraphicsPipeline::GetByteOffsetToMember(bi, static_mesh_data.GetVertexDescriptor().array[ai]);
+						++bi;
+						return po;
 					} else {
-						return dataPointer + GAL::GraphicsPipeline::GetByteOffsetToMember(elementIndex++, static_mesh_data.GetVertexDescriptor()) * static_mesh_data.GetVertexCount();
+						if(bi == static_mesh_data.GetVertexDescriptor().array[ai].Length) {
+							bi = 0;
+							++ai;
+						}
+
+						jumpSize = GAL::GraphicsPipeline::GetByteOffsetToMember(bi + 1, static_mesh_data.GetVertexDescriptor().array[ai]);
+						auto* po = dataPointer + offset + accumulatedOffset * static_mesh_data.GetVertexCount();
+
+						accumulatedOffset += jumpSize;
+
+						++bi;
+
+						return po;
 					}
 				};
 
 				auto writeElement = [&]<typename T>(T * elementPointer, const T & obj, const uint32 elementIndex) -> void {
-					*reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * static_mesh_data.GetVertexSize())) = obj;
+					*reinterpret_cast<T*>(reinterpret_cast<byte*>(elementPointer) + (elementIndex * jumpSize)) = obj;
 				};
 
 				auto doWrite = [writeElement]<typename T>(const GAL::ShaderDataType format, T value, byte * byteData, uint32 vertexIndex) {
@@ -302,20 +351,20 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 					for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 						for (uint32 index = 0; index < 3; ++index) {
-							reinterpret_cast<uint16*>(meshDataBuffer.GetData() + static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize())[face * 3 + index] = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
+							reinterpret_cast<uint16*>(meshDataBuffer.GetData() + static_mesh_data.GetVertexCount() * vertexSize)[face * 3 + index] = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
 						}
 					}
 				} else {
 					for (uint32 face = 0; face < inMesh->mNumFaces; ++face) {
 						for (uint32 index = 0; index < 3; ++index) {
-							reinterpret_cast<uint32*>(meshDataBuffer.GetData() + static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize())[face * 3 + index] = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
+							reinterpret_cast<uint32*>(meshDataBuffer.GetData() + static_mesh_data.GetVertexCount() * vertexSize)[face * 3 + index] = static_cast<uint16>(inMesh->mFaces[face].mIndices[index]);
 						}
 					}
 				}
 
 				static_mesh_data.GetBoundingBox() = GTSL::Math::Max(static_mesh_data.GetBoundingBox(), meshInfo.GetBoundingBox());
 
-				dataPointer += meshInfo.GetVertexCount() * static_mesh_data.GetVertexSize() + meshInfo.GetIndexCount() * static_mesh_data.GetIndexSize();
+				offset += meshInfo.GetVertexCount() * vertexSize + meshInfo.GetIndexCount() * static_mesh_data.GetIndexSize();
 			}
 
 			for (uint32 i = 0; i < ai_node->mNumChildren; ++i) {

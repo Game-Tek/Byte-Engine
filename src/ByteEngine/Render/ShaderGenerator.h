@@ -456,15 +456,12 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		isRayTracing = true;
 	}
 
-	headerBlock += u8"#extension GL_EXT_shader_16bit_storage : enable\n";
-	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n";
-	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n";
-	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n";
-	headerBlock += u8"#extension GL_EXT_nonuniform_qualifier : enable\n";
-	headerBlock += u8"#extension GL_EXT_scalar_block_layout : enable\n";
-	headerBlock += u8"#extension GL_EXT_buffer_reference : enable\n";
-	headerBlock += u8"#extension GL_EXT_buffer_reference2 : enable\n";
-	headerBlock += u8"#extension GL_EXT_shader_image_load_formatted : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_16bit_storage : enable\n"; headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n"; headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n";
+	headerBlock += u8"#extension GL_EXT_nonuniform_qualifier : enable\n"; headerBlock += u8"#extension GL_EXT_scalar_block_layout : enable\n";
+	headerBlock += u8"#extension GL_EXT_buffer_reference : enable\n"; headerBlock += u8"#extension GL_EXT_buffer_reference2 : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_image_load_formatted : enable\n"; headerBlock += u8"#extension GL_KHR_shader_subgroup_basic : enable\n";
+	headerBlock += u8"#extension GL_KHR_shader_subgroup_arithmetic  : enable\n"; headerBlock += u8"#extension GL_KHR_shader_subgroup_ballot : enable\n";
 	if (isRayTracing) {
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}

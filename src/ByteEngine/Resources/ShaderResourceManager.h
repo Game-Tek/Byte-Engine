@@ -374,7 +374,7 @@ public:
 		GTSL::Vector<Parameter, BE::PAR> Parameters;
 		GTSL::Vector<ShaderGroupInstance, BE::PAR> Instances;
 		GTSL::Vector<uint32, BE::PAR> Shaders;
-		GTSL::StaticVector<StructElement, 20> VertexElements;
+		GTSL::StaticVector<GTSL::StaticVector<StructElement, 8>, 8> VertexElements;
 	};
 
 	struct ShaderGroupDataSerialize : ShaderGroupData, Object {
@@ -390,7 +390,7 @@ public:
 		GTSL::Vector<ShaderGroupInstance, BE::PAR> Instances;
 		GTSL::Vector<Parameter, BE::PAR> Parameters;
 
-		GTSL::StaticVector<StructElement, 16> VertexElements;
+		GTSL::StaticVector<GTSL::StaticVector<StructElement, 8>, 8> VertexElements;
 
 		struct RayTraceData {
 			StructElement Payload;
@@ -478,12 +478,19 @@ private:
 			}
 		}
 
-		uint32 vertexElementCount = 0;
-		shaderGroupInfosFile >> vertexElementCount;
+		uint32 vertexStreamCount = 0;
+		shaderGroupInfosFile >> vertexStreamCount;
 
-		for (uint32 i = 0; i < vertexElementCount; ++i) {
-			auto& vertexElement = shaderGroupInfo.VertexElements.EmplaceBack();
-			shaderGroupInfosFile >> vertexElement.Type >> vertexElement.Name;
+		for (uint32 a = 0; a < vertexStreamCount; ++a) {
+			auto& stream = shaderGroupInfo.VertexElements.EmplaceBack();
+
+			uint32 vertexElements = 0;
+			shaderGroupInfosFile >> vertexElements;
+
+			for (uint32 a = 0; a < vertexElements; ++a) {
+				auto& e = stream.EmplaceBack();
+				shaderGroupInfosFile >> e.Type >> e.Name;
+			}
 		}
 
 		bool rayTrace = false; shaderGroupInfosFile >> rayTrace;
@@ -670,7 +677,6 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance.ModelMatrix);");
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
 
@@ -724,6 +730,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instance" });
+
+		pipeline->DeclareRawFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance[gl_InstanceIndex].ModelMatrix);");
 
 		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
@@ -987,9 +995,12 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			if (auto jsonVertex = json[u8"vertexElements"]) {
 				GTSL::StaticVector<StructElement, 8> vertexElements;
 
-				for (auto ve : jsonVertex) {
-					shaderGroupDataSerialize.VertexElements.EmplaceBack(ve[u8"type"], ve[u8"id"]);
-					vertexElements.EmplaceBack(ve[u8"type"], ve[u8"id"]);
+				for (auto a : jsonVertex) {
+					auto& t = shaderGroupDataSerialize.VertexElements.EmplaceBack();
+					for (auto ve : a) {
+						t.EmplaceBack(ve[u8"type"], ve[u8"id"]);
+						vertexElements.EmplaceBack(ve[u8"type"], ve[u8"id"]);
+					}
 				}
 
 				pipeline.DeclareStruct(GPipeline::ElementHandle(), u8"vertex", vertexElements);
@@ -1100,10 +1111,13 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					}
 				}
 
-				shaderGroupInfosFile << shaderGroupDataSerialize.VertexElements.GetLength();
 
+				shaderGroupInfosFile << shaderGroupDataSerialize.VertexElements.GetLength();
 				for (auto& e : shaderGroupDataSerialize.VertexElements) {
-					shaderGroupInfosFile << e.Type << e.Name;
+					shaderGroupInfosFile << e.GetLength();
+					for (auto& ve : e) {
+						shaderGroupInfosFile << ve.Type << ve.Name;
+					}
 				}
 
 				shaderGroupInfosFile << rayTrace;

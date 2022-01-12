@@ -431,9 +431,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto buffer = renderSystem->GetBuffer(meshData.Handle);
 
-			commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), { buffer }, { 0 }, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
+			GTSL::StaticVector<GPUBuffer, 8> buffers;
+
+			for(uint32 i = 0; i < meshData.Offsets.GetLength(); ++i) {
+				buffers.EmplaceBack(buffer);
+			}
+
+			commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), buffers, meshData.Offsets, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
 			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(meshData.VertexSize * meshData.VertexCount, renderSystem->GetBufferSubDataAlignment()), meshData.IndexCount, meshData.IndexType);
-			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, 1);
+			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount);
 			break;
 		}
 		case RTT::GetTypeIndex<DrawData>(): {
@@ -870,7 +876,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	MemberHandle textureReferences[8];
 
-	GTSL::StaticVector<GTSL::StaticVector<GAL::Pipeline::VertexElement, 32>, 8> vertexStreams;
+	GTSL::StaticVector<GTSL::StaticVector<GAL::Pipeline::VertexElement, 8>, 8> vertexStreams;
 	struct ShaderBundleData {
 		GTSL::StaticVector<uint32, 8> Shaders;
 		GAL::ShaderStage Stage;
@@ -880,18 +886,20 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	GTSL::StaticVector<MemberInfo, 16> members;
 	GTSL::KeyMap<uint64, BE::TAR> loadedShadersMap(8, GetTransientAllocator()); //todo: differentiate hash from hash + name, since a different hash could be interpreted as a different shader, when in reality it functionally represents the same shader but with different code
 
-	auto& vertexElements = vertexStreams.EmplaceBack();
+	for (uint8 ai = 0;  auto& a : shader_group_info.VertexElements) {
+		auto& stream = vertexStreams.EmplaceBack();
 
-	for (uint8 l = 0;  auto & e : shader_group_info.VertexElements) {
-		GAL::ShaderDataType type;
+		for (auto& b : a) {
+			GAL::ShaderDataType type;
 
-		switch (Hash(e.Type)) {
-		case GTSL::Hash(u8"vec2f"): type = GAL::ShaderDataType::FLOAT2; break;
-		case GTSL::Hash(u8"vec3f"): type = GAL::ShaderDataType::FLOAT3; break;
-		case GTSL::Hash(u8"vec4f"): type = GAL::ShaderDataType::FLOAT4; break;
+			switch (Hash(b.Type)) {
+			case GTSL::Hash(u8"vec2f"): type = GAL::ShaderDataType::FLOAT2; break;
+			case GTSL::Hash(u8"vec3f"): type = GAL::ShaderDataType::FLOAT3; break;
+			case GTSL::Hash(u8"vec4f"): type = GAL::ShaderDataType::FLOAT4; break;
+			}
+
+			stream.EmplaceBack(GAL::Pipeline::VertexElement{ GTSL::ShortString<32>(b.Name.c_str()), type, ai++ });
 		}
-
-		vertexElements.EmplaceBack(GAL::Pipeline::VertexElement{ GTSL::ShortString<32>(e.Name.c_str()), type, l++ });
 	}
 
 	for (uint32 offset = 0, si = 0; const auto & s : shader_group_info.Shaders) {
@@ -1268,7 +1276,7 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 	signalDependencyToResource(texture.Resource);
 }
 
-WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), spherePositionsAndRadius(16, GetPersistentAllocator()) {
+WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), spherePositionsAndRadius(16, GetPersistentAllocator()), materials(GetPersistentAllocator()) {
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 

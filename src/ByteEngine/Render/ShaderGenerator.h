@@ -23,7 +23,7 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		ID, OP, LITERAL, LPAREN, RPAREN, LSQUAREBRACKETS, RSQUAREBRACKETS, DOT, COMMA
+		NULL, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, SEMICOLON
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -42,14 +42,108 @@ bool IsAnyOf(const auto& a, const auto&... elems) {
 
 enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
 
-struct GPipeline {
+/**
+ * \brief Turns code into a stream of tokens, every first dimension is an statement, all elements in the array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)
+ * \param code String containing code to tokenize.
+ * \param statements Array container for statements.
+ */
+void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& allocator) {
+	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
+	GTSL::StaticVector<ShaderNode::Type, 1024> tokenTypes;
+
+	auto codeString = code;
+
+	for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
+		auto c = code[i];
+
+		ShaderNode::Type type;
+
+		GTSL::StaticString<64> str;
+
+		if (GTSL::IsSymbol(c)) {
+			if (c == U'(') {
+				type = ShaderNode::Type::LPAREN;
+			}
+			else if (c == U')') {
+				type = ShaderNode::Type::RPAREN;
+			}
+			else if (c == U'[') {
+				type = ShaderNode::Type::LBRACKET;
+			}
+			else if (c == U']') {
+				type = ShaderNode::Type::RBRACKET;
+			}
+			else if (c == U'{') {
+				type = ShaderNode::Type::LBRACE;
+			}
+			else if (c == U'}') {
+				type = ShaderNode::Type::RBRACE;
+			}
+			else if (c == U'.') {
+				type = ShaderNode::Type::DOT;
+			}
+			else if (c == U',') {
+				type = ShaderNode::Type::COMMA;
+			}
+			else if (c == U';') {
+				type = ShaderNode::Type::SEMICOLON;
+			}
+			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%')) {
+				type = ShaderNode::Type::OP;
+			}
+
+			str += c;
+
+			tokens.EmplaceBack(str);
+			tokenTypes.EmplaceBack(type);
+		}
+		else if (GTSL::IsNumber(c)) {
+			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'.') {
+				str += code[i];
+				++i;
+			}
+
+			type = ShaderNode::Type::LITERAL;
+
+			tokens.EmplaceBack(str);
+			tokenTypes.EmplaceBack(type);
+
+			--i;
+		}
+		else if (GTSL::IsLetter(code[i])) {
+			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
+				str += code[i];
+				++i;
+			}
+
+			if (code[i] == U'*') { str += U'*'; ++i; }
+
+			type = ShaderNode::Type::ID;
+
+			tokens.EmplaceBack(str);
+			tokenTypes.EmplaceBack(type);
+
+			--i;
+		}
+
+		//anything else, new line, null, space, skip
+	}
+
+	for(uint32 i = 0; i < tokens; ++i) {
+		statements.EmplaceBack(tokenTypes[i], tokens[i]);
+	}
+}
+
+struct GPipeline : public Object {
 	struct ElementHandle { uint32 Handle = 1; };
 
 	struct FunctionDefinition {
+		FunctionDefinition(const BE::PAR& allocator) : Tokens(16, allocator) {}
+
 		GTSL::StaticString<32> Return, Name;
-		GTSL::StaticVector<StructElement, 8> Parameters;
-		GTSL::StaticString<512> Code;
-		GTSL::StaticVector<GTSL::StaticVector<ShaderNode, 64>, 8> Statements;
+		GTSL::StaticVector<StructElement, 12> Parameters;
+		//GTSL::StaticString<512> Code;
+		GTSL::Vector<ShaderNode, BE::PAR> Tokens;
 		bool IsRaw = false, Inline = false;
 
 		//Every function gets assigned an id which is unique per pipeline
@@ -198,7 +292,7 @@ struct GPipeline {
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name) {
 		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
-		auto& function = Functions.EmplaceBack();
+		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Id = handle.Handle;
 		return ElementHandle(elements[handle.Handle].Reference);
 	}
@@ -206,16 +300,22 @@ struct GPipeline {
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
 		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
-		auto& function = Functions.EmplaceBack();
-		function.Name = name; function.Return = returnType; function.Parameters = parameters; function.Code = code; function.Id = handle.Handle;
+		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
+		function.Name = name; function.Return = returnType; function.Parameters = parameters;
+		function.Id = handle.Handle;
+		//function.Code = code;
+		tokenizeCode(code, function.Tokens, GetPersistentAllocator());
 		return ElementHandle(elements[handle.Handle].Reference);
 	}
 
 	ElementHandle DeclareRawFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
 		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
-		auto& function = Functions.EmplaceBack();
-		function.Name = name; function.Return = returnType; function.Parameters = parameters; function.Code = code; function.IsRaw = true; function.Id = handle.Handle;
+		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
+		function.Name = name; function.Return = returnType; function.Parameters = parameters;
+		//function.Code = code;
+		tokenizeCode(code, function.Tokens, GetPersistentAllocator());
+		function.IsRaw = true; function.Id = handle.Handle;
 		return ElementHandle(elements[handle.Handle].Reference);
 	}
 
@@ -301,128 +401,6 @@ private:
 	GTSL::Vector<StructElement, BE::TAR> members;
 	GTSL::Vector<FunctionDefinition, BE::TAR> Functions;
 };
-
-/**
- * \brief Turns code into a stream of tokens, every first dimension is an statement, all elements in the array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)
- * \param code String containing code to tokenize.
- * \param statements Array container for statements.
- */
-void tokenizeCode(const GTSL::StringView code, auto& statements) {
-	enum class TokenTypes { ID, OP, NUM, LPAREN, RPAREN, LSQBRACKETS, RSQBRACKETS, LBRACE, RBRACE, DOT, COMMA, END };
-	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
-	GTSL::StaticVector<TokenTypes, 1024> tokenTypes;
-
-	auto codeString = code;
-
-	for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
-		auto c = code[i];
-
-		TokenTypes type;
-
-		GTSL::StaticString<64> str;
-
-		if (GTSL::IsSymbol(c)) {
-			if (c == U'(') {
-				type = TokenTypes::LPAREN;
-			}
-			else if (c == U')') {
-				type = TokenTypes::RPAREN;
-			}
-			else if (c == U'[') {
-				type = TokenTypes::LSQBRACKETS;
-			}
-			else if (c == U']') {
-				type = TokenTypes::RSQBRACKETS;
-			}
-			else if (c == U'{') {
-				type = TokenTypes::LBRACE;
-			}
-			else if (c == U'}') {
-				type = TokenTypes::RBRACE;
-			}
-			else if (c == U'.') {
-				type = TokenTypes::DOT;
-			}
-			else if (c == U',') {
-				type = TokenTypes::COMMA;
-			}
-			else if (c == U';') {
-				type = TokenTypes::END;
-			}
-			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%')) {
-				type = TokenTypes::OP;
-			}
-
-			str += c;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
-		} else if (GTSL::IsNumber(c)) {
-			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'.') {
-				str += code[i];
-				++i;
-			}
-
-			type = TokenTypes::NUM;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
-
-			--i;
-		} else if(GTSL::IsLetter(code[i])) {
-			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
-				str += code[i];
-				++i;
-			}
-
-			if (code[i] == U'*') { str += U'*'; ++i; }
-
-			type = TokenTypes::ID;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
-
-			--i;
-		}
-
-		//anything else, new line, null, space, skip
-	}
-
-	for (uint32 i = 0, s = 0; i < tokens; ++i) {
-		if (tokenTypes[i] != TokenTypes::END) { continue; }
-
-		auto& statement = statements.EmplaceBack();
-
-		for (uint32 j = s; j < i; ++j) {
-			if (tokenTypes[j] == TokenTypes::ID or tokenTypes[j] == TokenTypes::OP) {
-				if (tokenTypes[j] == TokenTypes::ID) {
-					statement.EmplaceBack(ShaderNode::Type::ID, tokens[j]);
-				}
-				else {
-					statement.EmplaceBack(ShaderNode::Type::OP, tokens[j]);
-				}
-			}
-			else {
-				ShaderNode::Type type;
-
-				switch (tokenTypes[j]) {
-				case TokenTypes::NUM: type = ShaderNode::Type::LITERAL; break;
-				case TokenTypes::LPAREN: type = ShaderNode::Type::LPAREN; break;
-				case TokenTypes::RPAREN: type = ShaderNode::Type::RPAREN; break;
-				case TokenTypes::LSQBRACKETS: type = ShaderNode::Type::LSQUAREBRACKETS; break;
-				case TokenTypes::RSQBRACKETS: type = ShaderNode::Type::RSQUAREBRACKETS; break;
-				case TokenTypes::DOT: type = ShaderNode::Type::DOT; break;
-				case TokenTypes::COMMA: type = ShaderNode::Type::COMMA; break;
-				case TokenTypes::END: break;
-				}
-
-				statement.EmplaceBack(type, tokens[j]);
-			}
-		}
-
-		s = i + 1;
-	}
-}
 
 /**
  * \brief Generates a shader string from a token stream to a target shader language.
@@ -596,7 +574,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
 
-		GTSL::StaticString<1024> string;
+		GTSL::StaticString<2048> string;
 
 		if (!functionUsed.Get()) {
 			string += resolveTypeName({ function.Return, u8"" }).Type; string += u8' ';  string += function.Name;
@@ -613,24 +591,26 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			string += u8") { ";
 
-			if (!function.Statements) {
-				tokenizeCode(function.Code, function.Statements);
-			}
+			//if (!function.Statements) {
+			//	tokenizeCode(function.Code, function.Statements);
+			//}
 
-			for (auto& s : function.Statements) {
-				[&]() {
-					GTSL::StaticString<512> statementString;
+			for (uint32 i = 0; i < function.Tokens;) {
+				auto makeStatement = [&] {
+					GTSL::StaticString<1024> statementString;
 
-					GPipeline::ElementHandle lastElement;
+					bool isLoopBody = false;
 
-					for (auto& node : s) {
+					while (i < function.Tokens) {
+						const auto& node = function.Tokens[i++];
+
 						switch (node.ValueType) {
 						case ShaderNode::Type::ID: {
 							if (statementString) {
 								if (GTSL::IsLetter(*(statementString.end() - 1)) || GTSL::IsNumber(*(statementString.end() - 1))) { statementString += U' '; }
 							}
 
-							if (function.IsRaw) { statementString += resolve(node.Name); break; }
+							//if (function.IsRaw) { statementString += resolve(node.Name); break; }
 
 							auto elementResult = pipeline.TryGetElementHandle(scopes, node.Name);
 
@@ -638,7 +618,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 								auto& element = pipeline.GetElement(elementResult.Get());
 
 								if (element.Type == GPipeline::LanguageElement::ElementType::MEMBER) {
-									lastElement = pipeline.TryGetElementHandle(scopes, node.GetName()).Get();
 									statementString += node.Name;
 								}
 								else if (element.Type == GPipeline::LanguageElement::ElementType::DEDUCTION_GUIDE) {
@@ -657,7 +636,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 									statementString += node.Name;
 								} else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
-									return; //skip statement
+									return GTSL::StaticString<1024>(); //skip statement
 								} else {
 									statementString += resolve(node.Name);
 								}
@@ -669,24 +648,31 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							break;
 						}
 						case ShaderNode::Type::LPAREN: {
-							statementString += u8"(";
+							statementString += u8"("; isLoopBody = true;
 							break;
 						}
 						case ShaderNode::Type::RPAREN: {
-							statementString += u8")";
+							statementString += u8")"; isLoopBody = false;
 							break;
 						}
-						case ShaderNode::Type::LSQUAREBRACKETS: {
+						case ShaderNode::Type::LBRACKET: {
 							statementString += u8"[";
 							break;
 						}
-						case ShaderNode::Type::RSQUAREBRACKETS: {
+						case ShaderNode::Type::RBRACKET: {
 							statementString += u8"]";
+							break;
+						}
+						case ShaderNode::Type::LBRACE: {
+							statementString += u8"{";
+							break;
+						}
+						case ShaderNode::Type::RBRACE: {
+							statementString += u8"}";
 							break;
 						}
 						case ShaderNode::Type::DOT: {
 							statementString += u8".";
-							//accessStack.EmplaceBack(lastElement);
 							break;
 						}
 						case ShaderNode::Type::LITERAL: {
@@ -694,20 +680,25 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							break;
 						}
 						case ShaderNode::Type::OP: {
-							statementString += u8' '; statementString += node.Name; statementString += u8' ';
+							//statementString += u8' '; statementString += node.Name; statementString += u8' ';
+							statementString += node.Name;
 							break;
 						}
 						case ShaderNode::Type::COMMA: {
 							statementString += u8", ";
-							//accessStack.Resize(2);
 							break;
+						}
+						case ShaderNode::Type::SEMICOLON: {
+							statementString += u8';';
+
 						}
 						}
 					}
 
-					statementString += u8"; ";
-					string += statementString;
-				}();
+					return statementString;
+				};
+
+				string += makeStatement();
 			}
 
 			string += u8"}\n";

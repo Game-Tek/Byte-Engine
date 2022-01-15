@@ -227,20 +227,20 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"a");
 		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"b");
 		auto d = CreateMember(u8"global", u8"GlobalData", members);
-		globalData = AddLayer(u8"GlobalData", NodeHandle());
-		BindToNode(renderSystem, globalData, d);
+		globalData = AddDataNode(u8"GlobalData", NodeHandle(), d);
 	}
 
 	{
 		MemberHandle t;
-		GTSL::StaticVector<MemberInfo, 4> members;
+		GTSL::StaticVector<MemberInfo, 8> members;
 		members.EmplaceBack(&t, u8"matrix4f", u8"view");
 		members.EmplaceBack(&t, u8"matrix4f", u8"proj");
 		members.EmplaceBack(&t, u8"matrix4f", u8"viewInverse");
 		members.EmplaceBack(&t, u8"matrix4f", u8"projInverse");
+		members.EmplaceBack(&t, u8"matrix4f", u8"vp");
+		members.EmplaceBack(&t, u8"vec4f", u8"worldPosition");
 		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
-		cameraDataNode = AddLayer(u8"CameraData", globalData);
-		BindToNode(renderSystem, cameraDataNode, cameraMatricesHandle);
+		cameraDataNode = AddDataNode(u8"CameraData", globalData, cameraMatricesHandle);
 	}
 
 	if constexpr (BE_DEBUG) {
@@ -251,13 +251,6 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
-
-		PassData geoRenderPass;
-		geoRenderPass.PassType = PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Color" }); //result attachment
-		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"Normal" });
-		geoRenderPass.WriteAttachments.EmplaceBack(PassData::AttachmentReference{ u8"RenderDepth" });
-		AddRenderPass(u8"SceneRenderPass", GetCameraDataLayer(), renderSystem, geoRenderPass, initializeInfo.ApplicationManager);
 
 		RenderOrchestrator::PassData colorGrading{};
 		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
@@ -336,6 +329,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			key[u8"proj"] = projectionMatrix;
 			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
 			key[u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
+			key[u8"vp"] = projectionMatrix * viewMatrix;
+			key[u8"worldPosition"] = GTSL::Vector4(cameraSystem->GetCameraPosition(CameraSystem::CameraHandle(0)), 1.0f);
 		}
 		else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
@@ -350,41 +345,38 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	using RTT = decltype(renderingTree);
 
-	bool le[8]{ false };
-
 	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level) -> void {
 		DataStreamHandle dataStreamHandle = {};
 
-		const auto& baseData = renderingTree.GetBeta(key);
+		const auto& baseData = renderingTree.GetAlpha(key);
 
 		if constexpr (BE_DEBUG) {
 			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 		}
 
-		//if (auto address = baseData.Address[currentFrame]) { //if node has an associated data entry, bind it
-		//	dataStreamHandle = renderState.AddDataStream();
-		//	le[level] = true;
-		//	auto& setLayout = setLayoutDatas[globalSetLayout()]; address += baseData.Offset;
-		//	commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
-		//}
+		printNode(key, level, true);
 
-		if(baseData.DataKey) {
-			dataStreamHandle = renderState.AddDataStream();
-			le[level] = true;
-			GAL::DeviceAddress address;
-			const auto& dataKey = dataKeys[baseData.DataKey()];
+		switch (renderingTree.GetNodeType(key)) {
+		case RTT::GetTypeIndex<LayerData>(): {
+			const LayerData& layerData = renderingTree.GetClass<LayerData>(key);
 
-			if(renderSystem->IsUpdatable(dataKey.Buffer)) {
-				address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
-			} else {
-				address = renderSystem->GetBufferAddress(dataKey.Buffer);
+			if (layerData.DataKey) {
+				dataStreamHandle = renderState.AddDataStream();
+				GAL::DeviceAddress address;
+				const auto& dataKey = dataKeys[layerData.DataKey()];
+
+				if (renderSystem->IsUpdatable(dataKey.Buffer)) {
+					address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
+				}
+				else {
+					address = renderSystem->GetBufferAddress(dataKey.Buffer);
+				}
+
+				auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
+				commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 			}
-
-			auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
-			commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);			
+			break;
 		}
-
-		switch (renderingTree.GetBetaNodeType(key)) {
 		case RTT::GetTypeIndex<PipelineBindData>(): {
 			const PipelineBindData& pipeline_bind_data = renderingTree.GetClass<PipelineBindData>(key);
 			const auto& shaderGroup = shaderGroups[pipeline_bind_data.Handle.ShaderGroupIndex];
@@ -495,7 +487,13 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	};
 
 	auto endNode = [&](const uint32 key, const uint32_t level) {
-		switch (renderingTree.GetBetaNodeType(key)) {
+		BE_LOG_WARNING(u8"Leaving node ", key);
+
+		switch (renderingTree.GetNodeType(key)) {
+		case RTT::GetTypeIndex<LayerData>(): {
+			renderState.PopData();
+			break;
+		}
 		case RTT::GetTypeIndex<RenderPassData>(): {
 			auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
 			if (renderPassData.Type == PassType::RASTER) {
@@ -505,11 +503,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			break;
 		}
 		default: break;
-		}
-
-		if (le[level]) {
-			renderState.PopData();
-			le[level] = false;
 		}
 
 		if constexpr (BE_DEBUG) {
@@ -615,20 +608,27 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	attachments.Emplace(attachmentName, attachment);
 }
 
-RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent, RenderSystem* renderSystem, PassData passData, ApplicationManager* am) {
-	NodeHandle renderPassNodeHandle = addNode(Id(renderPassName), parent, NodeType::RENDER_PASS);
-	InternalNodeHandle internalNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassNodeHandle, parent);
-	RenderPassData& renderPass = getPrivateNode<RenderPassData>(internalNodeHandle);
+RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData, ApplicationManager* am) {
+	GTSL::StaticVector<MemberInfo, 16> members;
 
-	renderPasses.Emplace(renderPassName, renderPassNodeHandle, internalNodeHandle);
-	renderPassesInOrder.EmplaceBack(internalNodeHandle);
+	for (auto& e : passData.WriteAttachments) {
+		members.EmplaceBack(nullptr, u8"ImageReference", GTSL::StringView(e.Name));
+	}
+
+	auto member = CreateMember(u8"global", renderPassName, members);
+	auto renderPassDataNode = AddDataNode(renderPassName, parent_node_handle, member);
+	NodeHandle renderPassNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassDataNode);
+	RenderPassData& renderPass = getPrivateNode<RenderPassData>(renderPassNodeHandle);
+
+	renderPasses.Emplace(renderPassName, renderPassNodeHandle);
+	renderPassesInOrder.EmplaceBack(renderPassNodeHandle);
 
 	renderPass.ResourceHandle = makeResource();
 	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
 
-	BindToNode(internalNodeHandle, renderPass.ResourceHandle);
+	BindToNode(renderPassNodeHandle, renderPass.ResourceHandle);
 
-	getNode(internalNodeHandle).Name = GTSL::StringView(renderPassName);
+	getNode(renderPassNodeHandle).Name = GTSL::StringView(renderPassName);
 
 	Id resultAttachment;
 
@@ -640,10 +640,13 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		finalAttachment.FormatDescriptor = GAL::FORMATS::BGRA_I8;
 	}
 
+	PassType renderPassType;
+	GAL::PipelineStage pipelineStage;
+
 	switch (passData.PassType) {
 	case PassType::RASTER: {
-		renderPass.Type = PassType::RASTER;
-		renderPass.PipelineStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+		renderPassType = PassType::RASTER;
+		pipelineStage = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 
 		for (const auto& e : passData.ReadAttachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
@@ -660,8 +663,8 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		break;
 	}
 	case PassType::COMPUTE: {
-		renderPass.Type = PassType::COMPUTE;
-		renderPass.PipelineStages = GAL::PipelineStages::COMPUTE;
+		renderPassType = PassType::COMPUTE;
+		pipelineStage = GAL::PipelineStages::COMPUTE;
 
 		for (auto& e : passData.WriteAttachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
@@ -677,7 +680,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 			attachmentData.ConsumingStages = GAL::PipelineStages::COMPUTE;
 		}
 
-		auto dispatchNodeHandle = addInternalNode<DispatchData>(Hash(renderPassName), renderPassNodeHandle, parent);
+		auto dispatchNodeHandle = addInternalNode<DispatchData>(Hash(renderPassName), renderPassNodeHandle);
 
 		auto loadComputeShader = [&]() {
 			//auto shaderLoadInfo = ShaderLoadInfo(GetPersistentAllocator());
@@ -692,8 +695,8 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		break;
 	}
 	case PassType::RAY_TRACING: {
-		renderPass.Type = PassType::RAY_TRACING;
-		renderPass.PipelineStages = GAL::PipelineStages::RAY_TRACING;
+		renderPassType = PassType::RAY_TRACING;
+		pipelineStage = GAL::PipelineStages::RAY_TRACING;
 
 		for (auto& e : passData.ReadAttachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
@@ -713,15 +716,10 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 	}
 	}
 
-	GTSL::StaticVector<MemberInfo, 16> members;
+	renderPass.Type = renderPassType;
+	renderPass.PipelineStages = pipelineStage;
 
-	for (auto& e : passData.WriteAttachments) {
-		members.EmplaceBack(&renderPass.RenderTargetReferences, u8"ImageReference", GTSL::StringView(e.Name));
-	}
-
-	auto member = CreateMember(u8"global", renderPassName, members);
-	BindToNode(renderSystem, renderPassNodeHandle, member);
-	auto bwk = GetBufferWriteKey(renderSystem, renderPassNodeHandle);
+	auto bwk = GetBufferWriteKey(renderSystem, renderPassDataNode);
 	for (auto i = 0u; i < passData.WriteAttachments.GetLength(); ++i) {
 		bwk[GTSL::StringView(passData.WriteAttachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
@@ -754,7 +752,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 	}
 
 	for (const auto apiRenderPassData : renderPasses) {
-		auto& layer = getPrivateNode<RenderPassData>(apiRenderPassData.Second);
+		auto& layer = getPrivateNode<RenderPassData>(apiRenderPassData);
 		signalDependencyToResource(layer.ResourceHandle);
 	}
 }
@@ -762,7 +760,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable)
 {
 	if (renderPassName) {
-		auto& renderPassNode = getPrivateNodeFromPublicHandle<RenderPassData>(renderPassName);
+		auto& renderPassNode = getPrivateNode<RenderPassData>(renderPassName);
 
 		switch (renderPassNode.Type) {
 		case PassType::RASTER: break;
@@ -968,7 +966,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			GAL::Pipeline::PipelineStateBlock::RenderContext context;
 
-			const auto& renderPassNode = getPrivateNodeFromPublicHandle<RenderPassData>(GetSceneRenderPass());
+			//BUG: if shader group gets processed before render pass it will fail
+			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[Id(shader_group_info.RenderPassName)]); //TODO: get render pass name from shader group
 
 			for (const auto& writeAttachment : renderPassNode.Attachments) {
 				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
@@ -1307,8 +1306,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	initialize_info.ApplicationManager->AddTask(this, u8"renderSetup", &WorldRendererPipeline::preRender, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), u8"RenderSetup", u8"Render");
 
-
-	RenderOrchestrator::MemberHandle bogus;
+	RenderOrchestrator::PassData geoRenderPass;
+	geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
+	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
+	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
+	auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
@@ -1318,8 +1321,25 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
 	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
-	//renderOrchestrator->CreateMember(u8"global", u8"DirectionalLightData", { { nullptr, u8"vec3f", u8"direction" } });
-	//renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"DirectionalLightData[8]");
+	{
+		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"vec3f", u8"position" }, { nullptr, u8"float32", u8"radius" } };
+		renderOrchestrator->CreateMember(u8"global", u8"PointLightData", members);
+	}
+	
+	{
+		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"uint32", u8"pointLightsLength" }, {nullptr, u8"PointLightData[4]", u8"pointLights"}};
+		renderOrchestrator->CreateMember(u8"global", u8"LightingData", members);
+	}
+	
+	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
+	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"LightingDataNode", renderPassNodeHandle, lightingDataKey);
+
+	{
+		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, lightingDataNodeHandle);
+		bwk[u8"pointLightsLength"] = 1;
+		bwk[u8"pointLights"][0][u8"position"] = GTSL::Vector3(1, 0, 0);
+		bwk[u8"pointLights"][0][u8"radius"] = 1.5f;
+	}
 
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
@@ -1335,8 +1355,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"RayTraceRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
 
 		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"rayTraceShaderGroup");
-		renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, renderOrchestrator->GetCameraDataLayer(), rayTraceShaderGroupHandle); //TODO:
-		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, renderOrchestrator->GetCameraDataLayer(), rayTraceShaderGroupHandle); //TODO:
+		renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
+		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
 
 		RenderOrchestrator::MemberHandle traceRayParameters, staticMeshDatas;
 		
@@ -1344,9 +1364,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember(u8"global", u8"TraceRayParameterData", traceRayParameterDataMembers);
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> rayTraceDataMembers{ { &traceRayParameters, u8"TraceRayParameterData", u8"traceRayParameters"}, {&staticMeshDatas, u8"StaticMeshData*", u8"staticMeshes"} };
 		auto rayTraceDataMember = renderOrchestrator->CreateMember(u8"global", u8"RayTraceData", rayTraceDataMembers);
-		renderOrchestrator->BindToNode(renderSystem, rayTraceNode, rayTraceDataMember);
+		auto dataNode = renderOrchestrator->AddDataNode(u8"RayTraceData", rayTraceNode, rayTraceDataMember);
 
-		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceNode);
+		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, dataNode);
 		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
 		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
 		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;

@@ -16,10 +16,6 @@ namespace GTSL {
 	class Window;
 }
 
-inline bool operator!=(const GTSL::Extent3D a, const GTSL::Extent3D b) {
-	return a.Width != b.Width || a.Height != b.Height || a.Depth != b.Depth;
-}
-
 class RenderSystem : public BE::System {
 public:
 	MAKE_HANDLE(uint32, Buffer)

@@ -1,5 +1,5 @@
 #include "ByteEngine/Game/System.hpp"
-#include <GTSL/Network/Sockets.h>
+#include <GTSL/Network/Sockets.hpp>
 
 class ConnectionHandler : public BE::System {
 public:

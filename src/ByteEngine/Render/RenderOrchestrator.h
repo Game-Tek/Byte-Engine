@@ -19,6 +19,7 @@
 #include "ByteEngine/Resources/ShaderResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "Culling.h"
+#include "LightsRenderGroup.h"
 
 class RenderOrchestrator;
 class RenderState;
@@ -243,15 +244,8 @@ public:
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
 	MemberHandle CreateMember(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<MemberInfo*> members) {
-		GTSL::StaticString<2048> string;
-
 		auto parseMembers = [&](auto&& self, GTSL::StringView par, GTSL::StringView typeName, GTSL::StringView name, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> ElementDataHandle {
 			auto currentScope = GTSL::StaticString<128>(par) << u8"." << typeName;
-
-			for (uint32 i = 0; i < level; ++i) { string += u8"	"; }
-
-			string << u8"\n";
-			string << typeName; string << u8": ";
 
 			auto dataTypeEmplace = tryAddElement(par, typeName, ElementData::ElementType::TYPE);
 
@@ -293,7 +287,6 @@ public:
 		};
 
 		auto handle = parseMembers(parseMembers, parents, structName, u8"root", members, 0);
-		BE_LOG_MESSAGE(string);
 		return MemberHandle{ handle };
 	}
 
@@ -465,7 +458,7 @@ public:
 			render_orchestrator->addPendingWrite(render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, NextFrame), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
-
+		
 		const BufferWriteKey& operator=(const RenderSystem::BufferHandle obj) const {
 			if (Offset == ~0u or !validateType<RenderSystem::BufferHandle>()) { return *this; }
 			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = render_system->GetBufferAddress(obj);
@@ -1345,7 +1338,7 @@ private:
 				//BE_LOG_MESSAGE(u8"Pre size: ", ttt.TyEl.Size, u8", handle: ", t(), u8", name: ", ttt.Name);
 				ttt.TyEl.Size = GTSL::Math::RoundUpByPowerOf2(ttt.TyEl.Size, getElement(typeHandle).TyEl.Alignment);
 				ttt.TyEl.Size += getElement(typeHandle).TyEl.Size * multiplier;
-				BE_LOG_MESSAGE(u8"Post size: ", ttt.TyEl.Size, u8", handle: ", t(), u8", name: ", ttt.Name);
+				//BE_LOG_MESSAGE(u8"Post size: ", ttt.TyEl.Size, u8", handle: ", t(), u8", name: ", ttt.Name);
 			}
 
 			return { (ElementDataHandle&&)elementResult.Get(), true };
@@ -1815,6 +1808,11 @@ private:
 		res.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 		res.Interleaved = staticMeshInfo.Interleaved;
 
+		for(uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
+			auto& sm = staticMeshInfo.GetSubMeshes().array[i];
+			//render_orchestrator->LoadShaderGroup(sm.ShaderGroupName);
+		}
+
 		//if unorm or snorm is used to specify data, take that into account as some properties (such as positions) may need scaling as XNORM enconding is defined in the 0->1 / -1->1 range
 		bool usesxNorm = false;
 
@@ -1939,6 +1937,12 @@ private:
 		if (rayTracing) {
 			renderSystem->SetInstancePosition(topLevelAccelerationStructure, meshes[static_mesh_handle].InstanceHandle, pos);
 		}
+	}
+
+	void onAddLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup* lights_render_group, LightsRenderGroup::PointLightHandle light_handle) {
+		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
+		//bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(lights_render_group->GetLightPosition());
+		//bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(lights_render_group->GetLightPosition());
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

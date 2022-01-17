@@ -345,14 +345,16 @@ namespace GAL
 						structure->shaderUniformBufferArrayNonUniformIndexing = true;
 					}
 
-					if (!tryAddExtension(u8"VK_KHR_synchronization2")) {
-						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_synchronization2\" is not available."), false);
-					}
-
-					{
+					if (tryAddExtension(u8"VK_KHR_synchronization2")) {
 						VkPhysicalDeviceSynchronization2FeaturesKHR* structure;
 						placeFeaturesStructure(&structure, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR);
 						structure->synchronization2 = true;
+					} else {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_synchronization2\" is not available."), false);
+					}
+
+					if(!tryAddExtension(u8"VK_KHR_copy_commands2")) {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_copy_commands2\" is not available."), false);
 					}
 
 					if(!tryAddExtension(u8"VK_KHR_swapchain")) {
@@ -371,12 +373,12 @@ namespace GAL
 						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_maintenance4\" is not available."), false);
 					}
 
-					if (!tryAddExtension(u8"VK_KHR_dynamic_rendering")) {
-						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_dynamic_rendering\" is not available."), false);
-					} else {
+					if (tryAddExtension(u8"VK_KHR_dynamic_rendering")) {
 						VkPhysicalDeviceDynamicRenderingFeaturesKHR* features;
 						placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
 						features->dynamicRendering = true;
+					} else {
+						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_dynamic_rendering\" is not available."), false);
 					}
 
 					for (GTSL::uint32 extension = 0; extension < static_cast<GTSL::uint32>(createInfo.Extensions.ElementCount()); ++extension) {
@@ -570,6 +572,7 @@ namespace GAL
 			getDeviceProcAddr(u8"vkCmdDispatch", &VkCmdDispatch);
 			getDeviceProcAddr(u8"vkCmdCopyBuffer", &VkCmdCopyBuffer);
 			getDeviceProcAddr(u8"vkCmdCopyBufferToImage", &VkCmdCopyBufferToImage);
+			getDeviceProcAddr(u8"vkCmdBlitImage2KHR", &VkCmdBlitImage2KHR);
 			getDeviceProcAddr(u8"vkCmdCopyImage", &VkCmdCopyImage);
 			getDeviceProcAddr(u8"vkCmdPipelineBarrier", &VkCmdPipelineBarrier);
 			getDeviceProcAddr(u8"vkCmdPipelineBarrier2KHR", &VkCmdPipelineBarrier2);
@@ -870,6 +873,7 @@ namespace GAL
 		PFN_vkCmdDispatch VkCmdDispatch;
 		PFN_vkCmdCopyBuffer VkCmdCopyBuffer;
 		PFN_vkCmdCopyBufferToImage VkCmdCopyBufferToImage;
+		PFN_vkCmdBlitImage2KHR VkCmdBlitImage2KHR;
 		PFN_vkCmdCopyImage VkCmdCopyImage;
 		PFN_vkCmdPipelineBarrier VkCmdPipelineBarrier;
 		PFN_vkCmdPipelineBarrier2KHR VkCmdPipelineBarrier2;

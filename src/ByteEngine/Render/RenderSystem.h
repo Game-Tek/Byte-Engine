@@ -47,13 +47,17 @@ public:
 		return CommandListHandle(index);
 	}
 
-	void StartCommandList(const CommandListHandle command_list_handle) {
+	void Wait(const CommandListHandle command_list_handle) {
 		auto& commandListData = commandLists[command_list_handle()];
 
 		if (fences[GetCurrentFrame()].State()) {
 			fences[GetCurrentFrame()].Wait(GetRenderDevice());
 			fences[GetCurrentFrame()].Reset(GetRenderDevice());
 		}
+	}
+
+	void StartCommandList(const CommandListHandle command_list_handle) {
+		auto& commandListData = commandLists[command_list_handle()];
 
 		commandListData.CommandList.BeginRecording(GetRenderDevice());
 

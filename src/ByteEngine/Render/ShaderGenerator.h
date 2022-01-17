@@ -809,12 +809,12 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		break;
 	}
 	case GAL::ShaderType::COMPUTE: {
-		auto xSize = pipeline.TryGetElement(scopes, u8"group_size_x");
-		auto ySize = pipeline.TryGetElement(scopes, u8"group_size_y");
-		auto zSize = pipeline.TryGetElement(scopes, u8"group_size_z");
-		declarationBlock += u8"layout(local_size_x="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(xSize.Get().Reference)).DefaultValue;
-		declarationBlock += u8",local_size_y="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(ySize.Get().Reference)).DefaultValue;
-		declarationBlock += u8",local_size_z="; declarationBlock += pipeline.GetMember(GPipeline::ElementHandle(zSize.Get().Reference)).DefaultValue;
+		auto xSize = pipeline.TryGetElementHandle(scopes, u8"group_size_x");
+		auto ySize = pipeline.TryGetElementHandle(scopes, u8"group_size_y");
+		auto zSize = pipeline.TryGetElementHandle(scopes, u8"group_size_z");
+		declarationBlock += u8"layout(local_size_x="; declarationBlock += pipeline.GetMember(xSize.Get()).DefaultValue;
+		declarationBlock += u8",local_size_y="; declarationBlock += pipeline.GetMember(ySize.Get()).DefaultValue;
+		declarationBlock += u8",local_size_z="; declarationBlock += pipeline.GetMember(zSize.Get()).DefaultValue;
 		declarationBlock += u8") in;\n";
 
 		break;

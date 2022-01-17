@@ -420,6 +420,8 @@ private:
 
 	mutable GTSL::ReadWriteMutex mutex;
 
+	GAL::ShaderCompiler compiler_;
+
 	template<typename... ARGS>
 	void loadShaderGroup(TaskInfo taskInfo, Id shaderGroupName, DynamicTaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS... args) { //TODO: check why can't use ARGS&&
 		shaderGroupInfosFile.SetPointer(shaderGroupInfoOffsets[shaderGroupName]);
@@ -596,7 +598,7 @@ struct PermutationManager : Object {
 		GAL::ShaderType TargetSemantics;
 		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
 	};
-	virtual GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy) = 0;
+	virtual void ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) = 0;
 
 	template<class A>
 	PermutationManager* CreateChild(const GTSL::StringView name) {
@@ -604,7 +606,9 @@ struct PermutationManager : Object {
 	}
 
 	GTSL::StaticVector<Result, 8> ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json) {
-		return ProcessShader2(pipeline, shader_group_json, shader_json, {});
+		GTSL::StaticVector<Result, 8> batches;
+		ProcessShader2(pipeline, shader_group_json, shader_json, {}, batches);
+		return batches;
 	}
 
 	GTSL::StaticVector<GTSL::SmartPointer<PermutationManager, BE::TAR>, 8> Children;
@@ -646,12 +650,6 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareStruct(commonScope, u8"globalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
 		pipeline->DeclareStruct(commonScope, u8"cameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"}, {u8"mat4f", u8"vp"}, {u8"vec4f", u8"worldPosition"} });
-		pipeline->DeclareStruct(commonScope, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
-
-		auto instanceDataStruct = pipeline->Add(commonScope, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
-		pipeline->DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
-		auto instanceStructVertexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
-		auto instanceStructIndexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
 
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
@@ -698,6 +696,13 @@ struct CommonPermutation : PermutationManager {
 		pipeline->Add(closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
 		pipeline->DeclareFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
 
+		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
+		pipeline->DeclareStruct(computeRenderPassScope, u8"renderPassData", { { u8"ImageReference", u8"Color" }});
+
+		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
+
 		shader_generation_data.Hierarchy.EmplaceBack(this);
 
 		for (auto& e : Children) {
@@ -705,20 +710,60 @@ struct CommonPermutation : PermutationManager {
 		}
 	}
 
-	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
-		GTSL::StaticVector<Result, 8> batches;
+	void ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override  {
+		if(shaderGroupJson[u8"domain"].GetStringView() == u8"Screen") {
+			if(shader_json[u8"class"].GetStringView() == u8"Compute") {
+				auto shaderScope = pipeline->DeclareScope(computeRenderPassScope, shader_json[u8"name"]);
+				auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
+				auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
+
+				tokenizeCode(u8"vec4f color = Sample(pushConstantBlock.renderPass.Color, GetScreenPosition());", main.Tokens, GetPersistentAllocator()); //insert variable shader will use to store color
+				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetScreenPosition(), color);", main.Tokens, GetPersistentAllocator()); //store final "color" value to image
+
+				if (auto res = shader_json[u8"localSize"]) {
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
+				}
+				else {
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
+					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
+				}
+
+				auto& batch = batches.EmplaceBack();
+				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
+				batch.Scopes.PushBack({ {}, commonScope, computeShaderScope, computeRenderPassScope, shaderScope, mainFunctionHandle });
+			}
+		}
 
 		hierarchy.EmplaceBack(this);
 
 		for (auto& e : Children) {
-			batches.PushBack(e->ProcessShader2(pipeline, shaderGroupJson, shaderJson, hierarchy));
+			e->ProcessShader2(pipeline, shaderGroupJson, shader_json, hierarchy, batches);
 		}
-
-		return batches;
 	}
 
-	GPipeline::ElementHandle commonScope;
+	GPipeline::ElementHandle commonScope, computeRenderPassScope;
 	GPipeline::ElementHandle vertexShaderScope, fragmentShaderScope, computeShaderScope, rayGenShaderScope, closestHitShaderScope, anyHitShaderScope, missShaderScope;
+};
+
+struct VertexPermutationManager {
+	VertexPermutationManager(GPipeline* pipeline) {
+		for(uint32 i = 0; i < vertexPermutations; ++i) {
+
+			GTSL::StaticVector<StructElement, 8> structElements;
+
+			for(uint32 j = 0; j < vertexPermutations[i]; ++j) {
+			}
+
+			vertexPermutationHandles.EmplaceBack(pipeline->DeclareStruct({}, u8"vertex", structElements));
+		}
+	}
+
+	GTSL::StaticVector<GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8>, 8> vertexPermutations;
+	GTSL::StaticVector<GPipeline::ElementHandle, 8> vertexPermutationHandles;
 };
 
 struct VisibilityRenderPassPermutation : PermutationManager {
@@ -726,6 +771,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 
 	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
 		visibilityHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"Visibility");
+
+		pipeline->DeclareStruct(visibilityHandle, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
 
 		shader_generation_data.Scopes.EmplaceBack(visibilityHandle);
 
@@ -743,6 +790,11 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		pipeline->DeclareRawFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance[gl_InstanceIndex].ModelMatrix);");
 
 		pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"light", { { u8"vec3f", u8"light_position" }, { u8"vec3f", u8"camera_position" }, { u8"vec3f", u8"surface_world_position" }, { u8"vec3f", u8"surface_normal" }, { u8"vec3f", u8"light_color" }, { u8"vec3f", u8"V" }, { u8"vec3f", u8"color" }, { u8"vec3f", u8"F0" }, { u8"float32", u8"roughness" } }, u8"vec3f L = normalize(light_position - surface_world_position); vec3f H = normalize(V + L); float32 distance = length(light_position - surface_world_position); float32 attenuation = 1.0f / (distance * distance); vec3f radiance = light_color * attenuation; float32 NDF = DistributionGGX(surface_normal, H, roughness); float32 G = GeometrySmith(surface_normal, V, L, roughness); vec3f F = FresnelSchlick(max(dot(H, V), 0.0), F0); vec3f kS = F; vec3f kD = vec3f(1.0) - kS; kD *= 1.0 - 0; vec3f numerator = NDF * G * F; float32 denominator = 4.0f * max(dot(surface_normal, V), 0.0f) * max(dot(surface_normal, L), 0.0f) + 0.0001f; vec3f specular = numerator / denominator; float32 NdotL = max(dot(surface_normal, L), 0.0f); return (kD * color / PI() + specular) * radiance * NdotL;");
+
+		auto instanceDataStruct = pipeline->Add(visibilityHandle, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
+		pipeline->DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
+		auto instanceStructVertexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"vertex*", u8"VertexBuffer" });
+		auto instanceStructIndexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"index*", u8"IndexBuffer" });
 
 		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
@@ -764,12 +816,13 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		shader_generation_data.Hierarchy.EmplaceBack(this);
 	}
 
-	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
+	void ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
-		GTSL::StaticVector<Result, 8> batches;
 
-		for (auto p : shader_group_json[u8"parameters"]) {
-			shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+		if (auto parameters = shader_group_json[u8"parameters"]) {
+			for (auto p : parameters) {
+				shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+			}
 		}
 
 		auto shaderScope = pipeline->DeclareScope(visibilityHandle, shader_json[u8"name"]);
@@ -860,8 +913,6 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				break;
 		}
 		}
-
-		return batches;
 	}
 
 	GPipeline::ElementHandle visibilityHandle, pushConstantBlockHandle, shaderParametersHandle;
@@ -890,9 +941,8 @@ struct RayTraceRenderPassPermutation : PermutationManager {
 		shader_generation_data.Hierarchy.EmplaceBack(this);
 	}
 
-	GTSL::StaticVector<Result, 8> ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy) override {
+	void ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
-		GTSL::StaticVector<Result, 8> batches;
 
 		//for (auto p : json[u8"parameters"]) {
 		//	shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
@@ -1032,20 +1082,24 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
-			for (auto s : json[u8"structs"]) {
-				GTSL::StaticVector<StructElement, 8> elements;
+			if (auto structs = json[u8"structs"]) {
+				for (auto s : structs) {
+					GTSL::StaticVector<StructElement, 8> elements;
 
-				for (auto m : s[u8"members"]) {
-					elements.EmplaceBack(m[u8"type"], m[u8"name"]);
+					for (auto m : s[u8"members"]) {
+						elements.EmplaceBack(m[u8"type"], m[u8"name"]);
+					}
+
+					pipeline.DeclareStruct(GPipeline::ElementHandle(), s[u8"name"], elements);
 				}
-
-				pipeline.DeclareStruct(GPipeline::ElementHandle(), s[u8"name"], elements);
 			}
 
-			for (auto f : json[u8"functions"]) {
-				GTSL::StaticVector<StructElement, 8> elements;
-				for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
-				pipeline.DeclareFunction(GPipeline::ElementHandle(), f[u8"type"], f[u8"name"], elements, f[u8"code"]);
+			if (auto functions = json[u8"functions"]) {
+				for (auto f : functions) {
+					GTSL::StaticVector<StructElement, 8> elements;
+					for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
+					pipeline.DeclareFunction(GPipeline::ElementHandle(), f[u8"type"], f[u8"name"], elements, f[u8"code"]);
+				}
 			}
 
 			shaderGroupDataSerialize.RenderPassName = json[u8"renderPass"];
@@ -1061,8 +1115,10 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				}
 			}
 
-			for (auto p : json[u8"parameters"]) {
-				shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+			if (auto parameters = json[u8"parameters"]) {
+				for (auto p : parameters) {
+					shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+				}
 			}
 
 			bool rayTrace = true; ShaderGroupInfo::RayTraceData ray_trace_data;
@@ -1095,7 +1151,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					if (loadedShaders.Find(shaderHash)) { continue; }
 					loadedShaders.Emplace(shaderHash);
 
-					auto [compRes, resultString, shaderBuffer] = CompileShader(shaderResult.Get().First, s[u8"name"], sb.TargetSemantics, GAL::ShaderLanguage::GLSL, GetTransientAllocator());
+					auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, s[u8"name"], sb.TargetSemantics, GAL::ShaderLanguage::GLSL, true, GetTransientAllocator());
 
 					if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
 

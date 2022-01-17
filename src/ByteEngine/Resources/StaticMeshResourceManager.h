@@ -38,6 +38,7 @@ public:
 			DEFINE_MEMBER(uint32, MaterialIndex)
 			DEFINE_MEMBER(GTSL::Vector3, BoundingBox)
 			DEFINE_MEMBER(float32, BoundingRadius)
+			DEFINE_MEMBER(GTSL::ShortString<32>, ShaderGroupName);
 		};
 
 		DEFINE_MEMBER(uint32, VertexCount)
@@ -107,5 +108,5 @@ private:
 		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
-	bool loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer);
+	bool loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView fileExtension);
 };

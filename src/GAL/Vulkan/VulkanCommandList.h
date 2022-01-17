@@ -287,6 +287,33 @@ namespace GAL {
 			renderDevice->VkCmdCopyImage(commandBuffer, sourceTexture.GetVkImage(), ToVulkan(sourceLayout, sourceFormat), destinationTexture.GetVkImage(), ToVulkan(destinationLayout, destinationFormat), 1, &vkImageCopy);
 		}
 
+		void BlitTexture(const VulkanRenderDevice* render_device, const VulkanTexture source_texture, const TextureLayout source_layout, const FormatDescriptor source_format_descriptor, const GTSL::Extent3D source_extent, const VulkanTexture destination_texture, const TextureLayout destination_layout, const FormatDescriptor destination_format_descriptor, const GTSL::Extent3D destination_extent) {
+			VkImageBlit2KHR vkImageBlit2Khr{ VK_STRUCTURE_TYPE_IMAGE_BLIT_2_KHR };
+			vkImageBlit2Khr.srcOffsets[0] = { 0, 0, 0 };
+			vkImageBlit2Khr.srcOffsets[1] = { source_extent.Width, source_extent.Height, source_extent.Depth };
+			vkImageBlit2Khr.srcSubresource.mipLevel = 0;
+			vkImageBlit2Khr.srcSubresource.baseArrayLayer = 0;
+			vkImageBlit2Khr.srcSubresource.layerCount = 1;
+			vkImageBlit2Khr.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+			vkImageBlit2Khr.dstOffsets[0] = { 0, 0, 0 };
+			vkImageBlit2Khr.dstOffsets[1] = { destination_extent.Width, destination_extent.Height, destination_extent.Depth };
+			vkImageBlit2Khr.dstSubresource.mipLevel = 0;
+			vkImageBlit2Khr.dstSubresource.baseArrayLayer = 0;
+			vkImageBlit2Khr.dstSubresource.layerCount = 1;
+			vkImageBlit2Khr.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+			VkBlitImageInfo2KHR vkBlitImageInfo2Khr{ VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2_KHR };
+			vkBlitImageInfo2Khr.srcImage = source_texture.GetVkImage();
+			vkBlitImageInfo2Khr.srcImageLayout = ToVulkan(source_layout, source_format_descriptor);
+			vkBlitImageInfo2Khr.dstImage = destination_texture.GetVkImage();
+			vkBlitImageInfo2Khr.dstImageLayout = ToVulkan(destination_layout, destination_format_descriptor);
+			vkBlitImageInfo2Khr.filter = VK_FILTER_LINEAR;
+			vkBlitImageInfo2Khr.regionCount = 1;
+			vkBlitImageInfo2Khr.pRegions = &vkImageBlit2Khr;
+			render_device->VkCmdBlitImage2KHR(commandBuffer, &vkBlitImageInfo2Khr);
+		}
+
 		void CopyBufferToTexture(const VulkanRenderDevice* renderDevice, VulkanBuffer source, VulkanTexture destination, const TextureLayout layout, const FormatDescriptor format, GTSL::Extent3D extent) {
 			VkBufferImageCopy region;
 			region.bufferOffset = 0;

@@ -15,6 +15,8 @@
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Vectors.hpp>
 
+#include "GTSL/JSON.hpp"
+
 static GTSL::Vector4 ToGTSL(const aiColor4D assimpVector) {
 	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);
 }
@@ -49,27 +51,57 @@ StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initi
 
 	resource_files_.Start(resources_path);
 
-	GTSL::FileQuery file_query;
-	while(auto queryResult = file_query.DoQuery(query_path))
 	{
-		auto file_path = resources_path;
-		file_path += queryResult.Get();
-		auto fileName = queryResult.Get(); DropLast(fileName, u8'.');
-		const auto hashed_name = GTSL::Id64(fileName);
+		GTSL::File meshDescriptionsFile; meshDescriptionsFile.Open(GetResourcePath(u8"meshes.json"));
 
-		if (!resource_files_.Exists(hashed_name)) {
-			GTSL::File queryFile;
-			queryFile.Open(GetResourcePath(queryResult.Get()), GTSL::File::READ, false);
-			
-			GTSL::Buffer meshFileBuffer(queryFile.GetSize(), 32, GetTransientAllocator());
-			queryFile.Read(meshFileBuffer);
+		GTSL::Buffer buffer(GetPersistentAllocator()); meshDescriptionsFile.Read(buffer);
 
-			GTSL::Buffer meshDataBuffer(2048 * 2048, 8, GetTransientAllocator());
+		GTSL::Buffer jsonBuffer(GetPersistentAllocator());
 
-			StaticMeshInfo meshInfo;
+		GTSL::JSONMember json = GTSL::Parse(GTSL::StringView(buffer.GetLength(), buffer.GetLength(), reinterpret_cast<const char8_t*>(buffer.GetData())), jsonBuffer);
 
-			if (loadMesh(meshFileBuffer, meshInfo, meshDataBuffer)) {
-				resource_files_.AddEntry(fileName, &meshInfo, meshDataBuffer.GetRange());
+		for(auto mesh : json[u8"meshes"]) {			
+			auto fileName = mesh[u8"name"];
+			const auto hashed_name = GTSL::Id64(fileName);
+
+			if (!resource_files_.Exists(hashed_name)) {
+				GTSL::StaticString<8> fileExtension;
+
+				GTSL::File meshFile;
+
+				for(auto e : { u8"obj", u8"fbx" }) {
+					GTSL::File queryFile;
+					auto res = queryFile.Open(GetResourcePath(fileName, e), GTSL::File::READ, false);
+
+					if(res != GTSL::File::OpenResult::ERROR) {
+						fileExtension = e;
+						meshFile.Open(GetResourcePath(fileName, e), GTSL::File::READ, false);
+						break;
+					}
+				}
+
+				GTSL::Buffer meshFileBuffer(meshFile.GetSize(), 32, GetTransientAllocator());
+				meshFile.Read(meshFileBuffer);
+
+				GTSL::Buffer meshDataBuffer(2048 * 2048, 8, GetTransientAllocator());
+
+				StaticMeshInfo meshInfo;
+
+				auto loadMeshSuccess = loadMesh(meshFileBuffer, meshInfo, meshDataBuffer, fileExtension);
+
+				if (mesh[u8"meshes"].GetCount() != meshInfo.GetSubMeshes().Length) {
+					BE_LOG_ERROR(u8"Incomplete data for ", mesh[u8"name"], u8" mesh.");
+					continue;
+				}
+
+				for (uint32 i = 0; auto sm : mesh[u8"meshes"]) {
+					auto& s = meshInfo.GetSubMeshes().array[i++];
+					s.GetShaderGroupName() = sm[u8"shaderGroup"];
+				}
+
+				if (loadMeshSuccess) {
+					resource_files_.AddEntry(fileName, &meshInfo, meshDataBuffer.GetRange());
+				}
 			}
 		}
 	}
@@ -84,11 +116,11 @@ struct nEl {
 	T e[N];
 };
 
-bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& static_mesh_data, GTSL::Buffer<BE::TAR>& meshDataBuffer)
+bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& static_mesh_data, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView file_extension)
 {
 	Assimp::Importer importer;
 	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_FlipUVs |
-		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, "obj");
+		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, reinterpret_cast<const char*>(file_extension.GetData()));
 
 	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
 		BE_LOG_ERROR(reinterpret_cast<const char8_t*>(importer.GetErrorString()));

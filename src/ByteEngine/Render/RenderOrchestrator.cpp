@@ -248,7 +248,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	{
-		AddAttachment(u8"Color", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+		AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
 
@@ -284,6 +284,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		OnResize(renderSystem, res.Get());
 		renderArea = res.Get();
 	}
+
+	renderSystem->Wait(graphicsCommandLists[currentFrame]);
 
 	updateDescriptors(taskInfo);
 
@@ -354,7 +356,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 		}
 
-		printNode(key, level, true);
+		printNode(key, level, false);
 
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
@@ -487,7 +489,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	};
 
 	auto endNode = [&](const uint32 key, const uint32_t level) {
-		BE_LOG_WARNING(u8"Leaving node ", key);
+		//BE_LOG_WARNING(u8"Leaving node ", key);
 
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
@@ -524,10 +526,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 
-		commandBuffer.CopyTextureToTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachments.At(resultAttachment).TextureHandle[currentFrame]),
-			*renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_SOURCE, GAL::TextureLayout::TRANSFER_DESTINATION,
-			attachments.At(resultAttachment).FormatDescriptor, renderSystem->GetSwapchainFormat(),
-			GTSL::Extent3D(renderSystem->GetRenderExtent()));
+		commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent()));
 	}
 
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
@@ -630,18 +629,10 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 	getNode(renderPassNodeHandle).Name = GTSL::StringView(renderPassName);
 
-	Id resultAttachment;
-
-	if (passData.WriteAttachments.GetLength())
-		resultAttachment = passData.WriteAttachments[0].Name;
-
-	{
-		auto& finalAttachment = attachments.At(resultAttachment);
-		finalAttachment.FormatDescriptor = GAL::FORMATS::BGRA_I8;
-	}
-
 	PassType renderPassType;
 	GAL::PipelineStage pipelineStage;
+
+	NodeHandle resultHandle = renderPassNodeHandle;
 
 	switch (passData.PassType) {
 	case PassType::RASTER: {
@@ -680,17 +671,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 			attachmentData.ConsumingStages = GAL::PipelineStages::COMPUTE;
 		}
 
-		auto dispatchNodeHandle = addInternalNode<DispatchData>(Hash(renderPassName), renderPassNodeHandle);
-
-		auto loadComputeShader = [&]() {
-			//auto shaderLoadInfo = ShaderLoadInfo(GetPersistentAllocator());
-			//shaderLoadInfo.handle = dispatchNodeHandle;
-			//srm->LoadShaderGroupInfo(am, renderPassName, onShaderInfosLoadHandle, GTSL::MoveRef(shaderLoadInfo));
-			//
-			//getNode(dispatchNodeHandle).Name = GTSL::StringView(renderPassName);
-
-			return Id(renderPassName);
-		};
+		auto sgh = CreateShaderGroup(renderPassName);
+		auto pipelineBindNode = addPipelineBindNode(renderPassNodeHandle, sgh);
+		resultHandle = addInternalNode<DispatchData>(Hash(renderPassName), pipelineBindNode);
 
 		break;
 	}
@@ -724,7 +707,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		bwk[GTSL::StringView(passData.WriteAttachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
 
-	return renderPassNodeHandle;
+	return resultHandle;
 }
 
 void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize)
@@ -872,8 +855,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	GTSL::StaticMap<Id, StructElement, 8> parameters;
 
-	MemberHandle textureReferences[8];
-
 	GTSL::StaticVector<GTSL::StaticVector<GAL::Pipeline::VertexElement, 8>, 8> vertexStreams;
 	struct ShaderBundleData {
 		GTSL::StaticVector<uint32, 8> Shaders;
@@ -1020,8 +1001,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				shaderInfo.Shader = shader.Shader;
 				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
 			}
-
-			sg.ComputePipelineIndex = e.PipelineIndex;
+			
 			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 		}
 
@@ -1313,6 +1293,11 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
 	auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 
+	RenderOrchestrator::PassData gammaCorrectionPass;
+	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
+	gammaCorrectionPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
+	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
+
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
 	members.EmplaceBack(&vertexBufferReferenceHandle, u8"ptr_t", u8"vertexBuffer");
@@ -1338,7 +1323,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, lightingDataNodeHandle);
 		bwk[u8"pointLightsLength"] = 1;
 		bwk[u8"pointLights"][0][u8"position"] = GTSL::Vector3(1, 0, 0);
-		bwk[u8"pointLights"][0][u8"radius"] = 1.5f;
+		bwk[u8"pointLights"][0][u8"radius"] = 100.f;
 	}
 
 	if (rayTracing) {

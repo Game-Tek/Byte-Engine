@@ -211,53 +211,59 @@ namespace GAL
 		compiler3->Compile(&dxc_buffer, arguments.GetData(), arguments.GetLength(), nullptr, __uuidof(IDxcResult), reinterpret_cast<void**>(&result));
 	}
 
-	template<class ALLOCATOR>
-	std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> CompileShader(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, const ALLOCATOR& allocator) {
-		shaderc_shader_kind shaderc_stage;
-
-		switch (shaderType) {
-		case ShaderType::VERTEX: shaderc_stage = shaderc_vertex_shader;	break;
-		case ShaderType::TESSELLATION_CONTROL: shaderc_stage = shaderc_tess_control_shader;	break;
-		case ShaderType::TESSELLATION_EVALUATION: shaderc_stage = shaderc_tess_evaluation_shader; break;
-		case ShaderType::GEOMETRY: shaderc_stage = shaderc_geometry_shader;	break;
-		case ShaderType::FRAGMENT: shaderc_stage = shaderc_fragment_shader;	break;
-		case ShaderType::COMPUTE: shaderc_stage = shaderc_compute_shader; break;
-		case ShaderType::RAY_GEN: shaderc_stage = shaderc_raygen_shader; break;
-		case ShaderType::CLOSEST_HIT: shaderc_stage = shaderc_closesthit_shader; break;
-		case ShaderType::ANY_HIT: shaderc_stage = shaderc_anyhit_shader; break;
-		case ShaderType::INTERSECTION: shaderc_stage = shaderc_intersection_shader; break;
-		case ShaderType::MISS: shaderc_stage = shaderc_miss_shader; break;
-		case ShaderType::CALLABLE: shaderc_stage = shaderc_callable_shader; break;
-		default: GAL_DEBUG_BREAK;
+	struct ShaderCompiler {
+		ShaderCompiler() {
+			shaderc_compile_options.SetTargetSpirv(shaderc_spirv_version_1_5);
+			shaderc_compile_options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+			shaderc_compile_options.SetOptimizationLevel(shaderc_optimization_level_performance);
+			shaderc_compile_options.SetGenerateDebugInfo();
 		}
 
-		const shaderc::Compiler shaderc_compiler;
+		template<class ALLOCATOR>
+		std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> Compile(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, bool is_debug, const ALLOCATOR& allocator) {
+			shaderc_shader_kind shaderc_stage;
+
+			switch (shaderType) {
+			case ShaderType::VERTEX: shaderc_stage = shaderc_vertex_shader;	break;
+			case ShaderType::TESSELLATION_CONTROL: shaderc_stage = shaderc_tess_control_shader;	break;
+			case ShaderType::TESSELLATION_EVALUATION: shaderc_stage = shaderc_tess_evaluation_shader; break;
+			case ShaderType::GEOMETRY: shaderc_stage = shaderc_geometry_shader;	break;
+			case ShaderType::FRAGMENT: shaderc_stage = shaderc_fragment_shader;	break;
+			case ShaderType::COMPUTE: shaderc_stage = shaderc_compute_shader; break;
+			case ShaderType::RAY_GEN: shaderc_stage = shaderc_raygen_shader; break;
+			case ShaderType::CLOSEST_HIT: shaderc_stage = shaderc_closesthit_shader; break;
+			case ShaderType::ANY_HIT: shaderc_stage = shaderc_anyhit_shader; break;
+			case ShaderType::INTERSECTION: shaderc_stage = shaderc_intersection_shader; break;
+			case ShaderType::MISS: shaderc_stage = shaderc_miss_shader; break;
+			case ShaderType::CALLABLE: shaderc_stage = shaderc_callable_shader; break;
+			default: GAL_DEBUG_BREAK;
+			}
+
+			shaderc_source_language shaderc_source_language = shaderc_source_language_glsl;
+			switch (shaderLanguage) {
+			case ShaderLanguage::GLSL: shaderc_source_language = shaderc_source_language_glsl; break;
+			case ShaderLanguage::HLSL: shaderc_source_language = shaderc_source_language_hlsl; break;
+			default: GAL_DEBUG_BREAK;
+			}
+
+			shaderc_compile_options.SetSourceLanguage(shaderc_source_language);
+
+			GTSL::String<ALLOCATOR> shaderNameNullTerminator(shaderName, allocator); //String guarantees null terminator, while StringView doesn't and shaderc needs it
+			const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes(), shaderc_stage, reinterpret_cast<const char*>(shaderNameNullTerminator.c_str()), shaderc_compile_options);
+
+			if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
+				auto errorString = shaderc_module.GetErrorMessage();
+				return { false, GTSL::String<ALLOCATOR>{ GTSL::Range(GTSL::Byte(errorString.size()), reinterpret_cast<const char8_t*>(errorString.c_str())), allocator }, GTSL::Buffer<ALLOCATOR>{ allocator } };
+			}
+
+			GTSL::Buffer<ALLOCATOR> buffer((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), 16, allocator);
+			buffer.Write((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), reinterpret_cast<const GTSL::byte*>(shaderc_module.begin()));
+
+			return { true, GTSL::String<ALLOCATOR>{ allocator }, GTSL::Buffer<ALLOCATOR>{ GTSL::MoveRef(buffer) } };
+		}
+
+	private:
+		shaderc::Compiler shaderc_compiler;
 		shaderc::CompileOptions shaderc_compile_options;
-		shaderc_compile_options.SetTargetSpirv(shaderc_spirv_version_1_5);
-		shaderc_compile_options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-		shaderc_compile_options.SetGenerateDebugInfo();
-
-		shaderc_source_language shaderc_source_language = shaderc_source_language_glsl;
-		switch (shaderLanguage) {
-		case ShaderLanguage::GLSL: shaderc_source_language = shaderc_source_language_glsl; break;
-		case ShaderLanguage::HLSL: shaderc_source_language = shaderc_source_language_hlsl; break;
-		default: GAL_DEBUG_BREAK;
-		}
-
-		shaderc_compile_options.SetSourceLanguage(shaderc_source_language);
-		shaderc_compile_options.SetOptimizationLevel(shaderc_optimization_level_performance);
-
-		GTSL::String<ALLOCATOR> shaderNameNullTerminator(shaderName, allocator); //String guarantees null terminator, while StringView doesn't and shaderc needs it
-		const auto shaderc_module = shaderc_compiler.CompileGlslToSpv(reinterpret_cast<const char*>(code.GetData()), code.GetBytes(), shaderc_stage, reinterpret_cast<const char*>(shaderNameNullTerminator.c_str()), shaderc_compile_options);
-
-		if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
-			auto errorString = shaderc_module.GetErrorMessage();
-			return { false, GTSL::String<ALLOCATOR>{ GTSL::Range(GTSL::Byte(errorString.size()), reinterpret_cast<const char8_t*>(errorString.c_str())), allocator }, GTSL::Buffer<ALLOCATOR>{ allocator } };
-		}
-
-		GTSL::Buffer<ALLOCATOR> buffer((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), 16, allocator);
-		buffer.Write((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), reinterpret_cast<const GTSL::byte*>(shaderc_module.begin()));
-
-		return { true, GTSL::String<ALLOCATOR>{ allocator }, GTSL::Buffer<ALLOCATOR>{ GTSL::MoveRef(buffer) } };
-	}
+	};
 }

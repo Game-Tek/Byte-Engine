@@ -1263,7 +1263,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	onStaticMeshInfoLoadHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnStaticMeshInfoLoad",
 		DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE),
-			TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE)),
+			TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator", AccessTypes::READ_WRITE)),
 		&WorldRendererPipeline::onStaticMeshInfoLoaded
 	);
 

@@ -880,9 +880,9 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
+				tokenizeCode(u8"float32 surfaceRoughness = 1.0f;", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-
-				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), 0.0f), 0.1); }", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
 
 				break;
 			}

@@ -19,9 +19,8 @@ public:
 	GTSL::Matrix4 GetMeshTransform(StaticMeshHandle index) { return transformations[index()]; }
 	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }
 	GTSL::Vector3 GetMeshPosition(StaticMeshHandle staticMeshHandle) const { return GTSL::Math::GetTranslation(transformations[staticMeshHandle()]); }
-	ShaderGroupHandle GetMaterialHandle(StaticMeshHandle i) const { return meshes[i()].MaterialInstanceHandle; }
 
-	StaticMeshHandle AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance, ShaderGroupHandle Material);
+	StaticMeshHandle AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance);
 
 	void SetPosition(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
@@ -36,7 +35,7 @@ public:
 	void Init(WorldRendererPipeline*);
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddMesh;
+	DynamicTaskHandle<StaticMeshHandle, Id> OnAddMesh;
 	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
 	DynamicTaskHandle<GTSL::Range<const StaticMeshHandle*>> DeleteStaticMeshes;
 
@@ -45,7 +44,6 @@ private:
 	}
 
 	struct Mesh {
-		ShaderGroupHandle MaterialInstanceHandle;
 	};
 	
 	GTSL::FixedVector<Mesh, BE::PAR> meshes;

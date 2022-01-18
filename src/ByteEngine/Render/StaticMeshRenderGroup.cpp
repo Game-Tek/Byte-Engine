@@ -16,14 +16,14 @@ StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInf
 	GetApplicationManager()->BindDeletionTaskToType(staticMeshEntityIdentifier, DeleteStaticMeshes);
 }
 
-StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance, ShaderGroupHandle Material) {
+StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance) {
 	uint32 index = transformations.Emplace();
 
-	meshes.Emplace(Mesh{ Material });
+	meshes.Emplace(Mesh{});
 
 	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(staticMeshEntityIdentifier, index);
 
-	GameInstance->AddStoredDynamicTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName), GTSL::MoveRef(Material));
+	GameInstance->AddStoredDynamicTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
 
 	return handle;
 }

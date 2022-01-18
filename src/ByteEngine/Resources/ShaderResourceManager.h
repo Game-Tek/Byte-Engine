@@ -721,16 +721,9 @@ struct CommonPermutation : PermutationManager {
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetScreenPosition(), color);", main.Tokens, GetPersistentAllocator()); //store final "color" value to image
 
-				if (auto res = shader_json[u8"localSize"]) {
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
-				}
-				else {
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
-				}
+				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
+				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
+				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
 
 				auto& batch = batches.EmplaceBack();
 				batch.TargetSemantics = GAL::ShaderType::COMPUTE;

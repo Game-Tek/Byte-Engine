@@ -17,12 +17,21 @@ FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceM
 	{
 		GTSL::FileQuery file_query;
 
-		GTSL::Buffer pathBuffer(512 * 512, 16, GetTransientAllocator());
 
 		while(auto r = file_query.DoQuery(GetResourcePath(u8"*.ttf"))) {
-			GTSL::Font font({});
-			GTSL::MakeFont({}, &font); //process ttf file
+			auto name = r.Get();
 
+			DropLast(name, U'.');
+
+			if(resource_files_.Exists(Id(name))) { continue; }
+
+			GTSL::Buffer<BE::TAR> fontFileContentsBuffer(GetTransientAllocator());
+			GTSL::File file; file.Open(GetResourcePath(r.Get())); file.Read(fontFileContentsBuffer);
+
+			GTSL::Font font({});
+			GTSL::MakeFont(fontFileContentsBuffer.GetRange(), &font); //process ttf file
+
+			GTSL::Buffer pathBuffer(512 * 512, 16, GetTransientAllocator());
 			FontData font_data;
 
 			for(auto e : ALPHABET) {

@@ -63,7 +63,7 @@ namespace AAL
 			return GTSL::Result(GTSL::MoveRef(mixFormat), true);
 		}
 
-		BufferSamplePlacement GetBufferSamplePlacement() const { return BufferSamplePlacement::INTERLEAVED; }
+		BufferSamplePlacement GetBufferSamplePlacement() const { return BufferSamplePlacement::BLOCKS; }
 		
 		/**
 		 * \brief Queries the audio device for support of the specified format with the specified share mode.

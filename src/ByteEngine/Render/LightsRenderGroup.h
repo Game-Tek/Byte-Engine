@@ -21,7 +21,9 @@ public:
 	}
 
 	PointLightHandle CreatePointLight() {
-		return PointLightHandle(pointLights.Emplace());
+		auto handle = PointLightHandle(pointLights.Emplace());
+		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle>(u8"OnAddPointLight"), GTSL::MoveRef(handle));
+		return handle;
 	}
 
 	void SetRotation(const DirectionalLightHandle lightHandle, const GTSL::Rotator rotator) {
@@ -40,6 +42,15 @@ public:
 		pointLights[lightHandle()].Radius = size;
 	}
 
+	void SetPosition(PointLightHandle point_light_handle, GTSL::Vector3 position) {
+		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(position));
+		pointLights[point_light_handle()].Position = position;
+	}
+
+	GTSL::Vector3 GetPosition(const PointLightHandle point_light_handle) const {
+		return pointLights[point_light_handle()].Position;
+	}
+
 private:
 	struct DirectionalLight {
 		GTSL::RGBA Color;
@@ -50,6 +61,7 @@ private:
 	struct PointLight {
 		GTSL::RGBA Color;
 		float32 Radius;
+		GTSL::Vector3 Position;
 	};
 	GTSL::FixedVector<PointLight, BE::PersistentAllocatorReference> pointLights;
 

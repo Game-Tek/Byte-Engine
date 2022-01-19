@@ -321,7 +321,6 @@ public:
 		auto nodeHandle = addInternalNode<MeshData>(meshId, parentNodeHandle);
 		SetNodeState(nodeHandle, false);
 		getNode(nodeHandle).Name = GTSL::ShortString<32>(u8"Render Mesh");
-		++getPrivateNode<MeshData>(nodeHandle).InstanceCount;//for all meshes with same id under same tree branch add instance
 		return nodeHandle;
 	}
 
@@ -376,7 +375,7 @@ public:
 
 	template<typename T>
 	void addPendingWrite(const T& val, RenderSystem::BufferHandle buffer_handle, byte* writeTo, byte* readFrom, uint32 offset, uint8 current_frame, uint8 next_frame) {
-		auto key = uint64(buffer_handle()) | offset << 32;
+		auto key = uint64(buffer_handle()) << 32 | offset;
 
 		if (pendingWrites.Find(key)) {
 			pendingWrites.Remove(key);

@@ -147,6 +147,7 @@ namespace GAL {
 	};
 	
 	namespace FORMATS {
+		static constexpr auto R_I8 = FormatDescriptor(ComponentType::INT, 1, 8, TextureType::COLOR, 0, 0, 0, 0);
 		static constexpr auto RGB_I8 = FormatDescriptor(ComponentType::INT, 3, 8, TextureType::COLOR, 0, 1, 2, 3);
 		static constexpr auto BGRA_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
 		static constexpr auto BGRA_NONLINEAR8 = FormatDescriptor(ComponentType::NON_LINEAR, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
@@ -160,6 +161,7 @@ namespace GAL {
 	};
 	
 	enum class Format {
+		R_I8 = FORMATS::R_I8,
 		RGB_I8 = FORMATS::RGB_I8,
 		RGBA_I8 = FORMATS::RGBA_I8,
 		RGBA_F16 = FORMATS::RGBA_F16,

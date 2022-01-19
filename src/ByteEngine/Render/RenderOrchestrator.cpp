@@ -396,6 +396,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				BE_LOG_WARNING(u8"Pipeline bind data node with no valid pipeline reference.");
 			}
 
+			PrintMember(shaderGroup.Buffer, renderSystem);
+
 			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[pipelineIndex].pipeline, renderState.ShaderStages);
 			break;
 		}
@@ -886,9 +888,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			shader.Get().Shader.Initialize(renderSystem->GetRenderDevice(), GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset));
 			shader.Get().Type = s.Type;
 			shader.Get().Name = s.Name;
+			loadedShadersMap.Emplace(s.Hash);
 		}
-
-		loadedShadersMap.Emplace(s.Hash);
 
 		offset += s.Size;
 
@@ -922,7 +923,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	for (uint32 pi = 0; const auto & p : shader_group_info.Parameters) {
 		parameters.Emplace(Id(p.Name), p.Type, p.Name, p.Value);
-		members.EmplaceBack(MemberInfo{ &shaderGroups[shaderLoadInfo.MaterialIndex].ParametersHandles.Emplace(Id(p.Name)), p.Type, p.Name });
+		members.EmplaceBack(MemberInfo{ &sg.ParametersHandles.Emplace(Id(p.Name)), p.Type, p.Name });
 	}
 
 	for (auto& e : shaderBundles) {
@@ -967,7 +968,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
 			rasterState.CullMode = GAL::CullMode::CULL_BACK;
-			rasterState.WindingOrder = GAL::WindingOrder::CLOCKWISE;
+			rasterState.WindingOrder = GAL::WindingOrder::COUNTER_CLOCKWISE;
 			pipelineStates.EmplaceBack(rasterState);
 
 			GAL::Pipeline::PipelineStateBlock::ViewportState viewportState;
@@ -1157,6 +1158,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			++ii;
 		}
+
+		PrintMember(sg.Buffer, renderSystem);
 	}
 
 	for (auto& e : shaderBundles) {
@@ -1305,7 +1308,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 	gammaCorrectionPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
-	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
+	//renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
 
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");

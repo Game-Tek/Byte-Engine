@@ -69,7 +69,7 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 
 			TextureInfo texture_info;
 
-			texture_info.Format = GAL::FormatDescriptor(GAL::ComponentType::INT, finalChannelCount, 8, GAL::TextureType::COLOR, 0, 1, 2, 3);
+			texture_info.Format = GAL::FormatDescriptor(GAL::ComponentType::INT, finalChannelCount, 8, GAL::TextureType::COLOR, finalChannelCount > 0 ? 0 : 0, finalChannelCount > 1 ? 1 : 0, finalChannelCount > 2 ? 2 : 0, finalChannelCount > 3 ? 3 : 0);
 			const uint32 size = static_cast<uint32>(x) * y * finalChannelCount;
 			texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 

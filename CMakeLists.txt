@@ -4,7 +4,7 @@ include(FetchContent)
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 
 # assimp download
-FetchContent_Declare(assimp GIT_REPOSITORY "https://github.com/assimp/assimp" GIT_TAG "96e2f1cd5b9ff5b0bc2c5f5e81630253ea3a1ceb")
+FetchContent_Declare(assimp GIT_REPOSITORY "https://github.com/assimp/assimp" GIT_TAG "141c6ca270aa4d344bdccff4b5387bc55cbeb95c")
 
 set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "" FORCE)
 set(ASSIMP_BUILD_TESTS OFF CACHE INTERNAL "" FORCE)

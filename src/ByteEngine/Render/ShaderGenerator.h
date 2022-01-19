@@ -48,6 +48,10 @@ enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
  * \param statements Array container for statements.
  */
 void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& allocator) {
+	tokenizeCode(code, statements);
+}
+
+void tokenizeCode(const GTSL::StringView code, auto& statements) {
 	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
 	GTSL::StaticVector<ShaderNode::Type, 1024> tokenTypes;
 
@@ -134,7 +138,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& all
 	}
 }
 
-struct GPipeline : public Object {
+struct GPipeline : Object {
 	struct ElementHandle { uint32 Handle = 1; };
 
 	struct FunctionDefinition {
@@ -162,6 +166,7 @@ struct GPipeline : public Object {
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
 		GTSL::StaticVector<uint32, 32> symbols;
 		GTSL::StaticString<64> Name;
+		uint16 Level = 0;
 		uint32 Reference = 0xFFFFFFFF;
 	};
 
@@ -199,21 +204,21 @@ struct GPipeline : public Object {
 		__debugbreak();
 	}
 
+	uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
+
+	auto& GetElement(const ElementHandle element_handle) { return elements[element_handle.Handle]; }
+	const auto& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
+
 	ElementHandle Add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
 		elements[parent.Handle].map.Emplace(Id(name)).EmplaceBack(handle);
 		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
+		if(parent.Handle != 1) {
+			e.Level = GetElement(parent).Level + 1;
+		}
 		return ElementHandle(handle);
-	}
-
-	auto& GetElement(const ElementHandle element_handle) {
-		return elements[element_handle.Handle];
-	}
-
-	const auto& GetElement(const ElementHandle element_handle) const {
-		return elements[element_handle.Handle];
 	}
 
 	ElementHandle addConditional(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
@@ -221,6 +226,9 @@ struct GPipeline : public Object {
 		elements[parent.Handle].map.TryEmplace(Id(name)).Get().EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type;
+		if (parent.Handle != 1) {
+			e.Level = GetElement(parent).Level + 1;
+		}
 		return ElementHandle(handle);
 	}
 
@@ -273,6 +281,16 @@ struct GPipeline : public Object {
 	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
 		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElementHandle(parents[i], name)) {
+				return res;
+			}
+		}
+
+		return { ElementHandle(), false };
+	}
+
+	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const ElementHandle current_scope, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
+		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+			if (auto res = TryGetElementHandle(parents[i], name); res && GetLevel(res.Get()) <= GetLevel(current_scope)) {
 				return res;
 			}
 		}
@@ -569,7 +587,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		}
 	}
 
-	auto writeFunction = [&pipeline, scopes, &usedFunctions, resolveTypeName, resolve, addErrorCode, writeStruct](auto& resultString, const uint32 id, auto&& self) -> void {
+	auto writeFunction = [&pipeline, scopes, &usedFunctions, resolveTypeName, resolve, addErrorCode, writeStruct](auto& resultString, const GPipeline::ElementHandle function_handle, const uint32 id, auto&& self) -> void {
 		auto& function = pipeline.GetFunction(id);
 
 		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
@@ -612,7 +630,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 							//if (function.IsRaw) { statementString += resolve(node.Name); break; }
 
-							auto elementResult = pipeline.TryGetElementHandle(scopes, node.Name);
+							auto elementResult = pipeline.TryGetElementHandle(scopes, function_handle, node.Name);
 
 							if (elementResult.State()) {
 								auto& element = pipeline.GetElement(elementResult.Get());
@@ -622,15 +640,15 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 								}
 								else if (element.Type == GPipeline::LanguageElement::ElementType::DEDUCTION_GUIDE) {
 									for (uint32 i = 0; auto f : pipeline.GetMemberDeductionGuide(elementResult.Get())) {
+										if (i) { statementString += u8"."; }
 										statementString += resolve(pipeline.GetName(f));
-										if (i < pipeline.GetMemberDeductionGuide(elementResult.Get()).ElementCount() - 1) { statementString += u8"."; }
 										++i;
 									}
 								}
 								else if (element.Type == GPipeline::LanguageElement::ElementType::FUNCTION) {
 									if (auto res = pipeline.TryGetElement(scopes, node.Name)) {
 										for (auto e : pipeline.GetFunctionOverloads(scopes, node.Name)) { //for every overload, TODO: type deduction?
-											self(resultString, e->Id, self); //add function
+											self(resultString, elementResult.Get(), e->Id, self); //add function
 										}
 									}
 
@@ -831,7 +849,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		break;
 	}
 
-	writeFunction(functionBlock, pipeline.GetFunction(scopes, u8"main").Id, writeFunction); //add main
+	writeFunction(functionBlock, pipeline.TryGetElementHandle(scopes, u8"main").Get(), pipeline.GetFunction(scopes, u8"main").Id, writeFunction); //add main
 
 	GTSL::String<ALLOCATOR> fin(allocator);
 

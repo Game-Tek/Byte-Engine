@@ -825,7 +825,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
 			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
+				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
 			}			
 		}
 
@@ -883,6 +883,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				tokenizeCode(u8"float32 surfaceRoughness = 1.0f;", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"surfaceColor.rgb = surfaceColor.rgb / (surfaceColor.rgb + vec3f(1.0)); surfaceColor = vec4f(pow(surfaceColor.rgb, vec3f(1.0 / 2.2)), 1); ", main.Tokens);
 
 				break;
 			}
@@ -1141,21 +1142,22 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
 					auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
 
-					if (loadedShaders.Find(shaderHash)) { continue; }
-					loadedShaders.Emplace(shaderHash);
+					if (!loadedShaders.Find(shaderHash)) {
+						loadedShaders.Emplace(shaderHash);
 
-					auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, s[u8"name"], sb.TargetSemantics, GAL::ShaderLanguage::GLSL, true, GetTransientAllocator());
+						auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, s[u8"name"], sb.TargetSemantics, GAL::ShaderLanguage::GLSL, true, GetTransientAllocator());
 
-					if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
+						if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
 
-					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
-					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
+						shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
+						shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
 
-					shaderInfosFile << GTSL::ShortString<32>(s[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
-					shaderInfosFile << 0; //0 params
-					shaderInfosFile << sb.TargetSemantics;
+						shaderInfosFile << GTSL::ShortString<32>(s[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
+						shaderInfosFile << 0; //0 params
+						shaderInfosFile << sb.TargetSemantics;
 
-					shaderPackageFile.Write(shaderBuffer);
+						shaderPackageFile.Write(shaderBuffer);
+					}
 
 					shaderGroupDataSerialize.Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
 					shaderGroupUsedShaders.EmplaceBack(shaderHash);

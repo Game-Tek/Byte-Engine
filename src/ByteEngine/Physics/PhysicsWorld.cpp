@@ -67,7 +67,7 @@ void PhysicsWorld::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceM
 
 	physicsObjects[buffer].Buffer.Allocate(staticMeshInfo.GetVertexSize() * staticMeshInfo.GetVertexCount() + staticMeshInfo.GetIndexSize() * staticMeshInfo.GetIndexCount() + 32, 16);
 	
-	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 2, GTSL::Range<byte*>(physicsObjects[buffer].Buffer.GetCapacity(), physicsObjects[buffer].Buffer.GetData()), onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
+	//staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, 2, GTSL::Range<byte*>(physicsObjects[buffer].Buffer.GetCapacity(), physicsObjects[buffer].Buffer.GetData()), onStaticMeshLoadedHandle, GTSL::MoveRef(buffer));
 }
 
 void PhysicsWorld::onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32 index)

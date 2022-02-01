@@ -675,7 +675,6 @@ struct CommonPermutation : PermutationManager {
 		auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
 		auto outNormalHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
 		pipeline->AddMemberDeductionGuide(fragmentShaderScope, u8"surfaceColor", { outColorHandle });
-		pipeline->AddMemberDeductionGuide(fragmentShaderScope, u8"surfaceNormal", { outNormalHandle });
 
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
@@ -759,8 +758,177 @@ struct VertexPermutationManager {
 	GTSL::StaticVector<GPipeline::ElementHandle, 8> vertexPermutationHandles;
 };
 
+auto constexpr U_STRING = u8"output = instances[output.r].";
+auto constexpr F_STRING = u8"vec3f mix(uvec3 indices) { return  }";
+
 struct VisibilityRenderPassPermutation : PermutationManager {
 	VisibilityRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"VisibilityRenderPassPermutation") {}
+
+	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
+		visibilityHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"Visibility");
+
+		pipeline->DeclareStruct(visibilityHandle, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
+
+		shader_generation_data.Scopes.EmplaceBack(visibilityHandle);
+
+		pipeline->DeclareStruct(visibilityHandle, u8"BarycentricDeriv", { { u8"vec3f", u8"m_lambda" }, { u8"vec3f", u8"m_ddx" }, { u8"vec3f", u8"m_ddy" } });
+		pipeline->DeclareRawFunction(visibilityHandle, u8"BarycentricDeriv", u8"CalcFullBary", { { u8"vec4f", u8"pt0" }, { u8"vec4f", u8"pt1" }, { u8"vec4f", u8"pt2" }, { u8"vec2f", u8"pixelNdc" }, { u8"vec2f", u8"winSize" } }, u8"BarycentricDeriv ret; vec3f invW = vec3f(1) / vec3f(pt0.w, pt1.w, pt2.w); vec2f ndc0 = pt0.xy * invW.x; vec2f ndc1 = pt1.xy * invW.y; vec2f ndc2 = pt2.xy * invW.z; float32 invDet = 1.0f / determinant(mat2f(ndc2 - ndc1, ndc0 - ndc1)); ret.m_ddx = vec3f(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet; ret.m_ddy = vec3f(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet; vec2f deltaVec = pixelNdc - ndc0; float32 interpInvW = (invW.x + deltaVec.x * dot(invW, ret.m_ddx) + deltaVec.y * dot(invW, ret.m_ddy)); float32 interpW = 1.0f / interpInvW; ret.m_lambda.x = interpW * (invW[0] + deltaVec.x * ret.m_ddx.x * invW[0] + deltaVec.y * ret.m_ddy.x * invW[0]); ret.m_lambda.y = interpW * (0.0f + deltaVec.x * ret.m_ddx.y * invW[1] + deltaVec.y * ret.m_ddy.y * invW[1]); ret.m_lambda.z = interpW * (0.0f + deltaVec.x * ret.m_ddx.z * invW[2] + deltaVec.y * ret.m_ddy.z * invW[2]); ret.m_ddx *= (2.0f / winSize.x); ret.m_ddy *= (2.0f / winSize.y); ret.m_ddy *= -1.0f; return ret;");
+		pipeline->DeclareRawFunction(visibilityHandle, u8"vec3f", u8"InterpolateWithDeriv", { { u8"BarycentricDeriv", u8"deriv" }, { u8"vec3f", u8"mergedV" } }, u8"vec3f ret; ret.x = dot(deriv.m_lambda, mergedV); ret.y = dot(deriv.m_ddx * mergedV, vec3f(1, 1, 1)); ret.z = dot(deriv.m_ddy * mergedV, vec3f(1, 1, 1)); return ret;");
+
+		pipeline->DeclareStruct(visibilityHandle, u8"PointLightData", { { u8"vec3f", u8"position" }, {u8"float32", u8"radius"} });
+		pipeline->DeclareStruct(visibilityHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"} });
+
+		pushConstantBlockHandle = pipeline->DeclareScope(visibilityHandle, u8"pushConstantBlock");
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
+		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instance" });
+
+		pipeline->DeclareRawFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instance[gl_InstanceIndex].ModelMatrix);");
+		pipeline->DeclareRawFunction(visibilityHandle, u8"uint32", u8"GetVertexIndex", {}, u8"return gl_VertexIndex;");
+
+		//compute shader surface shader scope
+		pipeline->DeclareRawFunction(visibilityHandle, u8"vec4f", u8"GetVertexPosition", {}, u8"instanceData* instance = pushConstantBlock.instance[gl_InstanceIndex]; u16vec3 indices = index*(pushConstantBlock.renderPass.indexBuffer + instance.indexBufferOffset)[gl_PrimitiveID].indexTri; vec3f* vertices = vec3f*(pushConstantBlock.renderPass.vertexBuffer + instance.vertexBufferOffset + 0); vec3f barycenter = GetVertexBarycenter(); return vec4f(vertices[indices[0]] * barycenter.x + vertices[indices[1]] * barycenter.y + vertices[indices[2]] * barycenter.z, 1);");
+		//
+
+		pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"light", { { u8"vec3f", u8"light_position" }, { u8"vec3f", u8"camera_position" }, { u8"vec3f", u8"surface_world_position" }, { u8"vec3f", u8"surface_normal" }, { u8"vec3f", u8"light_color" }, { u8"vec3f", u8"V" }, { u8"vec3f", u8"color" }, { u8"vec3f", u8"F0" }, { u8"float32", u8"roughness" } }, u8"vec3f L = normalize(light_position - surface_world_position); vec3f H = normalize(V + L); float32 distance = length(light_position - surface_world_position); float32 attenuation = 1.0f / (distance * distance); vec3f radiance = light_color * attenuation; float32 NDF = DistributionGGX(surface_normal, H, roughness); float32 G = GeometrySmith(surface_normal, V, L, roughness); vec3f F = FresnelSchlick(max(dot(H, V), 0.0), F0); vec3f kS = F; vec3f kD = vec3f(1.0) - kS; kD *= 1.0 - 0; vec3f numerator = NDF * G * F; float32 denominator = 4.0f * max(dot(surface_normal, V), 0.0f) * max(dot(surface_normal, L), 0.0f) + 0.0001f; vec3f specular = numerator / denominator; float32 NdotL = max(dot(surface_normal, L), 0.0f); return (kD * color / PI() + specular) * radiance * NdotL;");
+
+		auto instanceDataStruct = pipeline->Add(visibilityHandle, u8"instanceData", GPipeline::LanguageElement::ElementType::STRUCT);
+		pipeline->DeclareVariable(instanceDataStruct, { u8"mat4x3f", u8"ModelMatrix" });
+		auto instanceStructVertexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"uint32", u8"vertexBufferOffset" });
+		auto instanceStructIndexBuffer = pipeline->DeclareVariable(instanceDataStruct, { u8"uint32", u8"indexBufferOffset" });
+
+		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
+
+		if (common_permutation) {
+			pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
+
+			auto vertexSurfaceInterface = pipeline->DeclareScope(visibilityHandle, u8"vertexSurfaceInterface");
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"instanceIndex" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"triangleIndex" });
+
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpacePosition" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpaceNormal" });
+		}
+		else {
+			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
+		}
+
+		shader_generation_data.Hierarchy.EmplaceBack(this);
+	}
+
+	void ProcessShader2(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+		GTSL::StaticVector<StructElement, 8> shaderParameters;
+
+		if (auto parameters = shader_group_json[u8"parameters"]) {
+			for (auto p : parameters) {
+				if (auto def = p[u8"defaultValue"]) {
+					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
+				}
+				else {
+					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
+				}
+			}
+		}
+
+		auto shaderScope = pipeline->DeclareScope(visibilityHandle, shader_json[u8"name"]);
+		auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
+
+		{ //add deduction guides for reaching shader parameters
+			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
+
+			for (auto& e : shaderParameters) {
+				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
+			}
+		}
+
+		if (auto res = shader_json[u8"localSize"]) {
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
+		}
+		else {
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
+			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
+		}
+
+		auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
+
+		//if (auto sv = shader_group_json[u8"shaderVariables"]) {
+		//	for (auto e : sv) {
+		//		StructElement struct_element(e[u8"type"], e[u8"name"]);
+		//
+		//		//pipeline.Add(GPipeline::ElementHandle(), struct_element.Name, GPipeline::LanguageElement::ElementType::MEMBER);
+		//
+		//		if (auto res = e[u8"defaultValue"]) {
+		//			struct_element.DefaultValue = res;
+		//		}
+		//	}
+		//}
+
+		switch (Hash(shader_group_json[u8"domain"])) {
+		case GTSL::Hash(u8"World"): {
+			auto& batch = batches.EmplaceBack();
+
+			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
+
+			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
+			batch.Scopes.EmplaceBack(common_permutation->commonScope);
+			batch.Scopes.EmplaceBack(visibilityHandle);
+
+			switch (Hash(shader_json[u8"class"])) {
+			case GTSL::Hash(u8"Vertex"): {
+				batch.TargetSemantics = GAL::ShaderType::VERTEX;
+				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
+
+				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
+
+				//todo: analyze if we need to emit compute shader
+				break;
+			}
+			case GTSL::Hash(u8"Surface"): {
+				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
+				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
+
+				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
+
+				break;
+			}
+			case GTSL::Hash(u8"Miss"): {
+				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
+				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
+				batch.Scopes.EmplaceBack(shaderScope);
+				//todo: emit compute shader for raster
+				break;
+			}
+			default: {
+				batches.PopBack(); //remove added batch as no shader was created
+				BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")
+			}
+			}
+
+			break;
+		}
+		default: {
+			//BE_LOG_ERROR(u8"Unhandled domain.")
+			break;
+		}
+		}
+	}
+
+	GPipeline::ElementHandle visibilityHandle, pushConstantBlockHandle, shaderParametersHandle;
+};
+
+struct ForwardRenderPassPermutation : PermutationManager {
+	ForwardRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"ForwardRenderPassPermutation") {}
 
 	void Process2(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
 		visibilityHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"Visibility");
@@ -814,7 +982,11 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
 			for (auto p : parameters) {
-				shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+				if (auto def = p[u8"defaultValue"]) {
+					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
+				} else {
+					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
+				}
 			}
 		}
 
@@ -880,10 +1052,9 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
-				tokenizeCode(u8"float32 surfaceRoughness = 1.0f;", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"surfaceColor.rgb = surfaceColor.rgb / (surfaceColor.rgb + vec3f(1.0)); surfaceColor = vec4f(pow(surfaceColor.rgb, vec3f(1.0 / 2.2)), 1); ", main.Tokens);
 
 				break;
 			}
@@ -1045,7 +1216,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"Common");
 
 			{ //configure permutations
-				commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPass");
+				commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
 				//commonPermutation->CreateChild<RayTraceRenderPassPermutation>(u8"RayTraceRenderPass");
 			} //todo: parametrize
 
@@ -1111,7 +1282,11 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			if (auto parameters = json[u8"parameters"]) {
 				for (auto p : parameters) {
-					shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
+					if (auto def = p[u8"defaultValue"]) {
+						shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
+					} else {
+						shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
+					}
 				}
 			}
 

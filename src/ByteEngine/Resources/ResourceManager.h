@@ -181,6 +181,12 @@ struct ResourceFiles {
 		return true;
 	}
 
+	bool LoadData(auto& info, GTSL::Range<byte*> buffer, uint32 offset, uint32 size) {
+		data.SetPointer(info.Header.DataOffset + offset);
+		data.Read(size, buffer.begin());
+		return true;
+	}
+
 private:
 	static constexpr uint64 BLOCK_SIZE = 1024u;
 

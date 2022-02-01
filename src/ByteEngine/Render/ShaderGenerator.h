@@ -472,6 +472,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		case GTSL::Hash(u8"vec2u"):   result = u8"uvec2"; break;
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
+		case GTSL::Hash(u8"mat2f"):   result = u8"mat2"; break;
 		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
 		case GTSL::Hash(u8"mat3x4f"): result = u8"mat3x4"; break;
 		case GTSL::Hash(u8"mat4x3f"): result = u8"mat4x3"; break;
@@ -767,6 +768,9 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 			auto vertexFragmentInterfaceBlockHandle = pipeline.TryGetElementHandle(scopes, u8"vertexSurfaceInterface");
 			if (!vertexFragmentInterfaceBlockHandle) { addErrorCode(u8"Vertex-Surface interface block declaration was not found."); return; }
 			for (auto& e : pipeline.GetChildren(vertexFragmentInterfaceBlockHandle.Get())) {
+				if(pipeline.GetMember(e).Type == u8"uint32") {
+					declarationBlock += u8"flat ";
+				}
 				writeStructElement(declarationBlock, pipeline.GetMember(e));
 			}
 		}();

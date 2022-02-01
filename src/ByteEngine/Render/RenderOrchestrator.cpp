@@ -163,6 +163,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	tryAddDataType(u8"global", u8"uint32", 4);
 	tryAddDataType(u8"global", u8"uint64", 8);
 	tryAddDataType(u8"global", u8"float32", 4);
+	tryAddDataType(u8"global", u8"vec2u", 4 * 2);
 	tryAddDataType(u8"global", u8"vec2f", 4 * 2);
 	tryAddDataType(u8"global", u8"vec3f", 4 * 3);
 	tryAddDataType(u8"global", u8"vec4f", 4 * 4);
@@ -268,7 +269,7 @@ void RenderOrchestrator::Setup(TaskInfo taskInfo) {
 
 template<typename K, typename V, class ALLOC>
 void Skim(GTSL::HashMap<K, V, ALLOC>& hash_map, auto predicate) {
-	GTSL::StaticVector<uint32, 512> toSkim;
+	GTSL::StaticVector<uint64, 512> toSkim;
 	GTSL::PairForEach(hash_map, [&](K key, V& val) { if (predicate(val)) { toSkim.EmplaceBack(key); } });
 	for (auto e : toSkim) { hash_map.Remove(e); }
 }
@@ -352,15 +353,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		const auto& baseData = renderingTree.GetAlpha(key);
 
-		if constexpr (BE_DEBUG) {
-			commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
-		}
-
 		printNode(key, level, false);
 
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
 			const LayerData& layerData = renderingTree.GetClass<LayerData>(key);
+
+			if constexpr (BE_DEBUG) {
+				commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
+			}
 
 			if (layerData.DataKey) {
 				dataStreamHandle = renderState.AddDataStream();
@@ -396,8 +397,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				BE_LOG_WARNING(u8"Pipeline bind data node with no valid pipeline reference.");
 			}
 
-			PrintMember(shaderGroup.Buffer, renderSystem);
-
 			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[pipelineIndex].pipeline, renderState.ShaderStages);
 			break;
 		}
@@ -422,20 +421,28 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			break;
 		}
-		case RTT::GetTypeIndex<MeshData>(): {
-			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
+		case RTT::GetTypeIndex<VertexBufferBindData>(): {
+			const VertexBufferBindData& meshData = renderingTree.GetClass<VertexBufferBindData>(key);
 
 			auto buffer = renderSystem->GetBuffer(meshData.Handle);
 
 			GTSL::StaticVector<GPUBuffer, 8> buffers;
 
-			for(uint32 i = 0; i < meshData.Offsets.GetLength(); ++i) {
+			for (uint32 i = 0; i < meshData.Offsets.GetLength(); ++i) {
 				buffers.EmplaceBack(buffer);
 			}
 
 			commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), buffers, meshData.Offsets, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
-			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), buffer, GTSL::Math::RoundUpByPowerOf2(meshData.VertexSize * meshData.VertexCount, renderSystem->GetBufferSubDataAlignment()), meshData.IndexCount, meshData.IndexType);
-			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount);
+			break;
+		}
+		case RTT::GetTypeIndex<IndexBufferBindData>(): {
+			const IndexBufferBindData& meshData = renderingTree.GetClass<IndexBufferBindData>(key);
+			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), renderSystem->GetBuffer(meshData.BufferHandle), 0, meshData.IndexCount, meshData.IndexType);
+			break;
+		}
+		case RTT::GetTypeIndex<MeshData>(): {
+			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
+			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, 0, meshData.VertexOffset);
 			break;
 		}
 		case RTT::GetTypeIndex<DrawData>(): {
@@ -496,6 +503,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
 			renderState.PopData();
+
+			if constexpr (BE_DEBUG) {
+				commandBuffer.EndRegion(renderSystem->GetRenderDevice());
+			}
+
 			break;
 		}
 		case RTT::GetTypeIndex<RenderPassData>(): {
@@ -507,10 +519,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			break;
 		}
 		default: break;
-		}
-
-		if constexpr (BE_DEBUG) {
-			commandBuffer.EndRegion(renderSystem->GetRenderDevice());
 		}
 	};
 
@@ -855,7 +863,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock, 32> pipelineStates;
 
-	GTSL::StaticMap<Id, StructElement, 8> parameters;
+	GTSL::HashMap<Id, StructElement, BE::TAR> parameters(8, GetTransientAllocator());
 
 	GTSL::StaticVector<GTSL::StaticVector<GAL::Pipeline::VertexElement, 8>, 8> vertexStreams;
 	struct ShaderBundleData {
@@ -1300,7 +1308,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	RenderOrchestrator::PassData geoRenderPass;
 	geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
+	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
 	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
 	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
 	auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
@@ -1308,15 +1316,24 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 	gammaCorrectionPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
-	//renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
+	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
+
+	//32 = material count
+	auto materialCount = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
+	auto materialStart = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
+	auto pixelXY= renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2u[2073600]"); //1920 * 1080
 
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"ptr_t", u8"vertexBuffer");
-	members.EmplaceBack(&indexBufferReferenceHandle, u8"ptr_t", u8"indexBuffer");
+	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"vertexBufferOffset");
+	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"indexBufferOffset");
+	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint64", u8"pad");
 
 	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
 	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
+
+	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, false, {});
+	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX, true, false, {});
 
 	{
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"vec3f", u8"position" }, { nullptr, u8"float32", u8"radius" } };
@@ -1330,6 +1347,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	
 	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
 	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"LightingDataNode", renderPassNodeHandle, lightingDataKey);
+
+	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
+	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
 
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {

@@ -29,6 +29,10 @@ public:
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
 	bool IsUpdatable(BufferHandle buffer_handle) const { return buffers[buffer_handle()].isMulti; }
+	GTSL::Range<byte*> GetBufferRange(BufferHandle buffer_handle) const {
+		const auto& buffer = buffers[buffer_handle()];
+		return { buffer.Size, (byte*)buffer.StagingAllocation[0].Data };
+	}
 
 	MAKE_HANDLE(uint32, CommandList);
 	MAKE_HANDLE(uint32, AccelerationStructure);

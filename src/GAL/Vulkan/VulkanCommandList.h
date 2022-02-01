@@ -174,8 +174,8 @@ namespace GAL {
 			renderDevice->VkCmdDraw(commandBuffer, vertex_count, instance_count, 0, 0);
 		}
 
-		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount = 0) const {
-			renderDevice->VkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, 0, 0, 0);
+		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount, uint32_t first_instance_index, uint32 vertex_offset) const {
+			renderDevice->VkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, 0, vertex_offset, first_instance_index);
 		}
 
 		void DrawMesh(const VulkanRenderDevice* renderDevice, GTSL::uint32 taskCount) const {

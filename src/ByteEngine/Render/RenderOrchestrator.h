@@ -1768,6 +1768,8 @@ private:
 	};
 	GTSL::HashMap<uint64, PendingWriteData, BE::PAR> pendingWrites;
 
+	GTSL::ShortString<16> tag = u8"Forward";
+
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
 #endif
@@ -1808,7 +1810,8 @@ private:
 
 	bool rayTracing = false;
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
-	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle;
+	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
+	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
 
 	struct Mesh {
 		ShaderGroupHandle MaterialHandle;
@@ -1860,23 +1863,25 @@ private:
 
 		resource.Offset = vertexBufferOffset; resource.IndexOffset = indexBufferOffset;
 
-		RenderOrchestrator::NodeHandle materialNode;
-
 		for(uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 			auto& sm = staticMeshInfo.GetSubMeshes().array[i];
 			auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
 
-			if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-				auto materialDataNode = render_orchestrator->AddDataNode(render_system, u8"MeshMaterialNode", indexBufferNodeHandle, render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
-				r.Get().Node = render_orchestrator->AddMaterial(render_system, materialDataNode, shaderGroupHandle);
-				materialNode = r.Get().Node;
-
-				auto meshDataNode = render_orchestrator->AddDataNode(render_system, u8"MeshNode", materialNode, meshDataBuffer);
-				auto meshNode = render_orchestrator->AddMesh(meshDataNode, 0, resource.IndexCount, 0);
-				resource.nodeHandle = meshNode;
+			if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
+				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
+					auto materialDataNode = render_orchestrator->AddDataNode(render_system, u8"MaterialNode", meshDataNode, render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
+					r.Get().Node = render_orchestrator->AddMaterial(render_system, materialDataNode, shaderGroupHandle);
+					
+					resource.nodeHandle = render_orchestrator->AddMesh(r.Get().Node, 0, resource.IndexCount, vertexBufferOffset);
+				}
 			}
-			else {
-				materialNode = r.Get().Node;
+			else if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
+				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
+					resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, vertexBufferOffset);
+				}
+
+				//TODO: add to selection buffer
+				//TODO: add pipeline bind to render pixels with this material
 			}
 		}
 

@@ -79,8 +79,9 @@ target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono
 # assimp
 target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")
 target_include_directories(ByteEngine PUBLIC "${assimp_BINARY_DIR}/include")
-target_link_libraries(ByteEngine INTERFACE "${assimp_BINARY_DIR}/lib/assimp-vc142-mtd.lib")
+target_link_libraries(ByteEngine INTERFACE "${assimp_BINARY_DIR}/lib/assimp-vc143-mtd.lib")
 target_link_libraries(ByteEngine INTERFACE "${assimp_BINARY_DIR}/contrib/zlib/zlibstaticd.lib")
+# find_package(assimp MODULE REQUIRED)
 # assimp
 
 # stb

@@ -249,14 +249,15 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	{
-		AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-		AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
+		if (tag == GTSL::ShortString<16>(u8"Forward")) {
+			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
+			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+		}
 
-		RenderOrchestrator::PassData colorGrading{};
-		colorGrading.PassType = RenderOrchestrator::PassType::COMPUTE;
-		colorGrading.WriteAttachments.EmplaceBack(u8"Color"); //result attachment
-		//auto cgrp = renderOrchestrator->AddRenderPass(u8"ColorGradingRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, colorGrading, applicationManager, applicationManager->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager"));
+		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
 	}
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
@@ -891,15 +892,17 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 	}
 
-	for (uint32 offset = 0, si = 0; const auto & s : shader_group_info.Shaders) {
+	for (uint32 offset = 0, si = 0; si < shader_group_info.Shaders; offset += shader_group_info.Shaders[si].Size, ++si) {
+		const auto& s = shader_group_info.Shaders[si];
+
+		if (!Contains(tag, s.Tags.GetRange()) && s.Tags.GetLength()) { continue; } //if shader doesn't contain tag don't use it, tags are used to filter shaders usually based on render technique used
+
 		if (auto shader = shaders.TryEmplace(s.Hash)) {
 			shader.Get().Shader.Initialize(renderSystem->GetRenderDevice(), GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset));
 			shader.Get().Type = s.Type;
 			shader.Get().Name = s.Name;
 			loadedShadersMap.Emplace(s.Hash);
 		}
-
-		offset += s.Size;
 
 		bool foundGroup = false;
 		auto shaderStageFlag = GAL::ShaderTypeToShaderStageFlag(s.Type);
@@ -925,8 +928,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			sb.Shaders.EmplaceBack(si);
 			sb.Stage = shaderStageFlag;
 		}
-
-		++si;
 	}
 
 	for (uint32 pi = 0; const auto & p : shader_group_info.Parameters) {
@@ -957,7 +958,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			GAL::Pipeline::PipelineStateBlock::RenderContext context;
 
 			//BUG: if shader group gets processed before render pass it will fail
-			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[Id(shader_group_info.RenderPassName)]); //TODO: get render pass name from shader group
+			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[Id(tag == GTSL::StringView(u8"Visibility") ? u8"VisibilityRenderPass" : u8"ForwardRenderPass")]);
 
 			for (const auto& writeAttachment : renderPassNode.Attachments) {
 				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
@@ -1306,12 +1307,57 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto updateLightTaskHandle = GetApplicationManager()->StoreDynamicTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
-	RenderOrchestrator::PassData geoRenderPass;
-	geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
-	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
-	geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
-	auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
+	RenderOrchestrator::NodeHandle renderPassNodeHandle;
+
+	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
+		RenderOrchestrator::PassData geoRenderPass;
+		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
+		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
+	}
+	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
+		RenderOrchestrator::PassData geoRenderPass;
+		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
+		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
+
+		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"positionStream");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"normalStream");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"tangentStream");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"bitangentStream");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"textureCoordinatesStream");
+		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
+
+		auto visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
+		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"VisibilityDataLightingDataNode", renderPassNodeHandle, visibilityDataKey);
+
+		{
+			auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, visibilityDataKey);
+
+			bwk[u8"positionStream"] = vertexBuffer;
+			bwk[u8"normalStream"] = vertexBuffer;
+			bwk[u8"tangentStream"] = vertexBuffer;
+			bwk[u8"bitangentStream"] = vertexBuffer;
+			bwk[u8"textureCoordinatesStream"] = vertexBuffer;
+		}
+
+		//todo: select pixels
+		RenderOrchestrator::PassData selectRenderPassData;
+		selectRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
+		selectRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		renderOrchestrator->AddRenderPass(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectRenderPassData, GetApplicationManager());
+
+		//todo: paint
+		RenderOrchestrator::PassData paintRenderPassData;
+		paintRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
+		paintRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		paintRenderPassData.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
+		renderOrchestrator->AddRenderPass(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
+	}
 
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
@@ -1350,6 +1396,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
 	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
+	meshDataNode = renderOrchestrator->AddDataNode(renderSystem, u8"MeshNode", indexBufferNodeHandle, meshDataBuffer);
+
+	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
+		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"VisibilityShaderGroup"));
+		mainVisibilityPipelineNode = renderOrchestrator->AddMaterial(renderSystem, meshDataNode, shaderGroupHandle);
+	}
 
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {

@@ -52,7 +52,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& all
 }
 
 void tokenizeCode(const GTSL::StringView code, auto& statements) {
-	GTSL::StaticVector<GTSL::StaticString<64>, 1024> tokens;
+	GTSL::StaticVector<GTSL::StaticString<64>, 2048> tokens;
 	GTSL::StaticVector<ShaderNode::Type, 1024> tokenTypes;
 
 	auto codeString = code;
@@ -160,7 +160,7 @@ struct GPipeline : Object {
 		LanguageElement(const BE::TAR& allocator) : map(16, allocator) {}
 
 		enum class ElementType {
-			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED
+			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
 		} Type = ElementType::NULL;
 
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
@@ -170,24 +170,29 @@ struct GPipeline : Object {
 		uint32 Reference = 0xFFFFFFFF;
 	};
 
-	GPipeline() : elements(32, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), Functions(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")) {
+
+	struct StructData {
+		bool IsNonRef = false;
+	};
+
+	GPipeline() : elements(32, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), Functions(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")) {
 		auto handle = elements.Emplace(0, BE::TAR(u8"Shader"));
 		auto& e = elements[handle];
 		e.Type = LanguageElement::ElementType::SCOPE;
 		e.Name = u8"global";
 
-		Add(ElementHandle(), u8"=", LanguageElement::ElementType::FUNCTION);
-		Add(ElementHandle(), u8"+", LanguageElement::ElementType::FUNCTION);
-		Add(ElementHandle(), u8"-", LanguageElement::ElementType::FUNCTION);
-		Add(ElementHandle(), u8"*", LanguageElement::ElementType::FUNCTION);
-		Add(ElementHandle(), u8"/", LanguageElement::ElementType::FUNCTION);
-		Add(ElementHandle(), u8"return", LanguageElement::ElementType::KEYWORD);
-		Add(ElementHandle(), u8"uint32", LanguageElement::ElementType::TYPE);
-		Add(ElementHandle(), u8"float32", LanguageElement::ElementType::TYPE);
-		Add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
-		Add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
-		Add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
-		Add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"=", LanguageElement::ElementType::FUNCTION);
+		add(ElementHandle(), u8"+", LanguageElement::ElementType::FUNCTION);
+		add(ElementHandle(), u8"-", LanguageElement::ElementType::FUNCTION);
+		add(ElementHandle(), u8"*", LanguageElement::ElementType::FUNCTION);
+		add(ElementHandle(), u8"/", LanguageElement::ElementType::FUNCTION);
+		add(ElementHandle(), u8"return", LanguageElement::ElementType::KEYWORD);
+		add(ElementHandle(), u8"uint32", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"float32", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
+		add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
 	}
 
 	auto& GetElement(ElementHandle parent, const GTSL::StringView name) {
@@ -209,7 +214,8 @@ struct GPipeline : Object {
 	auto& GetElement(const ElementHandle element_handle) { return elements[element_handle.Handle]; }
 	const auto& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
 
-	ElementHandle Add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
+private:
+	ElementHandle add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
 		elements[parent.Handle].map.Emplace(Id(name)).EmplaceBack(handle);
 		elements[parent.Handle].symbols.EmplaceBack(handle);
@@ -221,6 +227,7 @@ struct GPipeline : Object {
 		return ElementHandle(handle);
 	}
 
+
 	ElementHandle addConditional(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
 		elements[parent.Handle].map.TryEmplace(Id(name)).Get().EmplaceBack(handle);
@@ -231,6 +238,8 @@ struct GPipeline : Object {
 		}
 		return ElementHandle(handle);
 	}
+
+public:
 
 	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
 		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
@@ -372,7 +381,13 @@ struct GPipeline : Object {
 	}
 
 	ElementHandle DeclareStruct(const ElementHandle parent, const GTSL::StringView name, GTSL::Range<const StructElement*> members) {
-		auto handle = Add(parent, name, LanguageElement::ElementType::STRUCT);
+		auto handle = add(parent, name, LanguageElement::ElementType::STRUCT);
+
+		GetElement(handle).Reference = structs.GetLength();
+
+		auto& strct = structs.EmplaceBack();
+
+		strct.IsNonRef = false; //don't make struct type, only ref
 
 		for (auto& e : members) {
 			DeclareVariable(handle, e);
@@ -381,19 +396,29 @@ struct GPipeline : Object {
 		return handle;
 	}
 
+	void SetMakeStruct(const ElementHandle element_handle) {
+		GetStruct(element_handle).IsNonRef = true;
+	}
+
 	ElementHandle DeclareScope(const ElementHandle parentHandle, const GTSL::StringView name) {
-		return Add(parentHandle, name, LanguageElement::ElementType::SCOPE);
+		return add(parentHandle, name, LanguageElement::ElementType::SCOPE);
+	}
+
+	ElementHandle DeclareShader(const ElementHandle parentHandle, const GTSL::StringView name) {
+		auto handle = addConditional(parentHandle, name, LanguageElement::ElementType::SHADER);
+		auto& element = GetElement(handle);
+		return handle;
 	}
 
 	ElementHandle DeclareVariable(const ElementHandle parentHandle, const StructElement member) {
-		auto handle = Add(parentHandle, member.Name, LanguageElement::ElementType::MEMBER);
+		auto handle = add(parentHandle, member.Name, LanguageElement::ElementType::MEMBER);
 		elements[handle.Handle].Reference = members.GetLength();
 		members.EmplaceBack(member);
 		return { handle };
 	}
 
 	void AddMemberDeductionGuide(const ElementHandle start_cope, const GTSL::StringView interface_name, const GTSL::Range<const ElementHandle*> access_chain) {
-		auto& element = GetElement(Add(start_cope, interface_name, LanguageElement::ElementType::DEDUCTION_GUIDE));
+		auto& element = GetElement(add(start_cope, interface_name, LanguageElement::ElementType::DEDUCTION_GUIDE));
 		element.Reference = deductionGuides.GetLength();
 		deductionGuides.EmplaceBack().PushBack(access_chain);
 	}
@@ -413,10 +438,20 @@ struct GPipeline : Object {
 	ElementHandle GetElementHandle(ElementHandle parent_handle, const GTSL::StringView name) const {
 		return ElementHandle(elements[parent_handle.Handle].map.At(Id(name)).back());
 	}
+
+	StructData& GetStruct(const ElementHandle element_handle) {
+		return structs[GetElement(element_handle).Reference];
+	}
+
+	const StructData& GetStruct(const ElementHandle element_handle) const {
+		return structs[GetElement(element_handle).Reference];
+	}
 private:
 	GTSL::Tree<LanguageElement, BE::TAR> elements;
 	GTSL::Vector<GTSL::StaticVector<ElementHandle, 4>, BE::TAR> deductionGuides;
 	GTSL::Vector<StructElement, BE::TAR> members;
+
+	GTSL::Vector<StructData, BE::TAR> structs;
 	GTSL::Vector<FunctionDefinition, BE::TAR> Functions;
 };
 
@@ -463,8 +498,8 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	}
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
 
-	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<32> {
-		GTSL::StaticString<32> result = name;
+	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
+		GTSL::StaticString<64> result = name;
 
 		switch (Hash(name)) {
 		case GTSL::Hash(u8"float32"): result = u8"float"; break;
@@ -535,7 +570,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	auto writeStruct = [&](GTSL::StringView ne, const GPipeline::ElementHandle structHandle, bool ref, bool readOnly, auto&& self) {
 		if (usedStructs.Find(Id(ne))) { return; }
 
-		GTSL::StaticString<32> name(ne);
+		GTSL::StaticString<64> name(ne);
 
 		if (ref) { name += u8"Pointer"; }
 
@@ -543,7 +578,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		GTSL::StaticVector<StructElement, 16> stt;
 
-		GTSL::StaticString<256> statementString;
+		GTSL::StaticString<512> statementString;
 
 		for (auto& e : pipeline.GetChildren(structHandle)) {
 			//if (pipeline.GetElement(e).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
@@ -582,8 +617,11 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	for (auto& e : scopes) {
 		for (auto& r : pipeline.GetChildren(e)) {
 			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
-				writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
-				writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+				if (pipeline.GetStruct(r).IsNonRef) {
+					writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+				} else {
+					writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);	
+				}
 			}
 		}
 	}

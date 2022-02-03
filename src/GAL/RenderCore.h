@@ -150,6 +150,7 @@ namespace GAL {
 		static constexpr auto R_I8 = FormatDescriptor(ComponentType::INT, 1, 8, TextureType::COLOR, 0, 0, 0, 0);
 		static constexpr auto RGB_I8 = FormatDescriptor(ComponentType::INT, 3, 8, TextureType::COLOR, 0, 1, 2, 3);
 		static constexpr auto BGRA_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
+		static constexpr auto RG_I32 = FormatDescriptor(ComponentType::INT, 2, 32, TextureType::COLOR, 0, 1, 0, 0);
 		static constexpr auto BGRA_NONLINEAR8 = FormatDescriptor(ComponentType::NON_LINEAR, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
 		static constexpr auto RGBA_F16 = FormatDescriptor(ComponentType::FLOAT, 4, 16, TextureType::COLOR, 0, 1, 2, 3);
 		static constexpr auto RGBA_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 0, 1, 2, 3);
@@ -166,6 +167,7 @@ namespace GAL {
 		RGBA_I8 = FORMATS::RGBA_I8,
 		RGBA_F16 = FORMATS::RGBA_F16,
 		BGRA_I8 = FORMATS::BGRA_I8,
+		RG_I32 = FORMATS::RG_I32,
 		DEPTH32 = FORMATS::DEPTH_F32
 	};
 

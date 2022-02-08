@@ -34,6 +34,10 @@ public:
 		return { buffer.Size, (byte*)buffer.StagingAllocation[0].Data };
 	}
 
+	[[nodiscard]] GAL::DeviceAddress MakeAddress(BufferHandle buffer_handle, uint32 offset) const {
+		return buffers[buffer_handle()].Addresses[0] + offset;
+	}
+
 	MAKE_HANDLE(uint32, CommandList);
 	MAKE_HANDLE(uint32, AccelerationStructure);
 	MAKE_HANDLE(uint32, BLASInstance);

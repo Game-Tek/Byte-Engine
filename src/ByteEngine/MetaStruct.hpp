@@ -33,4 +33,11 @@ template<fixed_string TAG, typename T>
 struct member {
 	//template<typename OTHER>
 	//constexpr member(tag_and_value<TAG, OTHER> tv) : value(std::move(tv.value)) {}
+
+	constexpr static auto tag() { return TAG; }
+
+	using element_type = T;
 };
+
+template<typename... MEMBERS>
+struct meta_struct : MEMBERS... {};

@@ -157,14 +157,14 @@ struct GPipeline : Object {
 	};
 
 	struct LanguageElement {
-		LanguageElement(const BE::TAR& allocator) : map(16, allocator) {}
+		LanguageElement(const BE::TAR& allocator) : map(16, allocator), symbols(4, allocator) {}
 
 		enum class ElementType {
 			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
 		} Type = ElementType::NULL;
 
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
-		GTSL::StaticVector<uint32, 32> symbols;
+		GTSL::Vector<uint32, BE::TAR> symbols;
 		GTSL::StaticString<64> Name;
 		uint16 Level = 0;
 		uint32 Reference = 0xFFFFFFFF;
@@ -187,12 +187,11 @@ struct GPipeline : Object {
 		add(ElementHandle(), u8"*", LanguageElement::ElementType::FUNCTION);
 		add(ElementHandle(), u8"/", LanguageElement::ElementType::FUNCTION);
 		add(ElementHandle(), u8"return", LanguageElement::ElementType::KEYWORD);
-		add(ElementHandle(), u8"uint32", LanguageElement::ElementType::TYPE);
 		add(ElementHandle(), u8"float32", LanguageElement::ElementType::TYPE);
-		add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
-		add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
-		add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
-		add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
+		//add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
+		//add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
+		//add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
+		//add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
 	}
 
 	auto& GetElement(ElementHandle parent, const GTSL::StringView name) {
@@ -231,8 +230,9 @@ private:
 	ElementHandle addConditional(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
 		elements[parent.Handle].map.TryEmplace(Id(name)).Get().EmplaceBack(handle);
+		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
-		e.Type = type;
+		e.Type = type; e.Name = name;
 		if (parent.Handle != 1) {
 			e.Level = GetElement(parent).Level + 1;
 		}
@@ -656,8 +656,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 				auto makeStatement = [&] {
 					GTSL::StaticString<1024> statementString;
 
-					bool isLoopBody = false;
-
 					while (i < function.Tokens) {
 						const auto& node = function.Tokens[i++];
 
@@ -705,11 +703,11 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							break;
 						}
 						case ShaderNode::Type::LPAREN: {
-							statementString += u8"("; isLoopBody = true;
+							statementString += u8"(";
 							break;
 						}
 						case ShaderNode::Type::RPAREN: {
-							statementString += u8")"; isLoopBody = false;
+							statementString += u8")";
 							break;
 						}
 						case ShaderNode::Type::LBRACKET: {

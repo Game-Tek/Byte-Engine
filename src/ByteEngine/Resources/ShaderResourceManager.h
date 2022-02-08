@@ -17,7 +17,11 @@
 #include "ResourceManager.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Render/ShaderGenerator.h"
+
 #include "PermutationManager.hpp"
+#include "CommonPermutation.hpp"
+#include "ForwardPermutation.hpp"
+#include "VisibilityPermutation.hpp"
 
 template<typename T, class A>
 auto operator<<(auto& buffer, const GTSL::Vector<T, A>& vector) -> decltype(buffer)& {
@@ -191,41 +195,23 @@ public:
 		}
 	};
 
-	struct TaskShader {
+	struct TaskShader {};
 
-	};
+	struct MeshShader {};
 
-	struct MeshShader {
+	struct ComputeShader { GTSL::ShortString<64> Execution; };
 
-	};
+	struct RayGenShader { uint8 Recursion = 1; };
 
-	struct ComputeShader {
+	struct ClosestHitShader {};
 
-	};
+	struct MissShader {};
 
-	struct RayGenShader {
-		uint8 Recursion = 1;
-	};
+	struct AnyHitShader {};
 
-	struct ClosestHitShader {
+	struct IntersectionShader {};
 
-	};
-
-	struct MissShader {
-
-	};
-
-	struct AnyHitShader {
-
-	};
-
-	struct IntersectionShader {
-
-	};
-
-	struct CallableShader {
-
-	};
+	struct CallableShader {};
 
 	struct ShaderInfo {
 		GTSL::ShortString<32> Name;
@@ -464,6 +450,13 @@ private:
 				for(uint32 i = 0; i < tagCount; ++i) {
 					shaderInfosFile >> shader.Tags.EmplaceBack();
 				}
+
+				GTSL::ShortString<64> execution;
+
+				if(shaderType == GAL::ShaderType::COMPUTE) {
+					shaderInfosFile >> execution;
+					shader.ComputeShader.Execution = execution;
+				}
 			}
 		}
 
@@ -535,155 +528,6 @@ private:
 
 		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 	};
-
-	static GPipeline makeDefaultPipeline() {
-		GPipeline pipeline;
-		auto descriptorSetBlockHandle = pipeline.DeclareScope(GPipeline::ElementHandle(), u8"descriptorSetBlock");
-		auto firstDescriptorSetBlockHandle = pipeline.DeclareScope(descriptorSetBlockHandle, u8"descriptorSet");
-		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"texture2D[]", u8"textures" });
-		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"image2D[]", u8"images" });
-		pipeline.DeclareVariable(firstDescriptorSetBlockHandle, { u8"sampler", u8"s" });
-
-		pipeline.SetMakeStruct(pipeline.DeclareStruct({}, u8"TextureReference", { { u8"uint32", u8"Instance" } }));
-		pipeline.SetMakeStruct(pipeline.DeclareStruct({}, u8"ImageReference", { { u8"uint32", u8"Instance" } }));
-
-		pipeline.DeclareRawFunction({}, u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
-		pipeline.DeclareRawFunction({}, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
-		pipeline.DeclareRawFunction({}, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
-		pipeline.DeclareRawFunction({}, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
-		pipeline.DeclareRawFunction({}, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"X", { { u8"vec4f", u8"vec" } }, u8"return vec.x;");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"Y", { { u8"vec4f", u8"vec" } }, u8"return vec.y;");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"Z", { { u8"vec4f", u8"vec" } }, u8"return vec.z;");
-		pipeline.DeclareRawFunction({}, u8"vec3f", u8"FresnelSchlick", { { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
-		pipeline.DeclareRawFunction({}, u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
-		pipeline.DeclareRawFunction({}, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth_from_depth_buffer" }, { u8"mat4f", u8"inverse_projection_matrix" } }, u8"vec4 p = inverse_projection_matrix * vec4(vec3(texture_coordinate * 2.0 - vec2(1.0), depth_from_depth_buffer), 1.0); return p.xyz / p.w;\n");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"PI", { }, u8"return 3.14159265359f;");
-		pipeline.DeclareRawFunction({}, u8"vec2f", u8"SphericalCoordinates", { { u8"vec3f", u8"v" } }, u8"vec2f uv = vec2(atan(v.z, v.x), asin(v.y)); uv *= vec2(0.1591, 0.3183); uv += 0.5; return uv; ");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"DistributionGGX", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"H"}, { u8"float32", u8"roughness"}}, u8"float32 a = roughness * roughness; float32 a2 = a * a; float32 NdotH = max(dot(N, H), 0.0); float32 NdotH2 = NdotH * NdotH; float32 num = a2; float32 denom = (NdotH2 * (a2 - 1.0) + 1.0); denom = PI() * denom * denom; return num / denom;");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"GeometrySchlickGGX", { { u8"float32", u8"NdotV"}, { u8"float32", u8"roughness"}}, u8"float32 r = (roughness + 1.0); float32 k = (r * r) / 8.0; float32 num = NdotV; float32 denom = NdotV * (1.0 - k) + k; return num / denom;");
-		pipeline.DeclareRawFunction({}, u8"float32", u8"GeometrySmith", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"V"}, { u8"vec3f", u8"L"}, { u8"float32", u8"roughness" } }, u8"float32 NdotV = max(dot(N, V), 0.0); float32 NdotL = max(dot(N, L), 0.0); float32 ggx2 = GeometrySchlickGGX(NdotV, roughness); float32 ggx1 = GeometrySchlickGGX(NdotL, roughness); return ggx1 * ggx2;");
-
-		return pipeline;
-	}
-
-	//if (auto fs = shaderJson[u8"functions"]) {
-//	for (auto f : fs) {
-//		auto& fd = shader.Functions.EmplaceBack();
-//
-//		fd.Return = f[u8"return"];
-//		fd.Name = f[u8"name"];
-//
-//		pipeline.add(GPipeline::ElementHandle(), fd.Name, GPipeline::LanguageElement::ElementType::FUNCTION);
-//
-//		for (auto p : f[u8"params"]) { fd.Parameters.EmplaceBack(p[u8"type"], p[u8"name"]); }
-//
-//		tokenizeCode(f[u8"code"].GetStringView(), fd.Statements);
-//	}
-//}
-};
-
-struct CommonPermutation : PermutationManager {
-	CommonPermutation(const GTSL::StringView name) : PermutationManager(name, u8"CommonPermutation") {}
-
-	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
-		vertexShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"VertexShader");
-		fragmentShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"FragmentShader");
-		computeShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ComputeShader");
-		rayGenShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"RayGenShader");
-		closestHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"ClosestHitShader");
-		anyHitShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"AnyHitShader");
-		missShaderScope = pipeline->DeclareScope(GPipeline::ElementHandle(), u8"MissShader");
-
-		pipeline->DeclareFunction(GPipeline::ElementHandle(), u8"vec3f", u8"light", {{u8"vec3f", u8"light_position"}, {u8"vec3f", u8"camera_position"}, {u8"vec3f", u8"surface_world_position"}, {u8"vec3f", u8"surface_normal"}, {u8"vec3f", u8"light_color"}, {u8"vec3f", u8"V"}, {u8"vec3f", u8"color"}, {u8"vec3f", u8"F0"}, {u8"float32", u8"roughness"}}, u8"vec3f L = normalize(light_position - surface_world_position); vec3f H = normalize(V + L); float32 distance = length(light_position - surface_world_position); float32 attenuation = 1.0f / (distance * distance); vec3f radiance = light_color * attenuation; float32 NDF = DistributionGGX(surface_normal, H, roughness); float32 G = GeometrySmith(surface_normal, V, L, roughness); vec3f F = FresnelSchlick(max(dot(H, V), 0.0), F0); vec3f kS = F; vec3f kD = vec3f(1.0) - kS; kD *= 1.0 - 0; vec3f numerator = NDF * G * F; float32 denominator = 4.0f * max(dot(surface_normal, V), 0.0f) * max(dot(surface_normal, L), 0.0f) + 0.0001f; vec3f specular = numerator / denominator; float32 NdotL = max(dot(surface_normal, L), 0.0f); return (kD * color / PI() + specular) * radiance * NdotL;");
-
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");
-
-		pipeline->DeclareVariable(closestHitShaderScope, { u8"vec2f", u8"hitBarycenter" });
-		pipeline->DeclareFunction(closestHitShaderScope, u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
-
-		commonScope = pipeline->DeclareScope({}, u8"Common");
-		shader_generation_data.Scopes.EmplaceBack(commonScope);
-
-		pipeline->DeclareStruct(commonScope, u8"globalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
-		pipeline->DeclareStruct(commonScope, u8"cameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"}, {u8"mat4f", u8"vp"}, {u8"vec4f", u8"worldPosition"} });
-
-		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
-		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
-
-		auto glPositionHandle = pipeline->DeclareVariable(vertexShaderScope, { u8"vec4f", u8"gl_Position" });
-		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
-
-		pipeline->DeclareStruct(rayGenShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-		pipeline->DeclareStruct(missShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-		pipeline->DeclareStruct(closestHitShaderScope, u8"traceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} });
-
-		pipeline->DeclareStruct(rayGenShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
-		pipeline->DeclareStruct(missShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"uint64", u8"instances" } });
-		pipeline->DeclareStruct(closestHitShaderScope, u8"rayTraceData", { { u8"traceRayParameterData", u8"traceRayParameters"}, { u8"instanceData*", u8"instances" } });
-
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexIn.vertexTextureCoordinates;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpacePosition", {}, u8"return vertexIn.worldSpacePosition;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpaceNormal", {}, u8"return vertexIn.worldSpaceNormal;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
-		pipeline->DeclareRawFunction(fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(vertexIn.viewSpaceNormal, 0);");
-
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
-		pipeline->DeclareRawFunction(vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
-
-		pipeline->DeclareRawFunction(computeShaderScope, u8"uvec2", u8"GetScreenPosition", {}, u8"return gl_WorkGroupID.xy;");
-
-		pipeline->DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
-		pipeline->DeclareRawFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareRawFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
-		pipeline->DeclareRawFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
-		pipeline->DeclareRawFunction(rayGenShaderScope, u8"vec2f", u8"GetFragmentNormalizedPosition", {}, u8"vec2f pixelCenter = 1vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
-
-		//auto shaderRecordBlockHandle = pipeline->add(closestHitShaderScope, u8"shaderRecordBlock", GPipeline::LanguageElement::ElementType::MEMBER);
-		//auto shaderRecordEntry = pipeline->DeclareVariable(shaderRecordBlockHandle, { u8"shaderParametersData*", u8"shaderEntries" });
-		//pipeline->add(closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
-		//pipeline->DeclareFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
-
-		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
-		pipeline->DeclareStruct(computeRenderPassScope, u8"renderPassData", { { u8"ImageReference", u8"Color" }});
-
-		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-
-		AddSupportedDomain(u8"Screen");
-	}
-
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override  {
-		if(shaderGroupJson[u8"domain"].GetStringView() == u8"Screen") {
-			if(shader_json[u8"class"].GetStringView() == u8"Compute") {
-				auto shaderScope = pipeline->DeclareScope(computeRenderPassScope, shader_json[u8"name"]);
-				auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
-				auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
-
-				tokenizeCode(u8"vec4f color = Sample(pushConstantBlock.renderPass.Color, GetScreenPosition());", main.Tokens, GetPersistentAllocator()); //insert variable shader will use to store color
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetScreenPosition(), color);", main.Tokens, GetPersistentAllocator()); //store final "color" value to image
-
-				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
-				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
-				pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
-
-				auto& batch = batches.EmplaceBack();
-				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
-				batch.Scopes.PushBack({ {}, commonScope, computeShaderScope, computeRenderPassScope, shaderScope });
-			}
-		}
-	}
-
-	GPipeline::ElementHandle commonScope, computeRenderPassScope;
-	GPipeline::ElementHandle vertexShaderScope, fragmentShaderScope, computeShaderScope, rayGenShaderScope, closestHitShaderScope, anyHitShaderScope, missShaderScope;
 };
 
 struct VertexPermutationManager {
@@ -705,379 +549,6 @@ struct VertexPermutationManager {
 
 auto constexpr U_STRING = u8"output = instances[output.r].";
 auto constexpr F_STRING = u8"vec3f mix(uvec3 indices) { return  }";
-
-struct VisibilityRenderPassPermutation : PermutationManager {
-	VisibilityRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"VisibilityRenderPassPermutation") {
-		AddTag(u8"Visibility");
-
-		AddSupportedDomain(u8"Visibility");
-		AddSupportedDomain(u8"World");
-	}
-
-	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
-		visibilityHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"Visibility");
-		visibilityPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"VisibilityPass");
-		paintPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"PaintPass");
-
-		pipeline->DeclareStruct(visibilityHandle, u8"renderPassData", { { u8"ImageReference", u8"Visibility" }, { u8"ImageReference", u8"Depth"} });
-
-		shader_generation_data.Scopes.EmplaceBack(visibilityHandle);
-
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(visibilityHandle, u8"BarycentricDeriv", { { u8"vec3f", u8"m_lambda" }, { u8"vec3f", u8"m_ddx" }, { u8"vec3f", u8"m_ddy" } }));
-		pipeline->DeclareRawFunction(visibilityHandle, u8"BarycentricDeriv", u8"CalcFullBary", { { u8"vec4f", u8"pt0" }, { u8"vec4f", u8"pt1" }, { u8"vec4f", u8"pt2" }, { u8"vec2f", u8"pixelNdc" }, { u8"vec2f", u8"winSize" } }, u8"BarycentricDeriv ret; vec3f invW = vec3f(1) / vec3f(pt0.w, pt1.w, pt2.w); vec2f ndc0 = pt0.xy * invW.x; vec2f ndc1 = pt1.xy * invW.y; vec2f ndc2 = pt2.xy * invW.z; float32 invDet = 1.0f / determinant(mat2f(ndc2 - ndc1, ndc0 - ndc1)); ret.m_ddx = vec3f(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet; ret.m_ddy = vec3f(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet; vec2f deltaVec = pixelNdc - ndc0; float32 interpInvW = (invW.x + deltaVec.x * dot(invW, ret.m_ddx) + deltaVec.y * dot(invW, ret.m_ddy)); float32 interpW = 1.0f / interpInvW; ret.m_lambda.x = interpW * (invW[0] + deltaVec.x * ret.m_ddx.x * invW[0] + deltaVec.y * ret.m_ddy.x * invW[0]); ret.m_lambda.y = interpW * (0.0f + deltaVec.x * ret.m_ddx.y * invW[1] + deltaVec.y * ret.m_ddy.y * invW[1]); ret.m_lambda.z = interpW * (0.0f + deltaVec.x * ret.m_ddx.z * invW[2] + deltaVec.y * ret.m_ddy.z * invW[2]); ret.m_ddx *= (2.0f / winSize.x); ret.m_ddy *= (2.0f / winSize.y); ret.m_ddy *= -1.0f; return ret;");
-		pipeline->DeclareRawFunction(visibilityHandle, u8"vec3f", u8"InterpolateWithDeriv", { { u8"BarycentricDeriv", u8"deriv" }, { u8"vec3f", u8"mergedV" } }, u8"vec3f ret; ret.x = dot(deriv.m_lambda, mergedV); ret.y = dot(deriv.m_ddx * mergedV, vec3f(1, 1, 1)); ret.z = dot(deriv.m_ddy * mergedV, vec3f(1, 1, 1)); return ret;");
-
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(visibilityHandle, u8"PointLightData", { { u8"vec3f", u8"position" }, {u8"float32", u8"radius"} }));
-		pipeline->DeclareStruct(visibilityHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"} });
-
-		{ //visibility pass
-			pushConstantBlockHandle = pipeline->DeclareScope(visibilityPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instances" });
-
-			pipeline->DeclareRawFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
-			pipeline->DeclareRawFunction(visibilityHandle, u8"uint32", u8"GetVertexIndex", {}, u8"return gl_VertexIndex;");
-			
-			auto vertexBlock = pipeline->DeclareScope(visibilityPass, u8"vertex");
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"POSITION" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"NORMAL" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"TANGENT" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"BITANGENT" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
-		}
-
-		{ //select pass
-			
-		}
-
-		{ //paint pass
-			
-		}
-
-		pipeline->DeclareStruct(paintPass, u8"PositionVertex", { { u8"vec3f", u8"POSITION" } });
-		pipeline->DeclareStruct(paintPass, u8"NormalVertex", { { u8"vec3f", u8"NORMAL" } });
-		pipeline->DeclareStruct(paintPass, u8"TangentVertex", { { u8"vec3f", u8"TANGENT" } });
-		pipeline->DeclareStruct(paintPass, u8"BitangentVertex", { { u8"vec3f", u8"BITANGENT" } });
-		pipeline->DeclareStruct(paintPass, u8"TextureCoordinatesVertex", { { u8"vec2f", u8"TEXTURE_COORDINATES" } });
-		pipeline->DeclareStruct(paintPass, u8"VisibilityData", { { u8"PositionVertex*", u8"positionStream" }, { u8"NormalVertex*", u8"normalStream" }, { u8"TangentVertex*", u8"tangentStream" }, { u8"BitangentVertex*", u8"bitangentStream" }, { u8"TextureCoordinatesVertex*", u8"textureCoordinatesStream" } });
-
-		//compute shader surface shader scope
-		pipeline->DeclareRawFunction(paintPass, u8"vec4f", u8"GetVertexPosition", {}, u8"instanceData* instance = pushConstantBlock.instances[gl_InstanceIndex]; u16vec3 indices = index*(pushConstantBlock.renderPass.indexBuffer + instance.indexBufferOffset)[gl_PrimitiveID].indexTri; PositionVertex* vertices = pushConstantBlock.visibility.positionStream + instance.vertexBufferOffset; vec3f barycenter = GetVertexBarycenter(); return vec4f(vertices[indices[0]].POSITION * barycenter.x + vertices[indices[1]].POSITION * barycenter.y + vertices[indices[2]].POSITION * barycenter.z, 1);");
-
-		pipeline->DeclareStruct(visibilityHandle, u8"instanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint64", u8"padding" } });
-
-		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
-
-		if (common_permutation) {
-			pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
-
-			auto vertexSurfaceInterface = pipeline->DeclareScope(visibilityHandle, u8"vertexSurfaceInterface");
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"instanceIndex" });
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"triangleIndex" });
-
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpacePosition" });
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpaceNormal" });
-		}
-		else {
-			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
-		}
-	}
-
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
-		GTSL::StaticVector<StructElement, 8> shaderParameters;
-
-		if (auto parameters = shader_group_json[u8"parameters"]) {
-			for (auto p : parameters) {
-				if (auto def = p[u8"defaultValue"]) {
-					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
-				}
-				else {
-					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
-				}
-			}
-		}
-
-		auto shaderScope = pipeline->DeclareShader(visibilityHandle, shader_json[u8"name"]);
-		auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
-
-		{ //add deduction guides for reaching shader parameters
-			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
-
-			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
-			}
-		}
-
-		if (auto res = shader_json[u8"localSize"]) {
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
-		}
-		else {
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
-		}
-
-		auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
-
-		switch (Hash(shader_group_json[u8"domain"])) {
-		case GTSL::Hash(u8"World"): {
-			auto& batch = batches.EmplaceBack();
-
-			batch.Tags = GetTagList();
-			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
-
-			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
-			batch.Scopes.EmplaceBack(common_permutation->commonScope);
-			batch.Scopes.EmplaceBack(visibilityHandle);
-			batch.Scopes.EmplaceBack(visibilityPass);
-
-			switch (Hash(shader_json[u8"class"])) {
-			case GTSL::Hash(u8"Vertex"): {
-				batch.TargetSemantics = GAL::ShaderType::VERTEX;
-				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex;", main.Tokens);
-				tokenizeCode(u8"vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				break;
-			}
-			case GTSL::Hash(u8"Surface"): {
-				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
-				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0); vec4f surfaceColor = vec4f(0);", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetPixelPosition(), surfaceColor);", main.Tokens);
-
-				batches.PopBack();
-
-				break;
-			}
-			case GTSL::Hash(u8"Miss"): {
-				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
-				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-				//todo: emit compute shader for raster
-				break;
-			}
-			default: {
-				batches.PopBack(); //remove added batch as no shader was created
-				BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")
-			}
-			}
-
-			break;
-		}
-		case GTSL::Hash(u8"Visibility"): {
-			auto& batch = batches.EmplaceBack();
-
-			batch.Tags = GetTagList();
-			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
-
-			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
-			batch.Scopes.EmplaceBack(common_permutation->commonScope);
-			batch.Scopes.EmplaceBack(visibilityHandle);
-			batch.Scopes.EmplaceBack(visibilityPass);
-
-			switch (Hash(shader_json[u8"class"])) {
-			case GTSL::Hash(u8"Vertex"): {
-				batch.TargetSemantics = GAL::ShaderType::VERTEX;
-				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex;", main.Tokens);
-				tokenizeCode(u8"vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-
-				break;
-			}
-			case GTSL::Hash(u8"Surface"): {
-				batch.TargetSemantics = GAL::ShaderType::FRAGMENT;
-				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-
-				batches.PopBack();
-
-				break;
-			}
-			default: {
-				batches.PopBack(); //remove added batch as no shader was created
-				BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")
-			}
-			}
-
-			break;
-		}
-		}
-	}
-
-	GPipeline::ElementHandle visibilityHandle, pushConstantBlockHandle, shaderParametersHandle, visibilityPass, paintPass;
-};
-
-struct ForwardRenderPassPermutation : PermutationManager {
-	ForwardRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"ForwardRenderPassPermutation") {
-		AddTag(u8"Forward");
-
-		AddSupportedDomain(u8"World");
-	}
-
-	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
-		forwardScopeHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"ForwardScope");
-
-		{
-			auto vertexBlock = pipeline->DeclareScope(forwardScopeHandle, u8"vertex");
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"POSITION" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"NORMAL" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"TANGENT" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"BITANGENT" });
-			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
-		}
-
-		pipeline->DeclareStruct(forwardScopeHandle, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Depth"} });
-
-		shader_generation_data.Scopes.EmplaceBack(forwardScopeHandle);
-
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", { { u8"vec3f", u8"position" }, {u8"float32", u8"radius"} }));
-		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"}});
-
-		pushConstantBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instances" });
-		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
-
-		pipeline->DeclareRawFunction(forwardScopeHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
-
-		pipeline->DeclareStruct(forwardScopeHandle, u8"instanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint64", u8"padding" } });
-
-		{
-			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
-			auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
-			auto outNormalHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
-			pipeline->AddMemberDeductionGuide(forwardScopeHandle, u8"surfaceColor", { outColorHandle });
-		}
-
-		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
-
-		if (common_permutation) {
-			pipeline->DeclareFunction(forwardScopeHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
-
-			auto vertexSurfaceInterface = pipeline->DeclareScope(forwardScopeHandle, u8"vertexSurfaceInterface");
-			auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });
-			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
-			auto vertexViewSpacePositionHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpacePosition" });
-			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexViewSpacePosition", { { vertexSurfaceInterface }, { vertexViewSpacePositionHandle } });
-			auto vertexViewSpaceNormalHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpaceNormal" });
-			pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexViewSpaceNormal", { { vertexSurfaceInterface }, { vertexViewSpaceNormalHandle } });
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpacePosition" });
-			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpaceNormal" });
-		} else {
-			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
-		}
-	}
-
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
-		GTSL::StaticVector<StructElement, 8> shaderParameters;
-
-		if (auto parameters = shader_group_json[u8"parameters"]) {
-			for (auto p : parameters) {
-				if (auto def = p[u8"defaultValue"]) {
-					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
-				} else {
-					shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
-				}
-			}
-		}
-
-		auto shaderScope = pipeline->DeclareShader(forwardScopeHandle, shader_json[u8"name"]);
-		auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
-
-		{ //add deduction guides for reaching shader parameters
-			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
-
-			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
-			}			
-		}
-
-		if (auto res = shader_json[u8"localSize"]) {
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", res[0].GetStringView() });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", res[1].GetStringView() });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", res[2].GetStringView() });
-		} else {
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
-			pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
-		}
-
-		auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
-
-		switch (Hash(shader_group_json[u8"domain"])) {
-		case GTSL::Hash(u8"World"): {
-			auto& batch = batches.EmplaceBack();
-
-			batch.Tags = GetTagList();
-			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
-
-			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
-			batch.Scopes.EmplaceBack(common_permutation->commonScope);
-			batch.Scopes.EmplaceBack(forwardScopeHandle);
-
-			switch (Hash(shader_json[u8"class"])) {
-			case GTSL::Hash(u8"Vertex"): {
-				batch.TargetSemantics = GAL::ShaderType::VERTEX;
-				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-
-				//todo: analyze if we need to emit compute shader
-				break;
-			}
-			case GTSL::Hash(u8"Surface"): {
-				batch.TargetSemantics = GAL::ShaderType::FRAGMENT;
-				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-
-				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
-
-				break;
-			}
-			case GTSL::Hash(u8"Miss"): {
-				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
-				batch.Scopes.EmplaceBack(common_permutation->computeShaderScope);
-				batch.Scopes.EmplaceBack(shaderScope);
-				//todo: emit compute shader for raster
-				break;
-			}
-			default: {
-				batches.PopBack(); //remove added batch as no shader was created
-				BE_LOG_ERROR(u8"Can't utilize this shader class in this domain.")				
-			}
-			}
-			
-			break;
-		}
-		}
-	}
-
-	GPipeline::ElementHandle forwardScopeHandle, pushConstantBlockHandle, shaderParametersHandle;
-};
 
 struct RayTraceRenderPassPermutation : PermutationManager {
 	RayTraceRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"RayTraceRenderPassPermutation") {}
@@ -1222,7 +693,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
 			shaderGroupDataSerialize.Name = json[u8"name"];
 
-			auto pipeline = makeDefaultPipeline();
+			GPipeline pipeline;
 
 			PermutationManager::InitializePermutations(commonPermutation, &pipeline);
 
@@ -1296,6 +767,16 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 				auto shaderBatch = PermutationManager::ProcessShaders(commonPermutation, &pipeline, json, shaderJson);
 
+				GTSL::ShortString<64> executionString;
+
+				if(auto execution = shaderJson[u8"execution"]) {
+					executionString = execution;
+				}
+
+				if (auto domain = json[u8"domain"]; domain.GetStringView() == u8"Screen") {
+					executionString = GTSL::ShortString<64>(u8"windowExtent");
+				}
+
 				for (auto& sb : shaderBatch) {
 					auto shaderResult = GenerateShader(pipeline, sb.Scopes, sb.TargetSemantics, GetTransientAllocator());
 					if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
@@ -1317,7 +798,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 								shaderName += n;
 							}
-
 						}
 
 						auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, shaderName, sb.TargetSemantics, GAL::ShaderLanguage::GLSL, true, GetTransientAllocator());
@@ -1331,9 +811,12 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 						shaderInfosFile << 0; //0 params
 						shaderInfosFile << sb.TargetSemantics;
 						shaderInfosFile << sb.Tags.GetLength();
-
 						for(auto& e : sb.Tags) {
 							shaderInfosFile << e;
+						}
+
+						if (sb.TargetSemantics == GAL::ShaderType::COMPUTE) {
+							shaderInfosFile << executionString;
 						}
 
 						shaderPackageFile.Write(shaderBuffer);

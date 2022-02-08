@@ -69,14 +69,22 @@ struct PermutationManager : Object {
 		GTSL::StaticVector<Result, 8> batches;
 		GTSL::StaticVector<PermutationManager*, 16> scopes;
 
+		auto domain = GTSL::ShortString<32>(shader_group_json[u8"domain"]);
+
 		//there's an unintended side effect in this code, where the first permutation is called regardless of whether it can process the current domain or not
 		auto call = [&](PermutationManager* parent, auto&& self) -> void {
-			parent->ProcessShader(pipeline, shader_group_json, shader_json, scopes, batches);
+			auto res = parent->supportedDomains.Find(domain);
+
+			if (auto l = parent->supportedDomainsFunctions[res.Get()]) {
+				l(parent, pipeline, shader_group_json, shader_json, scopes, batches);
+			} else {
+				parent->ProcessShader(pipeline, shader_group_json, shader_json, scopes, batches);				
+			}
 
 			scopes.EmplaceBack(parent);
 
 			for(const auto& e : parent->Children) {
-				if (Contains(GTSL::ShortString<32>(shader_group_json[u8"domain"]), static_cast<const PermutationManager*>(e.GetData())->supportedDomains.GetRange())) {
+				if (Contains(domain, static_cast<const PermutationManager*>(e.GetData())->supportedDomains.GetRange())) {
 					self(e, self);
 				}
 			}
@@ -90,10 +98,22 @@ struct PermutationManager : Object {
 	}
 
 protected:
+	using SIG = GTSL::FunctionPointer<void(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches)>;
+
 	void AddTag(const GTSL::StringView tag_string) { tags.EmplaceBack(tag_string); }
-	void AddSupportedDomain(const GTSL::StringView domain_name) { supportedDomains.EmplaceBack(domain_name); }
+	void AddSupportedDomain(const GTSL::StringView domain_name) {
+		supportedDomains.EmplaceBack(domain_name);
+		supportedDomainsFunctions.EmplaceBack();
+	}
+
+	template<typename T, void(T::*L)(GPipeline*, GTSL::JSONMember, GTSL::JSONMember, GTSL::StaticVector<PermutationManager*, 16>, GTSL::StaticVector<Result, 8>&)>
+	void AddSupportedDomain(const GTSL::StringView domain_name) {
+		supportedDomains.EmplaceBack(domain_name);
+		supportedDomainsFunctions.EmplaceBack(SIG::Create<T, L>());
+	}
 
 private:
 	GTSL::StaticVector<GTSL::ShortString<16>, 4> tags;
 	GTSL::StaticVector<GTSL::ShortString<32>, 8> supportedDomains;
+	GTSL::StaticVector<SIG, 8> supportedDomainsFunctions;
 };

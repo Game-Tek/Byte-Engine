@@ -163,6 +163,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	tryAddDataType(u8"global", u8"uint32", 4);
 	tryAddDataType(u8"global", u8"uint64", 8);
 	tryAddDataType(u8"global", u8"float32", 4);
+	tryAddDataType(u8"global", u8"vec2s", 2 * 2);
 	tryAddDataType(u8"global", u8"vec2u", 4 * 2);
 	tryAddDataType(u8"global", u8"vec2f", 4 * 2);
 	tryAddDataType(u8"global", u8"vec3f", 4 * 3);
@@ -398,12 +399,26 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				BE_LOG_WARNING(u8"Pipeline bind data node with no valid pipeline reference.");
 			}
 
+			renderState.BoundPipelineIndex = pipelineIndex;
+
 			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[pipelineIndex].pipeline, renderState.ShaderStages);
 			break;
 		}
 		case RTT::GetTypeIndex<DispatchData>(): {
 			const DispatchData& dispatchData = renderingTree.GetClass<DispatchData>(key);
-			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), renderArea); //todo: change
+
+			const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
+
+			GTSL::Extent3D dispatchExtent{ 1, 1, 1 };
+
+			if(execution == u8"windowExtent") {
+				dispatchExtent = renderArea;
+			} else if(execution == u8"32") {
+				dispatchExtent.Width = 32;
+			}
+
+			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), dispatchExtent);
+
 			break;
 		}
 		case RTT::GetTypeIndex<RayTraceData>(): {
@@ -876,6 +891,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	GTSL::StaticVector<MemberInfo, 16> members;
 	GTSL::KeyMap<uint64, BE::TAR> loadedShadersMap(8, GetTransientAllocator()); //todo: differentiate hash from hash + name, since a different hash could be interpreted as a different shader, when in reality it functionally represents the same shader but with different code
 
+	GTSL::StaticString<64> executionString;
+
+	shaderGroupNotify(this, renderSystem);
+
 	for (uint8 ai = 0;  auto& a : shader_group_info.VertexElements) {
 		auto& stream = vertexStreams.EmplaceBack();
 
@@ -902,6 +921,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			shader.Get().Type = s.Type;
 			shader.Get().Name = s.Name;
 			loadedShadersMap.Emplace(s.Hash);
+		}
+
+		if(s.Type == GAL::ShaderType::COMPUTE) {
+			executionString = s.ComputeShader.Execution;
 		}
 
 		bool foundGroup = false;
@@ -1013,6 +1036,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 			
 			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+
+			pipeline.ExecutionString = executionString;
 		}
 
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
@@ -1267,6 +1292,10 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 	signalDependencyToResource(texture.Resource);
 }
 
+#include "ByteEngine/MetaStruct.hpp"
+
+//using VisibilityData = meta_struct<member<"shaderGroupLength", uint32>> ;
+
 WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), meshes(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), spherePositionsAndRadius(16, GetPersistentAllocator()), materials(GetPersistentAllocator()) {
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
@@ -1307,7 +1336,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto updateLightTaskHandle = GetApplicationManager()->StoreDynamicTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
+	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, false, {});
+	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX, true, false, {});
+
 	RenderOrchestrator::NodeHandle renderPassNodeHandle;
+
+	renderOrchestrator->AddNotifyShaderGroupCreated(GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)>::Create<WorldRendererPipeline, &WorldRendererPipeline::onAddShaderGroup>(this));
 
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
@@ -1324,39 +1358,69 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
+		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"positionStream");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"normalStream");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"tangentStream");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"bitangentStream");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"textureCoordinatesStream");
+		members.EmplaceBack(nullptr, u8"uint32", u8"shaderGroupLength");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"shaderGroupUseCount");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"shaderGroupStart");
+		members.EmplaceBack(nullptr, u8"ptr_t", u8"pixelBuffer");
 		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
 
-		auto visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
+		visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
 		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"VisibilityDataLightingDataNode", renderPassNodeHandle, visibilityDataKey);
+
+		//material count stores how many pixels use each material
+		auto materialCount = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
+		//material start contains a prefix sum based on material count to determine how many pixels 
+		auto materialStart = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
+		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
+		auto pielBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
 
 		{
 			auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, visibilityDataKey);
 
+			const auto vertexElementsThatFitInBuffer = ((1024 * 1024 * 4) / 56u);
+
 			bwk[u8"positionStream"] = vertexBuffer;
-			bwk[u8"normalStream"] = vertexBuffer;
-			bwk[u8"tangentStream"] = vertexBuffer;
-			bwk[u8"bitangentStream"] = vertexBuffer;
-			bwk[u8"textureCoordinatesStream"] = vertexBuffer;
+			bwk[u8"normalStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 1 * vertexElementsThatFitInBuffer); //todo: if buffer is updatable only address for current frame will be set
+			bwk[u8"tangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 2 * vertexElementsThatFitInBuffer);
+			bwk[u8"bitangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 3 * vertexElementsThatFitInBuffer);
+			bwk[u8"textureCoordinatesStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 4 * vertexElementsThatFitInBuffer);
+			bwk[u8"shaderGroupLength"] = 0u;
+			bwk[u8"shaderGroupUseCount"] = materialCount;
+			bwk[u8"shaderGroupStart"] = materialStart;
+			bwk[u8"pixelBuffer"] = pielBuffer;
 		}
 
-		//todo: select pixels
-		RenderOrchestrator::PassData selectRenderPassData;
-		selectRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		selectRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		renderOrchestrator->AddRenderPass(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectRenderPassData, GetApplicationManager());
+		//Counts how many pixels each shader group uses
+		RenderOrchestrator::PassData countPixelsRenderPassData;
+		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
+		countPixelsRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		renderOrchestrator->AddRenderPass(u8"CountPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, countPixelsRenderPassData, GetApplicationManager());
 
-		//todo: paint
-		RenderOrchestrator::PassData paintRenderPassData;
-		paintRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		paintRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		paintRenderPassData.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
-		renderOrchestrator->AddRenderPass(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
+		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
+		//RenderOrchestrator::PassData prefixSumRenderPassData;
+		//prefixSumRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
+		//renderOrchestrator->AddRenderPass(u8"PrefixSum", renderOrchestrator->GetCameraDataLayer(), renderSystem, prefixSumRenderPassData, GetApplicationManager());
+		//
+		////Scans the whole rendered image and stores which pixels every shader group occupies utilizing the information from the prefix sum pass
+		//RenderOrchestrator::PassData selectPixelsRenderPass;
+		//selectPixelsRenderPass.PassType = RenderOrchestrator::PassType::COMPUTE;
+		//countPixelsRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		//renderOrchestrator->AddRenderPass(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectPixelsRenderPass, GetApplicationManager());
+		//
+		////Every participating shader group is called to paint every pixel it occupies on screen
+		//RenderOrchestrator::PassData paintRenderPassData;
+		//paintRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
+		//paintRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		//paintRenderPassData.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
+		//renderOrchestrator->AddRenderPass(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
+
+		//renderOrchestrator->SetShaderGroupParameter(renderSystem, ShaderGroupHandle{}, u8"materialCount", 0u);
 	}
 
 	RenderOrchestrator::PassData gammaCorrectionPass;
@@ -1364,22 +1428,15 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	gammaCorrectionPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
 	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
 
-	//32 = material count
-	auto materialCount = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
-	auto materialStart = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
-	auto pixelXY= renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2u[2073600]"); //1920 * 1080
-
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
 	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
 	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"vertexBufferOffset");
 	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"indexBufferOffset");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint64", u8"pad");
+	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"shaderGroupIndex");
+	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"pad");
 
 	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
 	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
-
-	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, false, {});
-	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX, true, false, {});
 
 	{
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"vec3f", u8"position" }, { nullptr, u8"float32", u8"radius" } };

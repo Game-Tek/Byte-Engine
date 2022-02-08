@@ -260,6 +260,12 @@ public:
 		node.IndexCount += count;
 	}
 
+	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
+
+	void AddNotifyShaderGroupCreated(GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> notify_delegate) {
+		shaderGroupNotify = notify_delegate;
+	}
+
 	struct PassData {
 		struct AttachmentReference {
 			Id Name;
@@ -954,6 +960,8 @@ private:
 		GAL::ShaderStage ShaderStages;
 		uint8 streamsCount = 0, buffersCount = 0;
 
+		uint32 BoundPipelineIndex;
+
 		DataStreamHandle AddDataStream() {
 			++buffersCount;
 			return DataStreamHandle(streamsCount++);
@@ -1218,6 +1226,8 @@ private:
 
 			uint32 PipelineIndex;
 		} RayTracingData;
+
+		GTSL::StaticString<64> ExecutionString;
 	};
 	GTSL::FixedVector<Pipeline, BE::PAR> pipelines;
 
@@ -1782,7 +1792,18 @@ public:
 	auto GetOnAddMeshHandle() const { return OnAddMesh; }
 	auto GetOnMeshUpdateHandle() const { return OnUpdateMesh; }
 
+	void onAddShaderGroup(RenderOrchestrator* render_orchestrator, RenderSystem* render_system) {
+		++shaderGroupCount;
+
+		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
+			auto bwk = render_orchestrator->GetBufferWriteKey(render_system, visibilityDataKey);
+			bwk[u8"shaderGroupLength"] = shaderGroupCount;
+		}
+	}
+
 private:
+	uint32 shaderGroupCount = 0;
+
 	DynamicTaskHandle<StaticMeshHandle, Id> OnAddMesh;
 	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
 	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
@@ -1812,6 +1833,7 @@ private:
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
 	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
 	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
+	Handle<uint32, DataKey_tag> visibilityDataKey;
 
 	struct Mesh {
 		ShaderGroupHandle MaterialHandle;
@@ -1972,6 +1994,7 @@ private:
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
 		key[static_mesh_handle()][u8"transform"] = GTSL::Matrix3x4(renderGroup->GetMeshTransform(static_mesh_handle));
 		key[static_mesh_handle()][u8"vertexBufferOffset"] = res.Offset; key[static_mesh_handle()][u8"indexBufferOffset"] = res.IndexOffset;
+		key[static_mesh_handle()][u8"shaderGroupIndex"] = mesh.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
 
 		render_orchestrator->AddInstance(res.nodeHandle);
 

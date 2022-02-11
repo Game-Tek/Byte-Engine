@@ -52,6 +52,12 @@ namespace GAL {
 
 		void EndRecording(const VulkanRenderDevice* renderDevice) const { renderDevice->VkEndCommandBuffer(commandBuffer); }
 
+		void ExecuteCommandLists(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanCommandList*> command_lists) const {
+			GTSL::StaticVector<VkCommandBuffer, 32> vkCommandBuffers;
+			for(auto& e : command_lists) { vkCommandBuffers.EmplaceBack(e.GetVkCommandBuffer()); }
+			render_device->VkCmdExecuteCommands(commandBuffer, vkCommandBuffers.GetLength(), vkCommandBuffers.GetData());
+		}
+
 		//void BeginRenderPass(const VulkanRenderDevice* renderDevice, VulkanRenderPass renderPass, VulkanFramebuffer framebuffer,
 		//	GTSL::Extent2D renderArea, GTSL::Range<const RenderPassTargetDescription*> renderPassTargetDescriptions) {
 		//	VkRenderPassBeginInfo vkRenderPassBeginInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -227,6 +233,10 @@ namespace GAL {
 		
 		void Dispatch(const VulkanRenderDevice* renderDevice, GTSL::Extent3D workGroups) {
 			renderDevice->VkCmdDispatch(commandBuffer, workGroups.Width, workGroups.Height, workGroups.Depth);
+		}
+
+		void DispatchIndirect(const VulkanRenderDevice* render_device, const VulkanBuffer buffer, const uint64 offset) {
+			render_device->VkCmdDispatchIndirect(commandBuffer, buffer.GetVkBuffer(), offset);
 		}
 
 		void BindBindingsSets(const VulkanRenderDevice* renderDevice, ShaderStage shaderStage, GTSL::Range<const VulkanBindingsSet*> bindingsSets, VulkanPipelineLayout pipelineLayout, GTSL::uint32 firstSet) {

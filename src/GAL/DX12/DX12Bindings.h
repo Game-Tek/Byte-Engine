@@ -7,24 +7,93 @@
 #include "GAL/Bindings.h"
 #include "GAL/DX12/DX12RenderDevice.h"
 
-namespace GAL
-{
+namespace GAL {
 	class DX12BindingsSet final {
-	public:
-		void Initialize(const DX12RenderDevice* renderDevice) {
-			D3D12_ROOT_CONSTANTS rootConstants;
-			rootConstants.ShaderRegister = 0;
-			rootConstants.RegisterSpace = 0;
-			rootConstants.Num32BitValues = 0; //
-			renderDevice->GetID3D12Device2()->CreateRootSignature(0, nullptr, 0ull, __uuidof(ID3D12RootSignature), reinterpret_cast<void**>(&rootSignature));
-		}
+	public:	
+	private:
+	};
 	
+	class DX12BindingsSetLayout final : BindingSetLayout {
+	public:
+		struct BindingDescriptor {
+			BindingType BindingType;
+			ShaderStage ShaderStage;
+			GTSL::uint32 BindingsCount;
+			BindingFlag Flags;
+			GTSL::Range<const DX12Sampler*> Samplers;
+		};
+
+		DX12BindingsSetLayout(const DX12RenderDevice* renderDevice, GTSL::Range<const BindingDescriptor*> bindingsDescriptors) {
+			GTSL::StaticVector<D3D12_ROOT_PARAMETER1, 16> parameters;
+			GTSL::StaticVector<D3D12_STATIC_SAMPLER_DESC, 16> staticSamplers;
+
+			for(uint32 i = 0; i < bindingsDescriptors.ElementCount(); ++i) {
+				const auto& bd = bindingsDescriptors[i];
+
+				auto& parameter = parameters.EmplaceBack();
+				parameter.ShaderVisibility = ToDX12(bd.ShaderStage);
+
+				if(!bd.Samplers.ElementCount()) {
+					switch (bd.BindingType) {
+					case BindingType::SAMPLER: break;
+					case BindingType::COMBINED_IMAGE_SAMPLER: break;
+					case BindingType::SAMPLED_IMAGE: {
+						parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+						break;
+					}
+					case BindingType::STORAGE_IMAGE: {
+						parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+						break;
+					}
+					case BindingType::UNIFORM_BUFFER: break;
+					case BindingType::STORAGE_BUFFER: {
+						parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+						parameter.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+						break;
+					}
+					case BindingType::INPUT_ATTACHMENT: break;
+					case BindingType::ACCELERATION_STRUCTURE: break;
+					}
+				} else {
+					auto& ss = staticSamplers.EmplaceBack();
+					ss.ShaderVisibility = parameter.ShaderVisibility;
+					ss.ShaderRegister = 0u; ss.RegisterSpace = 0u;
+					ss.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP; ss.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP; ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+					ss.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+					ss.ComparisonFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+					ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+					ss.MaxAnisotropy = 8u;
+					ss.MinLOD = 0u; ss.MaxLOD = 0u;
+					ss.MipLODBias = 0.0f;
+				}
+
+			}
+
+			{
+				auto& pc = parameters.EmplaceBack();
+				pc.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+				pc.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+				pc.Constants.Num32BitValues = 128 / 4;
+				pc.Constants.RegisterSpace = 0u; pc.Constants.ShaderRegister = 0u;
+			}
+
+			D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc{ D3D_ROOT_SIGNATURE_VERSION_1_1 };
+			rootSignatureDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+			rootSignatureDesc.Desc_1_1.NumParameters = parameters.GetLength();
+			rootSignatureDesc.Desc_1_1.pParameters = parameters.GetData();
+			rootSignatureDesc.Desc_1_1.NumStaticSamplers = staticSamplers.GetLength();
+			rootSignatureDesc.Desc_1_1.pStaticSamplers = staticSamplers.GetData();
+
+			ID3DBlob* rootSignatureBlob, * errorBlob;
+
+			D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &rootSignatureBlob, &errorBlob);
+
+			renderDevice->GetID3D12Device2()->CreateRootSignature(0, rootSignatureBlob->GetBufferPointer(), rootSignatureBlob->GetBufferSize(), __uuidof(ID3D12RootSignature), reinterpret_cast<void**>(&rootSignature));
+		}
+
 	private:
 		ID3D12RootSignature* rootSignature = nullptr;
 	};
-	
-	class DX12BindingsSetLayout final
-	{};
 
 	class DX12BindingsPool final : BindingsPool {
 	public:
@@ -69,6 +138,7 @@ namespace GAL
 
 		struct TextureBindingUpdateInfo {
 			DX12Sampler Sampler;
+			DX12Texture Texture;
 			DX12TextureView TextureView;
 			TextureLayout TextureLayout;
 			FormatDescriptor FormatDescriptor;
@@ -102,14 +172,13 @@ namespace GAL
 		};
 
 		template<class ALLOCATOR>
-		void Update(const DX12RenderDevice* renderDevice, const DX12BindingsSet* bindingsSet, GTSL::Range<const BindingsUpdateInfo*> bindingsUpdateInfos, const ALLOCATOR& allocator)
-		{
+		void Update(const DX12RenderDevice* renderDevice, const DX12BindingsSet* bindingsSet, GTSL::Range<const BindingsUpdateInfo*> bindingsUpdateInfos, const ALLOCATOR& allocator) {
 			auto sbv_srv_uav_size = renderDevice->GetID3D12Device2()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			auto rtvHeapSize = renderDevice->GetID3D12Device2()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 			auto dsvHeapSize = renderDevice->GetID3D12Device2()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 			auto samplerHandleSize = renderDevice->GetID3D12Device2()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
-			auto sbv_srv_uav_handle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+			auto sbv_srv_uav_handle = descriptorHeapCBV_SRV_UAV->GetCPUDescriptorHandleForHeapStart();
 
 			for (GTSL::uint32 index = 0; index < static_cast<GTSL::uint32>(bindingsUpdateInfos.ElementCount()); ++index) {
 				auto& info = bindingsUpdateInfos[index];
@@ -117,7 +186,7 @@ namespace GAL
 				switch (info.Type) {
 				case BindingType::SAMPLER: {
 					for (auto e : info.BindingUpdateInfos) {
-						sbv_srv_uav_handle.ptr += sbv_srv_uav_HeapSize;
+						sbv_srv_uav_handle.ptr += sbv_srv_uav_size;
 					}
 					break;		
 				}
@@ -127,12 +196,12 @@ namespace GAL
 				case BindingType::INPUT_ATTACHMENT: {
 					for (auto e : info.BindingUpdateInfos) {
 						D3D12_SHADER_RESOURCE_VIEW_DESC resourceViewDesc;
-						resourceViewDesc.Texture2D.MipLevels;
-						resourceViewDesc.Texture2D.MostDetailedMip;
-						resourceViewDesc.Texture2D.PlaneSlice;
-						resourceViewDesc.Texture2D.ResourceMinLODClamp;
+						resourceViewDesc.Texture2D.MipLevels = 1;
+						resourceViewDesc.Texture2D.MostDetailedMip = 0u;
+						resourceViewDesc.Texture2D.PlaneSlice = 0u;
+						resourceViewDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 						renderDevice->GetID3D12Device2()->CreateShaderResourceView(e.TextureBindingUpdateInfo.Texture.GetID3D12Resource(), &resourceViewDesc, sbv_srv_uav_handle);
-						sbv_srv_uav_handle.ptr += sbv_srv_uav_HeapSize;
+						sbv_srv_uav_handle.ptr += sbv_srv_uav_size;
 					}
 
 					break;
@@ -150,7 +219,7 @@ namespace GAL
 						resourceViewDesc.Buffer.NumElements;
 						resourceViewDesc.Buffer.StructureByteStride;
 						renderDevice->GetID3D12Device2()->CreateUnorderedAccessView(e.BufferBindingUpdateInfo.Buffer.GetID3D12Resource(), &resourceViewDesc, sbv_srv_uav_handle);
-						sbv_srv_uav_handle.ptr += sbv_srv_uav_HeapSize;
+						sbv_srv_uav_handle.ptr += sbv_srv_uav_size;
 					}
 
 					break;
@@ -160,7 +229,7 @@ namespace GAL
 						D3D12_SHADER_RESOURCE_VIEW_DESC resourceViewDesc;
 						resourceViewDesc.RaytracingAccelerationStructure.Location;
 						renderDevice->GetID3D12Device2()->CreateUnorderedAccessView(e.AccelerationStructureBindingUpdateInfo.AccelerationStructure.GetID3D12Resource(), nullptr, sbv_srv_uav_handle);
-						sbv_srv_uav_handle.ptr += sbv_srv_uav_HeapSize;
+						sbv_srv_uav_handle.ptr += sbv_srv_uav_size;
 					}
 
 					break;

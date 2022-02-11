@@ -92,17 +92,8 @@ namespace GAL
 		VkDescriptorPool descriptorPool;
 	};
 
-	class VulkanBindingsSetLayout final
-	{
+	class VulkanBindingsSetLayout final : public BindingSetLayout {
 	public:
-		struct BindingDescriptor {
-			BindingType BindingType;
-			ShaderStage ShaderStage;
-			GTSL::uint32 BindingsCount;
-			BindingFlag Flags;
-			GTSL::Range<const VulkanSampler*> Samplers;
-		};
-
 		struct ImageBindingDescriptor : BindingDescriptor {
 			GTSL::Range<const VulkanTextureView*> ImageViews;
 			GTSL::Range<const TextureLayout*> Layouts;
@@ -112,6 +103,14 @@ namespace GAL
 			GTSL::Range<const VulkanBuffer*> Buffers;
 			GTSL::Range<const GTSL::uint32*> Offsets;
 			GTSL::Range<const GTSL::uint32*> Sizes;
+		};
+
+		struct BindingDescriptor {
+			BindingType BindingType;
+			ShaderStage ShaderStage;
+			GTSL::uint32 BindingsCount;
+			BindingFlag Flags;
+			GTSL::Range<const VulkanSampler*> Samplers;
 		};
 
 		VulkanBindingsSetLayout() = default;
@@ -138,7 +137,7 @@ namespace GAL
 
 				if(bindingsDescriptors[i].Samplers.ElementCount()) {
 					for(auto& e : bindingsDescriptors[i].Samplers) {
-						staticSamplers.EmplaceBack(e.GetVkSampler());
+						staticSamplers.EmplaceBack(static_cast<const VulkanSampler&>(e).GetVkSampler());
 					}
 
 					binding.pImmutableSamplers = staticSamplers.GetData();

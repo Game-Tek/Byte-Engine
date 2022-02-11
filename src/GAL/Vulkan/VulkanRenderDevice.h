@@ -557,6 +557,7 @@ namespace GAL
 			getDeviceProcAddr(u8"vkDestroyQueryPool", &VkDestroyQueryPool);
 			getDeviceProcAddr(u8"vkBeginCommandBuffer", &VkBeginCommandBuffer);
 			getDeviceProcAddr(u8"vkEndCommandBuffer", &VkEndCommandBuffer);
+			getDeviceProcAddr(u8"vkCmdExecuteCommands", &VkCmdExecuteCommands);
 			getDeviceProcAddr(u8"vkCmdBeginRenderPass", &VkCmdBeginRenderPass);
 			getDeviceProcAddr(u8"vkCmdNextSubpass", &VkCmdNextSubpass);
 			getDeviceProcAddr(u8"vkCmdEndRenderPass", &VkCmdEndRenderPass);
@@ -570,6 +571,7 @@ namespace GAL
 			getDeviceProcAddr(u8"vkCmdDraw", &VkCmdDraw);
 			getDeviceProcAddr(u8"vkCmdDrawIndexed", &VkCmdDrawIndexed);
 			getDeviceProcAddr(u8"vkCmdDispatch", &VkCmdDispatch);
+			getDeviceProcAddr(u8"vkCmdDispatchIndirect", &VkCmdDispatchIndirect);
 			getDeviceProcAddr(u8"vkCmdCopyBuffer", &VkCmdCopyBuffer);
 			getDeviceProcAddr(u8"vkCmdCopyBufferToImage", &VkCmdCopyBufferToImage);
 			getDeviceProcAddr(u8"vkCmdBlitImage2KHR", &VkCmdBlitImage2KHR);
@@ -871,6 +873,7 @@ namespace GAL
 		PFN_vkBindImageMemory VkBindImageMemory;
 		PFN_vkCmdBindPipeline VkCmdBindPipeline;
 		PFN_vkCmdDispatch VkCmdDispatch;
+		PFN_vkCmdDispatchIndirect VkCmdDispatchIndirect;
 		PFN_vkCmdCopyBuffer VkCmdCopyBuffer;
 		PFN_vkCmdCopyBufferToImage VkCmdCopyBufferToImage;
 		PFN_vkCmdBlitImage2KHR VkCmdBlitImage2KHR;
@@ -895,6 +898,8 @@ namespace GAL
 		
 		PFN_vkCmdBeginRenderingKHR VkCmdBeginRendering;
 		PFN_vkCmdEndRenderingKHR VkCmdEndRendering;
+
+		PFN_vkCmdExecuteCommands VkCmdExecuteCommands;
 
 		//PFN_vkGetDeviceBuffer
 		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceBufferMemoryRequirements;

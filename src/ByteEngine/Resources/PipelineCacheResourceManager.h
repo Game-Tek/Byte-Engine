@@ -1,12 +1,13 @@
 #pragma once
 
 #include "ResourceManager.h"
-#include <GTSL/File.h>
 
+#include <GTSL/File.h>
 #include <GTSL/Buffer.hpp>
 
-class PipelineCacheResourceManager : public ResourceManager
-{
+//TODO: support multiple APIs
+
+class PipelineCacheResourceManager : public ResourceManager {
 public:
 	PipelineCacheResourceManager(const InitializeInfo&);
 	~PipelineCacheResourceManager();

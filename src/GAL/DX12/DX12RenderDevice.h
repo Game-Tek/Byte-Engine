@@ -25,7 +25,6 @@ namespace GAL
 			DX_CHECK(CreateDXGIFactory2(factoryFlags, IID_IDXGIFactory4, reinterpret_cast<void**>(&factory4)))
 
 			IDXGIAdapter1* adapter1 = nullptr;
-			IDXGIAdapter4* adapter4 = nullptr;
 
 			{
 				SIZE_T maxDedicatedVideoMemory = 0;
@@ -36,13 +35,12 @@ namespace GAL
 					// Check to see if the adapter can create a D3D12 device without actually 
 					// creating it. The adapter with the largest dedicated video memory
 					// is favored.
-					if ((dxgiAdapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 && SUCCEEDED(D3D12CreateDevice(adapter1, D3D_FEATURE_LEVEL_12_1, IID_ID3D12Device2, nullptr)) && dxgiAdapterDesc1.DedicatedVideoMemory > maxDedicatedVideoMemory)
-					{
+					if ((dxgiAdapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 && SUCCEEDED(D3D12CreateDevice(adapter1, D3D_FEATURE_LEVEL_12_1, IID_ID3D12Device2, nullptr)) && dxgiAdapterDesc1.DedicatedVideoMemory > maxDedicatedVideoMemory) {
 						maxDedicatedVideoMemory = dxgiAdapterDesc1.DedicatedVideoMemory;
-						DX_CHECK(adapter1->QueryInterface(IID_IDXGIAdapter4, reinterpret_cast<void**>(&adapter4))) //BUG: CHECK QUERY INTERFACE
 					}
 				}
 
+				adapter1->QueryInterface(__uuidof(IDXGIAdapter4), reinterpret_cast<void**>(&adapter4));
 				DX_CHECK(D3D12CreateDevice(adapter4, D3D_FEATURE_LEVEL_12_1, IID_ID3D12Device2, reinterpret_cast<void**>(&device)))
 				//setName(device, info);
 			}
@@ -88,9 +86,31 @@ namespace GAL
 			}
 		}
 
+		GPUInfo GetInfo() {
+			DXGI_ADAPTER_DESC3 dxgiAdapterDesc3;
+			adapter4->GetDesc3(&dxgiAdapterDesc3);
+
+			GPUInfo result;
+
+			result.APIVersion = (uint32)dxgiAdapterDesc3.AdapterLuid.HighPart;
+			result.DriverVersion = dxgiAdapterDesc3.DeviceId;
+
+			char8_t name[512]{ u8'\0' };
+
+			WideCharToMultiByte(CP_UTF8, 0, dxgiAdapterDesc3.Description, 0, reinterpret_cast<LPSTR>(name), 512, 0, 0);
+			result.GPUName = name;
+			result.PipelineCacheUUID[0] = static_cast<uint8>(dxgiAdapterDesc3.DeviceId << 0);
+			result.PipelineCacheUUID[1] = static_cast<uint8>(dxgiAdapterDesc3.DeviceId << 8);
+			result.PipelineCacheUUID[2] = static_cast<uint8>(dxgiAdapterDesc3.DeviceId << 16);
+			result.PipelineCacheUUID[3] = static_cast<uint8>(dxgiAdapterDesc3.DeviceId << 24);
+
+			return result;
+		}
+
 		~DX12RenderDevice() {
 			device->Release();
 			debug->Release();
+			adapter4->Release();
 
 			debugClear(device);
 
@@ -104,6 +124,7 @@ namespace GAL
 
 	private:
 		ID3D12Device2* device = nullptr;
+		IDXGIAdapter4* adapter4 = nullptr;
 
 #if (_DEBUG)
 		ID3D12Debug* debug = nullptr;

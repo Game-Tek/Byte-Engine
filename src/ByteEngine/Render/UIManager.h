@@ -24,8 +24,19 @@ enum class Alignments : uint8 {
 			BOTTOM
 };
 
+/**
+ * \brief Enumerates all ways an element can be scaled when resizing occurs.
+ */
 enum class ScalingPolicies : uint8 {
-	FROM_SCREEN, FROM_OTHER_CONTAINER
+	/**
+	 * \brief The size of the object is defined relative to screen size, which means that when a window or a parent element is resized that element will maintain it's size.
+	 */
+	FROM_SCREEN,
+	/**
+	 * \brief The size of the object is defined relative to another element which means that when a parent element is resized that element will change it's size.
+	 */
+	FROM_OTHER_ELEMENT,
+	FROM_PARENT_CONTAINER = FROM_OTHER_ELEMENT
 };
 
 enum class SizingPolicies : uint8 {
@@ -34,16 +45,19 @@ enum class SizingPolicies : uint8 {
 	FILL
 };
 
-enum class SpacingPolicy : uint8
-{
-	PACK, DISTRIBUTE
-};
+/**
+ * \brief Enumerates all ways to accomodate elements in a space.
+ */
+enum class SpacingPolicy : uint8 {
+	/**
+	 * \brief Places every object inside the element one next to each other.
+	 */
+	PACK,
 
-class Button : public Object
-{
-public:
-	
-private:
+	/**
+	 * \brief Evenly distributes all objects inside the element.
+	 */
+	DISTRIBUTE
 };
 
 #undef NULL
@@ -51,17 +65,17 @@ private:
 MAKE_HANDLE(uint32, UIElement);
 
 struct PrimitiveData {
-	enum class PrimitiveType { NULL, ORGANIZER, SQUARE } Type;
+	enum class PrimitiveType { NULL, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
 	GTSL::Vector2 RelativeLocation;
 	GTSL::Vector2 AspectRatio;
 	GTSL::Vector2 Bounds;
-	Alignments Alignment = Alignments::CENTER;
-	SizingPolicies SizingPolicy = SizingPolicies::SET_ASPECT_RATIO;
+	Alignments Alignment;
+	SizingPolicies SizingPolicy;
 	ShaderGroupHandle Material;
-	uint32 DerivedTypeIndex = 0u;
+	uint32 DerivedTypeIndex;
 	ScalingPolicies ScalingPolicy;
 	SpacingPolicy SpacingPolicy;
-	bool isDirty = false;
+	bool isDirty;
 	DynamicTaskHandle<UIElementHandle> OnHover, OnPress;
 };
 
@@ -77,57 +91,79 @@ private:
 	float32 rotation = 0.0f;
 };
 
-class Canvas : public BE::System {
+/**
+ * \brief Manages ui elements.
+ * All scales are defined and stored as a percentage of screen size. That is all constant size elements maintain the same percentage, and container relative elements have their scale updated every time they are scaled.
+ */
+class UIManager : public BE::System {
 public:
-	Canvas();
+	explicit UIManager(const InitializeInfo& initializeInfo);
+
+	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle(0)) {
+		//canvases.Emplace(system);
+		return add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
+	}
+
+	auto& GetCanvases() { return canvases; }
+
+	void AddColor(const Id colorName, const GTSL::RGBA color) { colors.Emplace(colorName, color); }
+	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
 
 	UIElementHandle AddOrganizer(const UIElementHandle ui_element_handle = UIElementHandle(0)) {
-		auto primitiveIndex = primitives.Emplace(ui_element_handle());
-		return UIElementHandle(primitiveIndex);
+		return add(ui_element_handle, PrimitiveData::PrimitiveType::ORGANIZER);
 	}
 
 	UIElementHandle AddSquare(const UIElementHandle element_handle = UIElementHandle(0)) {
-		const auto primitiveIndex = primitives.Emplace(element_handle());
+		auto handle = add(element_handle, PrimitiveData::PrimitiveType::SQUARE);
 		const auto place = squares.Emplace();
-		auto& primitive = primitives[primitiveIndex];
-		primitive.AspectRatio = 1.f;
-		primitive.DerivedTypeIndex = primitiveIndex;
-		flagsAsDirty(element_handle);
-		return UIElementHandle(place);
+		auto& primitive = getPrimitive(handle);
+		primitive.DerivedTypeIndex = place;
+		return handle;
 	}
 
 	UIElementHandle AddText(const UIElementHandle element_handle, const GTSL::StringView text) {
-		const auto primitiveIndex = primitives.Emplace(element_handle());
+		auto handle = add(element_handle, PrimitiveData::PrimitiveType::TEXT);
 		const auto place = textPrimitives.Emplace(GetPersistentAllocator());
-		auto& primitive = getPrimitive(UIElementHandle(primitiveIndex));
-		primitive.AspectRatio = 1.f;
-		primitive.DerivedTypeIndex = primitiveIndex;
-		flagsAsDirty(element_handle);
+		auto& primitive = getPrimitive(handle);
+		primitive.DerivedTypeIndex = place;
 		textPrimitives[place].Text = text;
 		return UIElementHandle(place);
 	}
 
 	UIElementHandle AddCurve(const UIElementHandle element_handle) {
-		const auto primitiveIndex = primitives.Emplace(element_handle());
+		auto handle = add(element_handle, PrimitiveData::PrimitiveType::CURVE);
 		const auto place = curvePrimitives.Emplace(GetPersistentAllocator());
-		auto& primitive = getPrimitive(UIElementHandle(primitiveIndex));
-		primitive.AspectRatio = 1.f;
-		primitive.DerivedTypeIndex = primitiveIndex;
-		flagsAsDirty(element_handle);
+		auto& primitive = getPrimitive(handle);
+		primitive.DerivedTypeIndex = place;
 		auto& curve = curvePrimitives[place];
 		return UIElementHandle(place);
 	}
 
-	void BindToElement(const UIElementHandle ui_element_handle, const DynamicTaskHandle<UIElementHandle> delegate) {
-		getPrimitive(ui_element_handle).OnPress = delegate;
+	PrimitiveData& getPrimitive(const UIElementHandle element_handle) {
+		return primitives[element_handle()];
 	}
 
-	void SetAspectRatio(const UIElementHandle ui_element_handle, const GTSL::Vector2 aspectRatio) {
-		auto& primitive = primitives[ui_element_handle()];
-		primitive.AspectRatio = aspectRatio;
-		flagsAsDirty(ui_element_handle);
+	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
+
+	GTSL::Result<UIElementHandle> FindPrimitiveUnderPoint(const GTSL::Vector2 point) {
+		auto check = [&](decltype(primitives)::iterator level, auto&& self) -> GTSL::Result<UIElementHandle> {
+			GTSL::Vector2 rect;
+			if (GTSL::Math::Abs(rect - point) <= static_cast<const PrimitiveData&>(level).Bounds) { return GTSL::Result{ UIElementHandle(), true }; }
+
+			for (auto e : level) {
+				if (auto r = self(e, self)) { return r; }
+			}
+		};
+
+		check(primitives.begin(), check);
+
+		return GTSL::Result<UIElementHandle>{ false };
+	}
+
+	void BindToElement(const UIElementHandle ui_element_handle, const DynamicTaskHandle<UIElementHandle> delegate) {
+		getPrimitive(ui_element_handle).OnPress = delegate;
 	}
 
 	void SetColor(const UIElementHandle ui_element_handle, const Id color) {
@@ -144,32 +180,6 @@ public:
 		flagsAsDirty(ui_element_handle);
 	}
 
-	PrimitiveData& getPrimitive(const UIElementHandle element_handle) {
-		return primitives[element_handle()];
-	}
-
-	void SetOrganizerAlignment(const UIElementHandle organizer, Alignments alignment) {
-		getPrimitive(organizer).Alignment = alignment;
-		flagsAsDirty(organizer);
-	}
-
-	[[nodiscard]] GTSL::Extent2D GetExtent() const { return realExtent; }
-
-	GTSL::Result<UIElementHandle> FindPrimitiveUnderPoint(const GTSL::Vector2 point) {
-		auto check = [&](decltype(primitives)::iterator level, auto&& self) -> GTSL::Result<UIElementHandle> {
-			GTSL::Vector2 rect;
-			if (GTSL::Math::Abs(rect - point) <= static_cast<const PrimitiveData&>(level).Bounds) { return GTSL::Result{ UIElementHandle(), true }; }
-		
-			for(auto e : level) {
-				if (auto r = self(e, self)) { return r; }
-			}
-		};
-
-		check(primitives.begin(), check);
-
-		return GTSL::Result<UIElementHandle>{ false };
-	}
-	
 	void SetPosition(UIElementHandle ui_element_handle, GTSL::Vector2 pos) {
 		auto& primitive = primitives[ui_element_handle()];
 		switch (primitive.Type) {
@@ -179,11 +189,17 @@ public:
 		}
 		flagsAsDirty(ui_element_handle);
 	}
-	
-	//void NestElements(UIElementHandle parent_handle, UIElementHandle child_handle) {
-	//	//organizersPrimitives[organizer()].EmplaceBack(squares[square].PrimitiveIndex);
-	//	flagsAsDirty(parent_handle);
-	//}
+
+	void SetAspectRatio(const UIElementHandle ui_element_handle, const GTSL::Vector2 aspectRatio) {
+		auto& primitive = getPrimitive(ui_element_handle);
+		primitive.AspectRatio = aspectRatio;
+		flagsAsDirty(ui_element_handle);
+	}
+
+	void SetElementAlignment(const UIElementHandle organizer, Alignments alignment) {
+		getPrimitive(organizer).Alignment = alignment;
+		flagsAsDirty(organizer);
+	}
 
 	void SetElementSizingPolicy(UIElementHandle organizer, SizingPolicies sizingPolicy) {
 		getPrimitive(organizer).SizingPolicy = sizingPolicy;
@@ -201,16 +217,21 @@ public:
 	}
 
 	void ProcessUpdates();
-	
-private:
-	GTSL::Tree<PrimitiveData, BE::PAR> primitives;
-	GTSL::FixedVector<Square, BE::PAR> squares;
 
 	struct TextPrimitive {
 		TextPrimitive(const BE::PAR& allocator) : Text(allocator) {}
 		GTSL::String<BE::PAR> Text;
 		GTSL::StaticString<64> Font{ u8"COOPBL" };
+		bool IsLocalized = false;
 	};
+
+private:
+	GTSL::FixedVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
+	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
+
+	GTSL::Tree<PrimitiveData, BE::PAR> primitives;
+	GTSL::FixedVector<Square, BE::PAR> squares;
+
 	GTSL::FixedVector<TextPrimitive, BE::PAR> textPrimitives;
 
 	struct CurvePrimitive {
@@ -218,39 +239,28 @@ private:
 		GTSL::Vector<GTSL::Vector2, BE::PAR> Points;
 	};
 	GTSL::FixedVector<CurvePrimitive, BE::PAR> curvePrimitives;
-	
+
 	GTSL::Extent2D realExtent;
 
 	GTSL::Vector<UIElementHandle, BE::PAR> queuedUpdates;
 
-	/**
-	 * \brief Queues an organizer update to a list and prunes any redundant children updates if a parent is already updating higher up in the hierarchy.
-	 * \param organizer organizer to update from
-	 */
-	void queueUpdateAndCull(UIElementHandle organizer);
-	
+	UIElementHandle add(const UIElementHandle parent_handle, PrimitiveData::PrimitiveType type) {
+		auto primitiveIndex = primitives.Emplace(parent_handle());
+		auto& primitive = primitives[primitiveIndex];
+		primitive.Alignment = Alignments::CENTER;
+		primitive.ScalingPolicy = ScalingPolicies::FROM_SCREEN;
+		primitive.SizingPolicy = SizingPolicies::KEEP_CHILDREN_ASPECT_RATIO;
+		primitive.SpacingPolicy = SpacingPolicy::DISTRIBUTE;
+		primitive.AspectRatio = 1.f;
+		primitive.DerivedTypeIndex = ~0u;
+		primitive.isDirty = true;
+		flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
+		return UIElementHandle(primitiveIndex);
+	}
+
 	void updateBranch(UIElementHandle ui_element_handle = UIElementHandle(0));
 
 	void flagsAsDirty(const UIElementHandle element_handle) {
 		getPrimitive(element_handle).isDirty = true;
 	}
-};
-
-class UIManager : public BE::System {
-public:
-	explicit UIManager(const InitializeInfo& initializeInfo);
-
-	void AddCanvas(const CanvasHandle system)
-	{
-		canvases.Emplace(system);
-	}
-
-	auto& GetCanvases() { return canvases; }
-
-	void AddColor(const Id colorName, const GTSL::RGBA color) { colors.Emplace(colorName, color); }
-	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
-
-private:
-	GTSL::FixedVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
-	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
 };

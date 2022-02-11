@@ -2,32 +2,32 @@
 
 #include <GTSL/Math/Math.hpp>
 
-Canvas::Canvas() : BE::System({}, u8"Canvas"), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator())
+UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"), colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator())
 {
 }
 
-void Canvas::ProcessUpdates() {
+void UIManager::ProcessUpdates() {
 	updateBranch();
 
-	auto result = FindPrimitiveUnderPoint({});
-	if(result) {
-		GetApplicationManager()->AddStoredDynamicTask(getPrimitive(result.Get()).OnPress, UIElementHandle(result.Get()));
-	}
+	//auto result = FindPrimitiveUnderPoint({});
+	//if (result) {
+	//	GetApplicationManager()->AddStoredDynamicTask(getPrimitive(result.Get()).OnPress, UIElementHandle(result.Get()));
+	//}
 }
 
-void Canvas::updateBranch(UIElementHandle ui_element_handle) {
+void UIManager::updateBranch(UIElementHandle ui_element_handle) {
 	//for (uint32 i = 0; i < organizersPerOrganizer[organizer()].GetLength(); ++i) { updateBranch(organizersPerOrganizer[organizer()][i]); }
-	//
-	//if (!organizersPrimitives[organizer()].GetLength()) { return; }
-	//
-	//auto primCount = static_cast<float32>(organizersPrimitives[organizer()].GetLength());
-	//
-	//auto orgAR = primitives[organizersAsPrimitives[organizer()]].AspectRatio; auto orgLoc = primitives[organizersAsPrimitives[organizer()]].RelativeLocation;
+//
+//if (!organizersPrimitives[organizer()].GetLength()) { return; }
+//
+//auto primCount = static_cast<float32>(organizersPrimitives[organizer()].GetLength());
+//
+//auto orgAR = primitives[organizersAsPrimitives[organizer()]].AspectRatio; auto orgLoc = primitives[organizersAsPrimitives[organizer()]].RelativeLocation;
 
 	GTSL::Vector2 orgAR;
-	float32 way = -1.0f;
+	float32 way = 0.0f;
 
-	auto& primitive = getPrimitive(UIElementHandle());
+	auto& primitive = getPrimitive(ui_element_handle);
 
 	switch (primitive.Alignment) { case Alignments::LEFT: way = -1.0f; break; case Alignments::CENTER: way = 0.0f; break; case Alignments::RIGHT: way = 1.0f; break; }
 
@@ -85,9 +85,8 @@ void Canvas::updateBranch(UIElementHandle ui_element_handle) {
 		break;
 	}
 	case SpacingPolicy::DISTRIBUTE: {
-		auto primCount1 = primCount + 1.0f;
 		auto freeArea = GTSL::Vector2(orgAR.X() - (perPrimitiveInOrganizerAspectRatio.X() * primCount), orgAR.Y() - (perPrimitiveInOrganizerAspectRatio.Y() * primCount));
-		auto freeAreaPerPrim = freeArea / primCount1;
+		auto freeAreaPerPrim = freeArea / (primCount + 1.0f);
 		startPos = { (orgAR.X() * 0.5f * way) + ((freeAreaPerPrim.X() + perPrimitiveInOrganizerAspectRatio.X() * 0.5f) * (-way)), orgLoc.Y() };
 		increment = (perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim) * (-way);
 		increment.Y() = 0;
@@ -96,14 +95,12 @@ void Canvas::updateBranch(UIElementHandle ui_element_handle) {
 	}
 	}
 
+	primitive.isDirty = false;
+
 	//for (uint32 i = 0; i < organizersPrimitives.GetLength(); ++i) {
 	//	primitives[organizersPrimitives[organizer()][i]].AspectRatio = perPrimitiveInOrganizerAspectRatio;
 	//	primitives[organizersPrimitives[organizer()][i]].RelativeLocation = startPos;
 	//
 	//	startPos += increment;
 	//}
-}
-
-UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"), colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator())
-{
 }

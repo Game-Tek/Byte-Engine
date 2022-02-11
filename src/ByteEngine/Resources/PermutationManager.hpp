@@ -43,6 +43,12 @@ struct PermutationManager : Object {
 	};
 	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) = 0;
 
+	struct Result1 {
+		GTSL::StaticString<1024> ShaderGroupJSON;
+		GTSL::StaticVector<GTSL::Pair<Result, GTSL::StaticString<1024>>, 2> ShaderJSONs;
+	};
+	virtual GTSL::StaticVector<Result1, 8> MakeShaderGroups() = 0;
+
 	template<class A>
 	PermutationManager* CreateChild(const GTSL::StringView name) {
 		return Children.EmplaceBack(GTSL::SmartPointer<A, BE::TAR>(GetTransientAllocator(), name));

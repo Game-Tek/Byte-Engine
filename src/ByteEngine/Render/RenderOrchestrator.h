@@ -20,6 +20,7 @@
 #include "ByteEngine/Resources/TextureResourceManager.h"
 #include "Culling.h"
 #include "LightsRenderGroup.h"
+#include "UIManager.h"
 
 class RenderOrchestrator;
 class RenderState;
@@ -289,6 +290,16 @@ public:
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
+
+	MemberHandle CreateMember2(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>*> members) {
+		GTSL::StaticVector<MemberInfo, 16> mem;
+
+		for(auto& e : members) {
+			mem.EmplaceBack(nullptr, e.First, e.Second);
+		}
+
+		return  CreateMember(parents, structName, mem);
+	}
 
 	MemberHandle CreateMember(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<MemberInfo*> members) {
 		auto parseMembers = [&](auto&& self, GTSL::StringView par, GTSL::StringView typeName, GTSL::StringView name, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> ElementDataHandle {
@@ -1148,18 +1159,25 @@ private:
 	void onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem*, ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 
 	struct DrawData {};
+
 	struct VertexBufferBindData {
 		uint32 VertexCount = 0, VertexSize = 0;
 		RenderSystem::BufferHandle Handle;
 		GTSL::StaticVector<uint32, 8> Offsets;
 	};
+
 	struct IndexBufferBindData {
 		uint32 IndexCount = 0;
 		GAL::IndexType IndexType;		
 		RenderSystem::BufferHandle BufferHandle;
 	};
 
-	GTSL::MultiTree<BE::PAR, PublicNode, PipelineBindData, LayerData, RayTraceData, DispatchData, MeshData, RenderPassData, DrawData, VertexBufferBindData, IndexBufferBindData> renderingTree;
+	struct IndirectComputeDispatchData {
+		
+	};
+
+	GTSL::MultiTree<BE::PAR, PublicNode, PipelineBindData, LayerData, RayTraceData, DispatchData, MeshData, RenderPassData, DrawData, VertexBufferBindData, IndexBufferBindData, IndirectComputeDispatchData> renderingTree;
+
 	bool isUnchanged = true;
 
 	NodeHandle addRayTraceNode(const NodeHandle parent_node_handle, const ShaderGroupHandle material_instance_handle) {
@@ -1507,13 +1525,6 @@ private:
 			return { ElementDataHandle(entry.Get()), 1 };
 		}
 
-		switch (type) {
-		case ElementData::ElementType::NULL: BE_LOG_SUCCESS(u8"Added ", parents, u8".", name, u8" null."); break;
-		case ElementData::ElementType::SCOPE: BE_LOG_SUCCESS(u8"Added ", parents, u8".", name, u8" scope."); break;
-		case ElementData::ElementType::TYPE: BE_LOG_SUCCESS(u8"Added ", parents, u8".", name, u8" type."); break;
-		case ElementData::ElementType::MEMBER: BE_LOG_SUCCESS(u8"Added ", parents, u8".", name, u8" member, handle: ", entry.Get()()); break;
-		}
-
 		auto& child = elements[entry.Get()()];
 		child.DataType = name;
 		child.Type = type;
@@ -1780,6 +1791,8 @@ private:
 
 	GTSL::ShortString<16> tag = u8"Forward";
 
+	static constexpr bool INVERSE_Z = true;
+
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
 #endif
@@ -1904,6 +1917,8 @@ private:
 
 				//TODO: add to selection buffer
 				//TODO: add pipeline bind to render pixels with this material
+
+				//render_orchestrator->AddIndirectDispatchNode();
 			}
 		}
 
@@ -2130,14 +2145,19 @@ private:
 		}
 	}
 };
-class UIRenderManager : public RenderManager
-{
+
+class UIRenderManager : public RenderManager {
 public:
 	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager") {
 		auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 		auto* renderOrchestrator = initializeInfo.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-		renderOrchestrator->CreateMember(u8"global", u8"alphabet", {});
+		renderOrchestrator->CreateMember2(u8"global", u8"Segment", { { u8"vec2f[3]", u8"points" } });
+		renderOrchestrator->CreateMember2(u8"global", u8"FontRenderData", { { u8"uint32[256]", u8"offsets" }, { u8"Segment[256 * 2048]", u8"segments"} });
+
+		renderOrchestrator->CreateMember2(u8"global", u8"TextRenderData", { { u8"FontRenderData[4]", u8"fonts" } });
+
+		renderOrchestrator->CreateMember2(u8"global", u8"TextBlockData", { { u8"uint32", u8"fontIndex" }, { u8"uint32[256]", u8"chars"} });
 
 		//RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
 		//createMaterialInfo.RenderSystem = renderSystem;
@@ -2169,11 +2189,31 @@ public:
 		//renderOrchestrator->AddToRenderPass("UIRenderPass", "UIRenderGroup");
 	}
 
+	void ui() {
+		UIManager* ui;
+		UIManager::TextPrimitive textPrimitive{ GetPersistentAllocator() };
+
+		RenderOrchestrator::BufferWriteKey text;
+		text[u8"fontIndex"] = fontOrderMap[Id(textPrimitive.Font)];
+
+		for (uint32 i = 0; i < textPrimitive.Text; ++i) {
+			text[u8"chars"][i] = fontCharMap[textPrimitive.Text[i]];
+		}
+
+		for(const auto& e : ui->GetCanvases()) {
+		}
+
+		//ui->GetText
+	}
+
 	ShaderGroupHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
+
+	GTSL::StaticMap<Id, uint32, 4> fontOrderMap;
+	GTSL::StaticMap<char32_t, uint32, 4> fontCharMap;
 
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;

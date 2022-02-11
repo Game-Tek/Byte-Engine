@@ -168,10 +168,12 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	tryAddDataType(u8"global", u8"vec2f", 4 * 2);
 	tryAddDataType(u8"global", u8"vec3f", 4 * 3);
 	tryAddDataType(u8"global", u8"vec4f", 4 * 4);
+	tryAddDataType(u8"global", u8"u16vec2", 2 * 2);
 	tryAddDataType(u8"global", u8"matrix4f", 4 * 4 * 4);
 	tryAddDataType(u8"global", u8"matrix3x4f", 4 * 3 * 4);
 	tryAddDataType(u8"global", u8"ptr_t", 8);
 	tryAddDataType(u8"global", u8"ShaderHandle", 32);
+	tryAddDataType(u8"global", u8"IndirectDispatchCommand", 4 * 3);
 
 	tryAddDataType(u8"global", u8"TextureReference", 4);
 	tryAddDataType(u8"global", u8"ImageReference", 4);
@@ -234,13 +236,16 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	{
 		MemberHandle t;
-		GTSL::StaticVector<MemberInfo, 8> members;
+		GTSL::StaticVector<MemberInfo, 16> members;
 		members.EmplaceBack(&t, u8"matrix4f", u8"view");
 		members.EmplaceBack(&t, u8"matrix4f", u8"proj");
 		members.EmplaceBack(&t, u8"matrix4f", u8"viewInverse");
 		members.EmplaceBack(&t, u8"matrix4f", u8"projInverse");
 		members.EmplaceBack(&t, u8"matrix4f", u8"vp");
 		members.EmplaceBack(&t, u8"vec4f", u8"worldPosition");
+		members.EmplaceBack(&t, u8"float32", u8"near");
+		members.EmplaceBack(&t, u8"float32", u8"far");
+		members.EmplaceBack(&t, u8"u16vec2", u8"extent");
 		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
 		cameraDataNode = AddDataNode(u8"CameraData", globalData, cameraMatricesHandle);
 	}
@@ -324,7 +329,13 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			SetNodeState(cameraDataNode, true);
 			auto fov = cameraSystem->GetFieldOfViews()[0]; auto aspectRatio = static_cast<float32>(renderArea.Width) / static_cast<float32>(renderArea.Height);
 
-			GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
+			float32 nearValue = 0.01f, farValue = 1000.0f;
+
+			if constexpr (INVERSE_Z) {
+				std::swap(nearValue, farValue);
+			}
+
+			GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
 			projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
 
 			auto viewMatrix = cameraSystem->GetCameraTransform();
@@ -333,9 +344,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			key[u8"view"] = viewMatrix;
 			key[u8"proj"] = projectionMatrix;
 			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
-			key[u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, 0.01f, 1000.f);
+			key[u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
 			key[u8"vp"] = projectionMatrix * viewMatrix;
 			key[u8"worldPosition"] = GTSL::Vector4(cameraSystem->GetCameraPosition(CameraSystem::CameraHandle(0)), 1.0f);
+			key[u8"near"] = nearValue;
+			key[u8"far"] = farValue;
+			key[u8"extent"] = renderArea;
 		}
 		else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
@@ -622,7 +636,7 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	}
 	else {
 		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
-		attachment.ClearColor = GTSL::RGBA(1, 0, 0, 0);
+		attachment.ClearColor = GTSL::RGBA(INVERSE_Z ? 0.0f: 1.0f, 0, 0, 0);
 	}
 
 	attachment.Layout[0] = GAL::TextureLayout::UNDEFINED; attachment.Layout[1] = GAL::TextureLayout::UNDEFINED; attachment.Layout[2] = GAL::TextureLayout::UNDEFINED;
@@ -995,7 +1009,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			pipelineStates.EmplaceBack(context);
 
 			GAL::Pipeline::PipelineStateBlock::DepthState depth;
-			depth.CompareOperation = GAL::CompareOperation::LESS;
+			depth.CompareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
 			pipelineStates.EmplaceBack(depth);
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
@@ -1365,18 +1379,15 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"bitangentStream");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"textureCoordinatesStream");
 		members.EmplaceBack(nullptr, u8"uint32", u8"shaderGroupLength");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"shaderGroupUseCount");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"shaderGroupStart");
+		members.EmplaceBack(nullptr, u8"uint32[256]", u8"shaderGroupUseCount");
+		members.EmplaceBack(nullptr, u8"uint32[256]", u8"shaderGroupStart");
+		members.EmplaceBack(nullptr, u8"IndirectDispatchCommand[256]", u8"indirectBuffer");
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"pixelBuffer");
 		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
 
 		visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
 		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"VisibilityDataLightingDataNode", renderPassNodeHandle, visibilityDataKey);
 
-		//material count stores how many pixels use each material
-		auto materialCount = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
-		//material start contains a prefix sum based on material count to determine how many pixels 
-		auto materialStart = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"uint32[32]");
 		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
 		auto pielBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
 
@@ -1391,8 +1402,6 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 			bwk[u8"bitangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 3 * vertexElementsThatFitInBuffer);
 			bwk[u8"textureCoordinatesStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 4 * vertexElementsThatFitInBuffer);
 			bwk[u8"shaderGroupLength"] = 0u;
-			bwk[u8"shaderGroupUseCount"] = materialCount;
-			bwk[u8"shaderGroupStart"] = materialStart;
 			bwk[u8"pixelBuffer"] = pielBuffer;
 		}
 

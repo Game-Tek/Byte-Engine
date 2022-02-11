@@ -172,7 +172,8 @@ struct GPipeline : Object {
 
 
 	struct StructData {
-		bool IsNonRef = false;
+		uint8 GenerationType = 1;
+		bool IsConst = false;
 	};
 
 	GPipeline() : elements(32, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), Functions(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")) {
@@ -335,16 +336,16 @@ public:
 		return ElementHandle(elements[handle.Handle].Reference);
 	}
 
-	ElementHandle DeclareRawFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
-		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
-		elements[handle.Handle].Reference = Functions.GetLength();
-		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
-		function.Name = name; function.Return = returnType; function.Parameters = parameters;
-		//function.Code = code;
-		tokenizeCode(code, function.Tokens, GetPersistentAllocator());
-		function.IsRaw = true; function.Id = handle.Handle;
-		return ElementHandle(elements[handle.Handle].Reference);
-	}
+	//ElementHandle DeclareRawFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
+	//	auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
+	//	elements[handle.Handle].Reference = Functions.GetLength();
+	//	auto& function = Functions.EmplaceBack(GetPersistentAllocator());
+	//	function.Name = name; function.Return = returnType; function.Parameters = parameters;
+	//	//function.Code = code;
+	//	tokenizeCode(code, function.Tokens, GetPersistentAllocator());
+	//	function.IsRaw = true; function.Id = handle.Handle;
+	//	return ElementHandle(elements[handle.Handle].Reference);
+	//}
 
 	auto& GetFunction(uint32 id) {
 		return Functions[elements[id].Reference];
@@ -387,7 +388,7 @@ public:
 
 		auto& strct = structs.EmplaceBack();
 
-		strct.IsNonRef = false; //don't make struct type, only ref
+		strct.GenerationType = 1; //don't make struct type, only ref
 
 		for (auto& e : members) {
 			DeclareVariable(handle, e);
@@ -397,7 +398,15 @@ public:
 	}
 
 	void SetMakeStruct(const ElementHandle element_handle) {
-		GetStruct(element_handle).IsNonRef = true;
+		GetStruct(element_handle).GenerationType = 0;
+	}
+
+	void SetMakeBoth(const ElementHandle element_handle) {
+		GetStruct(element_handle).GenerationType = 2;
+	}
+
+	void SetAsConst(const ElementHandle element_handle) {
+		GetStruct(element_handle).IsConst = true;
 	}
 
 	ElementHandle DeclareScope(const ElementHandle parentHandle, const GTSL::StringView name) {
@@ -617,10 +626,14 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	for (auto& e : scopes) {
 		for (auto& r : pipeline.GetChildren(e)) {
 			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
-				if (pipeline.GetStruct(r).IsNonRef) {
-					writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
+				auto genType = pipeline.GetStruct(r).GenerationType; bool makeConst = pipeline.GetStruct(r).IsConst;
+				if (genType == 0) {
+					writeStruct(pipeline.GetElement(r).Name, r, false, makeConst, writeStruct);
+				} else if(genType == 1) {
+					writeStruct(pipeline.GetElement(r).Name, r, true, makeConst, writeStruct);
 				} else {
-					writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);	
+					writeStruct(pipeline.GetElement(r).Name, r, false, makeConst, writeStruct);
+					writeStruct(pipeline.GetElement(r).Name, r, true, makeConst, writeStruct);
 				}
 			}
 		}

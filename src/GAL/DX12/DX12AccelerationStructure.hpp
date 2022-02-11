@@ -12,6 +12,9 @@ namespace GAL
 			//renderDevice->GetID3D12Device2()->CreateAcc
 			ID3D12Device8* d;
 		}
+
+		ID3D12Resource* GetID3D12Resource() { return nullptr; }
+
 	private:
 		
 	};

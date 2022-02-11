@@ -20,7 +20,6 @@
 #include <GAL/DX12/DX12.h>
 #include <GAL/DX12/DX12Memory.h>
 #include <GAL/DX12/DX12Buffer.h>
-#include <GAL/DX12/DX12Bindings.h>
 #include <GAL/DX12/DX12Pipelines.h>
 #include <GAL/DX12/DX12QueryPool.h>
 #include <GAL/DX12/DX12RenderPass.h>
@@ -31,6 +30,8 @@
 #include <GAL/DX12/DX12Synchronization.h>
 #include <GAL/DX12/DX12AccelerationStructure.hpp>
 #endif
+
+#include <GAL/DX12/DX12Bindings.h>
 
 struct ShaderGroupHandle {
 	uint32 ShaderGroupIndex;

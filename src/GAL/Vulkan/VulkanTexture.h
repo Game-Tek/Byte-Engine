@@ -61,10 +61,7 @@ namespace GAL
 			VkImageViewCreateInfo vkImageViewCreateInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 			vkImageViewCreateInfo.image = texture.GetVkImage();
 			vkImageViewCreateInfo.viewType = ToVkImageViewType(extent);
-			vkImageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-			vkImageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-			vkImageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-			vkImageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+			vkImageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY; vkImageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;	vkImageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;	vkImageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 			vkImageViewCreateInfo.format = ToVulkan(MakeFormatFromFormatDescriptor(formatDescriptor));
 			vkImageViewCreateInfo.subresourceRange.aspectMask = ToVulkan(formatDescriptor.Type);
 			vkImageViewCreateInfo.subresourceRange.baseMipLevel = 0;
@@ -89,16 +86,13 @@ namespace GAL
 		friend class VulkanRenderContext;
 	};
 
-	class VulkanSampler final
-	{
+	class VulkanSampler final : public Sampler {
 	public:
 		VulkanSampler() = default;
 
 		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::uint8 anisotropy) {
 			VkSamplerCreateInfo vkSamplerCreateInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-			vkSamplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-			vkSamplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-			vkSamplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			vkSamplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT; vkSamplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT; vkSamplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 			vkSamplerCreateInfo.minFilter = VK_FILTER_LINEAR; vkSamplerCreateInfo.magFilter = VK_FILTER_LINEAR;
 			vkSamplerCreateInfo.maxAnisotropy = static_cast<GTSL::float32>(anisotropy == 0 ? 1 : anisotropy);
 			vkSamplerCreateInfo.anisotropyEnable = static_cast<VkBool32>(anisotropy);

@@ -9,8 +9,7 @@
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
-AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), audioBuffer(200000, 16, GetPersistentAllocator()),
-	loadedSounds(16, GetPersistentAllocator())
+AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), sourceAudioDatas(16, GetPersistentAllocator()), audioBuffer(4 * 2 * 48000, 16, GetPersistentAllocator())
 {
 	AudioDevice::CreateInfo createInfo;
 
@@ -82,53 +81,20 @@ AudioEmitterHandle AudioSystem::CreateAudioEmitter() {
 }
 
 void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay) {
-	lastRequestedAudios.EmplaceBack(audioToPlay);
+	auto* audioResourceManager = GetApplicationManager()->GetSystem<AudioResourceManager>(u8"AudioResourceManager");
+	auto& sad = sourceAudioDatas.Emplace(audioToPlay);
+	sad.Loaded = false;
 	audioEmittersSettings[audioEmitter()].Name = audioToPlay;
 }
 
 void AudioSystem::PlayAudio(AudioEmitterHandle audioEmitter)
 {
-	if ((!onHoldEmitters.Find(audioEmitter).State())) {
-		if(const auto res = playingEmitters.Find(audioEmitter); res.State()) {
-			audioEmittersSettings[audioEmitter()].Samples = 0;
-		}
-		else {
-			onHoldEmitters.EmplaceBack(audioEmitter);
-		}
-	}
-}
-
-void AudioSystem::requestAudioStreams() {
-	//auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
-	//
-	//for(uint8 i = 0; i < lastRequestedAudios.GetLength(); ++i)
-	//{
-	//	audioResourceManager->LoadAudioInfo(BE::Application::Get()->GetGameInstance(), lastRequestedAudios[i], onAudioInfoLoadHandle);
-	//}
-	//
-	//lastRequestedAudios.Resize(0);
+	audioEmittersSettings[audioEmitter()].CurrentSample = 0;
+	playingEmitters.EmplaceBack(audioEmitter);
 }
 
 void AudioSystem::render(TaskInfo) {
-	requestAudioStreams();
-
 	if(!activeAudioListenerHandle) { return; }
-	
-	{
-		GTSL::StaticVector<uint32, 16> emittersToRemove;
-		for (uint32 i = 0; i < onHoldEmitters.GetLength(); ++i) {
-			if (loadedSounds.Find(audioEmittersSettings[onHoldEmitters[i]()].Name).State()) {
-				emittersToRemove.EmplaceBack(i);
-			}
-		}
-		
-		for (auto e : emittersToRemove) {
-			playingEmitters.EmplaceBack(onHoldEmitters[e]);
-			onHoldEmitters.Pop(e);
-		}
-	}
-	
-	GTSL::StaticVector<uint32, 16> emittersToStop;
 	
 	//auto* audioResourceManager = BE::Application::Get()->GetResourceManager<AudioResourceManager>(u8"AudioResourceManager");
 	
@@ -165,8 +131,8 @@ void AudioSystem::render(TaskInfo) {
 				//leftPercentange *= distanceFactor; rightPercentage *= distanceFactor;
 			}
 			
-			auto& emmitter = audioEmittersSettings[playingEmitters[pe]()];
-			auto playedSamples = emmitter.Samples;
+			auto& emitter = audioEmittersSettings[playingEmitters[pe]()];
+			emitter.CurrentSample += 0;
 			
 			//byte* audio = audioResourceManager->GetAssetPointer(emmitter.Name);
 			//
@@ -213,10 +179,6 @@ void AudioSystem::render(TaskInfo) {
 			//TODO: disable audio
 		}
 	}
-	
-	for (uint32 i = 0; i < emittersToStop.GetLength(); ++i) {
-		removePlayingEmitter(i);
-	}
 }
 
 void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audioResourceManager, AudioResourceManager::AudioInfo audioInfo)
@@ -224,21 +186,14 @@ void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audio
 	audioResourceManager->LoadAudio(taskInfo.ApplicationManager, audioInfo, onAudioLoadHandle);
 }
 
-void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer)
-{
-	loadedSounds.EmplaceBack(audioInfo.Name);
+void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer) {
 	GTSL::StaticVector<uint32, 16> toDelete;
 	
-	for(uint32 i = 0; i < onHoldEmitters.GetLength(); ++i)
-	{
-		if(audioEmittersSettings[onHoldEmitters[i]()].Name == audioInfo.Name)
-		{
-			toDelete.EmplaceBack(i);
-			playingEmitters.EmplaceBack(onHoldEmitters[i]);
-			//audioEmittersSettings[onHoldEmitters[i]()].PrivateSoundHandle = soundHandle;
-		}
+	auto& sad = sourceAudioDatas[audioInfo.Name];
+
+	sad.Loaded = true;
+
+	for(auto& e : sad.Emitters) {
+		playingEmitters.EmplaceBack();		
 	}
-
-	for (auto e : toDelete) { onHoldEmitters.Pop(e); }
-
 }

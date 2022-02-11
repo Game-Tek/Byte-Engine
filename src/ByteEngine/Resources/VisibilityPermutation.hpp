@@ -21,28 +21,34 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		shader_generation_data.Scopes.EmplaceBack(visibilityHandle);
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(visibilityHandle, u8"BarycentricDeriv", { { u8"vec3f", u8"m_lambda" }, { u8"vec3f", u8"m_ddx" }, { u8"vec3f", u8"m_ddy" } }));
-		pipeline->DeclareRawFunction(visibilityHandle, u8"BarycentricDeriv", u8"CalcFullBary", { { u8"vec4f", u8"pt0" }, { u8"vec4f", u8"pt1" }, { u8"vec4f", u8"pt2" }, { u8"vec2f", u8"pixelNdc" }, { u8"vec2f", u8"winSize" } }, u8"BarycentricDeriv ret; vec3f invW = vec3f(1) / vec3f(pt0.w, pt1.w, pt2.w); vec2f ndc0 = pt0.xy * invW.x; vec2f ndc1 = pt1.xy * invW.y; vec2f ndc2 = pt2.xy * invW.z; float32 invDet = 1.0f / determinant(mat2f(ndc2 - ndc1, ndc0 - ndc1)); ret.m_ddx = vec3f(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet; ret.m_ddy = vec3f(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet; vec2f deltaVec = pixelNdc - ndc0; float32 interpInvW = (invW.x + deltaVec.x * dot(invW, ret.m_ddx) + deltaVec.y * dot(invW, ret.m_ddy)); float32 interpW = 1.0f / interpInvW; ret.m_lambda.x = interpW * (invW[0] + deltaVec.x * ret.m_ddx.x * invW[0] + deltaVec.y * ret.m_ddy.x * invW[0]); ret.m_lambda.y = interpW * (0.0f + deltaVec.x * ret.m_ddx.y * invW[1] + deltaVec.y * ret.m_ddy.y * invW[1]); ret.m_lambda.z = interpW * (0.0f + deltaVec.x * ret.m_ddx.z * invW[2] + deltaVec.y * ret.m_ddy.z * invW[2]); ret.m_ddx *= (2.0f / winSize.x); ret.m_ddy *= (2.0f / winSize.y); ret.m_ddy *= -1.0f; return ret;");
-		pipeline->DeclareRawFunction(visibilityHandle, u8"vec3f", u8"InterpolateWithDeriv", { { u8"BarycentricDeriv", u8"deriv" }, { u8"vec3f", u8"mergedV" } }, u8"vec3f ret; ret.x = dot(deriv.m_lambda, mergedV); ret.y = dot(deriv.m_ddx * mergedV, vec3f(1, 1, 1)); ret.z = dot(deriv.m_ddy * mergedV, vec3f(1, 1, 1)); return ret;");
+		pipeline->SetMakeStruct(pipeline->DeclareStruct(visibilityHandle, u8"Derivatives", { { u8"vec3f", u8"db_dx" }, { u8"vec3f", u8"db_dy" } }));
+		pipeline->DeclareFunction(visibilityHandle, u8"BarycentricDeriv", u8"CalcFullBary", { { u8"vec4f", u8"pt0" }, { u8"vec4f", u8"pt1" }, { u8"vec4f", u8"pt2" }, { u8"vec2f", u8"pixelNdc" }, { u8"vec2f", u8"winSize" } }, u8"BarycentricDeriv ret; vec3f invW = vec3f(1) / vec3f(pt0.w, pt1.w, pt2.w); vec2f ndc0 = pt0.xy * invW.x; vec2f ndc1 = pt1.xy * invW.y; vec2f ndc2 = pt2.xy * invW.z; float32 invDet = 1.0f / determinant(mat2f(ndc2 - ndc1, ndc0 - ndc1)); ret.m_ddx = vec3f(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet; ret.m_ddy = vec3f(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet; vec2f deltaVec = pixelNdc - ndc0; float32 interpInvW = (invW.x + deltaVec.x * dot(invW, ret.m_ddx) + deltaVec.y * dot(invW, ret.m_ddy)); float32 interpW = 1.0f / interpInvW; ret.m_lambda.x = interpW * (invW[0] + deltaVec.x * ret.m_ddx.x * invW[0] + deltaVec.y * ret.m_ddy.x * invW[0]); ret.m_lambda.y = interpW * (0.0f + deltaVec.x * ret.m_ddx.y * invW[1] + deltaVec.y * ret.m_ddy.y * invW[1]); ret.m_lambda.z = interpW * (0.0f + deltaVec.x * ret.m_ddx.z * invW[2] + deltaVec.y * ret.m_ddy.z * invW[2]); ret.m_ddx *= (2.0f / winSize.x); ret.m_ddy *= (2.0f / winSize.y); ret.m_ddy *= -1.0f; return ret;");
+		pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"InterpolateWithDeriv", { { u8"BarycentricDeriv", u8"deriv" }, { u8"vec3f", u8"mergedV" } }, u8"vec3f ret; ret.x = dot(deriv.m_lambda, mergedV); ret.y = dot(deriv.m_ddx * mergedV, vec3f(1, 1, 1)); ret.z = dot(deriv.m_ddy * mergedV, vec3f(1, 1, 1)); return ret;");
+
+		pipeline->DeclareFunction(visibilityHandle, u8"Derivatives", u8"ComputePartialDerivatives", { { u8"vec2f[3]", u8"v" } }, u8"Derivatives result; float32 d = 1.0f / determinant(mat2f(v[2] - v[1], v[0] - v[1])); result.db_dx = vec3f(v[1].y - v[2].y, v[2].y - v[0].y, v[0].y - v[1].y) * d; result.db_dy = vec3f(v[2].x - v[1].x, v[0].x - v[2].x, v[1].x - v[0].x) * d; return result;");
+
+		pipeline->DeclareFunction(visibilityHandle, u8"float32", u8"InterpolateAttribute", { { u8"vec3f", u8"attributes" }, { u8"vec3f", u8"db_dx" }, { u8"vec3f", u8"db_dy" }, { u8"vec2f", u8"d" }	}, u8"float attribute_x = dot(attributes, db_dx); float attribute_y = dot(attributes, db_dy); float attribute_s = attributes[0]; return (attribute_s + d.x * attribute_x + d.y * attribute_y);");
+
+		pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"InterpolateAttribute", { { u8"mat3f", u8"attributes" }, { u8"vec3f", u8"db_dx" }, { u8"vec3f", u8"db_dy" }, { u8"vec2f", u8"d" }	}, u8"vec3f attribute_x = db_dx * attributes; vec3f attribute_y = db_dy * attributes; vec3f attribute_s = attributes[0]; return (attribute_s + d.x * attribute_x + d.y * attribute_y);");
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(visibilityHandle, u8"PointLightData", { { u8"vec3f", u8"position" }, {u8"float32", u8"radius"} }));
 		pipeline->DeclareStruct(visibilityHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"} });
 
-		pipeline->DeclareStruct(visibilityHandle, u8"VisibilityData", { { u8"vec3f*", u8"positionStream" }, { u8"vec3f*", u8"normalStream" }, { u8"vec3f*", u8"tangentStream" }, { u8"vec3f*", u8"bitangentStream" }, { u8"vec2f*", u8"textureCoordinatesStream" }, {u8"uint32", u8"shaderGroupLength"},  {u8"uint32*", u8"shaderGroupUseCount"}, {u8"uint32*", u8"shaderGroupStart" } , {u8"vec2s*", u8"pixelBuffer"} });
+		pipeline->DeclareStruct(visibilityHandle, u8"VisibilityData", { { u8"vec3f*", u8"positionStream" }, { u8"vec3f*", u8"normalStream" }, { u8"vec3f*", u8"tangentStream" }, { u8"vec3f*", u8"bitangentStream" }, { u8"vec2f*", u8"textureCoordinatesStream" }, {u8"uint32", u8"shaderGroupLength"},  {u8"uint32[256]", u8"shaderGroupUseCount"}, {u8"uint32[256]", u8"shaderGroupStart" } , { u8"IndirectDispatchCommand[256]", u8"indirectBuffer" }, {u8"vec2s*", u8"pixelBuffer"}});
 
 		pipeline->DeclareStruct(visibilityHandle, u8"InstanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint32", u8"shaderGroupIndex" }, { u8"uint32", u8"padding" } });
+
+		simplePushConstant = pipeline->DeclareScope(countShaderGroupsShader, u8"pushConstantBlock");
+		pipeline->DeclareVariable(simplePushConstant, { u8"globalData*", u8"global" });
+		pipeline->DeclareVariable(simplePushConstant, { u8"renderPassData*", u8"renderPass" });
+		auto instancesPointerHandle = pipeline->DeclareVariable(simplePushConstant, { u8"instanceData*", u8"instances" });
+		auto visibilityDataHandle = pipeline->DeclareVariable(simplePushConstant, { u8"VisibilityData*", u8"visibility" });
 
 		{ //visibility pass
 			visibilityPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"VisibilityPass");
 
-			pushConstantBlockHandle = pipeline->DeclareScope(visibilityPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
-
-			pipeline->DeclareRawFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
-			pipeline->DeclareRawFunction(visibilityHandle, u8"uint32", u8"GetVertexIndex", {}, u8"return gl_VertexIndex;");
+			pipeline->DeclareFunction(visibilityHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
+			pipeline->DeclareFunction(visibilityHandle, u8"uint32", u8"GetVertexIndex", {}, u8"return gl_VertexIndex;");
 
 			auto vertexBlock = pipeline->DeclareScope(visibilityPass, u8"vertex");
 			pipeline->DeclareVariable(vertexBlock, { u8"vec3f", u8"POSITION" });
@@ -53,49 +59,41 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		}
 
 		{ //count pixels pass
-			countPixelsPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"CountPixelsPass");
+			countShaderGroupsShader = pipeline->DeclareShader(shader_generation_data.Scopes.back(), u8"CountShaderGroups");
 
-			auto pushConstantBlockHandle = pipeline->DeclareScope(countPixelsPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-			auto instancesPointerHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instances" });
-			auto visibilityDataHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"VisibilityData*", u8"visibility" });
+			pipeline->AddMemberDeductionGuide(countShaderGroupsShader, u8"visibility", { simplePushConstant, visibilityDataHandle, });
+			pipeline->AddMemberDeductionGuide(countShaderGroupsShader, u8"instances", { simplePushConstant, instancesPointerHandle });
 
-			pipeline->AddMemberDeductionGuide(countPixelsPass, u8"visibility", { pushConstantBlockHandle, visibilityDataHandle, });
-			pipeline->AddMemberDeductionGuide(countPixelsPass, u8"instances", { pushConstantBlockHandle, instancesPointerHandle });
+			// Count how many pixels contain each shader group
+			pipeline->DeclareFunction(countShaderGroupsShader, u8"void", u8"main", {}, u8"uint32 shaderGroupIndex = instances[SampleUint(pushConstantBlock.renderPass.visibility).r].shaderGroupIndex; atomicAdd(visibility.shaderGroupUseCount[shaderGroupIndex].a, 1);");
+			//execution = windowExtent
 		}
 
 		{ //prefix sum pass
-			prefixSumPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"PrefixSumPass");
+			prefixSumShader = pipeline->DeclareShader(shader_generation_data.Scopes.back(), u8"PrefixSum");
 
-			auto pushConstantBlockHandle = pipeline->DeclareScope(prefixSumPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"VisibilityData*", u8"visibility" });
-
-			//todo: declare deduction guides
+			pipeline->DeclareFunction(prefixSumShader, u8"void", u8"main", {}, u8"uint32 sum = 0; for(uint32 i = 0; i < pushConstantBlock.visibility.shaderGroupLength; ++i) { pushConstantBlock.visibility.shaderGroupStart[i].a = sum; sum += pushConstantBlock.visibility.shaderGroupUseCount[i].a; pushConstantBlock.visibility.indirectBuffer[i].width = pushConstantBlock.visibility.shaderGroupUseCount[i].a; }");
 		}
 
 		{ //select pixels pass
-			selectPixelsPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"SelectPixelsPass");
+			buildPixelBufferShader = pipeline->DeclareShader(shader_generation_data.Scopes.back(), u8"BuildPixelBuffer");
+			
+			pipeline->AddMemberDeductionGuide(buildPixelBufferShader, u8"visibility", { simplePushConstant, visibilityDataHandle, });
 
-			auto pushConstantBlockHandle = pipeline->DeclareScope(selectPixelsPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"VisibilityData*", u8"visibility" });
-
-			//todo: declare deduction guides
+			// For every pixel on the screen determine which shader group is visible and append the current pixel coordinate to a per shader group list of pixels that need to be shaded
+			pipeline->DeclareFunction(buildPixelBufferShader, u8"void", u8"main", {}, u8"visibility.pixelBuffer[atomicAdd(visibility.shaderGroupStart[pushConstantBlock.instances[SampleUint(pushConstantBlock.renderPass.visibility).r].shaderGroupIndex].a, 1)] = vec2s(GetGlobalIndex());");
+			//execution = windowExtent
 		}
 
 		{ //paint pass
 			paintPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"PaintPass");
 
-			auto pushConstantBlockHandle = pipeline->DeclareScope(paintPass, u8"pushConstantBlock"); //todo: make handles per stage
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"VisibilityData*", u8"visibility" });
-
-			//compute shader surface shader scope
-			pipeline->DeclareRawFunction(paintPass, u8"vec4f", u8"GetVertexPosition", {}, u8"instanceData* instance = pushConstantBlock.instances[gl_InstanceIndex]; u16vec3 indices = index*(pushConstantBlock.renderPass.indexBuffer + instance.indexBufferOffset)[gl_PrimitiveID].indexTri; PositionVertex* vertices = pushConstantBlock.visibility.positionStream + instance.vertexBufferOffset; vec3f barycenter = GetVertexBarycenter(); return vec4f(vertices[indices[0]].xyz * barycenter.x + vertices[indices[1]].xyz * barycenter.y + vertices[indices[2]].xyz * barycenter.z, 1);");
+			paintPushConstant = pipeline->DeclareScope(paintPass, u8"pushConstantBlock");
+			pipeline->DeclareVariable(paintPushConstant, { u8"globalData*", u8"global" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"cameraData*", u8"camera" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"renderPassData*", u8"renderPass" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"LightingData*", u8"lightingData" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"InstanceData*", u8"instances" });
 
 			pipeline->DeclareFunction(paintPass, u8"vec4f", u8"RandomColorFromUint", { { u8"uint32", u8"index" } }, u8"vec3f table[8] = vec3f[8](vec3f(0, 0.9, 0.4), vec3f(0, 0.2, 0.9), vec3f(1, 0.3, 1), vec3f(0.1, 0, 0.9), vec3f(1, 0.5, 0.1), vec3f(0.5, 0.4, 0.4), vec3f(1, 1, 0), vec3f(1, 0, 0)); return vec4f(table[index % 8], 1);");
 		}
@@ -115,6 +113,52 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		else {
 			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
 		}
+	}
+
+	GTSL::StaticVector<Result1, 8> MakeShaderGroups() override {
+		GTSL::StaticVector<Result1, 8> results;
+
+		{ //visibility
+			auto& result = results.EmplaceBack();
+			result.ShaderGroupJSON = 
+u8R"({
+    "name":"VisibilityShaderGroup",
+    "instances":[{"name":"unique", "parameters":[]}],
+    "domain":"Visibility"
+})";
+		}
+
+		{ //count shader groups
+			auto& result = results.EmplaceBack();
+			result.ShaderGroupJSON =
+				u8R"({
+    "name":"CountShaderGroups",
+    "instances":[{"name":"unique", "parameters":[]}],
+    "domain":"Visibility"
+})";
+		}
+
+		{ //prefix sum
+			auto& result = results.EmplaceBack();
+			result.ShaderGroupJSON =
+				u8R"({
+    "name":"PrefixSum",
+    "instances":[{"name":"unique", "parameters":[]}],
+    "domain":"Visibility"
+})";
+		}
+
+		{ //build pixel buffer
+			auto& result = results.EmplaceBack();
+			result.ShaderGroupJSON =
+				u8R"({
+    "name":"BuildPixelBuffer",
+    "instances":[{"name":"unique", "parameters":[]}],
+    "domain":"Visibility"
+})";
+		}
+
+		return results;
 	}
 
 	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
@@ -138,7 +182,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
 			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
+				//															simplePushConstant will work under all passes, but it's nn ot the correct way to do this
+				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { simplePushConstant, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
 			}
 
 		}
@@ -163,7 +208,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
-				tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex;", main.Tokens);
+				tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex / 3;", main.Tokens);
 				tokenizeCode(u8"vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				break;
@@ -175,9 +220,22 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 				
 				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0); vec4f surfaceColor = vec4f(0);", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"vec4u pixel = SampleUint(pushConstantBlock.renderPass.Visibility, GetPixelPosition()); uint32 instanceIndex = pixel.r; uint32 triangleIndex = pixel.g;", main.Tokens);
+
+				tokenizeCode(u8"instanceData* instance = pushConstantBlock.instances[instanceIndex];", main.Tokens);
+				tokenizeCode(u8"u16vec3 indices = index*(pushConstantBlock.visibility.indexBuffer + instance.indexBufferOffset)[triangleIndex].indexTri; vec3f* vertices = pushConstantBlock.visibility.positionStream + instance.vertexBufferOffset; vec3f pos[3] = vec3f[3](vertices[indices[0]].xyz, vertices[indices[1]].xyz, vertices[indices[2]].xyz);", main.Tokens);
+				tokenizeCode(u8"mat4f mvp = instance.matrix * pushConstantBlock.camera.vp;", main.Tokens); // Calculate MVP matrix
+				tokenizeCode(u8"vec4f positions[3] = vec4f[3](mvp * float4(pos[0], 1.0f), mvp * float4(pos[1], 1.0f), mvp * float4(pos[2], 1.0f));", main.Tokens); // Transform positions to clip space
+				tokenizeCode(u8"vec3f oneOverW = vec3f(1.0f) / vec3f(positions[0].w, positions[1].w, positions[2].w);", main.Tokens); // Calculate the inverse of w, since it's going to be used several times
+				tokenizeCode(u8"positions[0] *= oneOverW[0]; positions[1] *= oneOverW[1]; positions[2] *= oneOverW[2];", main.Tokens); // Project vertex positions to calculate 2D post-perspective positions
+				tokenizeCode(u8"vec2f screenPosition[3] = vec2f[3](positions[0].xy, positions[1].xy, positions[2].xy);", main.Tokens);
+				tokenizeCode(u8"Derivatives derivativesOut = ComputePartialDerivatives(screenPosition);", main.Tokens); // Compute partial derivatives. This is necessary to interpolate triangle attributes per pixel.
+				tokenizeCode(u8"vec2f d = vec2f(GetNormalizedGlobalIndex()) + -screenPosition[0];", main.Tokens); // Calculate delta vector (d) that points from the projected vertex 0 to the current screen point
+				tokenizeCode(u8"float32 w = 1.0f / InterpolateAttribute(oneOverW, derivativesOut.db_dx, derivativesOut.db_dy, d);", main.Tokens); // Interpolate the 1/w (one_over_w) for all three vertices of the triangle using the barycentric coordinates and the delta vector
+				tokenizeCode(u8"float z = w * getElem(Get(transform)[VIEW_CAMERA].projection, 2, 2) + getElem(Get(transform)[VIEW_CAMERA].projection, 3, 2);", main.Tokens); // Reconstruct the Z value at this screen point performing only the necessary matrix * vector multiplication operations that involve computing Z
+
 				//tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				//tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), //GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, pushConstant.visibility.pixelBuffer[GetGlobalIndex().x].hw, RandomColorFromUint(triangleIndex));", main.Tokens);
+				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, pushConstantBlock.visibility.pixelBuffer[GetGlobalIndex().x].hw, RandomColorFromUint(triangleIndex));", main.Tokens);
 				//tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetPixelPosition(), surfaceColor);", main.Tokens);
 
 				batches.PopBack();
@@ -227,7 +285,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
 			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
+				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { simplePushConstant, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
 			}
 
 		}
@@ -272,6 +330,6 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GPipeline::ElementHandle visibilityHandle, pushConstantBlockHandle, shaderParametersHandle;
-	GPipeline::ElementHandle visibilityPass, countPixelsPass, prefixSumPass, selectPixelsPass, paintPass;
+	GPipeline::ElementHandle visibilityHandle, simplePushConstant, paintPushConstant, shaderParametersHandle;
+	GPipeline::ElementHandle visibilityPass, countShaderGroupsShader, prefixSumShader, buildPixelBufferShader, paintPass;
 };

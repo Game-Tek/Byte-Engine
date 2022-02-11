@@ -36,7 +36,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"instanceData*", u8"instances" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 
-		pipeline->DeclareRawFunction(forwardScopeHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
+		pipeline->DeclareFunction(forwardScopeHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
 
 		pipeline->DeclareStruct(forwardScopeHandle, u8"instanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint64", u8"padding" } });
 
@@ -66,6 +66,8 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
 		}
 	}
+
+	GTSL::StaticVector<Result1, 8> MakeShaderGroups() override { return {}; }
 
 	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;

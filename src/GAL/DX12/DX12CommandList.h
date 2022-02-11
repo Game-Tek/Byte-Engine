@@ -61,14 +61,19 @@ namespace GAL {
 				}
 			}
 
-			commandList->BeginRenderPass(renderPassRenderTargetDescs.GetLength(), renderPassRenderTargetDescs.begin(),
-				&renderPassDepthStencilDesc, D3D12_RENDER_PASS_FLAG_NONE);
+			commandList->BeginRenderPass(renderPassRenderTargetDescs.GetLength(), renderPassRenderTargetDescs.begin(), &renderPassDepthStencilDesc, D3D12_RENDER_PASS_FLAG_NONE);
 		}
 
 		void EndRenderPass(const DX12RenderDevice* renderDevice) {
 			commandList->EndRenderPass();
 		}
-		
+
+		void ExecuteCommandLists(const DX12RenderDevice* render_device, const GTSL::Range<const DX12CommandList*> command_lists) {
+			for(const auto& e : command_lists) {
+				commandList->ExecuteBundle(e.GetID3D12CommandList());
+			}
+		}
+
 		struct MemoryBarrier {
 			GTSL::uint32 SourceAccessFlags, DestinationAccessFlags;
 		};
@@ -148,12 +153,12 @@ namespace GAL {
 		
 		void UpdatePushConstant(const DX12RenderDevice* renderDevice, DX12PipelineLayout pipelineLayout, GTSL::uint32 offset, GTSL::Range<const GTSL::byte*> data, ShaderStage shaderStages) {
 			if (shaderStages & (ShaderStages::VERTEX | ShaderStages::FRAGMENT | ShaderStages::RAY_GEN)) {
-				commandList->SetComputeRoot32BitConstants(0, data.Bytes() / 4, data.begin(), offset / 4);
+				commandList->SetGraphicsRoot32BitConstants(0, data.Bytes() / 4, data.begin(), offset / 4);
 				return;
 			}
 
 			if (shaderStages & (ShaderStages::COMPUTE)) {
-				commandList->SetGraphicsRoot32BitConstants(0, data.Bytes() / 4, data.begin(), offset / 4);
+				commandList->SetComputeRoot32BitConstants(0, data.Bytes() / 4, data.begin(), offset / 4);
 				return;
 			}
 		}
@@ -283,7 +288,7 @@ namespace GAL {
 		}
 
 		[[nodiscard]] ID3D12CommandAllocator* GetID3D12CommandAllocator() const { return commandAllocator; }
-		[[nodiscard]] ID3D12CommandList* GetID3D12CommandList() const { return commandList; }
+		[[nodiscard]] ID3D12GraphicsCommandList5* GetID3D12CommandList() const { return commandList; }
 
 		void Destroy(const DX12RenderDevice* renderDevice) {
 			commandAllocator->Release();

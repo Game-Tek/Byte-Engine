@@ -4,6 +4,7 @@
 
 namespace GAL
 {
+	class Sampler;
 	constexpr GTSL::uint8 MAX_BINDINGS_PER_SET = 10;
 
 	class RenderContext;
@@ -55,6 +56,16 @@ namespace GAL
 		//{
 		//	GTSL::Range<class BindingsSet> BindingsSet;
 		//};
+	};
+
+	struct BindingSetLayout {
+		struct BindingDescriptor {
+			BindingType BindingType;
+			ShaderStage ShaderStage;
+			GTSL::uint32 BindingsCount;
+			BindingFlag Flags;
+			GTSL::Range<const Sampler*> Samplers;
+		};		
 	};
 
 	class BindingsSet

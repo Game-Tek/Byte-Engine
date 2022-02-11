@@ -90,7 +90,9 @@ namespace GAL
 			
 			renderDevice->GetID3D12Device2()->CreateShaderResourceView(texture.GetID3D12Resource(), &shader_resource_view_desc, {});
 		}
-	
+
+
+
 	private:
 		ID3D12Resource* tex_2d = nullptr;
 	};

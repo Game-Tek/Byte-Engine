@@ -81,15 +81,24 @@ private:
 		bool Loop = false;
 		//PrivateSoundHandle PrivateSoundHandle;
 		Id Name;
-		uint32 Samples = 0;
+		// Indicates current playing sample
+		uint32 CurrentSample = 0;
+
 	};
 	GTSL::StaticVector<AudioEmitterSettings, 8> audioEmittersSettings;
 	
 	GTSL::StaticVector<AudioEmitterHandle, 8> playingEmitters;
 
-	GTSL::StaticVector<Id, 8> lastRequestedAudios;
+	struct SourceAudioData {
+		
+		/**
+		 * \brief A list of emitters currently playing this source.
+		 */
+		GTSL::StaticVector<AudioEmitterHandle, 8> Emitters;
 
-	GTSL::StaticVector<AudioEmitterHandle, 8> onHoldEmitters;
+		bool Loaded;
+	};
+	GTSL::HashMap<Id, SourceAudioData, BE::PAR> sourceAudioDatas;
 	
 	GTSL::Buffer<BE::PAR> audioBuffer;
 	DynamicTaskHandle<AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
@@ -97,23 +106,28 @@ private:
 
 	AudioListenerHandle activeAudioListenerHandle;
 
-	GTSL::Vector<Id, BE::PAR> loadedSounds;
-
 	template<typename T>
 	auto getSample(byte* buffer, const uint8 channelCount, const uint32 sample, const uint32 channel) -> T&
 	{
 		return *(reinterpret_cast<T*>(buffer) + sample * channelCount + channel);
 	};
-	
-	void requestAudioStreams();
+
 	void render(TaskInfo);
 
 	void removePlayingEmitter(uint32 i)
 	{
-		audioEmittersSettings[playingEmitters[i]()].Samples = 0;
+		audioEmittersSettings[playingEmitters[i]()].CurrentSample = 0;
 		playingEmitters.Pop(i);
 	}
 	
 	void onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo);
 	void onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer);
+
+	bool shouldStream(const uint32 samples) {
+		return samples >= samplesToLoad(); //if audio is longer than 10 seconds, stream it
+	}
+
+	uint32 samplesToLoad() {
+		return 48000 * 10;
+	}
 };

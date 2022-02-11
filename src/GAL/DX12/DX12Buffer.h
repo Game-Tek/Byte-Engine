@@ -51,9 +51,4 @@ namespace GAL
 	private:
 		ID3D12Resource* resource = nullptr;
 	};
-
-	class DX12DeviceMemory
-	{
-		
-	};
 }

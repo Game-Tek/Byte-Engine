@@ -41,7 +41,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		simplePushConstant = pipeline->DeclareScope(countShaderGroupsShader, u8"pushConstantBlock");
 		pipeline->DeclareVariable(simplePushConstant, { u8"globalData*", u8"global" });
 		pipeline->DeclareVariable(simplePushConstant, { u8"renderPassData*", u8"renderPass" });
-		auto instancesPointerHandle = pipeline->DeclareVariable(simplePushConstant, { u8"instanceData*", u8"instances" });
+		auto instancesPointerHandle = pipeline->DeclareVariable(simplePushConstant, { u8"InstanceData*", u8"instances" });
 		auto visibilityDataHandle = pipeline->DeclareVariable(simplePushConstant, { u8"VisibilityData*", u8"visibility" });
 
 		{ //visibility pass

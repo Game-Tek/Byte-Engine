@@ -116,18 +116,22 @@ namespace GAL {
 	constexpr GTSL::uint32 bitExtracted(GTSL::uint32 number, GTSL::uint8 k, GTSL::uint8 p) {
 		return (((1 << k) - 1) & (number >> (p - 1)));
 	}
-	
+
+	enum class ColorSpaces : GTSL::uint8 {
+		LINEAR, SRGB_NONLINEAR, DISPLAY_P3_LINEAR, DISPLAY_P3_NONLINEAR, HDR10_ST2048, DOLBY_VISION, HDR10_HLG, ADOBERGB_LINEAR, ADOBERGB_NONLINEAR
+	};
+
 	struct FormatDescriptor
 	{
 		FormatDescriptor() = default;
 		
-		constexpr FormatDescriptor(ComponentType compType, GTSL::uint8 compCount, GTSL::uint8 bitDepth, TextureType type, GTSL::uint8 a, GTSL::uint8 b, GTSL::uint8 c, GTSL::uint8 d) :
-		Component(compType), ComponentCount(compCount), A(a), B(b), C(c), D(d), BitDepth(GTSL::FindFirstSetBit(bitDepth).Get()), Type(type)
+		constexpr FormatDescriptor(ComponentType compType, GTSL::uint8 compCount, GTSL::uint8 bitDepth, TextureType type, GTSL::uint8 a, GTSL::uint8 b, GTSL::uint8 c, GTSL::uint8 d, ColorSpaces color_space = ColorSpaces::LINEAR) :
+		Component(compType), ComponentCount(compCount), A(a), B(b), C(c), D(d), BitDepth(GTSL::FindFirstSetBit(bitDepth).Get()), Type(type), ColorSpace(color_space)
 		{}
 
 		constexpr FormatDescriptor(const GTSL::uint32 i) : Component(static_cast<ComponentType>(bitExtracted(i, 4, 0))),
 		ComponentCount(bitExtracted(i, 4, 4)), A(bitExtracted(i, 2, 8)), B(bitExtracted(i, 2, 10)), C(bitExtracted(i, 2, 12)), D(bitExtracted(i, 2, 14)),
-		BitDepth(bitExtracted(i, 3, 16)), Type(static_cast<TextureType>(bitExtracted(i, 2, 19))) {}
+		BitDepth(bitExtracted(i, 3, 16)), Type(static_cast<TextureType>(bitExtracted(i, 2, 19))), ColorSpace(static_cast<ColorSpaces>(bitExtracted(i, 4, 21))) {}
 		
 		ComponentType Component : 4; //0
 		GTSL::uint8 ComponentCount : 4;  //4
@@ -137,34 +141,35 @@ namespace GAL {
 		GTSL::uint8 D : 2;               //14
 		GTSL::uint8 BitDepth : 3;        //16
 		TextureType Type : 2;            //19
+		ColorSpaces ColorSpace : 4;      //21
 
 		[[nodiscard]] GTSL::uint8 GetBitDepth() const { return static_cast<GTSL::uint8>(1) << BitDepth; }
 		[[nodiscard]] GTSL::uint8 GetSize() const { return GetBitDepth() / 8 * ComponentCount; }
 
 		[[nodiscard]] constexpr operator GTSL::uint32() const {
-			return static_cast<GTSL::UnderlyingType<ComponentType>>(Component) | ComponentCount << 4 | A << 8 | B << 10 | C << 12 | D << 14 | BitDepth << 16 | static_cast<GTSL::UnderlyingType<TextureType>>(Type) << 19;
+			return static_cast<GTSL::UnderlyingType<ComponentType>>(Component) | ComponentCount << 4 | A << 8 | B << 10 | C << 12 | D << 14 | BitDepth << 16 | static_cast<GTSL::UnderlyingType<TextureType>>(Type) << 19 | static_cast<GTSL::UnderlyingType<ColorSpaces>>(ColorSpace) << 21;
 		}
 	};
 	
 	namespace FORMATS {
 		static constexpr auto R_I8 = FormatDescriptor(ComponentType::INT, 1, 8, TextureType::COLOR, 0, 0, 0, 0);
+		static constexpr auto R_SRGB_I8 = FormatDescriptor(ComponentType::INT, 1, 8, TextureType::COLOR, 0, 0, 0, 0, ColorSpaces::SRGB_NONLINEAR);
 		static constexpr auto RGB_I8 = FormatDescriptor(ComponentType::INT, 3, 8, TextureType::COLOR, 0, 1, 2, 3);
 		static constexpr auto BGRA_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
 		static constexpr auto RG_I32 = FormatDescriptor(ComponentType::INT, 2, 32, TextureType::COLOR, 0, 1, 0, 0);
 		static constexpr auto BGRA_NONLINEAR8 = FormatDescriptor(ComponentType::NON_LINEAR, 4, 8, TextureType::COLOR, 2, 1, 0, 3);
 		static constexpr auto RGBA_F16 = FormatDescriptor(ComponentType::FLOAT, 4, 16, TextureType::COLOR, 0, 1, 2, 3);
 		static constexpr auto RGBA_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 0, 1, 2, 3);
+		static constexpr auto RGBA_SRGB_I8 = FormatDescriptor(ComponentType::INT, 4, 8, TextureType::COLOR, 0, 1, 2, 3, ColorSpaces::SRGB_NONLINEAR);
 		static constexpr auto DEPTH_F32 = FormatDescriptor(ComponentType::FLOAT, 1, 32, TextureType::DEPTH, 0, 0, 0, 0);
 	}
-
-	enum class ColorSpace : GTSL::uint8 {
-		SRGB_NONLINEAR, DISPLAY_P3_LINEAR, DISPLAY_P3_NONLINEAR, HDR10_ST2048, DOLBY_VISION, HDR10_HLG, ADOBERGB_LINEAR, ADOBERGB_NONLINEAR, PASS_THROUGH
-	};
 	
 	enum class Format {
 		R_I8 = FORMATS::R_I8,
+		R_SRGB_I8 = FORMATS::R_SRGB_I8,
 		RGB_I8 = FORMATS::RGB_I8,
 		RGBA_I8 = FORMATS::RGBA_I8,
+		RGBA_SRGB_I8 = FORMATS::RGBA_SRGB_I8,
 		RGBA_F16 = FORMATS::RGBA_F16,
 		BGRA_I8 = FORMATS::BGRA_I8,
 		RG_I32 = FORMATS::RG_I32,

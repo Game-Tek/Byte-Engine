@@ -1788,7 +1788,7 @@ private:
 	};
 	GTSL::HashMap<uint64, PendingWriteData, BE::PAR> pendingWrites;
 
-	GTSL::ShortString<16> tag = u8"Forward";
+	GTSL::ShortString<16> tag;
 
 	static constexpr bool INVERSE_Z = true;
 
@@ -2039,7 +2039,7 @@ private:
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
 		bwk[u8"pointLightsLength"] = ++lights;
 		bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
-		bwk[u8"pointLights"][light_handle()][u8"radius"] = 100.f;
+		bwk[u8"pointLights"][light_handle()][u8"radius"] = 8.f;
 	}
 
 	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position) {

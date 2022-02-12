@@ -150,6 +150,8 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 {
 	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
+	tag = BE::Application::Get()->GetStringOption(u8"renderTechnique");
+
 	renderBuffers.EmplaceBack().BufferHandle = renderSystem->CreateBuffer(RENDER_DATA_BUFFER_PAGE_SIZE, GAL::BufferUses::STORAGE, true, true, RenderSystem::BufferHandle());
 
 	for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {

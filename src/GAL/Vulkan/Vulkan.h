@@ -163,7 +163,9 @@ namespace GAL
 	inline VkFormat ToVulkan(const Format format) {
 		switch (format) {
 		case Format::R_I8: return VK_FORMAT_R8_UNORM;
+		case Format::R_SRGB_I8: return VK_FORMAT_R8_SRGB;
 		case Format::RGBA_I8: return VK_FORMAT_R8G8B8A8_UNORM;
+		case Format::RGBA_SRGB_I8: return VK_FORMAT_R8G8B8A8_SRGB;
 		case Format::RGBA_F16: return VK_FORMAT_R16G16B16A16_SFLOAT;
 		case Format::RG_I32: return VK_FORMAT_R32G32_UINT;
 		case Format::BGRA_I8: return VK_FORMAT_B8G8R8A8_UNORM;
@@ -489,17 +491,17 @@ namespace GAL
 		return vkGeometryFlagsKhr;
 	}
 
-	inline VkColorSpaceKHR ToVulkan(const ColorSpace colorSpace) {
+	inline VkColorSpaceKHR ToVulkan(const ColorSpaces colorSpace) {
 		switch (colorSpace) {
-		case ColorSpace::SRGB_NONLINEAR: return VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-		case ColorSpace::DISPLAY_P3_LINEAR: return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
-		case ColorSpace::DISPLAY_P3_NONLINEAR: return VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT;
-		case ColorSpace::HDR10_ST2048: return VK_COLOR_SPACE_HDR10_ST2084_EXT;
-		case ColorSpace::DOLBY_VISION: return VK_COLOR_SPACE_DOLBYVISION_EXT;
-		case ColorSpace::HDR10_HLG: return VK_COLOR_SPACE_HDR10_HLG_EXT;
-		case ColorSpace::ADOBERGB_LINEAR: return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
-		case ColorSpace::ADOBERGB_NONLINEAR: return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
-		case ColorSpace::PASS_THROUGH: break;
+		case ColorSpaces::LINEAR: return VK_COLOR_SPACE_PASS_THROUGH_EXT;
+		case ColorSpaces::SRGB_NONLINEAR: return VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+		case ColorSpaces::DISPLAY_P3_LINEAR: return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
+		case ColorSpaces::DISPLAY_P3_NONLINEAR: return VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT;
+		case ColorSpaces::HDR10_ST2048: return VK_COLOR_SPACE_HDR10_ST2084_EXT;
+		case ColorSpaces::DOLBY_VISION: return VK_COLOR_SPACE_DOLBYVISION_EXT;
+		case ColorSpaces::HDR10_HLG: return VK_COLOR_SPACE_HDR10_HLG_EXT;
+		case ColorSpaces::ADOBERGB_LINEAR: return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
+		case ColorSpaces::ADOBERGB_NONLINEAR: return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
 		}
 
 		return VK_COLOR_SPACE_MAX_ENUM_KHR;
@@ -557,22 +559,22 @@ namespace GAL
 		GAL_DEBUG_BREAK;
 	}
 	
-	inline ColorSpace ToGAL(const VkColorSpaceKHR colorSpace) {
+	inline ColorSpaces ToGAL(const VkColorSpaceKHR colorSpace) {
 		switch (colorSpace) {
-		case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return ColorSpace::SRGB_NONLINEAR;
-		case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return ColorSpace::DISPLAY_P3_NONLINEAR;
+		case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return ColorSpaces::SRGB_NONLINEAR;
+		case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return ColorSpaces::DISPLAY_P3_NONLINEAR;
 		case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: break;
-		case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return ColorSpace::DISPLAY_P3_LINEAR;
+		case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return ColorSpaces::DISPLAY_P3_LINEAR;
 		case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT: break;
 		case VK_COLOR_SPACE_BT709_LINEAR_EXT: break;
 		case VK_COLOR_SPACE_BT709_NONLINEAR_EXT: break;
 		case VK_COLOR_SPACE_BT2020_LINEAR_EXT: break;
-		case VK_COLOR_SPACE_HDR10_ST2084_EXT: return ColorSpace::HDR10_ST2048;
-		case VK_COLOR_SPACE_DOLBYVISION_EXT: return ColorSpace::DOLBY_VISION;
-		case VK_COLOR_SPACE_HDR10_HLG_EXT: return ColorSpace::HDR10_HLG;
-		case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return ColorSpace::ADOBERGB_LINEAR;
-		case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return ColorSpace::ADOBERGB_NONLINEAR;
-		case VK_COLOR_SPACE_PASS_THROUGH_EXT: return ColorSpace::PASS_THROUGH;
+		case VK_COLOR_SPACE_HDR10_ST2084_EXT: return ColorSpaces::HDR10_ST2048;
+		case VK_COLOR_SPACE_DOLBYVISION_EXT: return ColorSpaces::DOLBY_VISION;
+		case VK_COLOR_SPACE_HDR10_HLG_EXT: return ColorSpaces::HDR10_HLG;
+		case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return ColorSpaces::ADOBERGB_LINEAR;
+		case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return ColorSpaces::ADOBERGB_NONLINEAR;
+		case VK_COLOR_SPACE_PASS_THROUGH_EXT: return ColorSpaces::LINEAR;
 		case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT: break;
 		case VK_COLOR_SPACE_DISPLAY_NATIVE_AMD: break;
 		case VK_COLOR_SPACE_MAX_ENUM_KHR: break;

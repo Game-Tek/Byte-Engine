@@ -519,6 +519,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat2f"):   result = u8"mat2"; break;
+		case GTSL::Hash(u8"mat3f"):   result = u8"mat3"; break;
 		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
 		case GTSL::Hash(u8"mat3x4f"): result = u8"mat3x4"; break;
 		case GTSL::Hash(u8"mat4x3f"): result = u8"mat4x3"; break;

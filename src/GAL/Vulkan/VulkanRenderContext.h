@@ -31,12 +31,12 @@ namespace GAL
 			debugClear(surface);
 		}
 
-		GTSL::StaticVector<GTSL::Pair<ColorSpace, FormatDescriptor>, 16> GetSupportedFormatsAndColorSpaces(const VulkanRenderDevice* renderDevice) const {
+		GTSL::StaticVector<GTSL::Pair<ColorSpaces, FormatDescriptor>, 16> GetSupportedFormatsAndColorSpaces(const VulkanRenderDevice* renderDevice) const {
 			GTSL::uint32 surfaceFormatsCount = 16;
 			VkSurfaceFormatKHR vkSurfaceFormatKhrs[16];
 			renderDevice->VkGetPhysicalDeviceSurfaceFormats(renderDevice->GetVkPhysicalDevice(), surface, &surfaceFormatsCount, vkSurfaceFormatKhrs);
 
-			GTSL::StaticVector<GTSL::Pair<ColorSpace, FormatDescriptor>, 16> result;
+			GTSL::StaticVector<GTSL::Pair<ColorSpaces, FormatDescriptor>, 16> result;
 
 			for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(surfaceFormatsCount); ++i) {
 				if(GAL::IsSupported(vkSurfaceFormatKhrs[i].format))
@@ -100,7 +100,7 @@ namespace GAL
 		~VulkanRenderContext() = default;
 
 		bool InitializeOrRecreate(const VulkanRenderDevice* renderDevice, [[maybe_unused]] const VulkanQueue queue, const VulkanSurface* surface,
-		                          GTSL::Extent2D extent, FormatDescriptor format, ColorSpace colorSpace,
+		                          GTSL::Extent2D extent, FormatDescriptor format, ColorSpaces colorSpace,
 		                          TextureUse textureUse, PresentModes presentMode, GTSL::uint8 desiredFramesInFlight) {
 			VkSwapchainCreateInfoKHR vkSwapchainCreateInfoKhr{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 			vkSwapchainCreateInfoKhr.surface = static_cast<VkSurfaceKHR>(surface->GetVkSurface());

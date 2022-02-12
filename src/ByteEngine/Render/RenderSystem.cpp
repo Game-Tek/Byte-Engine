@@ -415,12 +415,12 @@ void RenderSystem::resize() {
 	auto supportedSurfaceFormats = surface.GetSupportedFormatsAndColorSpaces(&renderDevice);
 
 	{
-		GTSL::Pair<GAL::ColorSpace, GAL::FormatDescriptor> bestColorSpaceFormat;
+		GTSL::Pair<GAL::ColorSpaces, GAL::FormatDescriptor> bestColorSpaceFormat;
 
 		for (uint8 topScore = 0; const auto & e : supportedSurfaceFormats) {
 			uint8 score = 0;
 
-			if (useHDR && e.First == GAL::ColorSpace::HDR10_ST2048) {
+			if (useHDR && e.First == GAL::ColorSpaces::HDR10_ST2048) {
 				score += 2;
 			}
 			else {

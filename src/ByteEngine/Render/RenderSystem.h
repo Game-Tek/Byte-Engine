@@ -621,7 +621,7 @@ private:
 
 	GAL::PresentModes swapchainPresentMode;
 	GAL::FormatDescriptor swapchainFormat;
-	GAL::ColorSpace swapchainColorSpace;
+	GAL::ColorSpaces swapchainColorSpace;
 
 	void resize();
 	

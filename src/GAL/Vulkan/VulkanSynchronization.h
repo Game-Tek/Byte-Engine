@@ -7,25 +7,43 @@
 
 namespace GAL
 {
-	class VulkanFence final : public Fence
-	{
+	class VulkanSynchronizer final : public Synchronizer {
 	public:
-		VulkanFence() = default;
-		
-		void Initialize(const VulkanRenderDevice* renderDevice, bool isSignaled = false) {
-			VkFenceCreateInfo vk_fence_create_info{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-			vk_fence_create_info.flags = isSignaled;
+		VulkanSynchronizer() = default;
 
-			renderDevice->VkCreateFence(renderDevice->GetVkDevice(), &vk_fence_create_info, renderDevice->GetVkAllocationCallbacks(), &fence);
-			counter = isSignaled ? 1 : 0;
-		}
+		void Initialize(const VulkanRenderDevice* renderDevice, Type syncType, bool isSignaled = false, uint64 initialValue = ~0ULL) {
+			SyncType = syncType;
 
-		void Destroy(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkDestroyFence(renderDevice->GetVkDevice(), fence, renderDevice->GetVkAllocationCallbacks());
-			debugClear(fence);
+			switch (SyncType) {
+			case Type::FENCE: {
+				VkFenceCreateInfo vk_fence_create_info{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+				vk_fence_create_info.flags = isSignaled;
+
+				renderDevice->VkCreateFence(renderDevice->GetVkDevice(), &vk_fence_create_info, renderDevice->GetVkAllocationCallbacks(), &fence);
+				counter = isSignaled ? 1 : 0;
+				break;
+			}
+			case Type::SEMAPHORE: {
+				VkSemaphoreCreateInfo vkSemaphoreCreateInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+				VkSemaphoreTypeCreateInfo vkSemaphoreTypeCreateInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+				vkSemaphoreTypeCreateInfo.semaphoreType = initialValue == 0xFFFFFFFFFFFFFFFF ? VK_SEMAPHORE_TYPE_BINARY : VK_SEMAPHORE_TYPE_TIMELINE;
+				vkSemaphoreTypeCreateInfo.initialValue = initialValue == 0xFFFFFFFFFFFFFFFF ? 0 : initialValue;
+				vkSemaphoreCreateInfo.pNext = &vkSemaphoreTypeCreateInfo;
+
+				renderDevice->VkCreateSemaphore(renderDevice->GetVkDevice(), &vkSemaphoreCreateInfo, renderDevice->GetVkAllocationCallbacks(), &semaphore);
+				break;
+			}
+			case Type::EVENT: {
+				VkEventCreateInfo vkEventCreateInfo{ VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
+				renderDevice->VkCreateEvent(renderDevice->GetVkDevice(), &vkEventCreateInfo, renderDevice->GetVkAllocationCallbacks(), &event);
+				break;
+			}
+			}
 		}
 		
 		[[nodiscard]] VkFence GetVkFence() const { return fence; }
+		[[nodiscard]] VkSemaphore GetVkSemaphore() const { return semaphore; }
+		[[nodiscard]] VkEvent GetVkEvent() const { return event; }
 
 		void Wait(const VulkanRenderDevice* renderDevice) {
 			if (State()) {
@@ -37,12 +55,13 @@ namespace GAL
 		}
 
 		void Reset(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkResetFences(renderDevice->GetVkDevice(), 1u, &fence);
+			switch (SyncType) {
+			case Type::FENCE: renderDevice->VkResetFences(renderDevice->GetVkDevice(), 1u, &fence); break;
+			case Type::SEMAPHORE: break;
+			case Type::EVENT: renderDevice->VkResetEvent(renderDevice->GetVkDevice(), event); break;
+			}
+			
 			Release();
-		}
-		
-		[[nodiscard]] bool GetStatus(const VulkanRenderDevice* renderDevice) const {
-			return counter;
 		}
 
 		void Signal() {
@@ -53,37 +72,22 @@ namespace GAL
 			--counter;
 		}
 
-		bool State() const { return counter; }
-	private:
-		VkFence fence = nullptr;
-		GTSL::uint64 counter = 0;
-	};
-
-	class VulkanSemaphore final : public Semaphore
-	{
-	public:
-		VulkanSemaphore() = default;
-
-		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::uint64 initialValue = 0xFFFFFFFFFFFFFFFF) {
-
-			VkSemaphoreCreateInfo vkSemaphoreCreateInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-			VkSemaphoreTypeCreateInfo vkSemaphoreTypeCreateInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
-			vkSemaphoreTypeCreateInfo.semaphoreType = initialValue == 0xFFFFFFFFFFFFFFFF ? VK_SEMAPHORE_TYPE_BINARY : VK_SEMAPHORE_TYPE_TIMELINE;
-			vkSemaphoreTypeCreateInfo.initialValue = initialValue == 0xFFFFFFFFFFFFFFFF ? 0 : initialValue;
-			vkSemaphoreCreateInfo.pNext = &vkSemaphoreTypeCreateInfo;
-
-			renderDevice->VkCreateSemaphore(renderDevice->GetVkDevice(), &vkSemaphoreCreateInfo, renderDevice->GetVkAllocationCallbacks(), &semaphore);
+		void Set(const VulkanRenderDevice* renderDevice) {
+			renderDevice->VkSetEvent(renderDevice->GetVkDevice(), event);
 		}
 
 		void Destroy(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkDestroySemaphore(renderDevice->GetVkDevice(), semaphore, renderDevice->GetVkAllocationCallbacks());
-			debugClear(semaphore);
+			switch (SyncType) {
+			case Type::FENCE: renderDevice->VkDestroyFence(renderDevice->GetVkDevice(), fence, renderDevice->GetVkAllocationCallbacks()); debugClear(fence); break;
+			case Type::SEMAPHORE : renderDevice->VkDestroySemaphore(renderDevice->GetVkDevice(), semaphore, renderDevice->GetVkAllocationCallbacks()); debugClear(semaphore); break;
+			case Type::EVENT: renderDevice->VkDestroyEvent(renderDevice->GetVkDevice(), event, renderDevice->GetVkAllocationCallbacks()); debugClear(event); break;
+			}
 		}
 
-		static void Wait(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanSemaphore*> semaphores, const GTSL::Range<const uint64*> values) {
+		static void Wait(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanSynchronizer*> semaphores, const GTSL::Range<const uint64*> values) {
 			GTSL::StaticVector<VkSemaphore, 8> vk_semaphores;
 
-			for(auto& e : semaphores) {
+			for (auto& e : semaphores) {
 				vk_semaphores.EmplaceBack(e.GetVkSemaphore());
 			}
 
@@ -91,50 +95,13 @@ namespace GAL
 			render_device->vkWaitSemaphores(render_device->GetVkDevice(), &vk_semaphore_wait_info, ~0ULL);
 		}
 
-		[[nodiscard]] VkSemaphore GetVkSemaphore() const { return semaphore; }
-
-		void Signal() { ++counter; }
-		void Unsignal() { --counter; }
-		bool IsSignaled() const { return counter; }
+		bool State() const { return counter; }
 	private:
-		VkSemaphore semaphore{ nullptr };
-		GTSL::uint64 counter = 0;
-	};
-
-	class VulkanEvent final : public Fence
-	{
-	public:
-		VulkanEvent() = default;
-		
-		void Initialize(const VulkanRenderDevice* renderDevice) {
-			VkEventCreateInfo vkEventCreateInfo{ VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
-			renderDevice->VkCreateEvent(renderDevice->GetVkDevice(), &vkEventCreateInfo, renderDevice->GetVkAllocationCallbacks(), &event);
-		}
-		
-		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::Range<const char8_t*> name) {
-			VkEventCreateInfo vkEventCreateInfo{ VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
-			renderDevice->VkCreateEvent(renderDevice->GetVkDevice(), &vkEventCreateInfo, renderDevice->GetVkAllocationCallbacks(), &event);
-
-			setName(renderDevice, event, VK_OBJECT_TYPE_EVENT, name);
-		}
-
-		void Set(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkSetEvent(renderDevice->GetVkDevice(), event);
-		}
-		
-		void Reset(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkResetEvent(renderDevice->GetVkDevice(), event);
-		}
-		
-		void Destroy(const VulkanRenderDevice* renderDevice) {
-			renderDevice->VkDestroyEvent(renderDevice->GetVkDevice(), event, renderDevice->GetVkAllocationCallbacks());
-			debugClear(event);
-		}
-		
-		VkEvent GetVkEvent() const { return event; }
-
-		GTSL::uint64 GetHandle() const { return reinterpret_cast<GTSL::uint64>(event); }
-	private:
+		VkFence fence = nullptr;
+		VkSemaphore semaphore = nullptr;
 		VkEvent event = nullptr;
+		GTSL::uint64 counter = 0;
+
+		Type SyncType;
 	};
 }

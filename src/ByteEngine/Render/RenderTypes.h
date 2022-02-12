@@ -10,7 +10,6 @@
 #include <GAL/Vulkan/VulkanPipelines.h>
 #include <GAL/Vulkan/VulkanQueryPool.h>
 #include <GAL/Vulkan/VulkanRenderPass.h>
-#include <GAL/Vulkan/VulkanFramebuffer.h>
 #include <GAL/Vulkan/VulkanRenderDevice.h>
 #include <GAL/Vulkan/VulkanCommandList.h>
 #include <GAL/Vulkan/VulkanRenderContext.h>
@@ -66,19 +65,17 @@ struct RenderAllocation
 #if (BE_VULKAN)
 #undef OPAQUE
 using Queue = GAL::VulkanQueue;
-using Fence = GAL::VulkanFence;
-using GPUBuffer = GAL::VulkanBuffer;
 using Texture = GAL::VulkanTexture;
 using Surface = GAL::VulkanSurface;
-using GPUPipeline = GAL::VulkanPipeline;
-using GPUSemaphore = GAL::VulkanSemaphore;
+using GPUBuffer = GAL::VulkanBuffer;
 using QueryPool = GAL::VulkanQueryPool;
+using GPUPipeline = GAL::VulkanPipeline;
 using RenderPass = GAL::VulkanRenderPass;
 using TextureSampler = GAL::VulkanSampler;
 using TextureView = GAL::VulkanTextureView;
 using CommandList = GAL::VulkanCommandList;
 using BindingsSet = GAL::VulkanBindingsSet;
-using FrameBuffer = GAL::VulkanFramebuffer;
+using Synchronizer = GAL::VulkanSynchronizer;
 using DeviceMemory = GAL::VulkanDeviceMemory;
 using RenderDevice = GAL::VulkanRenderDevice;
 using BindingsPool = GAL::VulkanBindingsPool;

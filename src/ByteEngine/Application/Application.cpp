@@ -1,5 +1,5 @@
 #include "ByteEngine/Application/Application.h"
-
+#include "GTSL/Application.h"
 
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
@@ -26,9 +26,8 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()),
-	settings(32, systemAllocatorReference), systemApplication(GTSL::Application::ApplicationCreateInfo{}),
-	transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4)
+	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4),
+		jsonBuffer(GetPersistentAllocator()), systemApplication({})
 	{
 		applicationInstance = this;
 	}
@@ -48,7 +47,9 @@ namespace BE
 
 		GTSL::Thread::SetThreadId(0);
 
-		systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+		//systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+
+		jsonBuffer.Allocate(4096, 16);
 
 		if (!parseConfig()) {
 			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
@@ -56,16 +57,15 @@ namespace BE
 		}
 
 		Logger::LoggerCreateInfo logger_create_info;
-		auto path = systemApplication.GetPathToExecutable();
-		DropLast(path, u8'/');
+		auto path = GetPathToApplication();
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger_create_info.Trace = static_cast<bool>(GetOption(u8"trace"));
+		logger_create_info.Trace = GetBoolOption(u8"trace");
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
 		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
 
 		{
-			auto threadCount = GetOption(u8"threadCount");
+			auto threadCount = (uint32)GetUINTOption(u8"threadCount");
 			threadCount = GTSL::Math::Limit(threadCount, static_cast<uint32>(GTSL::Thread::ThreadCount() - 1/*main thread*/));
 			threadCount = threadCount ? static_cast<uint8>(threadCount) : GTSL::Thread::ThreadCount();
 			threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(systemAllocatorReference, threadCount);
@@ -96,10 +96,8 @@ namespace BE
 		return true;
 	}
 
-	void Application::Shutdown()
-	{
-		if (initialized)
-		{
+	void Application::Shutdown() {
+		if (initialized) {
 			applicationManager.TryFree();
 			
 			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
@@ -114,8 +112,6 @@ namespace BE
 			} else {
 				BE_LOG_SUCCESS(u8"Shutting down application. No reported errors.")
 			}
-
-			settings.Free();
 			
 			transientAllocator.LockedClear();
 			transientAllocator.Free();
@@ -167,10 +163,22 @@ namespace BE
 		this->closeMode = closeMode;
 	}
 
+	GTSL::StaticString<260> Application::GetPathToApplication() const {
+#ifdef _WIN32
+		char s[260];
+		GetModuleFileNameA(GetModuleHandleA(nullptr), s, 260);
+
+		GTSL::StaticString<260> ret(reinterpret_cast<const char8_t*>(s));
+		ReplaceAll(ret, u8'\\', u8'/');
+		DropLast(ret, u8'/');
+		return ret;
+#endif
+	}
+
 	bool Application::parseConfig()
 	{
 		auto path = GetPathToApplication();
-		path += u8"/settings.ini";
+		path += u8"/settings.json";
 		
 		GTSL::File settingsFile;
 		switch (settingsFile.Open(path, GTSL::File::READ, false)) {
@@ -181,160 +189,163 @@ namespace BE
 		if(settingsFile.GetSize() == 0) { return false; }
 		
 		GTSL::Buffer fileBuffer(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
-
 		settingsFile.Read(fileBuffer);
+
+		jsonMember = GTSL::Parse(GTSL::StringView(fileBuffer.GetLength(), fileBuffer.GetLength(), reinterpret_cast<const char8_t*>(fileBuffer.GetData())), jsonBuffer);
+
+		return true;
 		
-		uint32 i = 0;
-
-		enum class Token
-		{
-			NONE, SECTION, KEY, VALUE
-		} lastParsedToken = Token::NONE, currentToken = Token::NONE;
-
-		GTSL::StaticString<128> text;
-		bool parseEnded = false;
-		Id key;
-		
-		while (i < fileBuffer.GetLength()) {			
-			switch (static_cast<utf8>(fileBuffer.GetData()[i])) {
-			case '[':
-				{
-					if (lastParsedToken == Token::KEY) { return false; }
-					currentToken = Token::SECTION;
-					parseEnded = false;
-					break;
-				}
-
-			case ']':
-				{
-					if (currentToken != Token::SECTION || lastParsedToken == Token::KEY) { return false; }
-					parseEnded = !text.IsEmpty() && !parseEnded;
-					if (!parseEnded) { return false; }
-
-					key = text.c_str();
-
-					text.Drop(0);
-
-					lastParsedToken = Token::SECTION;
-					currentToken = Token::NONE;
-					
-					break;
-				}
-
-			case ' ':
-				{
-					return false;
-				}
-
-			case '=':
-				{
-					switch (lastParsedToken)
-					{
-					case Token::VALUE:
-					case Token::SECTION:
-					{
-						if(currentToken != Token::NONE) { return false; }
-						if (text.IsEmpty()) { return false; }
-						key = text.c_str();
-						parseEnded = true;
-						lastParsedToken = Token::KEY;
-						currentToken = Token::VALUE;
-						break;
-					}
-					case Token::KEY:
-					case Token::NONE:
-					{
-						return false;
-					}
-					default: break;
-					}
-
-					text.Drop(0);
-					break;
-				}
-
-			case '\0':
-			case '\n':
-			case '\r':
-				{
-					switch (lastParsedToken)
-					{
-					case Token::SECTION:
-					{
-						break;
-					}
-						
-					case Token::KEY:
-					{
-						if(currentToken != Token::VALUE) { return false; }
-						if (text.IsEmpty()) { return false; }
-						auto value = GTSL::ToNumber<uint32>(text);
-						if (!value.State()) { return false; }
-						settings.Emplace(key, value.Get());
-						lastParsedToken = Token::VALUE;
-						currentToken = Token::NONE;
-						parseEnded = true;
-						break;
-					}
-						
-					case Token::VALUE:
-					{
-						break;
-					}
-					case Token::NONE:
-					{
-						return false;
-					}
-						
-					default: break;
-					}
-
-					text.Drop(0);
-					break;
-				}
-				
-			default:
-				{
-					if (text.GetBytes() == 128) { return false; }
-					text += static_cast<utf8>(fileBuffer.GetData()[i]);
-				}
-			}
-
-			++i;
-		}
-
-		switch (lastParsedToken) {
-		case Token::NONE:
-			{
-				parseEnded = false;
-				break;
-			}
-			
-		case Token::SECTION:
-			{
-				parseEnded = true;
-				break;
-			}
-			
-		case Token::KEY:
-			{
-				if(!text.IsEmpty())
-				{
-					auto value = GTSL::ToNumber<uint32>(text);
-					if (!value.State()) { return false; }
-					settings.Emplace(key, value.Get());
-					parseEnded = true;
-					break;
-				}
-
-				parseEnded = false;
-				break;
-			}
-			
-		case Token::VALUE: break;
-		}
-
-		return parseEnded;
+		//uint32 i = 0;
+		//
+		//enum class Token
+		//{
+		//	NONE, SECTION, KEY, VALUE
+		//} lastParsedToken = Token::NONE, currentToken = Token::NONE;
+		//
+		//GTSL::StaticString<128> text;
+		//bool parseEnded = false;
+		//Id key;
+		//
+		//while (i < fileBuffer.GetLength()) {			
+		//	switch (static_cast<utf8>(fileBuffer.GetData()[i])) {
+		//	case '[':
+		//		{
+		//			if (lastParsedToken == Token::KEY) { return false; }
+		//			currentToken = Token::SECTION;
+		//			parseEnded = false;
+		//			break;
+		//		}
+		//
+		//	case ']':
+		//		{
+		//			if (currentToken != Token::SECTION || lastParsedToken == Token::KEY) { return false; }
+		//			parseEnded = !text.IsEmpty() && !parseEnded;
+		//			if (!parseEnded) { return false; }
+		//
+		//			key = text.c_str();
+		//
+		//			text.Drop(0);
+		//
+		//			lastParsedToken = Token::SECTION;
+		//			currentToken = Token::NONE;
+		//			
+		//			break;
+		//		}
+		//
+		//	case ' ':
+		//		{
+		//			return false;
+		//		}
+		//
+		//	case '=':
+		//		{
+		//			switch (lastParsedToken)
+		//			{
+		//			case Token::VALUE:
+		//			case Token::SECTION:
+		//			{
+		//				if(currentToken != Token::NONE) { return false; }
+		//				if (text.IsEmpty()) { return false; }
+		//				key = text.c_str();
+		//				parseEnded = true;
+		//				lastParsedToken = Token::KEY;
+		//				currentToken = Token::VALUE;
+		//				break;
+		//			}
+		//			case Token::KEY:
+		//			case Token::NONE:
+		//			{
+		//				return false;
+		//			}
+		//			default: break;
+		//			}
+		//
+		//			text.Drop(0);
+		//			break;
+		//		}
+		//
+		//	case '\0':
+		//	case '\n':
+		//	case '\r':
+		//		{
+		//			switch (lastParsedToken)
+		//			{
+		//			case Token::SECTION:
+		//			{
+		//				break;
+		//			}
+		//				
+		//			case Token::KEY:
+		//			{
+		//				if(currentToken != Token::VALUE) { return false; }
+		//				if (text.IsEmpty()) { return false; }
+		//				auto value = GTSL::ToNumber<uint32>(text);
+		//				if (!value.State()) { return false; }
+		//				settings.Emplace(key, value.Get());
+		//				lastParsedToken = Token::VALUE;
+		//				currentToken = Token::NONE;
+		//				parseEnded = true;
+		//				break;
+		//			}
+		//				
+		//			case Token::VALUE:
+		//			{
+		//				break;
+		//			}
+		//			case Token::NONE:
+		//			{
+		//				return false;
+		//			}
+		//				
+		//			default: break;
+		//			}
+		//
+		//			text.Drop(0);
+		//			break;
+		//		}
+		//		
+		//	default:
+		//		{
+		//			if (text.GetBytes() == 128) { return false; }
+		//			text += static_cast<utf8>(fileBuffer.GetData()[i]);
+		//		}
+		//	}
+		//
+		//	++i;
+		//}
+		//
+		//switch (lastParsedToken) {
+		//case Token::NONE:
+		//	{
+		//		parseEnded = false;
+		//		break;
+		//	}
+		//	
+		//case Token::SECTION:
+		//	{
+		//		parseEnded = true;
+		//		break;
+		//	}
+		//	
+		//case Token::KEY:
+		//	{
+		//		if(!text.IsEmpty())
+		//		{
+		//			auto value = GTSL::ToNumber<uint32>(text);
+		//			if (!value.State()) { return false; }
+		//			settings.Emplace(key, value.Get());
+		//			parseEnded = true;
+		//			break;
+		//		}
+		//
+		//		parseEnded = false;
+		//		break;
+		//	}
+		//	
+		//case Token::VALUE: break;
+		//}
+		//
+		//return parseEnded;
 	}
 	
 	bool Application::checkPlatformSupport() {

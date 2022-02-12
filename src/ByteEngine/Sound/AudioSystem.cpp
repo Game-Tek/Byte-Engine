@@ -16,14 +16,14 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 	bool error = false;
 
 	if (audioDevice.Initialize(createInfo)) {
-		auto bits = BE::Application::Get()->GetOption(u8"bitDepth");
+		auto bits = (uint32)BE::Application::Get()->GetUINTOption(u8"bitDepth");
 		bits = GTSL::Math::Clamp(bits, 8u, 32u);
 		bits = GTSL::NextPowerOfTwo(bits);
 
-		auto numChannels = BE::Application::Get()->GetOption(u8"channels");
+		auto numChannels = (uint32)BE::Application::Get()->GetUINTOption(u8"channels");
 		numChannels = GTSL::Math::Clamp(numChannels, 1u, 8u);
 
-		auto samplesPerSecond = BE::Application::Get()->GetOption(u8"kHz");
+		auto samplesPerSecond = (uint32)BE::Application::Get()->GetUINTOption(u8"kHz");
 		samplesPerSecond = GTSL::Math::Clamp(samplesPerSecond, 41000u, 96000u);
 
 		if (samplesPerSecond != 41000 && samplesPerSecond != 48000 && samplesPerSecond != 96000 ) {

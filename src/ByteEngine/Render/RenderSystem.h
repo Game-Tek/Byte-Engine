@@ -47,7 +47,7 @@ public:
 		auto& commandList = commandLists.EmplaceBack();
 		commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey());
 		//commandList.Fence.Initialize(GetRenderDevice(), true);
-		commandList.Semaphore.Initialize(GetRenderDevice());
+		commandList.Semaphore.Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::SEMAPHORE);
 		commandList.Operations = type;
 		if (type & GAL::QueueTypes::GRAPHICS) {
 			commandList.DefaultStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
@@ -139,10 +139,10 @@ public:
 	}
 
 	void SubmitAndPresent(GTSL::Range<const CommandListHandle*> command_list_handles) {
-		GTSL::StaticVector<Queue::WorkUnit, 8> workUnits;
-		GTSL::StaticVector<GPUSemaphore*, 8> presentWaitSemaphores;
+		GTSL::StaticVector<Queue::WorkUnit<Synchronizer>, 8> workUnits;
+		GTSL::StaticVector<Synchronizer*, 8> presentWaitSemaphores;
 		GTSL::StaticVector<GTSL::StaticVector<const GAL::CommandList*, 8>, 4> command_listses;
-		GTSL::StaticVector<GTSL::StaticVector<Queue::WorkUnit::SemaphoreOperationInfo, 8>, 4> waitOperations, signalOperations;
+		GTSL::StaticVector<GTSL::StaticVector<Queue::WorkUnit<Synchronizer>::SynchronizerOperationInfo, 8>, 4> waitOperations, signalOperations;
 
 		for (int32 clii = 0; clii < command_list_handles.ElementCount(); ++clii) {
 			auto& commandListData = commandLists[command_list_handles[clii]()];
@@ -165,8 +165,8 @@ public:
 			}
 
 			workUnit.CommandLists = cl;
-			workUnit.SignalSemaphores = so;
-			workUnit.WaitSemaphores = wo;
+			workUnit.Signal = so;
+			workUnit.Wait = wo;
 		}
 
 		if (fences[GetCurrentFrame()].State()) {
@@ -182,7 +182,7 @@ public:
 		}
 	}
 
-	Fence fences[MAX_CONCURRENT_FRAMES];
+	Synchronizer fences[MAX_CONCURRENT_FRAMES];
 
 	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
@@ -532,7 +532,7 @@ private:
 	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
-	GPUSemaphore imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
+	Synchronizer imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue;
 	bool breakOnError = true;
@@ -609,7 +609,7 @@ private:
 	struct CommandListData {
 		CommandList CommandList;
 		//Fence Fence;
-		GPUSemaphore Semaphore;
+		Synchronizer Semaphore;
 		GAL::QueueType Operations;
 		GAL::PipelineStage PipelineStages, DefaultStages;
 	};

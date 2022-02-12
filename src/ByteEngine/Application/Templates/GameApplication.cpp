@@ -75,14 +75,13 @@ void GameApplication::PostInitialize()
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
 
 	{
-		bool fullscreen = GetOption(u8"fullScreen");
+		bool fullscreen = GetBoolOption(u8"fullScreen");
 		GTSL::Extent2D screenSize;
 
 		if(fullscreen) {
 			screenSize = GTSL::System::GetScreenExtent();			
 		} else {
-			screenSize.Width = GetOption(u8"xRes");
-			screenSize.Height = GetOption(u8"yRes");
+			screenSize = GetExtent2DOption(u8"resolution");
 		}
 
 		window.BindToOS(GetApplicationName(), screenSize, systemApplication, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this)); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which

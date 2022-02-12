@@ -3,6 +3,8 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Debug/Assert.h"
 
+#include <GTSL/JSON.hpp>
+
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -15,7 +17,6 @@
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Vectors.hpp>
 
-#include "GTSL/JSON.hpp"
 
 static GTSL::Vector4 ToGTSL(const aiColor4D assimpVector) {
 	return GTSL::Vector4(assimpVector.r, assimpVector.g, assimpVector.b, assimpVector.a);

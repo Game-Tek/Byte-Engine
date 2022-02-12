@@ -5,14 +5,10 @@
 #include <GTSL/File.h>
 #include <GTSL/Filesystem.h>
 
-#include "ByteEngine/Application/Application.h"
-
 #define STB_IMAGE_IMPLEMENTATION
 //#define STBI_NO_STDIO
 //#define STBI_NO_GIF
 #include "stb_image.h"
-
-#include <GTSL/JSON.hpp>
 
 #undef Extract
 
@@ -73,15 +69,15 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 			const uint32 size = static_cast<uint32>(x) * y * finalChannelCount;
 			texture_info.Extent = { static_cast<uint16>(x), static_cast<uint16>(y), 1 };
 
-			GTSL::StartObject(serializer, indexFileString);
-				GTSL::Insert(serializer, indexFileString, u8"name", fileName);
-				GTSL::Insert(serializer, indexFileString, u8"format", GTSL::StringView(u8"INT_4_8_C_0123"));
-				GTSL::StartArray(serializer, indexFileString, u8"extent");
-					GTSL::Insert(serializer, indexFileString, x);
-					GTSL::Insert(serializer, indexFileString, y);
-					GTSL::Insert(serializer, indexFileString, 1);
-				GTSL::EndArray(serializer, indexFileString);
-			GTSL::EndObject(serializer, indexFileString);
+			//GTSL::StartObject(serializer, indexFileString);
+			//	GTSL::Insert(serializer, indexFileString, u8"name", fileName);
+			//	GTSL::Insert(serializer, indexFileString, u8"format", GTSL::StringView(u8"INT_4_8_C_0123"));
+			//	GTSL::StartArray(serializer, indexFileString, u8"extent");
+			//		GTSL::Insert(serializer, indexFileString, x);
+			//		GTSL::Insert(serializer, indexFileString, y);
+			//		GTSL::Insert(serializer, indexFileString, 1);
+			//	GTSL::EndArray(serializer, indexFileString);
+			//GTSL::EndObject(serializer, indexFileString);
 
 			resource_files_.AddEntry(fileName, &texture_info, { size, static_cast<const byte*>(data) });
 

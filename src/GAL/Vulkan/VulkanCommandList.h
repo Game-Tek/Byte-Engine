@@ -10,7 +10,6 @@
 #include <GTSL/RGB.h>
 
 #include "VulkanBindings.h"
-#include "VulkanFramebuffer.h"
 #include "VulkanRenderPass.h"
 #include "VulkanSynchronization.h"
 #include "GTSL/Vector.hpp"
@@ -457,10 +456,11 @@ namespace GAL {
 				buildGeometryInfos.begin(), buildRangesRangePerAccelerationStructure.begin());
 		}
 
-		void SetEvent(const VulkanRenderDevice* renderDevice, VulkanEvent event, PipelineStage pipelineStage) {
+		void SetEvent(const VulkanRenderDevice* renderDevice, VulkanSynchronizer event, PipelineStage pipelineStage) {
 			renderDevice->VkCmdSetEvent(commandBuffer, event.GetVkEvent(), ToVulkan(pipelineStage));
 		}
-		void ResetEvent(const VulkanRenderDevice* renderDevice, VulkanEvent event, PipelineStage pipelineStage) {
+
+		void ResetEvent(const VulkanRenderDevice* renderDevice, VulkanSynchronizer event, PipelineStage pipelineStage) {
 			renderDevice->VkCmdResetEvent(commandBuffer, event.GetVkEvent(), ToVulkan(pipelineStage));
 		}
 		

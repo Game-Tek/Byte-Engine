@@ -9,13 +9,14 @@ namespace GAL {
 
 	class Queue {
 	public:
+		template<class S>
 		struct WorkUnit final {
-			struct SemaphoreOperationInfo {
-				Semaphore* Semaphore = nullptr;
+			struct SynchronizerOperationInfo {
+				S* Synchronizer = nullptr;
 				PipelineStage PipelineStage;
 			};
 
-			GTSL::Range<SemaphoreOperationInfo*> SignalSemaphores, WaitSemaphores;
+			GTSL::Range<SynchronizerOperationInfo*> Signal, Wait;
 			GTSL::Range<const CommandList**> CommandLists;
 		};
 	};

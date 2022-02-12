@@ -251,7 +251,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	if constexpr (BE_DEBUG) {
-		pipelineStages |= BE::Application::Get()->GetOption(u8"debugSync") ? GAL::PipelineStages::ALL_GRAPHICS : GAL::PipelineStage(0);
+		pipelineStages |= BE::Application::Get()->GetBoolOption(u8"debugSync") ? GAL::PipelineStages::ALL_GRAPHICS : GAL::PipelineStage(0);
 	}
 
 	{
@@ -577,7 +577,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	{
 		GTSL::StaticVector<RenderSystem::CommandListHandle, 8> commandLists;
 
-		if (BE::Application::Get()->GetOption(u8"rayTracing")) {
+		if (BE::Application::Get()->GetBoolOption(u8"rayTracing")) {
 			commandLists.EmplaceBack(buildCommandList[currentFrame]);
 		}
 
@@ -788,7 +788,7 @@ void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable
 		switch (renderPassNode.Type) {
 		case PassType::RASTER: break;
 		case PassType::COMPUTE: break;
-		case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
+		case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetBoolOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
 		default: break;
 		}
 
@@ -1055,7 +1055,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
-			if (!BE::Application::Get()->GetOption(u8"rayTracing")) { continue; }
+			if (!BE::Application::Get()->GetBoolOption(u8"rayTracing")) { continue; }
 
 			if (rayTracingPipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
 				sg.RTPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
@@ -1212,7 +1212,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	for (auto& e : shaderBundles) {
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::ANY_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::CALLABLE)) {
-			if (!BE::Application::Get()->GetOption(u8"rayTracing")) { continue; }
+			if (!BE::Application::Get()->GetBoolOption(u8"rayTracing")) { continue; }
 			auto& pipelineData = pipelines[e.PipelineIndex]; auto& rtPipelineData = pipelineData.RayTracingData;
 
 			GTSL::Vector<GAL::ShaderHandle, BE::TAR> shaderGroupHandlesBuffer(e.Shaders.GetLength(), GetTransientAllocator());
@@ -1314,7 +1314,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	rayTracing = BE::Application::Get()->GetOption(u8"rayTracing");
+	rayTracing = BE::Application::Get()->GetBoolOption(u8"rayTracing");
 
 	onStaticMeshInfoLoadHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"OnStaticMeshInfoLoad",
 		DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE),

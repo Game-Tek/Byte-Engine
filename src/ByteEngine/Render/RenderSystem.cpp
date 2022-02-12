@@ -41,16 +41,16 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
-	useHDR = BE::Application::Get()->GetOption(u8"hdr");
-	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp(BE::Application::Get()->GetOption(u8"buffer"), 2u, 3u));
-	bool rayTracing = BE::Application::Get()->GetOption(u8"rayTracing");
+	useHDR = BE::Application::Get()->GetBoolOption(u8"hdr");
+	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp((uint32)BE::Application::Get()->GetUINTOption(u8"buffer"), 2u, 3u));
+	bool rayTracing = BE::Application::Get()->GetBoolOption(u8"rayTracing");
 
 	{
 		RenderDevice::CreateInfo createInfo;
 		createInfo.ApplicationName = GTSL::StaticString<128>(BE::Application::Get()->GetApplicationName());
 		createInfo.ApplicationVersion[0] = 0; createInfo.ApplicationVersion[1] = 0; createInfo.ApplicationVersion[2] = 0;
 
-		createInfo.Debug = BE::Application::Get()->GetOption(u8"debug");
+		createInfo.Debug = static_cast<bool>(BE::Application::Get()->GetUINTOption(u8"debug"));
 
 		GTSL::StaticVector<GAL::QueueType, 5> queue_create_infos;
 		GTSL::StaticVector<RenderDevice::QueueKey, 5> queueKeys;
@@ -145,7 +145,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 }
 
 class PresentKey {
-	Fence Fence;
+	Synchronizer Fence;
 	uint8 ImageIndex = 0;
 };
 
@@ -397,7 +397,7 @@ GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage()
 
 void RenderSystem::resize() {
 	if (!surface.GetHandle()) {
-		surface.Initialize(GetRenderDevice(), BE::Application::Get()->GetApplication(), *window);
+		surface.Initialize(GetRenderDevice(), *BE::Application::Get()->GetSystemApplication(), *window);
 	}
 
 	Surface::SurfaceCapabilities surfaceCapabilities;
@@ -609,9 +609,9 @@ void RenderSystem::deallocateApiMemory(void* data, void* allocation) {
 void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 	processedBufferCopies[frame_index] = 0;
 
-	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice());
+	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::SEMAPHORE);
 
-	fences[frame_index].Initialize(GetRenderDevice(), true);
+	fences[frame_index].Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::FENCE, true);
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {

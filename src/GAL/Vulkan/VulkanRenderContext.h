@@ -13,10 +13,8 @@
 namespace GAL
 {
 	class VulkanQueue;
-	class VulkanSemaphore;
 
-	class VulkanSurface final : public Surface
-	{
+	class VulkanSurface final : public Surface {
 	public:
 		VulkanSurface() = default;
 		
@@ -142,7 +140,7 @@ namespace GAL
 		 * \param acquireNextImageInfo Information to perform image acquisition.
 		 * \return Returns true if the contexts needs to be recreated.
 		 */
-		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSemaphore& semaphore, VulkanFence& fence) {
+		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer& semaphore, VulkanSynchronizer& fence) {
 			GTSL::uint32 image_index = 0;
 
 			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore.GetVkSemaphore(), fence.GetVkFence(), &image_index);
@@ -155,7 +153,7 @@ namespace GAL
 			return GTSL::Result(static_cast<GTSL::uint8>(image_index), state);
 		}
 		
-		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSemaphore* semaphore) {
+		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer* semaphore) {
 			GTSL::uint32 image_index = 0;
 
 			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore->GetVkSemaphore(), nullptr, &image_index);
@@ -175,14 +173,14 @@ namespace GAL
 			return GTSL::Result(static_cast<GTSL::uint8>(image_index), acquire_state);
 		}
 		
-		bool Present(const VulkanRenderDevice* renderDevice, GTSL::Range<VulkanSemaphore**> waitSemaphores, GTSL::uint32 index, VulkanQueue queue) {
+		bool Present(const VulkanRenderDevice* renderDevice, GTSL::Range<VulkanSynchronizer**> waitSemaphores, GTSL::uint32 index, VulkanQueue queue) {
 			VkPresentInfoKHR vkPresentInfoKhr{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 
 			GTSL::StaticVector<VkSemaphore, 16> semaphores;
 
 			for (auto& s : waitSemaphores) {
 				//if (s->IsSignaled()) {
-					s->Unsignal();
+					s->Release();
 					semaphores.EmplaceBack(s->GetVkSemaphore());
 				//}
 			}

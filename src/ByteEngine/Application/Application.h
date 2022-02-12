@@ -2,10 +2,10 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/Application.h>
 #include <GTSL/Allocator.h>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/String.hpp>
+#include <GTSL/Application.h>
 
 #include "Clock.h"
 #include "PoolAllocator.h"
@@ -20,6 +20,8 @@ class ThreadPool;
 class Clock;
 
 #undef ERROR
+
+#include <GTSL/JSON.hpp>
 
 namespace BE
 {	
@@ -40,7 +42,6 @@ namespace BE
 		virtual void PostInitialize() = 0;
 		virtual void Shutdown() = 0;
 		uint8 GetNumberOfThreads();
-		const GTSL::Application& GetApplication() const { return systemApplication; }
 
 		enum class UpdateContext : uint8 {
 			NORMAL, BACKGROUND
@@ -77,10 +78,12 @@ namespace BE
 			//todo: open dialog box?
 		}
 		
-		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const {
-			auto path = systemApplication.GetPathToExecutable();
-			path.Drop(FindLast(path, u8'/').Get()); return path;
-		}
+		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const;
+
+//		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const {
+	//		auto path = systemApplication.GetPathToExecutable();
+		//	path.Drop(FindLast(path, u8'/').Get()); return path;
+		//}
 		
 		[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }
 		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
@@ -96,13 +99,25 @@ namespace BE
 		[[nodiscard]] PoolAllocator* GetPersistantAllocator() { return &poolAllocator; }
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
-		uint32 GetOption(const Id optionName) const {
-			if(const auto res = settings.TryGet(optionName)) {
-				return res.Get();
-			} else {
-				return 0;
-			}
+		bool GetBoolOption(const GTSL::StringView optionName) const {
+			return jsonMember[optionName].GetBool();
 		}
+
+		uint64 GetUINTOption(const GTSL::StringView optionName) const {
+			return jsonMember[optionName].GetUint();
+		}
+
+		GTSL::StringView GetStringOption(const GTSL::StringView optionName) const {
+			return jsonMember[optionName].GetStringView();
+		}
+
+		GTSL::Extent2D GetExtent2DOption(const GTSL::StringView optionName) const {
+			return { static_cast<uint16>(jsonMember[optionName][0].GetUint()), static_cast<uint16>(jsonMember[optionName][1].GetUint()) };
+		}
+
+		//const GTSL::JSONMember& GetConfig() const {
+		//	return jsonMember;			
+		//}
 		
 	protected:
 		inline static Application* applicationInstance{ nullptr };
@@ -115,8 +130,6 @@ namespace BE
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
 		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> applicationManager;
-
-		GTSL::HashMap<Id, uint32, SystemAllocatorReference> settings;
 		
 		PoolAllocator poolAllocator;
 		StackAllocator transientAllocator;
@@ -134,6 +147,9 @@ namespace BE
 		BE_DEBUG_ONLY(GTSL::StaticString<1024> closeReason);
 
 		uint64 applicationTicks{ 0 };
+
+		GTSL::Buffer<BE::PAR> jsonBuffer;
+		GTSL::JSONMember jsonMember;
 
 		bool parseConfig();
 		/**

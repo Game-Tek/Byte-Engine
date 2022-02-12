@@ -22,7 +22,7 @@ namespace GAL {
 			renderDevice->VkQueueWaitIdle(queue);
 		}
 
-		bool Submit(const VulkanRenderDevice* renderDevice, const GTSL::Range<const WorkUnit*> submitInfos, VulkanFence& fence) {
+		bool Submit(const VulkanRenderDevice* renderDevice, const GTSL::Range<const WorkUnit<VulkanSynchronizer>*> submitInfos, VulkanSynchronizer& fence) {
 			VkResult submitResult;
 
 			//{
@@ -83,15 +83,15 @@ namespace GAL {
 						auto& cb = wucb.EmplaceBack(static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer());
 					}
 
-					for (auto& cbi : si.SignalSemaphores) {
-						auto& s = wuss.EmplaceBack(static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore());
-						static_cast<VulkanSemaphore*>(cbi.Semaphore)->Signal();
+					for (auto& cbi : si.Signal) {
+						auto& s = wuss.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
+						cbi.Synchronizer->Signal();
 					}
 
-					for (auto& cbi : si.WaitSemaphores) {
-						auto& s = wuws.EmplaceBack(static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore());
+					for (auto& cbi : si.Wait) {
+						auto& s = wuws.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
 						psfs.EmplaceBack(ToVulkan(cbi.PipelineStage));
-						static_cast<VulkanSemaphore*>(cbi.Semaphore)->Unsignal();
+						cbi.Synchronizer->Release();
 					}
 
 					a.commandBufferCount = wucb.GetLength();

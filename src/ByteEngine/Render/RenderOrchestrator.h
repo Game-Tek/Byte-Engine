@@ -137,7 +137,6 @@ protected:
 	};
 
 	struct APIRenderPassData {
-		FrameBuffer FrameBuffer[MAX_CONCURRENT_FRAMES];
 		RenderPass RenderPass;
 		uint8 APISubPass = 0, SubPassCount = 0;
 	};

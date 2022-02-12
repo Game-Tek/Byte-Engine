@@ -12,6 +12,8 @@
 
 #include <GTSL/Tree.hpp>
 
+#undef NULL
+
 //Object types are always stored as the interface types, not the end target's name
 struct StructElement {
 	StructElement() = default;

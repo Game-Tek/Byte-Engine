@@ -1964,8 +1964,7 @@ private:
 		render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
 
 		if (rayTracing) {
-			//res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), res.BufferHandle);
-
+			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/);
 			pendingUpdates.EmplaceBack(res.BLAS);
 		}
 
@@ -2039,12 +2038,15 @@ private:
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
 		bwk[u8"pointLightsLength"] = ++lights;
 		bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
-		bwk[u8"pointLights"][light_handle()][u8"radius"] = 8.f;
+		bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(1, 1, 1);
+		bwk[u8"pointLights"][light_handle()][u8"intensity"] = 5.f;
 	}
 
-	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position) {
+	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity) {
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
 		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
+		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
+		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

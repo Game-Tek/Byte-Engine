@@ -22,6 +22,7 @@
 #include "CommonPermutation.hpp"
 #include "ForwardPermutation.hpp"
 #include "VisibilityPermutation.hpp"
+#include "RayTracePermutation.hpp"
 
 template<typename T, class A>
 auto operator<<(auto& buffer, const GTSL::Vector<T, A>& vector) -> decltype(buffer)& {
@@ -547,97 +548,6 @@ struct VertexPermutationManager {
 	GTSL::StaticVector<GPipeline::ElementHandle, 8> vertexPermutationHandles;
 };
 
-auto constexpr U_STRING = u8"output = instances[output.r].";
-auto constexpr F_STRING = u8"vec3f mix(uvec3 indices) { return  }";
-
-struct RayTraceRenderPassPermutation : PermutationManager {
-	RayTraceRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"RayTraceRenderPassPermutation") {}
-
-	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
-		rayTraceHandle = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"RayTraceRenderPassPermutation");
-
-		shader_generation_data.Scopes.EmplaceBack(rayTraceHandle);
-
-		const auto pushConstantBlockHandle = pipeline->DeclareScope(rayTraceHandle, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"rayTraceData*", u8"rayTrace" });
-
-		auto* commonPermutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
-
-		//auto payloadBlockHandle = pipeline->add(rayTraceHandle, u8"payloadBlock", GPipeline::LanguageElement::ElementType::SCOPE);
-		//payloadHandle = pipeline->DeclareVariable(payloadBlockHandle, { u8"vec4f", u8"payload" });
-		pipeline->AddMemberDeductionGuide(commonPermutation->closestHitShaderScope, u8"surfaceColor", { payloadHandle });
-
-		shader_generation_data.Hierarchy.EmplaceBack(this);
-	}
-
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
-		GTSL::StaticVector<StructElement, 8> shaderParameters;
-
-		//for (auto p : json[u8"parameters"]) {
-		//	shaderParameters.EmplaceBack(p[u8"type"], p[u8"name"], p[u8"defaultValue"]);
-		//}
-		//
-		//{
-		//	auto shaderParametersHandle = pipeline.DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
-		//
-		//	for (auto& e : shaderParameters) {
-		//		pipeline.AddMemberDeductionGuide(shaderScope, shaderParameters.back().Name, { shaderRecordEntry, pipeline.GetElementHandle(shaderParametersHandle, e.Name) });
-		//	}
-		//}
-		//
-		bool transparency = false;
-		
-		if (auto tr = shader_json[u8"transparency"]) {
-			transparency = tr.GetBool();
-		}
-
-		if (transparency) {
-			auto e = batches.EmplaceBack();
-			e.TargetSemantics = GAL::ShaderType::ANY_HIT;
-		} else {
-			////translate writes to pixelColor variable into Write() calls for ray gen shader 
-			//[&]() {
-			//	for (uint32 l = 0; l < pipeline.GetFunction(shaderMainHandle).Statements; ++l) {
-			//		auto& s = main.Statements[l];
-			//		for (uint32 i = 0; i < s; ++i) {
-			//			if (s[i].Name == u8"pixelColor") {
-			//				if (s[i + 1].Name == u8"=") {
-			//					auto& newStatement = main.Statements.EmplaceBack();
-			//					newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Write");
-			//					newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");
-			//					newStatement.EmplaceBack(ShaderNode::Type::ID, u8"pushConstantBlock");
-			//					newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
-			//					newStatement.EmplaceBack(ShaderNode::Type::ID, u8"renderPass");
-			//					newStatement.EmplaceBack(ShaderNode::Type::DOT, u8".");
-			//					newStatement.EmplaceBack(ShaderNode::Type::ID, u8"Color");
-			//					newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
-			//					newStatement.EmplaceBack(ShaderNode::Type::ID, u8"GetFragmentPosition"); newStatement.EmplaceBack(ShaderNode::Type::LPAREN, u8"(");	newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
-			//					newStatement.EmplaceBack(ShaderNode::Type::COMMA, u8",");
-			//
-			//					for (uint32 j = i + 2; j < s; ++j) {
-			//						newStatement.EmplaceBack(s[j]);
-			//					}
-			//
-			//					newStatement.EmplaceBack(ShaderNode::Type::RPAREN, u8")");
-			//					main.Statements.Pop(l);
-			//					return;
-			//				}
-			//			}
-			//		}
-			//	}
-			//}();
-
-			auto e = batches.EmplaceBack();
-			e.TargetSemantics = GAL::ShaderType::CLOSEST_HIT;
-		}
-	}
-
-	GPipeline::ElementHandle rayTraceHandle, payloadHandle;
-};
-
 inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"ShaderResourceManager"), shaderGroupInfoOffsets(8, GetPersistentAllocator()), shaderInfoOffsets(8, GetPersistentAllocator()), shaderOffsets(8, GetPersistentAllocator()) {
 	shaderPackageFile.Open(GetResourcePath(u8"Shaders", u8"bepkg"), GTSL::File::READ | GTSL::File::WRITE, true);
 
@@ -685,6 +595,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			{ //configure permutations
 				commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
 				commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
+				commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
 			} //todo: parametrize
 
 			GTSL::Buffer deserializer(GetTransientAllocator());

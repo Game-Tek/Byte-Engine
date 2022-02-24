@@ -421,7 +421,7 @@ public:
 		return AccelerationStructureHandle{ tlasi };
 	}
 
-	AccelerationStructureHandle CreateBottomLevelAccelerationStructure(uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType,  BufferHandle sourceBuffer, bool willUpdate = false, bool willRebuild = false, bool isOpaque = true, uint32 offset = 0) {
+	AccelerationStructureHandle CreateBottomLevelAccelerationStructure(uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType,  BufferHandle sourceBuffer, uint32 offset = 0, bool willUpdate = false, bool willRebuild = false, bool isOpaque = true) {
 		uint32 blasi = accelerationStructures.Emplace(false);
 
 		auto& as = accelerationStructures[blasi];

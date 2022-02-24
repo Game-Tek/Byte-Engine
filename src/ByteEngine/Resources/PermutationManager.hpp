@@ -41,7 +41,7 @@ struct PermutationManager : Object {
 		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
 		GTSL::StaticVector<GTSL::ShortString<16>, 4> Tags;
 	};
-	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) = 0;
+	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, const GTSL::StaticVector<PermutationManager*, 16>& hierarchy, GTSL::StaticVector<Result, 8>& batches) = 0;
 
 	struct Result1 {
 		GTSL::StaticString<1024> ShaderGroupJSON;

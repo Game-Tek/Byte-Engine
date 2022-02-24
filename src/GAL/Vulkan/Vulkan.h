@@ -171,6 +171,7 @@ namespace GAL
 		case Format::BGRA_I8: return VK_FORMAT_B8G8R8A8_UNORM;
 		case Format::DEPTH32: return VK_FORMAT_D32_SFLOAT;
 		case Format::RGB_I8: return VK_FORMAT_R8G8B8_UNORM;
+		case Format::BGRA_SRGB_I8: return VK_FORMAT_B8G8R8A8_SRGB;
 		default: return VK_FORMAT_MAX_ENUM;
 		}
 	}
@@ -552,7 +553,7 @@ namespace GAL
 		switch (format) {
 		case VK_FORMAT_R8G8B8A8_UNORM: return FORMATS::RGBA_I8;
 		case VK_FORMAT_B8G8R8A8_UNORM: return FORMATS::BGRA_I8;
-		case VK_FORMAT_B8G8R8A8_SRGB: return FORMATS::BGRA_NONLINEAR8;
+		case VK_FORMAT_B8G8R8A8_SRGB: return FORMATS::BGRA_SRGB_I8;
 		case VK_FORMAT_R16G16B16A16_SFLOAT: return FORMATS::RGBA_F16;
 		}
 

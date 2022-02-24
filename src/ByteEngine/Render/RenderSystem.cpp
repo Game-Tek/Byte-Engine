@@ -421,10 +421,15 @@ void RenderSystem::resize() {
 			uint8 score = 0;
 
 			if (useHDR && e.First == GAL::ColorSpaces::HDR10_ST2048) {
-				score += 2;
+				score += 5;
 			}
 			else {
-				score += 1;
+				if (e.Second.ColorSpace == GAL::ColorSpaces::SRGB_NONLINEAR) {
+					score += 2;
+				}
+				else {
+					score += 3;
+				}
 			}
 
 			if (score > topScore) {
@@ -436,7 +441,7 @@ void RenderSystem::resize() {
 		swapchainColorSpace = bestColorSpaceFormat.First; swapchainFormat = bestColorSpaceFormat.Second;
 	}
 
-	renderContext.InitializeOrRecreate(GetRenderDevice(), graphicsQueue, &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);
+	renderContext.InitializeOrRecreate(GetRenderDevice(), graphicsQueue, &surface, renderArea, swapchainFormat, swapchainColorSpace, GAL::TextureUses::STORAGE | GAL::TextureUses::TRANSFER_DESTINATION, swapchainPresentMode, pipelinedFrames);	
 
 	for (auto& e : swapchainTextureViews) { e.Destroy(&renderDevice); }
 

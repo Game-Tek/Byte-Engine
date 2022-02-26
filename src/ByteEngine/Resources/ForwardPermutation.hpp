@@ -4,7 +4,7 @@
 
 struct ForwardRenderPassPermutation : PermutationManager {
 	ForwardRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"ForwardRenderPassPermutation") {
-		AddTag(u8"Forward");
+		AddTag(u8"RenderTechnique", u8"Forward");
 
 		AddSupportedDomain(u8"World");
 	}
@@ -47,7 +47,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->AddMemberDeductionGuide(forwardScopeHandle, u8"surfaceColor", { outColorHandle });
 		}
 
-		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
+		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
 		if (common_permutation) {
 			pipeline->DeclareFunction(forwardScopeHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
@@ -68,9 +68,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GTSL::StaticVector<Result1, 8> MakeShaderGroups() override { return {}; }
+	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::StaticVector<PermutationManager*, 16>& hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
@@ -115,7 +115,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			batch.Tags = GetTagList();
 			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
 
-			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
+			const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 			batch.Scopes.EmplaceBack(common_permutation->commonScope);
 			batch.Scopes.EmplaceBack(forwardScopeHandle);
 

@@ -4,7 +4,7 @@
 
 struct VisibilityRenderPassPermutation : PermutationManager {
 	VisibilityRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"VisibilityRenderPassPermutation") {
-		AddTag(u8"Visibility");
+		AddTag(u8"RenderTechnique", u8"Visibility");
 
 		AddSupportedDomain<VisibilityRenderPassPermutation, &VisibilityRenderPassPermutation::ProcessVisibility>(u8"Visibility");
 		AddSupportedDomain(u8"CountPixels");
@@ -98,7 +98,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			pipeline->DeclareFunction(paintPass, u8"vec4f", u8"RandomColorFromUint", { { u8"uint32", u8"index" } }, u8"vec3f table[8] = vec3f[8](vec3f(0, 0.9, 0.4), vec3f(0, 0.2, 0.9), vec3f(1, 0.3, 1), vec3f(0.1, 0, 0.9), vec3f(1, 0.5, 0.1), vec3f(0.5, 0.4, 0.4), vec3f(1, 1, 0), vec3f(1, 0, 0)); return vec4f(table[index % 8], 1);");
 		}
 
-		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
+		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
 		if (common_permutation) {
 			pipeline->DeclareFunction(visibilityHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
@@ -115,12 +115,12 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GTSL::StaticVector<Result1, 8> MakeShaderGroups() override {
-		GTSL::StaticVector<Result1, 8> results;
+	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override {
+		GTSL::Vector<Result1, BE::TAR> results(8, GetTransientAllocator());
 
 		{ //visibility
-			auto& result = results.EmplaceBack();
-			result.ShaderGroupJSON = 
+			auto& sg = results.EmplaceBack();
+			sg.ShaderGroupJSON = 
 u8R"({
     "name":"VisibilityShaderGroup",
     "instances":[{"name":"unique", "parameters":[]}],
@@ -158,10 +158,10 @@ u8R"({
 })";
 		}
 
-		return results;
+		return { GetTransientAllocator() };
 	}
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::StaticVector<PermutationManager*, 16>& hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
@@ -197,7 +197,7 @@ u8R"({
 			batch.Tags = GetTagList();
 			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
 
-			CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
+			const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 			batch.Scopes.EmplaceBack(common_permutation->commonScope);
 			batch.Scopes.EmplaceBack(visibilityHandle);
 			batch.Scopes.EmplaceBack(visibilityPass);
@@ -263,7 +263,7 @@ u8R"({
 		}
 	}
 
-	void ProcessVisibility(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::StaticVector<PermutationManager*, 16> hierarchy, GTSL::StaticVector<Result, 8>& batches) {
+	void ProcessVisibility(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
@@ -295,7 +295,7 @@ u8R"({
 		batch.Tags = GetTagList();
 		batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
 
-		CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
+		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 		batch.Scopes.EmplaceBack(common_permutation->commonScope);
 		batch.Scopes.EmplaceBack(visibilityHandle);
 		batch.Scopes.EmplaceBack(visibilityPass);
@@ -333,3 +333,49 @@ u8R"({
 	GPipeline::ElementHandle visibilityHandle, simplePushConstant, paintPushConstant, shaderParametersHandle;
 	GPipeline::ElementHandle visibilityPass, countShaderGroupsShader, prefixSumShader, buildPixelBufferShader, paintPass;
 };
+
+using AABB2 = GTSL::Vector2;
+using AABB = GTSL::Vector3;
+
+inline AABB2 Make2DAABBForAABB(AABB aabb, GTSL::Matrix4& mat) {
+	GTSL::Vector3 vertices[8]{ aabb };
+
+	//back plane
+	vertices[0][0] *= 1;
+
+	vertices[1][1] *= -1;
+
+	vertices[2][0] *= -1;
+	vertices[2][1] *= -1;
+
+	vertices[3][0] *= -1;
+
+	//front plane
+	vertices[0][0] *= 1;
+
+	vertices[1][1] *= -1;
+
+	vertices[2][0] *= -1;
+	vertices[2][1] *= -1;
+
+	vertices[3][0] *= -1;
+
+	vertices[4][2] *= -1;
+	vertices[5][2] *= -1;
+	vertices[6][2] *= -1;
+	vertices[7][2] *= -1;
+
+	float32 maxMagnitude = 0.0f;
+	GTSL::Vector3 res;
+
+	for(uint32 i = 0; i < 8; ++i) {
+		auto vec = mat * aabb;
+
+		if (auto mag = GTSL::Math::Length(vec); mag > maxMagnitude) {
+			maxMagnitude = mag;
+			res = vec;
+		}
+	}
+
+	return { res[0], res[1] };
+}

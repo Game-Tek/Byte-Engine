@@ -104,7 +104,7 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
+		pipeline->DeclareFunction(rayGenShaderScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" }, { u8"uint32", u8"rayFlags" } }, u8"traceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags | rayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetFragmentNormalizedPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
 
@@ -120,9 +120,9 @@ struct CommonPermutation : PermutationManager {
 		AddSupportedDomain(u8"Screen");
 	}
 
-	GTSL::StaticVector<Result1, 8> MakeShaderGroups() override { return {}; }
+	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, const GTSL::StaticVector<PermutationManager*, 16>& hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		if (shaderGroupJson[u8"domain"].GetStringView() == u8"Screen") {
 			if (shader_json[u8"class"].GetStringView() == u8"Compute") {
 				auto shaderScope = pipeline->DeclareScope(computeRenderPassScope, shader_json[u8"name"]);

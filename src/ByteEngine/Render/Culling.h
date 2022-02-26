@@ -8,7 +8,6 @@
 #include "ByteEngine/Core.h"
 #include <GTSL/SIMD.hpp>
 
-struct AABB;
 struct vec4;
 
 //GTSL::Vector3 ttt(const float32 near, const float32 far, const float32 fov, GTSL::Extent2D size, const GTSL::Matrix4& a) {

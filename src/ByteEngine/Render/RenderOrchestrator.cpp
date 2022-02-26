@@ -17,6 +17,48 @@ static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -0.5f, 0.5f }, { 0.5f, 0.
 //static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -1.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, -1.0f }, { -1.0f, -1.0f } };
 static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 
+static bool IsDelim(char8_t tst) {
+	const char8_t* DELIMS = u8" \n\t\r\f";
+	do { // Delimiter string cannot be empty, so don't check for it.  Real code should assert on it.
+		if (tst == *DELIMS)
+			return true;
+		++DELIMS;
+	} while (*DELIMS);
+
+	return false;
+}
+
+void d(GTSL::StringView string, GTSL::StaticVector<GTSL::StringView, 16>& tokens) {
+	auto begin = string.begin();
+
+	while (begin != string.end() && IsDelim(*begin)) { ++begin; }
+
+	while(begin != string.end()) {
+		auto tokenBegin = begin;
+
+		do {
+			++begin;
+		} while (!IsDelim(*begin) && begin != string.end());
+
+		tokens.EmplaceBack(tokenBegin, begin);
+
+		do {
+			++begin;
+		} while (begin != string.end() && IsDelim(*begin));
+	}
+}
+
+inline uint32 PRECEDENCE(const GTSL::StringView optor) {
+	GTSL::StaticMap<Id, uint8, 16> PRECEDENCE(16);
+	PRECEDENCE.Emplace(u8"=", 1);
+	PRECEDENCE.Emplace(u8"||", 2);
+	PRECEDENCE.Emplace(u8"<", 7); PRECEDENCE.Emplace(u8">", 7); PRECEDENCE.Emplace(u8"<=", 7); PRECEDENCE.Emplace(u8">=", 7); PRECEDENCE.Emplace(u8"==", 7); PRECEDENCE.Emplace(u8"!=", 7);
+	PRECEDENCE.Emplace(u8"+", 10); PRECEDENCE.Emplace(u8"-", 10);
+	PRECEDENCE.Emplace(u8"*", 20); PRECEDENCE.Emplace(u8"/", 20); PRECEDENCE.Emplace(u8"%", 20);
+
+	return PRECEDENCE[optor];
+}
+
 //for (auto& ref : canvases)
 //{
 //	auto& canvas = canvasSystem->GetCanvas(ref);
@@ -146,7 +188,7 @@ RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : S
 shaders(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()),
 renderingTree(128, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()),
 shaderGroupsByName(16, GetPersistentAllocator()), textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()),
-elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator()), shaderHandlesDebugMap(16, GetPersistentAllocator())
+elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator()), shaderHandlesDebugMap(16, GetPersistentAllocator()), rayTracingSets(16, GetPersistentAllocator())
 {
 	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
@@ -425,15 +467,57 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
 
-			GTSL::Extent3D dispatchExtent{ 1, 1, 1 };
+			GTSL::StaticVector<GTSL::StringView, 16> tokens;
 
-			if(execution == u8"windowExtent") {
-				dispatchExtent = renderArea;
-			} else if(execution == u8"32") {
-				dispatchExtent.Width = 32;
+			GTSL::StaticVector<GTSL::StringView, 16> output;
+			GTSL::StaticVector<GTSL::StringView, 16> operators;
+
+			d(execution, tokens);
+
+			while(tokens) {
+				auto token = tokens.back(); tokens.PopBack();
+
+				if(GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+					output.EmplaceBack(token);
+				} else { //is an operator
+					while(operators && PRECEDENCE(operators.back()) > PRECEDENCE(token)) {
+						output.EmplaceBack(operators.back());
+						operators.PopBack();
+					}
+
+					operators.EmplaceBack(token);
+				}
 			}
 
-			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), dispatchExtent);
+			while(operators) {
+				output.EmplaceBack(operators.back());
+				operators.PopBack();				
+			}
+
+			GTSL::StaticVector<GTSL::Extent3D, 8> numbers;
+
+			//evaluate
+			while(output) {
+				auto token = output.back(); output.PopBack();
+				if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+					if(token == u8"windowExtent") {
+						numbers.EmplaceBack(renderArea);
+					} else {
+						numbers.EmplaceBack(GTSL::ToNumber<uint16>(token).Get());
+					}
+				} else { //operator
+					auto a = numbers.back(), b = numbers.back(); numbers.PopBack(); numbers.PopBack();
+
+					switch (Hash(token)) {
+					case GTSL::Hash(u8"+"): numbers.EmplaceBack(b + a); break;
+					case GTSL::Hash(u8"-"): numbers.EmplaceBack(b - a); break;
+					case GTSL::Hash(u8"*"): numbers.EmplaceBack(b * a); break;
+					case GTSL::Hash(u8"/"): numbers.EmplaceBack(b / a); break;
+					}
+				}
+			}
+
+			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), numbers.back());
 
 			break;
 		}
@@ -902,6 +986,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		GTSL::StaticVector<uint32, 8> Shaders;
 		GAL::ShaderStage Stage;
 		uint32 PipelineIndex = 0;
+		GTSL::ShortString<32> Set;
+		bool Transparency = false;
 	};
 	GTSL::StaticVector<ShaderBundleData, 4> shaderBundles;
 	GTSL::StaticVector<MemberInfo, 16> members;
@@ -930,7 +1016,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	for (uint32 offset = 0, si = 0; si < shader_group_info.Shaders; offset += shader_group_info.Shaders[si].Size, ++si) {
 		const auto& s = shader_group_info.Shaders[si];
 
-		if (!Contains(tag, s.Tags.GetRange()) && s.Tags.GetLength()) { continue; } //if shader doesn't contain tag don't use it, tags are used to filter shaders usually based on render technique used
+		if (!Contains(PermutationManager::ShaderTag(u8"RenderTechnique", tag), s.Tags.GetRange())) { continue; }
+		//if shader doesn't contain tag don't use it, tags are used to filter shaders usually based on render technique used
 
 		if (auto shader = shaders.TryEmplace(s.Hash)) {
 			shader.Get().Shader.Initialize(renderSystem->GetRenderDevice(), GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset));
@@ -940,7 +1027,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 
 		if(s.Type == GAL::ShaderType::COMPUTE) {
-			executionString = s.ComputeShader.Execution;
+			auto executionExists = GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Execution"; });
+			executionString = executionExists.Get()->Second;
 		}
 
 		bool foundGroup = false;
@@ -966,6 +1054,22 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			auto& sb = shaderBundles.EmplaceBack();
 			sb.Shaders.EmplaceBack(si);
 			sb.Stage = shaderStageFlag;
+			sb.Set = GTSL::StringView(GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Set"; }).Get()->Second);
+		} else {
+			switch (s.Type) {
+			case GAL::ShaderType::VERTEX: break;
+			case GAL::ShaderType::FRAGMENT: break; //todo: set transparency
+			case GAL::ShaderType::COMPUTE: break;
+			case GAL::ShaderType::TASK: break;
+			case GAL::ShaderType::MESH: break;
+			case GAL::ShaderType::RAY_GEN: break;
+			case GAL::ShaderType::CLOSEST_HIT: break;
+			case GAL::ShaderType::ANY_HIT: break;
+			case GAL::ShaderType::INTERSECTION: break;
+			case GAL::ShaderType::MISS: break;
+			case GAL::ShaderType::CALLABLE: break;
+			default: ;
+			}
 		}
 	}
 
@@ -1003,16 +1107,18 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
 					auto& attachment = attachments.At(writeAttachment.Name);
 					auto& attachmentState = att.EmplaceBack();
-					attachmentState.BlendEnable = false; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
+					attachmentState.BlendEnable = e.Transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
 				}
 			}
 
 			context.Attachments = att;
 			pipelineStates.EmplaceBack(context);
 
-			GAL::Pipeline::PipelineStateBlock::DepthState depth;
-			depth.CompareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
-			pipelineStates.EmplaceBack(depth);
+			if (!e.Transparency) {
+				GAL::Pipeline::PipelineStateBlock::DepthState depth;
+				depth.CompareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
+				pipelineStates.EmplaceBack(depth);
+			}
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
 			rasterState.CullMode = GAL::CullMode::CULL_BACK;
@@ -1059,12 +1165,11 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
 			if (!BE::Application::Get()->GetBoolOption(u8"rayTracing")) { continue; }
 
-			if (rayTracingPipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
+			if(auto r = rayTracingSets.TryEmplace(Id(e.Set), 0xFFFFFFFFu)) {
 				sg.RTPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
-				rayTracingPipelineIndex = sg.RTPipelineIndex;
-			}
-			else {
-				sg.RTPipelineIndex = rayTracingPipelineIndex;
+				r.Get() = sg.RTPipelineIndex;
+			} else {
+				sg.RTPipelineIndex = r.Get();
 			}
 
 			e.PipelineIndex = sg.RTPipelineIndex;
@@ -1076,9 +1181,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				pipelineData.Shaders.EmplaceBack(shader_group_info.Shaders[s].Hash);
 			}
 
-			GTSL::Sort(pipelineData.Shaders, [&](uint64 a, uint64 b) {
-				return shaders[a].Type > shaders[b].Type;
-				});
+			GTSL::Sort(pipelineData.Shaders, [&](uint64 a, uint64 b) { return shaders[a].Type > shaders[b].Type; });
 
 			//add already loaded shaders to shaderInfos, todo: use pipeline libraries to accumulate state properly
 			for (auto s : pipelineData.Shaders) {
@@ -1482,9 +1585,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		pass_data.WriteAttachments.EmplaceBack(u8"Color");
-		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"RayTraceRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
+		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
 
-		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"rayTraceShaderGroup");
+		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
 		renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
 		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
 
@@ -1502,7 +1605,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
 		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
 		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.0f;
+		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
 		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
 		bwk[u8"staticMeshes"] = meshDataBuffer;
 	}

@@ -216,6 +216,10 @@ struct GPipeline : Object {
 	auto& GetElement(const ElementHandle element_handle) { return elements[element_handle.Handle]; }
 	const auto& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
 
+	auto& GetFunctionTokens(const ElementHandle element_handle) {
+		return Functions[GetElement(element_handle).Reference].Tokens;
+	}
+
 private:
 	ElementHandle add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));

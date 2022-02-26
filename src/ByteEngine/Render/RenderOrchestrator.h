@@ -960,7 +960,7 @@ private:
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle samplersSubsetHandle;
 
-	uint32 rayTracingPipelineIndex = 0xFFFFFFFF;
+	GTSL::HashMap<Id, uint32, BE::PAR> rayTracingSets;
 
 	GTSL::StaticVector<GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8>, 16> vertexLayouts;
 

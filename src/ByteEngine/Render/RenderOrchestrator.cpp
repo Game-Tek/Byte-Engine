@@ -17,8 +17,8 @@ static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -0.5f, 0.5f }, { 0.5f, 0.
 //static constexpr GTSL::Vector2 SQUARE_VERTICES[] = { { -1.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, -1.0f }, { -1.0f, -1.0f } };
 static constexpr uint16 SQUARE_INDICES[] = { 0, 1, 3, 1, 2, 3 };
 
-static bool IsDelim(char8_t tst) {
-	const char8_t* DELIMS = u8" \n\t\r\f";
+static bool IsDelim(char32_t tst) {
+	const char32_t* DELIMS = U" \n\t\r\f";
 	do { // Delimiter string cannot be empty, so don't check for it.  Real code should assert on it.
 		if (tst == *DELIMS)
 			return true;
@@ -33,7 +33,7 @@ void d(GTSL::StringView string, GTSL::StaticVector<GTSL::StringView, 16>& tokens
 
 	while (begin != string.end() && IsDelim(*begin)) { ++begin; }
 
-	while(begin != string.end()) {
+	while(begin < string.end()) {
 		auto tokenBegin = begin;
 
 		do {
@@ -274,8 +274,9 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"blah");
 		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"a");
 		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"b");
-		auto d = CreateMember(u8"global", u8"GlobalData", members);
-		globalData = AddDataNode(u8"GlobalData", NodeHandle(), d);
+		CreateMember(u8"global", u8"GlobalData", members);
+		globalDataDataKey = CreateDataKey(renderSystem, u8"global", u8"GlobalData");
+		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
@@ -408,6 +409,66 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	using RTT = decltype(renderingTree);
 
+	auto processExecutionString = [renderArea](const GTSL::StringView execution) {
+		GTSL::StaticVector<GTSL::StringView, 16> tokens;
+
+		GTSL::StaticVector<GTSL::StringView, 16> operators;
+
+		GTSL::StaticVector<GTSL::StaticString<64>, 16> output;
+
+		d(execution, tokens);
+
+		while (tokens) {
+			auto token = tokens.back(); tokens.PopBack();
+
+			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+				output.EmplaceBack(token);
+			}
+			else { //is an operator
+				while (operators && PRECEDENCE(operators.back()) > PRECEDENCE(token)) {
+					output.EmplaceBack(operators.back());
+					operators.PopBack();
+				}
+
+				operators.EmplaceBack(token);
+			}
+		}
+
+		while (operators) {
+			output.EmplaceBack(operators.back());
+			operators.PopBack();
+		}
+
+		GTSL::StaticVector<GTSL::Extent3D, 8> numbers;
+
+		//evaluate
+		for (uint32 i = 0; i < output; ++i) {
+			auto token = output[i];
+			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+				if (token == u8"windowExtent") {
+					numbers.EmplaceBack(renderArea);
+				}
+				else {
+					numbers.EmplaceBack(GTSL::ToNumber<uint16>(token).Get());
+				}
+			}
+			else { //operator
+				auto a = numbers.back(); numbers.PopBack();
+
+				auto b = numbers.back(); numbers.PopBack();
+
+				switch (Hash(token)) {
+				case GTSL::Hash(u8"+"): numbers.EmplaceBack(a + b); break;
+				case GTSL::Hash(u8"-"): numbers.EmplaceBack(a - b); break;
+				case GTSL::Hash(u8"*"): numbers.EmplaceBack(a * b); break;
+				case GTSL::Hash(u8"/"): numbers.EmplaceBack(a / b); break;
+				}
+			}
+		}
+
+		return numbers.back();
+	};
+
 	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level) -> void {
 		DataStreamHandle dataStreamHandle = {};
 
@@ -467,57 +528,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
 
-			GTSL::StaticVector<GTSL::StringView, 16> tokens;
+			auto executionExtent = processExecutionString(execution);
 
-			GTSL::StaticVector<GTSL::StringView, 16> output;
-			GTSL::StaticVector<GTSL::StringView, 16> operators;
-
-			d(execution, tokens);
-
-			while(tokens) {
-				auto token = tokens.back(); tokens.PopBack();
-
-				if(GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
-					output.EmplaceBack(token);
-				} else { //is an operator
-					while(operators && PRECEDENCE(operators.back()) > PRECEDENCE(token)) {
-						output.EmplaceBack(operators.back());
-						operators.PopBack();
-					}
-
-					operators.EmplaceBack(token);
-				}
-			}
-
-			while(operators) {
-				output.EmplaceBack(operators.back());
-				operators.PopBack();				
-			}
-
-			GTSL::StaticVector<GTSL::Extent3D, 8> numbers;
-
-			//evaluate
-			while(output) {
-				auto token = output.back(); output.PopBack();
-				if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
-					if(token == u8"windowExtent") {
-						numbers.EmplaceBack(renderArea);
-					} else {
-						numbers.EmplaceBack(GTSL::ToNumber<uint16>(token).Get());
-					}
-				} else { //operator
-					auto a = numbers.back(), b = numbers.back(); numbers.PopBack(); numbers.PopBack();
-
-					switch (Hash(token)) {
-					case GTSL::Hash(u8"+"): numbers.EmplaceBack(b + a); break;
-					case GTSL::Hash(u8"-"): numbers.EmplaceBack(b - a); break;
-					case GTSL::Hash(u8"*"): numbers.EmplaceBack(b * a); break;
-					case GTSL::Hash(u8"/"): numbers.EmplaceBack(b / a); break;
-					}
-				}
-			}
-
-			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), numbers.back());
+			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), executionExtent);
 
 			break;
 		}
@@ -533,7 +546,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				offset += GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
 			}
 
-			commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), sizeHistory[currentFrame]);
+			auto executionExtent = processExecutionString(pipelineData.ExecutionString);
+
+			commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), executionExtent);
 
 			break;
 		}
@@ -736,8 +751,12 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData, ApplicationManager* am) {
 	GTSL::StaticVector<MemberInfo, 16> members;
 
-	for (auto& e : passData.WriteAttachments) {
-		members.EmplaceBack(nullptr, u8"ImageReference", GTSL::StringView(e.Name));
+	for (auto& e : passData.Attachments) {
+		if(!(e.Access & GAL::AccessTypes::WRITE)) {
+			members.EmplaceBack(nullptr, u8"TextureReference", GTSL::StringView(e.Name));
+		} else {
+			members.EmplaceBack(nullptr, u8"ImageReference", GTSL::StringView(e.Name));			
+		}
 	}
 
 	auto member = CreateMember(u8"global", renderPassName, members);
@@ -765,16 +784,20 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		renderPassType = PassType::RASTER;
 		pipelineStage = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 
-		for (const auto& e : passData.ReadAttachments) {
+		for (const auto& e : passData.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
-			attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::SHADER_READ; attachmentData.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
-			attachmentData.Access = GAL::AccessTypes::READ;
-		}
 
-		for (const auto& e : passData.WriteAttachments) {
-			auto& attachmentData = renderPass.Attachments.EmplaceBack();
-			attachmentData.Name = e.Name; attachmentData.Layout = GAL::TextureLayout::ATTACHMENT; attachmentData.ConsumingStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-			attachmentData.Access = GAL::AccessTypes::WRITE;
+			attachmentData.Name = e.Name;
+			attachmentData.Access = e.Access;
+
+			if (e.Access & GAL::AccessTypes::READ) {
+				attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
+				attachmentData.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
+			} else {
+				attachmentData.Layout = GAL::TextureLayout::ATTACHMENT;
+				attachmentData.ConsumingStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+			}
+
 		}
 
 		break;
@@ -783,18 +806,19 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		renderPassType = PassType::COMPUTE;
 		pipelineStage = GAL::PipelineStages::COMPUTE;
 
-		for (auto& e : passData.WriteAttachments) {
+		for (const auto& e : passData.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
-			attachmentData.Name = e.Name;
-			attachmentData.Layout = GAL::TextureLayout::GENERAL;
-			attachmentData.ConsumingStages = GAL::PipelineStages::COMPUTE;
-		}
 
-		for (auto& e : passData.ReadAttachments) {
-			auto& attachmentData = renderPass.Attachments.EmplaceBack();
 			attachmentData.Name = e.Name;
-			attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
+			attachmentData.Access = e.Access;
 			attachmentData.ConsumingStages = GAL::PipelineStages::COMPUTE;
+
+			if (e.Access & GAL::AccessTypes::READ) {
+				attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
+			} else {
+				attachmentData.Layout = GAL::TextureLayout::GENERAL;
+			}
+
 		}
 
 		auto sgh = CreateShaderGroup(renderPassName);
@@ -807,18 +831,21 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		renderPassType = PassType::RAY_TRACING;
 		pipelineStage = GAL::PipelineStages::RAY_TRACING;
 
-		for (auto& e : passData.ReadAttachments) {
+		for (const auto& e : passData.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
-			attachmentData.Name = e.Name;
-			attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
-			attachmentData.ConsumingStages = GAL::PipelineStages::RAY_TRACING;
-		}
 
-		for (auto& e : passData.WriteAttachments) {
-			auto& attachmentData = renderPass.Attachments.EmplaceBack();
 			attachmentData.Name = e.Name;
-			attachmentData.Layout = GAL::TextureLayout::GENERAL;
+			attachmentData.Access = e.Access;
+
 			attachmentData.ConsumingStages = GAL::PipelineStages::RAY_TRACING;
+
+			if (e.Access & GAL::AccessTypes::READ) {
+				attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
+			}
+			else {
+				attachmentData.Layout = GAL::TextureLayout::ATTACHMENT;
+			}
+
 		}
 
 		break;
@@ -829,8 +856,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 	renderPass.PipelineStages = pipelineStage;
 
 	auto bwk = GetBufferWriteKey(renderSystem, renderPassDataNode);
-	for (auto i = 0u; i < passData.WriteAttachments.GetLength(); ++i) {
-		bwk[GTSL::StringView(passData.WriteAttachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
+
+	for (auto i = 0u; i < passData.Attachments.GetLength(); ++i) {
+		bwk[GTSL::StringView(passData.Attachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
 
 	return resultHandle;
@@ -1016,7 +1044,12 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	for (uint32 offset = 0, si = 0; si < shader_group_info.Shaders; offset += shader_group_info.Shaders[si].Size, ++si) {
 		const auto& s = shader_group_info.Shaders[si];
 
-		if (!Contains(PermutationManager::ShaderTag(u8"RenderTechnique", tag), s.Tags.GetRange())) { continue; }
+		if (Contains(PermutationManager::ShaderTag(u8"Domain", u8"World"), s.Tags.GetRange())) {
+			if (!Contains(PermutationManager::ShaderTag(u8"RenderTechnique", tag), s.Tags.GetRange())) {
+				continue;
+			}
+		}
+
 		//if shader doesn't contain tag don't use it, tags are used to filter shaders usually based on render technique used
 
 		if (auto shader = shaders.TryEmplace(s.Hash)) {
@@ -1054,7 +1087,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			auto& sb = shaderBundles.EmplaceBack();
 			sb.Shaders.EmplaceBack(si);
 			sb.Stage = shaderStageFlag;
-			sb.Set = GTSL::StringView(GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Set"; }).Get()->Second);
+			if(auto r = GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Set"; })) {
+				sb.Set = GTSL::StringView(r.Get()->Second);
+			}
+
 		} else {
 			switch (s.Type) {
 			case GAL::ShaderType::VERTEX: break;
@@ -1156,10 +1192,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				shaderInfo.Shader = shader.Shader;
 				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
 			}
-			
-			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 
 			pipeline.ExecutionString = executionString;
+
+			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 		}
 
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
@@ -1243,6 +1279,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			pipelineStates.EmplaceBack(rayTracePipelineState);
 
 			auto oldPipeline = pipelineData.pipeline;
+
+			pipelineData.ExecutionString = executionString;
 
 			pipelineData.pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 
@@ -1465,16 +1503,16 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Normal" });
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Normal" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"RenderDepth" });
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 	}
 	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		geoRenderPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"RenderDepth" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Visibility" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"RenderDepth" });
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
@@ -1491,7 +1529,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
 
 		visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
-		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"VisibilityDataLightingDataNode", renderPassNodeHandle, visibilityDataKey);
+		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"VisibilityDataLightingDataNode", visibilityDataKey);
 
 		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
 		auto pielBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
@@ -1513,7 +1551,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		//Counts how many pixels each shader group uses
 		RenderOrchestrator::PassData countPixelsRenderPassData;
 		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		countPixelsRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
+		countPixelsRenderPassData.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"Visibility" });
 		renderOrchestrator->AddRenderPass(u8"CountPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, countPixelsRenderPassData, GetApplicationManager());
 
 		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
@@ -1539,7 +1577,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-	gammaCorrectionPass.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" }); //result attachment
+	gammaCorrectionPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" }); //result attachment
 	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
 
 	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
@@ -1563,11 +1601,11 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 	
 	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
-	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderSystem, u8"LightingDataNode", renderPassNodeHandle, lightingDataKey);
+	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightingDataKey);
 
 	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
 	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
-	meshDataNode = renderOrchestrator->AddDataNode(renderSystem, u8"MeshNode", indexBufferNodeHandle, meshDataBuffer);
+	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer);
 
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"VisibilityShaderGroup"));
@@ -1581,33 +1619,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
 
-		//add node
-		RenderOrchestrator::PassData pass_data;
-		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		pass_data.WriteAttachments.EmplaceBack(u8"Color");
-		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
-
-		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
-		renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
-		auto rayTraceNode = renderOrchestrator->addRayTraceNode(renderPassLayerHandle, rayTraceShaderGroupHandle); //TODO:
-
-		RenderOrchestrator::MemberHandle traceRayParameters, staticMeshDatas;
-		
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> traceRayParameterDataMembers{ { &Acc, u8"uint64", u8"accelerationStructure" }, { &RayFlags, u8"uint32", u8"rayFlags" }, {&RecordOffset, u8"uint32", u8"recordOffset"}, {&RecordStride, u8"uint32", u8"recordStride"}, {&MissIndex, u8"uint32", u8"missIndex"}, {&tMin, u8"float32", u8"tMin"}, {&tMax, u8"float32", u8"tMax"} };
-		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember(u8"global", u8"TraceRayParameterData", traceRayParameterDataMembers);
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> rayTraceDataMembers{ { &traceRayParameters, u8"TraceRayParameterData", u8"traceRayParameters"}, {&staticMeshDatas, u8"StaticMeshData*", u8"staticMeshes"} };
-		auto rayTraceDataMember = renderOrchestrator->CreateMember(u8"global", u8"RayTraceData", rayTraceDataMembers);
-		auto dataNode = renderOrchestrator->AddDataNode(u8"RayTraceData", rayTraceNode, rayTraceDataMember);
-
-		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, dataNode);
-		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
-		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
-		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
-		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
-		bwk[u8"staticMeshes"] = meshDataBuffer;
+		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
 	}
 
 	//add node

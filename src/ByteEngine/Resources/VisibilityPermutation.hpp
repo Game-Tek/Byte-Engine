@@ -36,10 +36,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 
 		pipeline->DeclareStruct(visibilityHandle, u8"VisibilityData", { { u8"vec3f*", u8"positionStream" }, { u8"vec3f*", u8"normalStream" }, { u8"vec3f*", u8"tangentStream" }, { u8"vec3f*", u8"bitangentStream" }, { u8"vec2f*", u8"textureCoordinatesStream" }, {u8"uint32", u8"shaderGroupLength"},  {u8"uint32[256]", u8"shaderGroupUseCount"}, {u8"uint32[256]", u8"shaderGroupStart" } , { u8"IndirectDispatchCommand[256]", u8"indirectBuffer" }, {u8"vec2s*", u8"pixelBuffer"}});
 
-		pipeline->DeclareStruct(visibilityHandle, u8"InstanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint32", u8"shaderGroupIndex" }, { u8"uint32", u8"padding" } });
-
-		simplePushConstant = pipeline->DeclareScope(countShaderGroupsShader, u8"pushConstantBlock");
-		pipeline->DeclareVariable(simplePushConstant, { u8"globalData*", u8"global" });
+		simplePushConstant = pipeline->DeclareScope(visibilityHandle, u8"pushConstantBlock");
+		pipeline->DeclareVariable(simplePushConstant, { u8"GlobalData*", u8"global" });
 		pipeline->DeclareVariable(simplePushConstant, { u8"renderPassData*", u8"renderPass" });
 		auto instancesPointerHandle = pipeline->DeclareVariable(simplePushConstant, { u8"InstanceData*", u8"instances" });
 		auto visibilityDataHandle = pipeline->DeclareVariable(simplePushConstant, { u8"VisibilityData*", u8"visibility" });
@@ -89,8 +87,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			paintPass = pipeline->DeclareScope(shader_generation_data.Scopes.back(), u8"PaintPass");
 
 			paintPushConstant = pipeline->DeclareScope(paintPass, u8"pushConstantBlock");
-			pipeline->DeclareVariable(paintPushConstant, { u8"globalData*", u8"global" });
-			pipeline->DeclareVariable(paintPushConstant, { u8"cameraData*", u8"camera" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"GlobalData*", u8"global" });
+			pipeline->DeclareVariable(paintPushConstant, { u8"CameraData*", u8"camera" });
 			pipeline->DeclareVariable(paintPushConstant, { u8"renderPassData*", u8"renderPass" });
 			pipeline->DeclareVariable(paintPushConstant, { u8"LightingData*", u8"lightingData" });
 			pipeline->DeclareVariable(paintPushConstant, { u8"InstanceData*", u8"instances" });
@@ -195,7 +193,7 @@ u8R"({
 			auto& batch = batches.EmplaceBack();
 
 			batch.Tags = GetTagList();
-			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
+			batch.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 
 			const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 			batch.Scopes.EmplaceBack(common_permutation->commonScope);
@@ -293,7 +291,7 @@ u8R"({
 		auto& batch = batches.EmplaceBack();
 
 		batch.Tags = GetTagList();
-		batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
+		batch.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 
 		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 		batch.Scopes.EmplaceBack(common_permutation->commonScope);

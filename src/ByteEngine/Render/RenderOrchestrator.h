@@ -261,6 +261,7 @@ public:
 	}
 
 	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
+	DataKeyHandle globalDataDataKey;
 
 	void AddNotifyShaderGroupCreated(GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> notify_delegate) {
 		shaderGroupNotify = notify_delegate;
@@ -268,9 +269,9 @@ public:
 
 	struct PassData {
 		struct AttachmentReference {
-			Id Name;
+			GAL::AccessType Access; Id Name;
 		};
-		GTSL::StaticVector<AttachmentReference, 8> ReadAttachments, WriteAttachments;
+		GTSL::StaticVector<AttachmentReference, 8> Attachments;
 
 		PassType PassType;
 	};
@@ -545,7 +546,7 @@ public:
 		}
 	};
 
-	[[nodiscard]] NodeHandle AddDataNode(const RenderSystem* renderSystem, const GTSL::StringView node_name, const NodeHandle parent_node_handle, const DataKeyHandle data_key_handle) {
+	[[nodiscard]] NodeHandle AddDataNode(const NodeHandle parent_node_handle, const GTSL::StringView node_name, const DataKeyHandle data_key_handle) {
 		auto& dataKey = dataKeys[data_key_handle()];
 		auto nodeHandle = addInternalNode<LayerData>(0, parent_node_handle);
 		dataKey.Nodes.EmplaceBack(nodeHandle);
@@ -1834,8 +1835,6 @@ private:
 	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
 	RenderOrchestrator::MemberHandle staticMeshInstanceDataStruct;
 
-	RenderOrchestrator::MemberHandle Acc, RayFlags, RecordOffset, RecordStride, MissIndex, tMin, tMax;
-
 	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
 
 	GTSL::StaticVector<GTSL::Pair<Id, StaticMeshHandle>, 8> pendingAdditions;
@@ -1903,7 +1902,7 @@ private:
 
 			if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-					auto materialDataNode = render_orchestrator->AddDataNode(render_system, u8"MaterialNode", meshDataNode, render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
+					auto materialDataNode = render_orchestrator->AddDataNode(meshDataNode, u8"MaterialNode", render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
 					r.Get().Node = render_orchestrator->AddMaterial(render_system, materialDataNode, shaderGroupHandle);
 					
 					resource.nodeHandle = render_orchestrator->AddMesh(r.Get().Node, 0, resource.IndexCount, vertexBufferOffset);
@@ -2144,6 +2143,37 @@ private:
 				index++;
 			}
 		}
+	}
+
+	void setupDirectionShadowRenderPass(RenderSystem* renderSystem, RenderOrchestrator* renderOrchestrator) {
+		// Make render pass
+		RenderOrchestrator::PassData pass_data;
+		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
+		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
+		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"Depth" });
+		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data, GetApplicationManager());
+
+		// Create shader group
+		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
+		// Add dispatch
+		auto pipelineBindNode = renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle);
+		auto cameraDataNode = renderOrchestrator->AddDataNode(pipelineBindNode, u8"CameraData", renderOrchestrator->globalDataDataKey);
+		
+		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember2(u8"global", u8"TraceRayParameterData", { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} });
+		auto rayTraceDataMember = renderOrchestrator->CreateMember2(u8"global", u8"RayTraceData", { { u8"TraceRayParameterData", u8"traceRayParameters" }, { u8"StaticMeshData*", u8"staticMeshes" } });
+		auto rayTraceDataNode = renderOrchestrator->AddDataNode(u8"RayTraceData", cameraDataNode, rayTraceDataMember);
+
+		auto rayTraceNode = renderOrchestrator->addRayTraceNode(rayTraceDataNode, rayTraceShaderGroupHandle);
+
+		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceDataNode);
+		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
+		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
+		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
+		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
+		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
+		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
+		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
+		bwk[u8"staticMeshes"] = meshDataBuffer;
 	}
 };
 

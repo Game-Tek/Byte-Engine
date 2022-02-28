@@ -539,7 +539,7 @@ struct VertexPermutationManager {
 			for(uint32 j = 0; j < vertexPermutations[i]; ++j) {
 			}
 
-			vertexPermutationHandles.EmplaceBack(pipeline->DeclareStruct({}, u8"vertex", structElements));
+			//vertexPermutationHandles.EmplaceBack(pipeline->DeclareStruct({}, u8"vertex", structElements));
 		}
 	}
 
@@ -582,7 +582,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 	{ //configure permutations
 		commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
-		commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
+		//commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
 		commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
 	} //todo: parametrize
 
@@ -688,7 +688,7 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 				elements.EmplaceBack(m[u8"type"], m[u8"name"]);
 			}
 
-			pipeline.DeclareStruct(GPipeline::ElementHandle(), s[u8"name"], elements);
+			//pipeline.DeclareStruct(GPipeline::ElementHandle(), s[u8"name"], elements);
 		}
 	}
 
@@ -696,7 +696,7 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 		for (auto f : functions) {
 			GTSL::StaticVector<StructElement, 8> elements;
 			for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
-			pipeline.DeclareFunction(GPipeline::ElementHandle(), f[u8"type"], f[u8"name"], elements, f[u8"code"]);
+			//pipeline.DeclareFunction(GPipeline::ElementHandle(), f[u8"type"], f[u8"name"], elements, f[u8"code"]);
 		}
 	}
 

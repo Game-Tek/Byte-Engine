@@ -12,7 +12,7 @@ struct PermutationManager : Object {
 		GTSL::StaticVector<const PermutationManager*, 16> Hierarchy;
 	};
 
-	using ShaderTag = GTSL::Pair<GTSL::ShortString<16>, GTSL::ShortString<16>>;
+	using ShaderTag = GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>;
 
 	PermutationManager(const GTSL::StringView instance_name, const GTSL::StringView class_name) : InstanceName(instance_name), ClassName(class_name) {
 
@@ -42,7 +42,7 @@ struct PermutationManager : Object {
 		GTSL::StaticString<32> Name;
 		GAL::ShaderType TargetSemantics;
 		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
-		GTSL::StaticVector<GTSL::Pair<GTSL::ShortString<16>, GTSL::ShortString<16>>, 4> Tags;
+		GTSL::StaticVector<ShaderTag, 4> Tags;
 	};
 	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) = 0;
 
@@ -57,7 +57,11 @@ struct PermutationManager : Object {
 		GTSL::StaticVector<const PermutationManager*, 16> hierarchy;
 
 		auto call = [&](PermutationManager* parent, auto&& self) -> void {
-			result1s.PushBack(parent->MakeShaderGroups(pipeline, hierarchy));
+			auto res = parent->MakeShaderGroups(pipeline, hierarchy);
+
+			for(auto& e : res) {
+				result1s.EmplaceBack(GTSL::MoveRef(e));
+			}
 
 			hierarchy.EmplaceBack(parent);
 
@@ -122,9 +126,11 @@ struct PermutationManager : Object {
 
 		call(start, call);
 
-		for(auto& b : batches) {
-			for(auto t : shader_json[u8"tags"]) {
-				b.Tags.EmplaceBack(t[u8"name"].GetStringView(), t[u8"text"].GetStringView());
+		if (shader_json[u8"tags"]) {
+			for (auto& b : batches) {
+				for (auto t : shader_json[u8"tags"]) {
+					b.Tags.EmplaceBack(t[u8"name"].GetStringView(), t[u8"text"].GetStringView());
+				}
 			}
 		}
 

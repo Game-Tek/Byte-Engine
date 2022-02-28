@@ -22,21 +22,43 @@ struct RayTracePermutation : public PermutationManager {
 		//todo: make single float pipeline
 
 		auto& sg = r.EmplaceBack();
-		sg.ShaderGroupJSON = u8"{ \"name\":\"DirectionalShadow\" }";
+		sg.ShaderGroupJSON = u8"{ \"name\":\"DirectionalShadow\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }], \"execution\":\"windowExtent\" }";
+
+		auto directionalShadowScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"DirectionalShadow");
+		auto payloadBlockHandle = pipeline->DeclareScope(directionalShadowScope, u8"payloadBlock");
+		pipeline->DeclareVariable(payloadBlockHandle, { u8"float32", u8"payload" });
+
+		pipeline->DeclareStruct(directionalShadowScope, u8"RenderPassData", { { u8"ImageReference", u8"color" }, { u8"TextureReference", u8"depth"} });
+
+		pipeline->SetMakeStruct(pipeline->DeclareStruct(directionalShadowScope, u8"TraceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} }));
+
+		pipeline->DeclareStruct(directionalShadowScope, u8"RayTraceData", { { u8"TraceRayParameterData", u8"traceRayParameters"}, { u8"InstanceData*", u8"instances" } });
+
+		pipeline->DeclareFunction(directionalShadowScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" }, { u8"uint32", u8"rayFlags" } }, u8"TraceRayParameterData r = pushConstantBlock.rayTrace.traceRayParameters; traceRayEXT(accelerationStructureEXT(r.AccelerationStructure), r.RayFlags | rayFlags, 0xff, r.SBTRecordOffset, r.SBTRecordStride, r.MissIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
+
+		{
+			auto pushConstantBlockHandle = pipeline->DeclareScope(directionalShadowScope, u8"pushConstantBlock");
+			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
+			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
+			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
+			pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RayTraceData*", u8"rayTrace" });
+		}
+
 
 		{
 			auto& s = sg.Shaders.EmplaceBack();
 			auto& b = s.EmplaceBack();
 
-			auto shaderHandle = pipeline->DeclareShader({}, u8"rayGen");
+			auto shaderHandle = pipeline->DeclareShader(directionalShadowScope, u8"rayGen");
 			auto mainFunctionHandle = pipeline->DeclareFunction(shaderHandle, u8"void", u8"main");
 
 			b.TargetSemantics = GAL::ShaderType::RAY_GEN;
-			b.Scopes.EmplaceBack();
+			b.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 			b.Scopes.EmplaceBack(commonPermutation->commonScope);
+			b.Scopes.EmplaceBack(directionalShadowScope);
 			b.Scopes.EmplaceBack(commonPermutation->rayGenShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
-			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizeFragmentPosition(), Sample(pushConstantBlock.depth, GetFragmentPosition()).r, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(-100, 100, 0, 1) - vec4f(worldPosition, 1.0f)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(-100, 100, 0, 1) - vec4f(worldPosition, 1.0f)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
 
 		}
 
@@ -44,12 +66,13 @@ struct RayTracePermutation : public PermutationManager {
 			auto& s = sg.Shaders.EmplaceBack();
 			auto& b = s.EmplaceBack();
 
-			auto shaderHandle = pipeline->DeclareShader({}, u8"closestHit");
+			auto shaderHandle = pipeline->DeclareShader(directionalShadowScope, u8"closestHit");
 			auto mainFunctionHandle = pipeline->DeclareFunction(shaderHandle, u8"void", u8"main");
 
 			b.TargetSemantics = GAL::ShaderType::CLOSEST_HIT;
-			b.Scopes.EmplaceBack();
+			b.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 			b.Scopes.EmplaceBack(commonPermutation->commonScope);
+			b.Scopes.EmplaceBack(directionalShadowScope);
 			b.Scopes.EmplaceBack(commonPermutation->closestHitShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
 			tokenizeCode(u8"payload = gl_HitTEXT;", pipeline->GetFunctionTokens(mainFunctionHandle));
@@ -59,12 +82,13 @@ struct RayTracePermutation : public PermutationManager {
 			auto& s = sg.Shaders.EmplaceBack();
 			auto& b = s.EmplaceBack();
 
-			auto shaderHandle = pipeline->DeclareShader({}, u8"miss");
+			auto shaderHandle = pipeline->DeclareShader(directionalShadowScope, u8"miss");
 			auto mainFunctionHandle = pipeline->DeclareFunction(shaderHandle, u8"void", u8"main");
 
 			b.TargetSemantics = GAL::ShaderType::MISS;
-			b.Scopes.EmplaceBack();
+			b.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 			b.Scopes.EmplaceBack(commonPermutation->commonScope);
+			b.Scopes.EmplaceBack(directionalShadowScope);
 			b.Scopes.EmplaceBack(commonPermutation->missShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
 			tokenizeCode(u8"payload = -1.0f;", pipeline->GetFunctionTokens(mainFunctionHandle));

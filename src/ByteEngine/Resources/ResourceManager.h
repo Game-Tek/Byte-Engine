@@ -206,7 +206,13 @@ struct Array
 		return array[Length++];
 	}
 
+	A& front() { return array[0]; }
+	A& back() { return array[Length - 1]; }
+	void PopBack() { --Length; }
+
 	operator GTSL::Range<const A*>() const { return GTSL::Range<const A*>(Length, array); }
+
+	operator bool() const { return Length; }
 
 	uint32 Length = 0;
 	A array[SIZE];

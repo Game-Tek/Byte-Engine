@@ -141,7 +141,17 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 }
 
 struct GPipeline : Object {
-	struct ElementHandle { uint32 Handle = 1; };
+	struct ElementHandle {
+		constexpr ElementHandle() = default;
+
+		explicit constexpr ElementHandle(const uint32 n) : Handle(n) {
+			
+		}
+
+		uint32 Handle = 0xFFFFFFFF;
+	};
+
+	inline static const ElementHandle GLOBAL_SCOPE{ 1u };
 
 	struct FunctionDefinition {
 		FunctionDefinition(const BE::PAR& allocator) : Tokens(16, allocator) {}
@@ -184,13 +194,13 @@ struct GPipeline : Object {
 		e.Type = LanguageElement::ElementType::SCOPE;
 		e.Name = u8"global";
 
-		add(ElementHandle(), u8"=", LanguageElement::ElementType::FUNCTION);
-		add(ElementHandle(), u8"+", LanguageElement::ElementType::FUNCTION);
-		add(ElementHandle(), u8"-", LanguageElement::ElementType::FUNCTION);
-		add(ElementHandle(), u8"*", LanguageElement::ElementType::FUNCTION);
-		add(ElementHandle(), u8"/", LanguageElement::ElementType::FUNCTION);
-		add(ElementHandle(), u8"return", LanguageElement::ElementType::KEYWORD);
-		add(ElementHandle(), u8"float32", LanguageElement::ElementType::TYPE);
+		add(GLOBAL_SCOPE, u8"=", LanguageElement::ElementType::FUNCTION);
+		add(GLOBAL_SCOPE, u8"+", LanguageElement::ElementType::FUNCTION);
+		add(GLOBAL_SCOPE, u8"-", LanguageElement::ElementType::FUNCTION);
+		add(GLOBAL_SCOPE, u8"*", LanguageElement::ElementType::FUNCTION);
+		add(GLOBAL_SCOPE, u8"/", LanguageElement::ElementType::FUNCTION);
+		add(GLOBAL_SCOPE, u8"return", LanguageElement::ElementType::KEYWORD);
+		add(GLOBAL_SCOPE, u8"float32", LanguageElement::ElementType::TYPE);
 		//add(ElementHandle(), u8"vec2f", LanguageElement::ElementType::TYPE);
 		//add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
 		//add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
@@ -271,7 +281,7 @@ public:
 			return { ElementHandle(res.Get().back()), true };
 		}
 
-		return { ElementHandle(), false };
+		return { ElementHandle(GLOBAL_SCOPE), false };
 	}
 
 	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
@@ -301,7 +311,7 @@ public:
 			}
 		}
 
-		return { ElementHandle(), false };
+		return { ElementHandle(GLOBAL_SCOPE), false };
 	}
 
 	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const ElementHandle current_scope, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
@@ -311,7 +321,7 @@ public:
 			}
 		}
 
-		return { ElementHandle(), false };
+		return { ElementHandle(GLOBAL_SCOPE), false };
 	}
 
 	auto GetChildren(const ElementHandle element_handle) {
@@ -328,7 +338,7 @@ public:
 		elements[handle.Handle].Reference = Functions.GetLength();
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Id = handle.Handle;
-		return ElementHandle(elements[handle.Handle].Reference);
+		return handle;
 	}
 
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
@@ -339,19 +349,8 @@ public:
 		function.Id = handle.Handle;
 		//function.Code = code;
 		tokenizeCode(code, function.Tokens, GetPersistentAllocator());
-		return ElementHandle(elements[handle.Handle].Reference);
+		return handle;
 	}
-
-	//ElementHandle DeclareRawFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
-	//	auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
-	//	elements[handle.Handle].Reference = Functions.GetLength();
-	//	auto& function = Functions.EmplaceBack(GetPersistentAllocator());
-	//	function.Name = name; function.Return = returnType; function.Parameters = parameters;
-	//	//function.Code = code;
-	//	tokenizeCode(code, function.Tokens, GetPersistentAllocator());
-	//	function.IsRaw = true; function.Id = handle.Handle;
-	//	return ElementHandle(elements[handle.Handle].Reference);
-	//}
 
 	auto& GetFunction(uint32 id) {
 		return Functions[elements[id].Reference];

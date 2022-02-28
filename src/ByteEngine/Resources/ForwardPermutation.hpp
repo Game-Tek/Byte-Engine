@@ -29,16 +29,14 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"} });
 
 		pushConstantBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"globalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"cameraData*", u8"camera" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 
 		pipeline->DeclareFunction(forwardScopeHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
-
-		pipeline->DeclareStruct(forwardScopeHandle, u8"InstanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint64", u8"padding" } });
 
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
@@ -113,7 +111,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			auto& batch = batches.EmplaceBack();
 
 			batch.Tags = GetTagList();
-			batch.Scopes.EmplaceBack(GPipeline::ElementHandle());
+			batch.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE);
 
 			const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 			batch.Scopes.EmplaceBack(common_permutation->commonScope);

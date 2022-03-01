@@ -32,7 +32,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	textureCopyDatas{ { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() }, { 16, GetPersistentAllocator() } },
 	accelerationStructures(16, GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
 	pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),
-	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator())
+	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator()), workloads(16, GetPersistentAllocator())
 {
 	{
 		initializeInfo.ApplicationManager->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"FrameEnd", u8"FrameEnd");
@@ -56,7 +56,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		GTSL::StaticVector<RenderDevice::QueueKey, 5> queueKeys;
 
 		queue_create_infos.EmplaceBack(GAL::QueueTypes::GRAPHICS); queueKeys.EmplaceBack();
-		//queue_create_infos.EmplaceBack(GAL::QueueTypes::TRANSFER); queueKeys.EmplaceBack();
+		queue_create_infos.EmplaceBack(GAL::QueueTypes::COMPUTE); queueKeys.EmplaceBack();
 
 		createInfo.Queues = queue_create_infos;
 		createInfo.QueueKeys = queueKeys;
@@ -81,7 +81,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 			BE_LOG_ERROR(u8"Failed to initialize RenderDevice!\n	API: Vulkan\n	Reason: \"", renderDeviceInitializationResult.Get(), u8"\n");
 		}
 
-		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]);
+		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]); computeQueue.Initialize(GetRenderDevice(), queueKeys[1]);
 
 		{
 			needsStagingBuffer = true;
@@ -615,11 +615,8 @@ void RenderSystem::initializeFrameResources(const uint8 frame_index) {
 	processedBufferCopies[frame_index] = 0;
 
 	imageAvailableSemaphore[frame_index].Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::SEMAPHORE);
-
-	fences[frame_index].Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::FENCE, true);
 }
 
 void RenderSystem::freeFrameResources(const uint8 frameIndex) {
 	imageAvailableSemaphore[frameIndex].Destroy(&renderDevice);
-	fences[frameIndex].Destroy(GetRenderDevice());
 }

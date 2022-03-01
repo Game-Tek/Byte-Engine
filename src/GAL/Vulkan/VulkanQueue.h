@@ -25,47 +25,6 @@ namespace GAL {
 		bool Submit(const VulkanRenderDevice* renderDevice, const GTSL::Range<const WorkUnit<VulkanSynchronizer>*> submitInfos, VulkanSynchronizer& fence) {
 			VkResult submitResult;
 
-			//{
-			//	GTSL::StaticVector<VkSubmitInfo2KHR, 8> vkSubmitInfos;
-			//
-			//	GTSL::StaticVector<GTSL::StaticVector<VkCommandBufferSubmitInfoKHR, 16>, 4> vkCommandBuffers;
-			//	GTSL::StaticVector<GTSL::StaticVector<VkSemaphoreSubmitInfoKHR, 16>, 4> signalSemaphores, waitSemaphores;
-			//
-			//	for (auto& si : submitInfos) {
-			//		auto& a = vkSubmitInfos.EmplaceBack(VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR);
-			//		auto& wucb = vkCommandBuffers.EmplaceBack();
-			//		auto& wuss = signalSemaphores.EmplaceBack(); auto& wuws = waitSemaphores.EmplaceBack();
-			//
-			//		for (auto cbi : si.CommandLists) {
-			//			auto& cb = wucb.EmplaceBack(VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR);
-			//			cb.commandBuffer = static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer();
-			//		}
-			//
-			//		for (auto& cbi : si.SignalSemaphores) {
-			//			auto& s = wuss.EmplaceBack(VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR);
-			//			s.semaphore = static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore();
-			//			s.stageMask = ToVulkan(cbi.PipelineStage);
-			//			static_cast<VulkanSemaphore*>(cbi.Semaphore)->Signal();
-			//		}
-			//
-			//		for (auto& cbi : si.WaitSemaphores) {
-			//			auto& s = wuws.EmplaceBack(VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR);
-			//			s.semaphore = static_cast<const VulkanSemaphore*>(cbi.Semaphore)->GetVkSemaphore();
-			//			s.stageMask = ToVulkan(cbi.PipelineStage);
-			//			static_cast<VulkanSemaphore*>(cbi.Semaphore)->Unsignal();
-			//		}
-			//
-			//		a.commandBufferInfoCount = wucb.GetLength();
-			//		a.pCommandBufferInfos = wucb.begin();
-			//		a.waitSemaphoreInfoCount = wuws.GetLength();
-			//		a.pWaitSemaphoreInfos = wuws.begin();
-			//		a.signalSemaphoreInfoCount = wuss.GetLength();
-			//		a.pSignalSemaphoreInfos = wuss.begin();
-			//	}
-			//
-			//	submitResult = renderDevice->VkQueueSubmit2(queue, vkSubmitInfos.GetLength(), vkSubmitInfos.GetData(), fence.GetVkFence());
-			//}
-
 			{
 				GTSL::StaticVector<VkSubmitInfo, 8> vkSubmitInfos;
 

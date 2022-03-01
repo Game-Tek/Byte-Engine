@@ -22,7 +22,7 @@ struct RayTracePermutation : public PermutationManager {
 		//todo: make single float pipeline
 
 		auto& sg = r.EmplaceBack();
-		sg.ShaderGroupJSON = u8"{ \"name\":\"DirectionalShadow\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }], \"execution\":\"windowExtent\" }";
+		sg.ShaderGroupJSON = u8"{ \"name\":\"DirectionalShadow\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }] }";
 
 		auto directionalShadowScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"DirectionalShadow");
 		auto payloadBlockHandle = pipeline->DeclareScope(directionalShadowScope, u8"payloadBlock");
@@ -59,6 +59,7 @@ struct RayTracePermutation : public PermutationManager {
 			b.Scopes.EmplaceBack(commonPermutation->rayGenShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
 			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(-100, 100, 0, 1) - vec4f(worldPosition, 1.0f)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			b.Tags.EmplaceBack(u8"Execution", u8"windowExtent");
 
 		}
 

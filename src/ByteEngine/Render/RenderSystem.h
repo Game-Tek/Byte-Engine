@@ -39,39 +39,61 @@ public:
 	}
 
 	MAKE_HANDLE(uint32, CommandList);
+	MAKE_HANDLE(uint32, Workload);
 	MAKE_HANDLE(uint32, AccelerationStructure);
 	MAKE_HANDLE(uint32, BLASInstance);
+
+	struct WorkloadData {
+		GTSL::StaticVector<CommandListHandle, 16> AssociatedCommandlists;
+		Synchronizer Fence, Semaphore;
+		GAL::PipelineStage PipelineStages;
+	};
+	GTSL::FixedVector<WorkloadData, BE::PAR> workloads;
+
+	WorkloadHandle CreateWorkload(GAL::QueueType type) {
+		uint32 index = workloads.Emplace();
+		auto& workload = workloads[index];
+		workload.Fence.Initialize(GetRenderDevice(), Synchronizer::Type::FENCE);
+		workload.Semaphore.Initialize(GetRenderDevice(), Synchronizer::Type::SEMAPHORE);
+		if (type & GAL::QueueTypes::GRAPHICS) {
+			workload.PipelineStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+		} else {
+			workload.PipelineStages = GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD;
+		}
+		return WorkloadHandle(index);
+	}
 
 	CommandListHandle CreateCommandList(const GTSL::StringView name, GAL::QueueType type, bool isSingleFrame = true) {
 		uint32 index = commandLists.GetLength();
 		auto& commandList = commandLists.EmplaceBack();
-		commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey());
 		//commandList.Fence.Initialize(GetRenderDevice(), true);
 		commandList.Semaphore.Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::SEMAPHORE);
+		commandList.Fence.Initialize(GetRenderDevice(), GAL::VulkanSynchronizer::Type::FENCE);
 		commandList.Operations = type;
 		if (type & GAL::QueueTypes::GRAPHICS) {
 			commandList.DefaultStages = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+			commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey());
+		} else {
+			commandList.CommandList.Initialize(GetRenderDevice(), name, computeQueue.GetQueueKey());
 		}
 		return CommandListHandle(index);
-	}
-
-	void Wait(const CommandListHandle command_list_handle) {
-		auto& commandListData = commandLists[command_list_handle()];
-
-		if (fences[GetCurrentFrame()].State()) {
-			fences[GetCurrentFrame()].Wait(GetRenderDevice());
-			fences[GetCurrentFrame()].Reset(GetRenderDevice());
-		}
 	}
 
 	void StartCommandList(const CommandListHandle command_list_handle) {
 		auto& commandListData = commandLists[command_list_handle()];
 
+		if(commandListData.Fence.State()) {
+			commandListData.Fence.Wait(GetRenderDevice());
+			commandListData.Fence.Reset(GetRenderDevice());
+		}
+
 		commandListData.CommandList.BeginRecording(GetRenderDevice());
 
 		commandListData.PipelineStages = commandListData.DefaultStages;
 
-		beginGraphicsCommandLists(commandListData);
+		if (commandListData.PipelineStages & GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT) { //todo: fix atrocity, maintain pending copies per command list
+			beginGraphicsCommandLists(commandListData);
+		}
 	}
 
 	void DispatchBuild(const CommandListHandle command_list_handle, const GTSL::Range<const AccelerationStructureHandle*> handles) {
@@ -138,11 +160,23 @@ public:
 		commandListData.CommandList.EndRecording(GetRenderDevice());
 	}
 
-	void SubmitAndPresent(GTSL::Range<const CommandListHandle*> command_list_handles) {
+	void Wait(WorkloadHandle workload_handle) {
+		auto& workloadData = workloads[workload_handle()];
+
+		if (workloadData.Fence.State()) {
+			workloadData.Fence.Wait(GetRenderDevice());
+			workloadData.Fence.Reset(GetRenderDevice());
+		}
+	}
+
+	void Submit(GTSL::Range<const CommandListHandle*> command_list_handles, WorkloadHandle workload_handle) {
 		GTSL::StaticVector<Queue::WorkUnit<Synchronizer>, 8> workUnits;
-		GTSL::StaticVector<Synchronizer*, 8> presentWaitSemaphores;
 		GTSL::StaticVector<GTSL::StaticVector<const GAL::CommandList*, 8>, 4> command_listses;
 		GTSL::StaticVector<GTSL::StaticVector<Queue::WorkUnit<Synchronizer>::SynchronizerOperationInfo, 8>, 4> waitOperations, signalOperations;
+
+		BE_ASSERT(command_list_handles.ElementCount() == 1);
+
+		auto& workload = workloads[workload_handle()];
 
 		for (int32 clii = 0; clii < command_list_handles.ElementCount(); ++clii) {
 			auto& commandListData = commandLists[command_list_handles[clii]()];
@@ -151,16 +185,60 @@ public:
 			auto& wo = waitOperations.EmplaceBack();
 			auto& so = signalOperations.EmplaceBack();
 
+			for (int32 i = 0; i < clii; ++i) {
+				auto& x = commandLists[command_list_handles[i]()];
+				wo.EmplaceBack(&x.Semaphore, x.PipelineStages);
+			}
+
+			//so.EmplaceBack(&commandListData.Semaphore, commandListData.PipelineStages);
+			cl.EmplaceBack(&commandListData.CommandList);
+
+			so.EmplaceBack(&workload.Semaphore, workload.PipelineStages); // Signal workload
+
+			workUnit.CommandLists = cl;
+			workUnit.Signal = so;
+			workUnit.Wait = wo;
+
+			if (!workload.AssociatedCommandlists.Find(command_list_handles[clii])) {
+				workload.AssociatedCommandlists.EmplaceBack(command_list_handles[clii]);
+			}
+		}
+
+		computeQueue.Submit(GetRenderDevice(), workUnits, workload.Fence);
+	}
+
+	void SubmitAndPresent(GTSL::Range<const CommandListHandle*> command_list_handles, WorkloadHandle workload_handle, GTSL::Range<const WorkloadHandle*> dependent_workloads) {
+		GTSL::StaticVector<Queue::WorkUnit<Synchronizer>, 8> workUnits;
+		GTSL::StaticVector<Synchronizer*, 8> presentWaitSemaphores;
+		GTSL::StaticVector<GTSL::StaticVector<const GAL::CommandList*, 8>, 4> command_listses;
+		GTSL::StaticVector<GTSL::StaticVector<Queue::WorkUnit<Synchronizer>::SynchronizerOperationInfo, 8>, 4> waitOperations, signalOperations;
+
+		auto& workload = workloads[workload_handle()];
+
+		for (int32 clii = 0; clii < command_list_handles.ElementCount(); ++clii) {
+			auto& commandListData = commandLists[command_list_handles[clii]()];
+			auto& workUnit = workUnits.EmplaceBack();
+			auto& cl = command_listses.EmplaceBack();
+			auto& wo = waitOperations.EmplaceBack();
+			auto& so = signalOperations.EmplaceBack();
+
+			for (uint32 i = 0; i < dependent_workloads.ElementCount(); ++i) {
+				auto& x = workloads[dependent_workloads[i]()];
+				wo.EmplaceBack(&x.Semaphore, x.PipelineStages);
+			}
+
 			for(int32 i = 0; i < clii; ++i) {
 				auto& x = commandLists[command_list_handles[i]()];
 				wo.EmplaceBack(&x.Semaphore, x.PipelineStages);
 			}
 
-			so.EmplaceBack(&commandListData.Semaphore, commandListData.PipelineStages);
+			so.EmplaceBack(&workload.Semaphore, workload.PipelineStages); // Signal workload
+
+			//so.EmplaceBack(&commandListData.Semaphore, commandListData.PipelineStages);
 			cl.EmplaceBack(&commandListData.CommandList);
 
 			if (commandListData.Operations & GAL::QueueTypes::GRAPHICS && surface.GetHandle()) {
-				presentWaitSemaphores.EmplaceBack(&commandListData.Semaphore);
+				presentWaitSemaphores.EmplaceBack(&workload.Semaphore);
 				wo.EmplaceBack(&imageAvailableSemaphore[GetCurrentFrame()], GAL::PipelineStages::TRANSFER);
 			}
 
@@ -169,11 +247,7 @@ public:
 			workUnit.Wait = wo;
 		}
 
-		if (fences[GetCurrentFrame()].State()) {
-			fences[GetCurrentFrame()].Wait(GetRenderDevice());
-			fences[GetCurrentFrame()].Reset(GetRenderDevice());
-		}
-		graphicsQueue.Submit(GetRenderDevice(), workUnits, fences[GetCurrentFrame()]);
+		graphicsQueue.Submit(GetRenderDevice(), workUnits, workload.Fence);
 
 		if (surface.GetHandle()) {
 			if (!renderContext.Present(GetRenderDevice(), presentWaitSemaphores, imageIndex, graphicsQueue)) {
@@ -181,8 +255,6 @@ public:
 			}
 		}
 	}
-
-	Synchronizer fences[MAX_CONCURRENT_FRAMES];
 
 	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
 	                                GTSL::uint8 mipLevels, RenderAllocation* allocation)
@@ -534,7 +606,8 @@ private:
 	
 	Synchronizer imageAvailableSemaphore[MAX_CONCURRENT_FRAMES];
 	
-	GAL::VulkanQueue graphicsQueue;
+	GAL::VulkanQueue graphicsQueue, computeQueue;
+
 	bool breakOnError = true;
 	DynamicTaskHandle<GTSL::Extent2D> resizeHandle;
 
@@ -609,7 +682,7 @@ private:
 	struct CommandListData {
 		CommandList CommandList;
 		//Fence Fence;
-		Synchronizer Semaphore;
+		Synchronizer Semaphore, Fence;
 		GAL::QueueType Operations;
 		GAL::PipelineStage PipelineStages, DefaultStages;
 	};

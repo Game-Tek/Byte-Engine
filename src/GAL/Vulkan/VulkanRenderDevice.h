@@ -90,7 +90,7 @@ namespace GAL
 
 				VkApplicationInfo vkApplicationInfo{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
 				//vkEnumerateInstanceVersion(&vkApplicationInfo.apiVersion);
-				vkApplicationInfo.apiVersion = VK_MAKE_VERSION(1, 2, 0);
+				vkApplicationInfo.apiVersion = VK_MAKE_VERSION(1, 3, 0);
 				vkApplicationInfo.applicationVersion = VK_MAKE_VERSION(createInfo.ApplicationVersion[0], createInfo.ApplicationVersion[1], createInfo.ApplicationVersion[2]);
 				vkApplicationInfo.engineVersion = VK_MAKE_VERSION(0, 0, 1);
 				//vkApplicationInfo.pApplicationName = createInfo.ApplicationName.begin(); //todo: translate
@@ -270,7 +270,7 @@ namespace GAL
 							queueCreateInfo.pQueuePriorities = familiesPriorities[res.Get()];
 						}
 
-						createInfo.QueueKeys[queueIndex].Queue = res.Get();
+						createInfo.QueueKeys[queueIndex].Queue = vkDeviceQueueCreateInfos[res.Get()].queueCount;
 						createInfo.QueueKeys[queueIndex].Family = bestFamilyIndex;
 						familiesPriorities[bestFamilyIndex][vkDeviceQueueCreateInfos[res.Get()].queueCount] = 1.0f;
 						++vkDeviceQueueCreateInfos[res.Get()].queueCount;

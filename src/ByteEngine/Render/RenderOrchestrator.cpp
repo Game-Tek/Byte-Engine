@@ -313,6 +313,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Command List", GAL::QueueTypes::GRAPHICS);
+		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(GAL::QueueTypes::GRAPHICS);
 	}
 }
 
@@ -338,7 +339,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		renderArea = res.Get();
 	}
 
-	renderSystem->Wait(graphicsCommandLists[currentFrame]);
+	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
 
 	updateDescriptors(taskInfo);
 
@@ -677,14 +678,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	{
 		GTSL::StaticVector<RenderSystem::CommandListHandle, 8> commandLists;
+		GTSL::StaticVector<RenderSystem::WorkloadHandle, 8> workloads;
 
 		if (BE::Application::Get()->GetBoolOption(u8"rayTracing")) {
-			commandLists.EmplaceBack(buildCommandList[currentFrame]);
+			workloads.EmplaceBack(buildAccelerationStructuresWorkloadHandle[renderSystem->GetCurrentFrame()]);
 		}
 
 		commandLists.EmplaceBack(graphicsCommandLists[currentFrame]);
 
-		renderSystem->SubmitAndPresent(commandLists);
+		renderSystem->SubmitAndPresent(commandLists, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()], workloads);
 	}
 }
 
@@ -1059,8 +1061,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			loadedShadersMap.Emplace(s.Hash);
 		}
 
-		if(s.Type == GAL::ShaderType::COMPUTE) {
-			auto executionExists = GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Execution"; });
+		if (auto executionExists = GTSL::Find(s.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Execution"; })) {
 			executionString = executionExists.Get()->Second;
 		}
 
@@ -1493,8 +1494,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto updateLightTaskHandle = GetApplicationManager()->StoreDynamicTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
-	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, false, {});
-	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX, true, false, {});
+	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
+	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
 
 	RenderOrchestrator::NodeHandle renderPassNodeHandle;
 
@@ -1615,6 +1616,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (rayTracing) {
 		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
 			renderOrchestrator->buildCommandList[i] = renderSystem->CreateCommandList(u8"Acceleration structure build command list", GAL::QueueTypes::COMPUTE);
+			renderOrchestrator->buildAccelerationStructuresWorkloadHandle[i] = renderSystem->CreateWorkload(GAL::QueueTypes::COMPUTE);
 		}
 
 		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);

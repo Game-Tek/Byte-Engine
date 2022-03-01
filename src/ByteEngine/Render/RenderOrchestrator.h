@@ -961,6 +961,8 @@ private:
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle samplersSubsetHandle;
 
+	RenderSystem::WorkloadHandle graphicsWorkloadHandle[MAX_CONCURRENT_FRAMES], buildAccelerationStructuresWorkloadHandle[MAX_CONCURRENT_FRAMES];
+
 	GTSL::HashMap<Id, uint32, BE::PAR> rayTracingSets;
 
 	GTSL::StaticVector<GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8>, 16> vertexLayouts;
@@ -2071,11 +2073,15 @@ private:
 		}
 
 		if (rayTracing) {
+			render_system->Wait(render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()]);
+
 			render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
 			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingUpdates); //Update all BLASes
 			pendingUpdates.Resize(0);
 			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
 			render_system->EndCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
+
+			render_system->Submit({ render_orchestrator->buildCommandList[render_system->GetCurrentFrame()] }, render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()]);
 		}
 	}
 
@@ -2150,7 +2156,7 @@ private:
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"Depth" });
+		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"RenderDepth" });
 		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data, GetApplicationManager());
 
 		// Create shader group

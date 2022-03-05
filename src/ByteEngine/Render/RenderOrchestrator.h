@@ -2181,7 +2181,7 @@ private:
 		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
 		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
 		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
+		bwk[u8"traceRayParameters"][u8"tMin"] = 0.05f;
 		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
 		bwk[u8"staticMeshes"] = meshDataBuffer;
 	}

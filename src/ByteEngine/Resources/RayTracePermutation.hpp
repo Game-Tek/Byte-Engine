@@ -58,7 +58,8 @@ struct RayTracePermutation : public PermutationManager {
 			b.Scopes.EmplaceBack(directionalShadowScope);
 			b.Scopes.EmplaceBack(commonPermutation->rayGenShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
-			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(-100, 100, 0, 1) - vec4f(worldPosition, 1.0f)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			//tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(-100, 100, 0, 1) - vec4f(worldPosition, 1.0f)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).x, pushConstantBlock.camera.projInverse); Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), vec4f(worldPosition, 1));", pipeline->GetFunctionTokens(mainFunctionHandle));
 			b.Tags.EmplaceBack(u8"Execution", u8"windowExtent");
 
 		}

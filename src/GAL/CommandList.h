@@ -64,9 +64,9 @@ namespace GAL
 		};
 
 		struct BarrierData {
-			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const MemoryBarrier memoryBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::MEMORY), Memory(memoryBarrier) {}
-			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const BufferBarrier bufferBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::BUFFER), Buffer(bufferBarrier) {}
-			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const TextureBarrier textureBarrier) : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(sA), Type(BarrierType::TEXTURE),Texture(textureBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const MemoryBarrier memoryBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(dA), Type(BarrierType::MEMORY), Memory(memoryBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const BufferBarrier bufferBarrier)   : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(dA), Type(BarrierType::BUFFER), Buffer(bufferBarrier) {}
+			BarrierData(PipelineStage sP, PipelineStage dP, AccessType sA, AccessType dA, const TextureBarrier textureBarrier) : SourceStage(sP), DestinationStage(dP), SourceAccess(sA), DestinationAccess(dA), Type(BarrierType::TEXTURE),Texture(textureBarrier) {}
 
 			BarrierData(const BarrierData& other) : Type(other.Type) {
 				switch (Type) {

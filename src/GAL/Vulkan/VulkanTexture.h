@@ -99,7 +99,7 @@ namespace GAL
 			vkSamplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 			vkSamplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 			vkSamplerCreateInfo.unnormalizedCoordinates = VK_FALSE;
-			vkSamplerCreateInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+			vkSamplerCreateInfo.compareOp = VK_COMPARE_OP_NEVER;
 			vkSamplerCreateInfo.compareEnable = VK_FALSE;
 			vkSamplerCreateInfo.mipLodBias = 0.0f;
 			vkSamplerCreateInfo.minLod = 0.0f;

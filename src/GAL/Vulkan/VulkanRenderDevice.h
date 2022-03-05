@@ -361,13 +361,13 @@ namespace GAL
 						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_swapchain\" is not available."), false);
 					}
 
-					if (tryAddExtension(u8"VK_NV_mesh_shader")) {
-						VkPhysicalDeviceMeshShaderFeaturesNV* features;
-						placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV);
-						features->taskShader = true; features->meshShader = true;
-					} else {
-						return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);						
-					}
+					//if (tryAddExtension(u8"VK_NV_mesh_shader")) {
+					//	VkPhysicalDeviceMeshShaderFeaturesNV* features;
+					//	placeFeaturesStructure(&features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV);
+					//	features->taskShader = true; features->meshShader = true;
+					//} else {
+					//	return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);						
+					//}
 
 					if(!tryAddExtension(u8"VK_KHR_maintenance4")) {
 						return InitRes(GTSL::Range(u8"Required extension: \nVK_KHR_maintenance4\" is not available."), false);

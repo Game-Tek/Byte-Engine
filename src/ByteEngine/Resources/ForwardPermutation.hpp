@@ -48,7 +48,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
 		if (common_permutation) {
-			pipeline->DeclareFunction(forwardScopeHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.worldPosition);");
+			pipeline->DeclareFunction(forwardScopeHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.view[3]);");
 
 			auto vertexSurfaceInterface = pipeline->DeclareScope(forwardScopeHandle, u8"vertexSurfaceInterface");
 			auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });

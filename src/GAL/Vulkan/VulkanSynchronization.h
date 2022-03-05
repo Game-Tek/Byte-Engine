@@ -11,7 +11,7 @@ namespace GAL
 	public:
 		VulkanSynchronizer() = default;
 
-		void Initialize(const VulkanRenderDevice* renderDevice, Type syncType, bool isSignaled = false, uint64 initialValue = ~0ULL) {
+		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, Type syncType, bool isSignaled = false, uint64 initialValue = ~0ULL) {
 			SyncType = syncType;
 
 			switch (SyncType) {
@@ -31,6 +31,8 @@ namespace GAL
 				vkSemaphoreCreateInfo.pNext = &vkSemaphoreTypeCreateInfo;
 
 				renderDevice->VkCreateSemaphore(renderDevice->GetVkDevice(), &vkSemaphoreCreateInfo, renderDevice->GetVkAllocationCallbacks(), &semaphore);
+
+				setName(renderDevice, semaphore, VK_OBJECT_TYPE_SEMAPHORE, name);
 				break;
 			}
 			case Type::EVENT: {

@@ -286,13 +286,14 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		members.EmplaceBack(&t, u8"matrix4f", u8"proj");
 		members.EmplaceBack(&t, u8"matrix4f", u8"viewInverse");
 		members.EmplaceBack(&t, u8"matrix4f", u8"projInverse");
-		members.EmplaceBack(&t, u8"matrix4f", u8"vp");
-		members.EmplaceBack(&t, u8"vec4f", u8"worldPosition");
-		members.EmplaceBack(&t, u8"float32", u8"near");
-		members.EmplaceBack(&t, u8"float32", u8"far");
-		members.EmplaceBack(&t, u8"u16vec2", u8"extent");
+		//members.EmplaceBack(&t, u8"matrix4f", u8"vp");
+		//members.EmplaceBack(&t, u8"vec4f", u8"worldPosition");
+		//members.EmplaceBack(&t, u8"float32", u8"near");
+		//members.EmplaceBack(&t, u8"float32", u8"far");
+		//members.EmplaceBack(&t, u8"u16vec2", u8"extent");
 		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
-		cameraDataNode = AddDataNode(u8"CameraData", globalData, cameraMatricesHandle);
+		cameraDataKeyHandle = CreateDataKey(renderSystem, u8"global", u8"CameraData");
+		cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
 
 	if constexpr (BE_DEBUG) {
@@ -312,8 +313,10 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
-		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Command List", GAL::QueueTypes::GRAPHICS);
-		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(GAL::QueueTypes::GRAPHICS);
+		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
+		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(u8"Frame work", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
+		imageAcquisitionWorkloadHandles[f] = renderSystem->CreateWorkload(u8"Swpachain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 	}
 }
 
@@ -334,7 +337,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
 
-	if (auto res = renderSystem->AcquireImage(); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
+	if (auto res = renderSystem->AcquireImage(imageAcquisitionWorkloadHandles[currentFrame]); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
 		OnResize(renderSystem, res.Get());
 		renderArea = res.Get();
 	}
@@ -384,18 +387,21 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
 			projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
 
+			auto invertedProjectionMatrix = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
+			//invertedProjectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
+
 			auto viewMatrix = cameraSystem->GetCameraTransform();
 
-			auto key = GetBufferWriteKey(renderSystem, cameraDataNode);
+			auto key = GetBufferWriteKey(renderSystem, cameraDataKeyHandle);
 			key[u8"view"] = viewMatrix;
 			key[u8"proj"] = projectionMatrix;
 			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
-			key[u8"projInverse"] = GTSL::Math::BuildInvertedPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
-			key[u8"vp"] = projectionMatrix * viewMatrix;
-			key[u8"worldPosition"] = GTSL::Vector4(cameraSystem->GetCameraPosition(CameraSystem::CameraHandle(0)), 1.0f);
-			key[u8"near"] = nearValue;
-			key[u8"far"] = farValue;
-			key[u8"extent"] = renderArea;
+			key[u8"projInverse"] = invertedProjectionMatrix;
+			//key[u8"vp"] = projectionMatrix * viewMatrix;
+			//key[u8"worldPosition"] = GTSL::Vector4(cameraSystem->GetCameraPosition(CameraSystem::CameraHandle(0)), 1.0f);
+			//key[u8"near"] = nearValue;
+			//key[u8"far"] = farValue;
+			//key[u8"extent"] = renderArea;
 		}
 		else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
@@ -676,17 +682,27 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
 
+	renderSystem->StartCommandList(transferCommandList[currentFrame]);
+	renderSystem->EndCommandList(transferCommandList[currentFrame]);
+
 	{
 		GTSL::StaticVector<RenderSystem::CommandListHandle, 8> commandLists;
 		GTSL::StaticVector<RenderSystem::WorkloadHandle, 8> workloads;
 
+		commandLists.EmplaceBack(transferCommandList[renderSystem->GetCurrentFrame()]);
+
+		workloads.EmplaceBack(buildAccelerationStructuresWorkloadHandle[renderSystem->GetCurrentFrame()]);
 		if (BE::Application::Get()->GetBoolOption(u8"rayTracing")) {
-			workloads.EmplaceBack(buildAccelerationStructuresWorkloadHandle[renderSystem->GetCurrentFrame()]);
 		}
+
+		workloads.EmplaceBack(imageAcquisitionWorkloadHandles[currentFrame]);
+		workloads.EmplaceBack(graphicsWorkloadHandle[currentFrame]);
 
 		commandLists.EmplaceBack(graphicsCommandLists[currentFrame]);
 
-		renderSystem->SubmitAndPresent(commandLists, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()], workloads);
+		renderSystem->Submit(GAL::QueueTypes::GRAPHICS, { { { transferCommandList[currentFrame] }, {}, { graphicsWorkloadHandle[currentFrame]}}, {{graphicsCommandLists[currentFrame]}, workloads, {graphicsWorkloadHandle[currentFrame]}}}, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()]); // Wait on image acquisition to render maybe, //Signal grpahics workload
+
+		renderSystem->Present({ graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
 	}
 }
 
@@ -1436,10 +1452,9 @@ void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceMan
 	resourceManager->LoadTexture(taskInfo.ApplicationManager, textureInfo, dataBuffer, onTextureLoadHandle, GTSL::MoveRef(loadInfo));
 }
 
-void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem* renderSystem,
-	TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
+void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem* renderSystem, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)
 {
-	renderSystem->UpdateTexture(loadInfo.TextureHandle);
+	renderSystem->UpdateTexture(transferCommandList[renderSystem->GetCurrentFrame()], loadInfo.TextureHandle);
 
 	auto& texture = textures[textureInfo.GetName()];
 
@@ -1613,12 +1628,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		mainVisibilityPipelineNode = renderOrchestrator->AddMaterial(renderSystem, meshDataNode, shaderGroupHandle);
 	}
 
-	if (rayTracing) {
-		for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
-			renderOrchestrator->buildCommandList[i] = renderSystem->CreateCommandList(u8"Acceleration structure build command list", GAL::QueueTypes::COMPUTE);
-			renderOrchestrator->buildAccelerationStructuresWorkloadHandle[i] = renderSystem->CreateWorkload(GAL::QueueTypes::COMPUTE);
-		}
+	for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
+		renderOrchestrator->buildCommandList[i] = renderSystem->CreateCommandList(u8"Acc. Struct. build", GAL::QueueTypes::COMPUTE, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD);
+		renderOrchestrator->buildAccelerationStructuresWorkloadHandle[i] = renderSystem->CreateWorkload(u8"Build Acc. Structs.", GAL::QueueTypes::COMPUTE, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD);
+	}
 
+	if (rayTracing) {
 		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
 
 		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);

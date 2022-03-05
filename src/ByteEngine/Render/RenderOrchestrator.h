@@ -261,7 +261,7 @@ public:
 	}
 
 	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
-	DataKeyHandle globalDataDataKey;
+	DataKeyHandle globalDataDataKey, cameraDataKeyHandle;
 
 	void AddNotifyShaderGroupCreated(GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> notify_delegate) {
 		shaderGroupNotify = notify_delegate;
@@ -373,7 +373,7 @@ public:
 	}
 
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
-	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES];
+	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES], transferCommandList[MAX_CONCURRENT_FRAMES];
 
 	NodeHandle AddMesh(const NodeHandle parentNodeHandle, uint32 meshId, uint32 indexCount, uint32 vertexOffset = 0) {
 		auto nodeHandle = addInternalNode<MeshData>(meshId, parentNodeHandle);
@@ -961,7 +961,7 @@ private:
 	SubSetHandle imagesSubsetHandle;
 	SubSetHandle samplersSubsetHandle;
 
-	RenderSystem::WorkloadHandle graphicsWorkloadHandle[MAX_CONCURRENT_FRAMES], buildAccelerationStructuresWorkloadHandle[MAX_CONCURRENT_FRAMES];
+	RenderSystem::WorkloadHandle graphicsWorkloadHandle[MAX_CONCURRENT_FRAMES], buildAccelerationStructuresWorkloadHandle[MAX_CONCURRENT_FRAMES], imageAcquisitionWorkloadHandles[MAX_CONCURRENT_FRAMES];
 
 	GTSL::HashMap<Id, uint32, BE::PAR> rayTracingSets;
 
@@ -1960,12 +1960,14 @@ private:
 	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
 		auto& res = resources[Id(staticMeshInfo.GetName())];
 
-		render_system->UpdateBuffer(vertexBuffer); render_system->UpdateBuffer(indexBuffer);
+		auto commandListHandle = render_orchestrator->buildCommandList[render_system->GetCurrentFrame()];
+
+		render_system->UpdateBuffer(commandListHandle, vertexBuffer); render_system->UpdateBuffer(commandListHandle, indexBuffer);
 		render_orchestrator->AddVertices(vertexBufferNodeHandle, staticMeshInfo.GetVertexCount());
 		render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
 
 		if (rayTracing) {
-			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, staticMeshInfo.GetVertexSize(), staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/);
+			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
 			pendingUpdates.EmplaceBack(res.BLAS);
 		}
 
@@ -2058,8 +2060,8 @@ private:
 			auto i = 0;
 
 			while (i < pendingAdditions) {
-				auto addition = pendingAdditions[i];
-				if (render_orchestrator->GetResourceState(render_orchestrator->GetResourceForShaderGroup(u8"beachBall"))) {
+				const auto& addition = pendingAdditions[i];
+				if (render_orchestrator->GetResourceState(render_orchestrator->GetResourceForShaderGroup(u8"DiffuseShaderGroup"))) {
 					auto e = addition.Second;
 					auto& mesh = meshes[e];
 
@@ -2072,17 +2074,19 @@ private:
 			}
 		}
 
-		if (rayTracing) {
-			render_system->Wait(render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()]);
 
-			render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
+		auto workloadHandle = render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()];
+		render_system->Wait(workloadHandle);
+		render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
+
+		if (rayTracing) {
 			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingUpdates); //Update all BLASes
 			pendingUpdates.Resize(0);
 			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
-			render_system->EndCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
-
-			render_system->Submit({ render_orchestrator->buildCommandList[render_system->GetCurrentFrame()] }, render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()]);
 		}
+
+		render_system->EndCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
+		render_system->Submit(GAL::QueueTypes::COMPUTE, { { { render_orchestrator->buildCommandList[render_system->GetCurrentFrame()] }, {  }, { workloadHandle } } }, workloadHandle);
 	}
 
 	void terrain() {
@@ -2163,7 +2167,7 @@ private:
 		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
 		// Add dispatch
 		auto pipelineBindNode = renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle);
-		auto cameraDataNode = renderOrchestrator->AddDataNode(pipelineBindNode, u8"CameraData", renderOrchestrator->globalDataDataKey);
+		auto cameraDataNode = renderOrchestrator->AddDataNode(pipelineBindNode, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 		
 		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember2(u8"global", u8"TraceRayParameterData", { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} });
 		auto rayTraceDataMember = renderOrchestrator->CreateMember2(u8"global", u8"RayTraceData", { { u8"TraceRayParameterData", u8"traceRayParameters" }, { u8"StaticMeshData*", u8"staticMeshes" } });

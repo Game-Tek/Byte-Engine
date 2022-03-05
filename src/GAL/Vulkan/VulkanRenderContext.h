@@ -179,10 +179,8 @@ namespace GAL
 			GTSL::StaticVector<VkSemaphore, 16> semaphores;
 
 			for (auto& s : waitSemaphores) {
-				//if (s->IsSignaled()) {
-					s->Release();
-					semaphores.EmplaceBack(s->GetVkSemaphore());
-				//}
+				s->Release();
+				semaphores.EmplaceBack(s->GetVkSemaphore());
 			}
 			
 			vkPresentInfoKhr.waitSemaphoreCount = semaphores.GetLength();

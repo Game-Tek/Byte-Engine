@@ -19,8 +19,6 @@ struct RayTracePermutation : public PermutationManager {
 
 		auto* commonPermutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 
-		//todo: make single float pipeline
-
 		auto& sg = r.EmplaceBack();
 		sg.ShaderGroupJSON = u8"{ \"name\":\"DirectionalShadow\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }] }";
 
@@ -28,7 +26,7 @@ struct RayTracePermutation : public PermutationManager {
 		auto payloadBlockHandle = pipeline->DeclareScope(directionalShadowScope, u8"payloadBlock");
 		pipeline->DeclareVariable(payloadBlockHandle, { u8"float32", u8"payload" });
 
-		pipeline->DeclareStruct(directionalShadowScope, u8"RenderPassData", { { u8"ImageReference", u8"color" }, { u8"TextureReference", u8"depth"} });
+		pipeline->DeclareStruct(directionalShadowScope, u8"RenderPassData", { { u8"ImageReference", u8"color" }, { u8"TextureReference", u8"worldPosition" }, {u8"TextureReference", u8"depth"} });
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(directionalShadowScope, u8"TraceRayParameterData", { { u8"uint64", u8"AccelerationStructure"}, {u8"uint32", u8"RayFlags"}, {u8"uint32", u8"SBTRecordOffset"}, {u8"uint32", u8"SBTRecordStride"}, {u8"uint32", u8"MissIndex"}, {u8"float32", u8"tMin"}, {u8"float32", u8"tMax"} }));
 
@@ -58,7 +56,8 @@ struct RayTracePermutation : public PermutationManager {
 			b.Scopes.EmplaceBack(directionalShadowScope);
 			b.Scopes.EmplaceBack(commonPermutation->rayGenShaderScope);
 			b.Scopes.EmplaceBack(shaderHandle);
-			tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.projInverse, pushConstantBlock.camera.viewInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(1, 1, 0, 1)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			//tokenizeCode(u8"vec3f worldPosition = WorldPositionFromDepth(GetNormalizedFragmentPosition(), Sample(pushConstantBlock.renderPass.depth, GetFragmentPosition()).r, pushConstantBlock.camera.vpInverse); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(1, 1, 0, 1)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
+			tokenizeCode(u8"vec3f worldPosition = vec3f(Sample(pushConstantBlock.renderPass.worldPosition, GetFragmentPosition())); TraceRay(vec4f(worldPosition, 1.0f), normalize(vec4f(1, 1, 0, 1)), gl_RayFlagsTerminateOnFirstHitEXT); float colorMultiplier; if (payload == -1.0f) { colorMultiplier = 1.0f; } else { colorMultiplier = 0.1f; } Write(pushConstantBlock.renderPass.color, GetFragmentPosition(), Sample(pushConstantBlock.renderPass.color, GetFragmentPosition()) * colorMultiplier);", pipeline->GetFunctionTokens(mainFunctionHandle));
 			b.Tags.EmplaceBack(u8"Execution", u8"windowExtent");
 
 		}

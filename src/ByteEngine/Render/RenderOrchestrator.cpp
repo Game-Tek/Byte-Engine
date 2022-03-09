@@ -286,11 +286,11 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		members.EmplaceBack(&t, u8"matrix4f", u8"proj");
 		members.EmplaceBack(&t, u8"matrix4f", u8"viewInverse");
 		members.EmplaceBack(&t, u8"matrix4f", u8"projInverse");
-		//members.EmplaceBack(&t, u8"matrix4f", u8"vp");
-		//members.EmplaceBack(&t, u8"vec4f", u8"worldPosition");
-		//members.EmplaceBack(&t, u8"float32", u8"near");
-		//members.EmplaceBack(&t, u8"float32", u8"far");
-		//members.EmplaceBack(&t, u8"u16vec2", u8"extent");
+		members.EmplaceBack(&t, u8"matrix4f", u8"vp");
+		members.EmplaceBack(&t, u8"matrix4f", u8"vpInverse");
+		members.EmplaceBack(&t, u8"float32", u8"near");
+		members.EmplaceBack(&t, u8"float32", u8"far");
+		members.EmplaceBack(&t, u8"u16vec2", u8"extent");
 		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
 		cameraDataKeyHandle = CreateDataKey(renderSystem, u8"global", u8"CameraData");
 		cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
@@ -304,6 +304,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"WorldPosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
@@ -337,12 +338,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
 
+	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
+
 	if (auto res = renderSystem->AcquireImage(imageAcquisitionWorkloadHandles[currentFrame]); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
 		OnResize(renderSystem, res.Get());
 		renderArea = res.Get();
 	}
-
-	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
 
 	updateDescriptors(taskInfo);
 
@@ -353,21 +354,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
 
 	Id resultAttachment;
-
-	{
-		auto processPendingWrite = [&](PendingWriteData& pending_write_data) {
-			bool res;
-			pending_write_data.FrameCountdown.Get(currentFrame, res);
-			if (res) {
-				GTSL::MemCopy(pending_write_data.Size, pending_write_data.WhereToRead, pending_write_data.WhereToWrite);
-				return true;
-			}
-
-			return false;
-		};
-
-		Skim(pendingWrites, processPendingWrite);
-	}
 
 	{
 		auto* cameraSystem = taskInfo.ApplicationManager->GetSystem<CameraSystem>(u8"CameraSystem");
@@ -397,15 +383,30 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			key[u8"proj"] = projectionMatrix;
 			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
 			key[u8"projInverse"] = invertedProjectionMatrix;
-			//key[u8"vp"] = projectionMatrix * viewMatrix;
-			//key[u8"worldPosition"] = GTSL::Vector4(cameraSystem->GetCameraPosition(CameraSystem::CameraHandle(0)), 1.0f);
-			//key[u8"near"] = nearValue;
-			//key[u8"far"] = farValue;
-			//key[u8"extent"] = renderArea;
+			key[u8"vp"] = projectionMatrix * viewMatrix;
+			key[u8"vpInverse"] = GTSL::Math::Inverse(viewMatrix) * invertedProjectionMatrix;
+			key[u8"near"] = nearValue;
+			key[u8"far"] = farValue;
+			key[u8"extent"] = renderArea;
 		}
 		else { //disable rendering for everything which depends on this view
 			SetNodeState(cameraDataNode, false);
 		}
+	}
+
+	{
+		auto processPendingWrite = [&](PendingWriteData& pending_write_data) {
+			bool res;
+			pending_write_data.FrameCountdown.Get(currentFrame, res);
+			if (res) {
+				GTSL::MemCopy(pending_write_data.Size, pending_write_data.WhereToRead, pending_write_data.WhereToWrite);
+				return true;
+			}
+
+			return false;
+		};
+
+		Skim(pendingWrites, processPendingWrite);
 	}
 
 	RenderState renderState;
@@ -899,6 +900,8 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 		}
 
 		WriteBinding(renderSystem, textureSubsetsHandle, attachment.TextureHandle[currentFrame], attachment.ImageIndex, currentFrame);
+
+		attachment.Layout[currentFrame] = GAL::TextureLayout::UNDEFINED;
 	};
 
 	if (sizeHistory[currentFrame] != newSize) {
@@ -1521,6 +1524,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
 		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Normal" });
+		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"WorldPosition" });
 		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"RenderDepth" });
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetCameraDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
 	}

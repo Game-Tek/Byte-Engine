@@ -1,6 +1,6 @@
 #pragma once
 #include "RenderCore.h"
-#include "GTSL/RGB.h"
+#include <GTSL/RGB.hpp>
 
 #undef MemoryBarrier
 

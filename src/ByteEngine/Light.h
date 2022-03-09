@@ -2,7 +2,7 @@
 
 #include "Core.h"
 
-#include <GTSL/RGB.h>
+#include <GTSL/RGB.hpp>
 
 class Light
 {

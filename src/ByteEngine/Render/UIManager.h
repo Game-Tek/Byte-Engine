@@ -5,7 +5,7 @@
 #include <GTSL/Extent.h>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/FixedVector.hpp>
-#include <GTSL/RGB.h>
+#include <GTSL/RGB.hpp>
 #include <GTSL/String.hpp>
 #include <GTSL/Math/Vectors.hpp>
 #include <GTSL/Tree.hpp>
@@ -15,8 +15,6 @@
 
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
-
-MAKE_HANDLE(uint32, Canvas);
 
 enum class Alignments : uint8 {
 			TOP,
@@ -226,7 +224,7 @@ public:
 	};
 
 private:
-	GTSL::FixedVector<CanvasHandle, BE::PersistentAllocatorReference> canvases;
+	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
 
 	GTSL::Tree<PrimitiveData, BE::PAR> primitives;
@@ -254,7 +252,9 @@ private:
 		primitive.AspectRatio = 1.f;
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
-		flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
+		if (parent_handle() != 0) {
+			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
+		}
 		return UIElementHandle(primitiveIndex);
 	}
 

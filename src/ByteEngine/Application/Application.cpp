@@ -17,6 +17,8 @@
 #include <GTSL/System.h>
 #include <GTSL/Math/Math.hpp>
 
+#include <filesystem>
+
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
 {
@@ -51,16 +53,20 @@ namespace BE
 
 		jsonBuffer.Allocate(4096, 16);
 
-		if (!parseConfig()) {
-			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Failed to parse config file"));
-			return false;
-		}
-
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = GetPathToApplication();
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger_create_info.Trace = GetBoolOption(u8"trace");
+		logger_create_info.Trace = false;
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
+
+		if (!parseConfig()) {
+			return false;
+		}
+
+		if(!exists(std::filesystem::path((GetPathToApplication() + u8"/resources").c_str()))) {
+			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Resources folder not found."));
+			return false;
+		}
 
 		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
 
@@ -97,21 +103,24 @@ namespace BE
 	}
 
 	void Application::Shutdown() {
-		if (initialized) {
-			applicationManager.TryFree();
-			
-			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
-			inputManagerInstance.TryFree();
-			
+		if(logger) { // If logger instance was successfully initialized report shutting down reason
 			if (closeMode != CloseMode::OK) {
 				if (closeMode == CloseMode::WARNING) {
 					BE_LOG_WARNING(u8"Shutting down application!\nReason: ", closeReason)
 				}
 
 				BE_LOG_ERROR(u8"Shutting down application!\nReason: ", closeReason)
-			} else {
+			}
+			else {
 				BE_LOG_SUCCESS(u8"Shutting down application. No reported errors.")
 			}
+		}
+
+		if (initialized) {
+			applicationManager.TryFree();
+			
+			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
+			inputManagerInstance.TryFree();
 			
 			transientAllocator.LockedClear();
 			transientAllocator.Free();
@@ -175,18 +184,20 @@ namespace BE
 #endif
 	}
 
-	bool Application::parseConfig()
-	{
+	bool Application::parseConfig() {
 		auto path = GetPathToApplication();
 		path += u8"/settings.json";
 		
 		GTSL::File settingsFile;
 		switch (settingsFile.Open(path, GTSL::File::READ, false)) {
-		case GTSL::File::OpenResult::ERROR: return false;
+		case GTSL::File::OpenResult::ERROR: Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Config file not found.")); return false;
 		}
 
 		//don't try parsing if file is empty
-		if(settingsFile.GetSize() == 0) { return false; }
+		if(settingsFile.GetSize() == 0) {
+			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Config file is empty."));
+			return false;
+		}
 		
 		GTSL::Buffer fileBuffer(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
 		settingsFile.Read(fileBuffer);

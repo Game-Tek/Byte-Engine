@@ -557,19 +557,27 @@ public:
 		return 0;
 	}
 
-	BLASInstanceHandle AddBLASToTLAS(const AccelerationStructureHandle tlash, const AccelerationStructureHandle blash, uint32 instance_custom_index) {
+	BLASInstanceHandle AddBLASToTLAS(const AccelerationStructureHandle tlash, const AccelerationStructureHandle blash, uint32 instance_custom_index, BLASInstanceHandle instance_handle) {
 		auto& tlas = accelerationStructures[tlash()].TopLevel;
-		const auto& blas = accelerationStructures[blash()].BottomLevel;
 
 		uint32 instanceIndex = 0;
 
-		if(tlas.freeSlots) {
-			instanceIndex = tlas.freeSlots.back();
+		if (instance_handle) {
+			instanceIndex = instance_handle();
 		} else {
-			instanceIndex = accelerationStructures[tlash()].PrimitiveCount++;
+			if (tlas.freeSlots) {
+				instanceIndex = tlas.freeSlots.back();
+			}
+			else {
+				instanceIndex = accelerationStructures[tlash()].PrimitiveCount++;
+				//TODO: check need resize
+			}
 		}
 
-		GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
+		if (blash) {
+			const auto& blas = accelerationStructures[blash()].BottomLevel;
+			GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
+		}
 
 		auto& r = tlas.PendingUpdates.EmplaceBack(); //bug: only works if we update acc. str. every frame
 		r.First = instanceIndex;
@@ -581,12 +589,12 @@ public:
 #define BE_LOG_IF(cond, text) if(cond) { BE_LOG_WARNING(text); return; }
 
 	void SetInstancePosition(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const GTSL::Matrix4& matrix4) {
-		BE_LOG_IF(!instance_handle, u8"TlAS instance handle is invalid.");
+		BE_LOG_IF(!static_cast<bool>(instance_handle), u8"TlAS instance handle is invalid.");
 		GAL::WriteInstanceMatrix(GTSL::Matrix3x4(matrix4), GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 
 	void SetInstanceBindingTableRecordOffset(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const uint32 offset) {
-		BE_LOG_IF(!instance_handle, u8"TlAS instance handle is invalid.");
+		BE_LOG_IF(instance_handle, u8"TlAS instance handle is invalid.");
 		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 

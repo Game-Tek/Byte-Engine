@@ -7,7 +7,7 @@
 #include "VulkanRenderDevice.h"
 #include "VulkanAccelerationStructures.h"
 #include "VulkanPipelines.h"
-#include <GTSL/RGB.h>
+#include <GTSL/RGB.hpp>
 
 #include "VulkanBindings.h"
 #include "VulkanRenderPass.h"

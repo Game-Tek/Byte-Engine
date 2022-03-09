@@ -1,11 +1,9 @@
 #pragma once
 #include <GTSL/FixedVector.hpp>
-#include <GTSL/RGB.h>
+#include <GTSL/RGB.hpp>
 #include <GTSL/Math/Rotator.h>
 
-
 #include "ByteEngine/Game/System.hpp"
-
 
 class LightsRenderGroup : public BE::System {
 public:

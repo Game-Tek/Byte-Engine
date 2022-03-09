@@ -22,6 +22,7 @@
 #include "CommonPermutation.hpp"
 #include "ForwardPermutation.hpp"
 #include "VisibilityPermutation.hpp"
+#include "UIPermutation.hpp"
 #include "RayTracePermutation.hpp"
 
 template<typename T, class A>
@@ -584,6 +585,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
 		//commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
 		commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
+		//commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation");
 	} //todo: parametrize
 
 	GPipeline pipeline;

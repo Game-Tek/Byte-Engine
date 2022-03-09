@@ -209,7 +209,6 @@ namespace GAL {
 		inst.instanceCustomIndex = instanceCustomIndex;
 		inst.mask = 0xFF;
 		inst.instanceShaderBindingTableRecordOffset = 0;
-		inst.transform = { 1.0f, 0, 0, 0, 0, 1.0f, 0, 0, 0, 0, 1.0f, 0 };
 	}
 
 	inline void WriteInstanceMatrix(const GTSL::Matrix3x4& matrix3X4, void* data, GTSL::uint32 index) {

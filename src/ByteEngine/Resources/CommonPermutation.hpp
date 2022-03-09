@@ -39,7 +39,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"FresnelSchlick", { { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"mat4f", u8"inverse_projection_matrix" }, { u8"mat4f", u8"inverse_view_matrix" } }, u8"vec2 ndc = (texture_coordinate * 2.0) - 1.0; vec4 pos = vec4(ndc, depth, 1.0); pos = inverse_projection_matrix * pos; pos = vec4f(pos.xyz / pos.w, 1); return vec3f(inverse_view_matrix * pos);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"mat4f", u8"inverse_matrix" } }, u8"vec2 ndc = (texture_coordinate * 2.0) - 1.0; vec4 pos = vec4(ndc, depth, 1.0); pos = inverse_matrix * pos; return pos.xyz / pos.w;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"PI", { }, u8"return 3.14159265359f;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"SphericalCoordinates", { { u8"vec3f", u8"v" } }, u8"vec2f uv = vec2(atan(v.z, v.x), asin(v.y)); uv *= vec2(0.1591, 0.3183); uv += 0.5; return uv; ");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"DistributionGGX", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"H"}, { u8"float32", u8"roughness"} }, u8"float32 a = roughness * roughness; float32 a2 = a * a; float32 NdotH = max(dot(N, H), 0.0); float32 NdotH2 = NdotH * NdotH; float32 num = a2; float32 denom = (NdotH2 * (a2 - 1.0) + 1.0); denom = PI() * denom * denom; return num / denom;");
@@ -68,7 +68,7 @@ struct CommonPermutation : PermutationManager {
 		shader_generation_data.Scopes.EmplaceBack(commonScope);
 
 		pipeline->DeclareStruct(commonScope, u8"GlobalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
-		pipeline->DeclareStruct(commonScope, u8"CameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"} });
+		pipeline->DeclareStruct(commonScope, u8"CameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"}, { u8"mat4f", u8"vp"}, { u8"mat4f", u8"vpInverse" }, { u8"float32", u8"near"}, { u8"float32", u8"far" }, { u8"u16vec2", u8"extent"} });
 
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });

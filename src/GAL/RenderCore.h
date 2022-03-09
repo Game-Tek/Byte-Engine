@@ -8,7 +8,7 @@
 
 #include "GTSL/Bitman.h"
 #include "GTSL/Extent.h"
-#include "GTSL/RGB.h"
+#include "GTSL/RGB.hpp"
 #include "GTSL/Math/Matrix4.h"
 
 #undef OPAQUE

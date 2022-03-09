@@ -21,6 +21,7 @@
 #include "Culling.h"
 #include "LightsRenderGroup.h"
 #include "UIManager.h"
+#include "ByteEngine/MetaStruct.hpp"
 
 class RenderOrchestrator;
 class RenderState;
@@ -1775,7 +1776,7 @@ private:
 
 	template<typename T>
 	NodeHandle addInternalNode(const uint64 key, NodeHandle publicParentHandle) {
-		auto betaNodeHandle = renderingTree.Emplace<T>(publicParentHandle());
+		auto betaNodeHandle = renderingTree.Emplace<T>(0xFFFFFFFF, publicParentHandle());
 		isUnchanged = false;
 		return NodeHandle(betaNodeHandle);
 	}
@@ -1840,7 +1841,7 @@ private:
 	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
 
 	GTSL::StaticVector<GTSL::Pair<Id, StaticMeshHandle>, 8> pendingAdditions;
-	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 8> pendingUpdates;
+	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 8> pendingBuilds;
 
 	bool rayTracing = false;
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
@@ -1968,7 +1969,7 @@ private:
 
 		if (rayTracing) {
 			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
-			pendingUpdates.EmplaceBack(res.BLAS);
+			pendingBuilds.EmplaceBack(res.BLAS);
 		}
 
 		for (const auto e : res.Meshes) {
@@ -1993,6 +1994,10 @@ private:
 
 		resource.Get().Meshes.EmplaceBack(static_mesh_handle);
 		spherePositionsAndRadius.EmplaceBack(0, 0, 0, 0);
+
+		if (rayTracing) {
+			mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, static_mesh_handle(), mesh.InstanceHandle);
+		}
 
 		if (resource) {
 			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
@@ -2061,15 +2066,12 @@ private:
 
 			while (i < pendingAdditions) {
 				const auto& addition = pendingAdditions[i];
-				if (render_orchestrator->GetResourceState(render_orchestrator->GetResourceForShaderGroup(u8"DiffuseShaderGroup"))) {
-					auto e = addition.Second;
-					auto& mesh = meshes[e];
+				auto e = addition.Second;
+				auto& mesh = meshes[e];
 
-					mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e());
-					render_system->SetInstancePosition(topLevelAccelerationStructure, mesh.InstanceHandle, GTSL::Matrix4(GTSL::Vector3(spherePositionsAndRadius.At<0>(e()), spherePositionsAndRadius.At<1>(e()), spherePositionsAndRadius.At<2>(e()))));
+				mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e(), mesh.InstanceHandle);
 
-					pendingAdditions.Pop(i);
-				}
+				pendingAdditions.Pop(i);
 				++i;
 			}
 		}
@@ -2080,8 +2082,8 @@ private:
 		render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
 
 		if (rayTracing) {
-			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingUpdates); //Update all BLASes
-			pendingUpdates.Resize(0);
+			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingBuilds); //Update all BLASes
+			pendingBuilds.Resize(0);
 			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
 		}
 
@@ -2160,6 +2162,7 @@ private:
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
+		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"WorldPosition" });
 		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"RenderDepth" });
 		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data, GetApplicationManager());
 
@@ -2181,7 +2184,7 @@ private:
 		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
 		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
 		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.05f;
+		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
 		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
 		bwk[u8"staticMeshes"] = meshDataBuffer;
 	}
@@ -2228,6 +2231,17 @@ public:
 		//auto bufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&uiDataStruct, 16, members));
 		//materialSystem->BindBufferToName(bufferHandle, "UIRenderGroup");
 		//renderOrchestrator->AddToRenderPass("UIRenderPass", "UIRenderGroup");
+
+		GTSL::Matrix3x4 matrix; //default identity matrix
+
+		//UIManager* ui;
+		//
+		//ui->ProcessUpdates();
+		//
+		//auto& canvases = ui->GetCanvases();
+		//for(auto& e : canvases) {
+		//	auto& primitive = ui->getPrimitive(e);
+		//}
 	}
 
 	void ui() {

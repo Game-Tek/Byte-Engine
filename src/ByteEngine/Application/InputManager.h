@@ -5,7 +5,7 @@
 #include <GTSL/Id.h>
 #include <GTSL/Delegate.hpp>
 #include <GTSL/HashMap.hpp>
-#include <GTSL/RGB.h>
+#include <GTSL/RGB.hpp>
 #include <GTSL/Time.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Quaternion.h>

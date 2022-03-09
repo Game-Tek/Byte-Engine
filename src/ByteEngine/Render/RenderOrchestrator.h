@@ -199,7 +199,7 @@ public:
 
 	//HACKS, REMOVE
 	NodeHandle GetGlobalDataLayer() const { return globalData; }
-	NodeHandle GetCameraDataLayer() const { return cameraDataNode; }
+	//NodeHandle GetCameraDataLayer() const { return cameraDataNode; }
 	//HACKS, REMOVE
 
 	[[nodiscard]] ShaderGroupHandle CreateShaderGroup(Id shader_group_name);
@@ -365,6 +365,22 @@ public:
 		dataKey.Handle = member_handle.Handle;
 		renderDataOffset += GetSize(member_handle.Handle);
 		auto nodeHandle = addInternalNode<LayerData>(~0ull, parent);
+
+		dataKey.Nodes.EmplaceBack(nodeHandle);
+		UpdateDataKey(dataKeyHandle);
+		getNode(nodeHandle).Name = GTSL::StringView(layerName);
+
+		return nodeHandle;
+	}
+
+	NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const MemberHandle member_handle) {
+		auto dataKeyHandle = DataKeyHandle(dataKeys.GetLength());
+		auto& dataKey = dataKeys.EmplaceBack();
+		dataKey.Buffer = renderBuffers[0].BufferHandle;
+		dataKey.Offset = renderDataOffset;
+		dataKey.Handle = member_handle.Handle;
+		renderDataOffset += GetSize(member_handle.Handle);
+		auto nodeHandle = addInternalNode<LayerData>(~0ull, left_node_handle, parent);
 
 		dataKey.Nodes.EmplaceBack(nodeHandle);
 		UpdateDataKey(dataKeyHandle);
@@ -1063,7 +1079,7 @@ private:
 		return renderingTree.GetClass<T>(internal_node_handle());
 	}
 
-	NodeHandle globalData, cameraDataNode;
+	NodeHandle globalData/*, cameraDataNode*/;
 
 	void transitionImages(CommandList commandBuffer, RenderSystem* renderSystem, const RenderPassData* internal_layer);
 
@@ -1217,7 +1233,7 @@ private:
 		return strings;
 	}
 
-	GTSL::StaticMap<Id, NodeHandle, 16> renderPasses;
+	GTSL::StaticMap<Id, NodeHandle, 16> renderPasses, renderPasses2;
 	GTSL::StaticVector<NodeHandle, 16> renderPassesInOrder;
 
 	GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
@@ -1285,6 +1301,10 @@ private:
 		}
 		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
 			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Render Pass", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		default: {
+			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: null", u8", Name: ", getNode(nodeHandle).Name);
 			break;
 		}
 		}
@@ -1781,6 +1801,13 @@ private:
 		return NodeHandle(betaNodeHandle);
 	}
 
+	template<typename T>
+	NodeHandle addInternalNode(const uint64 key, NodeHandle leftNodeHandle, NodeHandle publicParentHandle) {
+		auto betaNodeHandle = renderingTree.Emplace<T>(leftNodeHandle(), publicParentHandle());
+		isUnchanged = false;
+		return NodeHandle(betaNodeHandle);
+	}
+
 	friend WorldRendererPipeline;
 
 	byte* buffer[MAX_CONCURRENT_FRAMES]; uint32 offsets[MAX_CONCURRENT_FRAMES]{ 0 };
@@ -1795,6 +1822,8 @@ private:
 	GTSL::ShortString<16> tag;
 
 	static constexpr bool INVERSE_Z = true;
+
+	GTSL::StaticVector<Id, 8> renderPassesGuide;
 
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;

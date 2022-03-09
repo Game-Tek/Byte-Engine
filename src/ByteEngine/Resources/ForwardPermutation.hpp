@@ -23,7 +23,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
 		}
 
-		pipeline->DeclareStruct(forwardScopeHandle, u8"renderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"TextureReference", u8"Position" }, {u8"ImageReference", u8"Depth"}});
+		pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"TextureReference", u8"Position" }, {u8"ImageReference", u8"Depth"}});
 
 		shader_generation_data.Scopes.EmplaceBack(forwardScopeHandle);
 
@@ -32,8 +32,8 @@ struct ForwardRenderPassPermutation : PermutationManager {
 
 		pushConstantBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });

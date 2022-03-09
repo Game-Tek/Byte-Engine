@@ -292,11 +292,11 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
-	MemberHandle CreateMember2(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>*> members) {
+	MemberHandle CreateMember2(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const StructElement*> members) {
 		GTSL::StaticVector<MemberInfo, 16> mem;
 
 		for(auto& e : members) {
-			mem.EmplaceBack(nullptr, e.First, e.Second);
+			mem.EmplaceBack(nullptr, e.Type, e.Name);
 		}
 
 		return  CreateMember(parents, structName, mem);
@@ -1831,12 +1831,8 @@ private:
 	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddParticleSystem;
 	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddVolume;
 	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddSkinnedMesh;
-
-	RenderOrchestrator::MemberHandle staticMeshStruct;
-	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle;
-	RenderOrchestrator::MemberHandle vertexBufferReferenceHandle, indexBufferReferenceHandle;
+	
 	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
-	RenderOrchestrator::MemberHandle staticMeshInstanceDataStruct;
 
 	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
 

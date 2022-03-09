@@ -523,9 +523,9 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat2f"):   result = u8"mat2"; break;
 		case GTSL::Hash(u8"mat3f"):   result = u8"mat3"; break;
-		case GTSL::Hash(u8"mat4f"):   result = u8"mat4"; break;
-		case GTSL::Hash(u8"mat3x4f"): result = u8"mat3x4"; break;
-		case GTSL::Hash(u8"mat4x3f"): result = u8"mat4x3"; break;
+		case GTSL::Hash(u8"matrix4f"):   result = u8"mat4"; break;
+		case GTSL::Hash(u8"matrix3x4f"): result = u8"mat4x3"; break; // row-columns to columns-rows
+		case GTSL::Hash(u8"matrix4x3f"): result = u8"mat3x4"; break;
 		case GTSL::Hash(u8"uint8"):   result = u8"uint8_t"; break;
 		case GTSL::Hash(u8"uint64"):  result = u8"uint64_t"; break;
 		case GTSL::Hash(u8"uint32"):  result = u8"uint"; break;

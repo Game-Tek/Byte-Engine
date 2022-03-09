@@ -214,7 +214,9 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	tryAddDataType(u8"global", u8"vec4f", 4 * 4);
 	tryAddDataType(u8"global", u8"u16vec2", 2 * 2);
 	tryAddDataType(u8"global", u8"matrix4f", 4 * 4 * 4);
+	tryAddDataType(u8"global", u8"mat4f", 4 * 4 * 4);
 	tryAddDataType(u8"global", u8"matrix3x4f", 4 * 3 * 4);
+	tryAddDataType(u8"global", u8"mat3x4f", 4 * 3 * 4);
 	tryAddDataType(u8"global", u8"ptr_t", 8);
 	tryAddDataType(u8"global", u8"ShaderHandle", 32);
 	tryAddDataType(u8"global", u8"IndirectDispatchCommand", 4 * 3);
@@ -269,29 +271,13 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	{
-		GTSL::StaticVector<MemberInfo, 4> members;
-		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"time");
-		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"blah");
-		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"a");
-		members.EmplaceBack(&globalDataHandle, u8"uint32", u8"b");
-		CreateMember(u8"global", u8"GlobalData", members);
+		CreateMember2(u8"global", u8"GlobalData", GLOBAL_DATA);
 		globalDataDataKey = CreateDataKey(renderSystem, u8"global", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
-		MemberHandle t;
-		GTSL::StaticVector<MemberInfo, 16> members;
-		members.EmplaceBack(&t, u8"matrix4f", u8"view");
-		members.EmplaceBack(&t, u8"matrix4f", u8"proj");
-		members.EmplaceBack(&t, u8"matrix4f", u8"viewInverse");
-		members.EmplaceBack(&t, u8"matrix4f", u8"projInverse");
-		members.EmplaceBack(&t, u8"matrix4f", u8"vp");
-		members.EmplaceBack(&t, u8"matrix4f", u8"vpInverse");
-		members.EmplaceBack(&t, u8"float32", u8"near");
-		members.EmplaceBack(&t, u8"float32", u8"far");
-		members.EmplaceBack(&t, u8"u16vec2", u8"extent");
-		cameraMatricesHandle = CreateMember(u8"global", u8"CameraData", members);
+		cameraMatricesHandle = CreateMember2(u8"global", u8"CameraData", CAMERA_DATA);
 		cameraDataKeyHandle = CreateDataKey(renderSystem, u8"global", u8"CameraData");
 		cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
@@ -1599,26 +1585,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 	gammaCorrectionPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" }); //result attachment
 	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
-
-	GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members;
-	members.EmplaceBack(&matrixUniformBufferMemberHandle, u8"matrix3x4f", u8"transform");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"vertexBufferOffset");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"indexBufferOffset");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"shaderGroupIndex");
-	members.EmplaceBack(&vertexBufferReferenceHandle, u8"uint32", u8"pad");
-
-	staticMeshInstanceDataStruct = renderOrchestrator->CreateMember(u8"global", u8"StaticMeshData", members);
+	
+	renderOrchestrator->CreateMember2(u8"global", u8"StaticMeshData", INSTANCE_DATA);
 	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
-	{
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"vec3f", u8"position" }, { nullptr, u8"vec3f", u8"color" }, { nullptr, u8"float32", u8"intensity" }};
-		renderOrchestrator->CreateMember(u8"global", u8"PointLightData", members);
-	}
-	
-	{
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 8> members{ { nullptr, u8"uint32", u8"pointLightsLength" }, {nullptr, u8"PointLightData[4]", u8"pointLights"}};
-		renderOrchestrator->CreateMember(u8"global", u8"LightingData", members);
-	}
+	renderOrchestrator->CreateMember2(u8"global", u8"PointLightData", POINT_LIGHT_DATA);	
+	renderOrchestrator->CreateMember2(u8"global", u8"LightingData", LIGHTING_DATA);
 	
 	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
 	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightingDataKey);

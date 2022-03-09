@@ -2,6 +2,7 @@
 
 #include "PermutationManager.hpp"
 #include "ByteEngine/Render/ShaderGenerator.h"
+#include "ByteEngine/Render/Types.hpp"
 
 struct CommonPermutation : PermutationManager {
 	CommonPermutation(const GTSL::StringView name) : PermutationManager(name, u8"CommonPermutation") {}
@@ -13,7 +14,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareVariable(firstDescriptorSetBlockHandle, { u8"image2D[]", u8"images" });
 		pipeline->DeclareVariable(firstDescriptorSetBlockHandle, { u8"sampler", u8"s" });
 
-		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"InstanceData", { { u8"mat4x3f", u8"ModelMatrix" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint32", u8"shaderGroupIndex" }, {u8"uint32", u8"padding" } });
+		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"InstanceData", INSTANCE_DATA);
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"TextureReference", { { u8"uint32", u8"Instance" } }));
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"ImageReference", { { u8"uint32", u8"Instance" } }));
@@ -39,7 +40,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"FresnelSchlick", { { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"mat4f", u8"inverse_matrix" } }, u8"vec2 ndc = (texture_coordinate * 2.0) - 1.0; vec4 pos = vec4(ndc, depth, 1.0); pos = inverse_matrix * pos; return pos.xyz / pos.w;");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_matrix" } }, u8"vec2 ndc = (texture_coordinate * 2.0) - 1.0; vec4 pos = vec4(ndc, depth, 1.0); pos = inverse_matrix * pos; return pos.xyz / pos.w;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"PI", { }, u8"return 3.14159265359f;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"SphericalCoordinates", { { u8"vec3f", u8"v" } }, u8"vec2f uv = vec2(atan(v.z, v.x), asin(v.y)); uv *= vec2(0.1591, 0.3183); uv += 0.5; return uv; ");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"DistributionGGX", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"H"}, { u8"float32", u8"roughness"} }, u8"float32 a = roughness * roughness; float32 a2 = a * a; float32 NdotH = max(dot(N, H), 0.0); float32 NdotH2 = NdotH * NdotH; float32 num = a2; float32 denom = (NdotH2 * (a2 - 1.0) + 1.0); denom = PI() * denom * denom; return num / denom;");
@@ -68,7 +69,7 @@ struct CommonPermutation : PermutationManager {
 		shader_generation_data.Scopes.EmplaceBack(commonScope);
 
 		pipeline->DeclareStruct(commonScope, u8"GlobalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
-		pipeline->DeclareStruct(commonScope, u8"CameraData", { { u8"mat4f", u8"view" }, {u8"mat4f", u8"proj"}, {u8"mat4f", u8"viewInverse"}, {u8"mat4f", u8"projInverse"}, { u8"mat4f", u8"vp"}, { u8"mat4f", u8"vpInverse" }, { u8"float32", u8"near"}, { u8"float32", u8"far" }, { u8"u16vec2", u8"extent"} });
+		pipeline->DeclareStruct(commonScope, u8"CameraData", CAMERA_DATA);
 
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
@@ -77,7 +78,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
 
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexIn.vertexTextureCoordinates;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"matrix4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpacePosition", {}, u8"return vertexIn.worldSpacePosition;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpaceNormal", {}, u8"return vertexIn.worldSpaceNormal;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
@@ -86,8 +87,8 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-		pipeline->DeclareFunction(vertexShaderScope, u8"mat4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
-		pipeline->DeclareFunction(vertexShaderScope, u8"mat4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
+		pipeline->DeclareFunction(vertexShaderScope, u8"matrix4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
+		pipeline->DeclareFunction(vertexShaderScope, u8"matrix4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetThreadIndex", {}, u8"return gl_LocalInvocationID;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetWorkGroupIndex", {}, u8"return gl_WorkGroupID;");
@@ -97,8 +98,8 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(computeShaderScope, u8"vec3f", u8"GetNormalizedGlobalIndex", {}, u8"return (vec3f(GetGlobalIndex()) + vec3f(0.5f)) / vec3f(GetGlobalExtent());");
 
-		pipeline->DeclareFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
-		pipeline->DeclareFunction(rayGenShaderScope, u8"mat4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+		pipeline->DeclareFunction(rayGenShaderScope, u8"matrix4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
+		pipeline->DeclareFunction(rayGenShaderScope, u8"matrix4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
 

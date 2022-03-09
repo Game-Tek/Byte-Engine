@@ -2,6 +2,8 @@
 
 #include "PermutationManager.hpp"
 
+#include "ByteEngine/Render/Types.hpp"
+
 struct ForwardRenderPassPermutation : PermutationManager {
 	ForwardRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"ForwardRenderPassPermutation") {
 		AddTag(u8"RenderTechnique", u8"Forward");
@@ -25,8 +27,8 @@ struct ForwardRenderPassPermutation : PermutationManager {
 
 		shader_generation_data.Scopes.EmplaceBack(forwardScopeHandle);
 
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", { { u8"vec3f", u8"position" }, { u8"vec3f", u8"color" }, {u8"float32", u8"intensity"} }));
-		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", { {u8"uint32", u8"pointLightsLength"},  {u8"PointLightData[4]", u8"pointLights"} });
+		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", POINT_LIGHT_DATA));
+		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", LIGHTING_DATA);
 
 		pushConstantBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
@@ -36,7 +38,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 
-		pipeline->DeclareFunction(forwardScopeHandle, u8"mat4f", u8"GetInstancePosition", {}, u8"return mat4(pushConstantBlock.instances[gl_InstanceIndex].ModelMatrix);");
+		pipeline->DeclareFunction(forwardScopeHandle, u8"matrix4f", u8"GetInstancePosition", {}, u8"return matrix4f(pushConstantBlock.instances[gl_InstanceIndex].transform);");
 
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");

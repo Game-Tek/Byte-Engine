@@ -24,20 +24,20 @@ public:
 
 	void SetPosition(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
-		application_manager->AddStoredDynamicTask(OnUpdateMesh, GTSL::MoveRef(staticMeshHandle));
+		application_manager->EnqueueTask(OnUpdateMesh, GTSL::MoveRef(staticMeshHandle));
 	}
 
 	void SetRotation(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
 		GTSL::Math::SetRotation(transformations[staticMeshHandle()], quaternion);
-		application_manager->AddStoredDynamicTask(OnUpdateMesh, GTSL::MoveRef(staticMeshHandle));
+		application_manager->EnqueueTask(OnUpdateMesh, GTSL::MoveRef(staticMeshHandle));
 	}
 
 	void Init(WorldRendererPipeline*);
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;
-	DynamicTaskHandle<StaticMeshHandle, Id> OnAddMesh;
-	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
-	DynamicTaskHandle<GTSL::Range<const StaticMeshHandle*>> DeleteStaticMeshes;
+	TaskHandle<StaticMeshHandle, Id> OnAddMesh;
+	TaskHandle<StaticMeshHandle> OnUpdateMesh;
+	TaskHandle<GTSL::Range<const StaticMeshHandle*>> DeleteStaticMeshes;
 
 	void deleteMeshes(const TaskInfo, GTSL::Range<const StaticMeshHandle*> handles) {
 		for(auto e : handles) { meshes.Pop(e()); }

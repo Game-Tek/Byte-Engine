@@ -74,7 +74,7 @@ struct PrimitiveData {
 	ScalingPolicies ScalingPolicy;
 	SpacingPolicy SpacingPolicy;
 	bool isDirty;
-	DynamicTaskHandle<UIElementHandle> OnHover, OnPress;
+	TaskHandle<UIElementHandle> OnHover, OnPress;
 };
 
 class Square {
@@ -160,7 +160,7 @@ public:
 		return GTSL::Result<UIElementHandle>{ false };
 	}
 
-	void BindToElement(const UIElementHandle ui_element_handle, const DynamicTaskHandle<UIElementHandle> delegate) {
+	void BindToElement(const UIElementHandle ui_element_handle, const TaskHandle<UIElementHandle> delegate) {
 		getPrimitive(ui_element_handle).OnPress = delegate;
 	}
 

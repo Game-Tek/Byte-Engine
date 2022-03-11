@@ -64,13 +64,13 @@ public:
 	~AudioResourceManager();
 
 	template<typename... ARGS>
-	void LoadAudioInfo(ApplicationManager* gameInstance, Id audioName, DynamicTaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+	void LoadAudioInfo(ApplicationManager* gameInstance, Id audioName, TaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
 		//gameInstance->AddDynamicTask(u8"loadAudioInfo", &AudioResourceManager::loadAudioInfo<ARGS...>, {}, {}, {}, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	//Audio data is aligned to 16 bytes
 	template<typename... ARGS>
-	void LoadAudio(ApplicationManager* gameInstance, AudioInfo audioInfo, DynamicTaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+	void LoadAudio(ApplicationManager* gameInstance, AudioInfo audioInfo, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
 		//gameInstance->AddDynamicTask(u8"loadAudio", &AudioResourceManager::loadAudio<ARGS...>, {}, {}, {}, GTSL::MoveRef(audioInfo), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
@@ -84,16 +84,16 @@ public:
 
 private:
 	template<typename... ARGS>
-	auto loadAudioInfo(TaskInfo taskInfo, Id audioName, DynamicTaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+	auto loadAudioInfo(TaskInfo taskInfo, Id audioName, TaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
 		auto audioInfoSerialize = audioResourceInfos.At(audioName);
 
 		AudioInfo audioInfo(audioName, audioInfoSerialize);
 
-		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
-	auto loadAudio(TaskInfo taskInfo, AudioInfo audioInfo, DynamicTaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+	auto loadAudio(TaskInfo taskInfo, AudioInfo audioInfo, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
 		//uint32 bytes = audioInfo.GetAudioSize(); const byte* dataPointer = nullptr;
 		//
 		//auto searchResult = audioBytes.TryEmplace(audioInfo.Name, bytes, 32, GetPersistentAllocator());

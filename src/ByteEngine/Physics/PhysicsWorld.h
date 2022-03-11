@@ -19,10 +19,10 @@ public:
 	PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"),
 		physicsObjects(32, GetPersistentAllocator())
 	{
-		initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
+		//initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
 
-		onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
-		onStaticMeshLoadedHandle = initialize_info.ApplicationManager->StoreDynamicTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
+		onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
+		onStaticMeshLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
 
 		boundlessForces.EmplaceBack(0, -10, 0, 0);
 	}
@@ -92,8 +92,8 @@ private:
 
 	GTSL::StaticVector<uint32, 8> loaded;
 
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;
+	TaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshInfoLoadedHandle;
+	TaskHandle<StaticMeshResourceManager::StaticMeshInfo, uint32> onStaticMeshLoadedHandle;
 
 	void applyImpulseLinear(PhysicsObject* a, const GTSL::Vector4 impulse) {
 		a->velocity += impulse * a->inverseMass;

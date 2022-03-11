@@ -261,6 +261,10 @@ public:
 		node.IndexCount += count;
 	}
 
+	void SetBaseInstanceIndex(NodeHandle node_handle, uint32 base_instance_handle) {
+		getPrivateNode<MeshData>(node_handle).InstanceIndex = base_instance_handle;
+	}
+
 	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
 	DataKeyHandle globalDataDataKey, cameraDataKeyHandle;
 
@@ -392,13 +396,13 @@ public:
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
 	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES], transferCommandList[MAX_CONCURRENT_FRAMES];
 
-	NodeHandle AddMesh(const NodeHandle parentNodeHandle, uint32 meshId, uint32 indexCount, uint32 vertexOffset = 0) {
+	NodeHandle AddMesh(const NodeHandle parentNodeHandle, uint32 meshId, uint32 indexCount, uint32 indexOffset, uint32 vertexOffset) {
 		auto nodeHandle = addInternalNode<MeshData>(meshId, parentNodeHandle);
 		//SetNodeState(nodeHandle, false);
 		getNode(nodeHandle).Name = GTSL::ShortString<32>(u8"Render Mesh");
 		auto& node = getPrivateNode<MeshData>(nodeHandle);
 		node.IndexCount = indexCount;
-		node.VertexOffset = vertexOffset;
+		node.IndexOffset = indexOffset; node.VertexOffset = vertexOffset; node.InstanceIndex = meshId;
 		return nodeHandle;
 	}
 
@@ -1017,7 +1021,7 @@ private:
 
 	struct MeshData {
 		uint32 InstanceCount = 0;
-		uint32_t IndexCount, VertexOffset;
+		uint32_t IndexCount, IndexOffset, VertexOffset, InstanceIndex;
 	};
 
 	struct DispatchData {
@@ -1366,10 +1370,10 @@ private:
 		attachment.Layout[frameIndex] = textureLayout; attachment.ConsumingStages = stages; attachment.AccessType = writeAccess;
 	}
 
-	DynamicTaskHandle<TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureInfoLoadHandle;
-	DynamicTaskHandle<TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureLoadHandle;
-	DynamicTaskHandle<ShaderResourceManager::ShaderGroupInfo, ShaderLoadInfo> onShaderInfosLoadHandle;
-	DynamicTaskHandle<ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*>, ShaderLoadInfo> onShaderGroupLoadHandle;
+	TaskHandle<TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureInfoLoadHandle;
+	TaskHandle<TextureResourceManager::TextureInfo, TextureLoadInfo> onTextureLoadHandle;
+	TaskHandle<ShaderResourceManager::ShaderGroupInfo, ShaderLoadInfo> onShaderInfosLoadHandle;
+	TaskHandle<ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*>, ShaderLoadInfo> onShaderGroupLoadHandle;
 
 	struct ElementData {
 		ElementData(const BE::PAR& allocator) : children() {}
@@ -1832,6 +1836,8 @@ private:
 
 class WorldRendererPipeline : public RenderPipeline {
 public:
+	MAKE_BE_HANDLE(Instance)
+
 	WorldRendererPipeline(const InitializeInfo& initialize_info);
 
 	auto GetOnAddMeshHandle() const { return OnAddMesh; }
@@ -1849,23 +1855,24 @@ public:
 private:
 	uint32 shaderGroupCount = 0;
 
-	DynamicTaskHandle<StaticMeshHandle, Id> OnAddMesh;
-	DynamicTaskHandle<StaticMeshHandle> OnUpdateMesh;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
-	DynamicTaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
+	TaskHandle<StaticMeshHandle, Id> OnAddMesh;
+	TaskHandle<StaticMeshHandle> OnUpdateMesh;
+	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
+	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
 
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddInfiniteLight;
+	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddInfiniteLight;
 
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddBackdrop;
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddParticleSystem;
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddVolume;
-	DynamicTaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddSkinnedMesh;
+	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddBackdrop;
+	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddParticleSystem;
+	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddVolume;
+	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddSkinnedMesh;
 	
 	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
 
 	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
+	GTSL::StaticVector<AABB, 8> aabss;
 
-	GTSL::StaticVector<GTSL::Pair<Id, StaticMeshHandle>, 8> pendingAdditions;
+	GTSL::StaticVector<GTSL::Pair<Id, InstanceHandle>, 8> pendingAdditions;
 	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 8> pendingBuilds;
 
 	bool rayTracing = false;
@@ -1873,18 +1880,22 @@ private:
 	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
 	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
 	Handle<uint32, DataKey_tag> visibilityDataKey;
+	TaskHandle<InstanceHandle, Id> addMeshInstanceTaskHandle; TaskHandle<InstanceHandle, GTSL::Matrix3x4> instanceUpdateTaskHandle;
 
 	struct Mesh {
 		ShaderGroupHandle MaterialHandle;
 		RenderSystem::BLASInstanceHandle InstanceHandle;
+		uint32 Index;
 	};
-	GTSL::HashMap<StaticMeshHandle, Mesh, BE::PAR> meshes;
+	GTSL::FixedVector<Mesh, BE::PAR> instances;
+
+	GTSL::HashMap<StaticMeshHandle, InstanceHandle, BE::PAR> meshToInstanceMap;
 
 	RenderOrchestrator::DataKeyHandle meshDataBuffer;
 
 	struct Resource {
 		GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> VertexElements;
-		GTSL::StaticVector<StaticMeshHandle, 8> Meshes;
+		GTSL::StaticVector<InstanceHandle, 8> Instances;
 		bool Loaded = false;
 		uint32 Offset = 0, IndexOffset = 0;
 		uint32 VertexSize, VertexCount = 0, IndexCount = 0;
@@ -1892,12 +1903,13 @@ private:
 		RenderSystem::AccelerationStructureHandle BLAS;
 		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
 		bool Interleaved = true;
+		uint32 Index = 0;
 		RenderOrchestrator::NodeHandle nodeHandle;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
 	RenderSystem::BufferHandle vertexBuffer, indexBuffer;
-	uint32 vertexBufferOffset = 0, indexBufferOffset = 0;
+	uint32 vertexComponentsPerStream = 0, indicesInBuffer = 0;
 
 	struct MaterialData {
 		RenderOrchestrator::NodeHandle Node;
@@ -1907,8 +1919,16 @@ private:
 
 	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle, lightingDataNodeHandle;
 
+	BE::TypeIdentifer instanceIdentifier;
+
 	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
 		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
+	}
+	
+	GTSL::StaticVector<uint32, 16> prefixSum; GTSL::StaticVector<Id, 16> prefixSumGuide;
+
+	void t() {
+		
 	}
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
@@ -1922,23 +1942,27 @@ private:
 		resource.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 		resource.Interleaved = staticMeshInfo.Interleaved;
 
-		resource.Offset = vertexBufferOffset; resource.IndexOffset = indexBufferOffset;
+		resource.Offset = vertexComponentsPerStream; resource.IndexOffset = indicesInBuffer;
 
 		for(uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 			auto& sm = staticMeshInfo.GetSubMeshes().array[i];
 			auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
 
 			if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
+				RenderOrchestrator::NodeHandle materialNodeHandle;
 				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
 					auto materialDataNode = render_orchestrator->AddDataNode(meshDataNode, u8"MaterialNode", render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
 					r.Get().Node = render_orchestrator->AddMaterial(render_system, materialDataNode, shaderGroupHandle);
-					
-					resource.nodeHandle = render_orchestrator->AddMesh(r.Get().Node, 0, resource.IndexCount, vertexBufferOffset);
+					materialNodeHandle = r.Get().Node;
+				} else {
+					materialNodeHandle = r.Get().Node;
 				}
+
+				resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, prefixSum[resource.Index], resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
 			}
 			else if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-					resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, vertexBufferOffset);
+					resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
 				}
 
 				//TODO: add to selection buffer
@@ -1977,10 +2001,10 @@ private:
 			resource.ScalingFactor = staticMeshInfo.GetBoundingBox();
 		}
 
-		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexBufferOffset, render_system->GetBufferRange(vertexBuffer), indexBufferOffset, render_system->GetBufferRange(indexBuffer), onStaticMeshLoadHandle);
+		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(vertexBuffer), indicesInBuffer, render_system->GetBufferRange(indexBuffer), onStaticMeshLoadHandle);
 
-		vertexBufferOffset += staticMeshInfo.GetVertexCount();
-		indexBufferOffset += staticMeshInfo.GetIndexCount();
+		vertexComponentsPerStream += staticMeshInfo.GetVertexCount();
+		indicesInBuffer += staticMeshInfo.GetIndexCount();
 	}
 
 	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
@@ -1997,8 +2021,8 @@ private:
 			pendingBuilds.EmplaceBack(res.BLAS);
 		}
 
-		for (const auto e : res.Meshes) {
-			onMeshLoad(render_system, render_group, render_orchestrator, res, Id(staticMeshInfo.GetName()), e);
+		for (auto e : res.Instances) {
+			GetApplicationManager()->CallTaskOnEntity(addMeshInstanceTaskHandle, e, Id(staticMeshInfo.GetName()));
 			*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 		}
 
@@ -2011,57 +2035,85 @@ private:
 		}
 	}
 
-	//BUG: WE HAVE AN IMPLICIT DEPENDENCY ON ORDERING OF TASK, AS WE REQUIRE onAddMesh TO BE RUN BEFORE updateMesh, THIS ORDERING IS NOT CURRENTLY GUARANTEED BY THE TASK SYSTEM
-
 	void onAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshHandle static_mesh_handle, Id resourceName) {
-		auto& mesh = meshes.Emplace(static_mesh_handle);
+		const auto instanceIndex = instances.Emplace();
+		const auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(instanceIdentifier, instanceIndex);
+		meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
 		auto resource = resources.TryEmplace(resourceName);
 
-		resource.Get().Meshes.EmplaceBack(static_mesh_handle);
 		spherePositionsAndRadius.EmplaceBack(0, 0, 0, 0);
+		auto& instance = instances[instanceIndex];
 
 		if (rayTracing) {
-			mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, static_mesh_handle(), mesh.InstanceHandle);
+			instance.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, 0, instance.InstanceHandle); // Custom instance index will be set later
 		}
 
-		if (resource) {
+		if (resource) { // If resource isn't already loaded 
+			resource.Get().Index = prefixSum.EmplaceBack(0); prefixSumGuide.EmplaceBack(resourceName);
+			//mesh.Index = resource.Get().Meshes.GetLength();
 			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
 		}
 		else {
 			if (resource.Get().Loaded) {
-				onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, resource.Get(), resourceName, static_mesh_handle);
+				//onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, resource.Get(), resourceName, static_mesh_handle);
+
+				//todo: call task on task on entity
 			}
 		}
+
+		resource.Get().Instances.EmplaceBack(instanceHandle);
 	}
 
-	void onMeshLoad(RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* render_orchestrator, const Resource& res, Id resource_name, StaticMeshHandle static_mesh_handle) {
-		auto& mesh = meshes[static_mesh_handle];
+	void addMeshInstance(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, Id resource_name) {
+		auto& instance = instances[instance_handle()];
+		auto& resource = resources[resource_name];
 
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-		key[static_mesh_handle()][u8"transform"] = GTSL::Matrix3x4(renderGroup->GetMeshTransform(static_mesh_handle));
-		key[static_mesh_handle()][u8"vertexBufferOffset"] = res.Offset; key[static_mesh_handle()][u8"indexBufferOffset"] = res.IndexOffset;
-		key[static_mesh_handle()][u8"shaderGroupIndex"] = mesh.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
 
-		render_orchestrator->AddInstance(res.nodeHandle);
+		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
+			auto instanceIndex = prefixSum[i]++;
+
+			render_orchestrator->SetBaseInstanceIndex(resources[prefixSumGuide[i]].nodeHandle, instanceIndex);
+		}
+
+		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
+			for (uint32 j = 0; j < resource.Instances; ++j) {
+				auto& inst = instances[resource.Instances[j]()];
+				auto instanceIndex = inst.Index = prefixSum[i] + j;
+				inst.Index = instanceIndex;
+
+				if (rayTracing) { renderSystem->SetAccelerationStructureInstanceIndex(topLevelAccelerationStructure, inst.InstanceHandle, instanceIndex); }
+			}
+		}
+
+		const auto instanceIndex = instance.Index;
+
+		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
+		key[instanceIndex][u8"shaderGroupIndex"] = instance.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
+
+		render_orchestrator->AddInstance(resource.nodeHandle);
 
 		if (rayTracing) {
-			pendingAdditions.EmplaceBack(resource_name, static_mesh_handle);
+			pendingAdditions.EmplaceBack(resource_name, instance_handle);
 		}
 	}
 
-	void updateMesh(TaskInfo, RenderSystem* renderSystem, StaticMeshRenderGroup* renderGroup, RenderOrchestrator* render_orchestrator, StaticMeshHandle static_mesh_handle) {
+	void updateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshHandle static_mesh_handle) {
+		GetApplicationManager()->EnqueueTask(instanceUpdateTaskHandle, GTSL::MoveRef(meshToInstanceMap[static_mesh_handle]), GTSL::Matrix3x4());
+	}
+
+	void updateMeshInstance(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, GTSL::Matrix3x4 transform) {
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-		auto pos = renderGroup->GetMeshTransform(static_mesh_handle);
 
+		auto& instance = instances[instance_handle()];
 
-		//info.MaterialSystem->UpdateIteratorMember(bufferIterator, staticMeshStruct, renderGroup->GetMeshIndex(e));
-		key[static_mesh_handle()][u8"transform"] = pos;
-		*spherePositionsAndRadius.GetPointer<0>(static_mesh_handle()) = pos[0][3];
-		*spherePositionsAndRadius.GetPointer<1>(static_mesh_handle()) = pos[1][3];
-		*spherePositionsAndRadius.GetPointer<2>(static_mesh_handle()) = pos[2][3];
+		key[instance.Index][u8"transform"] = transform;
+		*spherePositionsAndRadius.GetPointer<0>(instance_handle()) = transform[0][3];
+		*spherePositionsAndRadius.GetPointer<1>(instance_handle()) = transform[1][3];
+		*spherePositionsAndRadius.GetPointer<2>(instance_handle()) = transform[2][3];
 
 		if (rayTracing) {
-			renderSystem->SetInstancePosition(topLevelAccelerationStructure, meshes[static_mesh_handle].InstanceHandle, pos);
+			renderSystem->SetInstancePosition(topLevelAccelerationStructure, instance.InstanceHandle, transform);
 		}
 	}
 
@@ -2092,7 +2144,7 @@ private:
 			while (i < pendingAdditions) {
 				const auto& addition = pendingAdditions[i];
 				auto e = addition.Second;
-				auto& mesh = meshes[e];
+				auto& mesh = instances[e()];
 
 				mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e(), mesh.InstanceHandle);
 

@@ -171,7 +171,7 @@ public:
 	};
 
 	template<typename T>
-	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, DynamicTaskHandle<T> dynamicTaskHandle) {
+	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, TaskHandle<T> dynamicTaskHandle) {
 		auto inputEventIndex = inputEvents.GetLength();
 		auto& inputEvent = inputEvents.EmplaceBack();
 
@@ -238,7 +238,7 @@ protected:
 	struct InputSource {		
 		GTSL::Microseconds LastTime;
 		Datatypes LastValue;
-		float32 Threshold = 0.95f, DeadZone = 0.1f;
+		float32 Threshold = 0, DeadZone = 0.1f;
 
 		Type SourceType;
 		
@@ -348,13 +348,13 @@ protected:
 						}
 
 						if (oldValue != newValue) {
-							application_manager->AddStoredDynamicTask(DynamicTaskHandle<InputEvent<bool>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
+							application_manager->EnqueueTask(TaskHandle<InputEvent<bool>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
 						}
 
 						break;
 					}
 					case Type::CHAR: {
-						application_manager->AddStoredDynamicTask(DynamicTaskHandle<InputEvent<char32_t>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, record.NewValue.Unicode, U'0'));
+						application_manager->EnqueueTask(TaskHandle<InputEvent<char32_t>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, record.NewValue.Unicode, U'0'));
 						break;
 					}
 					case Type::LINEAR: {
@@ -398,7 +398,7 @@ protected:
 						}
 						}
 
-						application_manager->AddStoredDynamicTask(DynamicTaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
+						application_manager->EnqueueTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
 
 						break;
 					}
@@ -413,7 +413,7 @@ protected:
 						}
 
 						if (GTSL::Math::LengthGreater(newValue, GTSL::Vector2(inputSource.Threshold))) {
-							application_manager->AddStoredDynamicTask(DynamicTaskHandle<InputEvent<GTSL::Vector2>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
+							application_manager->EnqueueTask(TaskHandle<InputEvent<GTSL::Vector2>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
 						}
 						break;
 					}

@@ -28,7 +28,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 
 namespace BE
 {
-	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 4),
+	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 8),
 		jsonBuffer(GetPersistentAllocator()), systemApplication({})
 	{
 		applicationInstance = this;

@@ -33,8 +33,8 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator()), workloads(16, GetPersistentAllocator())
 {
 	{
-		initializeInfo.ApplicationManager->AddTask(this, u8"endCommandLists", &RenderSystem::renderFlush, DependencyBlock(), u8"FrameEnd", u8"FrameEnd");
-		resizeHandle = initializeInfo.ApplicationManager->StoreDynamicTask(this, u8"onResize", {}, & RenderSystem::onResize);
+		initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, u8"endCommandLists", DependencyBlock(), &RenderSystem::renderFlush, u8"FrameEnd", u8"FrameEnd"));
+		resizeHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onResize", {}, & RenderSystem::onResize);
 	}
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;

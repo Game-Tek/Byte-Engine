@@ -27,7 +27,7 @@ public:
 	[[nodiscard]] uint8 GetFrameIndex(int32 frameDelta) const { return static_cast<uint8>(frameDelta % pipelinedFrames); }
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
-	DynamicTaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
+	TaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
 	bool IsUpdatable(BufferHandle buffer_handle) const { return buffers[buffer_handle()].isMulti; }
 	GTSL::Range<byte*> GetBufferRange(BufferHandle buffer_handle) const {
 		const auto& buffer = buffers[buffer_handle()];
@@ -588,9 +588,13 @@ public:
 
 #define BE_LOG_IF(cond, text) if(cond) { BE_LOG_WARNING(text); return; }
 
-	void SetInstancePosition(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const GTSL::Matrix4& matrix4) {
+	void SetInstancePosition(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const GTSL::Matrix3x4& matrix4) {
 		BE_LOG_IF(!static_cast<bool>(instance_handle), u8"TlAS instance handle is invalid.");
-		GAL::WriteInstanceMatrix(GTSL::Matrix3x4(matrix4), GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
+		GAL::WriteInstanceMatrix(matrix4, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
+	}
+
+	void SetAccelerationStructureInstanceIndex(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, uint32 custom_index) {
+		GAL::WriteInstanceIndex(custom_index, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 
 	void SetInstanceBindingTableRecordOffset(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const uint32 offset) {
@@ -627,7 +631,7 @@ private:
 	GAL::VulkanQueue graphicsQueue, computeQueue, transferQueue;
 
 	bool breakOnError = true;
-	DynamicTaskHandle<GTSL::Extent2D> resizeHandle;
+	TaskHandle<GTSL::Extent2D> resizeHandle;
 
 	struct BufferData {
 		uint32 Size = 0, Counter = 0;

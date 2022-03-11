@@ -69,7 +69,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
+	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override {
+		return { GetTransientAllocator() };
+	}
 
 	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;

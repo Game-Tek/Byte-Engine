@@ -54,3 +54,11 @@ inline float32 test(const GTSL::Vector3 cameraPosition, const GTSL::Vector3 sphe
 inline uint8 SelectLOD(const float32 percentage, const uint8 minLOD, const uint8 maxLOD) {
 	return static_cast<uint8>(GTSL::Math::MapToRange(percentage, 0, 1, minLOD, maxLOD));
 }
+
+inline void ScreenCull(const GTSL::Range<const AABB*> aabbs) {
+	GTSL::StaticVector<AABB, 16> front; front.EmplaceBack();
+
+	for(uint32 i = 0; i < aabbs.ElementCount(); ++i) {
+		
+	}
+}

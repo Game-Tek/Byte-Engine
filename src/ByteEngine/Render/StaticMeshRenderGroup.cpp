@@ -12,7 +12,7 @@ StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInf
 
 	staticMeshEntityIdentifier = GetApplicationManager()->RegisterType(this, u8"StaticMesh");
 
-	DeleteStaticMeshes = GetApplicationManager()->StoreDynamicTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMeshes);
+	DeleteStaticMeshes = GetApplicationManager()->RegisterTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMeshes);
 	GetApplicationManager()->BindDeletionTaskToType(staticMeshEntityIdentifier, DeleteStaticMeshes);
 }
 
@@ -23,7 +23,7 @@ StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem*
 
 	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(staticMeshEntityIdentifier, index);
 
-	GameInstance->AddStoredDynamicTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
+	GameInstance->EnqueueTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
 
 	return handle;
 }

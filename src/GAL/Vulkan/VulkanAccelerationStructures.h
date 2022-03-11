@@ -211,6 +211,11 @@ namespace GAL {
 		inst.instanceShaderBindingTableRecordOffset = 0;
 	}
 
+	inline void WriteInstanceIndex(const uint32 index, void* data, GTSL::uint32 instance_index) {
+		auto& inst = *(static_cast<VkAccelerationStructureInstanceKHR*>(data) + index);
+		inst.instanceCustomIndex = index;
+	}
+
 	inline void WriteInstanceMatrix(const GTSL::Matrix3x4& matrix3X4, void* data, GTSL::uint32 index) {
 		auto& inst = *(static_cast<VkAccelerationStructureInstanceKHR*>(data) + index);
 		inst.transform = ToVulkan(matrix3X4);

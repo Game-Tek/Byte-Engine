@@ -101,8 +101,8 @@ private:
 	GTSL::HashMap<Id, SourceAudioData, BE::PAR> sourceAudioDatas;
 	
 	GTSL::Buffer<BE::PAR> audioBuffer;
-	DynamicTaskHandle<AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
-	DynamicTaskHandle<AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
+	TaskHandle<AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;
+	TaskHandle<AudioResourceManager::AudioInfo, GTSL::Range<const byte*>> onAudioLoadHandle;
 
 	AudioListenerHandle activeAudioListenerHandle;
 

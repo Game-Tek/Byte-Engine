@@ -84,20 +84,21 @@ StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initi
 				GTSL::Buffer meshFileBuffer(meshFile.GetSize(), 32, GetTransientAllocator());
 				meshFile.Read(meshFileBuffer);
 
-				GTSL::Buffer meshDataBuffer(2048 * 2048, 8, GetTransientAllocator());
+				GTSL::Buffer meshDataBuffer(2048 * 2048 * 8, 8, GetTransientAllocator());
 
 				StaticMeshInfo meshInfo;
 
 				auto loadMeshSuccess = loadMesh(meshFileBuffer, meshInfo, meshDataBuffer, fileExtension);
 
-				if (mesh[u8"meshes"].GetCount() != meshInfo.GetSubMeshes().Length) {
-					BE_LOG_ERROR(u8"Incomplete data for ", mesh[u8"name"], u8" mesh.");
-					continue;
-				}
-
 				for (uint32 i = 0; auto sm : mesh[u8"meshes"]) {
-					auto& s = meshInfo.GetSubMeshes().array[i++];
-					s.GetShaderGroupName() = sm[u8"shaderGroup"];
+					auto& s = meshInfo.GetSubMeshes().array[i];
+					if (i < mesh[u8"meshes"].GetCount()) { // If user specified data exists for this sub-mesh use that, else leave default data
+						s.GetShaderGroupName() = sm[u8"shaderGroup"];
+					} else {
+						s.GetShaderGroupName() = GTSL::ShortString<32>(u8"default");
+					}
+
+					++i;
 				}
 
 				if (loadMeshSuccess) {

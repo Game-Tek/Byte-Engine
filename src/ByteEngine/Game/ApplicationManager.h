@@ -58,13 +58,15 @@ template<typename... ACCESSES>
 struct Resources{};
 
 template<typename... ARGS>
-struct DynamicTaskHandle {
-	DynamicTaskHandle() = default;
-	DynamicTaskHandle(uint32 reference) : Reference(reference) {}
+struct TaskHandle {
+	TaskHandle() = default;
+	TaskHandle(uint32 reference) : Reference(reference) {}
 	
 	uint32 Reference = ~0U;
 
 	operator bool() const { return Reference != ~0U; }
+
+	uint32 operator()() const { return Reference; }
 };
 
 template<typename... ARGS>
@@ -113,12 +115,13 @@ namespace BE {
 
 class ApplicationManager : public Object {
 	using FunctionType = GTSL::Delegate<void(ApplicationManager*, DispatchedTaskHandle, void*)>;
+	MAKE_HANDLE(uint32, TypeErasedTask)
 public:
 	ApplicationManager();
 	~ApplicationManager();
 	
 	void OnUpdate(BE::Application* application);
-	
+
 	using WorldReference = uint8;
 	
 	struct CreateNewWorldInfo {};
@@ -169,16 +172,27 @@ public:
 	BE::TypeIdentifer RegisterType(const BE::System* system, const GTSL::StringView typeName);
 
 	template<typename... ARGS>
-	void BindTaskToType(const BE::TypeIdentifer type_identifer, const DynamicTaskHandle<ARGS...> handle) {
+	void BindTaskToType(const BE::TypeIdentifer type_identifer, const TaskHandle<ARGS...> handle) {
 		systemsData[type_identifer.SystemId].RegisteredTypes[type_identifer.TypeId].Target += 1;
 	}
 
 	template<typename T>
-	void BindDeletionTaskToType(const BE::TypeIdentifer handle, const DynamicTaskHandle<GTSL::Range<const T*>> deletion_task_handle) {
+	void BindDeletionTaskToType(const BE::TypeIdentifer handle, const TaskHandle<GTSL::Range<const T*>> deletion_task_handle) {
 		systemsData[handle.SystemId].RegisteredTypes[handle.TypeId].DeletionTaskHandle = deletion_task_handle.Reference;
 	}
 
-	template<typename DTI, typename T, bool doDelete, typename... ACC>
+	template<typename... ARGS1, typename... ARGS2>
+	void SpecifyTaskCoDependency(const TaskHandle<ARGS1...> a, const TaskHandle<ARGS2...> b) {
+		TaskData& taskB = tasks[b()];
+		taskB.Pre = a();
+	}
+
+	template<typename... ARGS>
+	void AddTypeSetupDependency(BE::TypeIdentifer type_identifer, TaskHandle<ARGS...> dynamic_task_handle) {
+		++systemsData[type_identifer.SystemId].RegisteredTypes[type_identifer.TypeId].Target;
+	}
+
+	template<typename DTI, typename T, typename... ACC>
 	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, void* data) {
 		DTI* info = static_cast<DTI*>(data);
 		
@@ -194,122 +208,36 @@ public:
 		BE::Application::Get()->GetLogger()->logFunction(info->Name, startTime, BE::Application::Get()->GetClock()->GetCurrentMicroseconds(), args);
 		
 		if(info->endStageIndex != 0xFFFF) { gameInstance->semaphores[info->endStageIndex].Post(); }
-		if constexpr (doDelete) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); }
+		if (info->InstanceIndex != 0xFFFFFFFF) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->EntityId].Entities[info->InstanceIndex].ResourceCounter; }
+		if (info->Scheduled) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); }
 		gameInstance->resourcesUpdated.NotifyAll();
 		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
 	}
 
-	template<class T, typename F, typename... ACC, typename... FARGS>
-	void AddTask(T* caller, const Id name, F delegate, DependencyBlock<ACC...> dependencies, const Id startStage, const Id endStage, FARGS&&... args) {
-		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE;
+	/**
+	 * \brief Registers a task with the application manager.
+	 * \tparam T Callee type.
+	 * \tparam ACC Typed dependencies types.
+	 * \tparam FARGS Task function parameter types.
+	 * \param caller Pointer to the system registering the function.
+	 * \param taskName Task name.
+	 * \param dependencies Dependencies list indicating which system will be accessed during this task and in what way(READ, READ_WRITE).
+	 * \param delegate Pointer to the function which will be called.
+	 * \param start_stage Stage at which the task can begin executing. Can be null to specify any moment in time is valid.
+	 * \param end_stage Stage for which the task must be done executing. Can be null to specify any moment in time is valid.
+	 * \return TaskHandle which identifies the task.
+	 */
+	template<typename T, typename... ACC, typename... FARGS>
+	[[nodiscard]] auto RegisterTask(T* caller, const Id taskName, DependencyBlock<ACC...> dependencies, void(T::* delegate)(TaskInfo, FARGS...), const Id start_stage = Id(), const Id end_stage = Id()) {
+		const uint64 fPointer = *reinterpret_cast<uint64*>(&delegate);
 
-		if constexpr (BE_DEBUG) { if (assertTask(name, startStage, endStage, dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes)) { return; } }
-
-		GTSL::StaticVector<TaskAccess, 32> accesses;
-
-		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
-
-		{
-			GTSL::ReadLock lock(stagesNamesMutex);
-			decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
-			startStageIndex = getStageIndex(startStage); endStageIndex = getStageIndex(endStage);
+		if (const auto r = functionToTaskMap.TryGet(fPointer)) {
+			return [&]<typename... ARGS>(void(T::*d)(TaskInfo, typename ACC::type*..., ARGS...)) { return TaskHandle<ARGS...>(r.Get()()); }(delegate);
 		}
 
-		[&] <typename... ARGS>(void(T::*function)(TaskInfo, typename ACC::type*..., ARGS...)) {
-			using DTI = DispatchTaskInfo<ARGS...>;
-			auto taskInfo = GTSL::SmartPointer<DTI, BE::PAR>(GetPersistentAllocator(), function, dependencies.Length, GTSL::ForwardRef<ARGS>(args)...);
-			taskInfo->Callee = caller;
-			taskInfo->startStageIndex = startStageIndex; taskInfo->endStageIndex = endStageIndex;
-
-			if constexpr (BE_DEBUG) {
-				GTSL::ShortString<128> n(caller->GetName()); n += u8"::"; n += GTSL::StringView(name);
-				taskInfo->Name = n;
-				taskInfo->StartStage = GTSL::StringView(startStage); taskInfo->EndStage = GTSL::StringView(endStage);
-				for (uint32 i = 0; i < dependencies.Length + 1; ++i) {
-					taskInfo->Accesses.EmplaceBack(GTSL::StringView(dependencies.Names[i]), dependencies.AccessTypes[i]);
-				}
-			}
-
-			for(uint32 i = 0; i < dependencies.Length; ++i) {
-				taskInfo->SetResource(i, systemsMap[dependencies.Names[1 + i]]);
-			}
-
-			{
-				GTSL::WriteLock lock(recurringTasksInfoMutex);
-				GTSL::WriteLock lock2(recurringTasksMutex);
-				recurringTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, false, ACC...>>(), accesses, endStageIndex, static_cast<void*>(taskInfo.GetData()), GetPersistentAllocator());
-				recurringTasksInfo[startStageIndex].EmplaceBack(GTSL::MoveRef(taskInfo));
-			}
-		}(delegate);
-	}
-	
-	void RemoveTask(Id taskName, Id startOn);
-
-	template<class T, typename F, typename... ACC, typename... FARGS>
-	void AddDynamicTask(T* caller, const Id name, DependencyBlock<ACC...> dependencies, F function, const Id startStage, const Id endStage, FARGS&&... args) {
-
-		[&]<typename... ARGS>(void(T::* d)(TaskInfo, typename ACC::type*..., ARGS...)) {
-			using DTI = DispatchTaskInfo<ARGS...>;
-
-			static_assert((GTSL::IsSame<FARGS, ARGS>() && ...), "Provided parameter types for task are not compatible with those required.");
-
-			auto* taskInfo = GTSL::New<DTI>(GetPersistentAllocator(), function, dependencies.Length, GTSL::ForwardRef<FARGS>(args)...);
-			taskInfo->Callee = caller;
-
-			dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE;
-
-			uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
-
-			if constexpr (BE_DEBUG) {
-				taskInfo->Name = GTSL::StringView(name);
-				taskInfo->StartStage = GTSL::StringView(startStage); taskInfo->EndStage = GTSL::StringView(endStage);
-				for (uint32 i = 0; i < dependencies.Length + 1; ++i) {
-					taskInfo->Accesses.EmplaceBack(GTSL::StringView(dependencies.Names[i]), dependencies.AccessTypes[i]);
-				}
-			}
-
-			for (uint32 i = 0; i < dependencies.Length; ++i) {
-				taskInfo->SetResource(i, systemsMap[dependencies.Names[1 + i]]);
-			}
-
-			GTSL::StaticVector<TaskAccess, 32> accesses;
-
-			if (startStage && endStage) {
-				{
-					GTSL::ReadLock lock(stagesNamesMutex);
-					decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
-					startStageIndex = getStageIndex(startStage);
-					endStageIndex = getStageIndex(endStage);
-				}
-
-				{
-					GTSL::WriteLock lock2(dynamicTasksPerStageMutex);
-					dynamicTasksPerStage[startStageIndex].AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), accesses, endStageIndex, static_cast<void*>(taskInfo), GetPersistentAllocator());
-				}
-			}
-			else { //no dependecies
-				{
-					GTSL::ReadLock lock(stagesNamesMutex);
-					decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
-				}
-
-				{
-					GTSL::WriteLock lock(asyncTasksMutex);
-					asyncTasks.AddTask(name, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), accesses, 0xFFFFFFFF, static_cast<void*>(taskInfo), GetPersistentAllocator());
-				}
-			}
-
-			taskInfo->startStageIndex = startStageIndex; taskInfo->endStageIndex = endStageIndex;
-		}(function);
-	}
-
-	template<typename T, typename... ACC, typename... FARGS>
-	[[nodiscard]] auto StoreDynamicTask(T* caller, const Id taskName, DependencyBlock<ACC...> dependencies, void(T::*delegate)(TaskInfo, FARGS...)) {
-		uint32 index;
-
 		GTSL::StaticVector<TaskAccess, 32> accesses;
 
-		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE;
+		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE; // Add a default access to the caller system since we also have to sync access to the caller and we don't expect the user to do so, access is assumed to be read_write
 
 		//assertTask(taskName, {}, )
 
@@ -318,57 +246,88 @@ public:
 			decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
 		}
 
-		return[&]<typename... ARGS>(void(T:: * d)(TaskInfo, typename ACC::type*..., ARGS...)) {
-			using DTI = DispatchTaskInfo<ARGS...>;
+		uint32 taskIndex = tasks.GetLength(); // Task index in tasks vector
+
+		TaskData& task = tasks.EmplaceBack();
+
+		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
+
+		if(start_stage) { // Store start stage indices if a start stage is specified
+			startStageIndex = stagesNames.Find(start_stage).Get();
+		}
+
+		if(end_stage) { // Store end stage indices if an end stage is specified
+			endStageIndex = stagesNames.Find(end_stage).Get();
+		}
+
+		return [&]<typename... ARGS>(void(T::*d)(TaskInfo, typename ACC::type*..., ARGS...)) {
+			//static_assert((GTSL::IsSame<typename ACC::type*, FARGS>() && ...), "Provided parameter types for task are not compatible with those required.");
+
+			using TDI = TaskDispatchInfo<ARGS...>;
 
 			{
-				GTSL::WriteLock lock(storedDynamicTasksMutex);
-				index = storedDynamicTasks.Emplace(StoredDynamicTaskData{ taskName, accesses, FunctionType::Create<&ApplicationManager::task<DTI, T, true, ACC...>>(), caller });
-				auto& sdt = storedDynamicTasks[index];
-				sdt.SetDelegate(d);
+				//TODO: LOCKS!!
+				task.Name = taskName; // Store task name, for debugging purposes
+				task.StartStageIndex = startStageIndex; // Store start stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
+				task.StartStage = static_cast<GTSL::StringView>(start_stage); // Store start stage name for debugging purposes
+				task.EndStageIndex = endStageIndex; // Store end stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
+				task.EndStage = static_cast<GTSL::StringView>(end_stage); // Store end stage name for debugging purposes
+				task.Callee = caller; // Store pointer to system instance which will be called when this task is executed
+				task.TaskDispatcher = FunctionType::Create<&ApplicationManager::task<TDI, T, ACC...>>(); // Store dispatcher, an application manager function which manages task state and calls the client delegate.
+				task.Access = accesses; // Store task accesses for synchronization and debugging purposes.
+				task.SetDelegate(d); // Set client function to be called
 			}
 
-			return DynamicTaskHandle<ARGS...>(index);
+
+			return TaskHandle<ARGS...>(taskIndex);
 		} (delegate);
 	}
 
+	/**
+	 * \brief Schedules a task to run on a periodic basis.
+	 * \tparam ARGS 
+	 */
 	template<typename... ARGS>
-	void AddStoredDynamicTask(const DynamicTaskHandle<ARGS...> taskHandle, ARGS&&... args) {
-		StoredDynamicTaskData storedDynamicTask;
-		
-		{
-			GTSL::WriteLock lock(storedDynamicTasksMutex);
-			storedDynamicTask = storedDynamicTasks[taskHandle.Reference];
-		}
+	auto EnqueueScheduledTask(TaskHandle<ARGS...> task_handle, ARGS&&... args) -> void {
+		using TDI = TaskDispatchInfo<ARGS...>;
 
-		using DTI = DispatchTaskInfo<ARGS...>;
+		TaskData& task = tasks[task_handle()]; //TODO: locks
 
-		DTI* taskInfo = GTSL::New<DTI>(GetPersistentAllocator());
-		taskInfo->Name = GTSL::StringView(storedDynamicTask.Name);
-		taskInfo->Callee = storedDynamicTask.Callee;
-		taskInfo->ResourceCount = storedDynamicTask.Access.GetLength() - 1;
-		taskInfo->WriteDelegateVoid(storedDynamicTask.TaskFunction);
+		TDI* dispatchTaskInfo = GTSL::New<TDI>(GetPersistentAllocator());
 
-		taskInfo->startStageIndex = storedDynamicTask.StartStageIndex; taskInfo->endStageIndex = storedDynamicTask.EndStageIndex;
+		dispatchTaskInfo->ResourceCount = task.Access.GetLength();
+		dispatchTaskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
+		dispatchTaskInfo->WriteDelegateVoid(task.TaskFunction);
+
+		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
 		if constexpr (BE_DEBUG) {
-			taskInfo->Name = GTSL::StringView(storedDynamicTask.Name);
-			taskInfo->StartStage = storedDynamicTask.StartStage; taskInfo->EndStage = storedDynamicTask.EndStage;
-			for (uint32 i = 0; i < storedDynamicTask.Access.GetLength(); ++i) {
-				taskInfo->Accesses.EmplaceBack(GTSL::StringView(systemNames[storedDynamicTask.Access[i].First]), storedDynamicTask.Access[i].Second);
-			}
+			dispatchTaskInfo->Name = GTSL::StringView(task.Name);
+			dispatchTaskInfo->StartStage = GTSL::StringView(task.StartStage); dispatchTaskInfo->EndStage = GTSL::StringView(task.EndStage);
+			for (uint32 i = 0; i < task.Access; ++i) { dispatchTaskInfo->Accesses.EmplaceBack(GTSL::StringView(systemNames[task.Access[i].First]), task.Access[i].Second); }
 		}
 
-		for (uint32 i = 0; i < storedDynamicTask.Access.GetLength() - 1; ++i) {
-			taskInfo->SetResource(i, systems[storedDynamicTask.Access[i + 1].First].GetData());
+		for (uint32 i = 1; i < task.Access; ++i) { // Skip first resource because it's the system being called for which we don't send a pointer for
+			dispatchTaskInfo->SetResource(i, systems[task.Access[i].First]);
 		}
 
-		taskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
+		dispatchTaskInfo->Callee = task.Callee;
+		dispatchTaskInfo->startStageIndex = startStageIndex;
+		dispatchTaskInfo->endStageIndex = endStageIndex;
 
-		{
-			GTSL::WriteLock lock(asyncTasksMutex);
-			asyncTasks.AddTask(storedDynamicTask.Name, storedDynamicTask.GameInstanceFunction,storedDynamicTask.Access, 0xFFFFFFFF, taskInfo, GetPersistentAllocator());
-		}
+		task.Scheduled = true;
+	}
+	
+	void RemoveTask(Id taskName, Id startOn);
+
+	template<typename T, typename... ARGS>
+	void CallTaskOnEntity(const TaskHandle<BE::Handle<T>, ARGS...> taskHandle, const BE::Handle<T> handle, ARGS&&... args) {
+		
+	}
+
+	template<typename... ARGS>
+	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
+		//TODO: enqueu task
 	}
 
 	template<typename... ARGS>
@@ -383,7 +342,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, DynamicTaskHandle<ARGS...> taskHandle) {
+	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, TaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name).Functions;
@@ -398,10 +357,10 @@ public:
 		Event& eventData = events.At(eventHandle.Name);
 
 		if(eventData.priorityEntry != ~0U) {
-			AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(eventData.Functions[eventData.priorityEntry]), GTSL::ForwardRef<ARGS>(args)...);
+			EnqueueTask(TaskHandle<ARGS...>(eventData.Functions[eventData.priorityEntry]()), GTSL::ForwardRef<ARGS>(args)...);
 		} else {
 			auto& functionList = eventData.Functions;
-			for (auto e : functionList) { AddStoredDynamicTask(DynamicTaskHandle<ARGS...>(e), GTSL::ForwardRef<ARGS>(args)...); }
+			for (auto e : functionList) { EnqueueTask(TaskHandle<ARGS...>(e()), GTSL::ForwardRef<ARGS>(args)...); }
 		}
 	}
 
@@ -436,7 +395,7 @@ private:
 	GTSL::HashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 	
 	/**
-	 * \brief Stores all data necessary to invoke a task.
+	 * \brief Stores all data necessary to invoke a dispatch.
 	 * Resource parameters are stored separately from data parameters because it simplifies accessing DispatchTaskInfo through type erased pointers since we don't need to know what resources the task requires only the data it uses.
 	 * Such a use case can be seen with stored tasks, only StoreDynamicTask() can see the tasks full signature but can't allocate a DTI
 	 * since every task needs it's own DTI instance which will be allocated when innvoking an stored dynamic task, but since AddStoredDynamicTask doesn't know the full
@@ -444,26 +403,26 @@ private:
 	 * \tparam ARGS Types of the non resource parameters for a task.
 	 */
 	template<typename... ARGS>
-	struct DispatchTaskInfo {
-		DispatchTaskInfo() : Arguments{ 0 } {}
+	struct TaskDispatchInfo {
+		TaskDispatchInfo() : Arguments{ 0 } {}
 
 		template<typename T, typename... FULL_ARGS>
-		DispatchTaskInfo(void(T::*function)(TaskInfo, FULL_ARGS...), uint32 sysCount) : ResourceCount(sysCount) {
+		TaskDispatchInfo(void(T::*function)(TaskInfo, FULL_ARGS...), uint32 sysCount) : ResourceCount(sysCount) {
 			static_assert(sizeof(decltype(function)) == 8);
 			WriteDelegate<T>(function);
 		}
 
 		template<typename T, typename... FULL_ARGS>
-		DispatchTaskInfo(void(T::*function)(TaskInfo, FULL_ARGS...), uint32 sysCount, ARGS&&... args) requires static_cast<bool>(sizeof...(ARGS)) : ResourceCount(sysCount) {
+		TaskDispatchInfo(void(T::*function)(TaskInfo, FULL_ARGS...), uint32 sysCount, ARGS&&... args) requires static_cast<bool>(sizeof...(ARGS)) : ResourceCount(sysCount) {
 			static_assert(sizeof(decltype(function)) == 8);
 			WriteDelegate<T>(function);
 			UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
 		}
 
-		DispatchTaskInfo(const DispatchTaskInfo&) = delete;
-		DispatchTaskInfo(DispatchTaskInfo&&) = delete;
+		TaskDispatchInfo(const TaskDispatchInfo&) = delete;
+		TaskDispatchInfo(TaskDispatchInfo&&) = delete;
 
-		~DispatchTaskInfo() {
+		~TaskDispatchInfo() {
 			[&]<uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~GTSL::template GetTypeAt<I, ARGS...>::type(), ...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
 #if BE_DEBUG
@@ -484,6 +443,9 @@ private:
 		void* Callee;
 		uint32 ResourceCount = 0;
 		byte Arguments[sizeof(BE::System*) * 8 + GTSL::PackSize<ARGS...>()];
+
+		bool Scheduled; // Whether this task is scheduled
+		uint16 SystemId, EntityId; uint32 InstanceIndex;
 
 		template<class T, typename... RS>
 		auto GetDelegate() -> void(T::*)(TaskInfo, RS*..., ARGS...) {
@@ -526,32 +488,11 @@ private:
 	};
 
 	template<typename T, typename... RS, typename... ARGS>
-	static void call(T* whoToCall, TaskInfo task_info, DispatchTaskInfo<ARGS...>* dispatch_task_info) {
+	static void call(T* whoToCall, TaskInfo task_info, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
 		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
 			(whoToCall->*dispatch_task_info->GetDelegate<T, RS...>())(task_info, dispatch_task_info->GetResource<RI, RS>()..., GTSL::MoveRef(dispatch_task_info->GetArgument<AI>())...);
 		} (GTSL::BuildIndices<sizeof...(RS)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
 	}
-
-	mutable GTSL::ReadWriteMutex storedDynamicTasksMutex;
-	struct StoredDynamicTaskData {
-		Id Name;
-		GTSL::StaticVector<TaskAccess, 32> Access;
-		FunctionType GameInstanceFunction;
-		void* Callee;
-		byte TaskFunction[8];
-
-		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
-		GTSL::StaticString<64> StartStage, EndStage;
-
-		template<typename F>
-		void SetDelegate(F delegate) {
-			auto* d = reinterpret_cast<byte*>(&delegate);
-			for(uint64 i = 0; i < 8; ++i) {
-				TaskFunction[i] = d[i];
-			}
-		}
-	};
-	GTSL::FixedVector<StoredDynamicTaskData, BE::PersistentAllocatorReference> storedDynamicTasks;
 
 	mutable GTSL::ReadWriteMutex eventsMutex;
 
@@ -559,25 +500,49 @@ private:
 		Event(const BE::PAR& allocator) : Functions(allocator) {}
 
 		uint32 priorityEntry = ~0U;
-		GTSL::Vector<uint32, BE::PAR> Functions;
+		GTSL::Vector<TypeErasedTaskHandle, BE::PAR> Functions;
 	};
 	GTSL::HashMap<Id, Event, BE::PersistentAllocatorReference> events;
 
-	mutable GTSL::ReadWriteMutex recurringTasksMutex;
-	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksPerStage;
-	mutable GTSL::ReadWriteMutex dynamicTasksPerStageMutex;
-	GTSL::Vector<Stage<FunctionType, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> dynamicTasksPerStage;
-	
-	mutable GTSL::ReadWriteMutex asyncTasksMutex;
-	Stage<FunctionType, BE::PersistentAllocatorReference> asyncTasks;
+	// TASKS
+	mutable GTSL::ReadWriteMutex tasksMutex;
+	struct TaskData {
+		/**
+		 * \brief Hold a function pointer to a dispatcher function with the signature of the task.
+		 */
+		FunctionType TaskDispatcher;
+
+		Id Name;
+		GTSL::StaticVector<TaskAccess, 32> Access;
+		void* Callee;
+		byte TaskFunction[8];
+
+		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
+		GTSL::StaticString<64> StartStage, EndStage;
+
+		//Task that has to be called before this
+		uint32 Pre = 0xFFFFFFFF;
+
+		bool Scheduled = false;
+
+		template<typename F>
+		void SetDelegate(F delegate) {
+			auto* d = reinterpret_cast<byte*>(&delegate);
+			for (uint64 i = 0; i < 8; ++i) {
+				TaskFunction[i] = d[i];
+			}
+		}
+	};
+	GTSL::Vector<TaskData, BE::PAR> tasks;
+
+	GTSL::HashMap<uint64, TypeErasedTaskHandle, BE::PAR> functionToTaskMap;
+
+	// TASKS
 
 	GTSL::ConditionVariable resourcesUpdated;
 	
 	mutable GTSL::ReadWriteMutex stagesNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> stagesNames;
-
-	mutable GTSL::ReadWriteMutex recurringTasksInfoMutex;
-	GTSL::Vector<GTSL::Vector<GTSL::SmartPointer<DispatchTaskInfo<uint32>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> recurringTasksInfo;
 
 	TaskSorter<BE::PersistentAllocatorReference> taskSorter;
 	
@@ -616,14 +581,14 @@ private:
 			}
 		}
 
-		{
-			GTSL::ReadLock lock(recurringTasksMutex);
-			
-			if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(taskName)) {
-				BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" which already exists to stage ", GTSL::StringView(startGoal), u8". Resolve this issue as it leads to undefined behavior in release builds!")
-				return true;
-			}
-		}
+		//{
+		//	GTSL::ReadLock lock(recurringTasksMutex);
+		//	
+		//	if (recurringTasksPerStage[getStageIndex(startGoal)].DoesTaskExist(taskName)) {
+		//		BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" which already exists to stage ", GTSL::StringView(startGoal), u8". Resolve this issue as it leads to undefined behavior in release builds!")
+		//		return true;
+		//	}
+		//}
 
 		{
 			GTSL::Lock lock(systemsMutex);

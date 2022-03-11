@@ -69,29 +69,29 @@ public:
 	};
 
 	template<typename... ARGS>
-	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		gameInstance->AddDynamicTask(this, u8"StaticMeshResourceManager::loadStaticMeshInfo", {}, &StaticMeshResourceManager::loadStaticMeshInfo<ARGS...>, {}, {}, GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->EnqueueTask(gameInstance->RegisterTask(this, u8"StaticMeshResourceManager::loadStaticMeshInfo", {}, &StaticMeshResourceManager::loadStaticMeshInfo<ARGS...>, {}, {}), GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
-	void LoadStaticMesh(ApplicationManager* gameInstance, StaticMeshInfo staticMeshInfo, uint32 verticesOffset, GTSL::Range<byte*> vertexBuffer, uint32 indicesOffset, GTSL::Range<byte*> indexBuffer, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		gameInstance->AddDynamicTask(this, u8"StaticMeshResourceManager::loadStaticMesh", {}, &StaticMeshResourceManager::loadMesh<ARGS...>, {}, {}, GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(verticesOffset), GTSL::MoveRef(vertexBuffer), GTSL::MoveRef(indicesOffset), GTSL::MoveRef(indexBuffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadStaticMesh(ApplicationManager* gameInstance, StaticMeshInfo staticMeshInfo, uint32 verticesOffset, GTSL::Range<byte*> vertexBuffer, uint32 indicesOffset, GTSL::Range<byte*> indexBuffer, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->EnqueueTask(gameInstance->RegisterTask(this, u8"StaticMeshResourceManager::loadStaticMesh", {}, &StaticMeshResourceManager::loadMesh<ARGS...>, {}, {}), GTSL::MoveRef(staticMeshInfo), GTSL::MoveRef(verticesOffset), GTSL::MoveRef(vertexBuffer), GTSL::MoveRef(indicesOffset), GTSL::MoveRef(indexBuffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 	
 private:
 	ResourceFiles resource_files_;
 
 	template<typename... ARGS>
-	void loadStaticMeshInfo(TaskInfo taskInfo, Id meshName, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
+	void loadStaticMeshInfo(TaskInfo taskInfo, Id meshName, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
 	{
 		StaticMeshInfo static_mesh_info;
 		resource_files_.LoadEntry(meshName, static_mesh_info);
 
-		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(static_mesh_info), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(static_mesh_info), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
 	template<typename... ARGS>
-	void loadMesh(TaskInfo taskInfo, StaticMeshInfo staticMeshInfo, uint32 verticesOffset, GTSL::Range<byte*> vertexBuffer, uint32 indicesOffset, GTSL::Range<byte*> indexBuffer, DynamicTaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
+	void loadMesh(TaskInfo taskInfo, StaticMeshInfo staticMeshInfo, uint32 verticesOffset, GTSL::Range<byte*> vertexBuffer, uint32 indicesOffset, GTSL::Range<byte*> indexBuffer, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
 	{
 		auto verticesSize = staticMeshInfo.GetVertexSize() * staticMeshInfo.GetVertexCount(); auto indicesSize = staticMeshInfo.GetIndexSize() * staticMeshInfo.GetIndexCount();
 
@@ -105,14 +105,14 @@ private:
 
 		for(auto i = 0u, offsetReadInFile = 0u, accumulatedVertexOffset = 0u; i < staticMeshInfo.GetVertexDescriptor().Length; ++i) {
 			auto streamSize = GAL::GraphicsPipeline::GetVertexSize(staticMeshInfo.GetVertexDescriptor().array[i]);
-			resource_files_.LoadData(staticMeshInfo, { staticMeshInfo.GetVertexCount() * streamSize, vertices + accumulatedVertexOffset * verticesThatFitInBuffer + verticesOffset * staticMeshInfo.GetVertexCount() }, offsetReadInFile, streamSize * staticMeshInfo.GetVertexCount());
+			resource_files_.LoadData(staticMeshInfo, { staticMeshInfo.GetVertexCount() * streamSize, vertices + accumulatedVertexOffset * verticesThatFitInBuffer + verticesOffset * streamSize }, offsetReadInFile, streamSize * staticMeshInfo.GetVertexCount());
 			offsetReadInFile += streamSize * staticMeshInfo.GetVertexCount();
 			accumulatedVertexOffset += streamSize;
 		}
 
-		resource_files_.LoadData(staticMeshInfo, { indexBuffer.Bytes() - indicesOffset * 2u, indexBuffer.begin() + indicesOffset * 2u }, verticesSize, indicesSize);
+		resource_files_.LoadData(staticMeshInfo, { staticMeshInfo.GetIndexCount() * 2u/*todo: use actual byte offset*/, indexBuffer.begin() + indicesOffset * 2u/*todo: use actual index byte offset*/}, verticesSize, indicesSize);
 
-		taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
 	bool loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView fileExtension);

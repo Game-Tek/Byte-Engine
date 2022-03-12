@@ -114,8 +114,8 @@ namespace BE {
 }
 
 class ApplicationManager : public Object {
-	using FunctionType = GTSL::Delegate<void(ApplicationManager*, DispatchedTaskHandle, void*)>;
 	MAKE_HANDLE(uint32, TypeErasedTask)
+	using FunctionType = GTSL::Delegate<void(ApplicationManager*, DispatchedTaskHandle, TypeErasedTaskHandle)>;
 public:
 	ApplicationManager();
 	~ApplicationManager();
@@ -193,23 +193,36 @@ public:
 	}
 
 	template<typename DTI, typename T, typename... ACC>
-	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, void* data) {
-		DTI* info = static_cast<DTI*>(data);
-		
-		auto startTime = BE::Application::Get()->GetClock()->GetCurrentMicroseconds();
-		call<T, typename ACC::type...>(static_cast<T*>(info->Callee), TaskInfo(gameInstance), info);
-		GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, info->StartStage); args += u8"\", \"Index\":"; ToString(args, info->startStageIndex); args += u8" },";
-		args += u8"\"End stage\":{ "; args += u8"\"Name\":\""; ToString(args, info->EndStage); args += u8"\", \"Index\":"; ToString(args, info->endStageIndex); args += u8" },";
-		args += u8"\"Accesses\":[ ";
-		for(auto&[name, access] : info->Accesses) {
-			args += u8"\"System\":{ "; args += u8"\"Name\":\""; args += name; args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
+	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, TypeErasedTaskHandle task_handle) {
+		TaskData& task = gameInstance->tasks[task_handle()];
+
+		for (auto e : task.Instances) {
+			DTI* info = static_cast<DTI*>(e);
+
+			auto startTime = BE::Application::Get()->GetClock()->GetCurrentMicroseconds();
+
+			call<T, typename ACC::type...>(static_cast<T*>(info->Callee), TaskInfo(gameInstance), &task, info);
+
+			GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, task.StartStage); args += u8"\", \"Index\":"; ToString(args, task.StartStageIndex); args += u8" },";
+			args += u8"\"End stage\":{ "; args += u8"\"Name\":\""; ToString(args, task.EndStage); args += u8"\", \"Index\":"; ToString(args, task.EndStageIndex); args += u8" },";
+			args += u8"\"Accesses\":[ ";
+			for (auto& [name, access] : task.Access) {
+				args += u8"\"System\":{ "; args += u8"\"Name\":\""; args += name; args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
+			}
+			args += u8" ]";
+
+			BE::Application::Get()->GetLogger()->logFunction(task.Name, startTime, BE::Application::Get()->GetClock()->GetCurrentMicroseconds(), args);
+
+			if (task.EndStageIndex != 0xFFFF) { gameInstance->semaphores[task.EndStageIndex].Post(); }
+			if (info->InstanceIndex != 0xFFFFFFFF) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->EntityId].Entities[info->InstanceIndex].ResourceCounter; }
+
+			if (!task.Scheduled) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); } // KEEP LAST AS THIS ERASES DATA
 		}
-		args += u8" ]";
-		BE::Application::Get()->GetLogger()->logFunction(info->Name, startTime, BE::Application::Get()->GetClock()->GetCurrentMicroseconds(), args);
-		
-		if(info->endStageIndex != 0xFFFF) { gameInstance->semaphores[info->endStageIndex].Post(); }
-		if (info->InstanceIndex != 0xFFFFFFFF) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->EntityId].Entities[info->InstanceIndex].ResourceCounter; }
-		if (info->Scheduled) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); }
+
+		if (!task.Scheduled) { // If tasks were one time remove them
+			task.Instances.Resize(0);
+		}
+
 		gameInstance->resourcesUpdated.NotifyAll();
 		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
 	}
@@ -267,7 +280,7 @@ public:
 
 			{
 				//TODO: LOCKS!!
-				task.Name = taskName; // Store task name, for debugging purposes
+				task.Name = GTSL::StringView(taskName); // Store task name, for debugging purposes
 				task.StartStageIndex = startStageIndex; // Store start stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
 				task.StartStage = static_cast<GTSL::StringView>(start_stage); // Store start stage name for debugging purposes
 				task.EndStageIndex = endStageIndex; // Store end stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
@@ -292,42 +305,27 @@ public:
 		using TDI = TaskDispatchInfo<ARGS...>;
 
 		TaskData& task = tasks[task_handle()]; //TODO: locks
-
-		TDI* dispatchTaskInfo = GTSL::New<TDI>(GetPersistentAllocator());
-
-		dispatchTaskInfo->ResourceCount = task.Access.GetLength();
-		dispatchTaskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
-		dispatchTaskInfo->WriteDelegateVoid(task.TaskFunction);
-
-		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
-
-		if constexpr (BE_DEBUG) {
-			dispatchTaskInfo->Name = GTSL::StringView(task.Name);
-			dispatchTaskInfo->StartStage = GTSL::StringView(task.StartStage); dispatchTaskInfo->EndStage = GTSL::StringView(task.EndStage);
-			for (uint32 i = 0; i < task.Access; ++i) { dispatchTaskInfo->Accesses.EmplaceBack(GTSL::StringView(systemNames[task.Access[i].First]), task.Access[i].Second); }
-		}
-
-		for (uint32 i = 1; i < task.Access; ++i) { // Skip first resource because it's the system being called for which we don't send a pointer for
-			dispatchTaskInfo->SetResource(i, systems[task.Access[i].First]);
-		}
-
-		dispatchTaskInfo->Callee = task.Callee;
-		dispatchTaskInfo->startStageIndex = startStageIndex;
-		dispatchTaskInfo->endStageIndex = endStageIndex;
-
 		task.Scheduled = true;
+		allocateTaskDispatchInfo(task, GTSL::ForwardRef<ARGS>(args)...);
+
+		stages[task.StartStageIndex].EmplaceBack(TypeErasedTaskHandle(task_handle()));
+	}
+
+	template<typename... ARGS>
+	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
+		TaskData& task = tasks[task_handle()]; //TODO: locks
+		task.Scheduled = false;
+		allocateTaskDispatchInfo(task, GTSL::ForwardRef<ARGS>(args)...);
+
+		enqueuedTasks.EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
 	
 	void RemoveTask(Id taskName, Id startOn);
 
 	template<typename T, typename... ARGS>
-	void CallTaskOnEntity(const TaskHandle<BE::Handle<T>, ARGS...> taskHandle, const BE::Handle<T> handle, ARGS&&... args) {
-		
-	}
-
-	template<typename... ARGS>
-	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
-		//TODO: enqueu task
+	void CallTaskOnEntity(const TaskHandle<BE::Handle<T>, ARGS...> task_handle, const BE::Handle<T> handle, ARGS&&... args) {
+		TaskData& task = tasks[task_handle()]; //TODO: locks
+		task.Scheduled = false;
 	}
 
 	template<typename... ARGS>
@@ -426,48 +424,32 @@ private:
 			[&]<uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~GTSL::template GetTypeAt<I, ARGS...>::type(), ...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
 #if BE_DEBUG
-				Name = u8"deleted";
 				Callee = nullptr;
 #endif
 		}
 
 		uint32 TaskIndex = 0;
-		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
-#if BE_DEBUG
-		GTSL::StaticString<64> Name = u8"null", StartStage, EndStage;
-		GTSL::StaticVector<GTSL::Pair<GTSL::ShortString<32>, AccessType>, 8> Accesses;
-#endif
-
-		byte Delegate[8];
+		//byte Delegate[8];
 		void* Callee;
 		uint32 ResourceCount = 0;
 		byte Arguments[sizeof(BE::System*) * 8 + GTSL::PackSize<ARGS...>()];
 
 		bool Scheduled; // Whether this task is scheduled
-		uint16 SystemId, EntityId; uint32 InstanceIndex;
+		uint16 SystemId, EntityId; uint32 InstanceIndex = 0xFFFFFFFF;
 
-		template<class T, typename... RS>
-		auto GetDelegate() -> void(T::*)(TaskInfo, RS*..., ARGS...) {
-			union F {
-				void(T::* Delegate)(TaskInfo, RS*..., ARGS...);
-			};
+		//template<class T, typename... FULL_ARGS>
+		//void WriteDelegate(void(T::*d)(TaskInfo, FULL_ARGS...)) {
+		//	union F {
+		//		void(T::* Delegate)(TaskInfo, FULL_ARGS...);
+		//	};
+		//
+		//	reinterpret_cast<F*>(Delegate)->Delegate = d;
+		//}
 
-			return reinterpret_cast<F*>(Delegate)->Delegate;
-		}
-
-		template<class T, typename... FULL_ARGS>
-		void WriteDelegate(void(T::*d)(TaskInfo, FULL_ARGS...)) {
-			union F {
-				void(T::* Delegate)(TaskInfo, FULL_ARGS...);
-			};
-
-			reinterpret_cast<F*>(Delegate)->Delegate = d;
-		}
-
-		void WriteDelegateVoid(byte* buffer) {
-			for (uint64 i = 0; i < 8; ++i) { Delegate[i] = buffer[i]; }
-		}
+		//void WriteDelegateVoid(byte* buffer) {
+		//	for (uint64 i = 0; i < 8; ++i) { Delegate[i] = buffer[i]; }
+		//}
 
 		void SetResource(const uint64 pos, BE::System* pointer) { *reinterpret_cast<BE::System**>(Arguments + pos * 8) = pointer; }
 
@@ -487,13 +469,6 @@ private:
 		}
 	};
 
-	template<typename T, typename... RS, typename... ARGS>
-	static void call(T* whoToCall, TaskInfo task_info, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
-		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
-			(whoToCall->*dispatch_task_info->GetDelegate<T, RS...>())(task_info, dispatch_task_info->GetResource<RI, RS>()..., GTSL::MoveRef(dispatch_task_info->GetArgument<AI>())...);
-		} (GTSL::BuildIndices<sizeof...(RS)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
-	}
-
 	mutable GTSL::ReadWriteMutex eventsMutex;
 
 	struct Event {
@@ -512,18 +487,22 @@ private:
 		 */
 		FunctionType TaskDispatcher;
 
-		Id Name;
 		GTSL::StaticVector<TaskAccess, 32> Access;
 		void* Callee;
 		byte TaskFunction[8];
 
 		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
-		GTSL::StaticString<64> StartStage, EndStage;
+
+#if BE_DEBUG
+		GTSL::StaticString<64> Name, StartStage, EndStage;
+#endif
 
 		//Task that has to be called before this
 		uint32 Pre = 0xFFFFFFFF;
 
 		bool Scheduled = false;
+
+		GTSL::StaticVector<void*, 8> Instances;
 
 		template<typename F>
 		void SetDelegate(F delegate) {
@@ -532,10 +511,30 @@ private:
 				TaskFunction[i] = d[i];
 			}
 		}
+
+		template<class T, typename... ARGS>
+		auto GetDelegate() -> void(T::*)(TaskInfo, ARGS...) {
+			union F {
+				void(T::* Delegate)(TaskInfo, ARGS...);
+			};
+
+			return reinterpret_cast<F*>(TaskFunction)->Delegate;
+		}
 	};
 	GTSL::Vector<TaskData, BE::PAR> tasks;
 
 	GTSL::HashMap<uint64, TypeErasedTaskHandle, BE::PAR> functionToTaskMap;
+
+	GTSL::StaticVector<GTSL::StaticVector<TypeErasedTaskHandle, 16>, 16> stages;
+
+	GTSL::Vector<TypeErasedTaskHandle, BE::PAR> enqueuedTasks;
+
+	template<typename T, typename... RS, typename... ARGS>
+	static void call(T* whoToCall, TaskInfo task_info, TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
+		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
+			(whoToCall->*task_data->GetDelegate<T, RS*..., ARGS...>())(task_info, dispatch_task_info->GetResource<RI, RS>()..., GTSL::MoveRef(dispatch_task_info->GetArgument<AI>())...);
+		} (GTSL::BuildIndices<sizeof...(RS)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
+	}
 
 	// TASKS
 
@@ -602,6 +601,22 @@ private:
 		}
 
 		return false;
+	}
+
+	template<typename... ARGS>
+	void allocateTaskDispatchInfo(TaskData& task, ARGS&&... args) {
+		TaskDispatchInfo<ARGS...>* dispatchTaskInfo = GTSL::New<TaskDispatchInfo<ARGS...>>(GetPersistentAllocator());
+
+		dispatchTaskInfo->ResourceCount = task.Access.GetLength();
+		dispatchTaskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
+
+		for (uint32 i = 1; i < task.Access; ++i) { // Skip first resource because it's the system being called for which we don't send a pointer for
+			dispatchTaskInfo->SetResource(i - 1, systems[task.Access[i].First]);
+		}
+
+		dispatchTaskInfo->Callee = task.Callee;
+
+		task.Instances.EmplaceBack(dispatchTaskInfo);
 	}
 
 	void initWorld(uint8 worldId);

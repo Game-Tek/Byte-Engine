@@ -11,7 +11,7 @@
 #include <GTSL/Semaphore.h>
 
 ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()),
-systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator())
+systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator()), enqueuedTasks(128, GetPersistentAllocator())
 {
 }
 
@@ -32,43 +32,62 @@ ApplicationManager::~ApplicationManager() {
 }
 
 void ApplicationManager::OnUpdate(BE::Application* application) {
-	GTSL::Vector<TypeErasedTaskHandle, BE::TAR> taskStack(64, GetTransientAllocator()); // Holds all tasks which are to be executed
+	using TaskStackType = GTSL::Vector<TypeErasedTaskHandle, BE::TAR>;
+	TaskStackType freeTaskStack(64, GetTransientAllocator()), scheduledTaskStack(64, GetTransientAllocator()); // Holds all tasks which are to be executed
 
 	GTSL::Vector<uint32, BE::TAR> perStageCounter(32, GetTransientAllocator()); // Maintains the count of how many tasks were executed for each stage. It's used to know when an stage can advance.
 
-	for(uint32 si = 0; si < stagesNames; ++si) { // Loads all recurrent task onto the stack
-		
+	for(uint32 si = stages.GetLength() - 1, i = 0; i < stages; --si, ++i) { // Loads all recurrent task onto the stack
+		for(uint32 j = 0, ti = stages[si].GetLength() - 1; j < stages[si]; ++j, --ti) {
+			scheduledTaskStack.EmplaceBack(stages[si][ti]);
+		}
+
+		perStageCounter.EmplaceBack(0);
+	}
+
+	{
+		for (uint32 i = 0, ii = enqueuedTasks.GetLength() - 1; i < enqueuedTasks; ++i, --ii) {
+			freeTaskStack.EmplaceBack(enqueuedTasks[ii]);
+		}
+
+		enqueuedTasks.Resize(0); // Clear enqueued tasks list after processing it
 	}
 
 	GTSL::Mutex waitWhenNoChange;
 
-	auto tryDispatchTask = [&](uint16 goalIndex, Stage<FunctionType, BE::TAR>&stage, uint16& taskIndex, bool& t) {
-		for(; taskIndex < stage.GetNumberOfTasks(); ++taskIndex) {
-			auto result = taskSorter.CanRunTask(stage.GetTaskAccesses(taskIndex));
+	auto tryDispatchTasks = [&](TaskStackType& stack) {
+		while(stack) {
+			auto taskHandle = stack.back();
+			auto& task = tasks[taskHandle()];
+
+			auto result = taskSorter.CanRunTask(task.Access);
+
 			if (result.State()) {
-				const uint16 targetStageIndex = stage.GetTaskGoalIndex(taskIndex);
-				application->GetThreadPool()->EnqueueTask(stage.GetTask(taskIndex), this, GTSL::MoveRef(result.Get()), stage.GetTaskInfo(taskIndex));
+				const uint16 targetStageIndex = task.EndStageIndex;
+				application->GetThreadPool()->EnqueueTask(task.TaskDispatcher, this, GTSL::MoveRef(result.Get()), GTSL::MoveRef(taskHandle));
 
 				if (targetStageIndex != 0xFFFF) {
 					semaphores[targetStageIndex].Add();
 					++perStageCounter[targetStageIndex];
 				}
 
+				stack.PopBack(); // If task was executed remove from stack
+
 				continue;
 			}
 
 			return;
 		}
-
-		t = true;
 	};
 
 	uint16 stageIndex = 0;
 
-	while(taskStack) { // While there are elements to be processed
-		getLogger()->InstantEvent(GTSL::StringView(stagesNames[stageIndex]), application->GetClock()->GetCurrentMicroseconds().GetCount()); //TODO: USE LOCK ON STAGE NAME
-		
+	while(freeTaskStack || scheduledTaskStack) { // While there are elements to be processed
 		semaphores[stageIndex].Wait();
+		getLogger()->InstantEvent(GTSL::StringView(stagesNames[stageIndex]), application->GetClock()->GetCurrentMicroseconds().GetCount()); //TODO: USE LOCK ON STAGE NAME
+
+		tryDispatchTasks(scheduledTaskStack);
+		tryDispatchTasks(freeTaskStack);
 	}
 
 	++frameNumber;
@@ -127,6 +146,8 @@ void ApplicationManager::AddStage(Id stageName)
 		GTSL::WriteLock lock(stagesNamesMutex);
 		stagesNames.EmplaceBack(stageName);
 	}
+
+	stages.EmplaceBack();
 
 	BE_LOG_MESSAGE(u8"Added stage ", GTSL::StringView(stageName))
 }

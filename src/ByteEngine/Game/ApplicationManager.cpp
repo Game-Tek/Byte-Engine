@@ -11,7 +11,7 @@
 #include <GTSL/Semaphore.h>
 
 ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()),
-systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator()), enqueuedTasks(128, GetPersistentAllocator())
+systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator()), enqueuedTasks(128, GetPersistentAllocator()), tasksInFlight(0u)
 {
 }
 
@@ -33,61 +33,122 @@ ApplicationManager::~ApplicationManager() {
 
 void ApplicationManager::OnUpdate(BE::Application* application) {
 	using TaskStackType = GTSL::Vector<TypeErasedTaskHandle, BE::TAR>;
-	TaskStackType freeTaskStack(64, GetTransientAllocator()), scheduledTaskStack(64, GetTransientAllocator()); // Holds all tasks which are to be executed
+	TaskStackType freeTaskStack(64, GetTransientAllocator());
+	GTSL::StaticVector<TaskStackType, 16> perStageTasks; // Holds all tasks which are to be executed
+
+	TaskStackType executedTasks(64, GetTransientAllocator());
 
 	GTSL::Vector<uint32, BE::TAR> perStageCounter(32, GetTransientAllocator()); // Maintains the count of how many tasks were executed for each stage. It's used to know when an stage can advance.
 
-	for(uint32 si = stages.GetLength() - 1, i = 0; i < stages; --si, ++i) { // Loads all recurrent task onto the stack
-		for(uint32 j = 0, ti = stages[si].GetLength() - 1; j < stages[si]; ++j, --ti) {
-			scheduledTaskStack.EmplaceBack(stages[si][ti]);
+	for(uint32 i = 0; i < stages; ++i) { // Loads all recurrent task onto the stack
+		perStageTasks.EmplaceBack(16, GetTransientAllocator());
+
+		for(uint32 j = 0; j < stages[i]; ++j) {
+			perStageTasks.back().EmplaceBack(stages[i][j]);
 		}
 
 		perStageCounter.EmplaceBack(0);
 	}
 
 	{
-		for (uint32 i = 0, ii = enqueuedTasks.GetLength() - 1; i < enqueuedTasks; ++i, --ii) {
-			freeTaskStack.EmplaceBack(enqueuedTasks[ii]);
+		for (uint32 i = 0; i < enqueuedTasks; ++i) {
+			freeTaskStack.EmplaceBack(enqueuedTasks[i]);
 		}
 
 		enqueuedTasks.Resize(0); // Clear enqueued tasks list after processing it
 	}
 
+	// Mutex used to wait until resource availability changes.
 	GTSL::Mutex waitWhenNoChange;
 
-	auto tryDispatchTasks = [&](TaskStackType& stack) {
-		while(stack) {
-			auto taskHandle = stack.back();
-			auto& task = tasks[taskHandle()];
-
-			auto result = taskSorter.CanRunTask(task.Access);
-
-			if (result.State()) {
-				const uint16 targetStageIndex = task.EndStageIndex;
-				application->GetThreadPool()->EnqueueTask(task.TaskDispatcher, this, GTSL::MoveRef(result.Get()), GTSL::MoveRef(taskHandle));
-
-				if (targetStageIndex != 0xFFFF) {
-					semaphores[targetStageIndex].Add();
-					++perStageCounter[targetStageIndex];
-				}
-
-				stack.PopBack(); // If task was executed remove from stack
-
-				continue;
-			}
-
-			return;
-		}
-	};
+	// Round robin counter to ensure all tasks run.
+	uint32 rr = 0;
 
 	uint16 stageIndex = 0;
 
-	while(freeTaskStack || scheduledTaskStack) { // While there are elements to be processed
-		semaphores[stageIndex].Wait();
-		getLogger()->InstantEvent(GTSL::StringView(stagesNames[stageIndex]), application->GetClock()->GetCurrentMicroseconds().GetCount()); //TODO: USE LOCK ON STAGE NAME
+	auto tryDispatchTask = [&](TaskStackType& stack) -> bool {
+		const uint32 taskIndex = rr++ % stack.GetLength();
+		auto taskHandle = stack[taskIndex];
+		auto& task = tasks[taskHandle()];
 
-		tryDispatchTasks(scheduledTaskStack);
-		tryDispatchTasks(freeTaskStack);
+		if(!task.Instances) { stack.Pop(taskIndex); return false; } //todo: instead cull queue and eliminate duplicate entries
+
+		if (const auto result = taskSorter.CanRunTask(task.Access)) {
+			uint32 i = 0;
+
+			while (i < task.Instances) {
+				auto& instance = task.Instances[i];
+
+				if(instance.InstanceIndex != 0xFFFFFFFF) { // Is executable instance
+					auto& s = systemsData[instance.SystemId];
+					auto& t = s.RegisteredTypes[instance.EntityId];
+					auto& entt = t.Entities[instance.InstanceIndex];
+
+					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || r.Get() != entt.ResourceCounter) { // If this task can, at this point, execute for this entity type
+						++i; continue;
+					}
+				}
+
+				if(task.Pre != 0xFFFFFFFF) {
+					if(!executedTasks.Find(TypeErasedTaskHandle(task.Pre))) { // If task which which we depend on executing hasn't yet executed, don't schedule instance.
+						++i; continue;
+					}
+				}
+
+				taskSorter.AddInstance(result.Get(), instance.TaskInfo); // Append task instance to the task sorter's task dispatch packet
+				task.Instances.Pop(i); // Remove tasks instances which where successfully scheduled for execution.
+			}
+
+			if (!taskSorter.GetValidInstances(result.Get())) {
+				taskSorter.ReleaseResources(result.Get()); return false;
+			} // Don't schedule dispatcher execution if no instance was up for execution
+
+			application->GetThreadPool()->EnqueueTask(task.TaskDispatcher, this, GTSL::MoveRef(result.Get()), GTSL::MoveRef(taskHandle)); // Add task dispatcher to thread pool
+
+			++tasksInFlight;
+
+			if(task.IsDependedOn) {
+				executedTasks.EmplaceBack(taskHandle);
+			}
+
+			const uint16 targetStageIndex = task.EndStageIndex;
+
+			if (targetStageIndex != 0xFFFF) {
+				semaphores[targetStageIndex].Add();
+				++perStageCounter[targetStageIndex];
+			}
+
+			stack.Pop(taskIndex); // If task was executed remove from stack.
+
+			return true;
+		}
+
+		return false;
+	};
+
+	while(freeTaskStack || (stageIndex < perStageTasks.GetLength()) && perStageTasks[stageIndex]) { // While there are elements to be processed
+		while (stageIndex < perStageTasks.GetLength() && perStageTasks[stageIndex]) {
+			semaphores[stageIndex].Wait();
+
+			if(!tryDispatchTask(perStageTasks[stageIndex])) {
+				break;
+			}
+		}
+
+		if (stageIndex < perStageTasks.GetLength() && !perStageTasks[stageIndex]) { // If stage can be changed
+			++stageIndex;
+			//getLogger()->InstantEvent(GTSL::StringView(stagesNames[stageIndex]), application->GetClock()->GetCurrentMicroseconds().GetCount()); //TODO: USE LOCK ON STAGE NAME					
+		}
+
+		while (freeTaskStack) {
+			if (!tryDispatchTask(freeTaskStack)) {
+				break;
+			}
+		}
+
+		if (tasksInFlight) { // If there are task enqueued on the thread pool wait until a change in resource availability occurs to continue trying to dispatch tasks. Don't wait without checking if there are tasks left, because that will leave the thread waiting indefinitely since there are no tasks to signal the condition.
+			resourcesUpdated.Wait(waitWhenNoChange);
+		}
 	}
 
 	++frameNumber;

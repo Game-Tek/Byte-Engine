@@ -42,7 +42,7 @@ template<class ALLOCATOR>
 struct TaskSorter {
 	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
 	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), objectNames(num, allocator)
+	ongoingTasksAccesses(num, allocator), instances(num, allocator)
 	{
 	}
 
@@ -63,8 +63,12 @@ struct TaskSorter {
 				currentObjectAccessState[accesses[i].First] = accesses[i].Second;
 				++currentObjectAccessCount[accesses[i].First];
 			}
-			
+
+			auto insPos = instances.Emplace();
+
 			res = ongoingTasksAccesses.Emplace(accesses);
+
+			BE_ASSERT(insPos == res, u8"");
 		}
 
 		return GTSL::Result(DispatchedTaskHandle(res), true);
@@ -80,26 +84,37 @@ struct TaskSorter {
 			BE_ASSERT(currentObjectAccessCount[accesses[i].First] != 0, "Oops :/");
 			if (--currentObjectAccessCount[accesses[i].First] == 0) { //if object is no longer accessed
 				currentObjectAccessState[accesses[i].First] = AccessType();
+			} else {
+				uint32 no = 0;
+				printf(nullptr);
 			}
 		}
 		
 		ongoingTasksAccesses.Pop(taskIndex());
+		instances.Pop(taskIndex());
 	}
 
 	void AddSystem(Id objectName) {
 		GTSL::WriteLock lock(mutex);
-		objectNames.Emplace(objectName);
 		currentObjectAccessState.Emplace(0);
 		currentObjectAccessCount.Emplace(0);
+	}
+
+	void AddInstance(const DispatchedTaskHandle dispatched_task_handle, void* instance) {
+		instances[dispatched_task_handle()].EmplaceBack(instance);
+	}
+
+	auto GetValidInstances(DispatchedTaskHandle dispatched_task_handle) {
+		return instances[dispatched_task_handle()];
 	}
 
 private:
 	GTSL::FixedVector<AccessType, ALLOCATOR> currentObjectAccessState;
 	GTSL::FixedVector<uint16, ALLOCATOR> currentObjectAccessCount;
 
-	GTSL::FixedVector<GTSL::StaticVector<TaskAccess, 64>, ALLOCATOR> ongoingTasksAccesses;
+	GTSL::FixedVector<GTSL::StaticVector<TaskAccess, 32>, ALLOCATOR> ongoingTasksAccesses;
 
-	GTSL::FixedVector<Id, ALLOCATOR> objectNames;
+	GTSL::FixedVector<GTSL::StaticVector<void*, 16>, ALLOCATOR> instances;
 
 	GTSL::ReadWriteMutex mutex;
 };

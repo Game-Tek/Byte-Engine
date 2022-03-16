@@ -2099,7 +2099,7 @@ private:
 	}
 
 	void updateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshHandle static_mesh_handle) {
-		GetApplicationManager()->EnqueueTask(instanceUpdateTaskHandle, GTSL::MoveRef(meshToInstanceMap[static_mesh_handle]), GTSL::Matrix3x4());
+		GetApplicationManager()->CallTaskOnEntity(instanceUpdateTaskHandle, meshToInstanceMap[static_mesh_handle], GTSL::Matrix3x4());
 	}
 
 	void updateMeshInstance(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, GTSL::Matrix3x4 transform) {

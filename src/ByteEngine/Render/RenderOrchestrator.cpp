@@ -249,7 +249,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	//}
 
 	{
-		const auto taskDependencies = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE }, { u8"RenderOrchestrator", AccessTypes::READ_WRITE } };
+		const auto taskDependencies = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
 		onRenderEnable(initializeInfo.ApplicationManager, taskDependencies);
 	}
 
@@ -1509,8 +1509,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	instanceUpdateTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::updateMeshInstance);
 
 	instanceIdentifier = GetApplicationManager()->RegisterType(this, u8"Instance");
-	GetApplicationManager()->AddTypeSetupDependency(instanceIdentifier, addMeshInstanceTaskHandle);
-	GetApplicationManager()->SpecifyTaskCoDependency(addMeshInstanceTaskHandle, instanceUpdateTaskHandle);
+	GetApplicationManager()->AddTypeSetupDependency(instanceIdentifier, addMeshInstanceTaskHandle, true);
+	GetApplicationManager()->AddTypeSetupDependency(instanceIdentifier, instanceUpdateTaskHandle, false);
 
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::onAddLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);

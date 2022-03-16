@@ -183,20 +183,26 @@ public:
 
 	template<typename... ARGS1, typename... ARGS2>
 	void SpecifyTaskCoDependency(const TaskHandle<ARGS1...> a, const TaskHandle<ARGS2...> b) {
+		TaskData& taskA = tasks[a()];
+		taskA.IsDependedOn = true;
 		TaskData& taskB = tasks[b()];
 		taskB.Pre = a();
 	}
 
 	template<typename... ARGS>
-	void AddTypeSetupDependency(BE::TypeIdentifer type_identifer, TaskHandle<ARGS...> dynamic_task_handle) {
-		++systemsData[type_identifer.SystemId].RegisteredTypes[type_identifer.TypeId].Target;
+	void AddTypeSetupDependency(BE::TypeIdentifer type_identifer, TaskHandle<ARGS...> dynamic_task_handle, bool is_required = true) {
+		auto& system = systemsData[type_identifer.SystemId]; auto& type = system.RegisteredTypes[type_identifer.TypeId];
+		type.SetupSteps.EmplaceBack(TypeErasedTaskHandle(dynamic_task_handle()), is_required);
+		++type.Target;
 	}
 
 	template<typename DTI, typename T, typename... ACC>
 	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, TypeErasedTaskHandle task_handle) {
-		TaskData& task = gameInstance->tasks[task_handle()];
+		const TaskData& task = gameInstance->tasks[task_handle()];
 
-		for (auto e : task.Instances) {
+		auto instances = gameInstance->taskSorter.GetValidInstances(dispatched_task_handle);
+
+		for (auto e : instances) {
 			DTI* info = static_cast<DTI*>(e);
 
 			auto startTime = BE::Application::Get()->GetClock()->GetCurrentMicroseconds();
@@ -216,13 +222,12 @@ public:
 			if (task.EndStageIndex != 0xFFFF) { gameInstance->semaphores[task.EndStageIndex].Post(); }
 			if (info->InstanceIndex != 0xFFFFFFFF) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->EntityId].Entities[info->InstanceIndex].ResourceCounter; }
 
+			++info->D_CallCount;
+
 			if (!task.Scheduled) { GTSL::Delete<DTI>(&info, gameInstance->GetPersistentAllocator()); } // KEEP LAST AS THIS ERASES DATA
 		}
 
-		if (!task.Scheduled) { // If tasks were one time remove them
-			task.Instances.Resize(0);
-		}
-
+		--gameInstance->tasksInFlight;
 		gameInstance->resourcesUpdated.NotifyAll();
 		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
 	}
@@ -248,7 +253,7 @@ public:
 			return [&]<typename... ARGS>(void(T::*d)(TaskInfo, typename ACC::type*..., ARGS...)) { return TaskHandle<ARGS...>(r.Get()()); }(delegate);
 		}
 
-		GTSL::StaticVector<TaskAccess, 32> accesses;
+		GTSL::StaticVector<TaskAccess, 16> accesses;
 
 		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE; // Add a default access to the caller system since we also have to sync access to the caller and we don't expect the user to do so, access is assumed to be read_write
 
@@ -306,7 +311,7 @@ public:
 
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = true;
-		allocateTaskDispatchInfo(task, GTSL::ForwardRef<ARGS>(args)...);
+		allocateTaskDispatchInfo(task, 0, 0, 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 
 		stages[task.StartStageIndex].EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
@@ -315,7 +320,7 @@ public:
 	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = false;
-		allocateTaskDispatchInfo(task, GTSL::ForwardRef<ARGS>(args)...);
+		allocateTaskDispatchInfo(task, 0, 0, 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 
 		enqueuedTasks.EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
@@ -326,6 +331,9 @@ public:
 	void CallTaskOnEntity(const TaskHandle<BE::Handle<T>, ARGS...> task_handle, const BE::Handle<T> handle, ARGS&&... args) {
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = false;
+		auto* taskDispatchInfo = allocateTaskDispatchInfo(task, handle.Identifier.SystemId, handle.Identifier.TypeId, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
+
+		enqueuedTasks.EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
 
 	template<typename... ARGS>
@@ -428,15 +436,13 @@ private:
 #endif
 		}
 
-		uint32 TaskIndex = 0;
-
 		//byte Delegate[8];
 		void* Callee;
 		uint32 ResourceCount = 0;
+		uint16 SystemId, EntityId; uint32 InstanceIndex = 0xFFFFFFFF;
 		byte Arguments[sizeof(BE::System*) * 8 + GTSL::PackSize<ARGS...>()];
 
-		bool Scheduled; // Whether this task is scheduled
-		uint16 SystemId, EntityId; uint32 InstanceIndex = 0xFFFFFFFF;
+		uint32 D_CallCount = 0;
 
 		//template<class T, typename... FULL_ARGS>
 		//void WriteDelegate(void(T::*d)(TaskInfo, FULL_ARGS...)) {
@@ -487,7 +493,7 @@ private:
 		 */
 		FunctionType TaskDispatcher;
 
-		GTSL::StaticVector<TaskAccess, 32> Access;
+		GTSL::StaticVector<TaskAccess, 16> Access;
 		void* Callee;
 		byte TaskFunction[8];
 
@@ -500,9 +506,15 @@ private:
 		//Task that has to be called before this
 		uint32 Pre = 0xFFFFFFFF;
 
+		bool IsDependedOn = false;
+
 		bool Scheduled = false;
 
-		GTSL::StaticVector<void*, 8> Instances;
+		struct InstanceData {
+			uint16 SystemId, EntityId; uint32 InstanceIndex = 0xFFFFFFFF;
+			void* TaskInfo;
+		};
+		GTSL::StaticVector<InstanceData, 8> Instances;
 
 		template<typename F>
 		void SetDelegate(F delegate) {
@@ -513,12 +525,12 @@ private:
 		}
 
 		template<class T, typename... ARGS>
-		auto GetDelegate() -> void(T::*)(TaskInfo, ARGS...) {
+		auto GetDelegate() const -> void(T::*)(TaskInfo, ARGS...) {
 			union F {
 				void(T::* Delegate)(TaskInfo, ARGS...);
 			};
 
-			return reinterpret_cast<F*>(TaskFunction)->Delegate;
+			return reinterpret_cast<const F*>(TaskFunction)->Delegate;
 		}
 	};
 	GTSL::Vector<TaskData, BE::PAR> tasks;
@@ -530,7 +542,7 @@ private:
 	GTSL::Vector<TypeErasedTaskHandle, BE::PAR> enqueuedTasks;
 
 	template<typename T, typename... RS, typename... ARGS>
-	static void call(T* whoToCall, TaskInfo task_info, TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
+	static void call(T* whoToCall, TaskInfo task_info, const TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
 		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
 			(whoToCall->*task_data->GetDelegate<T, RS*..., ARGS...>())(task_info, dispatch_task_info->GetResource<RI, RS>()..., GTSL::MoveRef(dispatch_task_info->GetArgument<AI>())...);
 		} (GTSL::BuildIndices<sizeof...(RS)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
@@ -539,6 +551,7 @@ private:
 	// TASKS
 
 	GTSL::ConditionVariable resourcesUpdated;
+	GTSL::Atomic<uint32> tasksInFlight;
 	
 	mutable GTSL::ReadWriteMutex stagesNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> stagesNames;
@@ -604,10 +617,10 @@ private:
 	}
 
 	template<typename... ARGS>
-	void allocateTaskDispatchInfo(TaskData& task, ARGS&&... args) {
+	auto allocateTaskDispatchInfo(TaskData& task, uint16 system_id, uint16 type_id, uint32 instance_index, ARGS&&... args) {
 		TaskDispatchInfo<ARGS...>* dispatchTaskInfo = GTSL::New<TaskDispatchInfo<ARGS...>>(GetPersistentAllocator());
 
-		dispatchTaskInfo->ResourceCount = task.Access.GetLength();
+		dispatchTaskInfo->ResourceCount = task.Access.GetLength() - 1;
 		dispatchTaskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
 
 		for (uint32 i = 1; i < task.Access; ++i) { // Skip first resource because it's the system being called for which we don't send a pointer for
@@ -616,7 +629,11 @@ private:
 
 		dispatchTaskInfo->Callee = task.Callee;
 
-		task.Instances.EmplaceBack(dispatchTaskInfo);
+		task.Instances.EmplaceBack(system_id, type_id, instance_index, dispatchTaskInfo);
+
+		dispatchTaskInfo->SystemId = system_id; dispatchTaskInfo->EntityId = type_id; dispatchTaskInfo->InstanceIndex = instance_index;
+
+		return dispatchTaskInfo;
 	}
 
 	void initWorld(uint8 worldId);
@@ -638,6 +655,14 @@ private:
 		struct TypeData {
 			uint32 Target = 0;
 			uint32 DeletionTaskHandle = ~0U;
+
+			struct DependencyData {
+				DependencyData(TypeErasedTaskHandle task_handle, bool is_required) : TaskHandle(task_handle), IsReq(is_required) {}
+
+				TypeErasedTaskHandle TaskHandle;
+				bool IsReq = true;
+			};
+			GTSL::StaticVector<DependencyData, 4> SetupSteps;
 
 			struct EntityData {
 				uint32 Uses = 0, ResourceCounter = 0;

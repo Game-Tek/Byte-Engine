@@ -21,13 +21,14 @@ public:
 	{
 		//initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
 
-		onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
-		onStaticMeshLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
+		//onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->
+		// (this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
+		//onStaticMeshLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
 
 		boundlessForces.EmplaceBack(0, -10, 0, 0);
 	}
 
-	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshHandle);
+	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshRenderGroup::StaticMeshHandle);
 
 	GTSL::Vector4 GetPosition(const PhysicsObjectHandle physics_object_handle) const { return physicsObjects[physics_object_handle()].position; }
 
@@ -79,7 +80,7 @@ private:
 		//shape
 		float32 radius = 1.0f;
 
-		StaticMeshHandle Handle;
+		StaticMeshRenderGroup::StaticMeshHandle Handle;
 		GTSL::Vector3 aabb;
 
 		PhysicsObject(const BE::PAR& allocator) : Buffer(allocator) {}

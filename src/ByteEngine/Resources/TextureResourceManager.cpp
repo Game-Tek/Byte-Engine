@@ -12,6 +12,8 @@
 
 #undef Extract
 
+#include "ByteEngine/Application/Application.h"
+
 bool FindString(const GTSL::StringView string, const GTSL::StringView match) {
 	for(auto e = string.begin(); e != string.end(); ++e) {
 		uint32 i = 0;

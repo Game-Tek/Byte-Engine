@@ -11,6 +11,7 @@
 #include "ByteEngine/Network/ConnectionHandler.hpp"
 
 #include "ByteEngine/Render/RenderSystem.h"
+#include "ByteEngine/Render/WorldRenderPipeline.hpp"
 #include "ByteEngine/Render/UIManager.h"
 
 #include "ByteEngine/Resources/ShaderResourceManager.h"
@@ -69,8 +70,6 @@ void GameApplication::PostInitialize()
 	auto* smrm = applicationManager->AddSystem<WorldRendererPipeline>(u8"WorldRendererPipeline");
 
 	applicationManager->AddSystem<PhysicsWorld>(u8"PhysicsWorld");
-
-	smrg->Init(smrm);
 
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
 

@@ -5,32 +5,32 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 
+#include "ByteEngine/Render/WorldRenderPipeline.hpp"
+
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInfo): System(initializeInfo, u8"StaticMeshRenderGroup"),
 	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()) {
 
-	staticMeshEntityIdentifier = GetApplicationManager()->RegisterType(this, u8"StaticMesh");
+	StaticMeshTypeIndentifier = GetApplicationManager()->RegisterType(this, u8"StaticMesh");
 
-	DeleteStaticMeshes = GetApplicationManager()->RegisterTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMeshes);
-	GetApplicationManager()->BindDeletionTaskToType(staticMeshEntityIdentifier, DeleteStaticMeshes);
+	DeleteStaticMesh = GetApplicationManager()->RegisterTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMesh);
+	GetApplicationManager()->BindDeletionTaskToType(StaticMeshTypeIndentifier, DeleteStaticMesh);
+
+	GetApplicationManager()->AddEvent(u8"SMRG", GetOnAddMeshEventHandle());
+	GetApplicationManager()->AddEvent(u8"SMRG", GetOnUpdateMeshEventHandle());
 }
 
-StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance) {
+StaticMeshRenderGroup::StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance) {
 	uint32 index = transformations.Emplace();
 
 	meshes.Emplace(Mesh{});
 
-	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(staticMeshEntityIdentifier, index);
+	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(StaticMeshTypeIndentifier, index);
 
-	GameInstance->EnqueueTask(OnAddMesh, GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
+	GameInstance->DispatchEvent(u8"SMRG", GetOnAddMeshEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
 
 	return handle;
-}
-
-void StaticMeshRenderGroup::Init(WorldRendererPipeline* s) {
-	OnAddMesh = s->GetOnAddMeshHandle();
-	OnUpdateMesh = s->GetOnMeshUpdateHandle();
 }
 
 GTSL::ShortString<64> ToString(const GAL::ShaderDataType type)

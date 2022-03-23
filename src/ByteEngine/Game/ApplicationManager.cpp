@@ -81,7 +81,7 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 
 				if(instance.InstanceIndex != 0xFFFFFFFF) { // Is executable instance
 					auto& s = systemsData[instance.SystemId];
-					auto& t = s.RegisteredTypes[instance.EntityId];
+					auto& t = s.RegisteredTypes[instance.TTID()];
 					auto& entt = t.Entities[instance.InstanceIndex];
 
 					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || r.Get() != entt.ResourceCounter) { // If this task can, at this point, execute for this entity type
@@ -96,7 +96,12 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 				}
 
 				taskSorter.AddInstance(result.Get(), instance.TaskInfo); // Append task instance to the task sorter's task dispatch packet
-				task.Instances.Pop(i); // Remove tasks instances which where successfully scheduled for execution.
+
+				if (!task.Scheduled) {
+					task.Instances.Pop(i); // Remove tasks instances which where successfully scheduled for execution.
+				} else {
+					++i;
+				}
 			}
 
 			if (!taskSorter.GetValidInstances(result.Get())) {
@@ -162,11 +167,11 @@ void ApplicationManager::UnloadWorld(const WorldReference worldId)
 	worlds.Pop(worldId);
 }
 
-BE::TypeIdentifer ApplicationManager::RegisterType(const BE::System* system, const GTSL::StringView type_name) {
+BE::TypeIdentifier ApplicationManager::RegisterType(const BE::System* system, const GTSL::StringView type_name) {
 	uint16 id = system->systemId;
-	uint16 typeId = systemsData[id].RegisteredTypes.GetLength();
+	uint16 typeId = systemsData[id].TypeCount++;
 
-	systemsData[id].RegisteredTypes.EmplaceBack(GetPersistentAllocator());
+	systemsData[id].RegisteredTypes.Emplace(BE::TypeIdentifier{ id, typeId }(), GetPersistentAllocator());
 
 	return { id, typeId };
 }

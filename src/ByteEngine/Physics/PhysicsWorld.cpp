@@ -4,7 +4,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
-PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshHandle static_mesh_handle)
+PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle)
 {
 	auto objectIndex = physicsObjects.Emplace(GetPersistentAllocator());
 	physicsObjects[objectIndex].Handle = static_mesh_handle;

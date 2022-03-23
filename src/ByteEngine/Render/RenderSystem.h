@@ -761,3 +761,16 @@ private:
 	void initializeFrameResources(const uint8 frameIndex);
 	void freeFrameResources(const uint8 frameIndex);
 };
+
+class RenderManager : public BE::System
+{
+public:
+	RenderManager(const InitializeInfo& initializeInfo, const char8_t* name) : System(initializeInfo, name) {}
+
+	struct SetupInfo {
+		ApplicationManager* GameInstance;
+		RenderSystem* RenderSystem;
+		//RenderState* RenderState;
+		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
+	};
+};

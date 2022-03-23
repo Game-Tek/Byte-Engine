@@ -65,20 +65,6 @@ struct TypeNamer<GTSL::Matrix3x4> {
 	static constexpr const char8_t* NAME = u8"matrix3x4f";
 };
 
-class RenderManager : public BE::System
-{
-public:
-	RenderManager(const InitializeInfo& initializeInfo, const char8_t* name) : System(initializeInfo, name) {}
-
-	struct SetupInfo {
-		ApplicationManager* GameInstance;
-		RenderSystem* RenderSystem;
-		//RenderState* RenderState;
-		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
-		RenderOrchestrator* RenderOrchestrator;
-	};
-};
-
 /**
  * \brief Renders a frame according to a specfied model/pipeline.
  * E.J: Forward Rendering, Deferred Rendering, Ray Tracing, etc.
@@ -197,6 +183,9 @@ public:
 	void Setup(TaskInfo taskInfo);
 	void Render(TaskInfo taskInfo, RenderSystem* renderSystem);
 
+	void test(TaskInfo, RenderSystem*);
+	//void test(TaskInfo, uint32);
+
 	//HACKS, REMOVE
 	NodeHandle GetGlobalDataLayer() const { return globalData; }
 	//NodeHandle GetCameraDataLayer() const { return cameraDataNode; }
@@ -217,7 +206,7 @@ public:
 	}
 
 	void AddInstance(NodeHandle node_handle) {
-		++getPrivateNode<MeshData>(node_handle).InstanceCount;
+		renderingTree.ToggleBranch(node_handle(), ++getPrivateNode<MeshData>(node_handle).InstanceCount);
 	}
 
 	NodeHandle AddVertexBufferBind(RenderSystem* render_system, NodeHandle parent_node_handle, RenderSystem::BufferHandle buffer_handle, GTSL::Range<const GTSL::Range<const GAL::ShaderDataType*>*> meshVertexLayout) {
@@ -814,10 +803,6 @@ public:
 		renderingTree.ToggleBranch(layer_handle(), state);
 	}
 
-	NodeHandle GetSceneReference() const {
-		return NodeHandle(); //todo: gen
-	}
-
 	bool GetResourceState(const ResourceHandle resource_handle) {
 		if (!resources.Find(resource_handle())) { BE_LOG_WARNING(u8"Tried to get resource handle state for invalid handle."); return false; }
 		return resources[resource_handle()].isValid();
@@ -1097,8 +1082,9 @@ private:
 
 	uint64 resourceCounter = 0;
 
-	ResourceHandle makeResource() {
-		resources.Emplace(++resourceCounter);
+	ResourceHandle makeResource(const GTSL::StringView resource_name = {}) {
+		auto& resource = resources.Emplace(++resourceCounter);
+		resource.Name = resource_name;
 		return ResourceHandle(resourceCounter);
 	}
 
@@ -1157,6 +1143,7 @@ private:
 	}
 
 	struct ResourceData {
+		GTSL::ShortString<32> Name;
 		GTSL::StaticVector<NodeHandle, 8> NodeHandles;
 		uint32 Count = 0, Target = 0;
 		GTSL::StaticVector<ResourceHandle, 8> Children;
@@ -1301,6 +1288,14 @@ private:
 		}
 		case decltype(renderingTree)::GetTypeIndex<MeshData>(): {
 			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Mesh Data", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): {
+			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Vertex Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): {
+			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Index Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
@@ -1832,439 +1827,6 @@ private:
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
 #endif
-};
-
-class WorldRendererPipeline : public RenderPipeline {
-public:
-	MAKE_BE_HANDLE(Instance)
-
-	WorldRendererPipeline(const InitializeInfo& initialize_info);
-
-	auto GetOnAddMeshHandle() const { return OnAddMesh; }
-	auto GetOnMeshUpdateHandle() const { return OnUpdateMesh; }
-
-	void onAddShaderGroup(RenderOrchestrator* render_orchestrator, RenderSystem* render_system) {
-		++shaderGroupCount;
-
-		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-			auto bwk = render_orchestrator->GetBufferWriteKey(render_system, visibilityDataKey);
-			bwk[u8"shaderGroupLength"] = shaderGroupCount;
-		}
-	}
-
-private:
-	uint32 shaderGroupCount = 0;
-
-	TaskHandle<StaticMeshHandle, Id> OnAddMesh;
-	TaskHandle<StaticMeshHandle> OnUpdateMesh;
-	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
-	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
-
-	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddInfiniteLight;
-
-	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddBackdrop;
-	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddParticleSystem;
-	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddVolume;
-	TaskHandle<StaticMeshHandle, Id, ShaderGroupHandle> OnAddSkinnedMesh;
-	
-	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
-
-	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
-	GTSL::StaticVector<AABB, 8> aabss;
-
-	GTSL::StaticVector<GTSL::Pair<Id, InstanceHandle>, 8> pendingAdditions;
-	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 8> pendingBuilds;
-
-	bool rayTracing = false;
-	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
-	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
-	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
-	Handle<uint32, DataKey_tag> visibilityDataKey;
-	TaskHandle<InstanceHandle, Id> addMeshInstanceTaskHandle; TaskHandle<InstanceHandle, GTSL::Matrix3x4> instanceUpdateTaskHandle;
-
-	struct Mesh {
-		ShaderGroupHandle MaterialHandle;
-		RenderSystem::BLASInstanceHandle InstanceHandle;
-		uint32 Index;
-	};
-	GTSL::FixedVector<Mesh, BE::PAR> instances;
-
-	GTSL::HashMap<StaticMeshHandle, InstanceHandle, BE::PAR> meshToInstanceMap;
-
-	RenderOrchestrator::DataKeyHandle meshDataBuffer;
-
-	struct Resource {
-		GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> VertexElements;
-		GTSL::StaticVector<InstanceHandle, 8> Instances;
-		bool Loaded = false;
-		uint32 Offset = 0, IndexOffset = 0;
-		uint32 VertexSize, VertexCount = 0, IndexCount = 0;
-		GAL::IndexType IndexType;
-		RenderSystem::AccelerationStructureHandle BLAS;
-		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
-		bool Interleaved = true;
-		uint32 Index = 0;
-		RenderOrchestrator::NodeHandle nodeHandle;
-	};
-	GTSL::HashMap<Id, Resource, BE::PAR> resources;
-
-	RenderSystem::BufferHandle vertexBuffer, indexBuffer;
-	uint32 vertexComponentsPerStream = 0, indicesInBuffer = 0;
-
-	struct MaterialData {
-		RenderOrchestrator::NodeHandle Node;
-		ShaderGroupHandle SGHandle;
-	};
-	GTSL::HashMap<uint32, MaterialData, BE::PAR> materials;
-
-	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle, lightingDataNodeHandle;
-
-	BE::TypeIdentifer instanceIdentifier;
-
-	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
-		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
-	}
-	
-	GTSL::StaticVector<uint32, 16> prefixSum; GTSL::StaticVector<Id, 16> prefixSumGuide;
-
-	void t() {
-		
-	}
-
-	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
-		auto& resource = resources[Id(staticMeshInfo.GetName())];
-
-		auto verticesSize = staticMeshInfo.GetVertexSize() * staticMeshInfo.GetVertexCount(), indicesSize = staticMeshInfo.GetIndexCount() * staticMeshInfo.GetIndexSize();
-
-		resource.VertexSize = staticMeshInfo.GetVertexSize();
-		resource.VertexCount = staticMeshInfo.VertexCount;
-		resource.IndexCount = staticMeshInfo.IndexCount;
-		resource.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
-		resource.Interleaved = staticMeshInfo.Interleaved;
-
-		resource.Offset = vertexComponentsPerStream; resource.IndexOffset = indicesInBuffer;
-
-		for(uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
-			auto& sm = staticMeshInfo.GetSubMeshes().array[i];
-			auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
-
-			if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
-				RenderOrchestrator::NodeHandle materialNodeHandle;
-				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-					auto materialDataNode = render_orchestrator->AddDataNode(meshDataNode, u8"MaterialNode", render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
-					r.Get().Node = render_orchestrator->AddMaterial(render_system, materialDataNode, shaderGroupHandle);
-					materialNodeHandle = r.Get().Node;
-				} else {
-					materialNodeHandle = r.Get().Node;
-				}
-
-				resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, prefixSum[resource.Index], resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
-			}
-			else if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-				if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-					resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
-				}
-
-				//TODO: add to selection buffer
-				//TODO: add pipeline bind to render pixels with this material
-
-				//render_orchestrator->AddIndirectDispatchNode();
-			}
-		}
-
-		//if unorm or snorm is used to specify data, take that into account as some properties (such as positions) may need scaling as XNORM enconding is defined in the 0->1 / -1->1 range
-		bool usesxNorm = false;
-
-		for (uint32 ai = 0; ai < staticMeshInfo.GetVertexDescriptor().Length; ++ai) {
-			auto& t = resource.VertexElements.EmplaceBack();
-
-			auto& a = staticMeshInfo.GetVertexDescriptor().array[ai];
-			for (uint32 bi = 0; bi < a.Length; ++bi) {
-				auto& b = a.array[bi];
-
-				t.EmplaceBack(b);
-
-				if (b == GAL::ShaderDataType::U16_UNORM or b == GAL::ShaderDataType::U16_UNORM2 or b == GAL::ShaderDataType::U16_UNORM3 or b == GAL::ShaderDataType::U16_UNORM4) {
-					usesxNorm = true;
-				}
-
-				if (b == GAL::ShaderDataType::U16_SNORM or b == GAL::ShaderDataType::U16_SNORM2 or b == GAL::ShaderDataType::U16_SNORM3 or b == GAL::ShaderDataType::U16_SNORM4) {
-					usesxNorm = true;
-				}				
-			}
-
-		}
-
-		if(usesxNorm) {
-			//don't always assign bounding box as scaling factor, as even if we didn't need it bounding boxes usually have little errors which would cause the mesh to be scaled incorrectly
-			//even though we have the correct coordinates to begin with
-			resource.ScalingFactor = staticMeshInfo.GetBoundingBox();
-		}
-
-		staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(vertexBuffer), indicesInBuffer, render_system->GetBufferRange(indexBuffer), onStaticMeshLoadHandle);
-
-		vertexComponentsPerStream += staticMeshInfo.GetVertexCount();
-		indicesInBuffer += staticMeshInfo.GetIndexCount();
-	}
-
-	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
-		auto& res = resources[Id(staticMeshInfo.GetName())];
-
-		auto commandListHandle = render_orchestrator->buildCommandList[render_system->GetCurrentFrame()];
-
-		render_system->UpdateBuffer(commandListHandle, vertexBuffer); render_system->UpdateBuffer(commandListHandle, indexBuffer);
-		render_orchestrator->AddVertices(vertexBufferNodeHandle, staticMeshInfo.GetVertexCount());
-		render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
-
-		if (rayTracing) {
-			res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
-			pendingBuilds.EmplaceBack(res.BLAS);
-		}
-
-		for (auto e : res.Instances) {
-			GetApplicationManager()->CallTaskOnEntity(addMeshInstanceTaskHandle, e, Id(staticMeshInfo.GetName()));
-			*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
-		}
-
-		res.Loaded = true;
-
-		GTSL::StaticVector<GTSL::Range<const GAL::ShaderDataType*>, 8> r;
-
-		for (auto& e : res.VertexElements) {
-			r.EmplaceBack(e.GetRange());
-		}
-	}
-
-	void onAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshHandle static_mesh_handle, Id resourceName) {
-		const auto instanceIndex = instances.Emplace();
-		const auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(instanceIdentifier, instanceIndex);
-		meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
-		auto resource = resources.TryEmplace(resourceName);
-
-		spherePositionsAndRadius.EmplaceBack(0, 0, 0, 0);
-		auto& instance = instances[instanceIndex];
-
-		if (rayTracing) {
-			instance.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, 0, instance.InstanceHandle); // Custom instance index will be set later
-		}
-
-		if (resource) { // If resource isn't already loaded 
-			resource.Get().Index = prefixSum.EmplaceBack(0); prefixSumGuide.EmplaceBack(resourceName);
-			//mesh.Index = resource.Get().Meshes.GetLength();
-			static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
-		}
-		else {
-			if (resource.Get().Loaded) {
-				//onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, resource.Get(), resourceName, static_mesh_handle);
-
-				//todo: call task on task on entity
-			}
-		}
-
-		resource.Get().Instances.EmplaceBack(instanceHandle);
-	}
-
-	void addMeshInstance(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, Id resource_name) {
-		auto& instance = instances[instance_handle()];
-		auto& resource = resources[resource_name];
-
-		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-
-		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
-			auto instanceIndex = prefixSum[i]++;
-
-			render_orchestrator->SetBaseInstanceIndex(resources[prefixSumGuide[i]].nodeHandle, instanceIndex);
-		}
-
-		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
-			for (uint32 j = 0; j < resource.Instances; ++j) {
-				auto& inst = instances[resource.Instances[j]()];
-				auto instanceIndex = inst.Index = prefixSum[i] + j;
-				inst.Index = instanceIndex;
-
-				if (rayTracing) { renderSystem->SetAccelerationStructureInstanceIndex(topLevelAccelerationStructure, inst.InstanceHandle, instanceIndex); }
-			}
-		}
-
-		const auto instanceIndex = instance.Index;
-
-		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
-		key[instanceIndex][u8"shaderGroupIndex"] = instance.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
-
-		render_orchestrator->AddInstance(resource.nodeHandle);
-
-		if (rayTracing) {
-			pendingAdditions.EmplaceBack(resource_name, instance_handle);
-		}
-	}
-
-	void updateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshHandle static_mesh_handle) {
-		GetApplicationManager()->CallTaskOnEntity(instanceUpdateTaskHandle, meshToInstanceMap[static_mesh_handle], GTSL::Matrix3x4());
-	}
-
-	void updateMeshInstance(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, GTSL::Matrix3x4 transform) {
-		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-
-		auto& instance = instances[instance_handle()];
-
-		key[instance.Index][u8"transform"] = transform;
-		*spherePositionsAndRadius.GetPointer<0>(instance_handle()) = transform[0][3];
-		*spherePositionsAndRadius.GetPointer<1>(instance_handle()) = transform[1][3];
-		*spherePositionsAndRadius.GetPointer<2>(instance_handle()) = transform[2][3];
-
-		if (rayTracing) {
-			renderSystem->SetInstancePosition(topLevelAccelerationStructure, instance.InstanceHandle, transform);
-		}
-	}
-
-	uint32 lights = 0;
-
-	void onAddLight(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle) {
-		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
-		bwk[u8"pointLightsLength"] = ++lights;
-		bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
-		bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(1, 1, 1);
-		bwk[u8"pointLights"][light_handle()][u8"intensity"] = 5.f;
-	}
-
-	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity) {
-		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
-		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
-		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
-		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
-	}
-
-	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {
-		//GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
-		//projectSpheres({0}, spherePositionsAndRadius, results);
-
-		{ // Add BLAS instances to TLAS only if dependencies were fulfilled
-			auto i = 0;
-
-			while (i < pendingAdditions) {
-				const auto& addition = pendingAdditions[i];
-				auto e = addition.Second;
-				auto& mesh = instances[e()];
-
-				mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e(), mesh.InstanceHandle);
-
-				pendingAdditions.Pop(i);
-				++i;
-			}
-		}
-
-
-		auto workloadHandle = render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()];
-		render_system->Wait(workloadHandle);
-		render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
-
-		if (rayTracing) {
-			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingBuilds); //Update all BLASes
-			pendingBuilds.Resize(0);
-			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
-		}
-
-		render_system->EndCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
-		render_system->Submit(GAL::QueueTypes::COMPUTE, { { { render_orchestrator->buildCommandList[render_system->GetCurrentFrame()] }, {  }, { workloadHandle } } }, workloadHandle);
-	}
-
-	void terrain() {
-		struct TerrainVertex {
-			GTSL::Vector3 position; GTSL::RGBA color;
-		};
-
-		GTSL::Extent3D terrainExtent{ 256, 1, 256 };
-
-		uint32 vertexCount = (terrainExtent.Width - 1) * (terrainExtent.Depth - 1) * 8;
-		uint32 indexCount = vertexCount;
-
-		TerrainVertex* vertices = nullptr; uint16* indices = nullptr;
-
-		// Initialize the index into the vertex and index arrays.
-		uint32 index = 0;
-
-		GTSL::RGBA color; uint32 m_terrainWidth; GTSL::Vector3* m_terrainModel = nullptr, * m_heightMap = nullptr;
-
-		// Load the vertex array and index array with data.
-		for (uint32 j = 0; j < (terrainExtent.Depth - 1); j++) {
-			for (uint32 i = 0; i < (terrainExtent.Width - 1); i++) {
-				// Get the indexes to the four points of the quad.
-				uint32 index1 = (m_terrainWidth * j) + i;          // Upper left.
-				uint32 index2 = (m_terrainWidth * j) + (i + 1);      // Upper right.
-				uint32 index3 = (m_terrainWidth * (j + 1)) + i;      // Bottom left.
-				uint32 index4 = (m_terrainWidth * (j + 1)) + (i + 1);  // Bottom right.
-
-				// Now create two triangles for that quad.
-				// Triangle 1 - Upper left.
-				m_terrainModel[index].X() = m_heightMap[index1].X();
-				m_terrainModel[index].Y() = m_heightMap[index1].Y();
-				m_terrainModel[index].Z() = m_heightMap[index1].Z();
-				index++;
-
-				// Triangle 1 - Upper right.
-				m_terrainModel[index].X() = m_heightMap[index2].X();
-				m_terrainModel[index].Y() = m_heightMap[index2].Y();
-				m_terrainModel[index].Z() = m_heightMap[index2].Z();
-				index++;
-
-				// Triangle 1 - Bottom left.
-				m_terrainModel[index].X() = m_heightMap[index3].X();
-				m_terrainModel[index].Y() = m_heightMap[index3].Y();
-				m_terrainModel[index].Z() = m_heightMap[index3].Z();
-				index++;
-
-				// Triangle 2 - Bottom left.
-				m_terrainModel[index].X() = m_heightMap[index3].X();
-				m_terrainModel[index].Y() = m_heightMap[index3].Y();
-				m_terrainModel[index].Z() = m_heightMap[index3].Z();
-				index++;
-
-				// Triangle 2 - Upper right.
-				m_terrainModel[index].X() = m_heightMap[index2].X();
-				m_terrainModel[index].Y() = m_heightMap[index2].Y();
-				m_terrainModel[index].Z() = m_heightMap[index2].Z();
-				index++;
-
-				// Triangle 2 - Bottom right.
-				m_terrainModel[index].X() = m_heightMap[index4].X();
-				m_terrainModel[index].Y() = m_heightMap[index4].Y();
-				m_terrainModel[index].Z() = m_heightMap[index4].Z();
-				index++;
-			}
-		}
-	}
-
-	void setupDirectionShadowRenderPass(RenderSystem* renderSystem, RenderOrchestrator* renderOrchestrator) {
-		// Make render pass
-		RenderOrchestrator::PassData pass_data;
-		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"WorldPosition" });
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"RenderDepth" });
-		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data, GetApplicationManager());
-
-		// Create shader group
-		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
-		// Add dispatch
-		auto pipelineBindNode = renderOrchestrator->addPipelineBindNode(renderPassLayerHandle, rayTraceShaderGroupHandle);
-		auto cameraDataNode = renderOrchestrator->AddDataNode(pipelineBindNode, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
-		
-		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember2(u8"global", u8"TraceRayParameterData", { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} });
-		auto rayTraceDataMember = renderOrchestrator->CreateMember2(u8"global", u8"RayTraceData", { { u8"TraceRayParameterData", u8"traceRayParameters" }, { u8"StaticMeshData*", u8"staticMeshes" } });
-		auto rayTraceDataNode = renderOrchestrator->AddDataNode(u8"RayTraceData", cameraDataNode, rayTraceDataMember);
-
-		auto rayTraceNode = renderOrchestrator->addRayTraceNode(rayTraceDataNode, rayTraceShaderGroupHandle);
-
-		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceDataNode);
-		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
-		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
-		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
-		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
-		bwk[u8"staticMeshes"] = meshDataBuffer;
-	}
 };
 
 class UIRenderManager : public RenderManager {

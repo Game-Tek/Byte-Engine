@@ -155,7 +155,7 @@ public:
 			}
 		};
 
-		check(primitives.begin(), check);
+		//check(primitives.begin(), check);
 
 		return GTSL::Result<UIElementHandle>{ false };
 	}

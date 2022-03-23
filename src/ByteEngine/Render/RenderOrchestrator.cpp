@@ -229,6 +229,9 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	// MATERIALS
 
+	//GetApplicationManager()->RegisterTask(this, u8"aaa", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::test);
+	//GetApplicationManager()->RegisterTask(this, u8"aaa", DependencyBlock(), &RenderOrchestrator::test);
+
 	onTextureInfoLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
 	onTextureLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
 
@@ -470,7 +473,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		const auto& baseData = renderingTree.GetAlpha(key);
 
-		printNode(key, level, false);
+		printNode(key, level, true);
 
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
@@ -649,7 +652,40 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 	};
 
-	ForEachBeta(renderingTree, runLevel, endNode);
+	auto onFail = [&](const uint32 nodeHandle, uint32 level) {
+		switch (renderingTree.GetNodeType(nodeHandle)) {
+		case decltype(renderingTree)::GetTypeIndex<LayerData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: LayerData", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<PipelineBindData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Pipeline Bind", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<MeshData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Mesh Data", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Vertex Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Index Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Render Pass", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		default: {
+			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: null", u8", Name: ", getNode(nodeHandle).Name);
+			break;
+		}
+		}
+	};
+
+	ForEachBeta(renderingTree, runLevel, endNode, onFail);
 
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
 	CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
@@ -710,7 +746,7 @@ ShaderGroupHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_name) {
 		auto& shaderGroup = shaderGroups[materialIndex];
 
 		if constexpr (BE_DEBUG) { shaderGroup.Name = GTSL::StringView(shader_group_name); }
-		shaderGroup.ResourceHandle = makeResource();
+		shaderGroup.ResourceHandle = makeResource(GTSL::StringView(shader_group_name));
 		addDependencyOnResource(shaderGroup.ResourceHandle); // Add dependency the pipeline itself
 		shaderGroup.Buffer = MakeDataKey();
 	} else {
@@ -1476,171 +1512,4 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 
 //using VisibilityData = meta_struct<member<"shaderGroupLength", uint32>> ;
 
-WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), materials(GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()) {
-	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
-	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
-
-	rayTracing = BE::Application::Get()->GetBoolOption(u8"rayTracing");
-
-	onStaticMeshInfoLoadHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE), TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator", AccessTypes::READ_WRITE)), &WorldRendererPipeline::onStaticMeshInfoLoaded);
-
-	onStaticMeshLoadHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnStaticMeshLoad",
-		DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE),
-			TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup"),
-			TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")),
-		&WorldRendererPipeline::onStaticMeshLoaded);
-
-	OnAddMesh = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddMesh",
-		DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"),
-			TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"),
-			TypedDependency<RenderSystem>(u8"RenderSystem"),
-			TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")),
-		&WorldRendererPipeline::onAddMesh);
-
-	OnUpdateMesh = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::updateMesh);
-
-	initialize_info.ApplicationManager->EnqueueScheduledTask(initialize_info.ApplicationManager->RegisterTask(this, u8"renderSetup", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::preRender, u8"RenderSetup", u8"Render"));
-
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"));
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"));
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnRemovePointLight"));
-
-	addMeshInstanceTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addMeshInstance", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::addMeshInstance);
-	instanceUpdateTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::updateMeshInstance);
-
-	instanceIdentifier = GetApplicationManager()->RegisterType(this, u8"Instance");
-	GetApplicationManager()->AddTypeSetupDependency(instanceIdentifier, addMeshInstanceTaskHandle, true);
-	GetApplicationManager()->AddTypeSetupDependency(instanceIdentifier, instanceUpdateTaskHandle, false);
-
-	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::onAddLight);
-	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
-	auto updateLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
-	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
-
-	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
-	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
-
-	RenderOrchestrator::NodeHandle renderPassNodeHandle;
-
-	renderOrchestrator->AddNotifyShaderGroupCreated(GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)>::Create<WorldRendererPipeline, &WorldRendererPipeline::onAddShaderGroup>(this));
-
-	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
-		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Normal" });
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"WorldPosition" });
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"RenderDepth" });
-		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
-	}
-	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Visibility" });
-		geoRenderPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"RenderDepth" });
-		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass, GetApplicationManager());
-
-		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"positionStream");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"normalStream");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"tangentStream");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"bitangentStream");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"textureCoordinatesStream");
-		members.EmplaceBack(nullptr, u8"uint32", u8"shaderGroupLength");
-		members.EmplaceBack(nullptr, u8"uint32[256]", u8"shaderGroupUseCount");
-		members.EmplaceBack(nullptr, u8"uint32[256]", u8"shaderGroupStart");
-		members.EmplaceBack(nullptr, u8"IndirectDispatchCommand[256]", u8"indirectBuffer");
-		members.EmplaceBack(nullptr, u8"ptr_t", u8"pixelBuffer");
-		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
-
-		visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
-		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"VisibilityDataLightingDataNode", visibilityDataKey);
-
-		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
-		auto pielBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
-
-		{
-			auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, visibilityDataKey);
-
-			const auto vertexElementsThatFitInBuffer = ((1024 * 1024 * 4) / 56u);
-
-			bwk[u8"positionStream"] = vertexBuffer;
-			bwk[u8"normalStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 1 * vertexElementsThatFitInBuffer); //todo: if buffer is updatable only address for current frame will be set
-			bwk[u8"tangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 2 * vertexElementsThatFitInBuffer);
-			bwk[u8"bitangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 3 * vertexElementsThatFitInBuffer);
-			bwk[u8"textureCoordinatesStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 4 * vertexElementsThatFitInBuffer);
-			bwk[u8"shaderGroupLength"] = 0u;
-			bwk[u8"pixelBuffer"] = pielBuffer;
-		}
-
-		//Counts how many pixels each shader group uses
-		RenderOrchestrator::PassData countPixelsRenderPassData;
-		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		countPixelsRenderPassData.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"Visibility" });
-		renderOrchestrator->AddRenderPass(u8"CountPixels", renderOrchestrator->GetGlobalDataLayer(), renderSystem, countPixelsRenderPassData, GetApplicationManager());
-
-		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
-		//RenderOrchestrator::PassData prefixSumRenderPassData;
-		//prefixSumRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		//renderOrchestrator->AddRenderPass(u8"PrefixSum", renderOrchestrator->GetCameraDataLayer(), renderSystem, prefixSumRenderPassData, GetApplicationManager());
-		//
-		////Scans the whole rendered image and stores which pixels every shader group occupies utilizing the information from the prefix sum pass
-		//RenderOrchestrator::PassData selectPixelsRenderPass;
-		//selectPixelsRenderPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-		//countPixelsRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		//renderOrchestrator->AddRenderPass(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectPixelsRenderPass, GetApplicationManager());
-		//
-		////Every participating shader group is called to paint every pixel it occupies on screen
-		//RenderOrchestrator::PassData paintRenderPassData;
-		//paintRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
-		//paintRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		//paintRenderPassData.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
-		//renderOrchestrator->AddRenderPass(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
-
-		//renderOrchestrator->SetShaderGroupParameter(renderSystem, ShaderGroupHandle{}, u8"materialCount", 0u);
-	}
-
-	RenderOrchestrator::PassData gammaCorrectionPass;
-	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-	gammaCorrectionPass.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" }); //result attachment
-	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass, GetApplicationManager());
-	
-	renderOrchestrator->CreateMember2(u8"global", u8"StaticMeshData", INSTANCE_DATA);
-	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
-
-	renderOrchestrator->CreateMember2(u8"global", u8"PointLightData", POINT_LIGHT_DATA);	
-	renderOrchestrator->CreateMember2(u8"global", u8"LightingData", LIGHTING_DATA);
-
-	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
-
-	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
-	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightingDataKey);
-
-	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
-	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
-	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer);
-
-	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"VisibilityShaderGroup"));
-		mainVisibilityPipelineNode = renderOrchestrator->AddMaterial(renderSystem, meshDataNode, shaderGroupHandle);
-	}
-
-	for (uint32 i = 0; i < renderSystem->GetPipelinedFrames(); ++i) {
-		renderOrchestrator->buildCommandList[i] = renderSystem->CreateCommandList(u8"Acc. Struct. build", GAL::QueueTypes::COMPUTE, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD);
-		renderOrchestrator->buildAccelerationStructuresWorkloadHandle[i] = renderSystem->CreateWorkload(u8"Build Acc. Structs.", GAL::QueueTypes::COMPUTE, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD);
-	}
-
-	if (rayTracing) {
-		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
-
-		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
-	}
-
-	//add node
-	//RenderOrchestrator::PassData pass_data;
-	//pass_data.PassType = RenderOrchestrator::PassType::COMPUTE;
-	//pass_data.WriteAttachments.EmplaceBack(u8"Color");
-	//pass_data.ReadAttachments.EmplaceBack(u8"Normal");
-	//pass_data.ReadAttachments.EmplaceBack(u8"RenderDepth");
-	//auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"Lighting", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
-}
+#define REGISTER_TASK(name) name = GetApplicationManager()->RegisterTask(this, u8"name", name##_DEPENDENCIES, &WorldRendererPipeline::OnUpdateMesh);

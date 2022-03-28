@@ -82,6 +82,9 @@ MAKE_HANDLE(uint32, System)
 
 namespace BE {
 	struct TypeIdentifier {
+		TypeIdentifier() = delete;
+		TypeIdentifier(const uint16 sysid, const uint16 tid) : SystemId(sysid), TypeId(tid) {}
+
 		uint16 SystemId = 0xFFFF, TypeId = 0xFFFF;
 
 		uint32 operator()() const { return (SystemId | TypeId << 16); }
@@ -89,7 +92,7 @@ namespace BE {
 
 	template<typename T>
 	struct Handle {
-		Handle() = default;
+		Handle() : Identifier(0xFFFF, 0xFFFF), EntityIndex(0xFFFFFFFF) {}
 		Handle(TypeIdentifier type_identifier, uint32 handle) : Identifier(type_identifier), EntityIndex(handle) {}
 		Handle(const Handle&) = default;
 		//Handle& operator=(const Handle& other) {
@@ -347,7 +350,7 @@ public:
 
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = true;
-		allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
+		allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 
 		stages[task.StartStageIndex].EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
@@ -367,7 +370,7 @@ public:
 				auto handle = get<0>(args...);
 				auto* taskDispatchInfo = allocateTaskDispatchInfo(task, task.Access.front().First, handle.Identifier, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
 			} else {
-				allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
+				allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 			}
 		}
 
@@ -456,7 +459,7 @@ private:
 	 */
 	template<typename... ARGS>
 	struct TaskDispatchInfo {
-		TaskDispatchInfo() : Arguments{ 0 } {}
+		TaskDispatchInfo() : TTID(0xFFFF, 0xFFFF), Arguments{ 0 } {}
 
 		template<typename T, typename... FULL_ARGS>
 		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), uint32 sysCount) : ResourceCount(sysCount) {

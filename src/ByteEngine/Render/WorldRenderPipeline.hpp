@@ -273,10 +273,10 @@ private:
 		// Make render pass
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::WRITE, u8"Color" });
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"WorldPosition" });
-		pass_data.Attachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ GAL::AccessTypes::READ, u8"RenderDepth" });
-		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data, GetApplicationManager());
+		pass_data.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
+		pass_data.Attachments.EmplaceBack(u8"WorldPosition", GAL::AccessTypes::READ);
+		pass_data.Attachments.EmplaceBack(u8"RenderDepth", GAL::AccessTypes::READ);
+		auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"DirectionalShadow", renderOrchestrator->GetGlobalDataLayer(), renderSystem, pass_data);
 
 		// Create shader group
 		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");

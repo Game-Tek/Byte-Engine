@@ -2,12 +2,14 @@
 
 #include <GTSL/Math/Math.hpp>
 
-UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"), colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator())
+UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"),
+colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(8, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator()),
+UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElement"))
 {
 }
 
 void UIManager::ProcessUpdates() {
-	updateBranch();
+	updateBranch(UIElementHandle(UIElementTypeIndentifier, 1));
 
 	//auto result = FindPrimitiveUnderPoint({});
 	//if (result) {

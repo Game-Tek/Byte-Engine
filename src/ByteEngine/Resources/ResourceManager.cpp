@@ -1,17 +1,31 @@
 #include "ResourceManager.h"
+#include "ResourceManager.h"
+#include "ResourceManager.h"
 
 #include "ByteEngine/Application/Application.h"
 
-GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension)
-{
+GTSL::StaticString<512> ResourceManager::GetUserResourcePath(const GTSL::Range<const utf8*> fileWithExtension) {
+	GTSL::StaticString<512> path;
+	path += BE::Application::Get()->GetPathToApplication();
+	path += u8"/user/"; path += fileWithExtension;
+	return path;
+}
+
+GTSL::StaticString<512> ResourceManager::GetUserResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension) {
+	GTSL::StaticString<512> path;
+	path += BE::Application::Get()->GetPathToApplication();
+	path += u8"/user/"; path += fileName; path += u8'.'; path += extension;
+	return path;
+}
+
+GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension) {
 	GTSL::StaticString<512> path;
 	path += BE::Application::Get()->GetPathToApplication();
 	path += u8"/resources/"; path += fileName; path += u8'.'; path += extension;
 	return path;
 }
 
-GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension)
-{
+GTSL::StaticString<512> ResourceManager::GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension) {
 	GTSL::StaticString<512> path;
 	path += BE::Application::Get()->GetPathToApplication();
 	path += u8"/resources/"; path += fileWithExtension;

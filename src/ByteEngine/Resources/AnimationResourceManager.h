@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GTSL/HashMap.hpp>
-#include <GTSL/Math/Matrix4.h>
+#include <GTSL/Math/Matrix.hpp>
 #include <GTSL/Math/Quaternion.h>
 
 #include "ResourceManager.h"

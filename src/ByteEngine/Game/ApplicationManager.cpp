@@ -171,7 +171,7 @@ BE::TypeIdentifier ApplicationManager::RegisterType(const BE::System* system, co
 	uint16 id = system->systemId;
 	uint16 typeId = systemsData[id].TypeCount++;
 
-	systemsData[id].RegisteredTypes.Emplace(BE::TypeIdentifier{ id, typeId }(), GetPersistentAllocator());
+	systemsData[id].RegisteredTypes.Emplace(BE::TypeIdentifier(id, typeId)(), GetPersistentAllocator());
 
 	return { id, typeId };
 }

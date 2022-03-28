@@ -263,13 +263,13 @@ public:
 
 	struct PassData {
 		struct AttachmentReference {
-			GAL::AccessType Access; Id Name;
+			Id Name; GAL::AccessType Access;
 		};
 		GTSL::StaticVector<AttachmentReference, 8> Attachments;
 
 		PassType PassType;
 	};
-	NodeHandle AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData, ApplicationManager* am);
+	NodeHandle AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData);
 
 	void OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize);
 
@@ -342,7 +342,7 @@ public:
 		return MemberHandle{ handle };
 	}
 
-	NodeHandle AddMaterial(RenderSystem* render_system, NodeHandle parent_node_handle, ShaderGroupHandle materialHandle) {
+	NodeHandle AddMaterial(NodeHandle parent_node_handle, ShaderGroupHandle materialHandle) {
 		auto& material = shaderGroups[materialHandle.ShaderGroupIndex];
 		auto pipelineBindNode = addPipelineBindNode(parent_node_handle, materialHandle);
 		auto& materialNode = getNode(pipelineBindNode);
@@ -939,6 +939,16 @@ public:
 		return render_system->GetBufferAddress(dataKeys[data_key_handle()].Buffer);
 	}
 
+	NodeHandle AddSquare(const NodeHandle parent_node_handle) {
+		auto nodeHandle = addInternalNode<DrawData>(0, parent_node_handle);
+		return nodeHandle;
+	}
+
+	void AddMeshInstance2(const NodeHandle parent_node_handle) {
+		auto& node = getPrivateNode<DrawData>(parent_node_handle);
+		++node.InstanceCount;
+	}
+
 private:
 	inline static const Id RENDER_TASK_NAME{ u8"RenderOrchestrator::Render" };
 	inline static const Id SETUP_TASK_NAME{ u8"RenderOrchestrator::Setup" };
@@ -1082,7 +1092,7 @@ private:
 
 	uint64 resourceCounter = 0;
 
-	ResourceHandle makeResource(const GTSL::StringView resource_name = {}) {
+	ResourceHandle makeResource(const GTSL::StringView resource_name) {
 		auto& resource = resources.Emplace(++resourceCounter);
 		resource.Name = resource_name;
 		return ResourceHandle(resourceCounter);
@@ -1168,7 +1178,9 @@ private:
 
 	void onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem*, ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 
-	struct DrawData {};
+	struct DrawData {
+		uint32 InstanceCount = 0;
+	};
 
 	struct VertexBufferBindData {
 		uint32 VertexCount = 0, VertexSize = 0;
@@ -1516,16 +1528,6 @@ private:
 		return { ElementDataHandle(), false };
 	}
 
-	//GTSL::Result<uint32> dataTypeSize(GTSL::StringView parents, GTSL::StringView name) {
-	//	auto res = tryGetDataTypeHandle(parents, name);
-	//
-	//	if (res) {
-	//		return { GTSL::MoveRef(elements[res.Get()()].Size), true };
-	//	}
-	//
-	//	return { 0u, false };
-	//}
-
 	//will declare data type name under parents
 	//2 result if added
 	//1 result if exists
@@ -1831,6 +1833,8 @@ private:
 
 class UIRenderManager : public RenderManager {
 public:
+	DECLARE_BE_TASK(OnCreateUIElement, BE_RESOURCES(RenderOrchestrator), UIManager::UIElementHandle, UIManager::PrimitiveData::PrimitiveType);
+
 	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager") {
 		auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 		auto* renderOrchestrator = initializeInfo.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
@@ -1842,45 +1846,34 @@ public:
 
 		renderOrchestrator->CreateMember2(u8"global", u8"TextBlockData", { { u8"uint32", u8"fontIndex" }, { u8"uint32[256]", u8"chars"} });
 
-		//RenderOrchestrator::CreateMaterialInfo createMaterialInfo;
-		//createMaterialInfo.RenderSystem = renderSystem;
-		//createMaterialInfo.ApplicationManager = initializeInfo.ApplicationManager;
-		//createMaterialInfo.MaterialName = "UIMat";
-		//createMaterialInfo.InstanceName = "UIMat";
-		//createMaterialInfo.ShaderResourceManager = BE::Application::Get()->GetResourceManager<ShaderResourceManager>("ShaderResourceManager");
-		//createMaterialInfo.TextureResourceManager = BE::Application::Get()->GetResourceManager<TextureResourceManager>("TextureResourceManager");
-		//uiMaterial = renderOrchestrator->CreateShaderGroup(createMaterialInfo);
-		//
-		//square = renderSystem->CreateMesh("BE_UI_SQUARE", 0, GetUIMaterial());
-		//renderSystem->SignalMeshDataUpdate(square, 4, 4 * 2, 6, 2, GTSL::StaticVector<GAL::ShaderDataType, 4>{ GAL::ShaderDataType::FLOAT2 });
-		////
-		//auto* meshPointer = renderSystem->GetMeshPointer(square);
-		//GTSL::MemCopy(4 * 2 * 4, SQUARE_VERTICES, meshPointer);
-		//meshPointer += 4 * 2 * 4;
-		//GTSL::MemCopy(6 * 2, SQUARE_INDICES, meshPointer);
-		//renderSystem->SignalMeshDataUpdate(square);
-		//renderSystem->SetWillWriteMesh(square, false);	
-		//
-		//GTSL::StaticVector<MaterialSystem::MemberInfo, 8> members;
-		//members.EmplaceBack(&matrixUniformBufferMemberHandle, 1);
-		////members.EmplaceBack(4); //padding
-		//
-		////TODO: MAKE A CORRECT PATH FOR DECLARING RENDER PASSES
-		//
-		//auto bufferHandle = materialSystem->CreateBuffer(renderSystem, MaterialSystem::MemberInfo(&uiDataStruct, 16, members));
-		//materialSystem->BindBufferToName(bufferHandle, "UIRenderGroup");
-		//renderOrchestrator->AddToRenderPass("UIRenderPass", "UIRenderGroup");
 
-		GTSL::Matrix3x4 matrix; //default identity matrix
+		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
 
-		//UIManager* ui;
-		//
-		//ui->ProcessUpdates();
-		//
-		//auto& canvases = ui->GetCanvases();
-		//for(auto& e : canvases) {
-		//	auto& primitive = ui->getPrimitive(e);
-		//}
+		GetApplicationManager()->SubscribeToEvent(u8"UIManager", UIManager::GetOnCreateUIElementEventHandle(), OnCreateUIElementTaskHandle);
+
+		{
+			RenderOrchestrator::PassData uiRenderPassData;
+			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
+			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
+			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UI", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
+
+			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(renderPassNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
+		}
+
+		meshNodeHandle = renderOrchestrator->AddSquare(uiMaterialNodeHandle);
+	}
+
+	void OnCreateUIElement(const TaskInfo, RenderOrchestrator* render_orchestrator, UIManager::UIElementHandle ui_element_handle, UIManager::PrimitiveData::PrimitiveType type) {
+		switch (type) {
+		break; case UIManager::PrimitiveData::PrimitiveType::NULL:
+		break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
+		break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
+		break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
+			render_orchestrator->AddMeshInstance2(meshNodeHandle);
+		break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
+		break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
+		break;
+		}
 	}
 
 	void ui() {
@@ -1900,11 +1893,44 @@ public:
 		//ui->GetText
 	}
 
+	void everyFrame() {
+		UIManager* ui;
+		ui->ProcessUpdates();
+
+		auto root = ui->GetRoot();
+
+		auto visitUIElement = [&](GTSL::Tree<UIManager::PrimitiveData, BE::PAR>::iterator iterator, GTSL::Matrix3x4 matrix, auto&& self) -> void {
+			const auto& primitive = static_cast<const UIManager::PrimitiveData&>(iterator);
+
+			GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.Size, 0));
+			GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
+
+			//switch (primitive.Type) {
+			//break; case UIManager::PrimitiveData::PrimitiveType::NULL:
+			//break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
+			//break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
+			//break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
+			//break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
+			//break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
+			//}
+
+			for (auto e : iterator) {
+				self(e, matrix, self);
+			}
+		};
+
+		for (auto e : root) {
+			visitUIElement(e, GTSL::Matrix3x4(), visitUIElement);
+		}
+	}
+
 	ShaderGroupHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
+
+	RenderOrchestrator::NodeHandle uiMaterialNodeHandle, meshNodeHandle;
 
 	GTSL::StaticMap<Id, uint32, 4> fontOrderMap;
 	GTSL::StaticMap<char32_t, uint32, 4> fontCharMap;
@@ -1912,3 +1938,128 @@ private:
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;
 };
+
+//for (auto& ref : canvases)
+//{
+//	auto& canvas = canvasSystem->GetCanvas(ref);
+//	auto canvasSize = canvas.GetExtent();
+//
+//	float xyRatio = static_cast<float32>(canvasSize.Width) / static_cast<float32>(canvasSize.Height);
+//	float yxRatio = static_cast<float32>(canvasSize.Height) / static_cast<float32>(canvasSize.Width);
+//	
+//	GTSL::Matrix4 ortho = GTSL::Math::MakeOrthoMatrix(1.0f, -1.0f, yxRatio, -yxRatio, 0, 100);
+//	
+//	auto& organizers = canvas.GetOrganizersTree();
+//
+//	//auto primitives = canvas.GetPrimitives();
+//	//auto squares = canvas.GetSquares();
+//	//
+//	//const auto* parentOrganizer = organizers[0];
+//	//
+//	//uint32 sq = 0;
+//	//for(auto& e : squares)
+//	//{
+//	//	GTSL::Matrix4 trans(1.0f);
+//	//
+//	//	auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
+//	//	auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
+//	//	//
+//	//	GTSL::Math::AddTranslation(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
+//	//	GTSL::Math::Scale(trans, GTSL::Vector3(scale.X(), scale.Y(), 1));
+//	//	//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
+//	//	//
+//	//
+//	//	MaterialSystem::BufferIterator iterator;
+//	//	info.MaterialSystem->UpdateIteratorMember(iterator, uiDataStruct, sq);
+//	//	*info.MaterialSystem->GetMemberPointer(iterator, matrixUniformBufferMemberHandle) = trans * ortho;
+//	//	//*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
+//	//	++sq;
+//	//}
+//	
+//	//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
+//	//{
+//	//	GTSL::Matrix4 transform;
+//	//
+//	//	for (uint32 i = 0; i < node->Nodes.GetLength(); ++i) { self(node->Nodes[i], depth + 1, transform, self); }
+//	//
+//	//	const auto aspectRatio = organizersAspectRatio.begin()[parentOrganizer->Data];
+//	//	GTSL::Matrix4 organizerMatrix = ortho;
+//	//	GTSL::Math::Scale(organizerMatrix, { aspectRatio.X, aspectRatio.Y, 1.0f });
+//	//
+//	//	for (auto square : organizersSquares.begin()[node->Data])
+//	//	{
+//	//		primitivesPerOrganizer->begin()[square.PrimitiveIndex].AspectRatio;
+//	//	}
+//	//};
+//	//
+//	//processNode(parentOrganizer, 0, ortho, processNode);
+//}
+
+//if (textSystem->GetTexts().ElementCount())
+//{
+//	int32 atlasIndex = 0;
+//	
+//	auto& text = textSystem->GetTexts()[0];
+//	auto& imageFont = textSystem->GetFont();
+//
+//	auto x = text.Position.X;
+//	auto y = text.Position.Y;
+//	
+//	byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
+//
+//	uint32 offset = 0;
+//	
+//	GTSL::Matrix4 ortho;
+//	auto renderExtent = info.RenderSystem->GetRenderExtent();
+//	GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(renderExtent.Width) * 0.5f, static_cast<float32>(renderExtent.Width) * -0.5f, static_cast<float32>(renderExtent.Height) * 0.5f, static_cast<float32>(renderExtent.Height) * -0.5f, 1, 100);
+//	GTSL::MemCopy(sizeof(ortho), &ortho, data + offset); offset += sizeof(ortho);
+//	GTSL::MemCopy(sizeof(uint32), &atlasIndex, data + offset); offset += sizeof(uint32); offset += sizeof(uint32) * 3;
+//	
+//	for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
+//	{
+//		auto& ch = imageFont.Characters.at(*c);
+//
+//		float xpos = x + ch.Bearing.X * scale;
+//		float ypos = y - (ch.Size.Height - ch.Bearing.Y) * scale;
+//
+//		float w = ch.Size.Width * scale;
+//		float h = ch.Size.Height * scale;
+//		
+//		// update VBO for each character
+//		float vertices[6][4] = {
+//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
+//			{ xpos,     -(ypos),       0.0f, 1.0f },
+//			{ xpos + w, -(ypos),       1.0f, 1.0f },
+//
+//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
+//			{ xpos + w, -(ypos),       1.0f, 1.0f },
+//			{ xpos + w, -(ypos + h),   1.0f, 0.0f }
+//		};
+//		
+//		// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+//		x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
+//
+//		uint32 val = ch.Position.Width;
+//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+//		val = ch.Position.Height;
+//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+//
+//		val = ch.Size.Width;
+//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+//		val = ch.Size.Height;
+//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
+//		
+//		for (uint32 v = 0; v < 6; ++v)
+//		{
+//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][0], data + offset); offset += sizeof(GTSL::Vector2); //vertices
+//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][2], data + offset); offset += sizeof(GTSL::Vector2); //uv
+//		}
+//		
+//	}
+//
+//}
+////MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
+////updateInfo.RenderGroup = "TextSystem";
+////updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
+////updateInfo.Address = 0;
+////info.MaterialSystem->UpdateRenderGroupData(updateInfo);

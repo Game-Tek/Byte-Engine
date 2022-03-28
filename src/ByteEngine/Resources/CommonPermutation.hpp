@@ -115,9 +115,9 @@ struct CommonPermutation : PermutationManager {
 		AddSupportedDomain(u8"Screen");
 	}
 
-	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
+	GTSL::Vector<ShaderGroupDescriptor, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) override {
 		if (shaderGroupJson[u8"domain"].GetStringView() == u8"Screen") {
 			if (shader_json[u8"class"].GetStringView() == u8"Compute") {
 				auto shaderScope = pipeline->DeclareScope(computeRenderPassScope, shader_json[u8"name"]);

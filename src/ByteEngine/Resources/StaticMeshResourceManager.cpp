@@ -42,18 +42,12 @@ static GTSL::Matrix4 ToGTSL(const aiMatrix4x4 assimpMatrix)
 
 using ShaderDataTypeType = GTSL::UnderlyingType<GAL::ShaderDataType>;
 
-StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"StaticMeshResourceManager")
-{
-	GTSL::StaticString<512> query_path, resources_path, index_path;
-	query_path += BE::Application::Get()->GetPathToApplication();
-	resources_path += BE::Application::Get()->GetPathToApplication();
-	query_path += u8"/resources/*.obj";
-	resources_path += u8"/resources/StaticMesh";
+StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"StaticMeshResourceManager") {
 
-	resource_files_.Start(resources_path);
+	resource_files_.Start(GetResourcePath(u8"StaticMeshes"));
 
 	{
-		GTSL::File meshDescriptionsFile; meshDescriptionsFile.Open(GetResourcePath(u8"meshes.json"));
+		GTSL::File meshDescriptionsFile; meshDescriptionsFile.Open(GetUserResourcePath(u8"meshes.json"));
 
 		GTSL::Buffer buffer(GetPersistentAllocator()); meshDescriptionsFile.Read(buffer);
 
@@ -72,11 +66,11 @@ StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initi
 
 				for(auto e : { u8"obj", u8"fbx" }) {
 					GTSL::File queryFile;
-					auto res = queryFile.Open(GetResourcePath(fileName, e), GTSL::File::READ, false);
+					auto res = queryFile.Open(GetUserResourcePath(fileName, e), GTSL::File::READ, false);
 
 					if(res != GTSL::File::OpenResult::ERROR) {
 						fileExtension = e;
-						meshFile.Open(GetResourcePath(fileName, e), GTSL::File::READ, false);
+						meshFile.Open(GetUserResourcePath(fileName, e), GTSL::File::READ, false);
 						break;
 					}
 				}

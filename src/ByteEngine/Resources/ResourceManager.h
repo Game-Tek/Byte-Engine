@@ -20,6 +20,8 @@ public:
 
 	ResourceManager(const InitializeInfo& info, const utf8* name) : System(info, name) {}
 	
+	GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
+	GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
 

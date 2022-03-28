@@ -133,7 +133,7 @@ public:
 
 	ShaderResourceManager(const InitializeInfo& initialize_info);
 	void makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const
-	                     PermutationManager::Result*>*> shaderBatch);
+	                     PermutationManager::ShaderPermutation*>*> shaderBatch);
 
 	~ShaderResourceManager() = default;
 
@@ -585,7 +585,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
 		//commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
 		commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
-		//commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation");
+		commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation");
 	} //todo: parametrize
 
 	GPipeline pipeline;
@@ -596,7 +596,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		for(auto e : PermutationManager::GetDefaultShaderGroups(commonPermutation, &pipeline)) {
 			GTSL::Buffer deserializer(GetTransientAllocator());
 			auto json = Parse(e.ShaderGroupJSON, deserializer);
-			GTSL::StaticVector<GTSL::Range<const PermutationManager::Result*>, 8> s;
+			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
 			for (auto& j : e.Shaders) {
 				s.EmplaceBack(j);
 			}
@@ -605,18 +605,18 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 		GTSL::FileQuery shaderGroupFileQuery;
 
-		while (auto fileRef = shaderGroupFileQuery.DoQuery(GetResourcePath(u8"*ShaderGroup.json"))) {
-			GTSL::File shaderGroupFile; shaderGroupFile.Open(GetResourcePath(fileRef.Get()), GTSL::File::READ, false);
+		while (auto fileRef = shaderGroupFileQuery.DoQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"))) {
+			GTSL::File shaderGroupFile; shaderGroupFile.Open(GetUserResourcePath(fileRef.Get()), GTSL::File::READ, false);
 
 			GTSL::Buffer buffer(shaderGroupFile.GetSize(), 16, GetTransientAllocator()); shaderGroupFile.Read(buffer);
 
 			GTSL::Buffer deserializer(GetTransientAllocator());
 			auto json = Parse(GTSL::StringView(GTSL::Byte(buffer.GetLength()), reinterpret_cast<const utf8*>(buffer.GetData())), deserializer);
 
-			GTSL::StaticVector<GTSL::StaticVector<PermutationManager::Result, 8>, 8> resultsPerShader;
+			GTSL::StaticVector<GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>, 8> resultsPerShader;
 
 			for (auto s : json[u8"shaders"]) {
-				GTSL::File shaderFile; shaderFile.Open(GetResourcePath(s[u8"name"], u8"json"));
+				GTSL::File shaderFile; shaderFile.Open(GetUserResourcePath(s[u8"name"], u8"json"));
 				GTSL::Buffer shaderFileBuffer(shaderFile.GetSize(), 16, GetTransientAllocator()); shaderFile.Read(shaderFileBuffer);
 
 				GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
@@ -635,7 +635,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				resultsPerShader.EmplaceBack(PermutationManager::ProcessShaders(commonPermutation, &pipeline, json, shaderJson));
 			}
 
-			GTSL::StaticVector<GTSL::Range<const PermutationManager::Result*>, 8> s;
+			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
 
 			for(auto& e : resultsPerShader) {
 				s.EmplaceBack(e);
@@ -679,7 +679,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 }
 
-inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const PermutationManager::Result*>*> shaderBatch) {
+inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const PermutationManager::ShaderPermutation*>*> shaderBatch) {
 	GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
 	if (auto structs = json[u8"structs"]) {

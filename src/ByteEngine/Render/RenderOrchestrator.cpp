@@ -3,7 +3,7 @@
 #undef MemoryBarrier
 
 #include <GTSL/Math/Math.hpp>
-#include <GTSL/Math/Matrix4.h>
+#include <GTSL/Math/Matrix.hpp>
 #include "LightsRenderGroup.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Game/Tasks.h"
@@ -59,131 +59,6 @@ inline uint32 PRECEDENCE(const GTSL::StringView optor) {
 	return PRECEDENCE[optor];
 }
 
-//for (auto& ref : canvases)
-//{
-//	auto& canvas = canvasSystem->GetCanvas(ref);
-//	auto canvasSize = canvas.GetExtent();
-//
-//	float xyRatio = static_cast<float32>(canvasSize.Width) / static_cast<float32>(canvasSize.Height);
-//	float yxRatio = static_cast<float32>(canvasSize.Height) / static_cast<float32>(canvasSize.Width);
-//	
-//	GTSL::Matrix4 ortho = GTSL::Math::MakeOrthoMatrix(1.0f, -1.0f, yxRatio, -yxRatio, 0, 100);
-//	
-//	auto& organizers = canvas.GetOrganizersTree();
-//
-//	//auto primitives = canvas.GetPrimitives();
-//	//auto squares = canvas.GetSquares();
-//	//
-//	//const auto* parentOrganizer = organizers[0];
-//	//
-//	//uint32 sq = 0;
-//	//for(auto& e : squares)
-//	//{
-//	//	GTSL::Matrix4 trans(1.0f);
-//	//
-//	//	auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
-//	//	auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
-//	//	//
-//	//	GTSL::Math::AddTranslation(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
-//	//	GTSL::Math::Scale(trans, GTSL::Vector3(scale.X(), scale.Y(), 1));
-//	//	//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
-//	//	//
-//	//
-//	//	MaterialSystem::BufferIterator iterator;
-//	//	info.MaterialSystem->UpdateIteratorMember(iterator, uiDataStruct, sq);
-//	//	*info.MaterialSystem->GetMemberPointer(iterator, matrixUniformBufferMemberHandle) = trans * ortho;
-//	//	//*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
-//	//	++sq;
-//	//}
-//	
-//	//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
-//	//{
-//	//	GTSL::Matrix4 transform;
-//	//
-//	//	for (uint32 i = 0; i < node->Nodes.GetLength(); ++i) { self(node->Nodes[i], depth + 1, transform, self); }
-//	//
-//	//	const auto aspectRatio = organizersAspectRatio.begin()[parentOrganizer->Data];
-//	//	GTSL::Matrix4 organizerMatrix = ortho;
-//	//	GTSL::Math::Scale(organizerMatrix, { aspectRatio.X, aspectRatio.Y, 1.0f });
-//	//
-//	//	for (auto square : organizersSquares.begin()[node->Data])
-//	//	{
-//	//		primitivesPerOrganizer->begin()[square.PrimitiveIndex].AspectRatio;
-//	//	}
-//	//};
-//	//
-//	//processNode(parentOrganizer, 0, ortho, processNode);
-//}
-
-//if (textSystem->GetTexts().ElementCount())
-//{
-//	int32 atlasIndex = 0;
-//	
-//	auto& text = textSystem->GetTexts()[0];
-//	auto& imageFont = textSystem->GetFont();
-//
-//	auto x = text.Position.X;
-//	auto y = text.Position.Y;
-//	
-//	byte* data = static_cast<byte*>(info.MaterialSystem->GetRenderGroupDataPointer("TextSystem"));
-//
-//	uint32 offset = 0;
-//	
-//	GTSL::Matrix4 ortho;
-//	auto renderExtent = info.RenderSystem->GetRenderExtent();
-//	GTSL::Math::MakeOrthoMatrix(ortho, static_cast<float32>(renderExtent.Width) * 0.5f, static_cast<float32>(renderExtent.Width) * -0.5f, static_cast<float32>(renderExtent.Height) * 0.5f, static_cast<float32>(renderExtent.Height) * -0.5f, 1, 100);
-//	GTSL::MemCopy(sizeof(ortho), &ortho, data + offset); offset += sizeof(ortho);
-//	GTSL::MemCopy(sizeof(uint32), &atlasIndex, data + offset); offset += sizeof(uint32); offset += sizeof(uint32) * 3;
-//	
-//	for (auto* c = text.String.begin(); c != text.String.end() - 1; c++)
-//	{
-//		auto& ch = imageFont.Characters.at(*c);
-//
-//		float xpos = x + ch.Bearing.X * scale;
-//		float ypos = y - (ch.Size.Height - ch.Bearing.Y) * scale;
-//
-//		float w = ch.Size.Width * scale;
-//		float h = ch.Size.Height * scale;
-//		
-//		// update VBO for each character
-//		float vertices[6][4] = {
-//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
-//			{ xpos,     -(ypos),       0.0f, 1.0f },
-//			{ xpos + w, -(ypos),       1.0f, 1.0f },
-//
-//			{ xpos,     -(ypos + h),   0.0f, 0.0f },
-//			{ xpos + w, -(ypos),       1.0f, 1.0f },
-//			{ xpos + w, -(ypos + h),   1.0f, 0.0f }
-//		};
-//		
-//		// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
-//		x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64)
-//
-//		uint32 val = ch.Position.Width;
-//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-//		val = ch.Position.Height;
-//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-//
-//		val = ch.Size.Width;
-//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-//		val = ch.Size.Height;
-//		GTSL::MemCopy(sizeof(val), &val, data + offset); offset += sizeof(val);
-//		
-//		for (uint32 v = 0; v < 6; ++v)
-//		{
-//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][0], data + offset); offset += sizeof(GTSL::Vector2); //vertices
-//			GTSL::MemCopy(sizeof(GTSL::Vector2), &vertices[v][2], data + offset); offset += sizeof(GTSL::Vector2); //uv
-//		}
-//		
-//	}
-//
-//}
-////MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
-////updateInfo.RenderGroup = "TextSystem";
-////updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
-////updateInfo.Address = 0;
-////info.MaterialSystem->UpdateRenderGroupData(updateInfo);
-
 RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderOrchestrator"),
 shaders(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()),
 renderingTree(128, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()),
@@ -227,11 +102,6 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 		GetPersistentAllocator().Allocate(1024 * 8, 32, reinterpret_cast<void**>(&buffer[0]), &allocatedSize); //TODO: free
 	}
 
-	// MATERIALS
-
-	//GetApplicationManager()->RegisterTask(this, u8"aaa", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::test);
-	//GetApplicationManager()->RegisterTask(this, u8"aaa", DependencyBlock(), &RenderOrchestrator::test);
-
 	onTextureInfoLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
 	onTextureLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
 
@@ -240,16 +110,6 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, SETUP_TASK_NAME, DependencyBlock(), &RenderOrchestrator::Setup, u8"GameplayEnd", u8"RenderSetup"));
 	initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, RENDER_TASK_NAME, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::Render, u8"Render", u8"Render"));
-
-	//{
-	//	GTSL::StaticVector<TaskDependency, 1> dependencies{ { u8"RenderOrchestrator", AccessTypes::READ_WRITE } };
-	//
-	//	auto renderEnableHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"RenderOrchestrator::OnRenderEnable", &RenderOrchestrator::OnRenderEnable, dependencies);
-	//	//initializeInfo.ApplicationManager->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusGainEventHandle(), renderEnableHandle);
-	//
-	//	auto renderDisableHandle = initializeInfo.ApplicationManager->StoreDynamicTask(u8"RenderOrchestrator::OnRenderDisable", &RenderOrchestrator::OnRenderDisable, dependencies);
-	//	//initializeInfo.ApplicationManager->SubscribeToEvent(u8"Application", GameApplication::GetOnFocusLossEventHandle(), renderDisableHandle);
-	//}
 
 	{
 		const auto taskDependencies = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
@@ -309,6 +169,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	renderPassesGuide.EmplaceBack(u8"ForwardRenderPass");
 	renderPassesGuide.EmplaceBack(u8"DirectionalShadow");
+	renderPassesGuide.EmplaceBack(u8"UI");
 	renderPassesGuide.EmplaceBack(u8"GammaCorrection");
 }
 
@@ -323,8 +184,6 @@ void Skim(GTSL::HashMap<K, V, ALLOC>& hash_map, auto predicate) {
 }
 
 void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
-	//renderSystem->SetHasRendered(renderingEnabled);
-	//if (!renderingEnabled) { return; }
 	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
 
 	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
@@ -577,7 +436,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 		case RTT::GetTypeIndex<DrawData>(): {
 			const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
-			commandBuffer.Draw(renderSystem->GetRenderDevice(), 6);
+			commandBuffer.Draw(renderSystem->GetRenderDevice(), 6, draw_data.InstanceCount);
 			break;
 		}
 		case RTT::GetTypeIndex<RenderPassData>(): {
@@ -791,7 +650,7 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	attachments.Emplace(attachmentName, attachment);
 }
 
-RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData, ApplicationManager* am) {
+RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData) {
 	GTSL::StaticVector<MemberInfo, 16> members;
 
 	for (auto& e : passData.Attachments) {
@@ -826,7 +685,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 	renderPasses2.Emplace(renderPassName, renderPassDataNode);
 	renderPassesInOrder.EmplaceBack(renderPassNodeHandle);
 
-	renderPass.ResourceHandle = makeResource();
+	renderPass.ResourceHandle = makeResource(renderPassName);
 	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
 
 	BindToNode(renderPassNodeHandle, renderPass.ResourceHandle);
@@ -1475,7 +1334,7 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 		t.Get().Index = textureIndex++;
 		auto textureLoadInfo = TextureLoadInfo(RenderAllocation());
 		createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
-		t.Get().Resource = makeResource();
+		t.Get().Resource = makeResource(createTextureInfo.TextureName);
 		return t.Get().Index;
 	}
 	else {

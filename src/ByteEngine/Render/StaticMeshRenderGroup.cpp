@@ -10,9 +10,7 @@
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInfo): System(initializeInfo, u8"StaticMeshRenderGroup"),
-	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()) {
-
-	StaticMeshTypeIndentifier = GetApplicationManager()->RegisterType(this, u8"StaticMesh");
+	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()), StaticMeshTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"StaticMesh")) {
 
 	DeleteStaticMesh = GetApplicationManager()->RegisterTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMesh);
 	GetApplicationManager()->BindDeletionTaskToType(StaticMeshTypeIndentifier, DeleteStaticMesh);

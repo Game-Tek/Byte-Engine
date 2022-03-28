@@ -113,8 +113,8 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GTSL::Vector<Result1, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override {
-		GTSL::Vector<Result1, BE::TAR> results(8, GetTransientAllocator());
+	GTSL::Vector<ShaderGroupDescriptor, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override {
+		GTSL::Vector<ShaderGroupDescriptor, BE::TAR> results(8, GetTransientAllocator());
 
 		{ //visibility
 			auto& sg = results.EmplaceBack();
@@ -159,7 +159,7 @@ u8R"({
 		return { GetTransientAllocator() };
 	}
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
@@ -261,7 +261,7 @@ u8R"({
 		}
 	}
 
-	void ProcessVisibility(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<Result, 8>& batches) {
+	void ProcessVisibility(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {

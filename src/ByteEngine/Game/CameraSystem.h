@@ -4,7 +4,7 @@
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Game/System.hpp"
 
-#include <GTSL/Math/Matrix4.h>
+#include <GTSL/Math/Matrix.hpp>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Vector.hpp>
 
@@ -55,7 +55,7 @@ public:
 	}
 
 	void AddCameraPosition(const CameraHandle reference, GTSL::Vector3 pos) {
-		GTSL::Math::AddTranslation(positionMatrices[reference()], pos);
+		GTSL::Math::Translate(positionMatrices[reference()], pos);
 	}
 
 	void AddCameraRotation(const CameraHandle reference, const GTSL::Quaternion quaternion)

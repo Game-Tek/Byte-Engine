@@ -370,6 +370,16 @@ public:
 		__debugbreak();
 	}
 
+	void AddCodeToFunction(const ElementHandle function_handle, const GTSL::StringView code) {
+		auto& main = Functions[GetElement(function_handle).Reference];
+		tokenizeCode(code, main.Tokens);
+	}
+
+	void AddCodeToFunction(const ElementHandle function_handle, const GTSL::Range<const ShaderNode*> tokens) {
+		auto& main = GetFunction({ function_handle }, u8"main");
+		main.Tokens.PushBack(tokens);
+	}
+
 	auto GetFunctionOverloads(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
 		for (auto& p : parents) {
 			if (auto res = TryGetElement(p, name)) {
@@ -918,6 +928,30 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	fin += functionBlock;
 
 	return GTSL::Result(GTSL::Pair(MoveRef(fin), MoveRef(errorString)), errorString.IsEmpty());
+}
+
+inline void AddPushConstantDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
+	auto pushConstantBlockHandle = pipeline->DeclareScope(parent_element_handle, u8"pushConstantBlock");
+	for (auto& e : elements) {
+		pipeline->DeclareVariable(pushConstantBlockHandle, e);
+	}
+}
+
+inline void AddVertexSurfaceInterfaceBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
+	auto vertexSurfaceInterface = pipeline->DeclareScope(parent_element_handle, u8"vertexSurfaceInterface");
+
+	for (auto& e : elements) {
+		auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, e);
+		//pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
+	}
+}
+
+inline void AddVertexBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
+	auto vertexBlock = pipeline->DeclareScope(parent_element_handle, u8"vertex");
+	for (auto& e : elements) {
+		pipeline->DeclareVariable(vertexBlock, e);
+
+	}
 }
 
 // SHADER DOC

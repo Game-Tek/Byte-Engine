@@ -60,23 +60,6 @@ enum class SpacingPolicy : uint8 {
 
 #undef NULL
 
-MAKE_HANDLE(uint32, UIElement);
-
-struct PrimitiveData {
-	enum class PrimitiveType { NULL, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
-	GTSL::Vector2 RelativeLocation;
-	GTSL::Vector2 AspectRatio;
-	GTSL::Vector2 Bounds;
-	Alignments Alignment;
-	SizingPolicies SizingPolicy;
-	ShaderGroupHandle Material;
-	uint32 DerivedTypeIndex;
-	ScalingPolicies ScalingPolicy;
-	SpacingPolicy SpacingPolicy;
-	bool isDirty;
-	TaskHandle<UIElementHandle> OnHover, OnPress;
-};
-
 class Square {
 public:
 	Square() = default;
@@ -95,9 +78,31 @@ private:
  */
 class UIManager : public BE::System {
 public:
+	DECLARE_BE_TYPE(UIElement);
+
 	explicit UIManager(const InitializeInfo& initializeInfo);
 
-	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle(0)) {
+
+	struct PrimitiveData {
+		enum class PrimitiveType { NULL, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
+		GTSL::Vector2 RelativeLocation;
+		GTSL::Vector2 AspectRatio;
+		GTSL::Vector2 Bounds;
+		GTSL::Vector2 Size;
+		GTSL::Vector2 Position;
+		Alignments Alignment;
+		SizingPolicies SizingPolicy;
+		ShaderGroupHandle Material;
+		uint32 DerivedTypeIndex;
+		ScalingPolicies ScalingPolicy;
+		SpacingPolicy SpacingPolicy;
+		bool isDirty;
+		TaskHandle<UIElementHandle> OnHover, OnPress;
+	};
+
+	static EventHandle<UIElementHandle, PrimitiveData::PrimitiveType> GetOnCreateUIElementEventHandle() { return { u8"OnCreateUIElement" }; }
+
+	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		//canvases.Emplace(system);
 		return add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
 	}
@@ -109,11 +114,11 @@ public:
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
 
-	UIElementHandle AddOrganizer(const UIElementHandle ui_element_handle = UIElementHandle(0)) {
+	UIElementHandle AddOrganizer(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		return add(ui_element_handle, PrimitiveData::PrimitiveType::ORGANIZER);
 	}
 
-	UIElementHandle AddSquare(const UIElementHandle element_handle = UIElementHandle(0)) {
+	UIElementHandle AddSquare(const UIElementHandle element_handle = UIElementHandle()) {
 		auto handle = add(element_handle, PrimitiveData::PrimitiveType::SQUARE);
 		const auto place = squares.Emplace();
 		auto& primitive = getPrimitive(handle);
@@ -127,7 +132,7 @@ public:
 		auto& primitive = getPrimitive(handle);
 		primitive.DerivedTypeIndex = place;
 		textPrimitives[place].Text = text;
-		return UIElementHandle(place);
+		return UIElementHandle(UIElementTypeIndentifier, place);
 	}
 
 	UIElementHandle AddCurve(const UIElementHandle element_handle) {
@@ -136,7 +141,7 @@ public:
 		auto& primitive = getPrimitive(handle);
 		primitive.DerivedTypeIndex = place;
 		auto& curve = curvePrimitives[place];
-		return UIElementHandle(place);
+		return UIElementHandle(UIElementTypeIndentifier, place);
 	}
 
 	PrimitiveData& getPrimitive(const UIElementHandle element_handle) {
@@ -223,6 +228,8 @@ public:
 		bool IsLocalized = false;
 	};
 
+	auto GetRoot() { return primitives.begin(); }
+
 private:
 	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
@@ -243,7 +250,13 @@ private:
 	GTSL::Vector<UIElementHandle, BE::PAR> queuedUpdates;
 
 	UIElementHandle add(const UIElementHandle parent_handle, PrimitiveData::PrimitiveType type) {
-		auto primitiveIndex = primitives.Emplace(parent_handle());
+		uint32 parentNodeKey = 0;
+
+		if (parent_handle) {
+			parentNodeKey = parent_handle();
+		}
+
+		auto primitiveIndex = primitives.Emplace(parentNodeKey);
 		auto& primitive = primitives[primitiveIndex];
 		primitive.Alignment = Alignments::CENTER;
 		primitive.ScalingPolicy = ScalingPolicies::FROM_SCREEN;
@@ -252,13 +265,15 @@ private:
 		primitive.AspectRatio = 1.f;
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
-		if (parent_handle() != 0) {
+
+		if (parent_handle) {
 			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
 		}
-		return UIElementHandle(primitiveIndex);
+
+		return UIElementHandle(UIElementTypeIndentifier, primitiveIndex);
 	}
 
-	void updateBranch(UIElementHandle ui_element_handle = UIElementHandle(0));
+	void updateBranch(UIElementHandle ui_element_handle);
 
 	void flagsAsDirty(const UIElementHandle element_handle) {
 		getPrimitive(element_handle).isDirty = true;

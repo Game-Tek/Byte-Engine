@@ -26,25 +26,16 @@ bool FindString(const GTSL::StringView string, const GTSL::StringView match) {
 	return false;
 }
 
-TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"TextureResourceManager")
-{
-	GTSL::StaticString<512> query_path, resources_path;
-	query_path += BE::Application::Get()->GetPathToApplication();
-	resources_path += BE::Application::Get()->GetPathToApplication();
-	resources_path += u8"/resources/";
-	query_path += u8"/resources/*.png";
-
+TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"TextureResourceManager") {
 	GTSL::String indexFileString(5192, GetTransientAllocator());
 	auto serializer = GTSL::MakeSerializer(indexFileString);
 	GTSL::StartArray(serializer, indexFileString, u8"textures");
 
-	resource_files_.Start(resources_path + u8"Textures");
+	resource_files_.Start(GetResourcePath(u8"Textures"));
 
 	GTSL::FileQuery file_query;
 
-	while (auto queryResult = file_query.DoQuery(query_path)) {
-		auto file_path = resources_path;
-		file_path += queryResult.Get();
+	while (auto queryResult = file_query.DoQuery(GetUserResourcePath(u8"*.png"))) {
 		auto fileName = queryResult.Get(); DropLast(fileName, u8'.');
 		const auto hashed_name = GTSL::Id64(fileName);
 
@@ -52,7 +43,7 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 
 		if (!resource_files_.Exists(hashed_name)) {
 			GTSL::File query_file;
-			query_file.Open(file_path, GTSL::File::READ, false);
+			query_file.Open(GetUserResourcePath(queryResult.Get()), GTSL::File::READ, false);
 			
 			GTSL::Buffer textureFileBuffer(GetTransientAllocator());
 			query_file.Read(textureFileBuffer);

@@ -429,12 +429,12 @@ public:
 	template<typename T>
 	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index) {
 		auto& s = systemsData[type_identifier.SystemId];
-		auto entI = s.RegisteredTypes[type_identifier()].Entities.Emplace();
-		auto& ent = s.RegisteredTypes[type_identifier()].Entities[entI];
+		s.RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
+		auto& ent = s.RegisteredTypes[type_identifier()].Entities[index];
 		++ent.Uses;
 
 		for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
-			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(entI);
+			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
 		}
 
 		return T(type_identifier, index);

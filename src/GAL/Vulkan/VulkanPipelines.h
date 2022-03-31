@@ -316,6 +316,8 @@ namespace GAL
 					vkPipelineColorblendStateCreateInfo.logicOp = VK_LOGIC_OP_COPY; // Optional
 					vkPipelineColorblendStateCreateInfo.pAttachments = reinterpret_cast<const VkPipelineColorBlendAttachmentState*>(buffer.GetData() + buffer.GetLength());
 
+					VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+
 					GTSL::uint8 colorAttachmentCount = 0, depthAttachmentIndex = 0xFF;
 					for (GTSL::uint8 i = 0; i < static_cast<GTSL::uint8>(pipelineState.Context.Attachments.ElementCount()); ++i) {
 						if (pipelineState.Context.Attachments[i].FormatDescriptor.Type == TextureType::COLOR) {
@@ -328,6 +330,7 @@ namespace GAL
 							++colorAttachmentCount;
 						} else {
 							depthAttachmentIndex = i;
+							depthFormat = ToVulkan(MakeFormatFromFormatDescriptor(pipelineState.Context.Attachments[depthAttachmentIndex].FormatDescriptor));
 						}
 					}
 
@@ -343,7 +346,7 @@ namespace GAL
 					pipeline_rendering_create_info->pColorAttachmentFormats = reinterpret_cast<const VkFormat*>(buffer.GetData() + buffer.GetLength());
 					for(auto i = 0; i < colorAttachmentCount; ++i) { buffer.AllocateStructure<VkFormat>(ToVulkan(MakeFormatFromFormatDescriptor(pipelineState.Context.Attachments[i].FormatDescriptor))); }
 					pipeline_rendering_create_info->colorAttachmentCount = colorAttachmentCount;
-					pipeline_rendering_create_info->depthAttachmentFormat = ToVulkan(MakeFormatFromFormatDescriptor(pipelineState.Context.Attachments[depthAttachmentIndex].FormatDescriptor));
+					pipeline_rendering_create_info->depthAttachmentFormat = depthFormat;
 					pipeline_rendering_create_info->stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 					pipeline_rendering_create_info->viewMask = 0;
 

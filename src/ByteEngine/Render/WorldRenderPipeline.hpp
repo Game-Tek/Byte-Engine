@@ -143,9 +143,9 @@ private:
 		auto& instance = instances[meshToInstanceMap[mesh_handle]()];
 
 		key[instance.Index][u8"transform"] = transform;
-		*spherePositionsAndRadius.GetPointer<0>(instance.Index) = transform[0][3];
-		*spherePositionsAndRadius.GetPointer<1>(instance.Index) = transform[1][3];
-		*spherePositionsAndRadius.GetPointer<2>(instance.Index) = transform[2][3];
+		*spherePositionsAndRadius.GetPointer<0>(instance.Index) = transform(0, 3);
+		*spherePositionsAndRadius.GetPointer<1>(instance.Index) = transform(1, 3);
+		*spherePositionsAndRadius.GetPointer<2>(instance.Index) = transform(2, 3);
 
 		if (rayTracing) {
 			renderSystem->SetInstancePosition(topLevelAccelerationStructure, instance.InstanceHandle, transform);

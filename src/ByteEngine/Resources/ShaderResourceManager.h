@@ -361,29 +361,30 @@ public:
 	};
 
 	struct ShaderGroupData : Data {
-		ShaderGroupData(const BE::PAR& allocator) : Parameters(allocator), Instances(allocator), Shaders(allocator) {}
-
+		ShaderGroupData(const BE::PAR& allocator) : Parameters(allocator), Instances(allocator), Shaders(allocator), Tags(allocator) {}
+	
 		GTSL::ShortString<32> Name;
-
+	
 		GTSL::Vector<Parameter, BE::PAR> Parameters;
 		GTSL::Vector<ShaderGroupInstance, BE::PAR> Instances;
 		GTSL::Vector<uint32, BE::PAR> Shaders;
+		GTSL::Vector<PermutationManager::ShaderTag, BE::PAR> Tags;
 		GTSL::StaticVector<GTSL::StaticVector<StructElement, 8>, 8> VertexElements;
 	};
-
+	
 	struct ShaderGroupDataSerialize : ShaderGroupData, Object {
 		ShaderGroupDataSerialize(const BE::PAR& allocator) : ShaderGroupData(allocator) {}
 	};
 
 	struct ShaderGroupInfo {
-		ShaderGroupInfo(const BE::PAR& allocator) : Shaders(allocator), Instances(allocator), Parameters(allocator) {}
+		ShaderGroupInfo(const BE::PAR& allocator) : Shaders(allocator), Instances(allocator), Parameters(allocator), Tags(allocator) {}
 
 		GTSL::ShortString<32> Name;
 
 		GTSL::Vector<ShaderInfo, BE::PAR> Shaders;
 		GTSL::Vector<ShaderGroupInstance, BE::PAR> Instances;
 		GTSL::Vector<Parameter, BE::PAR> Parameters;
-
+		GTSL::Vector<PermutationManager::ShaderTag, BE::PAR> Tags;
 		GTSL::StaticVector<GTSL::StaticVector<StructElement, 8>, 8> VertexElements;
 
 		struct RayTraceData {
@@ -458,12 +459,24 @@ private:
 			}
 		}
 
-		uint32 parameterCount;
-		shaderGroupInfosFile >> parameterCount;
+		{
+			uint32 parameterCount;
+			shaderGroupInfosFile >> parameterCount;
 
-		for (uint32 p = 0; p < parameterCount; ++p) {
-			auto& parameter = shaderGroupInfo.Parameters.EmplaceBack();
-			shaderGroupInfosFile >> parameter.Type >> parameter.Name >> parameter.Value;
+			for (uint32 p = 0; p < parameterCount; ++p) {
+				auto& parameter = shaderGroupInfo.Parameters.EmplaceBack();
+				shaderGroupInfosFile >> parameter.Type >> parameter.Name >> parameter.Value;
+			}
+		}
+
+		{
+			uint32 tagCount;
+			shaderGroupInfosFile >> tagCount;
+
+			for (uint32 p = 0; p < tagCount; ++p) {
+				auto& tag = shaderGroupInfo.Tags.EmplaceBack();
+				shaderGroupInfosFile >> tag.First >> tag.Second;
+			}
 		}
 
 		uint32 instanceCount;
@@ -716,6 +729,12 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 		}
 	}
 
+	if (auto r = json[u8"tags"]) {
+		for (auto e : r) {
+			shaderGroupDataSerialize.Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
+		}
+	}
+
 	if (auto parameters = json[u8"parameters"]) {
 		for (auto p : parameters) {
 			if (auto def = p[u8"defaultValue"]) {
@@ -803,6 +822,11 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 		shaderGroupInfosFile << shaderGroupDataSerialize.Parameters.GetLength();
 		for (auto& p : shaderGroupDataSerialize.Parameters) {
 			shaderGroupInfosFile << p.Type << p.Name << p.Value;
+		}
+
+		shaderGroupInfosFile << shaderGroupDataSerialize.Tags.GetLength();
+		for (auto& p : shaderGroupDataSerialize.Tags) {
+			shaderGroupInfosFile << p.First << p.Second;
 		}
 
 		shaderGroupInfosFile << shaderGroupDataSerialize.Instances.GetLength();

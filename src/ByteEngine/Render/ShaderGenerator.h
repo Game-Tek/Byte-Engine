@@ -25,7 +25,7 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		NULL, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, SEMICOLON
+		NULL, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -90,6 +90,9 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 			}
 			else if (c == U',') {
 				type = ShaderNode::Type::COMMA;
+			}
+			else if (c == U':') {
+				type = ShaderNode::Type::COLON;
 			}
 			else if (c == U';') {
 				type = ShaderNode::Type::SEMICOLON;
@@ -772,6 +775,10 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							statementString += u8", ";
 							break;
 						}
+						case ShaderNode::Type::COLON: {
+							statementString += u8':';
+							break;
+						}
 						case ShaderNode::Type::SEMICOLON: {
 							statementString += u8';';
 
@@ -928,6 +935,13 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	fin += functionBlock;
 
 	return GTSL::Result(GTSL::Pair(MoveRef(fin), MoveRef(errorString)), errorString.IsEmpty());
+}
+
+inline void AddSurfaceShaderOutDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
+	auto fragmentOutputBlockHandle = pipeline->DeclareScope(parent_element_handle, u8"fragmentOutputBlock");
+	for (auto& e : elements) {
+		pipeline->DeclareVariable(fragmentOutputBlockHandle, e);
+	}
 }
 
 inline void AddPushConstantDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {

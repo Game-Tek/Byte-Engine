@@ -121,6 +121,7 @@ protected:
 		GAL::TextureLayout Layout;
 		GAL::PipelineStage ConsumingStages;
 		GAL::AccessType Access;
+		GAL::Operations LoadOperation;
 	};
 
 	struct APIRenderPassData {
@@ -941,12 +942,13 @@ public:
 
 	NodeHandle AddSquare(const NodeHandle parent_node_handle) {
 		auto nodeHandle = addInternalNode<DrawData>(0, parent_node_handle);
+		SetNodeState(nodeHandle, false);
 		return nodeHandle;
 	}
 
-	void AddMeshInstance2(const NodeHandle parent_node_handle) {
-		auto& node = getPrivateNode<DrawData>(parent_node_handle);
-		++node.InstanceCount;
+	void AddMeshInstance2(const NodeHandle node_handle) {
+		auto& node = getPrivateNode<DrawData>(node_handle);
+		SetNodeState(node_handle, ++node.InstanceCount);
 	}
 
 private:
@@ -1846,10 +1848,15 @@ public:
 
 		renderOrchestrator->CreateMember2(u8"global", u8"TextBlockData", { { u8"uint32", u8"fontIndex" }, { u8"uint32[256]", u8"chars"} });
 
-
-		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
+		//TODO: check why setting an end stage stop the whole process
+		//OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
+		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement);
 
 		GetApplicationManager()->SubscribeToEvent(u8"UIManager", UIManager::GetOnCreateUIElementEventHandle(), OnCreateUIElementTaskHandle);
+		GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<UIManager>(u8"UIManager")->GetUIElementTypeIdentifier(), OnCreateUIElementTaskHandle);
+
+		renderOrchestrator->CreateMember2(u8"global", u8"UIInstance", UI_INSTANCE_DATA);
+		uiInstancesDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIInstance[1024]");
 
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
@@ -1857,7 +1864,9 @@ public:
 			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UI", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
 
-			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(renderPassNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
+			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
+
+			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
 		}
 
 		meshNodeHandle = renderOrchestrator->AddSquare(uiMaterialNodeHandle);
@@ -1937,6 +1946,8 @@ private:
 
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;
+
+	RenderOrchestrator::DataKeyHandle uiInstancesDataKey;
 };
 
 //for (auto& ref : canvases)

@@ -258,6 +258,7 @@ private:
 
 		auto primitiveIndex = primitives.Emplace(parentNodeKey);
 		auto& primitive = primitives[primitiveIndex];
+		primitive.Type = type;
 		primitive.Alignment = Alignments::CENTER;
 		primitive.ScalingPolicy = ScalingPolicies::FROM_SCREEN;
 		primitive.SizingPolicy = SizingPolicies::KEEP_CHILDREN_ASPECT_RATIO;
@@ -270,7 +271,11 @@ private:
 			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
 		}
 
-		return UIElementHandle(UIElementTypeIndentifier, primitiveIndex);
+		auto handle = GetApplicationManager()->MakeHandle<UIElementHandle>(UIElementTypeIndentifier, primitiveIndex);
+
+		GetApplicationManager()->DispatchEvent(u8"UIManager", GetOnCreateUIElementEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(primitive.Type));
+
+		return handle;
 	}
 
 	void updateBranch(UIElementHandle ui_element_handle);

@@ -32,7 +32,7 @@ public:
 
 		auto shaderHandle = pipeline->DeclareShader(uiScope, u8"UIVertex");
 		auto mainFunctionHandle = pipeline->DeclareFunction(shaderHandle, u8"void", u8"main");
-		pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 x = float32(((uint32(gl_VertexIndex) + 2) / 3) % 2); float32 y = float32(((uint32(gl_VertexIndex) + 1) / 3) % 2); vertexSurfaceInterface.vertexUV = vec2f(x, y); vertexSurfaceInterface.vertexPos = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexPosition = vec4f(vertexSurfaceInterface.vertexPos, 0, 1);");
+		pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 x = float32(((uint32(gl_VertexIndex) + 2) / 3) % 2); float32 y = float32(((uint32(gl_VertexIndex) + 1) / 3) % 2); vertexSurfaceInterface.vertexUV = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexSurfaceInterface.vertexPos = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexPosition = vec4f(vertexSurfaceInterface.vertexPos, 0, 1);");
 		vertexShaderHandle = shaderHandle;
 	}
 
@@ -42,8 +42,8 @@ public:
 		auto* commonPermutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 
 		auto& res = results.EmplaceBack();
-		
-		res.ShaderGroupJSON = u8"{ \"name\":\"UI\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }], \"domain\":\"Screen\" }";
+
+		res.ShaderGroupJSON = u8"{ \"name\":\"UI\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }], \"domain\":\"Screen\", \"tags\":[{ \"name\":\"RenderPass\", \"value\":\"UI\" }, { \"name\":\"Transparency\", \"value\":\"true\" }] }";
 		auto& vsp = res.Shaders.EmplaceBack();
 		auto& vs = vsp.EmplaceBack();
 		vs.Name = u8"UIVertex"; vs.Tags.EmplaceBack(u8"Domain", u8"UI"); vs.TargetSemantics = GAL::ShaderType::VERTEX; vs.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE); vs.Scopes.EmplaceBack(uiScope); vs.Scopes.EmplaceBack(commonPermutation->commonScope); vs.Scopes.EmplaceBack(vertexShaderHandle); vs.Scopes.EmplaceBack(commonPermutation->vertexShaderScope);
@@ -51,7 +51,9 @@ public:
 		{
 			auto fragmentShaderHandle = pipeline->DeclareShader(uiScope, u8"UIFragment"); auto mainFunctionHandle = pipeline->DeclareFunction(fragmentShaderHandle, u8"void", u8"main");
 
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(1);");
+			AddSurfaceShaderOutDeclaration(pipeline, fragmentShaderHandle, { { u8"vec4f", u8"surfaceColor" } });
+
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float rounding = 0.5f; float aspectRatio = 720.0f / 1280.0f; vec2 d = abs(vertexIn.vertexUV) - vec2((1.0f - rounding * aspectRatio), 1.0f - rounding); d.x /= aspectRatio; float distance = length(max(d,0.0f)) + min(max(d.x,d.y),0.0f) - rounding; float32 alpha = clamp(-distance / fwidth(distance), 0.0f, 1.0f); surfaceColor = vec4f(vec3(alpha), alpha);");
 
 			auto& fsp = res.Shaders.EmplaceBack();
 			auto& fs = fsp.EmplaceBack();

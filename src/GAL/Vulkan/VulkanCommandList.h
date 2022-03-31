@@ -96,6 +96,7 @@ namespace GAL {
 					attachmentInfo = &colorAttachmentInfos.EmplaceBack();
 				} else {
 					attachmentInfo = &depthAttachmentInfo;
+					vk_rendering_info_khr.pDepthAttachment = &depthAttachmentInfo;
 				}
 
 				attachmentInfo->sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
@@ -112,7 +113,6 @@ namespace GAL {
 
 			vk_rendering_info_khr.colorAttachmentCount = colorAttachmentInfos.GetLength();
 			vk_rendering_info_khr.pColorAttachments = colorAttachmentInfos.GetData();
-			vk_rendering_info_khr.pDepthAttachment = &depthAttachmentInfo;
 			vk_rendering_info_khr.pStencilAttachment = nullptr;
 			vk_rendering_info_khr.renderArea = { { 0, 0 }, { renderArea.Width, renderArea.Height } };
 			vk_rendering_info_khr.viewMask = 0; //multiview

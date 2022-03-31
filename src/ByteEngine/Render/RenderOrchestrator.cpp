@@ -332,7 +332,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		const auto& baseData = renderingTree.GetAlpha(key);
 
-		printNode(key, level, true);
+		printNode(key, level, false);
 
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<LayerData>(): {
@@ -456,7 +456,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 						e.ClearValue = attachment.ClearColor;
 						e.Start = renderPassData.Attachments[i].Layout;
 						e.End = renderPassData.Attachments[i].Layout;
-						e.LoadOperation = GAL::Operations::CLEAR;
+						e.LoadOperation = renderPassData.Attachments[i].LoadOperation;
 						e.StoreOperation = GAL::Operations::DO;
 						e.FormatDescriptor = attachment.FormatDescriptor;
 						e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
@@ -512,6 +512,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	};
 
 	auto onFail = [&](const uint32 nodeHandle, uint32 level) {
+		return;
+
 		switch (renderingTree.GetNodeType(nodeHandle)) {
 		case decltype(renderingTree)::GetTypeIndex<LayerData>(): {
 			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: LayerData", u8", Name: ", getNode(nodeHandle).Name);
@@ -670,8 +672,11 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 		if(pos) {
 			if(pos.Get() > 0) {
-				if(auto r = renderPasses2.Find(renderPassesGuide[pos.Get() - 1])) { //If render pass was already created grab it's handle to correctly place render passes, if it doesn't yet exists TODO: 
-					leftNodeHandle = renderPasses2[renderPassesGuide[pos.Get() - 1]];
+				for (uint32 i = pos.Get() - 1; i != ~0u; --i) {
+					if (auto r = renderPasses2.Find(renderPassesGuide[i])) { //If render pass was already created grab it's handle to correctly place render passes, if it doesn't yet exists TODO: 
+						leftNodeHandle = renderPasses2[renderPassesGuide[i]];
+						break;
+					}
 				}
 			}
 		}
@@ -683,6 +688,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 	renderPasses.Emplace(renderPassName, renderPassNodeHandle);
 	renderPasses2.Emplace(renderPassName, renderPassDataNode);
+
+	auto renderPassIndex = renderPassesInOrder.GetLength();
+
 	renderPassesInOrder.EmplaceBack(renderPassNodeHandle);
 
 	renderPass.ResourceHandle = makeResource(renderPassName);
@@ -707,6 +715,12 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 			attachmentData.Name = e.Name;
 			attachmentData.Access = e.Access;
+
+			if (renderPassIndex) {
+				attachmentData.LoadOperation = GAL::Operations::DO; //UNDEFINED ? 
+			} else {
+				attachmentData.LoadOperation = GAL::Operations::CLEAR; //UNDEFINED ?
+			}
 
 			if (e.Access & GAL::AccessTypes::READ) {
 				attachmentData.Layout = GAL::TextureLayout::SHADER_READ;
@@ -1055,28 +1069,40 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			GAL::Pipeline::PipelineStateBlock::RenderContext context;
 
+			Id renderPass = u8"ForwardRenderPass";
+
+			if (auto r = GTSL::Find(shader_group_info.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"RenderPass"; })) {
+				renderPass = Id(GTSL::StringView(r.Get()->Second));
+			}
+
+			bool transparency = false;
+
+			if (auto r = GTSL::Find(shader_group_info.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Transparency"; })) {
+				transparency = r.Get()->Second == GTSL::StringView(u8"True");
+			}
+
 			//BUG: if shader group gets processed before render pass it will fail
-			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[Id(tag == GTSL::StringView(u8"Visibility") ? u8"VisibilityRenderPass" : u8"ForwardRenderPass")]);
+			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[renderPass]);
 
 			for (const auto& writeAttachment : renderPassNode.Attachments) {
 				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
 					auto& attachment = attachments.At(writeAttachment.Name);
 					auto& attachmentState = att.EmplaceBack();
-					attachmentState.BlendEnable = e.Transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
+					attachmentState.BlendEnable = transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
 				}
 			}
 
 			context.Attachments = att;
 			pipelineStates.EmplaceBack(context);
 
-			if (!e.Transparency) {
+			if (!transparency) {
 				GAL::Pipeline::PipelineStateBlock::DepthState depth;
 				depth.CompareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
 				pipelineStates.EmplaceBack(depth);
 			}
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
-			rasterState.CullMode = GAL::CullMode::CULL_BACK;
+			rasterState.CullMode = GAL::CullMode::CULL_NONE;
 			rasterState.WindingOrder = GAL::WindingOrder::COUNTER_CLOCKWISE;
 			pipelineStates.EmplaceBack(rasterState);
 

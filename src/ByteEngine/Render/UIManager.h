@@ -104,7 +104,9 @@ public:
 
 	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		//canvases.Emplace(system);
-		return add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
+		auto canvasHandle =  add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
+		getPrimitive(canvasHandle).AspectRatio = { 1280.0f / 720.0f, 1.0f };
+		return canvasHandle;
 	}
 
 	auto& GetCanvases() { return canvases; }
@@ -260,6 +262,7 @@ private:
 		auto& primitive = primitives[primitiveIndex];
 		primitive.Type = type;
 		primitive.Alignment = Alignments::CENTER;
+		primitive.Size = 1.0f;
 		primitive.ScalingPolicy = ScalingPolicies::FROM_SCREEN;
 		primitive.SizingPolicy = SizingPolicies::KEEP_CHILDREN_ASPECT_RATIO;
 		primitive.SpacingPolicy = SpacingPolicy::DISTRIBUTE;
@@ -278,7 +281,7 @@ private:
 		return handle;
 	}
 
-	void updateBranch(UIElementHandle ui_element_handle);
+	void updateBranch(decltype(primitives)::iterator iterator);
 
 	void flagsAsDirty(const UIElementHandle element_handle) {
 		getPrimitive(element_handle).isDirty = true;

@@ -414,12 +414,6 @@ public:
 		return buffers[bufferHandle()].Addresses[frame];
 	}
 
-	void SignalBufferWrite(const BufferHandle buffer_handle) {
-		auto& buffer = buffers[buffer_handle()];
-
-		++buffer.references;
-	}
-
 	void UpdateBuffer(const CommandListHandle command_list_handle, const BufferHandle buffer_handle) {
 		auto& buffer = buffers[buffer_handle()];
 

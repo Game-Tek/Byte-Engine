@@ -598,7 +598,6 @@ public:
 
 	BufferWriteKey GetBufferWriteKey(RenderSystem* render_system, const DataKeyHandle data_key_handle) {
 		const auto& dataKey = dataKeys[data_key_handle()];
-		render_system->SignalBufferWrite(dataKey.Buffer);
 		BufferWriteKey buffer_write_key;
 		buffer_write_key.render_system = render_system;
 		buffer_write_key.render_orchestrator = this;
@@ -1848,6 +1847,9 @@ public:
 
 		renderOrchestrator->CreateMember2(u8"global", u8"TextBlockData", { { u8"uint32", u8"fontIndex" }, { u8"uint32[256]", u8"chars"} });
 
+		auto tickTaskHandle = GetApplicationManager()->RegisterTask(this, u8"uiEveryFrame", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<UIManager>(u8"UIManager")), &UIRenderManager::everyFrame, u8"RenderSetup", u8"Render");
+		GetApplicationManager()->EnqueueScheduledTask(tickTaskHandle);
+
 		//TODO: check why setting an end stage stop the whole process
 		//OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
 		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement);
@@ -1885,34 +1887,39 @@ public:
 		}
 	}
 
-	void ui() {
-		UIManager* ui;
-		UIManager::TextPrimitive textPrimitive{ GetPersistentAllocator() };
+	//void ui() {
+	//	UIManager* ui;
+	//	UIManager::TextPrimitive textPrimitive{ GetPersistentAllocator() };
+	//
+	//	RenderOrchestrator::BufferWriteKey text;
+	//	text[u8"fontIndex"] = fontOrderMap[Id(textPrimitive.Font)];
+	//
+	//	for (uint32 i = 0; i < textPrimitive.Text; ++i) {
+	//		text[u8"chars"][i] = fontCharMap[textPrimitive.Text[i]];
+	//	}
+	//
+	//	for(const auto& e : ui->GetCanvases()) {
+	//	}
+	//
+	//	//ui->GetText
+	//}
 
-		RenderOrchestrator::BufferWriteKey text;
-		text[u8"fontIndex"] = fontOrderMap[Id(textPrimitive.Font)];
-
-		for (uint32 i = 0; i < textPrimitive.Text; ++i) {
-			text[u8"chars"][i] = fontCharMap[textPrimitive.Text[i]];
-		}
-
-		for(const auto& e : ui->GetCanvases()) {
-		}
-
-		//ui->GetText
-	}
-
-	void everyFrame() {
-		UIManager* ui;
+	void everyFrame(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator,  UIManager* ui) {
 		ui->ProcessUpdates();
 
 		auto root = ui->GetRoot();
+
+		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiInstancesDataKey);
 
 		auto visitUIElement = [&](GTSL::Tree<UIManager::PrimitiveData, BE::PAR>::iterator iterator, GTSL::Matrix3x4 matrix, auto&& self) -> void {
 			const auto& primitive = static_cast<const UIManager::PrimitiveData&>(iterator);
 
 			GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.Size, 0));
 			GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
+
+			bwk[0][u8"transform"] = matrix;
+			bwk[0][u8"color"] = GTSL::Vector4(7.0f / 255.f, 208.0f / 255.f, 162.0f / 255.f, 1.0f);
+			bwk[0][u8"roundness"] = 1.0f;
 
 			//switch (primitive.Type) {
 			//break; case UIManager::PrimitiveData::PrimitiveType::NULL:

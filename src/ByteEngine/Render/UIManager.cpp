@@ -10,7 +10,7 @@ UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElemen
 }
 
 void UIManager::ProcessUpdates() {
-	updateBranch(UIElementHandle(UIElementTypeIndentifier, 1));
+	updateBranch(primitives.begin());
 
 	//auto result = FindPrimitiveUnderPoint({});
 	//if (result) {
@@ -18,7 +18,7 @@ void UIManager::ProcessUpdates() {
 	//}
 }
 
-void UIManager::updateBranch(UIElementHandle ui_element_handle) {
+void UIManager::updateBranch(decltype(primitives)::iterator iterator) {
 	//for (uint32 i = 0; i < organizersPerOrganizer[organizer()].GetLength(); ++i) { updateBranch(organizersPerOrganizer[organizer()][i]); }
 //
 //if (!organizersPrimitives[organizer()].GetLength()) { return; }
@@ -27,10 +27,11 @@ void UIManager::updateBranch(UIElementHandle ui_element_handle) {
 //
 //auto orgAR = primitives[organizersAsPrimitives[organizer()]].AspectRatio; auto orgLoc = primitives[organizersAsPrimitives[organizer()]].RelativeLocation;
 
-	GTSL::Vector2 orgAR;
 	float32 way = 0.0f;
 
-	auto& primitive = getPrimitive(ui_element_handle);
+	auto& primitive = static_cast<PrimitiveData&>(iterator);
+
+	GTSL::Vector2 orgAR = primitive.AspectRatio;
 
 	switch (primitive.Alignment) { case Alignments::LEFT: way = -1.0f; break; case Alignments::CENTER: way = 0.0f; break; case Alignments::RIGHT: way = 1.0f; break; }
 
@@ -77,7 +78,7 @@ void UIManager::updateBranch(UIElementHandle ui_element_handle) {
 	default: BE_ASSERT(false);
 	}
 
-	GTSL::Vector2 startPos, increment, orgLoc; uint32 primCount = 0;
+	GTSL::Vector2 startPos, increment, orgLoc; uint32 primCount = 1;
 
 	switch (primitive.SpacingPolicy) {
 	case SpacingPolicy::PACK: {
@@ -100,10 +101,7 @@ void UIManager::updateBranch(UIElementHandle ui_element_handle) {
 
 	primitive.isDirty = false;
 
-	//for (uint32 i = 0; i < organizersPrimitives.GetLength(); ++i) {
-	//	primitives[organizersPrimitives[organizer()][i]].AspectRatio = perPrimitiveInOrganizerAspectRatio;
-	//	primitives[organizersPrimitives[organizer()][i]].RelativeLocation = startPos;
-	//
-	//	startPos += increment;
-	//}
+	for(auto e : iterator) {
+		updateBranch(e);
+	}
 }

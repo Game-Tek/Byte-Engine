@@ -327,7 +327,11 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		return numbers.back();
 	};
 
-	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level) -> void {
+	uint32 lastInvalidLevel = 0xFFFFFFFF;
+
+	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
+		if (!enabled || level > lastInvalidLevel) { lastInvalidLevel = level; return; }
+
 		DataStreamHandle dataStreamHandle = {};
 
 		const auto& baseData = renderingTree.GetAlpha(key);
@@ -486,7 +490,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 	};
 
-	auto endNode = [&](const uint32 key, const uint32_t level) {
+	auto endNode = [&](const uint32 key, const uint32_t level, bool enabled) {
+		if (!enabled || level > lastInvalidLevel) { return; }
+
 		//BE_LOG_WARNING(u8"Leaving node ", key);
 
 		switch (renderingTree.GetNodeType(key)) {
@@ -511,42 +517,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 	};
 
-	auto onFail = [&](const uint32 nodeHandle, uint32 level) {
-		return;
-
-		switch (renderingTree.GetNodeType(nodeHandle)) {
-		case decltype(renderingTree)::GetTypeIndex<LayerData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: LayerData", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<PipelineBindData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Pipeline Bind", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<MeshData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Mesh Data", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Vertex Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Index Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: Render Pass", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		default: {
-			BE_LOG_WARNING(u8"Node index: ", nodeHandle, u8", Type: null", u8", Name: ", getNode(nodeHandle).Name);
-			break;
-		}
-		}
-	};
-
-	ForEachBeta(renderingTree, runLevel, endNode, onFail);
+	ForEachWithDisabled(renderingTree, runLevel, endNode);
 
 	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
 	CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
@@ -1078,7 +1049,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			bool transparency = false;
 
 			if (auto r = GTSL::Find(shader_group_info.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"Transparency"; })) {
-				transparency = r.Get()->Second == GTSL::StringView(u8"True");
+				transparency = r.Get()->Second == GTSL::StringView(u8"true");
 			}
 
 			//BUG: if shader group gets processed before render pass it will fail

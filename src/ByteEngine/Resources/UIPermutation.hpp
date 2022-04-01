@@ -25,17 +25,19 @@ public:
 	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
 		uiScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"UI");
 
+		pipeline->DeclareStruct(uiScope, u8"UIData", UI_DATA);
 		pipeline->DeclareStruct(uiScope, u8"UIInstanceData", UI_INSTANCE_DATA);
 
 		// No vertex declaration as we have no incoming data
 		AddVertexSurfaceInterfaceBlockDeclaration(pipeline, uiScope, { { u8"uint32", u8"instanceIndex" }, {u8"vec2f", u8"vertexPos"}, {u8"vec2f", u8"vertexUV"}});
-		AddPushConstantDeclaration(pipeline, uiScope, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"UIInstanceData*", u8"uiInstances" } });
+		AddPushConstantDeclaration(pipeline, uiScope, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"UIData*", u8"ui"}, { u8"UIInstanceData*", u8"uiInstances" }});
 		pipeline->DeclareStruct(uiScope, u8"RenderPassData", { { u8"TextureReference", u8"color" } });
 
 		auto shaderHandle = pipeline->DeclareShader(uiScope, u8"UIVertex");
 		auto mainFunctionHandle = pipeline->DeclareFunction(shaderHandle, u8"void", u8"main");
 		pipeline->AddCodeToFunction(mainFunctionHandle, u8"UIInstanceData* instance = pushConstantBlock.uiInstances[gl_InstanceIndex];");
-		pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 x = float32(((uint32(gl_VertexIndex) + 2) / 3) % 2); float32 y = float32(((uint32(gl_VertexIndex) + 1) / 3) % 2); vertexSurfaceInterface.vertexUV = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexSurfaceInterface.vertexPos = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexPosition = vec4f(instance.transform * vec4f(vertexSurfaceInterface.vertexPos, 0.0f, 1.0f), 1.0f);");
+		pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 x = float32(((uint32(gl_VertexIndex) + 2) / 3) % 2); float32 y = float32(((uint32(gl_VertexIndex) + 1) / 3) % 2);");
+		pipeline->AddCodeToFunction(mainFunctionHandle, u8"vertexSurfaceInterface.vertexUV = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexSurfaceInterface.vertexPos = vec2f(-1.0f + x * 2.0f, -1.0f + y * 2.0f); vertexPosition = pushConstantBlock.ui.projection * vec4f(instance.transform * vec4f(vertexSurfaceInterface.vertexPos, 0.0f, 1.0f), 1.0f);");
 		pipeline->AddCodeToFunction(mainFunctionHandle, u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex;");
 		vertexShaderHandle = shaderHandle;
 	}
@@ -62,7 +64,7 @@ public:
 			AddSurfaceShaderOutDeclaration(pipeline, fragmentShaderHandle, { { u8"vec4f", u8"surfaceColor" } });
 
 			pipeline->AddCodeToFunction(mainFunctionHandle, u8"UIInstanceData* instance = pushConstantBlock.uiInstances[vertexIn.instanceIndex];");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float roundness = instance.roundness; float aspectRatio = 720.0f / 1280.0f;");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float roundness = instance.roundness; float aspectRatio = instance.transform[1][1] / instance.transform[0][0];");
 			pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec2 d = abs(vertexIn.vertexUV) - vec2((1.0f - roundness * aspectRatio), 1.0f - roundness); d.x /= aspectRatio; float distance = length(max(d,0.0f)) + min(max(d.x,d.y),0.0f) - roundness; float32 alpha = clamp(-distance / fwidth(distance), 0.0f, 1.0f); surfaceColor = vec4f(vec3(instance.color), instance.color.a * alpha);");
 
 			auto& fsp = res.Shaders.EmplaceBack();

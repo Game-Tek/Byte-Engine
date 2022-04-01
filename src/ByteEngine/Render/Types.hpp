@@ -6,3 +6,4 @@
 #define CAMERA_DATA { { u8"matrix4f", u8"view" }, { u8"matrix4f", u8"proj" }, { u8"matrix4f", u8"viewInverse" }, { u8"matrix4f", u8"projInverse" }, { u8"matrix4f", u8"vp" }, { u8"matrix4f", u8"vpInverse" }, { u8"float32", u8"near" }, { u8"float32", u8"far" }, { u8"u16vec2", u8"extent"} }
 #define GLOBAL_DATA { { u8"uint32[4]", u8"blah" } }
 #define UI_INSTANCE_DATA { { u8"matrix3x4f", u8"transform" }, { u8"vec4f", u8"color" }, { u8"float32", u8"roundness" } }
+#define UI_DATA { { u8"matrix4f", u8"projection" } }

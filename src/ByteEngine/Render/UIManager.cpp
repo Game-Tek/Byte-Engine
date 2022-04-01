@@ -19,89 +19,79 @@ void UIManager::ProcessUpdates() {
 }
 
 void UIManager::updateBranch(decltype(primitives)::iterator iterator) {
-	//for (uint32 i = 0; i < organizersPerOrganizer[organizer()].GetLength(); ++i) { updateBranch(organizersPerOrganizer[organizer()][i]); }
-//
-//if (!organizersPrimitives[organizer()].GetLength()) { return; }
-//
-//auto primCount = static_cast<float32>(organizersPrimitives[organizer()].GetLength());
-//
-//auto orgAR = primitives[organizersAsPrimitives[organizer()]].AspectRatio; auto orgLoc = primitives[organizersAsPrimitives[organizer()]].RelativeLocation;
-
-	float32 way = 0.0f;
+	const uint32 primitiveCount = iterator.GetLength();
+	if (!primitiveCount) { return; } // If this element has no children, do not evaluate.
 
 	auto& primitive = static_cast<PrimitiveData&>(iterator);
 
-	GTSL::Vector2 orgAR = primitive.AspectRatio;
+	const GTSL::Vector2 halfSize = primitive.HalfSize;
 
-	switch (primitive.Alignment) { case Alignments::LEFT: way = -1.0f; break; case Alignments::CENTER: way = 0.0f; break; case Alignments::RIGHT: way = 1.0f; break; }
+	// Distribution axis indicates which axis, (X = 0 || Y = 1) the distribution of the elements will occur in.
+	uint32 distributionAxis = 0;
 
-	GTSL::Vector2 perPrimitiveInOrganizerAspectRatio;
+	// Distribution mask is used to cancel values in axis' where the calculations for the current distribution axis must not be taken into account.
+	GTSL::Vector2 distributionMask = 0;
 
-	switch (primitive.SizingPolicy) {
-	case SizingPolicies::KEEP_CHILDREN_ASPECT_RATIO: {
-		const auto minDimension = GTSL::Math::Min(orgAR.X(), orgAR.Y());
-		perPrimitiveInOrganizerAspectRatio = { minDimension, minDimension };
+	// Way indicates in which direction elements will be distributed among the different axis'.
+	GTSL::Vector2 way = 0.0f;
 
-		break;
-	}
-	case SizingPolicies::FILL: {
-		uint32 distributionAxis = 0;
+	{ // Set distribution variables according to alignment policies.
+		float32 w = 0;
 
 		switch (primitive.Alignment) {
-		case Alignments::LEFT:
-		case Alignments::RIGHT:
-			distributionAxis = 0;
-			break;
-
-		case Alignments::TOP:
-		case Alignments::BOTTOM:
-			distributionAxis = 1;
-			break;
-
-		case Alignments::CENTER:
-			BE_ASSERT(false);
-		default: break;
+		case Alignments::LEFT: distributionAxis = 0; w = -1.0f; break;
+		case Alignments::RIGHT: distributionAxis = 0; w = 1.0f; break;
+		case Alignments::TOP: distributionAxis = 1; w = 1.0f; break;
+		case Alignments::BOTTOM: distributionAxis = 1; w = -1.0f; break;
+		case Alignments::CENTER: w = 0.0f; break;
 		}
 
-		perPrimitiveInOrganizerAspectRatio[distributionAxis] = orgAR[distributionAxis] / 1;//organizersPrimitives[organizer()].GetLength();
-		perPrimitiveInOrganizerAspectRatio[(distributionAxis + 1) % 2] = orgAR[(distributionAxis + 1) % 2];
-
-		break;
-	}
-	case SizingPolicies::SET_ASPECT_RATIO: {
-		const auto minDimension = GTSL::Math::Min(orgAR.X(), orgAR.Y());
-		perPrimitiveInOrganizerAspectRatio = { minDimension, minDimension };
-
-		break;
+		way[distributionAxis] = w;
+		distributionMask[distributionAxis] = 1.0f;
 	}
 
-	default: BE_ASSERT(false);
-	}
+	// Maximum half size each primitive can have, when the available space is divided equally amongst all children taking into account distribution axis'.
+	GTSL::Vector2 perPrimitiveHalfSize = halfSize;
+	perPrimitiveHalfSize[distributionAxis] = halfSize[distributionAxis] / static_cast<float32>(primitiveCount);
 
-	GTSL::Vector2 startPos, increment, orgLoc; uint32 primCount = 1;
+	// Starting position for elements inside this element. A delta will be added to each primitive to correctly distribute them inside this element.
+	const GTSL::Vector2 startPosition = GTSL::Vector2() - perPrimitiveHalfSize * primitiveCount / 2.0f * distributionMask;
+	// How much each element has to move to correctly distribute them. Each of the children's positions will be the sum of the starting position plus a multiple of this increment times the child index.
+	const GTSL::Vector2 increment = perPrimitiveHalfSize * 2.0f * distributionMask;
 
-	switch (primitive.SpacingPolicy) {
-	case SpacingPolicy::PACK: {
-		startPos = { ((orgAR.X() * 0.5f * way) + (perPrimitiveInOrganizerAspectRatio.X() * 0.5f * (-way))), orgLoc.Y() };
-		increment = perPrimitiveInOrganizerAspectRatio * (-way);
-		increment.Y() = 0;
-
-		break;
-	}
-	case SpacingPolicy::DISTRIBUTE: {
-		auto freeArea = GTSL::Vector2(orgAR.X() - (perPrimitiveInOrganizerAspectRatio.X() * primCount), orgAR.Y() - (perPrimitiveInOrganizerAspectRatio.Y() * primCount));
-		auto freeAreaPerPrim = freeArea / (primCount + 1.0f);
-		startPos = { (orgAR.X() * 0.5f * way) + ((freeAreaPerPrim.X() + perPrimitiveInOrganizerAspectRatio.X() * 0.5f) * (-way)), orgLoc.Y() };
-		increment = (perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim) * (-way);
-		increment.Y() = 0;
-
-		break;
-	}
-	}
+	//switch (primitive.SpacingPolicy) {
+	//case SpacingPolicy::PACK: {
+	//	startPos = { ((extent.X() * 0.5f * way) + (perPrimitiveInOrganizerAspectRatio.X() * 0.5f * (-way))), orgLoc.Y() };
+	//	increment = perPrimitiveInOrganizerAspectRatio * (-way);
+	//	increment.Y() = 0;
+	//
+	//	break;
+	//}
+	//case SpacingPolicy::DISTRIBUTE: {
+	//	auto freeArea = GTSL::Vector2(extent.X() - (perPrimitiveInOrganizerAspectRatio.X() * primCount), extent.Y() - (perPrimitiveInOrganizerAspectRatio.Y() * primCount));
+	//	auto freeAreaPerPrim = freeArea / (primCount + 1.0f);
+	//	startPos = { (extent.X() * 0.5f * way) + ((freeAreaPerPrim.X() + perPrimitiveInOrganizerAspectRatio.X() * 0.5f) * (-way)), orgLoc.Y() };
+	//	increment = (perPrimitiveInOrganizerAspectRatio + freeAreaPerPrim) * (-way);
+	//	increment.Y() = 0;
+	//
+	//	break;
+	//}
+	//}
 
 	primitive.isDirty = false;
 
-	for(auto e : iterator) {
-		updateBranch(e);
+	{
+		uint32 i = 0;
+		for (auto e : iterator) {
+			auto& f = static_cast<PrimitiveData&>(e);
+			f.Position = startPosition + increment * i;
+			f.HalfSize[distributionAxis] = perPrimitiveHalfSize[distributionAxis];
+			updateBranch(e);
+			++i;
+		}
 	}
+}
+
+inline void size(float32 dpc, GTSL::Vector2 size, GTSL::Vector2 screen_resolution) {
+	// size is a fraction of screen size
 }

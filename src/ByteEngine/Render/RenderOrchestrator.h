@@ -1860,15 +1860,19 @@ public:
 		renderOrchestrator->CreateMember2(u8"global", u8"UIInstance", UI_INSTANCE_DATA);
 		uiInstancesDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIInstance[1024]");
 
+		renderOrchestrator->CreateMember2(u8"global", u8"UIData", UI_DATA);
+		uiDataDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIData");
+
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
 			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
 			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UI", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
 
-			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
+			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
+			auto uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
 
-			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
+			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
 		}
 
 		meshNodeHandle = renderOrchestrator->AddSquare(uiMaterialNodeHandle);
@@ -1907,19 +1911,30 @@ public:
 	void everyFrame(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator,  UIManager* ui) {
 		ui->ProcessUpdates();
 
+		{
+			auto extent = GTSL::Vector2(1280.0f / 720.0f, 1.0f);
+
+			auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
+			bwk[u8"projection"] = GTSL::Math::MakeOrthoMatrix(extent.X(), -extent.X(), extent.Y(), -extent.Y(), 0.0f, 1.f);
+		}
+
 		auto root = ui->GetRoot();
 
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiInstancesDataKey);
 
+		uint32 i = 0;
+
 		auto visitUIElement = [&](GTSL::Tree<UIManager::PrimitiveData, BE::PAR>::iterator iterator, GTSL::Matrix3x4 matrix, auto&& self) -> void {
 			const auto& primitive = static_cast<const UIManager::PrimitiveData&>(iterator);
 
-			GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.Size, 0));
+			GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.HalfSize, 0));
 			GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
 
-			bwk[0][u8"transform"] = matrix;
-			bwk[0][u8"color"] = GTSL::Vector4(7.0f / 255.f, 208.0f / 255.f, 162.0f / 255.f, 1.0f);
-			bwk[0][u8"roundness"] = 1.0f;
+			bwk[i][u8"transform"] = matrix;
+			bwk[i][u8"color"] = GTSL::Vector4((100.0f + float32(rand() % 155)) / 255.f, 208.0f / 255.f, 162.0f / 255.f, 1.0f);
+			bwk[i][u8"roundness"] = 0.5f;
+
+			++i;
 
 			//switch (primitive.Type) {
 			//break; case UIManager::PrimitiveData::PrimitiveType::NULL:
@@ -1954,7 +1969,7 @@ private:
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;
 
-	RenderOrchestrator::DataKeyHandle uiInstancesDataKey;
+	RenderOrchestrator::DataKeyHandle uiDataDataKey, uiInstancesDataKey;
 };
 
 //for (auto& ref : canvases)

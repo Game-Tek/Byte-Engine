@@ -206,8 +206,8 @@ u8R"({
 				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
-				tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex / 3;", main.Tokens);
-				tokenizeCode(u8"vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"instanceIndex = gl_InstanceIndex; triangleIndex = gl_VertexIndex / 3;", main.Tokens);
+				tokenizeCode(u8"worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				break;
 			}
@@ -304,8 +304,8 @@ u8R"({
 			batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 			batch.Scopes.EmplaceBack(shaderScope);
 
-			tokenizeCode(u8"vertexSurfaceInterface.instanceIndex = gl_InstanceIndex; vertexSurfaceInterface.triangleIndex = gl_VertexIndex;", main.Tokens);
-			tokenizeCode(u8"vertexSurfaceInterface.worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); vertexSurfaceInterface.worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
+			tokenizeCode(u8"instanceIndex = gl_InstanceIndex; triangleIndex = gl_VertexIndex;", main.Tokens);
+			tokenizeCode(u8"worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
 			tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 
 			break;

@@ -102,6 +102,8 @@ public:
 		SpacingPolicy SpacingPolicy;
 		bool isDirty;
 		TaskHandle<UIElementHandle> OnHover, OnPress;
+		GTSL::Vector4 Color;
+		float32 Rounding;
 	};
 
 	static EventHandle<UIElementHandle, PrimitiveData::PrimitiveType> GetOnCreateUIElementEventHandle() { return { u8"OnCreateUIElement" }; }
@@ -113,15 +115,24 @@ public:
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
 
+	/**
+	 * \brief Sets the scaling percentage for a UI element. This scale will be calculated based on the sizing policy.
+	 * \param element_handle Element to set scale for.
+	 * \param scale Scaling percentage.
+	 */
 	void SetScale(UIElementHandle element_handle, GTSL::Vector2 scale) {
 		getPrimitive(element_handle).HalfSize = scale;
+		flagsAsDirty(element_handle);
+	}
+
+	void SetRounding(const UIElementHandle element_handle, const float32 rounding) {
+		getPrimitive(element_handle).Rounding = rounding;
 		flagsAsDirty(element_handle);
 	}
 
 	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		//canvases.Emplace(system);
 		auto canvasHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
-		getPrimitive(canvasHandle).HalfSize = GTSL::Vector2{ 1280.0f / 720.0f, 1.0f };
 		return canvasHandle;
 	}
 
@@ -187,6 +198,11 @@ public:
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
 		case PrimitiveData::PrimitiveType::SQUARE: squares[primitive.DerivedTypeIndex].SetColor(color); break;
 		}
+
+		primitive.Color.X() = colors[color].R();
+		primitive.Color.Y() = colors[color].G();
+		primitive.Color.Z() = colors[color].B();
+		primitive.Color.W() = colors[color].A();
 	}
 
 	void SetMaterial(const UIElementHandle ui_element_handle, const ShaderGroupHandle material) {
@@ -271,6 +287,8 @@ private:
 		primitive.SpacingPolicy = SpacingPolicy::DISTRIBUTE;
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
+		primitive.Color = 1.0f;
+		primitive.Rounding = 0.5f;
 
 		if (parent_handle) {
 			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated

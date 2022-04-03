@@ -1073,8 +1073,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
-			rasterState.CullMode = GAL::CullMode::CULL_NONE;
-			rasterState.WindingOrder = GAL::WindingOrder::COUNTER_CLOCKWISE;
+			rasterState.CullMode = GAL::CullMode::CULL_BACK;
+			rasterState.WindingOrder = GAL::WindingOrder::CLOCKWISE;
 			pipelineStates.EmplaceBack(rasterState);
 
 			GAL::Pipeline::PipelineStateBlock::ViewportState viewportState;

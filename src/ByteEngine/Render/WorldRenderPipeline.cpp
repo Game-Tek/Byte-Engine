@@ -250,7 +250,7 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 	}
 
 	for (auto e : res.Instances) {
-		AddMeshInstance(render_system, render_orchestrator, e, staticMeshInfo.GetName());
+		AddMeshInstance(render_system, render_orchestrator, e, staticMeshInfo.GetName(), 0);
 		*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 	}
 
@@ -277,15 +277,13 @@ void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceMana
 	}
 
 	if (resource) { // If resource isn't already loaded 
-		resource.Get().Index = prefixSum.EmplaceBack(0); prefixSumGuide.EmplaceBack(resourceName);
-		//mesh.Index = resource.Get().Meshes.GetLength();
+		resource.Get().Index = prefixSum.EmplaceBack(0);
+		prefixSumGuide.EmplaceBack(resourceName);
 		static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
 	}
 	else {
 		if (resource.Get().Loaded) {
-			//onMeshLoad(render_system, static_mesh_render_group, render_orchestrator, resource.Get(), resourceName, static_mesh_handle);
-
-			//todo: call task on task on entity
+			AddMeshInstance(render_system, render_orchestrator, instanceHandle, resourceName, 0);
 		}
 	}
 

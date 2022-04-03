@@ -865,6 +865,29 @@ public:
 						GTSL::ToString(string, reinterpret_cast<uint32*>(beginPointer + offset)[0]);
 						break;
 					}
+					case GTSL::Hash(u8"vec4f"): {
+						auto pointer = reinterpret_cast<GTSL::Vector4*>(beginPointer + offset)[0];
+						GTSL::ToString(string, pointer.X());
+						GTSL::ToString(string, pointer.Y());
+						GTSL::ToString(string, pointer.Z());
+						GTSL::ToString(string, pointer.W());
+						break;
+					}
+					case GTSL::Hash(u8"matrix3x4f"): {
+						auto matrixPointer = reinterpret_cast<GTSL::Matrix3x4*>(beginPointer + offset)[0];
+
+						for (uint8 r = 0; r < 3; ++r) {
+							for (uint32 i = 0; i < level && r; ++i) { string += U'	'; } //insert tab for every space deep we are to show struct depth
+
+							for (uint8 c = 0; c < 4; ++c) {
+								GTSL::ToString(string, matrixPointer[r][c]); string += u8" ";
+							}
+
+							string += U'\n';
+						}
+
+						break;
+					}
 					case GTSL::Hash(u8"matrix4f"): {
 						auto matrixPointer = reinterpret_cast<GTSL::Matrix4*>(beginPointer + offset)[0];
 
@@ -1858,7 +1881,7 @@ public:
 		GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<UIManager>(u8"UIManager")->GetUIElementTypeIdentifier(), OnCreateUIElementTaskHandle);
 
 		renderOrchestrator->CreateMember2(u8"global", u8"UIInstance", UI_INSTANCE_DATA);
-		uiInstancesDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIInstance[1024]");
+		uiInstancesDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIInstance[4]");
 
 		renderOrchestrator->CreateMember2(u8"global", u8"UIData", UI_DATA);
 		uiDataDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"UIData");
@@ -1912,7 +1935,9 @@ public:
 		ui->ProcessUpdates();
 
 		{
-			auto extent = GTSL::Vector2(1280.0f / 720.0f, 1.0f);
+			// TODO: value can be outdated
+			auto e = render_system->GetRenderExtent();
+			auto extent = GTSL::Vector2(float32(e.Width) / static_cast<float32>(e.Height), 1.0f);
 
 			auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
 			bwk[u8"projection"] = GTSL::Math::MakeOrthoMatrix(extent.X(), -extent.X(), extent.Y(), -extent.Y(), 0.0f, 1.f);
@@ -1931,8 +1956,8 @@ public:
 			GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
 
 			bwk[i][u8"transform"] = matrix;
-			bwk[i][u8"color"] = GTSL::Vector4((100.0f + float32(rand() % 155)) / 255.f, 208.0f / 255.f, 162.0f / 255.f, 1.0f);
-			bwk[i][u8"roundness"] = 0.5f;
+			bwk[i][u8"color"] = GTSL::Vector4(primitive.Color);
+			bwk[i][u8"roundness"] = primitive.Rounding;
 
 			++i;
 

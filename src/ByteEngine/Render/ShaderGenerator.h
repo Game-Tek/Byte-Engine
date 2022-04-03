@@ -800,64 +800,53 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		resultString += string;
 	};
 
-	declarationBlock += u8"layout(push_constant, scalar) uniform _invocationInfo { ";
-	[&] { //push constant
-		auto pushConstantBlockHandle = pipeline.TryGetElementHandle(scopes, u8"pushConstantBlock");
-		if (!pushConstantBlockHandle) { addErrorCode(u8"Push constant block declaration was not found."); return; }
-		for (const auto& l : pipeline.GetChildren(pushConstantBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
-	}();
-	declarationBlock += u8"} pushConstantBlock;\n";
+	auto addBlockDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars) {
+		auto vertexFragmentInterfaceBlockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
+		if (!vertexFragmentInterfaceBlockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
+
+		declarationBlock += u8"layout(";
+		for (uint32 i = 0; i < vars.ElementCount(); ++i) { if (i) { declarationBlock += u8", "; } declarationBlock += vars[i]; }
+		declarationBlock += u8") "; declarationBlock += type; declarationBlock += u8" _"; declarationBlock += interface_name; declarationBlock += u8" { ";
+
+		for (const auto& e : pipeline.GetChildren(vertexFragmentInterfaceBlockHandle.Get())) {
+			writeStructElement(declarationBlock, pipeline.GetMember(e));
+		}
+		declarationBlock += u8" } ";
+		declarationBlock += interface_name;
+		declarationBlock += u8";\n";
+	};
+
+	auto addLayoutDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, bool isVertexSurfaceInterface = false) {
+		auto interfaceBlockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
+		if (!interfaceBlockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
+
+		const auto& arr = pipeline.GetChildren(interfaceBlockHandle.Get());
+		for (uint32 i = 0; i < arr; ++i) {
+			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") ";
+			declarationBlock += type;
+
+			const auto& member = pipeline.GetMember(arr[i]);
+
+			if (isVertexSurfaceInterface) { if (member.Type == u8"uint32") { declarationBlock &= u8"flat"; } }
+			declarationBlock &= resolveTypeName(member).Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
+		}
+	};
+
+	addBlockDeclaration(u8"pushConstantBlock", u8"uniform", { u8"push_constant", u8"scalar" });
 
 	if (isRayTracing) {
-		[&] {
-			auto payloadBlockHandle = pipeline.TryGetElementHandle(scopes, u8"payloadBlock");
-			if (!payloadBlockHandle) { addErrorCode(u8"Payload block declaration was not found."); return; }
-
-			for (uint32 i = 0; const auto & l : pipeline.GetChildren(payloadBlockHandle.Get())) {
-				declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") ";
-				declarationBlock += targetSemantics == GAL::ShaderType::RAY_GEN ? u8"rayPayloadEXT " : u8"rayPayloadInEXT ";
-				writeStructElement(declarationBlock, pipeline.GetMember(l)); declarationBlock += u8"\n";
-				++i;
-			}
-		}();
-
-		auto& main = pipeline.GetFunction(scopes, u8"main");
-
-		[&] {
-			auto shaderRecordBlockHandle = pipeline.TryGetElementHandle(scopes, u8"shaderRecordBlock");
-			if (!shaderRecordBlockHandle) { return; }
-			declarationBlock += u8"layout(shaderRecordEXT, scalar) buffer shader { ";
-			for (const auto& l : pipeline.GetChildren(shaderRecordBlockHandle.Get())) { writeStructElement(declarationBlock, pipeline.GetMember(l)); }
-			declarationBlock += u8" };\n";
-		}();
+		addLayoutDeclaration(u8"payloadBlock", targetSemantics == GAL::ShaderType::RAY_GEN ? u8"rayPayloadEXT" : u8"rayPayloadInEXT");
+		addBlockDeclaration(u8"shaderRecordBlock", u8"buffer", { u8"shaderRecordEXT", u8"scalar" });
 	}
 
 	switch (targetSemantics) {
 	case GAL::ShaderType::VERTEX: {
-		declarationBlock += u8"layout(location=0) out vertexData { ";
+		//addBlockDeclaration(u8"vertexSurfaceInterface", u8"out", { u8"location=0" });
+		//addBlockDeclaration(u8"vertexSurfaceInterface1", u8"out", { u8"location=4" });
 
-		[&] {
-			auto vertexFragmentInterfaceBlockHandle = pipeline.TryGetElementHandle(scopes, u8"vertexSurfaceInterface");
-			if (!vertexFragmentInterfaceBlockHandle) { addErrorCode(u8"Vertex-Surface interface block declaration was not found."); return; }
-			for (auto& e : pipeline.GetChildren(vertexFragmentInterfaceBlockHandle.Get())) {
-				if(pipeline.GetMember(e).Type == u8"uint32") {
-					declarationBlock += u8"flat ";
-				}
-				writeStructElement(declarationBlock, pipeline.GetMember(e));
-			}
-		}();
+		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"out");
 
-		declarationBlock += u8" } vertexSurfaceInterface;\n";
-
-		[&] {
-			auto vertexBlockHandle = pipeline.TryGetElementHandle(scopes, u8"vertex");
-			if (!vertexBlockHandle) { addErrorCode(u8"Vertex declaration was not found."); return; }
-			for (uint8 i = 0; const auto & ve : pipeline.GetChildren(vertexBlockHandle.Get())) {
-				declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") in ";
-				writeStructElement(declarationBlock, pipeline.GetMember(ve)); declarationBlock += u8'\n';
-				++i;
-			}
-		}();
+		addLayoutDeclaration(u8"vertex", u8"in");
 
 		break;
 	}
@@ -878,27 +867,12 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	case GAL::ShaderType::TESSELLATION_EVALUATION: break;
 	case GAL::ShaderType::GEOMETRY: break;
 	case GAL::ShaderType::FRAGMENT: {
-		declarationBlock += u8"layout(location=0) in vertexData { ";
+		//addBlockDeclaration(u8"vertexSurfaceInterface", u8"in", { u8"location=0" });
+		//addBlockDeclaration(u8"vertexSurfaceInterface1", u8"in", { u8"location=4" });
 
-		[&] {
-			auto vertexFragmentInterfaceBlockHandle = pipeline.TryGetElementHandle(scopes, u8"vertexSurfaceInterface");
-			if (!vertexFragmentInterfaceBlockHandle) { addErrorCode(u8"Vertex-Surface interface block declaration was not found."); return; }
-			for (auto& e : pipeline.GetChildren(vertexFragmentInterfaceBlockHandle.Get())) {
-				writeStructElement(declarationBlock, pipeline.GetMember(e));
-			}
-		}();
+		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"in", true);
 
-		declarationBlock += u8" } vertexIn;\n";
-
-		[&] {
-			auto fragmentOutputBlockHandle = pipeline.TryGetElementHandle(scopes, u8"fragmentOutputBlock");
-			if (!fragmentOutputBlockHandle) { addErrorCode(u8"Fragment output block declaration was not found."); return; }
-			for (uint32 i = 0; auto & e : pipeline.GetChildren(fragmentOutputBlockHandle.Get())) {
-				declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") out ";
-				writeStructElement(declarationBlock, pipeline.GetMember(e)); declarationBlock += u8'\n';
-				++i;
-			}
-		}();
+		addLayoutDeclaration(u8"fragmentOutputBlock", u8"out");
 
 		break;
 	}
@@ -953,6 +927,15 @@ inline void AddPushConstantDeclaration(GPipeline* pipeline, GPipeline::ElementHa
 
 inline void AddVertexSurfaceInterfaceBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
 	auto vertexSurfaceInterface = pipeline->DeclareScope(parent_element_handle, u8"vertexSurfaceInterface");
+
+	for (auto& e : elements) {
+		auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, e);
+		//pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
+	}
+}
+
+inline void AddVertexSurfaceInterfaceBlockDeclaration1(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
+	auto vertexSurfaceInterface = pipeline->DeclareScope(parent_element_handle, u8"vertexSurfaceInterface1");
 
 	for (auto& e : elements) {
 		auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, e);

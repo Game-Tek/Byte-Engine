@@ -10,6 +10,13 @@ UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElemen
 }
 
 void UIManager::ProcessUpdates() {
+	auto screenExtent = GTSL::System::GetScreenExtent();
+	auto screenSize = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
+
+	auto windowSize = GTSL::Vector2(1280.0f, 720.f);
+
+	primitives[1].HalfSize = (windowSize / screenSize) / 2.0f;
+
 	updateBranch(primitives.begin());
 
 	//auto result = FindPrimitiveUnderPoint({});
@@ -55,7 +62,7 @@ void UIManager::updateBranch(decltype(primitives)::iterator iterator) {
 	perPrimitiveHalfSize[distributionAxis] = halfSize[distributionAxis] / static_cast<float32>(primitiveCount);
 
 	// Starting position for elements inside this element. A delta will be added to each primitive to correctly distribute them inside this element.
-	const GTSL::Vector2 startPosition = GTSL::Vector2() - perPrimitiveHalfSize * primitiveCount / 2.0f * distributionMask;
+	const GTSL::Vector2 startPosition = GTSL::Vector2() - perPrimitiveHalfSize * (primitiveCount + 1) / 2.0f * distributionMask;
 	// How much each element has to move to correctly distribute them. Each of the children's positions will be the sum of the starting position plus a multiple of this increment times the child index.
 	const GTSL::Vector2 increment = perPrimitiveHalfSize * 2.0f * distributionMask;
 

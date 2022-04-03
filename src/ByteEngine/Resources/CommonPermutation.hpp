@@ -77,12 +77,12 @@ struct CommonPermutation : PermutationManager {
 		auto glPositionHandle = pipeline->DeclareVariable(vertexShaderScope, { u8"vec4f", u8"gl_Position" });
 		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
 
-		pipeline->DeclareFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexIn.vertexTextureCoordinates;");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexTextureCoordinates;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"matrix4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpacePosition", {}, u8"return vertexIn.worldSpacePosition;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpaceNormal", {}, u8"return vertexIn.worldSpaceNormal;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return vertexIn.viewSpacePosition;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(vertexIn.viewSpaceNormal, 0);");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpacePosition", {}, u8"return worldSpacePosition;");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpaceNormal", {}, u8"return worldSpaceNormal;");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return viewSpacePosition;");
+		pipeline->DeclareFunction(fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(viewSpaceNormal, 0);");
 
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");

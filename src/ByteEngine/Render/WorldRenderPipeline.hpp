@@ -103,7 +103,7 @@ private:
 
 	void OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName);
 
-	void AddMeshInstance(RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, Id resource_name) {
+	void AddMeshInstance(RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, Id resource_name, uint32 ins) {
 		auto& instance = instances[instance_handle()];
 		auto& resource = resources[resource_name];
 

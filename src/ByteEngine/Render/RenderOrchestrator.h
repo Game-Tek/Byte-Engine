@@ -2,26 +2,25 @@
 
 #include "ByteEngine/Game/System.hpp"
 
-#include <GTSL/Vector.hpp>
+#include <GTSL/Bitfield.h>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/PagedVector.h>
 #include <GTSL/SparseVector.hpp>
-#include <GTSL/Tree.hpp>
 #include <GTSL/String.hpp>
-#include <GTSL/Bitfield.h>
+#include <GTSL/Tree.hpp>
+#include <GTSL/Vector.hpp>
 
-#include "ByteEngine/Id.h"
+#include "Culling.h"
 #include "RenderSystem.h"
 #include "RenderTypes.h"
 #include "StaticMeshRenderGroup.h"
+#include "UIManager.h"
+#include "ByteEngine/Id.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/Tasks.h"
+#include "ByteEngine/Resources/FontResourceManager.h"
 #include "ByteEngine/Resources/ShaderResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
-#include "Culling.h"
-#include "LightsRenderGroup.h"
-#include "UIManager.h"
-#include "ByteEngine/MetaStruct.hpp"
 
 class RenderOrchestrator;
 class RenderState;
@@ -206,10 +205,6 @@ public:
 		return DataKeyHandle(newDataKeyIndex);
 	}
 
-	void AddInstance(NodeHandle node_handle) {
-		renderingTree.ToggleBranch(node_handle(), ++getPrivateNode<MeshData>(node_handle).InstanceCount);
-	}
-
 	NodeHandle AddVertexBufferBind(RenderSystem* render_system, NodeHandle parent_node_handle, RenderSystem::BufferHandle buffer_handle, GTSL::Range<const GTSL::Range<const GAL::ShaderDataType*>*> meshVertexLayout) {
 		auto nodeHandle = addInternalNode<VertexBufferBindData>(0, parent_node_handle);
 		auto& node = getPrivateNode<VertexBufferBindData>(nodeHandle);
@@ -253,6 +248,26 @@ public:
 
 	void SetBaseInstanceIndex(NodeHandle node_handle, uint32 base_instance_handle) {
 		getPrivateNode<MeshData>(node_handle).InstanceIndex = base_instance_handle;
+	}
+
+	template<typename T>
+	uint32 GetInstanceIndex(const NodeHandle handle, const T& instance_handle) {
+		const auto& node = getPrivateNode<DataNode>(handle);
+		return node.Instances[instance_handle()];
+	}
+
+	template<typename T>
+	void RegisterMeshInstance(NodeHandle data_node_handle, const T handle) {
+		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
+		dataNode.Instances.Emplace(handle(), dataNode.Instance++);
+	}
+
+	template<typename T>
+	void AddInstance(NodeHandle data_node_handle, NodeHandle mesh_node_handle, T handle) {
+		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
+		auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
+		++meshNode.InstanceCount;
+		renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);
 	}
 
 	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
@@ -351,36 +366,26 @@ public:
 		return pipelineBindNode;
 	}
 
-	NodeHandle AddDataNode(Id layerName, NodeHandle parent, const MemberHandle member_handle) {
+	NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const MemberHandle member_handle, bool useCounter = false) {
 		auto dataKeyHandle = DataKeyHandle(dataKeys.GetLength());
 		auto& dataKey = dataKeys.EmplaceBack();
 		dataKey.Buffer = renderBuffers[0].BufferHandle;
 		dataKey.Offset = renderDataOffset;
 		dataKey.Handle = member_handle.Handle;
 		renderDataOffset += GetSize(member_handle.Handle);
-		auto nodeHandle = addInternalNode<LayerData>(~0ull, parent);
+		auto nodeHandle = addInternalNode<DataNode>(layerName(), left_node_handle, parent);
 
 		dataKey.Nodes.EmplaceBack(nodeHandle);
 		UpdateDataKey(dataKeyHandle);
 		getNode(nodeHandle).Name = GTSL::StringView(layerName);
+		auto& node = getPrivateNode<DataNode>(nodeHandle);
+		node.UseCounter = useCounter;
 
 		return nodeHandle;
 	}
 
-	NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const MemberHandle member_handle) {
-		auto dataKeyHandle = DataKeyHandle(dataKeys.GetLength());
-		auto& dataKey = dataKeys.EmplaceBack();
-		dataKey.Buffer = renderBuffers[0].BufferHandle;
-		dataKey.Offset = renderDataOffset;
-		dataKey.Handle = member_handle.Handle;
-		renderDataOffset += GetSize(member_handle.Handle);
-		auto nodeHandle = addInternalNode<LayerData>(~0ull, left_node_handle, parent);
-
-		dataKey.Nodes.EmplaceBack(nodeHandle);
-		UpdateDataKey(dataKeyHandle);
-		getNode(nodeHandle).Name = GTSL::StringView(layerName);
-
-		return nodeHandle;
+	NodeHandle AddDataNode(Id layerName, NodeHandle parent, const MemberHandle member_handle, bool use_counter = false) {
+		return AddDataNode(layerName, {}, parent, member_handle, use_counter);
 	}
 
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
@@ -557,12 +562,13 @@ public:
 		}
 	};
 
-	[[nodiscard]] NodeHandle AddDataNode(const NodeHandle parent_node_handle, const GTSL::StringView node_name, const DataKeyHandle data_key_handle) {
+	[[nodiscard]] NodeHandle AddDataNode(const NodeHandle parent_node_handle, const GTSL::StringView node_name, const DataKeyHandle data_key_handle, bool use_counter = false) {
 		auto& dataKey = dataKeys[data_key_handle()];
-		auto nodeHandle = addInternalNode<LayerData>(0, parent_node_handle);
+		auto nodeHandle = addInternalNode<DataNode>(0, parent_node_handle);
 		dataKey.Nodes.EmplaceBack(nodeHandle);
 		UpdateDataKey(data_key_handle);
 		setNodeName(nodeHandle, node_name);
+		getPrivateNode<DataNode>(nodeHandle).UseCounter = use_counter;
 		return nodeHandle;
 	}
 
@@ -578,12 +584,12 @@ public:
 			//getInternalNodeFromPublicHandle(e).BufferHandle = dataKey.Buffer;
 			//getInternalNodeFromPublicHandle(e).Offset = dataKey.Offset;
 			SetNodeState(e, static_cast<bool>(dataKey.Buffer));
-			getPrivateNode<LayerData>(e).DataKey = data_key_handle;
+			getPrivateNode<DataNode>(e).DataKey = data_key_handle;
 		}
 	}
 	
 	BufferWriteKey GetBufferWriteKey(RenderSystem* render_system, const NodeHandle node_handle, uint32 frame = ~0u) {
-		auto& node = getPrivateNode<LayerData>(node_handle);
+		auto& node = getPrivateNode<DataNode>(node_handle);
 		BufferWriteKey buffer_write_key;
 		buffer_write_key.render_system = render_system;
 		buffer_write_key.render_orchestrator = this;
@@ -1070,8 +1076,11 @@ private:
 		//};
 	};
 
-	struct LayerData {
+	struct DataNode {
 		DataKeyHandle DataKey;
+		bool UseCounter;
+		uint32 Instance = 0;
+		GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> Instances;
 	};
 
 	struct PublicNode {
@@ -1222,7 +1231,7 @@ private:
 		
 	};
 
-	GTSL::MultiTree<BE::PAR, PublicNode, PipelineBindData, LayerData, RayTraceData, DispatchData, MeshData, RenderPassData, DrawData, VertexBufferBindData, IndexBufferBindData, IndirectComputeDispatchData> renderingTree;
+	GTSL::MultiTree<BE::PAR, PublicNode, PipelineBindData, DataNode, RayTraceData, DispatchData, MeshData, RenderPassData, DrawData, VertexBufferBindData, IndexBufferBindData, IndirectComputeDispatchData> renderingTree;
 
 	bool isUnchanged = true;
 
@@ -1314,7 +1323,7 @@ private:
 		if (!d) { return; }
 
 		switch (renderingTree.GetNodeType(nodeHandle)) {
-		case decltype(renderingTree)::GetTypeIndex<LayerData>(): {
+		case decltype(renderingTree)::GetTypeIndex<DataNode>(): {
 			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: LayerData", u8", Name: ", getNode(nodeHandle).Name);
 			break;
 		}
@@ -1410,8 +1419,8 @@ private:
 		ElementData(const BE::PAR& allocator) : children() {}
 
 		enum class ElementType {
-			NULL, SCOPE, TYPE, MEMBER
-		} Type = ElementType::NULL;
+			NONE, SCOPE, TYPE, MEMBER
+		} Type = ElementType::NONE;
 
 		GTSL::StaticString<64> DataType, Name;
 
@@ -1742,7 +1751,7 @@ private:
 		auto& e = elements[element_data_handle()];
 
 		switch (e.Type) {
-		case ElementData::ElementType::NULL: break;
+		case ElementData::ElementType::NONE: break;
 		case ElementData::ElementType::SCOPE: break;
 		case ElementData::ElementType::TYPE: return e.TyEl.Size;
 		case ElementData::ElementType::MEMBER: return getElement(e.Mem.TypeHandle).TyEl.Size * (getOnlyType ? 1 : e.Mem.Multiplier);
@@ -1859,7 +1868,7 @@ class UIRenderManager : public RenderManager {
 public:
 	DECLARE_BE_TASK(OnCreateUIElement, BE_RESOURCES(RenderOrchestrator), UIManager::UIElementHandle, UIManager::PrimitiveData::PrimitiveType);
 
-	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager") {
+	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager"), instancesMap(32, GetPersistentAllocator()), fontData(GetApplicationManager()->GetSystem<FontResourceManager>(u8"FontResourceManager")->GetFont(u8"arial")) {
 		auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 		auto* renderOrchestrator = initializeInfo.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
@@ -1903,11 +1912,13 @@ public:
 
 	void OnCreateUIElement(const TaskInfo, RenderOrchestrator* render_orchestrator, UIManager::UIElementHandle ui_element_handle, UIManager::PrimitiveData::PrimitiveType type) {
 		switch (type) {
-		break; case UIManager::PrimitiveData::PrimitiveType::NULL:
+		break; case UIManager::PrimitiveData::PrimitiveType::NONE:
 		break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
 		break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
 		break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
 			render_orchestrator->AddMeshInstance2(meshNodeHandle);
+			instancesMap.Emplace(ui_element_handle(), instanceCount);
+			++instanceCount;
 		break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
 		break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
 		break;
@@ -1947,37 +1958,40 @@ public:
 
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiInstancesDataKey);
 
-		uint32 i = 0;
-
 		auto visitUIElement = [&](GTSL::Tree<UIManager::PrimitiveData, BE::PAR>::iterator iterator, GTSL::Matrix3x4 matrix, auto&& self) -> void {
+			if(!instancesMap.Find(iterator.GetPosition())) { return; }
+
 			const auto& primitive = static_cast<const UIManager::PrimitiveData&>(iterator);
 
-			GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.HalfSize, 0));
-			GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
+			switch (primitive.Type) {
+			break; case UIManager::PrimitiveData::PrimitiveType::NONE:
+			break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
+			break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
+			break; case UIManager::PrimitiveData::PrimitiveType::SQUARE: {
+				GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.HalfSize, 0));
+				GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
 
-			bwk[i][u8"transform"] = matrix;
-			bwk[i][u8"color"] = GTSL::Vector4(primitive.Color);
-			bwk[i][u8"roundness"] = primitive.Rounding;
+				const auto i = instancesMap[iterator.GetPosition()];
 
-			++i;
-
-			//switch (primitive.Type) {
-			//break; case UIManager::PrimitiveData::PrimitiveType::NULL:
-			//break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
-			//break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
-			//break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
-			//break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
-			//break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
-			//}
+				bwk[i][u8"transform"] = matrix;
+				bwk[i][u8"color"] = GTSL::Vector4(primitive.Color);
+				bwk[i][u8"roundness"] = primitive.Rounding;
+			}
+			break; case UIManager::PrimitiveData::PrimitiveType::TEXT: {
+				//auto& text = ui->GetText(primitive.DerivedTypeIndex);
+			}
+			break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
+				break;
+			}
 
 			for (auto e : iterator) {
 				self(e, matrix, self);
 			}
 		};
 
-		for (auto e : root) {
-			visitUIElement(e, GTSL::Matrix3x4(), visitUIElement);
-		}
+		if (root.GetPosition() == 1) { return; }
+
+		visitUIElement(root, GTSL::Matrix3x4(), visitUIElement);
 	}
 
 	ShaderGroupHandle GetUIMaterial() const { return uiMaterial; }
@@ -1991,10 +2005,16 @@ private:
 	GTSL::StaticMap<Id, uint32, 4> fontOrderMap;
 	GTSL::StaticMap<char32_t, uint32, 4> fontCharMap;
 
+	GTSL::HashMap<uint32, uint32, BE::PAR> instancesMap;
+
+	uint32 instanceCount = 0;
+
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;
 
 	RenderOrchestrator::DataKeyHandle uiDataDataKey, uiInstancesDataKey;
+
+	GTSL::Pair<FontResourceManager::FontData, GTSL::Buffer<BE::PAR>> fontData;
 };
 
 //for (auto& ref : canvases)

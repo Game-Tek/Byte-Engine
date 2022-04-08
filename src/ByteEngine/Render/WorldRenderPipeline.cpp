@@ -131,7 +131,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
 	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
-	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer);
+	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer, true);
 
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"VisibilityShaderGroup"));
@@ -186,7 +186,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 				materialNodeHandle = r.Get().Node;
 			}
 
-			resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, prefixSum[resource.Index], resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
+			resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
 		}
 		else if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 			if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
@@ -276,9 +276,12 @@ void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceMana
 		instance.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, 0, instance.InstanceHandle); // Custom instance index will be set later
 	}
 
+
+	render_orchestrator->RegisterMeshInstance(meshDataNode, static_mesh_handle);
+
 	if (resource) { // If resource isn't already loaded 
-		resource.Get().Index = prefixSum.EmplaceBack(0);
-		prefixSumGuide.EmplaceBack(resourceName);
+		//resource.Get().Index = prefixSum.EmplaceBack(0);
+		//prefixSumGuide.EmplaceBack(resourceName);
 		static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
 	}
 	else {

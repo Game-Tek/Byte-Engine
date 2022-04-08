@@ -84,6 +84,23 @@ public:
 			fs.Name = u8"UIFragment"; fs.Tags.EmplaceBack(u8"Domain", u8"UI"); fs.TargetSemantics = GAL::ShaderType::FRAGMENT; fs.Scopes.EmplaceBack(GPipeline::GLOBAL_SCOPE); fs.Scopes.EmplaceBack(uiScope); fs.Scopes.EmplaceBack(commonPermutation->commonScope); fs.Scopes.EmplaceBack(fragmentShaderHandle); fs.Scopes.EmplaceBack(commonPermutation->fragmentShaderScope);
 		}
 
+		{
+			//todo: discard out of box points
+			//pipeline->AddCodeToFunction({}, u8"if(isLinearSegment()) {");
+			//pipeline->AddCodeToFunction({}, u8"vec2f point = ClosestPointOnLineSegmentToPoint();");
+			//pipeline->AddCodeToFunction({}, u8"return length(point - pointInGlyph);");
+			//pipeline->AddCodeToFunction({}, u8"} else {");
+			//pipeline->AddCodeToFunction({}, u8"float32 dist = 100.0f; const uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f }; uint32 sideToAdjust = 0; for (uint32 l = 0; l < LOOPS; ++l) { for (uint32 i = 0, ni = 1; i < 2; ++i, --//ni) { float32 t = mix(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f); vec2f ab = mix(curve.Points[0], curve.Points[1], t); vec2f bc = mix(curve.Points[1], curve.Points[2], t); vec2f pos = mix(ab, bc, t); float32 //newDist = length(pos - point); if (newDist < dist) { sideToAdjust = ni; dist = newDist; } } bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f; } return dist;");
+			//pipeline->AddCodeToFunction({}, u8"}");
+			//
+			//pipeline->AddCodeToFunction({}, u8"FontChar char = pushConstantBlock.ui.fontData[pushConstantBlock.ui.textData[pushConstantBlock.ui.instances[gl_InstanceIndex].derivedTypeIndex].fontIndex];");
+			//pipeline->AddCodeToFunction({}, u8"uint32 closestSegmentIndex = 0xffffffff; float32 shortestDistance = 100000.0f;");
+			//pipeline->AddCodeToFunction({}, u8"for (uint32 i = 0; i < char.segmentCount; ++i) { ");
+			//pipeline->AddCodeToFunction({}, u8"float32 distance = segmentDistanceToPixel(font.segments[char.offset], GetTextureCoordinates());");
+			//pipeline->AddCodeToFunction({}, u8"if (distance < shortestDistance) { shortestDistance = distance; closestSegmentIndex = i; }");
+			//pipeline->AddCodeToFunction({}, u8"} surfaceColor = segmentSide();");
+		}
+
 		return results;
 	}
 

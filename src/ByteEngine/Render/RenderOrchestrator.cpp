@@ -329,6 +329,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	uint32 lastInvalidLevel = 0xFFFFFFFF;
 
+	GTSL::StaticVector<uint32, 16> counterStack;
+
 	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
 		if (!enabled || level > lastInvalidLevel) { lastInvalidLevel = level; return; }
 
@@ -339,14 +341,18 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		printNode(key, level, false);
 
 		switch (renderingTree.GetNodeType(key)) {
-		case RTT::GetTypeIndex<LayerData>(): {
-			const LayerData& layerData = renderingTree.GetClass<LayerData>(key);
+		case RTT::GetTypeIndex<DataNode>(): {
+			const DataNode& layerData = renderingTree.GetClass<DataNode>(key);
 
 			if constexpr (BE_DEBUG) {
 				commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
 			}
 
 			if (layerData.DataKey) {
+				if (layerData.UseCounter) {
+					counterStack.EmplaceBack();
+				}
+
 				dataStreamHandle = renderState.AddDataStream();
 				GAL::DeviceAddress address;
 				const auto& dataKey = dataKeys[layerData.DataKey()];
@@ -436,6 +442,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		case RTT::GetTypeIndex<MeshData>(): {
 			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
 			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, meshData.InstanceIndex, meshData.IndexOffset, meshData.VertexOffset);
+			counterStack.back() += meshData.InstanceCount;
 			break;
 		}
 		case RTT::GetTypeIndex<DrawData>(): {
@@ -496,8 +503,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		//BE_LOG_WARNING(u8"Leaving node ", key);
 
 		switch (renderingTree.GetNodeType(key)) {
-		case RTT::GetTypeIndex<LayerData>(): {
+		case RTT::GetTypeIndex<DataNode>(): {
+			const auto& node = getPrivateNode<DataNode>(key);
+
 			renderState.PopData();
+
+			if(node.UseCounter) {
+				counterStack.PopBack();
+			}
 
 			if constexpr (BE_DEBUG) {
 				commandBuffer.EndRegion(renderSystem->GetRenderDevice());

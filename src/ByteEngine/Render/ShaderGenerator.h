@@ -1,18 +1,13 @@
 #pragma once
 
-#include <GTSL/String.hpp>
-#include "ByteEngine/Application/AllocatorReferences.h"
+#include <ByteEngine/Id.h>
 #include <GAL/RenderCore.h>
 #include <GTSL/HashMap.hpp>
-#include <ByteEngine/Id.h>
-#include <GTSL/Vector.hpp>
-#include <GAL/Pipelines.h>
-
-#include <GTSL/JSON.hpp>
-
+#include <GTSL/String.hpp>
 #include <GTSL/Tree.hpp>
+#include <GTSL/Vector.hpp>
 
-#undef NULL
+#include "ByteEngine/Application/AllocatorReferences.h"
 
 //Object types are always stored as the interface types, not the end target's name
 struct StructElement {
@@ -25,7 +20,7 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		NULL, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON
+		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -175,8 +170,8 @@ struct GPipeline : Object {
 		LanguageElement(const BE::TAR& allocator) : map(16, allocator), symbols(4, allocator) {}
 
 		enum class ElementType {
-			NULL, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
-		} Type = ElementType::NULL;
+			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
+		} Type = ElementType::NONE;
 
 		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
 		GTSL::Vector<uint32, BE::TAR> symbols;
@@ -210,8 +205,8 @@ struct GPipeline : Object {
 		//add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
 	}
 
-	auto& GetElement(ElementHandle parent, const GTSL::StringView name) {
-		return elements[elements[parent.Handle].map[Id(name)].back()];
+	auto& GetElement(ElementHandle parent, const GTSL::StringView element_name) {
+		return elements[elements[parent.Handle].map[Id(element_name)].back()];
 	}
 
 	auto& GetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
@@ -825,10 +820,10 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") ";
 			declarationBlock += type;
 
-			const auto& member = pipeline.GetMember(arr[i]);
+			const auto member = resolveTypeName(pipeline.GetMember(arr[i]));
 
 			if (isVertexSurfaceInterface) { if (member.Type == u8"uint32") { declarationBlock &= u8"flat"; } }
-			declarationBlock &= resolveTypeName(member).Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
+			declarationBlock &= member.Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
 		}
 	};
 

@@ -4,6 +4,8 @@
 #include "ByteEngine/Game/ApplicationManager.h"
 #include <ByteEngine/Render/RenderOrchestrator.h>
 
+#include "LightsRenderGroup.h"
+
 class StaticMeshRenderGroup;
 class StaticMeshResouceManager;
 
@@ -50,12 +52,12 @@ private:
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
 	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
 	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
-	Handle<uint32, DataKey_tag> visibilityDataKey;
+	RenderOrchestrator::DataKeyHandle visibilityDataKey;
 
 	struct Mesh {
 		ShaderGroupHandle MaterialHandle;
 		RenderSystem::BLASInstanceHandle InstanceHandle;
-		uint32 Index;
+		//uint32 Index;
 	};
 	GTSL::FixedVector<Mesh, BE::PAR> instances;
 
@@ -73,7 +75,7 @@ private:
 		RenderSystem::AccelerationStructureHandle BLAS;
 		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
 		bool Interleaved = true;
-		uint32 Index = 0;
+		//uint32 Index = 0;
 		RenderOrchestrator::NodeHandle nodeHandle;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
@@ -93,7 +95,7 @@ private:
 		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
 	}
 
-	GTSL::StaticVector<uint32, 16> prefixSum; GTSL::StaticVector<Id, 16> prefixSumGuide;
+	//GTSL::StaticVector<uint32, 16> prefixSum; GTSL::StaticVector<Id, 16> prefixSumGuide;
 
 	DECLARE_BE_TYPE(Instance)
 
@@ -109,28 +111,29 @@ private:
 
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
 
-		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
-			auto instanceIndex = prefixSum[i]++;
+		//for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {	
+		//	auto instanceIndex = prefixSum[i]++;
+		//
+		//	render_orchestrator->SetBaseInstanceIndex(resources[prefixSumGuide[i]].nodeHandle, instanceIndex);
+		//}
+		//
+		//for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
+		//	for (uint32 j = 0; j < resource.Instances; ++j) {
+		//		auto& inst = instances[resource.Instances[j]()];
+		//		auto instanceIndex = inst.Index = prefixSum[i] + j;
+		//		inst.Index = instanceIndex;
+		//
+		//		if (rayTracing) { renderSystem->SetAccelerationStructureInstanceIndex(topLevelAccelerationStructure, inst.InstanceHandle, instanceIndex); }
+		//	}
+		//}
 
-			render_orchestrator->SetBaseInstanceIndex(resources[prefixSumGuide[i]].nodeHandle, instanceIndex);
-		}
+		render_orchestrator->AddInstance(meshDataNode, resource.nodeHandle, instance_handle);
 
-		for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
-			for (uint32 j = 0; j < resource.Instances; ++j) {
-				auto& inst = instances[resource.Instances[j]()];
-				auto instanceIndex = inst.Index = prefixSum[i] + j;
-				inst.Index = instanceIndex;
-
-				if (rayTracing) { renderSystem->SetAccelerationStructureInstanceIndex(topLevelAccelerationStructure, inst.InstanceHandle, instanceIndex); }
-			}
-		}
-
-		const auto instanceIndex = instance.Index;
+		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
 
 		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
 		key[instanceIndex][u8"shaderGroupIndex"] = instance.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
 
-		render_orchestrator->AddInstance(resource.nodeHandle);
 
 		if (rayTracing) {
 			pendingAdditions.EmplaceBack(resource_name, instance_handle);
@@ -140,12 +143,15 @@ private:
 	void OnUpdateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshRenderGroup::StaticMeshHandle mesh_handle, GTSL::Matrix3x4 transform) {
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
 
-		auto& instance = instances[meshToInstanceMap[mesh_handle]()];
+		const auto& instanceHandle = meshToInstanceMap[mesh_handle];
+		const auto& instance = instances[instanceHandle()];
+		
+		const auto instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instanceHandle);
 
-		key[instance.Index][u8"transform"] = transform;
-		*spherePositionsAndRadius.GetPointer<0>(instance.Index) = transform(0, 3);
-		*spherePositionsAndRadius.GetPointer<1>(instance.Index) = transform(1, 3);
-		*spherePositionsAndRadius.GetPointer<2>(instance.Index) = transform(2, 3);
+		key[instanceIndex][u8"transform"] = transform;
+		//*spherePositionsAndRadius.GetPointer<0>(instanceIndex) = transform(0, 3);
+		//*spherePositionsAndRadius.GetPointer<1>(instanceIndex) = transform(1, 3);
+		//*spherePositionsAndRadius.GetPointer<2>(instanceIndex) = transform(2, 3);
 
 		if (rayTracing) {
 			renderSystem->SetInstancePosition(topLevelAccelerationStructure, instance.InstanceHandle, transform);

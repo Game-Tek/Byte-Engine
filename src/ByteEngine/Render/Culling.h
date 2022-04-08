@@ -55,6 +55,10 @@ inline uint8 SelectLOD(const float32 percentage, const uint8 minLOD, const uint8
 	return static_cast<uint8>(GTSL::Math::MapToRange(percentage, 0, 1, minLOD, maxLOD));
 }
 
+
+using AABB2 = GTSL::Vector2;
+using AABB = GTSL::Vector3;
+
 inline void ScreenCull(const GTSL::Range<const AABB*> aabbs) {
 	GTSL::StaticVector<AABB, 16> front; front.EmplaceBack();
 

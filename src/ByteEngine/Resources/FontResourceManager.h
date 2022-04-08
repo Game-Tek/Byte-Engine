@@ -26,8 +26,7 @@ class FontResourceManager : public ResourceManager
 public:
 	FontResourceManager(const InitializeInfo&);
 	
-	struct Character
-	{
+	struct Character {
 		GTSL::Extent2D Size;       // Size of glyph
 		IVector2D Bearing;    // Address from baseline to left/top of glyph
 		GTSL::Extent2D Position;
@@ -40,6 +39,14 @@ public:
 	struct FontData : SData {
 		DEFINE_ARRAY_MEMBER(Character, Characters, SIZE)
 	};
+
+	GTSL::Pair<FontData, GTSL::Buffer<BE::PAR>> GetFont(const GTSL::StringView string_view) {
+		FontData fontData;
+		resource_files_.LoadEntry(string_view, fontData);
+		GTSL::Buffer buffer(GetPersistentAllocator());
+		resource_files_.LoadData(fontData, buffer);
+		return GTSL::Pair(GTSL::MoveRef(fontData), GTSL::MoveRef(buffer));
+	}
 
 private:
 	ResourceFiles resource_files_;

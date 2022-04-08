@@ -177,6 +177,13 @@ struct ResourceFiles {
 		return tableMap.Find(static_cast<uint64>(name));
 	}
 
+	bool LoadData(auto& info, auto& buffer) {
+		data.SetPointer(info.Header.DataOffset);
+		buffer.Resize(info.Header.DataSize);
+		data.Read(info.Header.DataSize, buffer.begin());
+		return true;
+	}
+
 	bool LoadData(auto& info, GTSL::Range<byte*> buffer) {
 		data.SetPointer(info.Header.DataOffset);
 		data.Read(info.Header.DataSize, buffer.begin());

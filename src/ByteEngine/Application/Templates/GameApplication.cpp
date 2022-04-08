@@ -38,6 +38,7 @@ bool GameApplication::Initialize()
 	applicationManager->AddSystem<ShaderResourceManager>(u8"ShaderResourceManager");
 	applicationManager->AddSystem<AudioResourceManager>(u8"AudioResourceManager");
 	applicationManager->AddSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
+	applicationManager->AddSystem<FontResourceManager>(u8"FontResourceManager");
 
 	return true;
 }
@@ -51,6 +52,9 @@ void GameApplication::PostInitialize()
 	applicationManager->AddStage(u8"GameplayStart");
 	//GAMEPLAY CODE ENDS
 	applicationManager->AddStage(u8"GameplayEnd");
+
+	//applicationManager->AddStage(u8"PostGameplay");
+	//applicationManager->AddStage(u8"PreRenderSetup");
 	
 	//RENDER CODE BEGINS
 	applicationManager->AddStage(u8"RenderSetup");

@@ -1,20 +1,18 @@
 #pragma once
 
-#include "ByteEngine/Game/System.hpp"
-
 #include <GTSL/Extent.h>
-#include <GTSL/HashMap.hpp>
 #include <GTSL/FixedVector.hpp>
+#include <GTSL/HashMap.hpp>
 #include <GTSL/RGB.hpp>
 #include <GTSL/String.hpp>
-#include <GTSL/Math/Vectors.hpp>
 #include <GTSL/Tree.hpp>
+#include <GTSL/Math/Vectors.hpp>
 
 #include "RenderTypes.h"
-#include "ByteEngine/Id.h"
-
 #include "ByteEngine/Handle.hpp"
+#include "ByteEngine/Id.h"
 #include "ByteEngine/Game/ApplicationManager.h"
+#include "ByteEngine/Game/System.hpp"
 
 enum class Alignments : uint8 {
 			TOP,
@@ -62,8 +60,6 @@ enum class SpacingPolicy : uint8 {
 	DISTRIBUTE
 };
 
-#undef NULL
-
 class Square {
 public:
 	Square() = default;
@@ -88,7 +84,7 @@ public:
 
 
 	struct PrimitiveData {
-		enum class PrimitiveType { NULL, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
+		enum class PrimitiveType { NONE, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
 		GTSL::Vector2 RelativeLocation;
 		GTSL::Vector2 Bounds;
 		GTSL::Vector2 HalfSize;
@@ -194,7 +190,7 @@ public:
 	void SetColor(const UIElementHandle ui_element_handle, const Id color) {
 		auto& primitive = primitives[ui_element_handle()];
 		switch (primitive.Type) {
-		case PrimitiveData::PrimitiveType::NULL: break;
+		case PrimitiveData::PrimitiveType::NONE: break;
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
 		case PrimitiveData::PrimitiveType::SQUARE: squares[primitive.DerivedTypeIndex].SetColor(color); break;
 		}
@@ -213,7 +209,7 @@ public:
 	void SetPosition(UIElementHandle ui_element_handle, GTSL::Vector2 pos) {
 		auto& primitive = primitives[ui_element_handle()];
 		switch (primitive.Type) {
-		case PrimitiveData::PrimitiveType::NULL: break;
+		case PrimitiveData::PrimitiveType::NONE: break;
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
 		case PrimitiveData::PrimitiveType::SQUARE: break;
 		}

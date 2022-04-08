@@ -15,7 +15,7 @@ void UIManager::ProcessUpdates() {
 
 	auto windowSize = GTSL::Vector2(1280.0f, 720.f);
 
-	primitives[1].HalfSize = (windowSize / screenSize) / 2.0f;
+	if (primitives.begin().GetPosition() == 1) { return; }
 
 	updateBranch(primitives.begin());
 

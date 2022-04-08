@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PermutationManager.hpp"
+#include "ByteEngine/Render/Culling.h"
 
 struct VisibilityRenderPassPermutation : PermutationManager {
 	VisibilityRenderPassPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"VisibilityRenderPassPermutation") {
@@ -331,9 +332,6 @@ u8R"({
 	GPipeline::ElementHandle visibilityHandle, simplePushConstant, paintPushConstant, shaderParametersHandle;
 	GPipeline::ElementHandle visibilityPass, countShaderGroupsShader, prefixSumShader, buildPixelBufferShader, paintPass;
 };
-
-using AABB2 = GTSL::Vector2;
-using AABB = GTSL::Vector3;
 
 inline AABB2 Make2DAABBForAABB(AABB aabb, GTSL::Matrix4& mat) {
 	GTSL::Vector3 vertices[8]{ aabb };

@@ -265,8 +265,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		renderState.ShaderStages = stages;
 	};
 
-	using RTT = decltype(renderingTree);
-
 	auto processExecutionString = [renderArea](const GTSL::StringView execution) {
 		GTSL::StaticVector<GTSL::StringView, 16> tokens;
 
@@ -332,17 +330,17 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	GTSL::StaticVector<uint32, 16> counterStack;
 
 	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
-		if (!enabled || level > lastInvalidLevel) { lastInvalidLevel = level; return; }
+		printNode(key, level, false, enabled);
+
+		if (!enabled || level >= lastInvalidLevel) { lastInvalidLevel = level; return; }
 
 		DataStreamHandle dataStreamHandle = {};
 
 		const auto& baseData = renderingTree.GetAlpha(key);
 
-		printNode(key, level, false);
-
 		switch (renderingTree.GetNodeType(key)) {
 		case RTT::GetTypeIndex<DataNode>(): {
-			const DataNode& layerData = renderingTree.GetClass<DataNode>(key);
+			DataNode& layerData = renderingTree.GetClass<DataNode>(key);
 
 			if constexpr (BE_DEBUG) {
 				commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
@@ -367,6 +365,14 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 				commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 			}
+
+			//for(auto e : layerData.UnorderedEntries) {
+			//	//todo: order
+			//	auto& position = layerData.Instances[e];
+			//	auto newPosition = position;
+			//	position = newPosition;
+			//}
+
 			break;
 		}
 		case RTT::GetTypeIndex<PipelineBindData>(): {
@@ -441,7 +447,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 		case RTT::GetTypeIndex<MeshData>(): {
 			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
-			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, meshData.InstanceIndex, meshData.IndexOffset, meshData.VertexOffset);
+			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack.back(), meshData.IndexOffset, meshData.VertexOffset);
 			counterStack.back() += meshData.InstanceCount;
 			break;
 		}
@@ -498,7 +504,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	};
 
 	auto endNode = [&](const uint32 key, const uint32_t level, bool enabled) {
-		if (!enabled || level > lastInvalidLevel) { return; }
+		if (!enabled || level >= lastInvalidLevel) { return; }
 
 		//BE_LOG_WARNING(u8"Leaving node ", key);
 
@@ -1101,6 +1107,20 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			for(auto& e : vertexStreams) { vertexStreamsRanges.EmplaceBack(e); }
 
 			vertexState.Vertex.VertexStreams = vertexStreamsRanges;
+
+			GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock::SpecializationData::SpecializationEntry, 8> specializationEntries;
+
+			auto& specializations = pipelineStates.EmplaceBack(GAL::Pipeline::PipelineStateBlock::SpecializationData{});
+			GTSL::StaticBuffer<1024> specializationData;
+
+			{
+				auto& debugEntry = specializationEntries.EmplaceBack();
+				debugEntry.Size = 4; debugEntry.Offset = 0u; debugEntry.ID = 0u;
+				specializationData.AllocateStructure<uint32>(0u);
+			}
+
+			specializations.Specialization.Entries = specializationEntries;
+			specializations.Specialization.Data = specializationData.GetRange();
 
 			pipelines[e.PipelineIndex].pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
 		}

@@ -367,7 +367,8 @@ namespace BE
 
 		bool avx2 = systemInfo.CPU.VectorInfo.HW_AVX2;
 		bool totalMemory = systemInfo.RAM.TotalPhysicalMemory >= GTSL::Byte(GTSL::GigaByte(12));
-		bool availableMemory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(2));
+		//bool availableMemory = systemInfo.RAM.ProcessAvailableMemory >= GTSL::Byte(GTSL::GigaByte(2));
+		bool availableMemory = true;
 		
 		return avx2 && totalMemory && availableMemory;
 	}

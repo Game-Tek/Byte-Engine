@@ -15,7 +15,7 @@ void UIManager::ProcessUpdates() {
 
 	auto windowSize = GTSL::Vector2(1280.0f, 720.f);
 
-	if (primitives.begin().GetPosition() == 1) { return; }
+	if (!primitives) { return; }
 
 	updateBranch(primitives.begin());
 

@@ -247,6 +247,8 @@ public:
 
 	auto GetRoot() { return primitives.begin(); }
 
+	bool Valid() const { return static_cast<bool>(primitives); }
+
 private:
 	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;

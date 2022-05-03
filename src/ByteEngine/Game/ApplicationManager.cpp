@@ -111,6 +111,7 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			application->GetThreadPool()->EnqueueTask(task.TaskDispatcher, this, GTSL::MoveRef(result.Get()), GTSL::MoveRef(taskHandle)); // Add task dispatcher to thread pool
 
 			++tasksInFlight;
+			resourcesUpdated.Add();
 
 			if(task.IsDependedOn) {
 				executedTasks.EmplaceBack(taskHandle);
@@ -131,7 +132,7 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 		return false;
 	};
 
-	while(freeTaskStack || (stageIndex < perStageTasks.GetLength()) && perStageTasks[stageIndex]) { // While there are elements to be processed
+	while(freeTaskStack || stageIndex < perStageTasks.GetLength()) { // While there are elements to be processed
 		while (stageIndex < perStageTasks.GetLength() && perStageTasks[stageIndex]) {
 			semaphores[stageIndex].Wait();
 
@@ -152,7 +153,8 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 		}
 
 		if (tasksInFlight) { // If there are task enqueued on the thread pool wait until a change in resource availability occurs to continue trying to dispatch tasks. Don't wait without checking if there are tasks left, because that will leave the thread waiting indefinitely since there are no tasks to signal the condition.
-			resourcesUpdated.Wait(waitWhenNoChange);
+			//resourcesUpdated.Wait(waitWhenNoChange);
+			resourcesUpdated.Wait();
 		}
 	}
 

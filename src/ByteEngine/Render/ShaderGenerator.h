@@ -20,7 +20,7 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON
+		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON, HASH, EXCLAMATION
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -91,6 +91,12 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 			}
 			else if (c == U';') {
 				type = ShaderNode::Type::SEMICOLON;
+			}
+			else if (c == U'#') {
+				type = ShaderNode::Type::HASH;
+			}
+			else if (c == U'!') {
+				type = ShaderNode::Type::EXCLAMATION;
 			}
 			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%')) {
 				type = ShaderNode::Type::OP;
@@ -519,6 +525,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
+	headerBlock += u8"layout(constant_id = 0) const uint DEBUG = 1;\n";
 
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
 		GTSL::StaticString<64> result = name;
@@ -776,7 +783,15 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 						}
 						case ShaderNode::Type::SEMICOLON: {
 							statementString += u8';';
-
+							break;
+						}
+						case ShaderNode::Type::HASH: {
+							statementString += u8"\n#";
+							break;
+						}
+						case ShaderNode::Type::EXCLAMATION: {
+							statementString += u8" !";
+							break;
 						}
 						}
 					}
@@ -822,7 +837,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			const auto member = resolveTypeName(pipeline.GetMember(arr[i]));
 
-			if (isVertexSurfaceInterface) { if (member.Type == u8"uint32") { declarationBlock &= u8"flat"; } }
+			if (isVertexSurfaceInterface) { if (member.Type == u8"uint") { declarationBlock &= u8"flat"; } }
 			declarationBlock &= member.Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
 		}
 	};
@@ -839,7 +854,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		//addBlockDeclaration(u8"vertexSurfaceInterface", u8"out", { u8"location=0" });
 		//addBlockDeclaration(u8"vertexSurfaceInterface1", u8"out", { u8"location=4" });
 
-		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"out");
+		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"out", true);
 
 		addLayoutDeclaration(u8"vertex", u8"in");
 

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <set>
+
 #include "ByteEngine/Game/System.hpp"
 
 #include <GTSL/Bitfield.h>
@@ -64,6 +66,13 @@ struct TypeNamer<GTSL::Matrix3x4> {
 	static constexpr const char8_t* NAME = u8"matrix3x4f";
 };
 
+inline void ToString(auto& string, const GTSL::Range<const GTSL::StaticString<32>*> range) {
+	for (uint32 i = 0; i < range.ElementCount(); ++i) {
+		if (i) { string += u8", "; }
+		string += range[i];
+	}
+}
+
 /**
  * \brief Renders a frame according to a specfied model/pipeline.
  * E.J: Forward Rendering, Deferred Rendering, Ray Tracing, etc.
@@ -106,6 +115,10 @@ public:
 		uint32 operator()() const { return value; }
 
 		operator bool() const { return value; }
+
+		bool operator==(const NodeHandle& other) const {
+			return value == other.value;
+		}
 	private:
 		uint32 value = 0;
 	};
@@ -171,14 +184,6 @@ public:
 		dataKey.Buffer = buffer_handle;
 		return DataKeyHandle(pos);
 	}
-
-	//DataKeyHandle MakeDataKey(MemberHandle memberHandle) {
-	//	auto offset = renderDataOffset;
-	//	renderDataOffset += memberHandle.Size;
-	//	auto pos = dataKeys.GetLength();
-	//	dataKeys.EmplaceBack(offset);
-	//	return DataKeyHandle(pos);
-	//}
 
 	void Setup(TaskInfo taskInfo);
 	void Render(TaskInfo taskInfo, RenderSystem* renderSystem);
@@ -249,6 +254,11 @@ public:
 	void SetBaseInstanceIndex(NodeHandle node_handle, uint32 base_instance_handle) {
 		getPrivateNode<MeshData>(node_handle).InstanceIndex = base_instance_handle;
 	}
+	
+	uint32 GetInstanceIndex(const NodeHandle handle, const uint32 instance_handle) {
+		const auto& node = getPrivateNode<DataNode>(handle);
+		return node.Instances[instance_handle];
+	}
 
 	template<typename T>
 	uint32 GetInstanceIndex(const NodeHandle handle, const T& instance_handle) {
@@ -257,17 +267,26 @@ public:
 	}
 
 	template<typename T>
-	void RegisterMeshInstance(NodeHandle data_node_handle, const T handle) {
-		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
-		dataNode.Instances.Emplace(handle(), dataNode.Instance++);
-	}
-
-	template<typename T>
 	void AddInstance(NodeHandle data_node_handle, NodeHandle mesh_node_handle, T handle) {
+		auto typeIndex = renderingTree.GetNodeType(mesh_node_handle());
 		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
-		auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
-		++meshNode.InstanceCount;
-		renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);
+
+		dataNode.Instances.Emplace(handle(), dataNode.Instance++);
+		//dataNode.UnorderedEntries.EmplaceBack(handle());
+
+		//auto& g = dataNode.Groups.TryEmplace(mesh_node_handle()).Get();
+
+		if(typeIndex == RTT::GetTypeIndex<MeshData>()) {
+			auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
+			//meshNode.InstanceIndex = dataNode.Instance;
+			meshNode.InstanceCount++;
+			renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);
+		} else {
+			auto& meshNode = getPrivateNode<DrawData>(mesh_node_handle);
+			meshNode.InstanceCount++;
+			renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);			
+		}
+
 	}
 
 	GTSL::Delegate<void(RenderOrchestrator*, RenderSystem*)> shaderGroupNotify;
@@ -400,54 +419,6 @@ public:
 		node.IndexOffset = indexOffset; node.VertexOffset = vertexOffset; node.InstanceIndex = meshId;
 		return nodeHandle;
 	}
-
-	//void AddMesh(NodeHandle node_handle, RenderSystem::BufferHandle meshHandle, uint32 vertexCount, uint32 vertexSize, uint32 indexCount, GAL::IndexType indexType, GTSL::Range<const GTSL::Range<const GAL::ShaderDataType*>*> meshVertexLayout) {
-	//	bool foundLayout = false; uint8 layoutIndex = 0;
-	//
-	//	for (; layoutIndex < vertexLayouts.GetLength(); ++layoutIndex) {
-	//		if (vertexLayouts[layoutIndex].GetLength() != meshVertexLayout.ElementCount()) { continue; }
-	//
-	//		foundLayout = true;
-	//
-	//		for (uint8 i = 0; i < meshVertexLayout.ElementCount(); ++i) {
-	//			if (meshVertexLayout[i] != vertexLayouts[layoutIndex][i]) { foundLayout = false; break; }
-	//		}
-	//
-	//		if (foundLayout) { break; }
-	//
-	//		++layoutIndex;
-	//	}
-	//
-	//	if (!foundLayout) {
-	//		foundLayout = true;
-	//		layoutIndex = vertexLayouts.GetLength();
-	//		auto& vertexLayout = vertexLayouts.EmplaceBack();
-	//
-	//		for (auto e : meshVertexLayout) {
-	//			vertexLayout.EmplaceBack(e);
-	//		}
-	//	}
-	//
-	//	//auto& meshNode = getPrivateNode<MeshData>(node_handle);
-	//	//meshNode.IndexCount = indexCount;
-	//	//meshNode.IndexType = indexType;
-	//	//meshNode.VertexCount = vertexCount;
-	//	//meshNode.VertexSize = vertexSize;
-	//	//
-	//	//{
-	//	//	uint32 offset = 0;
-	//	//
-	//	//	for(auto& i : meshVertexLayout) {
-	//	//		auto vertexSize = GAL::GraphicsPipeline::GetVertexSize(i);
-	//	//
-	//	//		meshNode.Offsets.EmplaceBack(offset);
-	//	//
-	//	//		offset += vertexSize * vertexCount;
-	//	//	}
-	//	//}
-	//
-	//	SetNodeState(node_handle, true);
-	//}
 
 	template<typename T>
 	void addPendingWrite(const T& val, RenderSystem::BufferHandle buffer_handle, byte* writeTo, byte* readFrom, uint32 offset, uint8 current_frame, uint8 next_frame) {
@@ -822,7 +793,7 @@ public:
 	void PrintMember(const DataKeyHandle data_key_handle, RenderSystem* render_system) const {
 		byte* beginPointer;
 
-		GTSL::StaticString<4096> string(u8"\n"); //start struct on new line, looks better when printed
+		GTSL::SemiString<BE::TAR, 4096> string(u8"\n", GetTransientAllocator()); //start struct on new line, looks better when printed
 
 		const auto& dataKey = dataKeys[data_key_handle()];
 		const uint32 startOffset = dataKey.Offset;
@@ -831,7 +802,7 @@ public:
 			auto& e = elements[member_handle()];
 			auto& dt = getElement(e.Mem.TypeHandle);
 
-			for (uint32 t = 0; t < e.Mem.Multiplier; ++t) {
+			for (uint32 t = 0; t < e.Mem.Multiplier && t < 16; ++t) { // Clamp printed array elements to 16
 				string += u8"\n";
 
 				for (uint32 i = 0; i < level; ++i) { string += U'	'; } //insert tab for every space deep we are to show struct depth
@@ -869,6 +840,13 @@ public:
 					}
 					case GTSL::Hash(u8"ImageReference"): {
 						GTSL::ToString(string, reinterpret_cast<uint32*>(beginPointer + offset)[0]);
+						break;
+					}
+					case GTSL::Hash(u8"vec3f"): {
+						auto pointer = reinterpret_cast<GTSL::Vector3*>(beginPointer + offset)[0];
+						GTSL::ToString(string, pointer.X()); string += u8", ";
+						GTSL::ToString(string, pointer.Y()); string += u8", ";
+						GTSL::ToString(string, pointer.Z());
 						break;
 					}
 					case GTSL::Hash(u8"vec4f"): {
@@ -974,11 +952,6 @@ public:
 		return nodeHandle;
 	}
 
-	void AddMeshInstance2(const NodeHandle node_handle) {
-		auto& node = getPrivateNode<DrawData>(node_handle);
-		SetNodeState(node_handle, ++node.InstanceCount);
-	}
-
 private:
 	inline static const Id RENDER_TASK_NAME{ u8"RenderOrchestrator::Render" };
 	inline static const Id SETUP_TASK_NAME{ u8"RenderOrchestrator::Setup" };
@@ -1067,13 +1040,6 @@ private:
 		GAL::PipelineStage PipelineStages;
 		MemberHandle RenderTargetReferences;
 		ResourceHandle ResourceHandle;
-
-		RenderPassData() : Type(PassType::RASTER), Attachments(), PipelineStages() {
-		}
-
-		//union {
-		//	APIRenderPassData APIRenderPass;
-		//};
 	};
 
 	struct DataNode {
@@ -1081,6 +1047,8 @@ private:
 		bool UseCounter;
 		uint32 Instance = 0;
 		GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> Instances;
+		//GTSL::StaticVector<uint32, 4> UnorderedEntries;
+		//GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> Groups;
 	};
 
 	struct PublicNode {
@@ -1232,6 +1200,7 @@ private:
 	};
 
 	GTSL::MultiTree<BE::PAR, PublicNode, PipelineBindData, DataNode, RayTraceData, DispatchData, MeshData, RenderPassData, DrawData, VertexBufferBindData, IndexBufferBindData, IndirectComputeDispatchData> renderingTree;
+	using RTT = decltype(renderingTree);
 
 	bool isUnchanged = true;
 
@@ -1248,7 +1217,7 @@ private:
 		return handle;
 	}
 
-	auto parseScopeString(const GTSL::StringView parents) const {
+	static auto parseScopeString(const GTSL::StringView parents) {
 		GTSL::StaticVector<GTSL::StaticString<64>, 8> strings;
 
 		{
@@ -1319,38 +1288,76 @@ private:
 
 	uint32 textureIndex = 0, imageIndex = 0;
 
-	void printNode(const uint32 nodeHandle, uint32 level, bool d) {
+	void printNode(const uint32 nodeHandle, uint32 level, bool d, bool e) {
 		if (!d) { return; }
+
+		GTSL::StaticString<256> message;
+
+		message += u8"Node index:"; GTSL::ToString(message, nodeHandle); message += u8", Type: ";
 
 		switch (renderingTree.GetNodeType(nodeHandle)) {
 		case decltype(renderingTree)::GetTypeIndex<DataNode>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: LayerData", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"DataNode";
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<PipelineBindData>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Pipeline Bind", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"PipelineBind";
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<MeshData>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Mesh Data", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"MeshDraw";
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Vertex Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"VertexBufferBind";
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Index Buffer Bind", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"IndexBufferBind";
 			break;
 		}
 		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: Render Pass", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"RenderPass";
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<DrawData>(): {
+			message += u8"Draw";
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<IndirectComputeDispatchData>(): {
+			message += u8"Dispatch";
+			break;
+		}
+		case decltype(renderingTree)::GetTypeIndex<RayTraceData>(): {
+			message += u8"Raytrace";
 			break;
 		}
 		default: {
-			BE_LOG_MESSAGE(u8"Node index: ", nodeHandle, u8", Type: null", u8", Name: ", getNode(nodeHandle).Name);
+			message += u8"null";
 			break;
 		}
+		}
+
+		message += u8", Name: "; message += getNode(nodeHandle).Name;
+
+		if(e) {
+			BE_LOG_MESSAGE(message)
+		} else {
+			message += u8", Unfulfilled dependencies: ";
+
+			GTSL::StaticVector<GTSL::StaticString<32>, 16> deps;
+
+			for(auto& e : resources) {
+				if(e.NodeHandles.Find(NodeHandle(nodeHandle))) {
+					if (!e.isValid()) { //todo: recurse
+						deps.EmplaceBack(e.Name);
+					}
+				}
+			}
+
+			ToString(message, deps);
+
+			BE_LOG_WARNING(message)
 		}
 	}
 
@@ -1902,7 +1909,7 @@ public:
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UI", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
-			auto uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
+			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
 
 			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
 		}
@@ -1916,13 +1923,13 @@ public:
 		break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
 		break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
 		break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
-			render_orchestrator->AddMeshInstance2(meshNodeHandle);
-			instancesMap.Emplace(ui_element_handle(), instanceCount);
-			++instanceCount;
+			render_orchestrator->AddInstance(uiInstancesDataNodeHandle, meshNodeHandle, ui_element_handle);
 		break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
 		break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
 		break;
 		}
+
+		instancesMap.Emplace(ui_element_handle(), 0);
 	}
 
 	//void ui() {
@@ -1945,10 +1952,22 @@ public:
 	void everyFrame(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator,  UIManager* ui) {
 		ui->ProcessUpdates();
 
+		GTSL::Vector2 screenToWindowRatio; float32 r = 0;
+
 		{
 			// TODO: value can be outdated
 			auto e = render_system->GetRenderExtent();
+			auto t = GTSL::Vector2(float32(e.Width), static_cast<float32>(e.Height));
 			auto extent = GTSL::Vector2(float32(e.Width) / static_cast<float32>(e.Height), 1.0f);
+
+			auto screenExtent = GTSL::System::GetScreenExtent();
+
+			auto l = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
+
+			screenToWindowRatio = l / t;
+			extent /= screenToWindowRatio;
+
+			r = GTSL::Math::LengthSquared(t) / GTSL::Math::LengthSquared(l);
 
 			auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
 			bwk[u8"projection"] = GTSL::Math::MakeOrthoMatrix(extent.X(), -extent.X(), extent.Y(), -extent.Y(), 0.0f, 1.f);
@@ -1971,7 +1990,7 @@ public:
 				GTSL::Math::Scale(matrix, GTSL::Vector3(primitive.HalfSize, 0));
 				GTSL::Math::Translate(matrix, GTSL::Vector3(primitive.Position, 0));
 
-				const auto i = instancesMap[iterator.GetPosition()];
+				const auto i = render_orchestrator->GetInstanceIndex(uiInstancesDataNodeHandle, iterator.GetPosition());	
 
 				bwk[i][u8"transform"] = matrix;
 				bwk[i][u8"color"] = GTSL::Vector4(primitive.Color);
@@ -1989,7 +2008,7 @@ public:
 			}
 		};
 
-		if (root.GetPosition() == 1) { return; }
+		if (!ui->Valid()) { return; }
 
 		visitUIElement(root, GTSL::Matrix3x4(), visitUIElement);
 	}
@@ -2000,14 +2019,12 @@ private:
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
 
-	RenderOrchestrator::NodeHandle uiMaterialNodeHandle, meshNodeHandle;
+	RenderOrchestrator::NodeHandle uiMaterialNodeHandle, meshNodeHandle, uiInstancesDataNodeHandle;
 
 	GTSL::StaticMap<Id, uint32, 4> fontOrderMap;
 	GTSL::StaticMap<char32_t, uint32, 4> fontCharMap;
 
 	GTSL::HashMap<uint32, uint32, BE::PAR> instancesMap;
-
-	uint32 instanceCount = 0;
 
 	uint8 comps = 2;
 	ShaderGroupHandle uiMaterial;

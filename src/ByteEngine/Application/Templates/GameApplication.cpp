@@ -53,8 +53,8 @@ void GameApplication::PostInitialize()
 	//GAMEPLAY CODE ENDS
 	applicationManager->AddStage(u8"GameplayEnd");
 
-	//applicationManager->AddStage(u8"PostGameplay");
-	//applicationManager->AddStage(u8"PreRenderSetup");
+	applicationManager->AddStage(u8"PostGameplay");
+	applicationManager->AddStage(u8"PreRenderSetup");
 	
 	//RENDER CODE BEGINS
 	applicationManager->AddStage(u8"RenderSetup");
@@ -66,6 +66,7 @@ void GameApplication::PostInitialize()
 
 	applicationManager->AddEvent(u8"Application", EventHandle(u8"OnFocusGain"));
 	applicationManager->AddEvent(u8"Application", EventHandle(u8"OnFocusLoss"));
+	applicationManager->AddEvent(u8"Application", EventHandle<GTSL::Extent2D>(u8"OnWindowResize"));
 	
 	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");

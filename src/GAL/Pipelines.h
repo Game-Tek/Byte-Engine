@@ -102,6 +102,15 @@ namespace GAL
 				GTSL::uint8 MaxRecursionDepth;
 			};
 
+			struct SpecializationData {
+				struct SpecializationEntry {
+					uint64 Size, Offset, ID;
+				};
+
+				GTSL::Range<const SpecializationEntry*> Entries;
+				GTSL::Range<const byte*> Data;
+			};
+
 			union {
 				ViewportState Viewport;
 				RasterState Raster;
@@ -109,10 +118,11 @@ namespace GAL
 				RenderContext Context;
 				VertexState Vertex;
 				RayTracingState RayTracing;
+				SpecializationData Specialization;
 			};			
 
 			enum class StateType {
-				VIEWPORT_STATE, RASTER_STATE, DEPTH_STATE, COLOR_BLEND_STATE, VERTEX_STATE, RAY_TRACE_GROUPS
+				VIEWPORT_STATE, RASTER_STATE, DEPTH_STATE, COLOR_BLEND_STATE, VERTEX_STATE, RAY_TRACE_GROUPS, SPECIALIZATION
 			} Type;
 			
 			PipelineStateBlock() = default;
@@ -122,6 +132,7 @@ namespace GAL
 			PipelineStateBlock(const VertexState& vertexState) : Vertex(vertexState), Type(StateType::VERTEX_STATE) {}
 			PipelineStateBlock(const ViewportState& viewportState) : Viewport(viewportState), Type(StateType::VIEWPORT_STATE) {}
 			PipelineStateBlock(const RayTracingState& rayTracingGroups) : RayTracing(rayTracingGroups), Type(StateType::RAY_TRACE_GROUPS) {}
+			PipelineStateBlock(const SpecializationData& specialization_data) : Specialization(specialization_data), Type(StateType::SPECIALIZATION) {}
 		};
 		
 		//struct ShaderInfo

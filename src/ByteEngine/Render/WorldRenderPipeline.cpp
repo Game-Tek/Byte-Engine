@@ -1,4 +1,4 @@
-#include "WorldRenderPipeline.hpp"
+#include "WorldRenderPipeline.hpp";
 
 WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), materials(GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()), InstanceTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"Instance")) {
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
@@ -14,7 +14,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnAddMeshEventHandle(), OnAddMeshTaskHandle);
 
 	OnUpdateMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
-	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnUpdateMeshEventHandle(), OnUpdateMeshTaskHandle);
+	//GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnUpdateMeshEventHandle(), OnUpdateMeshTaskHandle);
 
 	initialize_info.ApplicationManager->EnqueueScheduledTask(initialize_info.ApplicationManager->RegisterTask(this, u8"renderSetup", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::preRender, u8"RenderSetup", u8"Render"));
 
@@ -23,6 +23,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnRemovePointLight"));
 
 	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnAddMeshTaskHandle, true);
+	addInstanceResourceHandle = GetApplicationManager()->AddResource(this, InstanceTypeIndentifier);
+	//GetApplicationManager()->CoupleTasks(GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetOnUpdateMeshEventHandle(), OnUpdateMeshTaskHandle);
 	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnUpdateMeshTaskHandle, false);
 
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onAddLight);
@@ -126,8 +128,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 
-	auto lightingDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
-	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightingDataKey);
+	lightsDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
+	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightsDataKey);
 
 	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
 	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
@@ -265,7 +267,7 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 
 void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName) {
 	const auto instanceIndex = instances.Emplace();
-	const auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(InstanceTypeIndentifier, instanceIndex);
+	const auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(InstanceTypeIndentifier, instanceIndex, static_mesh_handle);
 	meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
 	auto resource = resources.TryEmplace(resourceName);
 
@@ -275,9 +277,6 @@ void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceMana
 	if (rayTracing) {
 		instance.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, 0, instance.InstanceHandle); // Custom instance index will be set later
 	}
-
-
-	render_orchestrator->RegisterMeshInstance(meshDataNode, static_mesh_handle);
 
 	if (resource) { // If resource isn't already loaded 
 		//resource.Get().Index = prefixSum.EmplaceBack(0);

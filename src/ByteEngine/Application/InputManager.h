@@ -171,12 +171,13 @@ public:
 	};
 
 	template<typename T>
-	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, TaskHandle<T> dynamicTaskHandle) {
+	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, TaskHandle<T> dynamicTaskHandle, bool p = false) {
 		auto inputEventIndex = inputEvents.GetLength();
 		auto& inputEvent = inputEvents.EmplaceBack();
 
 		inputEvent.Handle = dynamicTaskHandle.Reference;
 		inputEvent.EventType = GetType<Type, typename T::type>();
+		inputEvent.P = p;
 
 		for (const auto& action : inputSourceNames) {
 			auto inputSource = inputSources.TryGet(action.InputSourceName);
@@ -256,6 +257,8 @@ protected:
 		Type EventType;
 		uint32 Handle = ~0U;
 
+		bool P = false;
+
 		struct Action {
 			Datatypes TargetValue;
 			uint32_t StackEntry = ~0U;
@@ -305,7 +308,7 @@ protected:
 	GTSL::SemiVector<uint32, 8, BE::PAR> inputLayers;
 
 	void updateInput(ApplicationManager* application_manager, GTSL::Microseconds time) {
-		for (auto& record : inputSourceRecords) {
+		for (const auto& record : inputSourceRecords) {
 			auto& inputSource = inputSources[record.InputSource];
 
 			for (const auto bie : inputSource.BoundInputEvents) {
@@ -348,7 +351,11 @@ protected:
 						}
 
 						if (oldValue != newValue) {
-							application_manager->EnqueueTask(TaskHandle<InputEvent<bool>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
+							if (inputEventData.P) {
+								application_manager->EnqueueScheduledTask(TaskHandle<InputEvent<bool>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));
+							} else {
+								application_manager->EnqueueTask(TaskHandle<InputEvent<bool>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newValue, oldValue));		
+							}
 						}
 
 						break;
@@ -360,18 +367,25 @@ protected:
 					case Type::LINEAR: {
 						float32 newVal = 0.0f, oldVal = 0.0f;
 
+						bool update = false;
+
 						switch (inputSource.SourceType) {
 						case Type::BOOL: {
 							auto& action = inputEventData.InputSources[record.InputSource];
 
-							if (record.NewValue.Action) {
-								newVal = action.TargetValue.Linear;
+							if (record.NewValue.Action) { // If key was pressed
+								newVal = action.TargetValue.Linear; // Set new value as target value
 
-								if (action.StackEntry == ~0U) {
+								if(inputEventData.Stack) {
+									update = true;
+								}
+
+								if (action.StackEntry == ~0U) { // If triggering source has no stack entry associated create one and bind it
 									action.StackEntry = inputEventData.Stack.GetLength();
 									auto& stackEntry = inputEventData.Stack.EmplaceBack();
 									stackEntry.Linear = newVal;
 								}
+
 							} else {
 								if (action.StackEntry != ~0U) {
 									inputEventData.Stack.Pop(action.StackEntry);
@@ -387,6 +401,7 @@ protected:
 
 								if (inputEventData.Stack.GetLength()) {
 									newVal = inputEventData.Stack.back().Linear;
+									update = true;
 								}
 							}
 							break;
@@ -398,7 +413,18 @@ protected:
 						}
 						}
 
-						application_manager->EnqueueTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
+						if (inputEventData.P) {
+							if (newVal != 0.0f) {
+								if (update) {
+									application_manager->RemoveScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle));
+								}
+								application_manager->EnqueueScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
+							} else {
+								application_manager->RemoveScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle));
+							}
+						} else {
+							application_manager->EnqueueTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));						
+						}
 
 						break;
 					}

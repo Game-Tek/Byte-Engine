@@ -28,7 +28,9 @@ private:
 	uint32 shaderGroupCount = 0;
 
 	DECLARE_BE_TASK(OnAddMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshRenderGroup*), StaticMeshRenderGroup::StaticMeshHandle, Id);
-	DECLARE_BE_TASK(OnUpdateMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), StaticMeshRenderGroup::StaticMeshHandle, GTSL::Matrix3x4);
+	DECLARE_BE_TASK(OnUpdateMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), InstanceHandle, GTSL::Matrix3x4);
+
+	ApplicationManager::ResourceHandle addInstanceResourceHandle;
 
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
@@ -52,7 +54,7 @@ private:
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
 	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
 	RenderOrchestrator::NodeHandle mainVisibilityPipelineNode;
-	RenderOrchestrator::DataKeyHandle visibilityDataKey;
+	RenderOrchestrator::DataKeyHandle visibilityDataKey, lightsDataKey;
 
 	struct Mesh {
 		ShaderGroupHandle MaterialHandle;
@@ -129,24 +131,26 @@ private:
 
 		render_orchestrator->AddInstance(meshDataNode, resource.nodeHandle, instance_handle);
 
-		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
+		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle); //todo: this
 
 		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
 		key[instanceIndex][u8"shaderGroupIndex"] = instance.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
+		key[instanceIndex][u8"transform"] = GTSL::Matrix3x4();
 
 
 		if (rayTracing) {
 			pendingAdditions.EmplaceBack(resource_name, instance_handle);
 		}
+
+		GetApplicationManager()->FulfillDependency(this, InstanceTypeIndentifier, InstanceHandle(InstanceTypeIndentifier, ins)); //Signal can update
 	}
 
-	void OnUpdateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshRenderGroup::StaticMeshHandle mesh_handle, GTSL::Matrix3x4 transform) {
+	void OnUpdateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, GTSL::Matrix3x4 transform) {
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-
-		const auto& instanceHandle = meshToInstanceMap[mesh_handle];
-		const auto& instance = instances[instanceHandle()];
 		
-		const auto instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instanceHandle);
+		const auto& instance = instances[instance_handle()];
+
+		const auto instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
 
 		key[instanceIndex][u8"transform"] = transform;
 		//*spherePositionsAndRadius.GetPointer<0>(instanceIndex) = transform(0, 3);
@@ -173,6 +177,7 @@ private:
 		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
 		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
 		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
+		render_orchestrator->PrintMember(lightsDataKey, render_system);
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

@@ -236,6 +236,8 @@ namespace GAL
 			vkGraphicsPipelineCreateInfo.pDepthStencilState = nullptr; vkGraphicsPipelineCreateInfo.pMultisampleState = &vkPipelineMultisampleStateCreateInfo;
 			vkGraphicsPipelineCreateInfo.layout = pipelineLayout.GetVkPipelineLayout();
 
+			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr; uint64 specializationDataSize = 0;
+
 			GTSL::Buffer<GTSL::StaticAllocator<8192>> buffer(8192, 8);
 
 			for (GTSL::uint8 ps = 0; ps < static_cast<GTSL::uint8>(pipelineStates.ElementCount()); ++ps) {
@@ -398,6 +400,18 @@ namespace GAL
 
 					break;
 				}
+				case PipelineStateBlock::StateType::SPECIALIZATION: {
+					specializationData = pipelineState.Specialization.Data.begin();
+					specializationDataSize = pipelineState.Specialization.Data.Bytes();
+
+					for(auto& e : pipelineState.Specialization.Entries) {
+						auto& s = specializationMapEntries.EmplaceBack();
+						s.size = e.Size; s.offset = e.Offset;
+						s.constantID = e.ID;
+					}
+
+					break;
+				}
 				default:;
 				}
 			}
@@ -418,7 +432,13 @@ namespace GAL
 				stage.stage = ToVulkan(stages[i].Type);
 				stage.pName = "main";
 				stage.module = stages[i].Shader.GetVkShaderModule();
-				stage.pSpecializationInfo = nullptr;
+				auto* specializationInfo = buffer.AllocateStructure<VkSpecializationInfo>();
+				stage.pSpecializationInfo = specializationInfo;
+				
+				specializationInfo->dataSize = specializationDataSize;
+				specializationInfo->mapEntryCount = specializationMapEntries.GetLength();
+				specializationInfo->pData = specializationData;
+				specializationInfo->pMapEntries = specializationMapEntries.GetData();
 			}
 
 			vkGraphicsPipelineCreateInfo.stageCount = vkPipelineShaderStageCreateInfos.GetLength();

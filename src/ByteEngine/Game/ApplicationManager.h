@@ -226,12 +226,40 @@ public:
 		}
 	}
 
+	MAKE_HANDLE(uint32, Resource);
+
+	ResourceHandle AddResource(BE::System* system_pointer, BE::TypeIdentifier type_identifier) {
+		auto& system = systemsData[system_pointer->GetSystemId()];
+		auto& type = system.RegisteredTypes[type_identifier()];
+		type.SetupSteps.EmplaceBack(TypeErasedTaskHandle(), true);
+		++type.Target;
+		return ResourceHandle(0);
+	}
+
+	template<typename T>
+	void FulfillDependency(BE::System* system_pointer, BE::TypeIdentifier type_identifier, BE::Handle<T> handle) {
+		auto& system = systemsData[type_identifier.SystemId]; auto& type = system.RegisteredTypes[type_identifier()];
+		++type.Entities[handle()].ResourceCounter;		
+	}
+
 	template<typename... ARGS>
 	void AddTypeSetupDependency(BE::TypeIdentifier type_identifer, TaskHandle<ARGS...> dynamic_task_handle, bool is_required = true) {
 		auto& system = systemsData[type_identifer.SystemId]; auto& type = system.RegisteredTypes[type_identifer()];
 		type.SetupSteps.EmplaceBack(TypeErasedTaskHandle(dynamic_task_handle()), is_required);
 		++type.Target;
 	}
+
+	//template<typename... ARGS1, typename... ARGS2>
+	//void CoupleTasks(const EventHandle<ARGS1...> event_handle, const TaskHandle<ARGS2...> task_handle) {
+	//	if constexpr (sizeof...(ARGS1)) {
+	//		if constexpr (is_instance<typename GTSL::TypeAt<0, ARGS1...>::type, BE::Handle>{} && is_instance<typename GTSL::TypeAt<0, ARGS2...>::type, BE::Handle>{}) {
+	//			tasks[task_handle()].RequiresTranslation = true;
+	//			events[event_handle.Name].Functions.EmplaceBack(task_handle());
+	//		}
+	//		else {
+	//		}
+	//	}
+	//}
 
 	template<typename T, typename DTI, typename... ACC>
 	static void task(ApplicationManager* gameInstance, const DispatchedTaskHandle dispatched_task_handle, TypeErasedTaskHandle task_handle) {
@@ -265,7 +293,8 @@ public:
 		}
 
 		--gameInstance->tasksInFlight;
-		gameInstance->resourcesUpdated.NotifyAll();
+		//gameInstance->resourcesUpdated.NotifyAll();
+		gameInstance->resourcesUpdated.Post();
 		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
 	}
 
@@ -347,12 +376,29 @@ public:
 	template<typename... ARGS>
 	auto EnqueueScheduledTask(TaskHandle<ARGS...> task_handle, ARGS&&... args) -> void {
 		using TDI = TaskDispatchInfo<ARGS...>;
-
 		TaskData& task = tasks[task_handle()]; //TODO: locks
+
+		if (stages[task.StartStageIndex].Find(TypeErasedTaskHandle(task_handle()))) {
+			BE_LOG_WARNING(u8"Task: ", task.Name, u8" is already scheduled"); return;
+		}
+
 		task.Scheduled = true;
 		allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 
 		stages[task.StartStageIndex].EmplaceBack(TypeErasedTaskHandle(task_handle()));
+	}
+
+	template<typename... ARGS>
+	void RemoveScheduledTask(TaskHandle<ARGS...> task_handle) {
+		TaskData& task = tasks[task_handle()]; //TODO: locks
+
+		if (!stages[task.StartStageIndex].Find(TypeErasedTaskHandle(task_handle()))) {
+			BE_LOG_WARNING(u8"Task: ", task.Name, u8" couldnt't be found"); return;
+		}
+
+		task.Instances.PopBack();
+
+		stages[task.StartStageIndex].Pop(stages[task.StartStageIndex].Find(TypeErasedTaskHandle(task_handle())).Get());
 	}
 
 	template <int I, class... Ts>
@@ -368,7 +414,11 @@ public:
 		if constexpr (sizeof...(ARGS)) {
 			if constexpr (is_instance<typename GTSL::TypeAt<0, ARGS...>::type, BE::Handle>{}) {
 				auto handle = get<0>(args...);
-				auto* taskDispatchInfo = allocateTaskDispatchInfo(task, task.Access.front().First, handle.Identifier, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
+				TaskDispatchInfo<ARGS...>* taskDispatchInfo = allocateTaskDispatchInfo(task, task.Access.front().First, handle.Identifier, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
+				//if(task.RequiresTranslation) {
+				//	auto targetInstanceIndex = systemsData[task.TargetType.SystemId].RegisteredTypes[task.TargetType.TypeId].TranslationMap[handle()]; //TODO: pull correct info
+				//	*taskDispatchInfo->GetPointer<0>() = typename GTSL::TypeAt<0, ARGS...>::type(task.TargetType, targetInstanceIndex);
+				//}
 			} else {
 				allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 			}
@@ -432,6 +482,22 @@ public:
 		s.RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
 		auto& ent = s.RegisteredTypes[type_identifier()].Entities[index];
 		++ent.Uses;
+
+		for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
+			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
+		}
+
+		return T(type_identifier, index);
+	}
+
+	template<typename T, typename F>
+	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index, const BE::Handle<F> other) {
+		auto& s = systemsData[type_identifier.SystemId];
+		auto& rt = s.RegisteredTypes[type_identifier()];
+		auto& entt = s.RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
+		++entt.Uses;
+
+		rt.TranslationMap.Emplace(other(), index);
 
 		for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
 			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
@@ -539,6 +605,9 @@ private:
 	// TASKS
 	mutable GTSL::ReadWriteMutex tasksMutex;
 	struct TaskData {
+		//TaskData() : TargetType(0xFFFF, 0xFFFF) {}
+		TaskData() {}
+
 		/**
 		 * \brief Hold a function pointer to a dispatcher function with the signature of the task.
 		 */
@@ -560,6 +629,8 @@ private:
 		bool IsDependedOn = false;
 
 		bool Scheduled = false;
+		//bool RequiresTranslation = false;
+		//BE::TypeIdentifier TargetType;
 
 		struct InstanceData {
 			uint16 SystemId;
@@ -602,7 +673,7 @@ private:
 
 	// TASKS
 
-	GTSL::ConditionVariable resourcesUpdated;
+	GTSL::Semaphore resourcesUpdated;
 	GTSL::Atomic<uint32> tasksInFlight;
 
 	mutable GTSL::ReadWriteMutex stagesNamesMutex;
@@ -711,6 +782,7 @@ private:
 			TypeErasedTaskHandle DeletionTaskHandle;
 
 			bool IsOwn = true;
+			GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> TranslationMap;
 
 			struct DependencyData {
 				DependencyData(TypeErasedTaskHandle task_handle, bool is_required) : TaskHandle(task_handle), IsReq(is_required) {}

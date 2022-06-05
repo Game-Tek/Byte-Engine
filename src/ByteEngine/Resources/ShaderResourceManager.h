@@ -132,8 +132,6 @@ public:
 	using ShaderHash = uint64;
 
 	ShaderResourceManager(const InitializeInfo& initialize_info);
-	void makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const
-	                     PermutationManager::ShaderPermutation*>*> shaderBatch);
 
 	~ShaderResourceManager() = default;
 
@@ -415,6 +413,9 @@ private:
 
 	GAL::ShaderCompiler compiler_;
 
+	void makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const
+	                     PermutationManager::ShaderPermutation*>*> shaderBatch, ShaderGroupDataSerialize*);
+
 	template<typename... ARGS>
 	void loadShaderGroup(TaskInfo taskInfo, Id shaderGroupName, TaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS... args) { //TODO: check why can't use ARGS&&
 		shaderGroupInfosFile.SetPointer(shaderGroupInfoOffsets[shaderGroupName]);
@@ -607,13 +608,21 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 	if (created) {
 		for(auto e : PermutationManager::GetDefaultShaderGroups(commonPermutation, &pipeline)) {
+			ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
+
 			GTSL::Buffer deserializer(GetTransientAllocator());
 			auto json = Parse(e.ShaderGroupJSON, deserializer);
 			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
 			for (auto& j : e.Shaders) {
 				s.EmplaceBack(j);
 			}
-			makeShaderGroup(json, pipeline, commonPermutation, s);
+
+			if(!shaderGroupDataSerialize.Instances) {
+				auto& basicInstance = shaderGroupDataSerialize.Instances.EmplaceBack();
+				basicInstance.Name = json[u8"name"];
+			}
+
+			makeShaderGroup(json, pipeline, commonPermutation, s, &shaderGroupDataSerialize);
 		}
 
 		GTSL::FileQuery shaderGroupFileQuery;
@@ -648,13 +657,47 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				resultsPerShader.EmplaceBack(PermutationManager::ProcessShaders(commonPermutation, &pipeline, json, shaderJson));
 			}
 
+			ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
+
+			auto filePath = fileRef.Get();
+			RTrimLast(filePath, u8'.');
+
+			GTSL::FileQuery shaderGroupInstanceFileQuery;
+
+			while (auto instanceFileRef = shaderGroupInstanceFileQuery.DoQuery(GetUserResourcePath(filePath+ u8"_*", u8"json"))) {
+				GTSL::File shaderGroupInstanceFile; shaderGroupInstanceFile.Open(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
+
+				GTSL::Buffer shaderGroupInstanceBuffer(shaderGroupInstanceFile.GetSize(), 16, GetTransientAllocator()); shaderGroupInstanceFile.Read(shaderGroupInstanceBuffer);
+
+				GTSL::Buffer shaderGroupInstanceDeserializer(GetTransientAllocator());
+				auto shaderGroupInstanceJson = Parse(GTSL::StringView(GTSL::Byte(shaderGroupInstanceBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderGroupInstanceBuffer.GetData())), shaderGroupInstanceDeserializer);
+
+				auto instanceName = instanceFileRef.Get();
+				LTrimFirst(instanceName, u8'_');
+				RTrimLast(instanceName, u8'.');
+
+				auto& instance = shaderGroupDataSerialize.Instances.EmplaceBack();
+				instance.Name = instanceName;
+
+				for (auto f : shaderGroupInstanceJson[u8"parameters"]) {
+					auto& param = instance.Parameters.EmplaceBack();
+					param.First = f[u8"name"];
+					param.Second = f[u8"defaultValue"];
+				}
+			}
+
+			if(!shaderGroupDataSerialize.Instances) {
+				auto& basicInstance = shaderGroupDataSerialize.Instances.EmplaceBack();
+				basicInstance.Name = json[u8"name"];
+			}
+
 			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
 
 			for(auto& e : resultsPerShader) {
 				s.EmplaceBack(e);
 			}
 
-			makeShaderGroup(json, pipeline, commonPermutation, s);
+			makeShaderGroup(json, pipeline, commonPermutation, s, &shaderGroupDataSerialize); //todo: transmit instances
 		}
 	}
 
@@ -692,7 +735,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 }
 
-inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const PermutationManager::ShaderPermutation*>*> shaderBatch) {
+inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const PermutationManager::ShaderPermutation*>*> shaderBatch, ShaderGroupDataSerialize* shader_group_data_serialize) {
 	GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
 	if (auto structs = json[u8"structs"]) {
@@ -715,42 +758,30 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 		}
 	}
 
-	ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
-	shaderGroupDataSerialize.Name = json[u8"name"];
-
-	for (auto i : json[u8"instances"]) {
-		auto& instance = shaderGroupDataSerialize.Instances.EmplaceBack();
-		instance.Name = i[u8"name"];
-
-		for (auto f : i[u8"parameters"]) {
-			auto& param = instance.Parameters.EmplaceBack();
-			param.First = f[u8"name"];
-			param.Second = f[u8"defaultValue"];
-		}
-	}
+	shader_group_data_serialize->Name = json[u8"name"];
 
 	if (auto r = json[u8"tags"]) {
 		for (auto e : r) {
-			shaderGroupDataSerialize.Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
+			shader_group_data_serialize->Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
 		}
 	}
 
 	if (auto parameters = json[u8"parameters"]) {
 		for (auto p : parameters) {
 			if (auto def = p[u8"defaultValue"]) {
-				shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
+				shader_group_data_serialize->Parameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
 			}
 			else {
-				shaderGroupDataSerialize.Parameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
+				shader_group_data_serialize->Parameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
 			}
 		}
 	}
 
-	shaderGroupDataSerialize.VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"POSITION");
-	shaderGroupDataSerialize.VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"NORMAL");
-	shaderGroupDataSerialize.VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"TANGENT");
-	shaderGroupDataSerialize.VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"BITANGENT");
-	shaderGroupDataSerialize.VertexElements.EmplaceBack().EmplaceBack(u8"vec2f", u8"TEXTURE_COORDINATES");
+	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"POSITION");
+	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"NORMAL");
+	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"TANGENT");
+	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"BITANGENT");
+	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec2f", u8"TEXTURE_COORDINATES");
 
 	bool rayTrace = true; ShaderGroupInfo::RayTraceData ray_trace_data;
 
@@ -806,31 +837,34 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 				shaderPackageFile.Write(shaderBuffer);
 			}
 
-			shaderGroupDataSerialize.Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
+			shader_group_data_serialize->Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
 			shaderGroupUsedShaders.EmplaceBack(shaderHash);
 		}
 	}
 
-	shaderGroupsTableFile << shaderGroupDataSerialize.Name << shaderGroupInfosFile.GetSize();
+	for(auto& e :shader_group_data_serialize->Instances) {
+		shaderGroupsTableFile << GTSL::ShortString<32>(e.Name) << shaderGroupInfosFile.GetSize(); // write offset to shader group for each instance name
+	}
 
 	{
-		shaderGroupInfosFile << shaderGroupDataSerialize.Name;
+		shaderGroupInfosFile << shader_group_data_serialize->Name;
 
 		shaderGroupInfosFile << shaderGroupUsedShaders.GetLength();
 		for (auto& e : shaderGroupUsedShaders) { shaderGroupInfosFile << e; }
 
-		shaderGroupInfosFile << shaderGroupDataSerialize.Parameters.GetLength();
-		for (auto& p : shaderGroupDataSerialize.Parameters) {
+		shaderGroupInfosFile << shader_group_data_serialize->Parameters.GetLength();
+		for (auto& p : shader_group_data_serialize->Parameters) {
 			shaderGroupInfosFile << p.Type << p.Name << p.Value;
 		}
 
-		shaderGroupInfosFile << shaderGroupDataSerialize.Tags.GetLength();
-		for (auto& p : shaderGroupDataSerialize.Tags) {
+		shaderGroupInfosFile << shader_group_data_serialize->Tags.GetLength();
+		for (auto& p : shader_group_data_serialize->Tags) {
 			shaderGroupInfosFile << p.First << p.Second;
 		}
 
-		shaderGroupInfosFile << shaderGroupDataSerialize.Instances.GetLength();
-		for (auto& i : shaderGroupDataSerialize.Instances) {
+		shaderGroupInfosFile << shader_group_data_serialize->Instances.GetLength();
+		for (auto& i : shader_group_data_serialize->Instances) {
+
 			shaderGroupInfosFile << i.Name;
 
 			shaderGroupInfosFile << i.Parameters.GetLength();
@@ -840,8 +874,8 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 		}
 
 
-		shaderGroupInfosFile << shaderGroupDataSerialize.VertexElements.GetLength();
-		for (auto& e : shaderGroupDataSerialize.VertexElements) {
+		shaderGroupInfosFile << shader_group_data_serialize->VertexElements.GetLength();
+		for (auto& e : shader_group_data_serialize->VertexElements) {
 			shaderGroupInfosFile << e.GetLength();
 			for (auto& ve : e) {
 				shaderGroupInfosFile << ve.Type << ve.Name;

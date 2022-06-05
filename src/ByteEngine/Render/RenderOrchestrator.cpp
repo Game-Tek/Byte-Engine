@@ -60,10 +60,10 @@ inline uint32 PRECEDENCE(const GTSL::StringView optor) {
 }
 
 RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderOrchestrator"),
-shaders(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()),
-renderingTree(128, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()),
-shaderGroupsByName(16, GetPersistentAllocator()), textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()),
-elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator()), shaderHandlesDebugMap(16, GetPersistentAllocator()), rayTracingSets(16, GetPersistentAllocator())
+rayTracingSets(16, GetPersistentAllocator()), shaderHandlesDebugMap(16, GetPersistentAllocator()), shaders(16, GetPersistentAllocator()),
+resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()), renderingTree(128, GetPersistentAllocator()), renderPasses(16),
+pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistentAllocator()), shaderGroupInstanceByName(16, GetPersistentAllocator()),
+textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()), elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator()), dataKeysMap(32, GetPersistentAllocator()), updateKeys(16, GetPersistentAllocator())
 {
 	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
@@ -133,13 +133,13 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 
 	{
 		CreateMember2(u8"global", u8"GlobalData", GLOBAL_DATA);
-		globalDataDataKey = CreateDataKey(renderSystem, u8"global", u8"GlobalData");
+		globalDataDataKey = MakeDataKey(renderSystem, u8"global", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
 		cameraMatricesHandle = CreateMember2(u8"global", u8"CameraData", CAMERA_DATA);
-		cameraDataKeyHandle = CreateDataKey(renderSystem, u8"global", u8"CameraData");
+		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global", u8"CameraData");
 		//cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
 
@@ -161,7 +161,7 @@ elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queu
 	}
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
-		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
+		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Graphics Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT, false);
 		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(u8"Frame work", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
 		imageAcquisitionWorkloadHandles[f] = renderSystem->CreateWorkload(u8"Swpachain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
@@ -187,23 +187,19 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
 
 	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
-
+	
 	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
 
-	if (auto res = renderSystem->AcquireImage(imageAcquisitionWorkloadHandles[currentFrame]); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
+	if (auto res = renderSystem->AcquireImage(imageAcquisitionWorkloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")) {
 		OnResize(renderSystem, res.Get());
 		renderArea = res.Get();
 	}
 
 	updateDescriptors(taskInfo);
 
-	renderSystem->StartCommandList(graphicsCommandLists[currentFrame]);
-
-	auto& commandBuffer = *renderSystem->GetCommandList(graphicsCommandLists[currentFrame]);
-
-	BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
-
 	Id resultAttachment;
+
+	bool debugRenderNodes = BE::Application::Get()->GetBoolOption(u8"debugRenderNodes");
 
 	{
 		auto* cameraSystem = taskInfo.ApplicationManager->GetSystem<CameraSystem>(u8"CameraSystem");
@@ -329,239 +325,260 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	GTSL::StaticVector<uint32, 16> counterStack;
 
-	auto runLevel = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
-		printNode(key, level, false, enabled);
+	if(isRenderTreeDirty) { // If render tree is dirty then every command buffer for every frame has to be updated
+		renderingTree.Optimize();
 
-		if (!enabled || level >= lastInvalidLevel) { lastInvalidLevel = level; return; }
-
-		DataStreamHandle dataStreamHandle = {};
-
-		const auto& baseData = renderingTree.GetAlpha(key);
-
-		switch (renderingTree.GetNodeType(key)) {
-		case RTT::GetTypeIndex<DataNode>(): {
-			DataNode& layerData = renderingTree.GetClass<DataNode>(key);
-
-			if constexpr (BE_DEBUG) {
-				commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
-			}
-
-			if (layerData.DataKey) {
-				if (layerData.UseCounter) {
-					counterStack.EmplaceBack();
-				}
-
-				dataStreamHandle = renderState.AddDataStream();
-				GAL::DeviceAddress address;
-				const auto& dataKey = dataKeys[layerData.DataKey()];
-
-				if (renderSystem->IsUpdatable(dataKey.Buffer)) {
-					address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
-				}
-				else {
-					address = renderSystem->GetBufferAddress(dataKey.Buffer);
-				}
-
-				auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
-				commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
-			}
-
-			//for(auto e : layerData.UnorderedEntries) {
-			//	//todo: order
-			//	auto& position = layerData.Instances[e];
-			//	auto newPosition = position;
-			//	position = newPosition;
-			//}
-
-			break;
+		for(uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
+			isCommandBufferUpdated[f] = false;
 		}
-		case RTT::GetTypeIndex<PipelineBindData>(): {
-			const PipelineBindData& pipeline_bind_data = renderingTree.GetClass<PipelineBindData>(key);
-			const auto& shaderGroup = shaderGroups[pipeline_bind_data.Handle.ShaderGroupIndex];
-			uint32 pipelineIndex = 0xFFFFFFFF;
-			if (shaderGroup.RasterPipelineIndex != 0xFFFFFFFF) {
-				pipelineIndex = shaderGroup.RasterPipelineIndex;
-			}
-			else if (shaderGroup.ComputePipelineIndex != 0xFFFFFFFF) {
-				pipelineIndex = shaderGroup.ComputePipelineIndex;
-			}
-			else if (shaderGroup.RTPipelineIndex != 0xFFFFFFFF) {
-				pipelineIndex = shaderGroup.RTPipelineIndex;
-			}
-			else {
-				BE_LOG_WARNING(u8"Pipeline bind data node with no valid pipeline reference.");
-			}
-
-			renderState.BoundPipelineIndex = pipelineIndex;
-
-			commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[pipelineIndex].pipeline, renderState.ShaderStages);
-			break;
-		}
-		case RTT::GetTypeIndex<DispatchData>(): {
-			const DispatchData& dispatchData = renderingTree.GetClass<DispatchData>(key);
-
-			const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
-
-			auto executionExtent = processExecutionString(execution);
-
-			commandBuffer.Dispatch(renderSystem->GetRenderDevice(), executionExtent);
-
-			break;
-		}
-		case RTT::GetTypeIndex<RayTraceData>(): {
-			const RayTraceData& rayTraceData = renderingTree.GetClass<RayTraceData>(key);
-			const auto& pipelineData = pipelines[shaderGroups[rayTraceData.ShaderGroupIndex].RTPipelineIndex];
-			CommandList::ShaderTableDescriptor shaderTableDescriptors[4];
-			for (uint32 i = 0, offset = 0; i < 3; ++i) {
-				shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
-				shaderTableDescriptors[i].EntrySize = GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
-				shaderTableDescriptors[i].Address = GetAddress(renderSystem, pipelineData.ShaderBindingTableBuffer) + offset;
-
-				offset += GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
-			}
-
-			auto executionExtent = processExecutionString(pipelineData.ExecutionString);
-
-			commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), executionExtent);
-
-			break;
-		}
-		case RTT::GetTypeIndex<VertexBufferBindData>(): {
-			const VertexBufferBindData& meshData = renderingTree.GetClass<VertexBufferBindData>(key);
-
-			auto buffer = renderSystem->GetBuffer(meshData.Handle);
-
-			GTSL::StaticVector<GPUBuffer, 8> buffers;
-
-			for (uint32 i = 0; i < meshData.Offsets.GetLength(); ++i) {
-				buffers.EmplaceBack(buffer);
-			}
-
-			commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), buffers, meshData.Offsets, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
-			break;
-		}
-		case RTT::GetTypeIndex<IndexBufferBindData>(): {
-			const IndexBufferBindData& meshData = renderingTree.GetClass<IndexBufferBindData>(key);
-			commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), renderSystem->GetBuffer(meshData.BufferHandle), 0, meshData.IndexCount, meshData.IndexType);
-			break;
-		}
-		case RTT::GetTypeIndex<MeshData>(): {
-			const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
-			commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack.back(), meshData.IndexOffset, meshData.VertexOffset);
-			counterStack.back() += meshData.InstanceCount;
-			break;
-		}
-		case RTT::GetTypeIndex<DrawData>(): {
-			const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
-			commandBuffer.Draw(renderSystem->GetRenderDevice(), 6, draw_data.InstanceCount);
-			break;
-		}
-		case RTT::GetTypeIndex<RenderPassData>(): {
-			const RenderPassData& renderPassData = renderingTree.GetClass<RenderPassData>(key);
-
-			transitionImages(commandBuffer, renderSystem, &renderPassData);
-
-			switch (renderPassData.Type) {
-			case PassType::RASTER: {
-				updateRenderStages(GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT);
-
-				GTSL::StaticVector<GAL::RenderPassTargetDescription, 8> renderPassTargetDescriptions;
-				for (uint8 i = 0; i < renderPassData.Attachments.GetLength(); ++i) {
-					if (renderPassData.Attachments[i].Access & GAL::AccessTypes::WRITE) {
-						auto& e = renderPassTargetDescriptions.EmplaceBack();
-						const auto& attachment = attachments.At(renderPassData.Attachments[i].Name);
-						e.ClearValue = attachment.ClearColor;
-						e.Start = renderPassData.Attachments[i].Layout;
-						e.End = renderPassData.Attachments[i].Layout;
-						e.LoadOperation = renderPassData.Attachments[i].LoadOperation;
-						e.StoreOperation = GAL::Operations::DO;
-						e.FormatDescriptor = attachment.FormatDescriptor;
-						e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
-						e.TextureView = renderSystem->GetTextureView(attachment.TextureHandle[currentFrame]);
-					}
-				}
-
-				commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderArea, renderPassTargetDescriptions);
-
-				resultAttachment = renderPassData.Attachments[0].Name;
-				break;
-			}
-			case PassType::COMPUTE: {
-				updateRenderStages(GAL::ShaderStages::COMPUTE);
-				break;
-			}
-			case PassType::RAY_TRACING: {
-				updateRenderStages(GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::INTERSECTION | GAL::ShaderStages::CALLABLE);
-				break;
-			}
-			}
-
-			//todo: write
-
-			break;
-		}
-		}
-	};
-
-	auto endNode = [&](const uint32 key, const uint32_t level, bool enabled) {
-		if (!enabled || level >= lastInvalidLevel) { return; }
-
-		//BE_LOG_WARNING(u8"Leaving node ", key);
-
-		switch (renderingTree.GetNodeType(key)) {
-		case RTT::GetTypeIndex<DataNode>(): {
-			const auto& node = getPrivateNode<DataNode>(key);
-
-			renderState.PopData();
-
-			if(node.UseCounter) {
-				counterStack.PopBack();
-			}
-
-			if constexpr (BE_DEBUG) {
-				commandBuffer.EndRegion(renderSystem->GetRenderDevice());
-			}
-
-			break;
-		}
-		case RTT::GetTypeIndex<RenderPassData>(): {
-			auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
-			if (renderPassData.Type == PassType::RASTER) {
-				commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
-			}
-
-			break;
-		}
-		default: break;
-		}
-	};
-
-	ForEachWithDisabled(renderingTree, runLevel, endNode);
-
-	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
-	CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
-
-	if (resultAttachment) {
-		auto& attachment = attachments.At(resultAttachment);
-
-		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
-			GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
-			GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
-
-		updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
-
-		commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent()));
 	}
 
-	commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
-	GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+	if(!isCommandBufferUpdated[currentFrame] or isRenderTreeDirty) {
+		if(debugRenderNodes) {
+			BE_LOG_SUCCESS(u8"Started baking command buffer.");
+		}
 
-	renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
+		renderSystem->StartCommandList(graphicsCommandLists[currentFrame]);
 
-	renderSystem->StartCommandList(transferCommandList[currentFrame]);
-	renderSystem->EndCommandList(transferCommandList[currentFrame]);
+		auto& commandBuffer = *renderSystem->GetCommandList(graphicsCommandLists[currentFrame]);
+
+		BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
+
+		auto visitNode = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
+			printNode(key, level, debugRenderNodes, enabled);
+
+			if (!enabled || level >= lastInvalidLevel) { lastInvalidLevel = level; return; }
+
+			DataStreamHandle dataStreamHandle = {};
+
+			const auto& baseData = renderingTree.GetAlpha(key);
+
+			switch (renderingTree.GetNodeType(key)) {
+			case RTT::GetTypeIndex<DataNode>(): {
+				DataNode& layerData = renderingTree.GetClass<DataNode>(key);
+
+				if constexpr (BE_DEBUG) {
+					commandBuffer.BeginRegion(renderSystem->GetRenderDevice(), baseData.Name);
+				}
+
+				if (layerData.DataKey) {
+					if (layerData.UseCounter) {
+						counterStack.EmplaceBack();
+					}
+
+					dataStreamHandle = renderState.AddDataStream();
+					GAL::DeviceAddress address;
+					const auto& dataKey = getDataKey(layerData.DataKey);
+
+					if (renderSystem->IsUpdatable(dataKey.Buffer)) {
+						address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
+					}
+					else {
+						address = renderSystem->GetBufferAddress(dataKey.Buffer);
+					}
+
+					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
+					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
+				}
+
+				break;
+			}
+			case RTT::GetTypeIndex<PipelineBindData>(): {
+				const PipelineBindData& pipeline_bind_data = renderingTree.GetClass<PipelineBindData>(key);
+				const auto& shaderGroupInstance = shaderGroupInstances[pipeline_bind_data.Handle()];
+				const auto& shaderGroup = shaderGroups[shaderGroupInstance.ShaderGroupIndex];
+				uint32 pipelineIndex = 0xFFFFFFFF;
+				if (shaderGroup.RasterPipelineIndex != 0xFFFFFFFF) {
+					pipelineIndex = shaderGroup.RasterPipelineIndex;
+				}
+				else if (shaderGroup.ComputePipelineIndex != 0xFFFFFFFF) {
+					pipelineIndex = shaderGroup.ComputePipelineIndex;
+				}
+				else if (shaderGroup.RTPipelineIndex != 0xFFFFFFFF) {
+					pipelineIndex = shaderGroup.RTPipelineIndex;
+				}
+				else {
+					BE_LOG_WARNING(u8"Pipeline bind data node with no valid pipeline reference.");
+				}
+
+				renderState.BoundPipelineIndex = pipelineIndex;
+
+				commandBuffer.BindPipeline(renderSystem->GetRenderDevice(), pipelines[pipelineIndex].pipeline, renderState.ShaderStages);
+				break;
+			}
+			case RTT::GetTypeIndex<DispatchData>(): {
+				const DispatchData& dispatchData = renderingTree.GetClass<DispatchData>(key);
+
+				const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
+
+				auto executionExtent = processExecutionString(execution);
+
+				commandBuffer.Dispatch(renderSystem->GetRenderDevice(), executionExtent);
+
+				break;
+			}
+			case RTT::GetTypeIndex<RayTraceData>(): {
+				const RayTraceData& rayTraceData = renderingTree.GetClass<RayTraceData>(key);
+				const auto& pipelineData = pipelines[shaderGroups[rayTraceData.ShaderGroupIndex].RTPipelineIndex];
+				CommandList::ShaderTableDescriptor shaderTableDescriptors[4];
+				for (uint32 i = 0, offset = 0; i < 3; ++i) {
+					shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
+					shaderTableDescriptors[i].EntrySize = GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
+					shaderTableDescriptors[i].Address = GetAddress(renderSystem, pipelineData.ShaderBindingTableBuffer) + offset;
+
+					offset += GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
+				}
+
+				auto executionExtent = processExecutionString(pipelineData.ExecutionString);
+
+				commandBuffer.TraceRays(renderSystem->GetRenderDevice(), GTSL::Range(4, shaderTableDescriptors), executionExtent);
+
+				break;
+			}
+			case RTT::GetTypeIndex<VertexBufferBindData>(): {
+				const VertexBufferBindData& meshData = renderingTree.GetClass<VertexBufferBindData>(key);
+
+				auto buffer = renderSystem->GetBuffer(meshData.Handle);
+
+				GTSL::StaticVector<GPUBuffer, 8> buffers;
+
+				for (uint32 i = 0; i < meshData.Offsets.GetLength(); ++i) {
+					buffers.EmplaceBack(buffer);
+				}
+
+				commandBuffer.BindVertexBuffers(renderSystem->GetRenderDevice(), buffers, meshData.Offsets, meshData.VertexSize * meshData.VertexCount, meshData.VertexSize);
+				break;
+			}
+			case RTT::GetTypeIndex<IndexBufferBindData>(): {
+				const IndexBufferBindData& meshData = renderingTree.GetClass<IndexBufferBindData>(key);
+				commandBuffer.BindIndexBuffer(renderSystem->GetRenderDevice(), renderSystem->GetBuffer(meshData.BufferHandle), 0, meshData.IndexCount, meshData.IndexType);
+				break;
+			}
+			case RTT::GetTypeIndex<MeshData>(): {
+				const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
+				commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack.back(), meshData.IndexOffset, meshData.VertexOffset);
+				counterStack.back() += meshData.InstanceCount;
+				break;
+			}
+			case RTT::GetTypeIndex<DrawData>(): {
+				const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
+				commandBuffer.Draw(renderSystem->GetRenderDevice(), 6, draw_data.InstanceCount);
+				break;
+			}
+			case RTT::GetTypeIndex<RenderPassData>(): {
+				const RenderPassData& renderPassData = renderingTree.GetClass<RenderPassData>(key);
+
+				transitionImages(commandBuffer, renderSystem, &renderPassData);
+
+				switch (renderPassData.Type) {
+				case PassType::RASTER: {
+					updateRenderStages(GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT);
+
+					GTSL::StaticVector<GAL::RenderPassTargetDescription, 8> renderPassTargetDescriptions;
+					for (uint8 i = 0; i < renderPassData.Attachments.GetLength(); ++i) {
+						if (renderPassData.Attachments[i].Access & GAL::AccessTypes::WRITE) {
+							auto& e = renderPassTargetDescriptions.EmplaceBack();
+							const auto& attachment = attachments.At(renderPassData.Attachments[i].Name);
+							e.ClearValue = attachment.ClearColor;
+							e.Start = renderPassData.Attachments[i].Layout;
+							e.End = renderPassData.Attachments[i].Layout;
+							e.LoadOperation = renderPassData.Attachments[i].LoadOperation;
+							e.StoreOperation = GAL::Operations::DO;
+							e.FormatDescriptor = attachment.FormatDescriptor;
+							e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
+							e.TextureView = renderSystem->GetTextureView(attachment.TextureHandle[currentFrame]);
+						}
+					}
+
+					commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderArea, renderPassTargetDescriptions);
+
+					resultAttachment = renderPassData.Attachments[0].Name;
+					break;
+				}
+				case PassType::COMPUTE: {
+					updateRenderStages(GAL::ShaderStages::COMPUTE);
+					break;
+				}
+				case PassType::RAY_TRACING: {
+					updateRenderStages(GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::INTERSECTION | GAL::ShaderStages::CALLABLE);
+					break;
+				}
+				}
+
+				break;
+			}
+			}
+		};
+
+		auto endNode = [&](const uint32 key, const uint32_t level, bool enabled) {
+			if (!enabled || level >= lastInvalidLevel) { return; }
+
+			if(debugRenderNodes) {
+				BE_LOG_WARNING(u8"Leaving node ", key);
+			}
+
+			switch (renderingTree.GetNodeType(key)) {
+			case RTT::GetTypeIndex<DataNode>(): {
+				const auto& node = getPrivateNode<DataNode>(key);
+
+				renderState.PopData();
+
+				if(node.UseCounter) {
+					counterStack.PopBack();
+				}
+
+				if constexpr (BE_DEBUG) {
+					commandBuffer.EndRegion(renderSystem->GetRenderDevice());
+				}
+
+				break;
+			}
+			case RTT::GetTypeIndex<RenderPassData>(): {
+				auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
+				if (renderPassData.Type == PassType::RASTER) {
+					commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
+				}
+
+				break;
+			}
+			default: break;
+			}
+		};
+
+		ForEachWithDisabled(renderingTree, visitNode, endNode);
+
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
+		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+
+		if (resultAttachment) {
+			auto& attachment = attachments.At(resultAttachment);
+
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
+				GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
+				GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
+
+			updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
+
+			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent()));
+		}
+
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
+		GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+
+		renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
+
+		if(debugRenderNodes) {
+			BE_LOG_SUCCESS(u8"Ended baking command buffer.");
+		}
+
+		isRenderTreeDirty = false;
+		isCommandBufferUpdated[currentFrame] = true;
+	}
 
 	{
+		renderSystem->StartCommandList(transferCommandList[currentFrame]);
+		renderSystem->EndCommandList(transferCommandList[currentFrame]);
+
 		GTSL::StaticVector<RenderSystem::CommandListHandle, 8> commandLists;
 		GTSL::StaticVector<RenderSystem::WorkloadHandle, 8> workloads;
 
@@ -576,33 +593,35 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		commandLists.EmplaceBack(graphicsCommandLists[currentFrame]);
 
-		renderSystem->Submit(GAL::QueueTypes::GRAPHICS, { { { transferCommandList[currentFrame] }, {}, { graphicsWorkloadHandle[currentFrame]}}, {{graphicsCommandLists[currentFrame]}, workloads, {graphicsWorkloadHandle[currentFrame]}}}, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()]); // Wait on image acquisition to render maybe, //Signal grpahics workload
+		renderSystem->Submit(GAL::QueueTypes::GRAPHICS, { { { transferCommandList[currentFrame] }, {}, { graphicsWorkloadHandle[currentFrame]}}, {{graphicsCommandLists[currentFrame]}, workloads,	{graphicsWorkloadHandle[currentFrame]}}}, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()]); // Wait on image acquisition to render maybe, //Signal grpahics workload
 
-		renderSystem->Present({ graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
+		renderSystem->Present(GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem"), { graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
 	}
 }
 
-ShaderGroupHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_name) {
-	auto shaderGroupReference = shaderGroupsByName.TryEmplace(shader_group_name);
+RenderModelHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_instance_name) {
+	auto shaderGroupReference = shaderGroupInstanceByName.TryEmplace(shader_group_instance_name);
 
-	uint32 materialIndex = 0xFFFFFFFF;
+	uint32 id = 0xFFFFFFFF;
 
 	if (shaderGroupReference.State()) {
-		materialIndex = shaderGroups.Emplace();
-		shaderGroupReference.Get() = materialIndex;
+		id = shaderGroupInstances.GetLength();
+		shaderGroupReference.Get() = id;
 
 		ShaderLoadInfo sli(GetPersistentAllocator());
-		GetApplicationManager()->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager")->LoadShaderGroupInfo(GetApplicationManager(), shader_group_name, onShaderInfosLoadHandle, GTSL::MoveRef(sli));
+		GetApplicationManager()->GetSystem<ShaderResourceManager>(u8"ShaderResourceManager")->LoadShaderGroupInfo(GetApplicationManager(), shader_group_instance_name, onShaderInfosLoadHandle, GTSL::MoveRef(sli));
 
-		auto& shaderGroup = shaderGroups[materialIndex];
+		auto& shaderGroupInstance = shaderGroupInstances.EmplaceBack();
 
-		if constexpr (BE_DEBUG) { shaderGroup.Name = GTSL::StringView(shader_group_name); }
-		shaderGroup.ResourceHandle = makeResource(GTSL::StringView(shader_group_name));
-		addDependencyOnResource(shaderGroup.ResourceHandle); // Add dependency the pipeline itself
-		shaderGroup.Buffer = MakeDataKey();
+		//if constexpr (BE_DEBUG) { shaderGroup.Name = GTSL::StringView(shader_group_instance_name); }
+		shaderGroupInstance.Resource = makeResource(GTSL::StringView(shader_group_instance_name));
+		addDependencyOnResource(shaderGroupInstance.Resource); // Add dependency the pipeline itself
+		shaderGroupInstance.DataKey = MakeDataKey();
+		shaderGroupInstance.Name = static_cast<GTSL::StringView>(shader_group_instance_name);
+		shaderGroupInstance.UpdateKey = CreateUpdateKey();
 	} else {
 		auto& material = shaderGroups[shaderGroupReference.Get()];
-		materialIndex = shaderGroupReference.Get();
+		id = shaderGroupReference.Get();
 		//auto index = material.MaterialInstances.LookFor([&](const MaterialInstance& materialInstance) {
 		//	return materialInstance.Name == info.InstanceName;
 		//});
@@ -612,7 +631,7 @@ ShaderGroupHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_name) {
 		//materialInstanceIndex = index.Get();
 	}
 
-	return { materialIndex };
+	return RenderModelHandle(id);
 }
 
 void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
@@ -673,7 +692,12 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 	}
 
 	auto renderPassDataNode = AddDataNode(renderPassName, leftNodeHandle, parent_node_handle, member);
-	NodeHandle renderPassNodeHandle = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassDataNode);
+	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassDataNode);
+
+	if(!renderPassNodeHandleResult) { return renderPassNodeHandleResult.Get(); }
+
+	NodeHandle renderPassNodeHandle = renderPassNodeHandleResult.Get();
+
 	RenderPassData& renderPass = getPrivateNode<RenderPassData>(renderPassNodeHandle);
 
 	renderPasses.Emplace(renderPassName, renderPassNodeHandle);
@@ -745,7 +769,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 		auto sgh = CreateShaderGroup(renderPassName);
 		auto pipelineBindNode = addPipelineBindNode(renderPassNodeHandle, sgh);
-		resultHandle = addInternalNode<DispatchData>(Hash(renderPassName), pipelineBindNode);
+		resultHandle = addInternalNode<DispatchData>(Hash(renderPassName), pipelineBindNode).Get();
 
 		break;
 	}
@@ -816,6 +840,8 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 		auto& layer = getPrivateNode<RenderPassData>(apiRenderPassData);
 		signalDependencyToResource(layer.ResourceHandle);
 	}
+
+	isRenderTreeDirty = true;
 }
 
 void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable)
@@ -912,6 +938,26 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 
 	shaderLoadInfo.Buffer.Allocate(size, 16);
 	shaderLoadInfo.Buffer.AddBytes(size);
+
+	auto shaderGroupWasEmplaced = shaderGroupsByName.TryEmplace(Id(shader_group_info.Name), ~0u);
+
+	if(shaderGroupWasEmplaced) {
+		auto shaderGroupIndex = shaderGroups.Emplace();
+		shaderGroupWasEmplaced.Get() = shaderGroupIndex;
+		auto& shaderGroup = shaderGroups[shaderGroupIndex];
+
+		shaderGroup.Name = shader_group_info.Name;
+		shaderGroup.Buffer = MakeDataKey();
+
+		for(auto& e : shader_group_info.Instances) {
+			shaderGroup.Resource = makeResource(shader_group_info.Name);
+
+			auto& instance = shaderGroupInstances[shaderGroupInstanceByName[Id(e.Name)]];
+			instance.Name = e.Name;
+			instance.ShaderGroupIndex = shaderGroupIndex;
+			addDependencyOnResource(shaderGroup.Resource, instance.Resource);
+		}
+	}
 
 	materialResourceManager->LoadShaderGroup(taskInfo.ApplicationManager, shader_group_info, onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
@@ -1238,7 +1284,12 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 		}
 
-		signalDependencyToResource(sg.ResourceHandle); //add ref count for pipeline load itself, todo: do we signal even when we are doing a pipeline update?
+		signalDependencyToResource(sg.Resource); //add ref count for pipeline load itself, todo: do we signal even when we are doing a pipeline update?
+
+		for(auto& k : shader_group_info.Instances) {
+			auto& instance = shaderGroupInstances[shaderGroupInstanceByName[Id(k.Name)]];
+			signalDependencyToResource(instance.Resource); //add ref count for pipeline load itself, todo: do we signal even when we are doing a pipeline update?
+		}
 	}
 
 	if (!sg.Loaded) {
@@ -1247,9 +1298,19 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		GTSL::StaticString<64> scope(u8"global"); scope << u8"." << GTSL::StringView(shader_group_info.Name);
 
 		auto materialDataMember = CreateMember(scope, u8"ShaderParametersData", members);
-		sg.Buffer = CreateDataKey(renderSystem, scope, u8"ShaderParametersData", sg.Buffer);
+		sg.Buffer = MakeDataKey(renderSystem, scope, u8"ShaderParametersData[4]", sg.Buffer); // Create shader group data in array, with an element for each instance
+
+		auto bwk = GetBufferWriteKey(renderSystem, sg.Buffer);
 
 		for (uint8 ii = 0; auto & i : shader_group_info.Instances) { //TODO: check parameters against stored layout to check if everything is still compatible
+			auto& instance = shaderGroupInstances[shaderGroupInstanceByName[Id(i.Name)]];
+
+			WriteUpdateKey(instance.UpdateKey, uint32(ii));
+
+			CopyDataKey(instance.DataKey, sg.Buffer);
+
+			auto instanceElement = bwk[ii];
+
 			for (uint32 pi = 0; auto & p : i.Parameters) {
 				GTSL::StaticString<32> parameterValue;
 
@@ -1269,10 +1330,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					createTextureInfo.TextureName = parameterValue;
 					auto textureReference = createTexture(createTextureInfo);
 
-					GetBufferWriteKey(renderSystem, sg.Buffer)[p.First] = textureReference;
+					instanceElement[p.First] = textureReference;
 
 					for (auto& e : shaderBundles) {
-						addPendingResourceToTexture(Id(parameterValue), sg.ResourceHandle);
+						addPendingResourceToTexture(Id(parameterValue), instance.Resource);
 					}
 
 					break;
@@ -1283,7 +1344,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					if (textureReference) {
 						uint32 textureComponentIndex = textureReference.Get().ImageIndex;
 
-						GetBufferWriteKey(renderSystem, sg.Buffer)[p.First] = textureComponentIndex;
+						instanceElement[p.First] = textureComponentIndex;
 					}
 					else {
 						BE_LOG_WARNING(u8"Default parameter value of ", GTSL::StringView(parameterValue), u8" for shader group ", shader_group_info.Name, u8" parameter ", p.First, u8" could not be found.");
@@ -1327,7 +1388,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				{ &rtPipelineData.ShaderGroups[3].TableHandle, tablePerGroup[3], u8"CallableTable", u8"callableTable", renderSystem->GetShaderGroupBaseAlignment()},
 			};
 			auto sbtMemeber = CreateMember(GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", tables);
-			pipelineData.ShaderBindingTableBuffer = CreateDataKey(renderSystem, GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", pipelineData.ShaderBindingTableBuffer, GAL::BufferUses::SHADER_BINDING_TABLE);
+			pipelineData.ShaderBindingTableBuffer = MakeDataKey(renderSystem, GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", pipelineData.ShaderBindingTableBuffer, GAL::BufferUses::SHADER_BINDING_TABLE);
 
 			auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer);
 

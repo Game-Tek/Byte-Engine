@@ -1,6 +1,7 @@
 #include "GameApplication.h"
 
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Application/WindowSystem.hpp"
 #include "ByteEngine/Debug/FunctionTimer.h"
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/ApplicationManager.h"
@@ -78,6 +79,9 @@ void GameApplication::PostInitialize()
 
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
 
+	auto* windowSystem = applicationManager->AddSystem<WindowSystem>(u8"WindowSystem");
+	windowSystemHandle = applicationManager->GetSystemReference(u8"WindowSystem");
+
 	{
 		bool fullscreen = GetBoolOption(u8"fullScreen");
 		GTSL::Extent2D screenSize;
@@ -88,17 +92,11 @@ void GameApplication::PostInitialize()
 			screenSize = GetExtent2DOption(u8"resolution");
 		}
 
-		window.BindToOS(GetApplicationName(), screenSize, systemApplication, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this)); //Call bind to OS after declaring goals, RenderSystem and RenderOrchestrator; as window creation may call ResizeDelegate which
-		//queues a function that depends on these map existing
+		windowSystem->CreateWindow(u8"main", u8"Sandbox", screenSize);
 	}
 
-	window.AddDevice(GTSL::Window::DeviceType::MOUSE);
-	window.AddDevice(GTSL::Window::DeviceType::GAMEPAD);
-	
-	renderSystem->SetWindow(&window);
+	windowSystem->keyboard = keyboard; windowSystem->mouse = mouse;
 
-	window.SetWindowVisibility(true);
-	
 	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
@@ -111,9 +109,11 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
 	Application::OnUpdate(updateInfo);
 
-	mouseCount = 0;
+	auto* windowSystem = applicationManager->GetSystem<WindowSystem>(windowSystemHandle);
 
-	window.Update(this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<GameApplication, &GameApplication::windowUpdateFunction>(this));
+	windowSystem->Update();
+
+	mouseCount = 0;
 
 	auto gamePadUpdate = [&](GTSL::Gamepad::SourceNames source, GTSL::Gamepad::Side side, const void* value) {
 		switch (source) {
@@ -278,13 +278,6 @@ void GameApplication::RegisterControllers()
 
 using namespace GTSL;
 
-void GameApplication::onWindowResize(Extent2D extent) {
-	if (extent != 0 && extent != oldSize) {
-		//applicationManager->AddStoredDynamicTask(applicationManager->GetSystem<RenderSystem>(u8"RenderSystem")->GetResizeHandle(),  MoveRef(extent));
-		oldSize = extent;
-	}
-}
-
 void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType) {
 	Id id;
 	
@@ -335,61 +328,5 @@ void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool s
 
 	if (isFirstkeyOfType) {
 		GetInputManager()->RecordInputSource(keyboard, id, state);
-	}
-}
-
-void GameApplication::windowUpdateFunction(void* userData, GTSL::Window::WindowEvents event, void* eventData)
-{
-	auto* app = static_cast<GameApplication*>(userData);
-
-	switch (event) {
-	case Window::WindowEvents::FOCUS: {
-		auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
-		if(focusEventData->Focus) {
-			app->applicationManager->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
-		} else {
-			app->applicationManager->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
-		}
-		break;
-	}
-	case GTSL::Window::WindowEvents::CLOSE: app->Close(CloseMode::OK, u8""); break;
-	case GTSL::Window::WindowEvents::KEYBOARD_KEY: {
-		auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);
-		app->keyboardEvent(keyboardEventData->Key, keyboardEventData->State, keyboardEventData->IsFirstTime);
-		break;
-	}
-	case GTSL::Window::WindowEvents::CHAR: app->GetInputManager()->RecordInputSource(app->keyboard, u8"Character", static_cast<char32_t>(*static_cast<GTSL::Window::CharEventData*>(eventData))); break;
-	case GTSL::Window::WindowEvents::SIZE: {
-		auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEventData*>(eventData);
-		app->onWindowResize(*sizingEventData);
-		break;
-	}
-	case GTSL::Window::WindowEvents::MOVING: break;
-	case GTSL::Window::WindowEvents::MOUSE_MOVE: {
-		auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
-		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
-		break;
-	}
-	case GTSL::Window::WindowEvents::MOUSE_WHEEL: {
-		auto* mouseWheelEventData = static_cast<GTSL::Window::MouseWheelEventData*>(eventData);
-		app->GetInputManager()->RecordInputSource(app->mouse, u8"MouseWheel", *mouseWheelEventData);
-		break;
-	}
-	case GTSL::Window::WindowEvents::MOUSE_BUTTON: {
-		auto* mouseButtonEventData = static_cast<GTSL::Window::MouseButtonEventData*>(eventData);
-
-		switch (mouseButtonEventData->Button) {
-		case Window::MouseButton::LEFT_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->State);	break;
-		case Window::MouseButton::RIGHT_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"RightMouseButton", mouseButtonEventData->State); break;
-		case Window::MouseButton::MIDDLE_BUTTON: app->GetInputManager()->RecordInputSource(app->mouse, u8"MiddleMouseButton", mouseButtonEventData->State); break;
-		default:;
-		}
-		break;
-	}
-	case Window::WindowEvents::DEVICE_CHANGE: {
-		BE_LOG_MESSAGE(u8"Device changed!")
-		break;
-	}
-	default:;
 	}
 }

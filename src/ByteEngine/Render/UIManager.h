@@ -40,9 +40,8 @@ enum class SizingPolicies : uint8 {
  * \brief All ways an en element can be scaled to fit inside it's parent.
  */
 enum class ScalingPolicies : uint8 {
-	KEEP_CHILDREN_ASPECT_RATIO,
-	SET_ASPECT_RATIO,
-	FILL
+	FILL,
+	SET_ASPECT_RATIO
 };
 
 /**
@@ -82,24 +81,25 @@ public:
 
 	explicit UIManager(const InitializeInfo& initializeInfo);
 
+	static constexpr bool WINDOW_SPACE = true;
 
 	struct PrimitiveData {
 		enum class PrimitiveType { NONE, CANVAS, ORGANIZER, SQUARE, TEXT, CURVE } Type;
 		GTSL::Vector2 RelativeLocation;
 		GTSL::Vector2 Bounds;
-		GTSL::Vector2 HalfSize;
+		GTSL::Vector2 HalfSize, RenderSize;
 		//Relative to parent.
 		GTSL::Vector2 Position;
 		Alignments Alignment;
-		ScalingPolicies ScalingPolicy;
-		ShaderGroupHandle Material;
+		ScalingPolicies ScalingPolicies[2/*DIMENSIONS*/];
+		SizingPolicies SizingPolicies[2];
+		RenderModelHandle Material;
 		uint32 DerivedTypeIndex;
-		SizingPolicies SizingPolicy;
 		SpacingPolicy SpacingPolicy;
 		bool isDirty;
 		TaskHandle<UIElementHandle> OnHover, OnPress;
 		GTSL::Vector4 Color;
-		float32 Rounding;
+		float32 Rounding = 0.0f;
 	};
 
 	static EventHandle<UIElementHandle, PrimitiveData::PrimitiveType> GetOnCreateUIElementEventHandle() { return { u8"OnCreateUIElement" }; }
@@ -129,11 +129,16 @@ public:
 	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		//canvases.Emplace(system);
 		auto canvasHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
+		SetScalingPolicy(canvasHandle, 0, ScalingPolicies::FILL);
+		SetScalingPolicy(canvasHandle, 1, ScalingPolicies::FILL);
+		SetSizingPolicy(canvasHandle, 0, SizingPolicies::FROM_SCREEN);
+		SetSizingPolicy(canvasHandle, 1, SizingPolicies::FROM_SCREEN);
 		return canvasHandle;
 	}
 
 	UIElementHandle AddOrganizer(const UIElementHandle ui_element_handle = UIElementHandle()) {
-		return add(ui_element_handle, PrimitiveData::PrimitiveType::ORGANIZER, SizingPolicies::FROM_PARENT_CONTAINER);
+		auto organizerHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::ORGANIZER);
+		return organizerHandle;
 	}
 
 	UIElementHandle AddSquare(const UIElementHandle element_handle = UIElementHandle()) {
@@ -201,7 +206,7 @@ public:
 		primitive.Color.W() = colors[color].A();
 	}
 
-	void SetMaterial(const UIElementHandle ui_element_handle, const ShaderGroupHandle material) {
+	void SetMaterial(const UIElementHandle ui_element_handle, const RenderModelHandle material) {
 		getPrimitive(ui_element_handle).Material = material;
 		flagsAsDirty(ui_element_handle);
 	}
@@ -222,12 +227,24 @@ public:
 	}
 
 	void SetScalingPolicy(UIElementHandle organizer, ScalingPolicies scaling_policy) {
-		getPrimitive(organizer).ScalingPolicy = scaling_policy;
+		getPrimitive(organizer).ScalingPolicies[0] = scaling_policy;
+		getPrimitive(organizer).ScalingPolicies[1] = scaling_policy;
+		flagsAsDirty(organizer);
+	}
+
+	void SetScalingPolicy(UIElementHandle organizer, uint8 axis, ScalingPolicies scaling_policy) {
+		getPrimitive(organizer).ScalingPolicies[axis] = scaling_policy;
 		flagsAsDirty(organizer);
 	}
 
 	void SetSizingPolicy(UIElementHandle organizer, SizingPolicies sizing_policy) {
-		getPrimitive(organizer).SizingPolicy = sizing_policy;
+		getPrimitive(organizer).SizingPolicies[0] = sizing_policy;
+		getPrimitive(organizer).SizingPolicies[1] = sizing_policy;
+		flagsAsDirty(organizer);
+	}
+
+	void SetSizingPolicy(UIElementHandle organizer, uint8 axis, SizingPolicies sizing_policy) {
+		getPrimitive(organizer).SizingPolicies[axis] = sizing_policy;
 		flagsAsDirty(organizer);
 	}
 
@@ -247,7 +264,7 @@ public:
 
 	auto GetRoot() { return primitives.begin(); }
 
-	bool Valid() const { return static_cast<bool>(primitives); }
+	bool Valid() const { return static_cast<bool>(false); }
 
 private:
 	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
@@ -268,7 +285,7 @@ private:
 
 	GTSL::Vector<UIElementHandle, BE::PAR> queuedUpdates;
 
-	UIElementHandle add(const UIElementHandle parent_handle, PrimitiveData::PrimitiveType type, SizingPolicies sizing_policy = SizingPolicies::FROM_SCREEN) {
+	UIElementHandle add(const UIElementHandle parent_handle, PrimitiveData::PrimitiveType type) {
 		uint32 parentNodeKey = 0;
 
 		if (parent_handle) {
@@ -280,13 +297,14 @@ private:
 		primitive.Type = type;
 		primitive.Alignment = Alignments::CENTER;
 		primitive.HalfSize = 1.0f;
-		primitive.SizingPolicy = sizing_policy;
-		primitive.ScalingPolicy = ScalingPolicies::KEEP_CHILDREN_ASPECT_RATIO;
+		primitive.SizingPolicies[0] = SizingPolicies::FROM_SCREEN;
+		primitive.SizingPolicies[1] = SizingPolicies::FROM_SCREEN;
+		primitive.ScalingPolicies[0] = ScalingPolicies::FILL;
+		primitive.ScalingPolicies[1] = ScalingPolicies::SET_ASPECT_RATIO;
 		primitive.SpacingPolicy = SpacingPolicy::DISTRIBUTE;
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
-		primitive.Color = 1.0f;
-		primitive.Rounding = 0.5f;
+		primitive.Color = 0.5f;
 
 		if (parent_handle) {
 			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
@@ -294,12 +312,17 @@ private:
 
 		auto handle = GetApplicationManager()->MakeHandle<UIElementHandle>(UIElementTypeIndentifier, primitiveIndex);
 
-		GetApplicationManager()->DispatchEvent(u8"UIManager", GetOnCreateUIElementEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(primitive.Type));
+		GetApplicationManager()->DispatchEvent(this, GetOnCreateUIElementEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(primitive.Type));
 
 		return handle;
 	}
 
-	void updateBranch(decltype(primitives)::iterator iterator);
+	struct UpdateData {
+		GTSL::Vector2 ScreenSize, WindowSize, ScreenToWindowSize, WindowToScreenSize;
+	};
+
+	PrimitiveData& updateBranch(GTSL::Tree<PrimitiveData, BE::PersistentAllocatorReference>::iterator iterator, const UpdateData* update_data, GTSL::
+	                  Vector2 size, GTSL::Vector2 start_position, GTSL::Vector2 parent_way);
 
 	void flagsAsDirty(const UIElementHandle element_handle) {
 		getPrimitive(element_handle).isDirty = true;

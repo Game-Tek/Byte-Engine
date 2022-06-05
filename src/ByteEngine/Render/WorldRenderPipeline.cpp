@@ -1,6 +1,6 @@
 #include "WorldRenderPipeline.hpp";
 
-WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), materials(GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()), InstanceTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"Instance")) {
+WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()), InstanceTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"Instance")) {
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
@@ -68,11 +68,11 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"pixelBuffer");
 		renderOrchestrator->CreateMember(u8"global", u8"VisibilityData", members);
 
-		visibilityDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"VisibilityData");
+		visibilityDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"VisibilityData");
 		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"VisibilityDataLightingDataNode", visibilityDataKey);
 
 		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
-		auto pielBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
+		auto pielBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
 
 		{
 			auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, visibilityDataKey);
@@ -121,14 +121,14 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass);
 
 	renderOrchestrator->CreateMember2(u8"global", u8"StaticMeshData", INSTANCE_DATA);
-	meshDataBuffer = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
+	meshDataBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
 	renderOrchestrator->CreateMember2(u8"global", u8"PointLightData", POINT_LIGHT_DATA);
 	renderOrchestrator->CreateMember2(u8"global", u8"LightingData", LIGHTING_DATA);
 
 	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 
-	lightsDataKey = renderOrchestrator->CreateDataKey(renderSystem, u8"global", u8"LightingData");
+	lightsDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"LightingData");
 	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightsDataKey);
 
 	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
@@ -177,23 +177,15 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 		auto& sm = staticMeshInfo.GetSubMeshes().array[i];
 		auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
 
-		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
-			RenderOrchestrator::NodeHandle materialNodeHandle;
-			if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-				auto materialDataNode = render_orchestrator->AddDataNode(meshDataNode, u8"MaterialNode", render_orchestrator->shaderGroups[shaderGroupHandle.ShaderGroupIndex].Buffer);
-				r.Get().Node = render_orchestrator->AddMaterial(materialDataNode, shaderGroupHandle);
-				materialNodeHandle = r.Get().Node;
-			}
-			else {
-				materialNodeHandle = r.Get().Node;
-			}
+		resource.MMM.EmplaceBack(shaderGroupHandle);
 
-			resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
+		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
+			RenderOrchestrator::NodeHandle materialNodeHandle = render_orchestrator->AddMaterial(meshDataNode, shaderGroupHandle);
+
+			resource.nodeHandle = render_orchestrator->AddMesh(materialNodeHandle, resource.IndexCount, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
 		}
 		else if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-			if (auto r = materials.TryEmplace(shaderGroupHandle.ShaderGroupIndex)) {
-				resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
-			}
+			resource.nodeHandle = render_orchestrator->AddMesh(mainVisibilityPipelineNode, 0, resource.IndexCount, indicesInBuffer, vertexComponentsPerStream);
 
 			//TODO: add to selection buffer
 			//TODO: add pipeline bind to render pixels with this material

@@ -162,9 +162,8 @@ namespace BE
 		return static_cast<int>(closeMode);
 	}
 
-	void Application::PromptClose()
-	{
-		applicationManager->DispatchEvent(u8"Application", EventHandle(u8"OnPromptClose"));
+	void Application::PromptClose() {
+		//applicationManager->DispatchEvent(this, EventHandle(u8"OnPromptClose"));
 	}
 
 	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)
@@ -181,7 +180,7 @@ namespace BE
 
 		GTSL::StaticString<260> ret(reinterpret_cast<const char8_t*>(s));
 		ReplaceAll(ret, u8'\\', u8'/');
-		DropLast(ret, u8'/');
+		RTrimLast(ret, u8'/');
 		return ret;
 #endif
 	}

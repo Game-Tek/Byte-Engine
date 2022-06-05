@@ -35,12 +35,12 @@ private:
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
 
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, ShaderGroupHandle> OnAddInfiniteLight;
+	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddInfiniteLight;
 
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, ShaderGroupHandle> OnAddBackdrop;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, ShaderGroupHandle> OnAddParticleSystem;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, ShaderGroupHandle> OnAddVolume;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, ShaderGroupHandle> OnAddSkinnedMesh;
+	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddBackdrop;
+	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddParticleSystem;
+	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddVolume;
+	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddSkinnedMesh;
 
 	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
 
@@ -57,7 +57,7 @@ private:
 	RenderOrchestrator::DataKeyHandle visibilityDataKey, lightsDataKey;
 
 	struct Mesh {
-		ShaderGroupHandle MaterialHandle;
+		RenderModelHandle MaterialHandle;
 		RenderSystem::BLASInstanceHandle InstanceHandle;
 		//uint32 Index;
 	};
@@ -79,6 +79,7 @@ private:
 		bool Interleaved = true;
 		//uint32 Index = 0;
 		RenderOrchestrator::NodeHandle nodeHandle;
+		GTSL::StaticVector<RenderModelHandle, 4> MMM;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
@@ -87,9 +88,9 @@ private:
 
 	struct MaterialData {
 		RenderOrchestrator::NodeHandle Node;
-		ShaderGroupHandle SGHandle;
+		RenderModelHandle SGHandle;
 	};
-	GTSL::HashMap<uint32, MaterialData, BE::PAR> materials;
+	//GTSL::HashMap<uint32, MaterialData, BE::PAR> materials;
 
 	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle, lightingDataNodeHandle;
 
@@ -113,28 +114,14 @@ private:
 
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
 
-		//for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {	
-		//	auto instanceIndex = prefixSum[i]++;
-		//
-		//	render_orchestrator->SetBaseInstanceIndex(resources[prefixSumGuide[i]].nodeHandle, instanceIndex);
-		//}
-		//
-		//for (uint32 i = resource.Index + 1; i < prefixSum; ++i) {
-		//	for (uint32 j = 0; j < resource.Instances; ++j) {
-		//		auto& inst = instances[resource.Instances[j]()];
-		//		auto instanceIndex = inst.Index = prefixSum[i] + j;
-		//		inst.Index = instanceIndex;
-		//
-		//		if (rayTracing) { renderSystem->SetAccelerationStructureInstanceIndex(topLevelAccelerationStructure, inst.InstanceHandle, instanceIndex); }
-		//	}
-		//}
+		instance.MaterialHandle = resource.MMM.front();
 
 		render_orchestrator->AddInstance(meshDataNode, resource.nodeHandle, instance_handle);
 
 		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle); //todo: this
 
 		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
-		key[instanceIndex][u8"shaderGroupIndex"] = instance.MaterialHandle.ShaderGroupIndex; //TODO: maybe use ACTUAL pipeline index to take into account instances
+		render_orchestrator->SubscribeToUpdate(render_orchestrator->GetShaderGroupIndexUpdateKey(instance.MaterialHandle), key[instanceIndex][u8"shaderGroupIndex"]);
 		key[instanceIndex][u8"transform"] = GTSL::Matrix3x4();
 
 
@@ -177,7 +164,6 @@ private:
 		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
 		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
 		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
-		render_orchestrator->PrintMember(lightsDataKey, render_system);
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

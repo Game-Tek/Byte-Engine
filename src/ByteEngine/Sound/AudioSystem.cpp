@@ -194,6 +194,6 @@ void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager*, AudioRes
 	sad.Loaded = true;
 
 	for(auto& e : sad.Emitters) {
-		playingEmitters.EmplaceBack();		
+		playingEmitters.EmplaceBack(e);	
 	}
 }

@@ -22,7 +22,7 @@ public:
 		auto handle = PointLightHandle(pointLights.Emplace());
 		auto& light = pointLights[handle()];
 		light.Lumens = 1.0f; light.Color.R() = 1.0f; light.Color.G() = 1.0f; light.Color.B() = 1.0f;
-		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle>(u8"OnAddPointLight"), GTSL::MoveRef(handle));
+		GetApplicationManager()->DispatchEvent(this, EventHandle<PointLightHandle>(u8"OnAddPointLight"), GTSL::MoveRef(handle));
 		return handle;
 	}
 
@@ -37,19 +37,19 @@ public:
 	void SetColor(PointLightHandle point_light_handle, const GTSL::RGB color) {
 		auto& light = pointLights[point_light_handle()];
 		light.Color = color;
-		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
+		GetApplicationManager()->DispatchEvent(this, EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
 	}
 
 	void SetLumens(PointLightHandle point_light_handle, const float32 lumens) {
 		auto& light = pointLights[point_light_handle()];
 		light.Lumens = lumens;
-		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
+		GetApplicationManager()->DispatchEvent(this, EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
 	}
 
 	void SetPosition(PointLightHandle point_light_handle, GTSL::Vector3 position) {
 		auto& light = pointLights[point_light_handle()];
 		light.Position = position;
-		GetApplicationManager()->DispatchEvent(u8"LightsRenderGroup", EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
+		GetApplicationManager()->DispatchEvent(this, EventHandle<PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), GTSL::MoveRef(point_light_handle), GTSL::MoveRef(light.Position), GTSL::MoveRef(light.Color), GTSL::MoveRef(light.Lumens));
 	}
 
 	GTSL::Vector3 GetPosition(const PointLightHandle point_light_handle) const {

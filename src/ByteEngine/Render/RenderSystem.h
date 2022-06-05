@@ -12,6 +12,8 @@
 #include <GTSL/Bitfield.h>
 #include <GTSL/Pair.hpp>
 
+#include "ByteEngine/Application/WindowSystem.hpp"
+
 namespace GTSL {
 	class Window;
 }
@@ -71,15 +73,15 @@ public:
 		commandList.PipelineStages = pipeline_stages;
 
 		if (type & GAL::QueueTypes::GRAPHICS) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey());
+			commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		if (type & GAL::QueueTypes::COMPUTE) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, computeQueue.GetQueueKey());
+			commandList.CommandList.Initialize(GetRenderDevice(), name, computeQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		if (type & GAL::QueueTypes::TRANSFER) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, transferQueue.GetQueueKey());
+			commandList.CommandList.Initialize(GetRenderDevice(), name, transferQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		return CommandListHandle(index);
@@ -257,7 +259,7 @@ public:
 		}
 	}
 
-	void Present(const GTSL::Range<const WorkloadHandle*> wait_workload_handles) {
+	void Present(WindowSystem* window_system, const GTSL::Range<const WorkloadHandle*> wait_workload_handles) {
 		GTSL::StaticVector<Synchronizer*, 8> waitSemaphores;
 
 		for(auto e : wait_workload_handles) {
@@ -266,7 +268,7 @@ public:
 
 		if (surface.GetHandle()) {
 			if (!renderContext.Present(GetRenderDevice(), waitSemaphores, imageIndex, graphicsQueue)) {
-				resize();
+				resize(window_system);
 			}
 		}
 	}
@@ -447,8 +449,6 @@ public:
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
 
-	void SetWindow(GTSL::Window* window) { this->window = window; }
-
 	[[nodiscard]] TextureHandle CreateTexture(GTSL::Range<const char8_t*> name, GAL::FormatDescriptor formatDescriptor, GTSL::Extent3D extent, GAL::TextureUse textureUses, bool updatable, TextureHandle texture_handle = TextureHandle());
 
 	void UpdateTexture(const CommandListHandle command_list_handle, const TextureHandle textureHandle);
@@ -474,7 +474,7 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
-	GTSL::Result<GTSL::Extent2D> AcquireImage(const WorkloadHandle workload_handle);
+	GTSL::Result<GTSL::Extent2D> AcquireImage(const WorkloadHandle workload_handle, WindowSystem* window_system);
 
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable, const BufferHandle buffer_handle);
 	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
@@ -596,9 +596,7 @@ public:
 		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
 	}
 
-private:
-	GTSL::Window* window;
-	
+private:	
 	GTSL::Mutex testMutex;
 	
 	bool needsStagingBuffer = true;
@@ -717,7 +715,7 @@ private:
 	GAL::FormatDescriptor swapchainFormat;
 	GAL::ColorSpaces swapchainColorSpace;
 
-	void resize();
+	void resize(WindowSystem* window_system);
 	
 	void renderFlush(TaskInfo taskInfo);
 

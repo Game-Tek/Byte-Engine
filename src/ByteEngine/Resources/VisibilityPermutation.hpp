@@ -122,7 +122,7 @@ struct VisibilityRenderPassPermutation : PermutationManager {
 			sg.ShaderGroupJSON = 
 u8R"({
     "name":"VisibilityShaderGroup",
-    "instances":[{"name":"unique", "parameters":[]}],
+    "instances":[{"name":"Visibility", "parameters":[]}],
     "domain":"Visibility"
 })";
 		}
@@ -132,7 +132,7 @@ u8R"({
 			result.ShaderGroupJSON =
 				u8R"({
     "name":"CountShaderGroups",
-    "instances":[{"name":"unique", "parameters":[]}],
+    "instances":[{"name":"Count", "parameters":[]}],
     "domain":"Visibility"
 })";
 		}
@@ -142,7 +142,7 @@ u8R"({
 			result.ShaderGroupJSON =
 				u8R"({
     "name":"PrefixSum",
-    "instances":[{"name":"unique", "parameters":[]}],
+    "instances":[{"name":"PrefixSum", "parameters":[]}],
     "domain":"Visibility"
 })";
 		}
@@ -152,7 +152,7 @@ u8R"({
 			result.ShaderGroupJSON =
 				u8R"({
     "name":"BuildPixelBuffer",
-    "instances":[{"name":"unique", "parameters":[]}],
+    "instances":[{"name":"BuildPixelBuffer", "parameters":[]}],
     "domain":"Visibility"
 })";
 		}

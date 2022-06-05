@@ -2,6 +2,8 @@
 
 #include "ByteEngine/Core.h"
 
+#include "ByteEngine/Handle.hpp"
+
 #if (BE_VULKAN)
 #include <GAL/Vulkan/Vulkan.h>
 #include <GAL/Vulkan/VulkanMemory.h>
@@ -32,9 +34,7 @@
 
 #include <GAL/DX12/DX12Bindings.h>
 
-struct ShaderGroupHandle {
-	uint32 ShaderGroupIndex;
-};
+MAKE_HANDLE(uint32, RenderModel);
 
 /**
  * \brief Defines the maximum number of frames that can be processed concurrently in the CPU and GPU.

@@ -13,6 +13,7 @@
 #undef Extract
 
 #include "ByteEngine/Application/Application.h"
+#include "ByteEngine/Render/ShaderGenerator.h"
 
 bool FindString(const GTSL::StringView string, const GTSL::StringView match) {
 	for(auto e = string.begin(); e != string.end(); ++e) {
@@ -35,8 +36,12 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 
 	GTSL::FileQuery file_query;
 
-	while (auto queryResult = file_query.DoQuery(GetUserResourcePath(u8"*.png"))) {
-		auto fileName = queryResult.Get(); DropLast(fileName, u8'.');
+	while (auto queryResult = file_query.DoQuery(GetUserResourcePath(u8"*"))) {
+		auto fileName = queryResult.Get(); RTrimLast(fileName, u8'.');
+		auto fileExtension = queryResult.Get(); LTrimFirst(fileExtension, u8'.');
+
+		if(!IsAnyOf(fileExtension, u8"png", u8"jpg")) { continue; }
+
 		const auto hashed_name = GTSL::Id64(fileName);
 
 		GAL::ColorSpaces colorSpace = GAL::ColorSpaces::LINEAR;
@@ -60,10 +65,11 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 
 				for(auto& e : substrings) {
 					switch (GTSL::Hash(e)) {
-					break; case GTSL::Hash(u8"png"): {
+					break; case GTSL::Hash(u8"png"):
+					case GTSL::Hash(u8"jpg"): {
 						data = stbi_load_from_memory(textureFileBuffer.GetData(), textureFileBuffer.GetLength(), &x, &y, &channel_count, finalChannelCount);
 
-						if(FindString(queryResult.Get(), u8"diff")) {
+						if(FindString(queryResult.Get(), u8"diff") or FindString(queryResult.Get(), u8"COL")) {
 							colorSpace = GAL::ColorSpaces::SRGB_NONLINEAR;							
 						} else {
 							colorSpace = GAL::ColorSpaces::LINEAR;

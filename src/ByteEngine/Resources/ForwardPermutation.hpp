@@ -60,6 +60,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpacePosition" });
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpaceNormal" });
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"mat3f", u8"tbn" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"_instanceIndex" });
 		}
 		else {
 			BE_LOG_ERROR(u8"Needed CommonPermutation to setup state but not found in hierarchy.")
@@ -90,9 +91,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		{ //add deduction guides for reaching shader parameters
 			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
 
-			for (auto& e : shaderParameters) {
-				pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(shaderParametersStructHandle, e.Name) });
-			}
+			//for (auto& e : shaderParameters) {
+			//	pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(/shaderParametersStructHandle, /e.Name) });
+			//}
 		}
 
 		if (auto res = shader_json[u8"localSize"]) {
@@ -125,7 +126,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
-				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal());", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal()); _instanceIndex = gl_InstanceIndex;", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"tbn = mat3f(normalize(vec3f(GetInstancePosition() * vec4f(TANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(BITANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(NORMAL, 0))));", main.Tokens, GetPersistentAllocator());
 
@@ -136,6 +137,10 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				batch.TargetSemantics = GAL::ShaderType::FRAGMENT;
 				batch.Scopes.EmplaceBack(common_permutation->fragmentShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
+
+				for (auto& e : shaderParameters) {
+					pipeline->AddCodeToFunction(mainFunctionHandle, (GTSL::StaticString<256>(e.Type) & e.Name)+ u8"=" + u8"pushConstantBlock.shaderParameters[pushConstantBlock.instances[_instanceIndex].shaderGroupIndex]." + e.Name + u8";");
+				}
 
 				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());

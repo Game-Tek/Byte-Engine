@@ -57,7 +57,7 @@ public:
 
 		auto& res = results.EmplaceBack();
 
-		res.ShaderGroupJSON = u8"{ \"name\":\"UI\", \"instances\":[{ \"name\":\"unique\", \"parameters\":[] }], \"domain\":\"Screen\", \"tags\":[{ \"name\":\"RenderPass\", \"value\":\"UI\" }, { \"name\":\"Transparency\", \"value\":\"true\" }] }";
+		res.ShaderGroupJSON = u8"{ \"name\":\"UI\", \"instances\":[{ \"name\":\"UI\", \"parameters\":[] }], \"domain\":\"Screen\", \"tags\":[{ \"name\":\"RenderPass\", \"value\":\"UI\" }, { \"name\":\"Transparency\", \"value\":\"true\" }] }";
 
 		{
 			auto& vsp = res.Shaders.EmplaceBack();

@@ -4,6 +4,7 @@
 
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
+#include "ByteEngine/Application/WindowSystem.hpp"
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
@@ -272,12 +273,12 @@ void RenderSystem::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
 	}
 }
 
-GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage(const WorkloadHandle workload_handle)
+GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage(const WorkloadHandle workload_handle, WindowSystem* window_system)
 {
 	bool result = false;
 	
 	if(!surface.GetHandle()) {
-		resize(); result = true;
+		resize(window_system); result = true;
 	}
 
 	const auto acquireResult = renderContext.AcquireNextImage(&renderDevice, &workloads[workload_handle()].Semaphore);
@@ -287,7 +288,7 @@ GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage(const WorkloadHandle wor
 	switch (acquireResult.State()) {
 	case GAL::VulkanRenderContext::AcquireState::OK: break;
 	case GAL::VulkanRenderContext::AcquireState::SUBOPTIMAL:
-	case GAL::VulkanRenderContext::AcquireState::BAD: resize(); result = true; break;
+	case GAL::VulkanRenderContext::AcquireState::BAD: resize(window_system); result = true; break;
 	}
 
 	if (lastRenderArea != renderArea) { lastRenderArea = renderArea; result = true; }
@@ -295,9 +296,9 @@ GTSL::Result<GTSL::Extent2D> RenderSystem::AcquireImage(const WorkloadHandle wor
 	return { GTSL::MoveRef(renderArea), result };
 }
 
-void RenderSystem::resize() {
+void RenderSystem::resize(WindowSystem* window_system) {
 	if (!surface.GetHandle()) {
-		surface.Initialize(GetRenderDevice(), *BE::Application::Get()->GetSystemApplication(), *window);
+		surface.Initialize(GetRenderDevice(), *BE::Application::Get()->GetSystemApplication(), window_system->GetWindow());
 	}
 
 	Surface::SurfaceCapabilities surfaceCapabilities;

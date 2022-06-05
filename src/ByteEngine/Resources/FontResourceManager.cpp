@@ -20,7 +20,7 @@ FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceM
 		while(auto r = file_query.DoQuery(GetUserResourcePath(u8"*.ttf"))) {
 			auto name = r.Get();
 
-			DropLast(name, U'.');
+			RTrimLast(name, U'.');
 
 			if(resource_files_.Exists(Id(name))) { continue; }
 

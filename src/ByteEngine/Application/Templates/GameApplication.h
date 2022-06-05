@@ -27,13 +27,12 @@ public:
 	static EventHandle<bool> GetOnFocusLossEventHandle() { return EventHandle<bool>(u8"OnFocusLoss"); }
 
 protected:
-	GTSL::Window window;
-	GTSL::Extent2D oldSize;
-
 	GTSL::Gamepad gamepad;
 	InputDeviceHandle controller;
 	InputDeviceHandle keyboard;
 	InputDeviceHandle mouse;
+
+	SystemHandle windowSystemHandle;
 
 	uint32 mouseCount = 0;
 
@@ -42,8 +41,5 @@ protected:
 	void RegisterKeyboard();
 	void RegisterControllers();
 
-	void onWindowResize(const GTSL::Extent2D extent);
-
 	void keyboardEvent(const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType);
-	void windowUpdateFunction(void* userData, GTSL::Window::WindowEvents event, void* eventData);
 };

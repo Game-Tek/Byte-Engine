@@ -26,7 +26,7 @@ StaticMeshRenderGroup::StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id 
 
 	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(StaticMeshTypeIndentifier, index);
 
-	GameInstance->DispatchEvent(u8"SMRG", GetOnAddMeshEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
+	GameInstance->DispatchEvent(this, GetOnAddMeshEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
 
 	return handle;
 }

@@ -119,6 +119,7 @@ namespace BE {
 #define BE_RESOURCES(...) __VA_ARGS__
 #define DECLARE_BE_TASK(name, res, ...) private: TaskHandle<__VA_ARGS__> name##TaskHandle; public: auto Get##name##TaskHandle() const { return name##TaskHandle; }
 #define DECLARE_BE_TYPE(name) MAKE_BE_HANDLE(name); private: BE::TypeIdentifier name##TypeIndentifier; public: BE::TypeIdentifier Get##name##TypeIdentifier() const { return name##TypeIndentifier; }
+#define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: auto Get##name##EventHandle() const { return name##EventHandle; }
 
 template <class, template <class> class>
 struct is_instance : public std::false_type {};
@@ -449,7 +450,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void DispatchEvent(const Id caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
+	void DispatchEvent(const BE::System* caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 

@@ -40,7 +40,7 @@ public:
 		auto& client = clients.EmplaceBack(GetPersistentAllocator());
 		
 		client.Name = connection_name;
-		client.Salt = GTSL::Math::Random();
+		client.Salt = randomNumberGenerator();
 		client.ConnectionState = ClientData::ConnectionStates::CONNECTING;
 
 		return { ConnectionHandle(clientIndex), ConnectionAttemptCodes::OK };
@@ -48,6 +48,8 @@ public:
 
 private:
 	static constexpr uint32 BUFFER_CAPACITY = 1024u, ACK_DEPTH = 32u;
+
+	GTSL::Math::RandomSeed randomNumberGenerator;
 
 	struct Header {
 		/**

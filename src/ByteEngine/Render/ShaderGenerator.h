@@ -61,7 +61,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 
 		GTSL::StaticString<64> str;
 
-		if (GTSL::IsSymbol(c)) {
+		if (GTSL::IsSymbol(c) and c != U'_') {
 			if (c == U'(') {
 				type = ShaderNode::Type::LPAREN;
 			}
@@ -120,7 +120,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 
 			--i;
 		}
-		else if (GTSL::IsLetter(code[i])) {
+		else if (GTSL::IsLetter(code[i]) or code[i] == u8'_') {
 			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
 				str += code[i];
 				++i;
@@ -551,7 +551,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		if (*(name.end() - 1) == u8'*') {
 			GTSL::StaticString<64> n(name);
-			DropLast(n, u8'*');
+			RTrimLast(n, u8'*');
 			n += u8"Pointer";
 			result = n;
 		}
@@ -688,7 +688,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			for (uint32 i = 0; i < function.Tokens;) {
 				auto makeStatement = [&] {
-					GTSL::StaticString<1024> statementString;
+					GTSL::StaticString<2048> statementString;
 
 					while (i < function.Tokens) {
 						const auto& node = function.Tokens[i++];
@@ -725,7 +725,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 									statementString += node.Name;
 								} else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
-									return GTSL::StaticString<1024>(); //skip statement
+									return GTSL::StaticString<2048>(); //skip statement
 								} else {
 									statementString += resolve(node.Name);
 								}
@@ -831,14 +831,19 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		if (!interfaceBlockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
 
 		const auto& arr = pipeline.GetChildren(interfaceBlockHandle.Get());
+
+		uint32 locationIndex = 0;
+
 		for (uint32 i = 0; i < arr; ++i) {
-			declarationBlock += u8"layout(location="; ToString(declarationBlock, i); declarationBlock += u8") ";
+			declarationBlock += u8"layout(location="; ToString(declarationBlock, locationIndex); declarationBlock += u8") ";
 			declarationBlock += type;
 
 			const auto member = resolveTypeName(pipeline.GetMember(arr[i]));
 
 			if (isVertexSurfaceInterface) { if (member.Type == u8"uint") { declarationBlock &= u8"flat"; } }
 			declarationBlock &= member.Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
+
+			locationIndex += pipeline.GetMember(arr[i]).Type == u8"mat3f" ? 3 : 1; // TODO: add proper support for other types
 		}
 	};
 

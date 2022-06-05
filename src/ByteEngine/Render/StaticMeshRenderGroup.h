@@ -33,12 +33,12 @@ public:
 
 	void SetPosition(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
-		application_manager->DispatchEvent(u8"SMRG", GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
+		application_manager->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
 	}
 
 	void SetRotation(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
 		GTSL::Math::SetRotation(transformations[staticMeshHandle()], quaternion);
-		application_manager->DispatchEvent(u8"SMRG", GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
+		application_manager->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
 	}
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;

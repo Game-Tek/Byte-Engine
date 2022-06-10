@@ -374,7 +374,7 @@ public:
 			}
 
 			if(index >= e.Mem.Multiplier) {
-				render_orchestrator->getLogger()->PrintObjectLog(render_orchestrator, BE::Logger::VerbosityLevel::FATAL, u8"Tried to access index", index, u8" of ", Path, u8" but array size is ", e.Mem.Multiplier);
+				render_orchestrator->getLogger()->PrintObjectLog(render_orchestrator, BE::Logger::VerbosityLevel::FATAL, u8"Tried to access index ", index, u8" of ", Path, u8" but array size is ", e.Mem.Multiplier);
 				return BufferWriteKey{ 0xFFFFFFFF, Path, ElementHandle, *this };
 			}
 
@@ -2009,7 +2009,7 @@ public:
 		GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<UIManager>(u8"UIManager")->GetUIElementTypeIdentifier(), OnCreateUIElementTaskHandle);
 
 		renderOrchestrator->CreateMember2(u8"global", u8"UIInstance", UI_INSTANCE_DATA);
-		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"UIInstance[4]");
+		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"UIInstance[16]");
 
 		renderOrchestrator->CreateMember2(u8"global", u8"UIData", UI_DATA);
 		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"UIData");

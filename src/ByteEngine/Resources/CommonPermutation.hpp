@@ -18,7 +18,7 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"TextureReference", { { u8"uint32", u8"Instance" } }));
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"ImageReference", { { u8"uint32", u8"Instance" } }));
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"IndirectDispatchCommand", { { u8"uint32", u8"x" }, { u8"uint32", u8"y" }, { u8"uint32", u8"z" } }));
+		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"IndirectDispatchCommand", INDIRECT_DISPATCH_COMMAND_DATA));
 
 		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"uint32", { { u8"uint32", u8"a"} });
 		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"vec2s", { { u8"u16vec2", u8"wh"} });

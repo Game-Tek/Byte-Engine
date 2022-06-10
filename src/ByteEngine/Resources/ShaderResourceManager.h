@@ -220,6 +220,8 @@ public:
 		GAL::ShaderType Type; uint64 Hash = 0;
 		GTSL::StaticVector<Parameter, 8> Parameters;
 		GTSL::StaticVector<PermutationManager::ShaderTag, 4> Tags;
+		GTSL::StaticString<2048> DebugData;
+
 		uint32 Size = 0;
 
 		union {
@@ -236,7 +238,8 @@ public:
 			CallableShader CallableShader;
 		};
 
-		ShaderInfo() {}
+		//ShaderInfo(const BE::PAR& allocator) : DebugData(allocator) {}
+		ShaderInfo(const BE::PAR& allocator) {}
 
 		void SetType(GAL::ShaderType type) {
 			Type = type;
@@ -260,7 +263,7 @@ public:
 			}
 		}
 
-		ShaderInfo(const ShaderInfo& shader_info) : Name(shader_info.Name), Type(shader_info.Type), Hash(shader_info.Hash), Parameters(shader_info.Parameters), Tags(shader_info.Tags), Size(shader_info.Size) {
+		ShaderInfo(const ShaderInfo& shader_info) : Name(shader_info.Name), Type(shader_info.Type), Hash(shader_info.Hash), Parameters(shader_info.Parameters), Tags(shader_info.Tags), DebugData(shader_info.DebugData), Size(shader_info.Size) {
 			switch (Type) {
 			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(shader_info.VertexShader); break;
 			case GAL::ShaderType::TESSELLATION_CONTROL: break;
@@ -306,6 +309,7 @@ public:
 			Hash = other.Hash;
 			Parameters = other.Parameters;
 			Tags = other.Tags;
+			DebugData = other.DebugData;
 
 			switch (Type) {
 			case GAL::ShaderType::VERTEX: VertexShader = other.VertexShader; break;
@@ -334,6 +338,7 @@ public:
 			Insert(shader.Size, buffer);
 			Insert(shader.Parameters, buffer);
 			Insert(shader.Tags, buffer);
+			Insert(shader.DebugData, buffer);
 
 			switch (shader.Type) {
 			case GAL::ShaderType::VERTEX: Insert(shader.VertexShader, buffer); break;
@@ -349,6 +354,7 @@ public:
 			Extract(shader.Size, buffer);
 			Extract(shader.Parameters, buffer);
 			Extract(shader.Tags, buffer);
+			Extract(shader.DebugData, buffer);
 
 			switch (shader.Type) {
 			case GAL::ShaderType::VERTEX: Extract(shader.VertexShader, buffer); break;
@@ -376,6 +382,8 @@ public:
 
 	struct ShaderGroupInfo {
 		ShaderGroupInfo(const BE::PAR& allocator) : Shaders(allocator), Instances(allocator), Parameters(allocator), Tags(allocator) {}
+
+		ShaderGroupInfo(ShaderGroupInfo&&) = default;
 
 		GTSL::ShortString<32> Name;
 
@@ -431,7 +439,7 @@ private:
 			uint64 shaderHash;
 			shaderGroupInfosFile >> shaderHash;
 
-			auto& shader = shaderGroupInfo.Shaders.EmplaceBack();
+			auto& shader = shaderGroupInfo.Shaders.EmplaceBack(GetPersistentAllocator());
 
 			{
 				shaderInfosFile.SetPointer(shaderInfoOffsets[shaderHash]);
@@ -457,6 +465,8 @@ private:
 					auto& tag = shader.Tags.EmplaceBack();
 					shaderInfosFile >> tag.First >> tag.Second;
 				}
+
+				shaderInfosFile >> shader.DebugData;
 			}
 		}
 
@@ -833,6 +843,12 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 				for (auto& t : sb.Tags) {
 					shaderInfosFile << t.First << t.Second;
 				}
+
+				GTSL::String<BE::TAR> string(GetTransientAllocator());
+
+				pipeline.MakeJSON(string, sb.Scopes); //MAKE JSON
+
+				shaderInfosFile << string; //Debug data
 
 				shaderPackageFile.Write(shaderBuffer);
 			}

@@ -5,5 +5,10 @@
 #define INSTANCE_DATA { { u8"matrix3x4f", u8"transform" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint32", u8"shaderGroupIndex" }, {u8"uint32", u8"padding" } }
 #define CAMERA_DATA { { u8"matrix4f", u8"view" }, { u8"matrix4f", u8"proj" }, { u8"matrix4f", u8"viewInverse" }, { u8"matrix4f", u8"projInverse" }, { u8"matrix4f", u8"vp" }, { u8"matrix4f", u8"vpInverse" }, { u8"float32", u8"near" }, { u8"float32", u8"far" }, { u8"u16vec2", u8"extent"} }
 #define GLOBAL_DATA { { u8"uint32[4]", u8"blah" } }
-#define UI_INSTANCE_DATA { { u8"matrix3x4f", u8"transform" }, { u8"vec4f", u8"color" }, { u8"float32", u8"roundness" } }
-#define UI_DATA { { u8"matrix4f", u8"projection" } }
+#define UI_INSTANCE_DATA { { u8"matrix3x4f", u8"transform" }, { u8"vec4f", u8"color" }, { u8"float32", u8"roundness" }, { u8"uint32", u8"derivedTypeIndex" } }
+#define UI_TEXT_DATA { { u8"uint32", u8"fontIndex" }, { u8"uint32[128]", u8"chars" } }
+#define UI_GLYPH_DATA { { u8"uint32", u8"linearSegmentCount" }, { u8"uint32", u8"quadraticSegmentCount" }, { u8"vec2f[128]", u8"linearSegments" }, { u8"vec3f[128]", u8"quadraticSegments" } }
+#define UI_FONT_DATA { { u8"UI_GLYPH_DATA[128]", u8"glyphs" } }
+#define UI_DATA { { u8"matrix4f", u8"projection" }, { u8"UI_FONT_DATA[4]", u8"fontData" }, { u8"UI_TEXT_DATA[16]", u8"textData" } }
+
+#define INDIRECT_DISPATCH_COMMAND_DATA { { u8"uint32", u8"x" }, { u8"uint32", u8"y" }, { u8"uint32", u8"z" } }

@@ -92,10 +92,10 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	tryAddDataType(u8"global", u8"matrix3x4f", 4 * 3 * 4);
 	tryAddDataType(u8"global", u8"ptr_t", 8);
 	tryAddDataType(u8"global", u8"ShaderHandle", 32);
-	tryAddDataType(u8"global", u8"IndirectDispatchCommand", 4 * 3);
 
-	tryAddDataType(u8"global", u8"TextureReference", 4);
-	tryAddDataType(u8"global", u8"ImageReference", 4);
+	CreateMember2(u8"global", u8"IndirectDispatchCommand", INDIRECT_DISPATCH_COMMAND_DATA);
+	CreateMember2(u8"global", u8"TextureReference", { { u8"uint32", u8"Instance" } });
+	CreateMember2(u8"global", u8"ImageReference", { { u8"uint32", u8"Instance" } });
 
 	{
 		uint64 allocatedSize;
@@ -959,7 +959,7 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 		}
 	}
 
-	materialResourceManager->LoadShaderGroup(taskInfo.ApplicationManager, shader_group_info, onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
+	materialResourceManager->LoadShaderGroup(taskInfo.ApplicationManager, GTSL::MoveRef(shader_group_info), onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
 
 void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem* renderSystem, ShaderResourceManager::ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
@@ -1021,6 +1021,48 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 
 		//if shader doesn't contain tag don't use it, tags are used to filter shaders usually based on render technique used
+
+		{ // Check if shader symbols match active runtime symbols
+			GTSL::Buffer jsonBuffer(8192, 8, GetTransientAllocator());
+
+			auto json = Parse(s.DebugData, jsonBuffer);
+			
+			for(auto jsonStruct : json[u8"structs"]) {
+				auto structName = jsonStruct[u8"name"].GetStringView();
+
+				auto handle = tryGetDataTypeHandle(structName);
+
+				if(!handle) {
+					BE_LOG_WARNING(u8"Could not find compatible shader declared symbol: ", structName);
+					continue;
+				}
+
+				auto& element = getElement(handle.Get());
+
+				for(auto c : jsonStruct[u8"members"]) {
+					auto memberSearchResult = tryGetDataTypeHandle(handle.Get(), c[u8"name"]);
+
+					if(!memberSearchResult) {
+						BE_LOG_WARNING(u8"Shader symbol ", structName, u8", has member: ", c[u8"name"], u8", which matching renderer symbol doesn't.");
+					}
+				}
+
+				for(auto& e : element.children) {
+					auto& f = getElement(e.Handle);
+					if(f.Type != ElementData::ElementType::MEMBER) { continue; }
+
+					[&]() {
+						for(auto c : jsonStruct[u8"members"]) {
+							if(c[f.Name]) {
+								return;
+							}
+						}
+
+						BE_LOG_WARNING(u8"Renderer symbol ", element.Name, u8", has member: ", f.Name, u8", which matching shader symbol doesn't.");						
+					};
+				}
+			}
+		}
 
 		if (auto shader = shaders.TryEmplace(s.Hash)) {
 			shader.Get().Shader.Initialize(renderSystem->GetRenderDevice(), GTSL::Range(s.Size, shaderLoadInfo.Buffer.GetData() + offset));

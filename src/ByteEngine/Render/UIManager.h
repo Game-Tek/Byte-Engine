@@ -13,6 +13,7 @@
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Game/System.hpp"
+#include "GTSL/JSON.hpp"
 
 enum class Alignments : uint8 {
 			TOP,
@@ -59,18 +60,6 @@ enum class SpacingPolicy : uint8 {
 	DISTRIBUTE
 };
 
-class Square {
-public:
-	Square() = default;
-	
-	void SetColor(const Id newColor) { color = newColor; }
-	[[nodiscard]] Id GetColor() const { return color; }
-	
-private:
-	Id color;
-	float32 rotation = 0.0f;
-};
-
 /**
  * \brief Manages ui elements.
  * All scales are defined and stored as a percentage of screen size. That is all constant size elements maintain the same percentage, and container relative elements have their scale updated every time they are scaled.
@@ -99,7 +88,7 @@ public:
 		bool isDirty;
 		TaskHandle<UIElementHandle> OnHover, OnPress;
 		GTSL::Vector4 Color;
-		float32 Rounding = 0.0f;
+		float32 Rounding = 0.0f, Padding, Spacing;
 	};
 
 	static EventHandle<UIElementHandle, PrimitiveData::PrimitiveType> GetOnCreateUIElementEventHandle() { return { u8"OnCreateUIElement" }; }
@@ -110,6 +99,11 @@ public:
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
+
+	void SetScale(UIElementHandle element_handle, const uint8 axis, float32 scale) {
+		getPrimitive(element_handle).HalfSize[axis] = scale;
+		flagsAsDirty(element_handle);
+	}
 
 	/**
 	 * \brief Sets the scaling percentage for a UI element. This scale will be calculated based on the sizing policy.
@@ -126,6 +120,16 @@ public:
 		flagsAsDirty(element_handle);
 	}
 
+	void SetPadding(const UIElementHandle element_handle, const float32 padding) {
+		getPrimitive(element_handle).Padding = padding;
+		flagsAsDirty(element_handle);
+	}
+
+	void SetSpacing(const UIElementHandle element_handle, const float32 spacing) {
+		getPrimitive(element_handle).Spacing = spacing;
+		flagsAsDirty(element_handle);
+	}
+
 	UIElementHandle AddCanvas(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		//canvases.Emplace(system);
 		auto canvasHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
@@ -136,6 +140,130 @@ public:
 		return canvasHandle;
 	}
 
+	void SetString(const UIElementHandle ui_element_handle, const GTSL::StringView string) {
+		auto& primitive = getPrimitive(ui_element_handle);
+		textPrimitives[primitive.DerivedTypeIndex].Text = string;
+		flagsAsDirty(ui_element_handle);
+	}
+
+	void SetFont(const UIElementHandle ui_element_handle, const GTSL::StringView font_name) {
+		auto& primitive = getPrimitive(ui_element_handle);
+		textPrimitives[primitive.DerivedTypeIndex].Font = font_name;
+		flagsAsDirty(ui_element_handle);
+	}
+
+	UIElementHandle AddCanvas(const GTSL::StringView json_ui_text, const UIElementHandle ui_element_handle = UIElementHandle()) {
+		//canvases.Emplace(system);
+		auto canvasHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::CANVAS);
+		SetScalingPolicy(canvasHandle, 0, ScalingPolicies::FILL);
+		SetScalingPolicy(canvasHandle, 1, ScalingPolicies::FILL);
+		SetSizingPolicy(canvasHandle, 0, SizingPolicies::FROM_SCREEN);
+		SetSizingPolicy(canvasHandle, 1, SizingPolicies::FROM_SCREEN);
+
+		auto processElement = [&](UIElementHandle parent_element_handle, const GTSL::StringView name, GTSL::JSONMember element, auto&& self) -> void {
+			auto typeString = element[u8"type"].GetStringView();
+
+			PrimitiveData::PrimitiveType type = PrimitiveData::PrimitiveType::NONE;
+
+			switch(GTSL::Hash(typeString)) {
+			case GTSL::Hash(u8"Box"): type = PrimitiveData::PrimitiveType::SQUARE; break;
+			case GTSL::Hash(u8"Organizer"): type = PrimitiveData::PrimitiveType::ORGANIZER; break;
+			case GTSL::Hash(u8"Text"): type = PrimitiveData::PrimitiveType::TEXT; break;
+			}
+
+			UIElementHandle elementHandle = add(parent_element_handle, type);
+
+			if(auto sizeL = element[u8"size"]) {
+				auto processSize = [&](const uint8 axis, GTSL::JSONMember json_member) {
+					if(!json_member) { return; }
+
+					if(auto size = json_member[u8"size"]) {
+						SetScale(elementHandle, axis, size.GetFloat());
+					}
+
+					if(auto scaling = json_member[u8"scaling"]) {
+						ScalingPolicies scalingPolicy = ScalingPolicies::FILL;
+
+						switch(GTSL::Hash(scaling.GetStringView())) {
+						case GTSL::Hash(u8"fill"): scalingPolicy = ScalingPolicies::FILL; break;
+						case GTSL::Hash(u8"aspect_ratio"): scalingPolicy = ScalingPolicies::SET_ASPECT_RATIO; break;
+						}
+
+						SetScalingPolicy(elementHandle, axis, scalingPolicy);
+					}
+
+					if(auto sizing = json_member[u8"reference"]) {
+						SizingPolicies sizingPolicy = SizingPolicies::FROM_SCREEN;
+
+						switch(GTSL::Hash(sizing.GetStringView())) {
+						case GTSL::Hash(u8"parent"): sizingPolicy = SizingPolicies::FROM_PARENT_CONTAINER; break;
+						case GTSL::Hash(u8"screen"): sizingPolicy = SizingPolicies::FROM_SCREEN; break;
+						}
+
+						SetSizingPolicy(elementHandle, axis, sizingPolicy);
+					}
+				};
+
+				processSize(0, sizeL[u8"x"]);
+				processSize(1, sizeL[u8"y"]);
+			}
+
+			if(auto color = element[u8"color"]) {
+				SetColor(elementHandle, color.GetStringView());
+			}
+
+			if(auto roundness = element[u8"rounding"]) {
+				SetRounding(elementHandle, roundness.GetFloat());
+			}
+
+			if(auto padding = element[u8"padding"]) {
+				SetPadding(elementHandle, padding.GetFloat());
+			}
+
+			if(auto spacing = element[u8"spacing"]) {
+				SetSpacing(elementHandle, spacing.GetFloat());
+			}
+
+			if(auto font = element[u8"font"]) {
+				SetFont(elementHandle, font.GetStringView());
+			}
+
+			if(auto string = element[u8"string"]) {
+				SetString(elementHandle, string.GetStringView());
+			}
+
+			if(auto alignmentData = element[u8"alignment"]) {
+				Alignments alignment = Alignments::CENTER;
+
+				switch(GTSL::Hash(alignmentData.GetStringView())) {
+				case GTSL::Hash(u8"center"): alignment = Alignments::CENTER; break;
+				case GTSL::Hash(u8"left"): alignment = Alignments::LEFT; break;
+				case GTSL::Hash(u8"right"): alignment = Alignments::RIGHT; break;
+				case GTSL::Hash(u8"top"): alignment = Alignments::TOP; break;
+				case GTSL::Hash(u8"bottom"): alignment = Alignments::BOTTOM; break;
+				}
+
+				SetElementAlignment(elementHandle, alignment);
+			}
+
+			if(auto children = element[u8"children"]) {
+				for(auto c : children) {
+					self(elementHandle, u8"", c, self);
+				}
+			}
+		};
+
+		GTSL::Buffer<BE::TAR> jsonBuffer(GetTransientAllocator());
+		GTSL::JSONMember json = GTSL::Parse(json_ui_text, jsonBuffer);
+
+		for(auto c : json[u8"children"]) {
+			processElement(canvasHandle, u8"p", c, processElement);
+		}
+
+
+		return canvasHandle;
+	}
+
 	UIElementHandle AddOrganizer(const UIElementHandle ui_element_handle = UIElementHandle()) {
 		auto organizerHandle = add(ui_element_handle, PrimitiveData::PrimitiveType::ORGANIZER);
 		return organizerHandle;
@@ -143,19 +271,12 @@ public:
 
 	UIElementHandle AddSquare(const UIElementHandle element_handle = UIElementHandle()) {
 		auto handle = add(element_handle, PrimitiveData::PrimitiveType::SQUARE);
-		const auto place = squares.Emplace();
-		auto& primitive = getPrimitive(handle);
-		primitive.DerivedTypeIndex = place;
 		return handle;
 	}
 
 	UIElementHandle AddText(const UIElementHandle element_handle, const GTSL::StringView text) {
 		auto handle = add(element_handle, PrimitiveData::PrimitiveType::TEXT);
-		const auto place = textPrimitives.Emplace(GetPersistentAllocator());
-		auto& primitive = getPrimitive(handle);
-		primitive.DerivedTypeIndex = place;
-		textPrimitives[place].Text = text;
-		return UIElementHandle(UIElementTypeIndentifier, place);
+		return UIElementHandle(UIElementTypeIndentifier, handle());
 	}
 
 	UIElementHandle AddCurve(const UIElementHandle element_handle) {
@@ -197,13 +318,17 @@ public:
 		switch (primitive.Type) {
 		case PrimitiveData::PrimitiveType::NONE: break;
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
-		case PrimitiveData::PrimitiveType::SQUARE: squares[primitive.DerivedTypeIndex].SetColor(color); break;
+		//case PrimitiveData::PrimitiveType::SQUARE: squares[primitive.DerivedTypeIndex].SetColor(color); break;
 		}
 
-		primitive.Color.X() = colors[color].R();
-		primitive.Color.Y() = colors[color].G();
-		primitive.Color.Z() = colors[color].B();
-		primitive.Color.W() = colors[color].A();
+		auto colorEntry = colors.TryGet(color);
+
+		if(!colorEntry) { return; }
+
+		primitive.Color.X() = colorEntry.Get().R();
+		primitive.Color.Y() = colorEntry.Get().G();
+		primitive.Color.Z() = colorEntry.Get().B();
+		primitive.Color.W() = colorEntry.Get().A();
 	}
 
 	void SetMaterial(const UIElementHandle ui_element_handle, const RenderModelHandle material) {
@@ -264,14 +389,11 @@ public:
 
 	auto GetRoot() { return primitives.begin(); }
 
-	bool Valid() const { return static_cast<bool>(false); }
-
 private:
 	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;
 
 	GTSL::Tree<PrimitiveData, BE::PAR> primitives;
-	GTSL::FixedVector<Square, BE::PAR> squares;
 
 	GTSL::FixedVector<TextPrimitive, BE::PAR> textPrimitives;
 
@@ -305,9 +427,19 @@ private:
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
 		primitive.Color = 0.5f;
+		primitive.Padding = 0.0f;
 
 		if (parent_handle) {
 			flagsAsDirty(parent_handle); //if a child is added to an element it has to be re-evaluated
+		}
+
+		switch (type) {
+		case PrimitiveData::PrimitiveType::NONE: break;
+		case PrimitiveData::PrimitiveType::CANVAS: break;
+		case PrimitiveData::PrimitiveType::ORGANIZER: break;
+		case PrimitiveData::PrimitiveType::SQUARE: break;
+		case PrimitiveData::PrimitiveType::TEXT: primitive.DerivedTypeIndex = textPrimitives.Emplace(GetPersistentAllocator()); break;
+		case PrimitiveData::PrimitiveType::CURVE: break;
 		}
 
 		auto handle = GetApplicationManager()->MakeHandle<UIElementHandle>(UIElementTypeIndentifier, primitiveIndex);

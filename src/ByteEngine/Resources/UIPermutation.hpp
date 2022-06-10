@@ -85,20 +85,37 @@ public:
 		}
 
 		{
-			//todo: discard out of box points
-			//pipeline->AddCodeToFunction({}, u8"if(isLinearSegment()) {");
-			//pipeline->AddCodeToFunction({}, u8"vec2f point = ClosestPointOnLineSegmentToPoint();");
-			//pipeline->AddCodeToFunction({}, u8"return length(point - pointInGlyph);");
-			//pipeline->AddCodeToFunction({}, u8"} else {");
-			//pipeline->AddCodeToFunction({}, u8"float32 dist = 100.0f; const uint16 LOOPS = 32; float32 bounds[2] = { 0.0f, 1.0f }; uint32 sideToAdjust = 0; for (uint32 l = 0; l < LOOPS; ++l) { for (uint32 i = 0, ni = 1; i < 2; ++i, --//ni) { float32 t = mix(bounds[0], bounds[1], static_cast<float32>(i) / 1.0f); vec2f ab = mix(curve.Points[0], curve.Points[1], t); vec2f bc = mix(curve.Points[1], curve.Points[2], t); vec2f pos = mix(ab, bc, t); float32 //newDist = length(pos - point); if (newDist < dist) { sideToAdjust = ni; dist = newDist; } } bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f; } return dist;");
-			//pipeline->AddCodeToFunction({}, u8"}");
-			//
-			//pipeline->AddCodeToFunction({}, u8"FontChar char = pushConstantBlock.ui.fontData[pushConstantBlock.ui.textData[pushConstantBlock.ui.instances[gl_InstanceIndex].derivedTypeIndex].fontIndex];");
-			//pipeline->AddCodeToFunction({}, u8"uint32 closestSegmentIndex = 0xffffffff; float32 shortestDistance = 100000.0f;");
-			//pipeline->AddCodeToFunction({}, u8"for (uint32 i = 0; i < char.segmentCount; ++i) { ");
-			//pipeline->AddCodeToFunction({}, u8"float32 distance = segmentDistanceToPixel(font.segments[char.offset], GetTextureCoordinates());");
-			//pipeline->AddCodeToFunction({}, u8"if (distance < shortestDistance) { shortestDistance = distance; closestSegmentIndex = i; }");
-			//pipeline->AddCodeToFunction({}, u8"} surfaceColor = segmentSide();");
+			auto closestPointOnLineSegmentToPointHandle = pipeline->DeclareFunction(uiScope, u8"vec2f", u8"ClosestPointOnLineSegmentToPoint", { { u8"vec2f", u8"a" }, { u8"vec2f", u8"b" }, { u8"vec2f", u8"p" } }, u8"const vec2f AB = b - a; float32 t = dot(p - a, AB) / length(AB) * length(AB); if (t < 0.0f) { return a; } if (t > 1.0f) { return b; } return a + AB * t;");
+
+			auto testPointToLineSideFunctionHandle = pipeline->DeclareFunction(uiScope, u8"float32", u8"TestPointToLineSide", { { u8"vec2f", u8"a" }, { u8"vec2f", u8"b" }, { u8"vec2f", u8"p" } }, u8"return ((a.x - b.x) * (p.y - b.y) - (a.y - b.y) * (p.x - b.x));");
+
+			auto solveLinearSegmentFunctionHandle = pipeline->DeclareFunction(uiScope, u8"float32", u8"SolveLinearSegment", { { u8"float32", u8"distance" }, { u8"vec2f", u8"point" } }, u8"vec2f point = ClosestPointOnLineSegmentToPoint(a, b, point); return length(point - pointInGlyph);");
+
+			auto solveQuadraticSegmentFunctionHandle = pipeline->DeclareFunction(uiScope, u8"float32", u8"SolveQuadraticSegment", { { u8"float32", u8"distance" }, { u8"vec2f", u8"point" } });
+
+			pipeline->AddCodeToFunction(solveQuadraticSegmentFunctionHandle, u8"float32 dist = 100.0f; const uint16 LOOPS = 32; float32 bounds[2] = float32[](0.0f, 1.0f); uint32 sideToAdjust = 0; for (uint32 l = 0; l < LOOPS; ++l) { for (uint32 i = 0, ni = 1; i < 2; ++i, --ni) { float32 t = mix(bounds[0], bounds[1], float32(i) / 1.0f); vec2f ab = mix(curve.Points[0], curve.Points[1], t); vec2f bc = mix(curve.Points[1], curve.Points[2], t); vec2f pos = mix(ab, bc, t); float32 newDist = length(pos - point); if (newDist < dist) { sideToAdjust = ni; dist = newDist; } } bounds[sideToAdjust] = (bounds[0] + bounds[1]) / 2.0f; } return dist;");
+
+			auto fontRenderingFragmentShader = pipeline->DeclareShader(uiScope, u8"fontRendering");
+			auto mainFunctionHandle = pipeline->DeclareFunction(fontRenderingFragmentShader, u8"void", u8"main");
+
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"FontChar char = pushConstantBlock.ui.fontData[pushConstantBlock.ui.textData[pushConstantBlock.ui.instances[gl_InstanceIndex].derivedTypeIndex].fontIndex];");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 shortestDistance = 100000.0f;, vec2f a, b, point = UV;");
+
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < char.linearSegmentCount; ++i) {");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"SolveLinearSegment(shortestDistance, font.segments[char.offset], GetTextureCoordinates()); }");
+
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < char.quadraticSegmentCount; ++i) {");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"SolveQuadraticSegment(shortestDistance, font.segments[char.offset], GetTextureCoordinates()); }");
+
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = TestPointToLineSide(a, b, point) < 0.0f ? 1.0f : 0.0f;");
+
+			//float DistToLine(vec2 pt1, vec2 pt2, vec2 testPt)
+//{
+//  vec2 lineDir = pt2 - pt1;
+//  vec2 perpDir = vec2(lineDir.y, -lineDir.x);
+//  vec2 dirToPt1 = pt1 - testPt;
+//  return abs(dot(normalize(perpDir), dirToPt1));
+//}
 		}
 
 		return results;

@@ -4,7 +4,7 @@
 #include <ByteEngine/Application/WindowSystem.hpp>
 
 UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"),
-colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(16, GetPersistentAllocator()), squares(8, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator()),
+colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(16, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator()),
 UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElement"))
 {
 	GetApplicationManager()->AddEvent(u8"UIManager", GetOnCreateUIElementEventHandle());
@@ -150,11 +150,11 @@ UIManager::PrimitiveData& UIManager::updateBranch(decltype(primitives)::iterator
 	{
 		uint32 i = 0;
 
-		auto pos = primitive.Position + halfSize * side;
+		auto pos = primitive.Position + (halfSize - primitive.Padding) * side;
 
 		for (auto e : iterator) {
-			auto& n = updateBranch(e, update_data, halfSize, pos, way);
-			pos += n.RenderSize * way * 2.0f;
+			auto& n = updateBranch(e, update_data, halfSize - primitive.Padding, pos, way);
+			pos += n.RenderSize * way * 2.0f + distributionMask * primitive.Spacing;
 
 			++i;
 		}

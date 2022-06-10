@@ -57,7 +57,7 @@ FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceM
 				for (auto& c : processedGlyph) {
 					for (auto& d : c) {
 						pathBuffer << pointOffset;
-						pointOffset += d.IsBezierCurve() ? 3 : 2;
+						pointOffset += d.IsBezierCurve() ? 3u : 2u;
 						//pathBuffer.Write(c.Points.GetLengthSize(), reinterpret_cast<const byte*>(c.Points.GetData()));
 					}
 				}

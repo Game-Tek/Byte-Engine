@@ -160,7 +160,7 @@ struct GPipeline : Object {
 	struct FunctionDefinition {
 		FunctionDefinition(const BE::PAR& allocator) : Tokens(16, allocator) {}
 
-		GTSL::StaticString<32> Return, Name;
+		GTSL::StaticString<64> Return, Name;
 		GTSL::StaticVector<StructElement, 12> Parameters;
 		//GTSL::StaticString<512> Code;
 		GTSL::Vector<ShaderNode, BE::PAR> Tokens;
@@ -174,6 +174,8 @@ struct GPipeline : Object {
 
 	struct LanguageElement {
 		LanguageElement(const BE::TAR& allocator) : map(16, allocator), symbols(4, allocator) {}
+
+		ElementHandle Parent;
 
 		enum class ElementType {
 			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
@@ -243,6 +245,7 @@ private:
 		e.Type = type; e.Name = name;
 		if(parent.Handle != 1) {
 			e.Level = GetElement(parent).Level + 1;
+			e.Parent = parent;
 		}
 		return ElementHandle(handle);
 	}
@@ -256,6 +259,7 @@ private:
 		e.Type = type; e.Name = name;
 		if (parent.Handle != 1) {
 			e.Level = GetElement(parent).Level + 1;
+			e.Parent = parent;
 		}
 		return ElementHandle(handle);
 	}
@@ -342,6 +346,15 @@ public:
 		elements[handle.Handle].Reference = Functions.GetLength();
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Id = handle.Handle;
+		return handle;
+	}
+
+	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters) {
+		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
+		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
+		function.Name = name; function.Return = returnType; function.Parameters = parameters;
+		function.Id = handle.Handle;
 		return handle;
 	}
 
@@ -474,6 +487,59 @@ public:
 	const StructData& GetStruct(const ElementHandle element_handle) const {
 		return structs[GetElement(element_handle).Reference];
 	}
+
+	void MakeJSON(auto& string, const GTSL::Range<const ElementHandle*> scopes) {
+		GTSL::JSONSerializer serializer = GTSL::MakeSerializer(string);
+
+		GTSL::StartArray(serializer, string, u8"structs");
+
+		for (auto& e : scopes) {
+			GTSL::StaticString<512> shaderName;
+
+			{
+				auto g = [&](ElementHandle t, auto&& self) -> void {
+					if(t.Handle == 0xFFFFFFFF) { return; }
+
+					self(GetElement(t).Parent, self);
+
+					shaderName += GetElement(t).Name;
+					shaderName += u8".";
+				};
+
+				g(e, g);
+			}
+
+			for (auto& r : GetChildren(e)) {
+				auto& element = GetElement(r);
+
+				if (element.Type == GPipeline::LanguageElement::ElementType::STRUCT) {
+					GTSL::StartObject(serializer, string);
+
+					StructData& structData = GetStruct(r);
+
+					GTSL::Insert(serializer, string, u8"name", shaderName + element.Name);
+
+					GTSL::StartArray(serializer, string, u8"members");
+
+					for (auto& c : GetChildren(r)) {
+						GTSL::StartObject(serializer, string);
+						const auto& structMember = GetMember(c);
+						GTSL::Insert(serializer, string, u8"type", structMember.Type);
+						GTSL::Insert(serializer, string, u8"name", structMember.Name);
+						GTSL::EndObject(serializer, string);
+					}
+
+					GTSL::EndArray(serializer, string);
+
+					GTSL::EndObject(serializer, string);
+				}
+			}
+		}
+
+		GTSL::EndArray(serializer, string);
+
+		GTSL::EndSerializer(string, serializer);
+	}
 private:
 	GTSL::Tree<LanguageElement, BE::TAR> elements;
 	GTSL::Vector<GTSL::StaticVector<ElementHandle, 4>, BE::TAR> deductionGuides;
@@ -486,7 +552,6 @@ private:
 /**
  * \brief Generates a shader string from a token stream to a target shader language.
  * \tparam ALLOCATOR Allocator to allocate shader strings.
- * \param shader Shader to generate code for.
  * \param pipeline Pipeline which contains all elements needed for compilation.
  * \param scopes Scopes in which to look for symbols, precedence grows from higher positions to lower, that is if a foo() declaration exists under scope[0] and another at scope[1], scope[1].foo will be used.
  * \param targetSemantics Target shader language to generate code for.

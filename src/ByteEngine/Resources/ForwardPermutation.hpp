@@ -23,9 +23,10 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
 		}
 
-		pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"TextureReference", u8"Position" }, {u8"ImageReference", u8"Depth"}});
+		forwardRenderPassScopeHandle = AddRenderPassDeclaration(pipeline, u8"ForwardRenderPass", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"TextureReference", u8"Position" }, {u8"ImageReference", u8"Depth"}});
 
 		shader_generation_data.Scopes.EmplaceBack(forwardScopeHandle);
+		shader_generation_data.Scopes.EmplaceBack(forwardRenderPassScopeHandle);
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", POINT_LIGHT_DATA));
 		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", LIGHTING_DATA);
@@ -119,6 +120,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", hierarchy);
 			batch.Scopes.EmplaceBack(common_permutation->commonScope);
 			batch.Scopes.EmplaceBack(forwardScopeHandle);
+			batch.Scopes.EmplaceBack(forwardRenderPassScopeHandle);
 
 			switch (Hash(shader_json[u8"class"])) { //
 			case GTSL::Hash(u8"Vertex"): {
@@ -168,5 +170,5 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		}
 	}
 
-	GPipeline::ElementHandle forwardScopeHandle, pushConstantBlockHandle, shaderParametersHandle;
+	GPipeline::ElementHandle forwardScopeHandle, pushConstantBlockHandle, shaderParametersHandle, forwardRenderPassScopeHandle;
 };

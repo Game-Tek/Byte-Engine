@@ -187,15 +187,15 @@ public:
 		return data_key_handle;
 	}
 
-	[[nodiscard]] DataKeyHandle MakeDataKey(RenderSystem* renderSystem, const GTSL::StringView scope, const GTSL::StringView type, DataKeyHandle data_key_handle = DataKeyHandle(), GAL::BufferUse buffer_uses = GAL::BufferUse()) {
+	[[nodiscard]] DataKeyHandle MakeDataKey(RenderSystem* renderSystem, const GTSL::StringView scope, const GTSL::StringView type, bool up, DataKeyHandle data_key_handle = DataKeyHandle(), GAL::BufferUse buffer_uses = GAL::BufferUse()) {
 		RenderSystem::BufferHandle b;
 
-		GTSL::StaticString<64> string(u8"Buffer: "); string << scope << type;
+		GTSL::StaticString<64> string(u8"Buffer: "); string << scope << u8"." << type;
 		auto handle = addMember(scope, type, string);
 
 		auto size = GetSize(handle.Get());
 
-		b = renderSystem->CreateBuffer(size, buffer_uses, true, true, b);
+		b = renderSystem->CreateBuffer(size, buffer_uses, true, up, b);
 		auto dataKeyHandle = MakeDataKey(renderSystem, b, data_key_handle);
 		getDataKey(dataKeyHandle).Handle = handle.Get();
 		return dataKeyHandle;
@@ -207,7 +207,7 @@ public:
 		for (auto& e : dataKey.Nodes) {
 			SetNodeState(e, static_cast<bool>(dataKey.Buffer));
 			renderingTree.UpdateNodeKey(e(), dataKeysMap[data_key_handle()]);
-			isRenderTreeDirty = true;
+			setRenderTreeAsDirty(e);
 			getPrivateNode<DataNode>(e).DataKey = data_key_handle;
 		}
 	}
@@ -378,7 +378,7 @@ public:
 				return BufferWriteKey{ 0xFFFFFFFF, Path, ElementHandle, *this };
 			}
 
-			return BufferWriteKey{ Offset + render_orchestrator->GetSize(ElementHandle, true) * index, Path, ElementHandle, *this };
+			return BufferWriteKey{ Offset + render_orchestrator->GetSize(ElementHandle, true) * index, Path + u8"." + e.Name, ElementHandle, *this };
 		}
 
 		BufferWriteKey operator[](const GTSL::StringView path) {
@@ -395,21 +395,20 @@ public:
 		const BufferWriteKey& operator=(const T& obj) const {
 			if (Offset == ~0u or !validateType<T>()) { return *this; }
 			*reinterpret_cast<T*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = obj;
-			render_orchestrator->addPendingWrite(obj, buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), render_system->GetBufferPointer(buffer_handle, Frame), Offset, Frame, NextFrame);
 			return *this;
 		}
 
 		const BufferWriteKey& operator=(const RenderSystem::AccelerationStructureHandle acceleration_structure_handle) const {
 			if (Offset == ~0u or !validateType<RenderSystem::AccelerationStructureHandle>()) { return *this; }
 			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, render_system->GetCurrentFrame());
-			render_orchestrator->addPendingWrite(render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, NextFrame), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
+			//render_orchestrator->addPendingWrite(render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, NextFrame), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
 		
 		const BufferWriteKey& operator=(const RenderSystem::BufferHandle obj) const {
 			if (Offset == ~0u or !validateType<RenderSystem::BufferHandle>()) { return *this; }
 			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = render_system->GetBufferAddress(obj);
-			render_orchestrator->addPendingWrite(render_system->GetBufferAddress(obj, NextFrame, true), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
+			//render_orchestrator->addPendingWrite(render_system->GetBufferAddress(obj, NextFrame, true), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
 
@@ -507,6 +506,10 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
+	MemberHandle CreateScope(const GTSL::StringView scope, const GTSL::StringView name) {
+		return tryAddElement(scope, name, ElementData::ElementType::SCOPE).Get();
+	}
+
 	MemberHandle CreateMember2(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const StructElement*> members) {
 		GTSL::StaticVector<MemberInfo, 16> mem;
 
@@ -514,10 +517,10 @@ public:
 			mem.EmplaceBack(nullptr, e.Type, e.Name);
 		}
 
-		return  CreateMember(parents, structName, mem);
+		return  RegisterType(parents, structName, mem);
 	}
 
-	MemberHandle CreateMember(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<MemberInfo*> members) {
+	MemberHandle RegisterType(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<MemberInfo*> members) {
 		auto parseMembers = [&](auto&& self, GTSL::StringView par, GTSL::StringView typeName, GTSL::StringView name, GTSL::Range<MemberInfo*> levelMembers, uint16 level) -> ElementDataHandle {
 			auto currentScope = GTSL::StaticString<128>(par) << u8"." << typeName;
 
@@ -573,31 +576,34 @@ public:
 		return pipelineBindNode;
 	}
 
-	NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const MemberHandle member_handle, bool useCounter = false) {
-		auto nodeHandle = addInternalNode<DataNode>(layerName(), left_node_handle, parent);
-
-		if(!nodeHandle) { return nodeHandle.Get(); }
-
-		auto dataKeyHandle = MakeDataKey();
-		auto&dataKey = getDataKey(dataKeyHandle);
-		dataKey.Buffer = renderBuffers[0].BufferHandle;
-		dataKey.Offset = renderDataOffset;
-		dataKey.Handle = member_handle.Handle;
-		renderDataOffset += GetSize(member_handle.Handle);
-
-		dataKey.Nodes.EmplaceBack(nodeHandle.Get());
-		UpdateDataKey(dataKeyHandle);
-
-		getNode(nodeHandle.Get()).Name = GTSL::StringView(layerName);
-		auto& node = getPrivateNode<DataNode>(nodeHandle.Get());
-		node.UseCounter = useCounter;
-
-		return nodeHandle.Get();
-	}
-
-	NodeHandle AddDataNode(Id layerName, NodeHandle parent, const MemberHandle member_handle, bool use_counter = false) {
-		return AddDataNode(layerName, {}, parent, member_handle, use_counter);
-	}
+	//NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const GTSL::StringView scope, const GTSL::StringView data_type_name, bool useCounter = false) {
+	//	auto nodeHandle = addInternalNode<DataNode>(layerName(), left_node_handle, parent);
+	//
+	//	if(!nodeHandle) { return nodeHandle.Get(); }
+	//
+	//	auto handle = addMember(scope, data_type_name, static_cast<GTSL::StringView>(layerName));
+	//
+	//	if(!handle) {
+	//		BE_LOG_ERROR(u8"Ooops");
+	//		return nodeHandle.Get();
+	//	}
+	//
+	//	auto dataKeyHandle = MakeDataKey();
+	//	auto&dataKey = getDataKey(dataKeyHandle);
+	//	dataKey.Buffer = renderBuffers[0].BufferHandle;
+	//	dataKey.Offset = renderDataOffset;
+	//	dataKey.Handle = handle.Get();
+	//	renderDataOffset += GetSize(handle.Get());
+	//
+	//	dataKey.Nodes.EmplaceBack(nodeHandle.Get());
+	//	UpdateDataKey(dataKeyHandle);
+	//
+	//	getNode(nodeHandle.Get()).Name = GTSL::StringView(layerName);
+	//	auto& node = getPrivateNode<DataNode>(nodeHandle.Get());
+	//	node.UseCounter = useCounter;
+	//
+	//	return nodeHandle.Get();
+	//}
 
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
 	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES], transferCommandList[MAX_CONCURRENT_FRAMES];
@@ -614,29 +620,37 @@ public:
 		node.IndexOffset = indexOffset; node.VertexOffset = vertexOffset; node.InstanceIndex = meshId;
 		return nodeHandle.Get();
 	}
+	
+	void addPendingWrite(RenderSystem* render_system, RenderSystem::BufferHandle buffer_handle, uint8 current_frame, uint8 next_frame) {
+		if(!render_system->IsUpdatable(buffer_handle)) { return; }
 
-	template<typename T>
-	void addPendingWrite(const T& val, RenderSystem::BufferHandle buffer_handle, byte* writeTo, byte* readFrom, uint32 offset, uint8 current_frame, uint8 next_frame) {
-		auto key = uint64(buffer_handle()) << 32 | offset;
+		auto key = uint64(buffer_handle()) << 32;
 
-		if (pendingWrites.Find(key)) {
-			pendingWrites.Remove(key);
-		}
+		auto write = pendingWrites.TryEmplace(key);
 
-		auto& write = pendingWrites.Emplace(key);
-		write.Size = sizeof(T);
+		write.Get().FrameCountdown[current_frame] = true;
+		write.Get().Buffer = buffer_handle;
 
-		write.WhereToWrite = writeTo + offset;
-		write.FrameCountdown.Set(next_frame, true);
+		//if (readFrom) {
+		//}
+		//else {
+		//	*reinterpret_cast<T*>(buffer[0] + offsets[0]) = val;
+		//	write.WhereToRead = buffer[0] + offsets[0];
+		//	offsets[0] += sizeof(T);
+		//}
+	}
 
-		if (readFrom) {
-			write.WhereToRead = readFrom + offset;
-		}
-		else {
-			*reinterpret_cast<T*>(buffer[0] + offsets[0]) = val;
-			write.WhereToRead = buffer[0] + offsets[0];
-			offsets[0] += sizeof(T);
-		}
+	NodeHandle AddDataNode(NodeHandle left_node_handle, NodeHandle parent, const DataKeyHandle data_key_handle) {
+		auto nodeHandle = addInternalNode<DataNode>(data_key_handle(), left_node_handle, parent);
+
+		if(!nodeHandle) { return nodeHandle.Get(); }
+
+		auto& dataKey = dataKeys[data_key_handle()];
+		dataKey.Nodes.EmplaceBack(nodeHandle.Get());
+		UpdateDataKey(data_key_handle);
+		setNodeName(nodeHandle.Get(), getElement(dataKey.Handle).Name);
+		getPrivateNode<DataNode>(nodeHandle.Get()).UseCounter = false;
+		return nodeHandle.Get();
 	}
 
 	[[nodiscard]] NodeHandle AddDataNode(const NodeHandle parent_node_handle, const GTSL::StringView node_name, const DataKeyHandle data_key_handle, bool use_counter = false) {
@@ -663,6 +677,7 @@ public:
 		buffer_write_key.buffer_handle = dataKey.Buffer;
 		buffer_write_key.Offset = dataKey.Offset;
 		buffer_write_key.ElementHandle = dataKey.Handle;
+		addPendingWrite(render_system, dataKey.Buffer, buffer_write_key.Frame, buffer_write_key.NextFrame);
 		return buffer_write_key;
 	}
 
@@ -681,6 +696,7 @@ public:
 		}
 		buffer_write_key.buffer_handle = dataKey.Buffer;
 		buffer_write_key.ElementHandle = dataKey.Handle;
+		addPendingWrite(render_system, dataKey.Buffer, buffer_write_key.Frame, buffer_write_key.NextFrame);
 		return buffer_write_key;
 	}
 
@@ -858,7 +874,7 @@ public:
 	void SetNodeState(const NodeHandle node_handle, const bool state) { //TODO: DONT CHANGE STATE IF THERE ARE PENDING RESOURCES WHICH SHOULD IMPEDE ENABLING THE NODE
 		if(renderingTree.GetNodeState(node_handle()) != state) {
 			renderingTree.ToggleBranch(node_handle(), state);
-			isRenderTreeDirty = true;
+			setRenderTreeAsDirty(node_handle);
 		}
 	}
 
@@ -884,22 +900,28 @@ public:
 			auto& e = elements[member_handle()];
 			auto& dt = getElement(e.Mem.TypeHandle);
 
-			for (uint32 t = 0; t < e.Mem.Multiplier && t < 16; ++t) { // Clamp printed array elements to 16
+			GTSL::StaticString<128> dtt;
+
+			for (uint32 t = 0; t < e.Mem.Multiplier && t < 4; ++t) { // Clamp printed array elements to 16
 				string += u8"\n";
 
 				for (uint32 i = 0; i < level; ++i) { string += U'	'; } //insert tab for every space deep we are to show struct depth
 
+				dtt = e.DataType;
+
 				string += u8"offset: "; ToString(string, offset - startOffset); string += u8", "; string += dt.DataType; string += u8" ";
 				if(e.Mem.Multiplier > 1) {
 					string += '['; GTSL::ToString(string, t); string += u8"] ";
+					dtt = dt.Name;
 				}
 				string += e.Name; string += u8": ";
+
 
 				if (FindLast(dt.DataType, U'*')) {
 					GTSL::ToString(string, reinterpret_cast<uint64*>(beginPointer + offset)[0]);
 				}
 				else {
-					switch (GTSL::Hash(dt.DataType)) {
+					switch (GTSL::Hash(dtt)) {
 					case GTSL::Hash(u8"ptr_t"): {
 						GTSL::ToString(string, reinterpret_cast<uint64*>(beginPointer + offset)[0]);
 						break;
@@ -924,6 +946,12 @@ public:
 					}
 					case GTSL::Hash(u8"ImageReference"): {
 						GTSL::ToString(string, reinterpret_cast<uint32*>(beginPointer + offset)[0]);
+						break;
+					}
+					case GTSL::Hash(u8"vec2f"): {
+						auto pointer = reinterpret_cast<GTSL::Vector2*>(beginPointer + offset)[0];
+						GTSL::ToString(string, pointer.X()); string += u8", ";
+						GTSL::ToString(string, pointer.Y());
 						break;
 					}
 					case GTSL::Hash(u8"vec3f"): {
@@ -1020,6 +1048,8 @@ public:
 			walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
 		} else {
 			beginPointer = render_system->GetBufferPointer(dataKey.Buffer, 0);
+			string += u8"\nAddress: "; GTSL::ToString(string, static_cast<uint64>(render_system->GetBufferAddress(dataKey.Buffer)));
+			string += u8"\n";
 			walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
 		}
 
@@ -1079,9 +1109,12 @@ private:
 		GAL::ShaderStage ShaderStages;
 		uint8 streamsCount = 0, buffersCount = 0;
 
-		uint32 BoundPipelineIndex;
+		uint32 BoundPipelineIndex, BoundShaderGroupIndex;
 
-		DataStreamHandle AddDataStream() {
+		DataKeyHandle dataKeys[128 / 8];
+
+		DataStreamHandle AddDataStream(const DataKeyHandle data_key_handle) {
+			dataKeys[buffersCount] = data_key_handle;
 			++buffersCount;
 			return DataStreamHandle(streamsCount++);
 		}
@@ -1095,7 +1128,7 @@ private:
 		RenderSystem::BufferHandle BufferHandle;
 		GTSL::StaticVector<uint32, 16> Elements;
 	};
-	GTSL::StaticVector<RenderDataBuffer, 32> renderBuffers;
+	//GTSL::StaticVector<RenderDataBuffer, 32> renderBuffers;
 
 	struct ShaderData {
 		GAL::VulkanShader Shader;
@@ -1301,6 +1334,10 @@ private:
 	bool isCommandBufferUpdated[MAX_CONCURRENT_FRAMES]{ false };
 	bool isRenderTreeDirty = false;
 
+	void setRenderTreeAsDirty(const NodeHandle dirty_node_handle) {
+		isRenderTreeDirty = true;
+	}
+
 	NodeHandle addRayTraceNode(const NodeHandle parent_node_handle, const RenderModelHandle material_instance_handle) {
 		auto handle = addInternalNode<RayTraceData>(222, parent_node_handle);
 
@@ -1384,6 +1421,7 @@ private:
 		bool Loaded = false;
 		uint32 RasterPipelineIndex = 0xFFFFFFFF, ComputePipelineIndex = 0xFFFFFFFF, RTPipelineIndex = 0xFFFFFFFF;
 		ResourceHandle Resource;
+		GTSL::StaticVector<StructElement, 8> PushConstantLayout;
 	};
 	GTSL::FixedVector<ShaderGroupData, BE::PAR> shaderGroups;
 
@@ -1573,15 +1611,28 @@ private:
 		auto typeString = GTSL::StaticString<128>(type);
 		uint32 multiplier = 1;
 
-		if (auto pos = FindLast(typeString, u8'[')) {
-			auto lastBracketPos = FindLast(typeString, u8']');
-			multiplier = GTSL::ToNumber<uint32>({ lastBracketPos.Get() - pos.Get() - 1, lastBracketPos.Get() - pos.Get() - 1, typeString.c_str() + pos.Get() + 1 }).Get();
+		if (auto pos = FindFirst(typeString, u8'[')) {
+			uint32 i = pos.Get();
+
+			while(i < typeString.GetCodepoints()) {
+				while(i < typeString.GetCodepoints() && typeString[i++] != u8'[') {}
+
+				uint32 start = i;
+
+				while(i < typeString.GetCodepoints() && typeString[i++] != u8']') {}
+
+				uint32 end = i - 1;
+
+				multiplier *= GTSL::ToNumber<uint32>({ end - start, end - start, typeString.c_str() + start }).Get();
+			}
+
 			typeString.Drop(pos.Get());
 		}
 
 		if(auto r = tryGetDataTypeHandle(scope, typeString)) {
 			typeHandle = r.Get();
 		} else {
+			BE_LOG_WARNING(u8"Failed to create member.");
 			return { ElementDataHandle(), false };
 		}
 
@@ -1593,6 +1644,7 @@ private:
 			element.Mem.TypeHandle = typeHandle;
 			element.Mem.Alignment = getElement(typeHandle).TyEl.Alignment;
 			element.Mem.Multiplier = multiplier;
+			element.DataType = type;
 
 			for (uint32 i = 1, j = parents.GetLength() - 1; i < parents; ++i, --j) {
 				auto& t = tryGetDataTypeHandle(scope, parents[j]).Get();
@@ -1702,7 +1754,7 @@ private:
 		}
 
 		auto& child = elements[entry.Get()()];
-		child.DataType = name;
+		child.Name = name;
 		child.Type = type;
 		return { ElementDataHandle(entry.Get()), 2 };
 	}
@@ -1760,7 +1812,7 @@ private:
 
 					offset = GTSL::Math::RoundUpByPowerOf2(offset, getElement(t.Mem.TypeHandle).TyEl.Alignment);
 					if (k.Name == newScope) { return { { k.Handle, static_cast<uint32&&>(offset) }, true }; }
-					offset += getElement(t.Mem.TypeHandle).TyEl.Size;
+					offset += getElement(t.Mem.TypeHandle).TyEl.Size * t.Mem.Multiplier;
 				}
 			}			
 
@@ -1950,14 +2002,14 @@ private:
 	template<typename T>
 	GTSL::Result<NodeHandle> addInternalNode(const uint64 key, NodeHandle publicParentHandle) {
 		auto betaNodeHandle = renderingTree.Emplace<T>(key, 0xFFFFFFFF, publicParentHandle());
-		isRenderTreeDirty = true;
+		setRenderTreeAsDirty(publicParentHandle);
 		return { NodeHandle(betaNodeHandle.Get()), betaNodeHandle.State() };
 	}
 
 	template<typename T>
 	GTSL::Result<NodeHandle> addInternalNode(const uint64 key, NodeHandle leftNodeHandle, NodeHandle publicParentHandle) {
 		auto betaNodeHandle = renderingTree.Emplace<T>(key, leftNodeHandle(), publicParentHandle());
-		isRenderTreeDirty = true;
+		setRenderTreeAsDirty(publicParentHandle);
 		return { NodeHandle(betaNodeHandle.Get()), betaNodeHandle.State() };
 	}
 
@@ -1966,9 +2018,8 @@ private:
 	byte* buffer[MAX_CONCURRENT_FRAMES]; uint32 offsets[MAX_CONCURRENT_FRAMES]{ 0 };
 
 	struct PendingWriteData {
-		void* WhereToRead; void* WhereToWrite = nullptr;
-		GTSL::uint64 Size;
-		GTSL::Bitfield<MAX_CONCURRENT_FRAMES> FrameCountdown;
+		RenderSystem::BufferHandle Buffer;
+		bool FrameCountdown[MAX_CONCURRENT_FRAMES] = { false };
 	};
 	GTSL::HashMap<uint64, PendingWriteData, BE::PAR> pendingWrites;
 
@@ -1985,58 +2036,77 @@ private:
 
 class UIRenderManager : public RenderManager {
 public:
-	DECLARE_BE_TASK(OnCreateUIElement, BE_RESOURCES(RenderOrchestrator), UIManager::UIElementHandle, UIManager::PrimitiveData::PrimitiveType);
+	DECLARE_BE_TASK(OnCreateUIElement, BE_RESOURCES(RenderOrchestrator, UIManager), UIManager::UIElementHandle, UIManager::PrimitiveData::PrimitiveType);
 
-	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager"), instancesMap(32, GetPersistentAllocator()), fontData(GetApplicationManager()->GetSystem<FontResourceManager>(u8"FontResourceManager")->GetFont(u8"arial")) {
+	DECLARE_BE_TASK(OnFontLoad, BE_RESOURCES(RenderSystem, RenderOrchestrator), FontResourceManager::FontData, GTSL::Buffer<BE::PAR>);
+
+	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager"), instancesMap(32, GetPersistentAllocator()), charToGlyphMap(GetPersistentAllocator()), characters(GetPersistentAllocator()) {
 		auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 		auto* renderOrchestrator = initializeInfo.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
-
-		renderOrchestrator->CreateMember2(u8"global", u8"Segment", { { u8"vec2f[3]", u8"points" } });
-		renderOrchestrator->CreateMember2(u8"global", u8"FontRenderData", { { u8"uint32[256]", u8"offsets" }, { u8"Segment[256 * 2048]", u8"segments"} });
-
-		renderOrchestrator->CreateMember2(u8"global", u8"TextRenderData", { { u8"FontRenderData[4]", u8"fonts" } });
-
-		renderOrchestrator->CreateMember2(u8"global", u8"TextBlockData", { { u8"uint32", u8"fontIndex" }, { u8"uint32[256]", u8"chars"} });
 
 		auto tickTaskHandle = GetApplicationManager()->RegisterTask(this, u8"uiEveryFrame", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<UIManager>(u8"UIManager")), &UIRenderManager::everyFrame, u8"RenderSetup", u8"Render");
 		GetApplicationManager()->EnqueueScheduledTask(tickTaskHandle);
 
 		//TODO: check why setting an end stage stop the whole process
 		//OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
-		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement);
+		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<UIManager>(u8"UIManager")), &UIRenderManager::OnCreateUIElement);
 
 		GetApplicationManager()->SubscribeToEvent(u8"UIManager", UIManager::GetOnCreateUIElementEventHandle(), OnCreateUIElementTaskHandle);
 		GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<UIManager>(u8"UIManager")->GetUIElementTypeIdentifier(), OnCreateUIElementTaskHandle);
 
-		renderOrchestrator->CreateMember2(u8"global", u8"UIInstance", UI_INSTANCE_DATA);
-		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"UIInstance[16]");
+		renderOrchestrator->CreateScope(u8"global", u8"UI");
 
-		renderOrchestrator->CreateMember2(u8"global", u8"UIData", UI_DATA);
-		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"UIData");
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"TextData", UI_TEXT_DATA);
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"LinearSegment", UI_LINEAR_SEGMENT);
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"QuadraticSegment", UI_QUADRATIC_SEGMENT);
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"GlyphContourData", UI_GLYPH_CONTOUR_DATA);
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"GlyphData", UI_GLYPH_DATA);
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"FontData", UI_FONT_DATA);
+
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIInstance", UI_INSTANCE_DATA);
+		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIInstance[16]", true);
+
+		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIData", UI_DATA);
+		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIData", true);
 
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
 			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
 			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
-			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UI", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
+			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UIRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
 			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
 
 			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
+			textMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UIText"));
 		}
 
 		meshNodeHandle = renderOrchestrator->AddSquare(uiMaterialNodeHandle);
+		textMeshNodeHandle = renderOrchestrator->AddSquare(textMaterialNodeHandle);
+
+		// Load font data
+		OnFontLoadTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnFontLoad", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnFontLoad);
+
+		auto* fontResourceManager = GetApplicationManager()->GetSystem<FontResourceManager>(u8"FontResourceManager");
+		fontResourceManager->LoadFont(u8"COOPBL", OnFontLoadTaskHandle);
+		// Load font data
 	}
 
-	void OnCreateUIElement(const TaskInfo, RenderOrchestrator* render_orchestrator, UIManager::UIElementHandle ui_element_handle, UIManager::PrimitiveData::PrimitiveType type) {
+	void OnCreateUIElement(const TaskInfo, RenderOrchestrator* render_orchestrator, UIManager* ui_manager, UIManager::UIElementHandle ui_element_handle, UIManager::PrimitiveData::PrimitiveType type) {
 		switch (type) {
 		break; case UIManager::PrimitiveData::PrimitiveType::NONE:
 		break; case UIManager::PrimitiveData::PrimitiveType::CANVAS:
 		break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
 		break; case UIManager::PrimitiveData::PrimitiveType::SQUARE:
 			render_orchestrator->AddInstance(uiInstancesDataNodeHandle, meshNodeHandle, ui_element_handle);
-		break; case UIManager::PrimitiveData::PrimitiveType::TEXT:
+		break; case UIManager::PrimitiveData::PrimitiveType::TEXT: {
+			auto string = ui_manager->GetString(ui_element_handle());
+
+			for(uint32 i = 0; i < string.GetCodepoints(); ++i) {
+				render_orchestrator->AddInstance(uiInstancesDataNodeHandle, textMeshNodeHandle, ui_element_handle);
+			}
+		}
 		break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
 		break;
 		}
@@ -2109,12 +2179,13 @@ public:
 			}
 
 			//auto projectionMatrix = GTSL::Matrix4();
-			//projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
+			projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
 			bwk[u8"projection"] = projectionMatrix;
 		}
 
 		auto root = ui->GetRoot();
 
+		auto uiData = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, uiInstancesDataKey);
 
 		auto visitUIElement = [&](GTSL::Tree<UIManager::PrimitiveData, BE::PAR>::iterator iterator, GTSL::Matrix3x4 matrix, auto&& self) -> void {
@@ -2132,7 +2203,7 @@ public:
 			break; case UIManager::PrimitiveData::PrimitiveType::ORGANIZER:
 			break; case UIManager::PrimitiveData::PrimitiveType::SQUARE: {
 				GTSL::Math::Scale(primitiveMatrix, GTSL::Vector3(primitive.RenderSize, 0));
-				GTSL::Math::Translate(primitiveMatrix, GTSL::Vector3(primitive.Position.X(), -primitive.Position.Y(), 0));
+				GTSL::Math::Translate(primitiveMatrix, GTSL::Vector3(primitive.Position, 0));
 
 				const auto i = render_orchestrator->GetInstanceIndex(uiInstancesDataNodeHandle, iterator.GetHandle());
 
@@ -2141,7 +2212,38 @@ public:
 				bwk[i][u8"roundness"] = primitive.Rounding;
 			}
 			break; case UIManager::PrimitiveData::PrimitiveType::TEXT: {
-				//auto& text = ui->GetText(primitive.DerivedTypeIndex);
+				uiData[u8"textData"][0][u8"fontIndex"] = 0u;
+
+				auto string = ui->GetString(iterator.GetHandle());
+
+				float32 x = primitive.Position.X() + primitive.RenderSize.X() * -1.f;
+
+				for(uint32 i = 0; auto c : string) {
+					if(!charToGlyphMap.Find(c)) { break; }
+					auto glyphIndex = charToGlyphMap[c];
+					auto& character = characters[glyphIndex];
+
+					uiData[u8"textData"][0][u8"chars"][i] = glyphIndex;
+
+					const auto index = render_orchestrator->GetInstanceIndex(uiInstancesDataNodeHandle, iterator.GetHandle());
+
+					//GTSL::Math::Scale(primitiveMatrix, GTSL::Vector3(primitive.RenderSize * GTSL::Vector2(character.Bearing.X, character.Bearing.Y) * 0.01f, 0));
+					GTSL::Math::Scale(primitiveMatrix, GTSL::Vector3(primitive.RenderSize, 0));
+					GTSL::Math::Translate(primitiveMatrix, GTSL::Vector3(x, primitive.Position.Y(), 0));
+
+					bwk[index][u8"transform"] = primitiveMatrix;
+					bwk[index][u8"color"] = GTSL::Vector4(primitive.Color);
+					bwk[index][u8"roundness"] = primitive.Rounding;
+
+					// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+					x += (characters[glyphIndex].Advance >> 6); // bitshift by 6 to get value in pixels (2^6 = 64)
+
+					++i;
+				}
+
+
+				//float xpos = x + ch.Bearing.X;
+				//float ypos = y - (ch.Size.Height - ch.Bearing.Y);
 			}
 			break; case UIManager::PrimitiveData::PrimitiveType::CURVE:
 				break;
@@ -2155,16 +2257,73 @@ public:
 		visitUIElement(root, GTSL::Matrix3x4(), visitUIElement);
 	}
 
+	void OnFontLoad(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, FontResourceManager::FontData font_data, GTSL::Buffer<BE::PAR> buffer) {
+		auto fontDataDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"FontData", false);
+
+		RenderOrchestrator::BufferWriteKey uiData = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
+		uiData[u8"fontData"][loadedFonts++] = fontDataDataKey;
+
+		RenderOrchestrator::BufferWriteKey fontData = render_orchestrator->GetBufferWriteKey(render_system, fontDataDataKey);
+
+		uint32 numberOfGlyphs; buffer >> numberOfGlyphs;
+
+		for(uint32 gi = 0; gi < numberOfGlyphs; ++gi) {
+			auto glyphReferenceDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"GlyphData", false);
+
+			fontData[u8"glyphs"][gi] = glyphReferenceDataKey;
+
+			auto glyphReference = render_orchestrator->GetBufferWriteKey(render_system, glyphReferenceDataKey);
+
+			charToGlyphMap.Emplace(FontResourceManager::ALPHABET[gi], gi);
+			characters.Emplace(gi, font_data.Characters.array[gi]);
+
+			uint32 contourCount; buffer >> contourCount;
+
+			glyphReference[u8"contourCount"] = contourCount;
+
+			for(uint32 ci = 0; ci < contourCount; ++ci) {
+				uint32 pointCount; buffer >> pointCount;
+
+				auto contourReference = glyphReference[u8"contours"][ci];
+
+				uint32 linearSegmentCount = 0, quadraticSegmentCount = 0;
+
+				auto linearSegments = contourReference[u8"linearSegments"];
+				auto quadraticSegments = contourReference[u8"quadraticSegments"];
+
+				for(uint32 pi = 0; pi < pointCount; ++pi) {
+					uint8 l = 0; buffer >> l;
+
+					if(l == 3) {
+						GTSL::Vector2 quadraticSegment[3];
+						buffer.Read(8 * 3, reinterpret_cast<byte*>(&quadraticSegment));
+						quadraticSegments[quadraticSegmentCount][u8"segments"][0] = quadraticSegment[0];
+						quadraticSegments[quadraticSegmentCount][u8"segments"][1] = quadraticSegment[1];
+						quadraticSegments[quadraticSegmentCount][u8"segments"][2] = quadraticSegment[2];
+						++quadraticSegmentCount;
+					} else {
+						GTSL::Vector2 linearSegment[2];
+						buffer.Read(8 * 2, reinterpret_cast<byte*>(&linearSegment));
+						linearSegments[linearSegmentCount][u8"segments"][0] = linearSegment[0];
+						linearSegments[linearSegmentCount][u8"segments"][1] = linearSegment[1];
+						++linearSegmentCount;
+					}
+				}
+
+				contourReference[u8"linearSegmentCount"] = linearSegmentCount;
+				contourReference[u8"quadraticSegmentCount"] = quadraticSegmentCount;
+			}
+		}
+
+	}
+
 	RenderModelHandle GetUIMaterial() const { return uiMaterial; }
 
 private:
 	RenderOrchestrator::MemberHandle matrixUniformBufferMemberHandle, colorHandle;
 	RenderOrchestrator::MemberHandle uiDataStruct;
 
-	RenderOrchestrator::NodeHandle uiMaterialNodeHandle, meshNodeHandle, uiInstancesDataNodeHandle;
-
-	GTSL::StaticMap<Id, uint32, 4> fontOrderMap;
-	GTSL::StaticMap<char32_t, uint32, 4> fontCharMap;
+	RenderOrchestrator::NodeHandle uiMaterialNodeHandle, meshNodeHandle, textMeshNodeHandle, uiInstancesDataNodeHandle, textMaterialNodeHandle;
 
 	GTSL::HashMap<uint32, uint32, BE::PAR> instancesMap;
 
@@ -2173,64 +2332,11 @@ private:
 
 	RenderOrchestrator::DataKeyHandle uiDataDataKey, uiInstancesDataKey;
 
-	GTSL::Pair<FontResourceManager::FontData, GTSL::Buffer<BE::PAR>> fontData;
-};
+	uint32 loadedFonts = 0;
 
-//for (auto& ref : canvases)
-//{
-//	auto& canvas = canvasSystem->GetCanvas(ref);
-//	auto canvasSize = canvas.GetExtent();
-//
-//	float xyRatio = static_cast<float32>(canvasSize.Width) / static_cast<float32>(canvasSize.Height);
-//	float yxRatio = static_cast<float32>(canvasSize.Height) / static_cast<float32>(canvasSize.Width);
-//	
-//	GTSL::Matrix4 ortho = GTSL::Math::MakeOrthoMatrix(1.0f, -1.0f, yxRatio, -yxRatio, 0, 100);
-//	
-//	auto& organizers = canvas.GetOrganizersTree();
-//
-//	//auto primitives = canvas.GetPrimitives();
-//	//auto squares = canvas.GetSquares();
-//	//
-//	//const auto* parentOrganizer = organizers[0];
-//	//
-//	//uint32 sq = 0;
-//	//for(auto& e : squares)
-//	//{
-//	//	GTSL::Matrix4 trans(1.0f);
-//	//
-//	//	auto location = primitives.begin()[e.PrimitiveIndex].RelativeLocation;
-//	//	auto scale = primitives.begin()[e.PrimitiveIndex].AspectRatio;
-//	//	//
-//	//	GTSL::Math::AddTranslation(trans, GTSL::Vector3(location.X(), -location.Y(), 0));
-//	//	GTSL::Math::Scale(trans, GTSL::Vector3(scale.X(), scale.Y(), 1));
-//	//	//GTSL::Math::Scale(trans, GTSL::Vector3(static_cast<float32>(canvasSize.Width), static_cast<float32>(canvasSize.Height), 1));
-//	//	//
-//	//
-//	//	MaterialSystem::BufferIterator iterator;
-//	//	info.MaterialSystem->UpdateIteratorMember(iterator, uiDataStruct, sq);
-//	//	*info.MaterialSystem->GetMemberPointer(iterator, matrixUniformBufferMemberHandle) = trans * ortho;
-//	//	//*reinterpret_cast<GTSL::RGBA*>(info.MaterialSystem->GetMemberPointer<GTSL::Vector4>(colorHandle, sq)) = uiSystem->GetColor(e.GetColor());
-//	//	++sq;
-//	//}
-//	
-//	//auto processNode = [&](decltype(parentOrganizer) node, uint32 depth, GTSL::Matrix4 parentTransform, auto&& self) -> void
-//	//{
-//	//	GTSL::Matrix4 transform;
-//	//
-//	//	for (uint32 i = 0; i < node->Nodes.GetLength(); ++i) { self(node->Nodes[i], depth + 1, transform, self); }
-//	//
-//	//	const auto aspectRatio = organizersAspectRatio.begin()[parentOrganizer->Data];
-//	//	GTSL::Matrix4 organizerMatrix = ortho;
-//	//	GTSL::Math::Scale(organizerMatrix, { aspectRatio.X, aspectRatio.Y, 1.0f });
-//	//
-//	//	for (auto square : organizersSquares.begin()[node->Data])
-//	//	{
-//	//		primitivesPerOrganizer->begin()[square.PrimitiveIndex].AspectRatio;
-//	//	}
-//	//};
-//	//
-//	//processNode(parentOrganizer, 0, ortho, processNode);
-//}
+	GTSL::HashMap<char32_t, uint32, BE::PAR> charToGlyphMap;
+	GTSL::HashMap<uint32, FontResourceManager::Character, BE::PAR> characters;
+};
 
 //if (textSystem->GetTexts().ElementCount())
 //{
@@ -2295,8 +2401,3 @@ private:
 //	}
 //
 //}
-////MaterialSystem::UpdateRenderGroupDataInfo updateInfo;
-////updateInfo.RenderGroup = "TextSystem";
-////updateInfo.Data = GTSL::Range<const byte>(64, static_cast<const byte*>(nullptr));
-////updateInfo.Address = 0;
-////info.MaterialSystem->UpdateRenderGroupData(updateInfo);

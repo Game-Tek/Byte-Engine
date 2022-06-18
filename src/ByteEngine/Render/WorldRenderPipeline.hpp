@@ -283,18 +283,18 @@ private:
 
 		auto traceRayParameterDataHandle = renderOrchestrator->CreateMember2(u8"global", u8"TraceRayParameterData", { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} });
 		auto rayTraceDataMember = renderOrchestrator->CreateMember2(u8"global", u8"RayTraceData", { { u8"TraceRayParameterData", u8"traceRayParameters" }, { u8"StaticMeshData*", u8"staticMeshes" } });
-		auto rayTraceDataNode = renderOrchestrator->AddDataNode(u8"RayTraceData", cameraDataNode, rayTraceDataMember);
+		//auto rayTraceDataNode = renderOrchestrator->AddDataNode(,u8"RayTraceData", cameraDataNode, rayTraceDataMember);
 
-		auto rayTraceNode = renderOrchestrator->addRayTraceNode(rayTraceDataNode, rayTraceShaderGroupHandle);
+		//auto rayTraceNode = renderOrchestrator->addRayTraceNode(rayTraceDataNode, rayTraceShaderGroupHandle);
 
-		auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceDataNode);
-		bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
-		bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
-		bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
-		bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
-		bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
-		bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
-		bwk[u8"staticMeshes"] = meshDataBuffer;
+		//auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, rayTraceDataNode);
+		//bwk[u8"traceRayParameters"][u8"accelerationStructure"] = topLevelAccelerationStructure;
+		//bwk[u8"traceRayParameters"][u8"rayFlags"] = 0u;
+		//bwk[u8"traceRayParameters"][u8"recordOffset"] = 0u;
+		//bwk[u8"traceRayParameters"][u8"recordStride"] = 0u;
+		//bwk[u8"traceRayParameters"][u8"missIndex"] = 0u;
+		//bwk[u8"traceRayParameters"][u8"tMin"] = 0.001f;
+		//bwk[u8"traceRayParameters"][u8"tMax"] = 100.0f;
+		//bwk[u8"staticMeshes"] = meshDataBuffer;
 	}
 };

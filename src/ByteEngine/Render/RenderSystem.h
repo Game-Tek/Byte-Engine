@@ -622,7 +622,7 @@ private:
 	
 	GAL::VulkanQueue graphicsQueue, computeQueue, transferQueue;
 
-	bool breakOnError = true;
+	bool breakOnError = false;
 	TaskHandle<GTSL::Extent2D> resizeHandle;
 
 	struct BufferData {

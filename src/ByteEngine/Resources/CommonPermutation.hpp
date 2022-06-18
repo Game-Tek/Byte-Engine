@@ -68,7 +68,7 @@ struct CommonPermutation : PermutationManager {
 		commonScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"Common");
 		shader_generation_data.Scopes.EmplaceBack(commonScope);
 
-		pipeline->DeclareStruct(commonScope, u8"GlobalData", { { u8"uint32", u8"frameIndex" }, {u8"float32", u8"time"} });
+		pipeline->DeclareStruct(commonScope, u8"GlobalData", GLOBAL_DATA);
 		pipeline->DeclareStruct(commonScope, u8"CameraData", CAMERA_DATA);
 
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });

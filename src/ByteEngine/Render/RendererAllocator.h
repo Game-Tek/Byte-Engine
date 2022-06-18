@@ -87,7 +87,7 @@ private:
 	uint32 bufferMemoryType = 0, textureMemoryType = 0;
 
 	
-	GTSL::StaticVector<AllocationInfo, 64> allocations;
+	GTSL::StaticVector<AllocationInfo, 1024> allocations;
 	
 	GTSL::StaticVector<MemoryBlock, 32> bufferMemoryBlocks;
 	GTSL::StaticVector<MemoryBlock, 32> textureMemoryBlocks;
@@ -125,6 +125,6 @@ private:
 
 	GTSL::uint32 granularity;
 
-	GTSL::StaticVector<AllocationInfo, 64> allocations;
+	GTSL::StaticVector<AllocationInfo, 1024> allocations;
 	GTSL::StaticVector<MemoryBlock, 32> bufferMemoryBlocks;
 };

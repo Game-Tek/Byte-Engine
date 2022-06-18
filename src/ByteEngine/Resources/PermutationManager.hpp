@@ -39,16 +39,15 @@ struct PermutationManager : Object {
 	virtual void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) = 0;
 
 	struct ShaderPermutation {
-		GTSL::StaticString<32> Name;
 		GAL::ShaderType TargetSemantics;
-		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
+		GTSL::StaticVector<GPipeline::ElementHandle, 8> Scopes;
 		GTSL::StaticVector<ShaderTag, 4> Tags;
 	};
 	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) = 0;
 
 	struct ShaderGroupDescriptor {
 		GTSL::StaticString<1024> ShaderGroupJSON;
-		GTSL::StaticVector<GTSL::StaticVector<ShaderPermutation, 8>, 4> Shaders;
+		GTSL::StaticVector<GTSL::StaticVector<ShaderPermutation, 4>, 4> Shaders;
 	};
 	virtual GTSL::Vector<ShaderGroupDescriptor, BE::TAR > MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) = 0;
 
@@ -60,6 +59,14 @@ struct PermutationManager : Object {
 			auto res = parent->MakeShaderGroups(pipeline, hierarchy);
 
 			for(auto& e : res) {
+				for(auto& s : e.Shaders) {
+					for(auto& t : s) {
+						for(uint32 i = 0; i < parent->scopes; ++i) {
+							t.Scopes.Insert(i, parent->scopes[i]);
+						}
+					}
+				}
+
 				result1s.EmplaceBack(GTSL::MoveRef(e));
 			}
 
@@ -153,8 +160,13 @@ protected:
 		supportedDomainsFunctions.EmplaceBack(SIG::Create<T, L>());
 	}
 
+	void AddScope(const GPipeline::ElementHandle scope_handle) {
+		scopes.EmplaceBack(scope_handle);
+	}
+
 private:
 	GTSL::StaticVector<ShaderTag, 4> tags;
 	GTSL::StaticVector<GTSL::ShortString<32>, 8> supportedDomains;
 	GTSL::StaticVector<SIG, 8> supportedDomainsFunctions;
+	GTSL::StaticVector<GPipeline::ElementHandle, 8> scopes;
 };

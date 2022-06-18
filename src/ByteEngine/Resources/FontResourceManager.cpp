@@ -35,40 +35,33 @@ FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceM
 
 			pathBuffer << static_cast<uint32>(SIZE); // Number of glyphs
 
-			for(auto e : ALPHABET) {
-				auto& glyph = font.GetGlyph(e);
+			for(uint32 i = 0; i < SIZE; ++i) {
+				auto& glyph = font.GetGlyph(ALPHABET[i]);
 
 				GTSL::Vector<GTSL::Vector<GTSL::Segment<3>, GTSL::DefaultAllocatorReference>, GTSL::DefaultAllocatorReference> processedGlyph;
 
 				GTSL::MakePath(glyph, &processedGlyph); //generate N point bezier curves for glyph
 
-				uint32 pointCount = 0;
+				pathBuffer << uint32(processedGlyph.GetLength()); // Contours
+
+				auto& m = font_data.Characters.array[i];
+				m.Advance = glyph.AdvanceWidth;
 
 				for (auto& c : processedGlyph) {
+					pathBuffer << uint32(c.GetLength()); // Points
+
 					for (auto& d : c) {
-						++pointCount;
-					}
-				}
+						for(auto& point : d.Points) { // Normalize point coordinates
+							point /= glyph.Max;
+						}
 
-				pathBuffer << pointCount;
-
-				uint16 pointOffset = 0;
-
-				for (auto& c : processedGlyph) {
-					for (auto& d : c) {
-						pathBuffer << pointOffset;
-						pointOffset += d.IsBezierCurve() ? 3u : 2u;
-						//pathBuffer.Write(c.Points.GetLengthSize(), reinterpret_cast<const byte*>(c.Points.GetData()));
-					}
-				}
-
-				for (auto& c : processedGlyph) {
-					for (const auto& d : c) {
 						if(d.IsBezierCurve()) {
-							pathBuffer.Write(12, reinterpret_cast<const byte*>(d.Points));							
+							pathBuffer << uint8(3);
+							pathBuffer.Write(24, reinterpret_cast<const byte*>(d.Points));
 						} else {
-							pathBuffer.Write(4, reinterpret_cast<const byte*>(&d.Points[0]));
-							pathBuffer.Write(4, reinterpret_cast<const byte*>(&d.Points[2]));							
+							pathBuffer << uint8(2);
+							pathBuffer.Write(8, reinterpret_cast<const byte*>(&d.Points[0]));
+							pathBuffer.Write(8, reinterpret_cast<const byte*>(&d.Points[2]));							
 						}
 					}
 				}

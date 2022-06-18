@@ -389,6 +389,8 @@ public:
 
 	auto GetRoot() { return primitives.begin(); }
 
+	GTSL::StringView GetString(const uint32 index) { return textPrimitives[primitives[index].DerivedTypeIndex].Text; }
+
 private:
 	GTSL::FixedVector<UIElementHandle, BE::PersistentAllocatorReference> canvases;
 	GTSL::HashMap<Id, GTSL::RGBA, BE::PAR> colors;

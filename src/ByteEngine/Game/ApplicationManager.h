@@ -117,7 +117,7 @@ namespace BE {
 }
 
 #define BE_RESOURCES(...) __VA_ARGS__
-#define DECLARE_BE_TASK(name, res, ...) private: TaskHandle<__VA_ARGS__> name##TaskHandle; public: auto Get##name##TaskHandle() const { return name##TaskHandle; }
+#define DECLARE_BE_TASK(name, res, ...) private: TaskHandle<__VA_ARGS__> name##TaskHandle; using name##Dependencies = DependencyBlock<res>; public: auto Get##name##TaskHandle() const { return name##TaskHandle; }
 #define DECLARE_BE_TYPE(name) MAKE_BE_HANDLE(name); private: BE::TypeIdentifier name##TypeIndentifier; public: BE::TypeIdentifier Get##name##TypeIdentifier() const { return name##TypeIndentifier; }
 #define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: auto Get##name##EventHandle() const { return name##EventHandle; }
 

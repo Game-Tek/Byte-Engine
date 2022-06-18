@@ -220,7 +220,7 @@ public:
 		GAL::ShaderType Type; uint64 Hash = 0;
 		GTSL::StaticVector<Parameter, 8> Parameters;
 		GTSL::StaticVector<PermutationManager::ShaderTag, 4> Tags;
-		GTSL::StaticString<2048> DebugData;
+		GTSL::StaticString<4096> DebugData;
 
 		uint32 Size = 0;
 
@@ -836,7 +836,7 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 				shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
 				shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
 
-				shaderInfosFile << GTSL::ShortString<32>(sb.Name) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
+				shaderInfosFile << GTSL::ShortString<32>(pipeline.GetElement(sb.Scopes.back()).Name) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
 				shaderInfosFile << 0; //0 params
 				shaderInfosFile << sb.TargetSemantics;
 				shaderInfosFile << sb.Tags.GetLength();

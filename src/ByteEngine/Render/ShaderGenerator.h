@@ -15,12 +15,12 @@ struct StructElement {
 	StructElement(const GTSL::StringView t, const GTSL::StringView n) : Type(t), Name(n) {}
 	StructElement(const GTSL::StringView t, const GTSL::StringView n, const GTSL::StringView dv) : Type(t), Name(n), DefaultValue(dv) {}
 
-	GTSL::StaticString<64> Type, Name, DefaultValue;
+	GTSL::StaticString<86> Type, Name, DefaultValue;
 };
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON, HASH, EXCLAMATION
+		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON, HASH, EXCLAMATION, LESS_THAN, GREATER_THAN
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -97,6 +97,12 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 			}
 			else if (c == U'!') {
 				type = ShaderNode::Type::EXCLAMATION;
+			}
+			else if (c == U'<') {
+				type = ShaderNode::Type::LESS_THAN;
+			}
+			else if (c == U'>') {
+				type = ShaderNode::Type::GREATER_THAN;
 			}
 			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%')) {
 				type = ShaderNode::Type::OP;
@@ -190,7 +196,7 @@ struct GPipeline : Object {
 
 
 	struct StructData {
-		uint8 GenerationType = 1;
+		uint8 GenerationType = 2;
 		bool IsConst = false;
 	};
 
@@ -243,7 +249,7 @@ private:
 		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
-		if(parent.Handle != 1) {
+		if(parent.Handle != 0xFFFFFFFF) {
 			e.Level = GetElement(parent).Level + 1;
 			e.Parent = parent;
 		}
@@ -257,7 +263,7 @@ private:
 		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
-		if (parent.Handle != 1) {
+		if (parent.Handle != 0xFFFFFFFF) {
 			e.Level = GetElement(parent).Level + 1;
 			e.Parent = parent;
 		}
@@ -420,7 +426,7 @@ public:
 
 		auto& strct = structs.EmplaceBack();
 
-		strct.GenerationType = 1; //don't make struct type, only ref
+		strct.GenerationType = 2;
 
 		for (auto& e : members) {
 			DeclareVariable(handle, e);
@@ -488,6 +494,20 @@ public:
 		return structs[GetElement(element_handle).Reference];
 	}
 
+	GTSL::StaticVector<ElementHandle, 16> GetAccessChain(const ElementHandle source) {
+		GTSL::StaticVector<ElementHandle, 16> chain;
+
+		auto g = [&](ElementHandle t, auto&& self) -> void {
+			if(t.Handle == 0xFFFFFFFF) { return; }
+			self(GetElement(t).Parent, self);
+			chain.EmplaceBack(t);
+		};
+
+		g(source, g);
+
+		return chain;
+	}
+
 	void MakeJSON(auto& string, const GTSL::Range<const ElementHandle*> scopes) {
 		GTSL::JSONSerializer serializer = GTSL::MakeSerializer(string);
 
@@ -537,6 +557,39 @@ public:
 		}
 
 		GTSL::EndArray(serializer, string);
+
+		GTSL::StartObject(serializer, string, u8"pushConstant");
+
+		auto pushConstantElementHandleSearch = TryGetElementHandle(scopes, u8"pushConstantBlock");
+		
+			GTSL::StartArray(serializer, string, u8"members");
+
+			for (auto& c : GetChildren(pushConstantElementHandleSearch.Get())) {
+				GTSL::StartObject(serializer, string);
+				const auto& structMember = GetMember(c);
+
+				auto typeName = structMember.Type;
+				RTrimLast(typeName, u8'*');
+
+				auto typeHandle = TryGetElementHandle(scopes, typeName);
+
+				GTSL::StaticString<512> shaderName;
+
+				for(auto& e : GetAccessChain(typeHandle.Get())) {
+					shaderName += GetElement(e).Name;
+					shaderName += u8".";
+				}
+
+				shaderName.Drop(shaderName.GetCodepoints() - 1);
+
+				GTSL::Insert(serializer, string, u8"type", shaderName);
+				GTSL::Insert(serializer, string, u8"name", structMember.Name);
+				GTSL::EndObject(serializer, string);
+			}
+
+			GTSL::EndArray(serializer, string);
+
+		GTSL::EndObject(serializer, string);
 
 		GTSL::EndSerializer(string, serializer);
 	}
@@ -663,7 +716,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	GTSL::HashMap<Id, bool, ALLOCATOR> usedStructs(16, allocator); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
 
 	auto writeStruct = [&](GTSL::StringView ne, const GPipeline::ElementHandle structHandle, bool ref, bool readOnly, auto&& self) {
-		if (usedStructs.Find(Id(ne))) { return; }
+		//if (usedStructs.Find(Id(ne))) { return; }
 
 		GTSL::StaticString<64> name(ne);
 
@@ -858,6 +911,14 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							statementString += u8" !";
 							break;
 						}
+						case ShaderNode::Type::LESS_THAN: {
+							statementString += u8"<";
+							break;
+						}
+						case ShaderNode::Type::GREATER_THAN: {
+							statementString += u8">";
+							break;
+						}
 						}
 					}
 
@@ -893,7 +954,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 	auto addLayoutDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, bool isVertexSurfaceInterface = false) {
 		auto interfaceBlockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
-		if (!interfaceBlockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
+		if (!interfaceBlockHandle) { addErrorCode(GTSL::StaticString<256>(interface_name) + u8" interface block declaration was not found."); return; }
 
 		const auto& arr = pipeline.GetChildren(interfaceBlockHandle.Get());
 
@@ -1029,6 +1090,12 @@ inline void AddVertexBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHan
 		pipeline->DeclareVariable(vertexBlock, e);
 
 	}
+}
+
+inline GPipeline::ElementHandle AddRenderPassDeclaration(GPipeline* pipeline, const GTSL::StringView render_pass_name, const GTSL::Range<const StructElement*> elements) {
+	auto renderPassScopeHandle = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, render_pass_name);
+	pipeline->DeclareStruct(renderPassScopeHandle, u8"RenderPassData", elements);
+	return renderPassScopeHandle;
 }
 
 // SHADER DOC

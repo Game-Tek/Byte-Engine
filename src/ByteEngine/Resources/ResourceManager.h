@@ -179,8 +179,7 @@ struct ResourceFiles {
 
 	bool LoadData(auto& info, auto& buffer) {
 		data.SetPointer(info.Header.DataOffset);
-		buffer.Resize(info.Header.DataSize);
-		data.Read(info.Header.DataSize, buffer.begin());
+		data.Read(info.Header.DataSize, buffer);
 		return true;
 	}
 

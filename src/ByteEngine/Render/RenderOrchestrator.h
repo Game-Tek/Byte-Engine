@@ -173,39 +173,53 @@ public:
 		return DataKeyHandle(pos);
 	}
 
-	DataKeyHandle MakeDataKey(RenderSystem* render_system, RenderSystem::BufferHandle buffer_handle, DataKeyHandle data_key_handle = DataKeyHandle()) {
-		if (data_key_handle) {
-			auto& dataKey = getDataKey(data_key_handle);
-			dataKey.Buffer = buffer_handle;
-			UpdateDataKey(data_key_handle);
-			return data_key_handle;
-		}
+	//DataKeyHandle MakeDataKey(RenderSystem* render_system, RenderSystem::BufferHandle buffer_handle, DataKeyHandle data_key_handle = DataKeyHandle()) {
+	//	if (data_key_handle) {
+	//		auto& dataKey = getDataKey(data_key_handle);
+	//		dataKey.Buffer[] = buffer_handle;
+	//		UpdateDataKey(data_key_handle);
+	//		return data_key_handle;
+	//	}
+	//
+	//	data_key_handle = MakeDataKey();
+	//	auto& dataKey = getDataKey(data_key_handle);
+	//	dataKey.Buffer = buffer_handle;
+	//	return data_key_handle;
+	//}
 
-		data_key_handle = MakeDataKey();
-		auto& dataKey = getDataKey(data_key_handle);
-		dataKey.Buffer = buffer_handle;
-		return data_key_handle;
-	}
-
-	[[nodiscard]] DataKeyHandle MakeDataKey(RenderSystem* renderSystem, const GTSL::StringView scope, const GTSL::StringView type, bool up, DataKeyHandle data_key_handle = DataKeyHandle(), GAL::BufferUse buffer_uses = GAL::BufferUse()) {
-		RenderSystem::BufferHandle b;
+	[[nodiscard]] DataKeyHandle MakeDataKey(RenderSystem* renderSystem, const GTSL::StringView scope, const GTSL::StringView type, DataKeyHandle data_key_handle = DataKeyHandle(), GAL::BufferUse buffer_uses = GAL::BufferUse()) {
+		RenderSystem::BufferHandle b[2]{};
 
 		GTSL::StaticString<64> string(u8"Buffer: "); string << scope << u8"." << type;
 		auto handle = addMember(scope, type, string);
 
 		auto size = GetSize(handle.Get());
 
-		b = renderSystem->CreateBuffer(size, buffer_uses, true, up, b);
-		auto dataKeyHandle = MakeDataKey(renderSystem, b, data_key_handle);
-		getDataKey(dataKeyHandle).Handle = handle.Get();
-		return dataKeyHandle;
+		b[0] = renderSystem->CreateBuffer(size, buffer_uses, true, b[0]);
+		b[1] = renderSystem->CreateBuffer(size, buffer_uses, false, b[1]);
+
+		if(!data_key_handle) {
+			data_key_handle = MakeDataKey();			
+		}
+
+		auto& dataKey = getDataKey(data_key_handle);
+
+		if(dataKey.Buffer[0]) {
+			__debugbreak();
+		}
+
+		dataKey.Buffer[0] = b[0];
+		dataKey.Buffer[1] = b[1];
+		dataKey.Handle = handle.Get();
+		
+		return data_key_handle;
 	}
 
 	void UpdateDataKey(const DataKeyHandle data_key_handle) {
 		auto& dataKey = getDataKey(data_key_handle);
 
 		for (auto& e : dataKey.Nodes) {
-			SetNodeState(e, static_cast<bool>(dataKey.Buffer));
+			SetNodeState(e, static_cast<bool>(dataKey.Buffer[0]) && static_cast<bool>(dataKey.Buffer[1]));
 			renderingTree.UpdateNodeKey(e(), dataKeysMap[data_key_handle()]);
 			setRenderTreeAsDirty(e);
 			getPrivateNode<DataNode>(e).DataKey = data_key_handle;
@@ -219,7 +233,7 @@ public:
 			auto& sourceDataKey = getDataKey(from);
 			auto& destinationDataKey = getDataKey(to);
 
-			if(sourceDataKey.Buffer) {
+			if(sourceDataKey.Buffer[0]) {
 				BE_LOG_WARNING(u8"Trying to delete data key handle: ", from(), u8", which contains initialized members.");
 				return;
 			}
@@ -288,8 +302,21 @@ public:
 	}
 
 	void AddVertices(const NodeHandle node_handle, uint32 count) {
-		auto& node = getPrivateNode<VertexBufferBindData>(node_handle);
-		node.VertexCount += count;
+		auto nodeType = renderingTree.GetNodeType(node_handle());
+
+		setRenderTreeAsDirty(node_handle);
+
+		if(nodeType == RTT::GetTypeIndex<VertexBufferBindData>()) {
+			auto& node = getPrivateNode<VertexBufferBindData>(node_handle);
+			node.VertexCount += count;
+			return;
+		}
+
+		if(nodeType == RTT::GetTypeIndex<DrawData>()) {
+			auto& node = getPrivateNode<DrawData>(node_handle);
+			node.VertexCount += count;
+			return;
+		}		
 	}
 
 	NodeHandle AddIndexBufferBind(NodeHandle parent_node_handle, RenderSystem::BufferHandle buffer_handle) {
@@ -304,11 +331,16 @@ public:
 
 	void AddIndices(const NodeHandle node_handle, uint32 count) {
 		auto& node = getPrivateNode<IndexBufferBindData>(node_handle);
+
+		setRenderTreeAsDirty(node_handle);
+
 		node.IndexCount += count;
 	}
 
 	void SetBaseInstanceIndex(NodeHandle node_handle, uint32 base_instance_handle) {
 		getPrivateNode<MeshData>(node_handle).InstanceIndex = base_instance_handle;
+
+		setRenderTreeAsDirty(node_handle);
 	}
 	
 	uint32 GetInstanceIndex(const NodeHandle handle, const uint32 instance_handle) {
@@ -328,27 +360,23 @@ public:
 		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
 
 		dataNode.Instances.Emplace(handle(), dataNode.Instance++);
-		//dataNode.UnorderedEntries.EmplaceBack(handle());
-
-		//auto& g = dataNode.Groups.TryEmplace(mesh_node_handle()).Get();
 
 		if(typeIndex == RTT::GetTypeIndex<MeshData>()) {
 			auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
 			//meshNode.InstanceIndex = dataNode.Instance;
 			meshNode.InstanceCount++;
-			renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);
+			SetNodeState(mesh_node_handle, meshNode.InstanceCount);
 		} else {
 			auto& meshNode = getPrivateNode<DrawData>(mesh_node_handle);
 			meshNode.InstanceCount++;
-			renderingTree.ToggleBranch(mesh_node_handle(), meshNode.InstanceCount);			
+			SetNodeState(mesh_node_handle, meshNode.InstanceCount);
 		}
-
 	}
 
 	struct BufferWriteKey {
 		uint32 Offset = 0;
 		RenderSystem* render_system = nullptr; RenderOrchestrator* render_orchestrator = nullptr;
-		uint8 Frame = 0, NextFrame = 0;
+		//uint8 Frame = 0, NextFrame = 0;
 		RenderSystem::BufferHandle buffer_handle;
 		GTSL::StaticString<256> Path{ u8"global" };
 		ElementDataHandle ElementHandle;
@@ -394,26 +422,33 @@ public:
 		template<typename T>
 		const BufferWriteKey& operator=(const T& obj) const {
 			if (Offset == ~0u or !validateType<T>()) { return *this; }
-			*reinterpret_cast<T*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = obj;
+			*reinterpret_cast<T*>(render_system->GetBufferPointer(buffer_handle) + Offset) = obj;
+			return *this;
+		}
+
+		const BufferWriteKey& operator=(const BufferWriteKey& other) const {
+			if (Offset == ~0u or render_orchestrator->getElement(ElementHandle).DataType != render_orchestrator->getElement(other.ElementHandle).DataType) { return *this; }
+			auto& element = render_orchestrator->getElement(ElementHandle);
+			GTSL::MemCopy(render_orchestrator->GetSize(element.Mem.TypeHandle), render_system->GetBufferPointer(other.buffer_handle), render_system->GetBufferPointer(buffer_handle) + Offset);
 			return *this;
 		}
 
 		const BufferWriteKey& operator=(const RenderSystem::AccelerationStructureHandle acceleration_structure_handle) const {
 			if (Offset == ~0u or !validateType<RenderSystem::AccelerationStructureHandle>()) { return *this; }
-			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, render_system->GetCurrentFrame());
+			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle) + Offset) = render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, render_system->GetCurrentFrame());
 			//render_orchestrator->addPendingWrite(render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, NextFrame), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
 		
 		const BufferWriteKey& operator=(const RenderSystem::BufferHandle obj) const {
 			if (Offset == ~0u or !validateType<RenderSystem::BufferHandle>()) { return *this; }
-			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle, Frame) + Offset) = render_system->GetBufferAddress(obj);
+			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle) + Offset) = render_system->GetBufferAddress(obj);
 			//render_orchestrator->addPendingWrite(render_system->GetBufferAddress(obj, NextFrame, true), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
 
 		const BufferWriteKey& operator=(const DataKeyHandle obj) const {
-			return (*this).operator=(render_orchestrator->dataKeys[obj()].Buffer);
+			return (*this).operator=(render_orchestrator->dataKeys[obj()].Buffer[1]); // When copying copy destination buffer address
 		}
 
 		template<typename T>
@@ -576,35 +611,6 @@ public:
 		return pipelineBindNode;
 	}
 
-	//NodeHandle AddDataNode(Id layerName, NodeHandle left_node_handle, NodeHandle parent, const GTSL::StringView scope, const GTSL::StringView data_type_name, bool useCounter = false) {
-	//	auto nodeHandle = addInternalNode<DataNode>(layerName(), left_node_handle, parent);
-	//
-	//	if(!nodeHandle) { return nodeHandle.Get(); }
-	//
-	//	auto handle = addMember(scope, data_type_name, static_cast<GTSL::StringView>(layerName));
-	//
-	//	if(!handle) {
-	//		BE_LOG_ERROR(u8"Ooops");
-	//		return nodeHandle.Get();
-	//	}
-	//
-	//	auto dataKeyHandle = MakeDataKey();
-	//	auto&dataKey = getDataKey(dataKeyHandle);
-	//	dataKey.Buffer = renderBuffers[0].BufferHandle;
-	//	dataKey.Offset = renderDataOffset;
-	//	dataKey.Handle = handle.Get();
-	//	renderDataOffset += GetSize(handle.Get());
-	//
-	//	dataKey.Nodes.EmplaceBack(nodeHandle.Get());
-	//	UpdateDataKey(dataKeyHandle);
-	//
-	//	getNode(nodeHandle.Get()).Name = GTSL::StringView(layerName);
-	//	auto& node = getPrivateNode<DataNode>(nodeHandle.Get());
-	//	node.UseCounter = useCounter;
-	//
-	//	return nodeHandle.Get();
-	//}
-
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
 	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES], transferCommandList[MAX_CONCURRENT_FRAMES];
 
@@ -621,23 +627,14 @@ public:
 		return nodeHandle.Get();
 	}
 	
-	void addPendingWrite(RenderSystem* render_system, RenderSystem::BufferHandle buffer_handle, uint8 current_frame, uint8 next_frame) {
-		if(!render_system->IsUpdatable(buffer_handle)) { return; }
-
-		auto key = uint64(buffer_handle()) << 32;
+	void addPendingWrite(RenderSystem* render_system, RenderSystem::BufferHandle source_buffer_handle, RenderSystem::BufferHandle destination_buffer_handle) {
+		auto key = uint64(source_buffer_handle()) << 32;
 
 		auto write = pendingWrites.TryEmplace(key);
 
-		write.Get().FrameCountdown[current_frame] = true;
-		write.Get().Buffer = buffer_handle;
-
-		//if (readFrom) {
-		//}
-		//else {
-		//	*reinterpret_cast<T*>(buffer[0] + offsets[0]) = val;
-		//	write.WhereToRead = buffer[0] + offsets[0];
-		//	offsets[0] += sizeof(T);
-		//}
+		write.Get().FrameCountdown[render_system->GetCurrentFrame()] = true;
+		write.Get().Buffer[0] = source_buffer_handle;
+		write.Get().Buffer[1] = destination_buffer_handle;
 	}
 
 	NodeHandle AddDataNode(NodeHandle left_node_handle, NodeHandle parent, const DataKeyHandle data_key_handle) {
@@ -671,13 +668,13 @@ public:
 		BufferWriteKey buffer_write_key;
 		buffer_write_key.render_system = render_system;
 		buffer_write_key.render_orchestrator = this;
-		buffer_write_key.Frame = render_system->GetCurrentFrame();
-		buffer_write_key.NextFrame = (render_system->GetCurrentFrame() + 1) % render_system->GetPipelinedFrames();
+		//buffer_write_key.Frame = render_system->GetCurrentFrame();
+		//buffer_write_key.NextFrame = (render_system->GetCurrentFrame() + 1) % render_system->GetPipelinedFrames();
 		const auto& dataKey = getDataKey(node.DataKey);
-		buffer_write_key.buffer_handle = dataKey.Buffer;
+		buffer_write_key.buffer_handle = dataKey.Buffer[0];
 		buffer_write_key.Offset = dataKey.Offset;
 		buffer_write_key.ElementHandle = dataKey.Handle;
-		addPendingWrite(render_system, dataKey.Buffer, buffer_write_key.Frame, buffer_write_key.NextFrame);
+		addPendingWrite(render_system, dataKey.Buffer[0], dataKey.Buffer[1]);
 		return buffer_write_key;
 	}
 
@@ -686,17 +683,17 @@ public:
 		BufferWriteKey buffer_write_key;
 		buffer_write_key.render_system = render_system;
 		buffer_write_key.render_orchestrator = this;
-		if (render_system->IsUpdatable(dataKey.Buffer)) {
-			buffer_write_key.Frame = render_system->GetCurrentFrame();
-			buffer_write_key.NextFrame = (render_system->GetCurrentFrame() + 1) % render_system->GetPipelinedFrames();
-		}
-		else {
-			buffer_write_key.Frame = 0;
-			buffer_write_key.NextFrame = 0;
-		}
-		buffer_write_key.buffer_handle = dataKey.Buffer;
+		//if (render_system->IsUpdatable(dataKey.Buffer)) {
+		//	buffer_write_key.Frame = render_system->GetCurrentFrame();
+		//	buffer_write_key.NextFrame = (render_system->GetCurrentFrame() + 1) % render_system->GetPipelinedFrames();
+		//}
+		//else {
+		//	buffer_write_key.Frame = 0;
+		//	buffer_write_key.NextFrame = 0;
+		//}
+		buffer_write_key.buffer_handle = dataKey.Buffer[0];
 		buffer_write_key.ElementHandle = dataKey.Handle;
-		addPendingWrite(render_system, dataKey.Buffer, buffer_write_key.Frame, buffer_write_key.NextFrame);
+		addPendingWrite(render_system, dataKey.Buffer[0], dataKey.Buffer[1]);
 		return buffer_write_key;
 	}
 
@@ -1037,33 +1034,21 @@ public:
 
 			return dt.TyEl.Size * e.Mem.Multiplier; //todo: align
 		};
-
-		if (render_system->IsUpdatable(dataKey.Buffer)) {
-			string += u8"Frame: 0\n";
-			beginPointer = render_system->GetBufferPointer(dataKey.Buffer, 0);
-			walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
-			string.Resize(0);
-			string += u8"\nFrame: 1\n";
-			beginPointer = render_system->GetBufferPointer(dataKey.Buffer, 1);
-			walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
-		} else {
-			beginPointer = render_system->GetBufferPointer(dataKey.Buffer, 0);
-			string += u8"\nAddress: "; GTSL::ToString(string, static_cast<uint64>(render_system->GetBufferAddress(dataKey.Buffer)));
-			string += u8"\n";
-			walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
-		}
+		
+		beginPointer = render_system->GetBufferPointer(dataKey.Buffer[0]);
+		string += u8"\nAddress: "; GTSL::ToString(string, static_cast<uint64>(render_system->GetBufferAddress(dataKey.Buffer[0])));
+		string += u8"\n";
+		walkTree(ElementDataHandle(dataKey.Handle), 0, startOffset, walkTree);
 
 		BE_LOG_MESSAGE(string);
-	}
-
-	GAL::DeviceAddress GetAddress(RenderSystem* render_system, const DataKeyHandle data_key_handle) const {
-		return render_system->GetBufferAddress(dataKeys[data_key_handle()].Buffer);
 	}
 
 	NodeHandle AddSquare(const NodeHandle parent_node_handle) {
 		auto nodeHandle = addInternalNode<DrawData>(0, parent_node_handle);
 
 		if(!nodeHandle) { return nodeHandle.Get(); }
+
+		getPrivateNode<DrawData>(nodeHandle.Get()).VertexCount = 6;
 
 		SetNodeState(nodeHandle.Get(), false);
 		return nodeHandle.Get();
@@ -1287,7 +1272,7 @@ private:
 
 	struct DataKeyData {
 		uint32 Offset = 0;
-		RenderSystem::BufferHandle Buffer;
+		RenderSystem::BufferHandle Buffer[2];
 		GTSL::StaticVector<NodeHandle, 8> Nodes;
 		ElementDataHandle Handle;
 	};
@@ -1309,7 +1294,7 @@ private:
 	void onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem*, ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
 
 	struct DrawData {
-		uint32 InstanceCount = 0;
+		uint32 VertexCount = 0, InstanceCount = 0;
 	};
 
 	struct VertexBufferBindData {
@@ -2018,7 +2003,7 @@ private:
 	byte* buffer[MAX_CONCURRENT_FRAMES]; uint32 offsets[MAX_CONCURRENT_FRAMES]{ 0 };
 
 	struct PendingWriteData {
-		RenderSystem::BufferHandle Buffer;
+		RenderSystem::BufferHandle Buffer[2];
 		bool FrameCountdown[MAX_CONCURRENT_FRAMES] = { false };
 	};
 	GTSL::HashMap<uint64, PendingWriteData, BE::PAR> pendingWrites;
@@ -2028,6 +2013,8 @@ private:
 	static constexpr bool INVERSE_Z = true;
 
 	GTSL::StaticVector<Id, 8> renderPassesGuide;
+
+	GTSL::Math::RandomSeed randomA, randomB;
 
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
@@ -2064,10 +2051,10 @@ public:
 		renderOrchestrator->CreateMember2(u8"global.UI", u8"FontData", UI_FONT_DATA);
 
 		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIInstance", UI_INSTANCE_DATA);
-		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIInstance[16]", true);
+		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIInstance[16]");
 
 		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIData", UI_DATA);
-		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIData", true);
+		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIData");
 
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
@@ -2076,7 +2063,7 @@ public:
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UIRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
-			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey);
+			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey, true);
 
 			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
 			textMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UIText"));
@@ -2234,6 +2221,8 @@ public:
 					bwk[index][u8"transform"] = primitiveMatrix;
 					bwk[index][u8"color"] = GTSL::Vector4(primitive.Color);
 					bwk[index][u8"roundness"] = primitive.Rounding;
+					bwk[index][u8"derivedTypeIndex"][0] = 0; // Text
+					bwk[index][u8"derivedTypeIndex"][1] = glyphIndex; // Char
 
 					// now advance cursors for next glyph (note that advance is number of 1/64 pixels)
 					x += (characters[glyphIndex].Advance >> 6); // bitshift by 6 to get value in pixels (2^6 = 64)
@@ -2258,7 +2247,7 @@ public:
 	}
 
 	void OnFontLoad(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, FontResourceManager::FontData font_data, GTSL::Buffer<BE::PAR> buffer) {
-		auto fontDataDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"FontData", false);
+		auto fontDataDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"FontData");
 
 		RenderOrchestrator::BufferWriteKey uiData = render_orchestrator->GetBufferWriteKey(render_system, uiDataDataKey);
 		uiData[u8"fontData"][loadedFonts++] = fontDataDataKey;
@@ -2268,7 +2257,7 @@ public:
 		uint32 numberOfGlyphs; buffer >> numberOfGlyphs;
 
 		for(uint32 gi = 0; gi < numberOfGlyphs; ++gi) {
-			auto glyphReferenceDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"GlyphData", false);
+			auto glyphReferenceDataKey = render_orchestrator->MakeDataKey(render_system, u8"global.UI", u8"GlyphData");
 
 			fontData[u8"glyphs"][gi] = glyphReferenceDataKey;
 

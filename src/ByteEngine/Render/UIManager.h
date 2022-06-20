@@ -13,6 +13,7 @@
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Game/System.hpp"
+#include "ByteEngine/Resources/FontResourceManager.h"
 #include "GTSL/JSON.hpp"
 
 enum class Alignments : uint8 {
@@ -42,7 +43,8 @@ enum class SizingPolicies : uint8 {
  */
 enum class ScalingPolicies : uint8 {
 	FILL,
-	SET_ASPECT_RATIO
+	SET_ASPECT_RATIO,
+	AUTO
 };
 
 /**
@@ -67,6 +69,8 @@ enum class SpacingPolicy : uint8 {
 class UIManager : public BE::System {
 public:
 	DECLARE_BE_TYPE(UIElement);
+
+	DECLARE_BE_TASK(OnFontLoad, BE_RESOURCES(), FontResourceManager::FontData, GTSL::Buffer<BE::PAR>);
 
 	explicit UIManager(const InitializeInfo& initializeInfo);
 
@@ -150,6 +154,9 @@ public:
 		auto& primitive = getPrimitive(ui_element_handle);
 		textPrimitives[primitive.DerivedTypeIndex].Font = font_name;
 		flagsAsDirty(ui_element_handle);
+
+		auto* fontResourceManager = GetApplicationManager()->GetSystem<FontResourceManager>(u8"FontResourceManager");
+		fontResourceManager->LoadFont(font_name, OnFontLoadTaskHandle);
 	}
 
 	UIElementHandle AddCanvas(const GTSL::StringView json_ui_text, const UIElementHandle ui_element_handle = UIElementHandle()) {
@@ -161,6 +168,8 @@ public:
 		SetSizingPolicy(canvasHandle, 1, SizingPolicies::FROM_SCREEN);
 
 		auto processElement = [&](UIElementHandle parent_element_handle, const GTSL::StringView name, GTSL::JSONMember element, auto&& self) -> void {
+			if(const auto e = element[u8"enabled"]; e && !e.GetBool()) { return; }
+
 			auto typeString = element[u8"type"].GetStringView();
 
 			PrimitiveData::PrimitiveType type = PrimitiveData::PrimitiveType::NONE;
@@ -440,7 +449,14 @@ private:
 		case PrimitiveData::PrimitiveType::CANVAS: break;
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
 		case PrimitiveData::PrimitiveType::SQUARE: break;
-		case PrimitiveData::PrimitiveType::TEXT: primitive.DerivedTypeIndex = textPrimitives.Emplace(GetPersistentAllocator()); break;
+		case PrimitiveData::PrimitiveType::TEXT: {
+			primitive.SizingPolicies[0] = SizingPolicies::FROM_PARENT_CONTAINER;
+			primitive.SizingPolicies[1] = SizingPolicies::FROM_SCREEN;
+			primitive.ScalingPolicies[0] = ScalingPolicies::FILL;
+			primitive.ScalingPolicies[1] = ScalingPolicies::AUTO;
+			primitive.DerivedTypeIndex = textPrimitives.Emplace(GetPersistentAllocator());
+			break;
+		}
 		case PrimitiveData::PrimitiveType::CURVE: break;
 		}
 
@@ -461,4 +477,21 @@ private:
 	void flagsAsDirty(const UIElementHandle element_handle) {
 		getPrimitive(element_handle).isDirty = true;
 	}
+
+	struct FontData {
+		FontData(const BE::PAR& allocator) : Characters(128, allocator) {}
+
+		GTSL::Vector<FontResourceManager::Character, BE::PAR> Characters;
+	};
+	GTSL::HashMap<Id, FontData, BE::PAR> fonts;
+
+	void OnFontLoad(TaskInfo, FontResourceManager::FontData font_data, GTSL::Buffer<BE::PAR> font_buffer);
 };
+
+inline void UIManager::OnFontLoad(TaskInfo, FontResourceManager::FontData font_data, GTSL::Buffer<BE::PAR> font_buffer) {
+	auto& font = fonts.Emplace(font_data.GetName(), GetPersistentAllocator());
+
+	for(uint32 i = 0; i < font_data.Characters.Length; ++i) {
+		font.Characters.EmplaceBack(font_data.Characters.array[i]);
+	}
+}

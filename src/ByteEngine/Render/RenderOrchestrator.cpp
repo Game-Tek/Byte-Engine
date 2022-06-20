@@ -134,13 +134,14 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	{
 		tryAddElement(u8"global", u8"Common", ElementData::ElementType::SCOPE);
 		CreateMember2(u8"global.Common", u8"GlobalData", GLOBAL_DATA);
-		globalDataDataKey = MakeDataKey(renderSystem, u8"global.Common", u8"GlobalData", true);
+		globalDataDataKey = MakeDataKey(renderSystem, u8"global.Common", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
+		CreateMember2(u8"global.Common", u8"ViewData", VIEW_DATA);
 		cameraMatricesHandle = CreateMember2(u8"global.Common", u8"CameraData", CAMERA_DATA);
-		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global.Common", u8"CameraData", true);
+		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global.Common", u8"CameraData");
 		//cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
 
@@ -152,13 +153,13 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"WorldPosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		}
 
-		AddAttachment(u8"RenderDepth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
+		AddAttachment(u8"Depth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
 	}
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
@@ -172,6 +173,8 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	renderPassesGuide.EmplaceBack(u8"DirectionalShadow");
 	renderPassesGuide.EmplaceBack(u8"UIRenderPass");
 	renderPassesGuide.EmplaceBack(u8"GammaCorrection");
+
+	randomB(); randomB(); randomB();
 }
 
 void RenderOrchestrator::Setup(TaskInfo taskInfo) {
@@ -203,6 +206,15 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	bool debugRenderNodes = BE::Application::Get()->GetBoolOption(u8"debugRenderNodes");
 
 	{
+		auto bwk = GetBufferWriteKey(renderSystem, globalDataDataKey);
+		bwk[u8"frameIndex"] = 0u;
+		bwk[u8"elapsedTime"] = BE::Application::Get()->GetClock()->GetElapsedTime().As<float32, GTSL::Seconds>();
+		bwk[u8"deltaTime"] = BE::Application::Get()->GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+		bwk[u8"random"][0] = static_cast<uint32>(randomA()); bwk[u8"random"][1] = static_cast<uint32>(randomB());
+		bwk[u8"random"][2] = static_cast<uint32>(randomA()); bwk[u8"random"][3] = static_cast<uint32>(randomB());
+	}
+
+	{
 		auto* cameraSystem = taskInfo.ApplicationManager->GetSystem<CameraSystem>(u8"CameraSystem");
 
 		auto fovs = cameraSystem->GetFieldOfViews();
@@ -225,16 +237,21 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto viewMatrix = cameraSystem->GetCameraTransform();
 
-			auto key = GetBufferWriteKey(renderSystem, cameraDataKeyHandle);
-			key[u8"view"] = viewMatrix;
-			key[u8"proj"] = projectionMatrix;
-			key[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
-			key[u8"projInverse"] = invertedProjectionMatrix;
-			key[u8"vp"] = projectionMatrix * viewMatrix;
-			key[u8"vpInverse"] = GTSL::Math::Inverse(viewMatrix) * invertedProjectionMatrix;
-			key[u8"near"] = nearValue;
-			key[u8"far"] = farValue;
-			key[u8"extent"] = renderArea;
+			auto cameraData = GetBufferWriteKey(renderSystem, cameraDataKeyHandle);
+			//cameraData[u8"viewHistory"][2] = cameraData[u8"viewHistory"][1];
+			//cameraData[u8"viewHistory"][1] = cameraData[u8"viewHistory"][0];
+
+			auto currentView = cameraData[u8"viewHistory"][0];
+
+			currentView[u8"view"] = viewMatrix;
+			currentView[u8"proj"] = projectionMatrix;
+			currentView[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
+			currentView[u8"projInverse"] = invertedProjectionMatrix;
+			currentView[u8"vp"] = projectionMatrix * viewMatrix;
+			currentView[u8"vpInverse"] = GTSL::Math::Inverse(viewMatrix) * invertedProjectionMatrix;
+			currentView[u8"near"] = nearValue;
+			currentView[u8"far"] = farValue;
+			currentView[u8"extent"] = renderArea;
 		}
 		else { //disable rendering for everything which depends on this view
 			//SetNodeState(cameraDataNode, false);
@@ -309,7 +326,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	uint32 lastInvalidLevel = 0xFFFFFFFF;
 
-	GTSL::StaticVector<uint32, 16> counterStack;
+	uint32 counterStack[16] = { 0u };
+	uint32 counterI = 0;
 
 	if(isRenderTreeDirty) { // If render tree is dirty then every command buffer for every frame has to be updated
 		if(BE::Application::Get()->GetBoolOption(u8"optimizeRenderTree")) {
@@ -351,25 +369,20 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 				if (layerData.DataKey) {
 					if (layerData.UseCounter) {
-						counterStack.EmplaceBack();
+						++counterI;
 					}
 
 					dataStreamHandle = renderState.AddDataStream(layerData.DataKey);
 					GAL::DeviceAddress address;
 					const auto& dataKey = getDataKey(layerData.DataKey);
 
-					if (renderSystem->IsUpdatable(dataKey.Buffer)) {
-						address = renderSystem->GetBufferAddress(dataKey.Buffer, renderSystem->GetCurrentFrame(), true);
-					}
-					else {
-						address = renderSystem->GetBufferAddress(dataKey.Buffer);
-					}
+					address = renderSystem->GetBufferAddress(dataKey.Buffer[1]); // Get READ buffer handle
 
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
-				}
 
-				PrintMember(layerData.DataKey, renderSystem);
+					PrintMember(layerData.DataKey, renderSystem);
+				}
 
 				break;
 			}
@@ -415,7 +428,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				for (uint32 i = 0, offset = 0; i < 3; ++i) {
 					shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
 					shaderTableDescriptors[i].EntrySize = GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
-					shaderTableDescriptors[i].Address = GetAddress(renderSystem, pipelineData.ShaderBindingTableBuffer) + offset;
+					shaderTableDescriptors[i].Address = renderSystem->GetBufferAddress(getDataKey(pipelineData.ShaderBindingTableBuffer).Buffer[1]) + offset;
 
 					offset += GTSL::Math::RoundUpByPowerOf2(GetSize(pipelineData.RayTracingData.ShaderGroups[i].TableHandle), renderSystem->GetShaderGroupHandleAlignment());
 				}
@@ -447,8 +460,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 			case RTT::GetTypeIndex<MeshData>(): {
 				const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
-				commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack.back(), meshData.IndexOffset, meshData.VertexOffset);
-				counterStack.back() += meshData.InstanceCount;
+				commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack[counterI - 1], meshData.IndexOffset, meshData.VertexOffset);
+				counterStack[counterI - 1] += meshData.InstanceCount;
 
 				if(debugRenderNodes) {
 					auto& shaderGroup = shaderGroups[renderState.BoundShaderGroupIndex];
@@ -473,7 +486,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 			case RTT::GetTypeIndex<DrawData>(): {
 				const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
-				commandBuffer.Draw(renderSystem->GetRenderDevice(), 6, draw_data.InstanceCount);
+				commandBuffer.Draw(renderSystem->GetRenderDevice(), draw_data.VertexCount, draw_data.InstanceCount, counterStack[counterI - 1]);
+
+				counterStack[counterI - 1] += draw_data.InstanceCount;
+
 				break;
 			}
 			case RTT::GetTypeIndex<RenderPassData>(): {
@@ -535,7 +551,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				renderState.PopData();
 
 				if(node.UseCounter) {
-					counterStack.PopBack();
+					--counterI;
+					counterStack[counterI] = 0u;
 				}
 
 				if constexpr (BE_DEBUG) {
@@ -587,6 +604,25 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	}
 
 	{
+		auto processPendingWrite = [&](PendingWriteData& pending_write_data) {
+			bool c = pending_write_data.FrameCountdown[currentFrame], b = pending_write_data.FrameCountdown[beforeFrame];
+			
+			if (c) {
+				renderSystem->AddBufferUpdate(transferCommandList[currentFrame], pending_write_data.Buffer[0], pending_write_data.Buffer[1]);
+				pending_write_data.FrameCountdown[beforeFrame] = false;
+				pending_write_data.FrameCountdown[currentFrame] = false;
+				return true;
+			}
+	
+			//pending_write_data.FrameCountdown[currentFrame] = false;
+	
+			return false;
+		};
+	
+		Skim(pendingWrites, processPendingWrite, GetPersistentAllocator());
+	}
+
+	{
 		renderSystem->StartCommandList(transferCommandList[currentFrame]);
 		renderSystem->EndCommandList(transferCommandList[currentFrame]);
 
@@ -609,25 +645,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		renderSystem->Present(GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem"), { graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
 	}
 
-	{
-		auto processPendingWrite = [&](PendingWriteData& pending_write_data) {
-			bool c = pending_write_data.FrameCountdown[currentFrame], b = pending_write_data.FrameCountdown[beforeFrame];
-			
-			if (c) {
-				auto range = renderSystem->GetBufferPointer(pending_write_data.Buffer, currentFrame);
-				GTSL::MemCopy(renderSystem->GetBufferRange(pending_write_data.Buffer).Bytes(), range, renderSystem->GetBufferPointer(pending_write_data.Buffer, beforeFrame));
-				pending_write_data.FrameCountdown[beforeFrame] = false;
-				pending_write_data.FrameCountdown[currentFrame] = false;
-				return true;
-			}
-
-			//pending_write_data.FrameCountdown[currentFrame] = false;
-
-			return false;
-		};
-
-		Skim(pendingWrites, processPendingWrite, GetPersistentAllocator());
-	}
+	//TODO: wait on transfer work to start next frame, or else reads will be corrupted since, next frame may have started
 }
 
 RenderModelHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_instance_name) {
@@ -726,7 +744,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		}
 	}
 
-	auto ddd = MakeDataKey(renderSystem, scope, u8"RenderPassData", false);
+	auto ddd = MakeDataKey(renderSystem, scope, u8"RenderPassData");
 	//auto renderPassDataNode = AddDataNode(renderPassName, leftNodeHandle, parent_node_handle, scope, u8"RenderPassData");
 	auto renderPassDataNode = AddDataNode(leftNodeHandle, parent_node_handle, ddd);
 	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassDataNode);
@@ -1383,7 +1401,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		GTSL::StaticString<64> scope(u8"global"); scope << u8"." << GTSL::StringView(shader_group_info.Name);
 
 		auto materialDataMember = RegisterType(scope, u8"ShaderParametersData", members);
-		sg.Buffer = MakeDataKey(renderSystem, scope, u8"ShaderParametersData[4]", true, sg.Buffer); // Create shader group data in array, with an element for each instance
+		sg.Buffer = MakeDataKey(renderSystem, scope, u8"ShaderParametersData[4]", sg.Buffer); // Create shader group data in array, with an element for each instance
 
 		auto bwk = GetBufferWriteKey(renderSystem, sg.Buffer);
 
@@ -1391,7 +1409,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			if(!shaderGroupInstanceByName.Find(Id(i.Name))) { continue; }
 			auto& instance = shaderGroupInstances[shaderGroupInstanceByName[Id(i.Name)]];
 
-			WriteUpdateKey(instance.UpdateKey, uint32(ii));
+			WriteUpdateKey(instance.UpdateKey, uint32(ii)); // TODO: !! NO BUFFER NOTIFY WHEN UPDATE KEY WRITE; BECAUSE NOTIFICATIONS NO LONGER OCCUR ON WRITE BUT WHEN ASKING FOR BWK
 
 			CopyDataKey(instance.DataKey, sg.Buffer);
 
@@ -1445,8 +1463,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			++ii;
 		}
-
-		PrintMember(sg.Buffer, renderSystem);
 	}
 
 	for (auto& e : shaderBundles) {
@@ -1474,7 +1490,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				{ &rtPipelineData.ShaderGroups[3].TableHandle, tablePerGroup[3], u8"CallableTable", u8"callableTable", renderSystem->GetShaderGroupBaseAlignment()},
 			};
 			auto sbtMemeber = RegisterType(GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", tables);
-			pipelineData.ShaderBindingTableBuffer = MakeDataKey(renderSystem, GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", true, pipelineData.ShaderBindingTableBuffer, GAL::BufferUses::SHADER_BINDING_TABLE);
+			pipelineData.ShaderBindingTableBuffer = MakeDataKey(renderSystem, GTSL::StaticString<128>(u8"global") << u8"." << GTSL::StringView(shader_group_info.Name), u8"ShaderTableData", pipelineData.ShaderBindingTableBuffer, GAL::BufferUses::SHADER_BINDING_TABLE);
 
 			auto bWK = GetBufferWriteKey(renderSystem, pipelineData.ShaderBindingTableBuffer);
 
@@ -1483,7 +1499,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				auto table = bWK[tables[shaderGroupIndex].Name];
 				for (uint32 i = 0; i < groupData.ShaderCount; ++i, ++shaderCount) {
 					table[u8"shaderHandle"] = shaderGroupHandlesBuffer[shaderCount];
-					table[u8"materialData"] = GetAddress(renderSystem, sg.Buffer); //todo: wrong
+					//table[u8"materialData"] = GetAddress(renderSystem, sg.Buffer); //todo: wrong
 
 					uint64 shaderHandleHash = 0; GTSL::StaticString<128> string(u8"S.H: "); string += shader_group_info.Name; string << u8", "; string += shaders[pipelineData.Shaders[shaderCount]].Name << u8": ";
 

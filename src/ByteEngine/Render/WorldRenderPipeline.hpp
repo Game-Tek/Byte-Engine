@@ -83,7 +83,7 @@ private:
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
-	RenderSystem::BufferHandle vertexBuffer, indexBuffer;
+	RenderSystem::BufferHandle sourceVertexBuffer, destinationVertexBuffer, sourceIndexBuffer, destinationIndexBuffer;
 	uint32 vertexComponentsPerStream = 0, indicesInBuffer = 0;
 
 	struct MaterialData {
@@ -154,9 +154,9 @@ private:
 	void onAddLight(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle) {
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
 		bwk[u8"pointLightsLength"] = ++lights;
-		bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
-		bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(1, 1, 1);
-		bwk[u8"pointLights"][light_handle()][u8"intensity"] = 5.f;
+		//bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
+		//bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(1, 1, 1);
+		//bwk[u8"pointLights"][light_handle()][u8"intensity"] = 5.f;
 	}
 
 	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity) {

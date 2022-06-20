@@ -40,7 +40,7 @@ public:
 		AddVertexSurfaceInterfaceBlockDeclaration(pipeline, uiScope, { {u8"vec2f", u8"vertexPos"}, {u8"vec2f", u8"vertexUV"}, {u8"uint32", u8"instanceIndex"} });
 		//AddVertexSurfaceInterfaceBlockDeclaration1(pipeline, uiScope, {  });
 		AddPushConstantDeclaration(pipeline, uiScope, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"UIData*", u8"ui"}, { u8"UIInstanceData*", u8"uiInstances" }});
-		uiRenderPassScopeHandle = AddRenderPassDeclaration(pipeline, u8"UIRenderPass", { { u8"TextureReference", u8"color" } });
+		uiRenderPassScopeHandle = AddRenderPassDeclaration(pipeline, u8"UIRenderPass", { { u8"TextureReference", u8"Color" } });
 
 		shader_generation_data.Scopes.EmplaceBack(uiRenderPassScopeHandle);
 
@@ -122,8 +122,8 @@ public:
 
 			pipeline->AddCodeToFunction(mainFunctionHandle, u8"const uint32 BE_INSTANCE_INDEX = instanceIndex; const vec2f BE_UV = vertexUV;");
 
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"FontData* font = pushConstantBlock.ui.fontData[0];");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"GlyphData* glyph = font.glyphs[0];");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"FontData* font = pushConstantBlock.ui.fontData[pushConstantBlock.ui.textData[pushConstantBlock.uiInstances[BE_INSTANCE_INDEX].derivedTypeIndex[0]].fontIndex];");
+			pipeline->AddCodeToFunction(mainFunctionHandle, u8"GlyphData* glyph = font.glyphs[pushConstantBlock.uiInstances[BE_INSTANCE_INDEX].derivedTypeIndex[1]];");
 			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 shortestDistance = 1000000.0f; vec2f point = BE_UV * 0.5f + 0.5f, a = point, b = point;");
 
 			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 c = 0; c < 2; ++c) {");

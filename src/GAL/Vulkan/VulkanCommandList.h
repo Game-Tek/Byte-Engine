@@ -175,8 +175,8 @@ namespace GAL {
 			renderDevice->VkCmdPushConstants(commandBuffer, pipelineLayout.GetVkPipelineLayout(), ToVulkan(shaderStages), offset, static_cast<GTSL::uint32>(data.Bytes()), data.begin());
 		}
 		
-		void Draw(const VulkanRenderDevice* renderDevice, uint32_t vertex_count, uint32_t instance_count = 1) const {
-			renderDevice->VkCmdDraw(commandBuffer, vertex_count, instance_count, 0, 0);
+		void Draw(const VulkanRenderDevice* renderDevice, uint32_t vertex_count, uint32_t instance_count = 1, uint32_t base_instance_index = 0) const {
+			renderDevice->VkCmdDraw(commandBuffer, vertex_count, instance_count, 0, base_instance_index);
 		}
 
 		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount, uint32_t first_instance_index, uint32 index_offset, uint32 vertex_offset) const {

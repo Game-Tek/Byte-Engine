@@ -32,8 +32,10 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto updateLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
-	vertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
-	indexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, false, {});
+	sourceVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, true, {});
+	destinationVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});
+	sourceIndexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, {});
+	destinationIndexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});
 
 	RenderOrchestrator::NodeHandle renderPassNodeHandle;
 
@@ -44,15 +46,15 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(u8"Normal", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"WorldPosition", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"RenderDepth", GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(u8"Position", GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass);
 	}
 	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(u8"Visibility", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"RenderDepth", GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass);
 
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
@@ -68,22 +70,24 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"pixelBuffer");
 		renderOrchestrator->RegisterType(u8"global", u8"VisibilityData", members);
 
-		visibilityDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"VisibilityData", false);
+		visibilityDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"VisibilityData");
 		renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"VisibilityDataLightingDataNode", visibilityDataKey);
 
 		//pixelXY stores blocks per material that determine which pixels need to be painted with each material
-		auto pielBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"vec2s[2073600]", false); //1920 * 1080
+		auto pielBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"vec2s[2073600]"); //1920 * 1080
 
 		{
 			auto bwk = renderOrchestrator->GetBufferWriteKey(renderSystem, visibilityDataKey);
 
 			const auto vertexElementsThatFitInBuffer = ((1024 * 1024 * 4) / 56u);
 
-			bwk[u8"positionStream"] = vertexBuffer;
-			bwk[u8"normalStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 1 * vertexElementsThatFitInBuffer); //todo: if buffer is updatable only address for current frame will be set
-			bwk[u8"tangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 2 * vertexElementsThatFitInBuffer);
-			bwk[u8"bitangentStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 3 * vertexElementsThatFitInBuffer);
-			bwk[u8"textureCoordinatesStream"] = renderSystem->MakeAddress(vertexBuffer, 12 * 4 * vertexElementsThatFitInBuffer);
+			auto bufferAddress = renderSystem->GetBufferAddress(destinationVertexBuffer);
+
+			bwk[u8"positionStream"] = bufferAddress;
+			bwk[u8"normalStream"] = bufferAddress + 12 * 1 * vertexElementsThatFitInBuffer; //todo: if buffer is updatable only address for current frame will be set
+			bwk[u8"tangentStream"] = bufferAddress + 12 * 2 * vertexElementsThatFitInBuffer;
+			bwk[u8"bitangentStream"] = bufferAddress + 12 * 3 * vertexElementsThatFitInBuffer;
+			bwk[u8"textureCoordinatesStream"] = bufferAddress + 12 * 4 * vertexElementsThatFitInBuffer;
 			bwk[u8"shaderGroupLength"] = 0u;
 			bwk[u8"pixelBuffer"] = pielBuffer;
 		}
@@ -121,18 +125,18 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass);
 
 	renderOrchestrator->CreateMember2(u8"global", u8"StaticMeshData", INSTANCE_DATA);
-	meshDataBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", true, meshDataBuffer);
+	meshDataBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
 	renderOrchestrator->CreateMember2(u8"global", u8"PointLightData", POINT_LIGHT_DATA);
 	renderOrchestrator->CreateMember2(u8"global", u8"LightingData", LIGHTING_DATA);
 
 	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 
-	lightsDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"LightingData", true);
+	lightsDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"LightingData");
 	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightsDataKey);
 
-	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, vertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
-	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, indexBuffer);
+	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, destinationVertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
+	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, destinationIndexBuffer);
 	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer, true);
 
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
@@ -223,7 +227,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 		resource.ScalingFactor = staticMeshInfo.GetBoundingBox();
 	}
 
-	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(vertexBuffer), indicesInBuffer, render_system->GetBufferRange(indexBuffer), onStaticMeshLoadHandle);
+	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(sourceVertexBuffer), indicesInBuffer, render_system->GetBufferRange(sourceIndexBuffer), onStaticMeshLoadHandle);
 
 	vertexComponentsPerStream += staticMeshInfo.GetVertexCount();
 	indicesInBuffer += staticMeshInfo.GetIndexCount();
@@ -234,12 +238,12 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 
 	auto commandListHandle = render_orchestrator->buildCommandList[render_system->GetCurrentFrame()];
 
-	render_system->UpdateBuffer(commandListHandle, vertexBuffer); render_system->UpdateBuffer(commandListHandle, indexBuffer);
+	render_system->AddBufferUpdate(commandListHandle, sourceVertexBuffer, destinationVertexBuffer); render_system->AddBufferUpdate(commandListHandle, sourceIndexBuffer, destinationIndexBuffer);
 	render_orchestrator->AddVertices(vertexBufferNodeHandle, staticMeshInfo.GetVertexCount());
 	render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
 
 	if (rayTracing) {
-		res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
+		//res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
 		pendingBuilds.EmplaceBack(res.BLAS);
 	}
 

@@ -361,36 +361,29 @@ void RenderSystem::resize(WindowSystem* window_system) {
 	}
 }
 
-RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable, BufferHandle buffer_handle) {
+RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, BufferHandle buffer_handle) {
 	auto doBuffer = [&] {
 		auto& buffer = buffers[buffer_handle()];
 
-		if (buffer.Size < size) {
-			auto frames = updateable ? GetPipelinedFrames() : 1;
+		if (size > buffer.Size) {
+			if (buffer.Buffer.GetVkBuffer()) {
+				buffer.Buffer.Destroy(GetRenderDevice());
 
-			for (uint8 f = 0; f < frames; ++f) {
-				if (buffer.Buffer[f].GetVkBuffer()) {
-					buffer.Buffer[f].Destroy(GetRenderDevice());
-					DeallocateLocalBufferMemory(buffer.Allocation[f]);
+				if (willWriteFromHost && needsStagingBuffer) {
+					DeallocateLocalBufferMemory(buffer.Allocation);
+				} else {
+					DeallocateLocalBufferMemory(buffer.Allocation);
 				}
+			}
 
-				if (willWriteFromHost) {
-					if (needsStagingBuffer) { //create staging buffer
-						if (buffer.Staging[f].GetVkBuffer()) {
-							buffer.Staging[f].Destroy(GetRenderDevice());
-							DeallocateLocalBufferMemory(buffer.StagingAllocation[f]);
-						}
+			if (willWriteFromHost && needsStagingBuffer) {
+				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Buffer, &buffer.Allocation);
+			} else {
+				flags |= GAL::BufferUses::TRANSFER_DESTINATION;				
+				AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer, &buffer.Allocation);
+			}
 
-						AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Staging[f], &buffer.StagingAllocation[f]);
-						buffer.StagingAddresses[f] = buffer.Staging[f].GetAddress(GetRenderDevice());
-
-						flags |= GAL::BufferUses::TRANSFER_DESTINATION;
-					}
-				}
-
-				AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer[f], &buffer.Allocation[f]);
-				buffer.Addresses[f] = buffer.Buffer[f].GetAddress(GetRenderDevice());
-			}			
+			buffer.Addresses = buffer.Buffer.GetAddress(GetRenderDevice());
 
 			buffer.Size = size;
 		}
@@ -406,42 +399,13 @@ RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUs
 	uint32 bufferIndex = buffers.Emplace(); auto& buffer = buffers[bufferIndex];
 
 	buffer_handle = BufferHandle(bufferIndex);
-
-	buffer.isMulti = updateable;
+	
 	buffer.Flags = flags;
 	++buffer.references;
 
 	doBuffer();
 
 	return buffer_handle;
-}
-
-void RenderSystem::SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state)
-{
-	auto& buffer = buffers[bufferHandle()];
-
-	if (buffer.isMulti) {
-		__debugbreak();
-	}
-	
-	if(state) {		
-		if(!buffer.Staging[0].GetVkBuffer()) {//if will write from host and we have no buffer
-			if (needsStagingBuffer) {
-				AllocateScratchBufferMemory(buffer.Size, buffer.Flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE | GAL::BufferUses::STORAGE,
-					&buffer.Staging[0], &buffer.StagingAllocation[0]);
-			}
-		}
-
-		//if will write from host and we have buffer, do nothing
-	} else {
-		if (buffer.Staging[0].GetVkBuffer()) { //if won't write from host and we have a buffer
-			if (needsStagingBuffer) {
-				--buffer.references; //todo: what
-			}
-		}
-
-		//if won't write from host and we have no buffer, do nothing
-	}
 }
 
 void RenderSystem::printError(GTSL::StringView message, const RenderDevice::MessageSeverity messageSeverity) const {

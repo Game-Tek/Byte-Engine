@@ -52,8 +52,6 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);
 
 		if (common_permutation) {
-			pipeline->DeclareFunction(forwardScopeHandle, u8"vec3f", u8"GetCameraPosition", {}, u8"return vec3f(pushConstantBlock.camera.view[0][3], pushConstantBlock.camera.view[1][3], pushConstantBlock.camera.view[2][3]);");
-
 			auto vertexSurfaceInterface = pipeline->DeclareScope(forwardScopeHandle, u8"vertexSurfaceInterface");
 			auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });
 			auto vertexViewSpacePositionHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpacePosition" });
@@ -128,6 +126,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
 				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal()); _instanceIndex = gl_InstanceIndex;", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"tbn = mat3f(normalize(vec3f(GetInstancePosition() * vec4f(TANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(BITANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(NORMAL, 0))));", main.Tokens, GetPersistentAllocator());
@@ -144,10 +143,13 @@ struct ForwardRenderPassPermutation : PermutationManager {
 					pipeline->AddCodeToFunction(mainFunctionHandle, (GTSL::StaticString<256>(e.Type) & e.Name)+ u8"=" + u8"pushConstantBlock.shaderParameters[pushConstantBlock.instances[_instanceIndex].shaderGroupIndex]." + e.Name + u8";");
 				}
 
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_MATRIX = pushConstantBlock.camera.viewHistory[0].view;");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const vec3f BE_CAMERA_POSITION = vec3f(BE_VIEW_MATRIX[0][3], BE_VIEW_MATRIX[1][3], BE_VIEW_MATRIX[2][3]);");
 				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
 				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
 				tokenizeCode(u8"surfaceNormal = vec4f(normalize(tbn * surfaceNormal.xyz), 0);", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); if(!bool(DEBUG)) { for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), surfaceNormal.xyz, l.color * l.intensity, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 1.0f); out_WorldPosition = vec4f(worldSpacePosition, 1); } } else { surfaceColor = vec4f(1.0f); }", main.Tokens, GetPersistentAllocator());
+				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); if(!bool(DEBUG)) { for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, BE_CAMERA_POSITION, GetSurfaceWorldSpacePosition(), surfaceNormal.xyz, l.color * l.intensity, normalize(BE_CAMERA_POSITION - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 1.0f); out_WorldPosition = vec4f(worldSpacePosition, 1); } } else { surfaceColor = vec4f(1.0f); }", main.Tokens, GetPersistentAllocator());
 				//tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
 
 				break;

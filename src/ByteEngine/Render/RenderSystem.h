@@ -30,14 +30,10 @@ public:
 	uint8 GetPipelinedFrames() const { return pipelinedFrames; }
 	GAL::FormatDescriptor GetSwapchainFormat() const { return swapchainFormat; }
 	TaskHandle<GTSL::Extent2D> GetResizeHandle() const { return resizeHandle; }
-	bool IsUpdatable(BufferHandle buffer_handle) const { return buffers[buffer_handle()].isMulti; }
+
 	GTSL::Range<byte*> GetBufferRange(BufferHandle buffer_handle) const {
 		const auto& buffer = buffers[buffer_handle()];
-		return { buffer.Size, (byte*)buffer.StagingAllocation[0].Data };
-	}
-
-	[[nodiscard]] GAL::DeviceAddress MakeAddress(BufferHandle buffer_handle, uint32 offset) const {
-		return buffers[buffer_handle()].Addresses[0] + offset;
+		return { buffer.Size, (byte*)buffer.Allocation.Data };
 	}
 
 	MAKE_HANDLE(uint32, CommandList);
@@ -101,17 +97,9 @@ public:
 			GTSL::Vector<CommandList::BarrierData, BE::TransientAllocatorReference> barriers(commandListData.bufferCopyDatas.GetLength(), GetTransientAllocator());
 
 			for (auto& e : commandListData.bufferCopyDatas) {
-				auto& buffer = buffers[e.BufferHandle()];
+				commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffers[e.SourceBufferHandle()].Buffer, e.SourceOffset, buffers[e.DestinationBufferHandle()].Buffer, e.DestinationOffset, buffers[e.SourceBufferHandle()].Size);
 
-				if (buffer.isMulti) {
-					__debugbreak();
-				}
-				else {
-					commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffer.Staging[0], e.Offset, buffer.Buffer[0], 0, buffer.Size); //TODO: offset
-					--buffer.references;
-				}
-
-				auto& barrier = barriers.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::BufferBarrier{ &buffer.Buffer[0], buffer.Size });
+				//auto& barrier = barriers.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::BufferBarrier{ &buffer.Buffer, buffer.Size });
 			}
 
 			commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
@@ -156,11 +144,11 @@ public:
 				auto& tlas = accelerationStructures[handle()].TopLevel;
 
 				buildData.DestinationAccelerationStructure = tlas.AccelerationStructures[GetCurrentFrame()];
-				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer, true);
+				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 
 				//GTSL::Skim(tlas.PendingUpdates, [&](decltype(tlas.PendingUpdates)::value_type& e) { bool val; e.Second.Get(GetCurrentFrame(), val); if (val) { GTSL::MemCopy(64ull, GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()) + e.First * 64, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()) + e.First * 64); return true; } return false; });
-				GTSL::MemCopy(64ull * as.PrimitiveCount, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()), GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()));
-				geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.InstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
+				//GTSL::MemCopy(64ull * as.PrimitiveCount, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()), GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()));
+				//geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.InstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
 
 				buildData.Geometries = geometries;
 			} else {
@@ -168,9 +156,9 @@ public:
 				const auto& blas = accelerationStructures[handle()].BottomLevel;
 
 				buildData.DestinationAccelerationStructure = blas.AccelerationStructure;
-				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
+				//buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 				
-				geometries.EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer, true) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer, true) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
+				geometries.EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
 
 				buildData.Geometries = geometries;
 			}
@@ -193,7 +181,7 @@ public:
 
 
 	void StagingCopy(const CommandListHandle command_list, const BufferHandle handle) {
-		commandLists[command_list()].CommandList.CopyBuffer(GetRenderDevice(), buffers[handle()].Staging[0], buffers[handle()].Buffer[0], buffers[handle()].Size);
+		commandLists[command_list()].CommandList.CopyBuffer(GetRenderDevice(), buffers[handle()].Buffer, buffers[handle()].Buffer, buffers[handle()].Size);
 	}
 
 	void EndCommandList(const CommandListHandle command_list_handle) {
@@ -329,15 +317,15 @@ public:
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
 	GPUBuffer GetBuffer(const RenderSystem::BufferHandle buffer_handle) const {
-		return buffers[buffer_handle()].Buffer[0];
+		return buffers[buffer_handle()].Buffer;
 		//TODO: is multi
 	}
 	//CommandList* GetTransferCommandBuffer() { return &transferCommandBuffers[currentFrameIndex]; }
 	
-	void AddBufferUpdate(CommandListHandle command_list_handle, const BufferHandle buffer_handle, uint32 offset = 0) {
+	void AddBufferUpdate(CommandListHandle command_list_handle, const BufferHandle source_buffer_handle, const BufferHandle destination_buffer_handle, uint32 source_offset = 0, uint32 destination_offset = 0) {
 		auto& commandList = commandLists[command_list_handle()];
 		if(needsStagingBuffer)
-			commandList.bufferCopyDatas.EmplaceBack(buffer_handle, offset);
+			commandList.bufferCopyDatas.EmplaceBack(source_buffer_handle, destination_buffer_handle, source_offset, destination_offset);
 	}
 	
 	struct TextureCopyData {
@@ -364,65 +352,20 @@ public:
 	[[nodiscard]] const Texture* GetSwapchainTexture() const { return &swapchainTextures[imageIndex]; }
 
 	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
-		if (needsStagingBuffer) {
-			if (buffers[bufferHandle()].isMulti) {
-				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[GetCurrentFrame()].Data);
-			} else {
-				return static_cast<byte*>(buffers[bufferHandle()].StagingAllocation[0].Data);
-			}
-		} else {
-			if (buffers[bufferHandle()].isMulti) {
-				return static_cast<byte*>(buffers[bufferHandle()].Allocation[GetCurrentFrame()].Data);
-			} else {
-				return static_cast<byte*>(buffers[bufferHandle()].Allocation[0].Data);
-			}
-		}
+		return static_cast<byte*>(buffers[bufferHandle()].Allocation.Data);
 	}
 
-	byte* GetBufferPointer(BufferHandle buffer_handle, uint8 frame) {
-		if (needsStagingBuffer) {
-			return static_cast<byte*>(buffers[buffer_handle()].StagingAllocation[frame].Data);
-		}
-		else {
-			return static_cast<byte*>(buffers[buffer_handle()].Allocation[frame].Data);
-		}
+	[[nodiscard]] GAL::DeviceAddress GetBufferAddress(BufferHandle bufferHandle) const {
+		return buffers[bufferHandle()].Addresses;
 	}
 
-	[[nodiscard]] GAL::DeviceAddress GetBufferAddress(BufferHandle bufferHandle, bool isLocal = false) const {
-		if (isLocal) {
-			if (buffers[bufferHandle()].isMulti) {
-				return buffers[bufferHandle()].Addresses[GetCurrentFrame()];
-			}
-
-			return buffers[bufferHandle()].Addresses[0];
-		} else {
-			if (needsStagingBuffer) {
-				if (buffers[bufferHandle()].isMulti) {
-					return buffers[bufferHandle()].StagingAddresses[GetCurrentFrame()];
-				}
-
-				return buffers[bufferHandle()].StagingAddresses[0];
-			}
-		}
-	}
-
-	[[nodiscard]] GAL::DeviceAddress GetBufferAddress(BufferHandle bufferHandle, uint8 frame, bool isLocal) const {
-		if(isLocal) {
-			if(needsStagingBuffer) {
-				return buffers[bufferHandle()].StagingAddresses[frame];
-			}
-		}
-
-		return buffers[bufferHandle()].Addresses[frame];
-	}
-
-	void UpdateBuffer(const CommandListHandle command_list_handle, const BufferHandle buffer_handle) {
-		auto& buffer = buffers[buffer_handle()];
-
-		++buffer.references;
-
-		AddBufferUpdate(command_list_handle, buffer_handle);
-	}
+	//void UpdateBuffer(const CommandListHandle command_list_handle, const BufferHandle buffer_handle) {
+	//	auto& buffer = buffers[buffer_handle()];
+	//
+	//	++buffer.references;
+	//
+	//	AddBufferUpdate(command_list_handle, buffer_handle);
+	//}
 	
 	void DestroyBuffer(const BufferHandle handle) {
 		--buffers[handle()].references;
@@ -476,8 +419,7 @@ public:
 
 	GTSL::Result<GTSL::Extent2D> AcquireImage(const WorkloadHandle workload_handle, WindowSystem* window_system);
 
-	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, bool updateable, const BufferHandle buffer_handle);
-	void SetBufferWillWriteFromHost(BufferHandle bufferHandle, bool state);
+	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, const BufferHandle buffer_handle);
 
 	AccelerationStructureHandle CreateTopLevelAccelerationStructure(uint32 estimatedMaxInstances) {
 		uint32 tlasi = accelerationStructures.Emplace(true);
@@ -495,8 +437,8 @@ public:
 			t.AccelerationStructures[f].Initialize(&renderDevice, true, t.AccelerationStructureBuffer[f], size, 0);
 		}
 
-		t.InstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, true, t.InstancesBuffer);
-		as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, false, true, as.ScratchBuffer);
+		//t.InstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, true, t.InstancesBuffer);
+		//as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, false, true, as.ScratchBuffer);
 
 		return AccelerationStructureHandle{ tlasi };
 	}
@@ -534,7 +476,7 @@ public:
 		AllocateLocalBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, &blas.AccelerationStructureBuffer, &blas.AccelerationStructureAllocation);
 		blas.AccelerationStructure.Initialize(GetRenderDevice(), false, blas.AccelerationStructureBuffer, bufferSize, 0);
 
-		as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, true, false, as.ScratchBuffer);
+		as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, true, as.ScratchBuffer);
 
 		return AccelerationStructureHandle{ blasi };
 	}
@@ -613,7 +555,7 @@ private:
 	GTSL::Extent2D renderArea, lastRenderArea;
 
 	struct BufferCopyData {
-		BufferHandle BufferHandle; uint32 Offset = 0;
+		BufferHandle SourceBufferHandle, DestinationBufferHandle; uint32 SourceOffset = 0, DestinationOffset = 0;
 	};
 	uint32 processedBufferCopies[MAX_CONCURRENT_FRAMES];
 	
@@ -629,13 +571,9 @@ private:
 		uint32 Size = 0, Counter = 0;
 		GAL::BufferUse Flags;
 		uint32 references = 0;
-		bool isMulti = false;
-		GPUBuffer Buffer[MAX_CONCURRENT_FRAMES];
-		RenderAllocation Allocation[MAX_CONCURRENT_FRAMES];
-		GPUBuffer Staging[MAX_CONCURRENT_FRAMES];
-		RenderAllocation StagingAllocation[MAX_CONCURRENT_FRAMES];
-		GAL::DeviceAddress Addresses[MAX_CONCURRENT_FRAMES];
-		GAL::DeviceAddress StagingAddresses[MAX_CONCURRENT_FRAMES];
+		GPUBuffer Buffer;
+		RenderAllocation Allocation;
+		GAL::DeviceAddress Addresses;
 	};
 	GTSL::FixedVector<BufferData, BE::PAR> buffers;
 

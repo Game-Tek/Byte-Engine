@@ -69,6 +69,7 @@ struct CommonPermutation : PermutationManager {
 		shader_generation_data.Scopes.EmplaceBack(commonScope);
 
 		pipeline->DeclareStruct(commonScope, u8"GlobalData", GLOBAL_DATA);
+		pipeline->DeclareStruct(commonScope, u8"ViewData", VIEW_DATA);
 		pipeline->DeclareStruct(commonScope, u8"CameraData", CAMERA_DATA);
 
 		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
@@ -78,7 +79,6 @@ struct CommonPermutation : PermutationManager {
 		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
 
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"return vertexTextureCoordinates;");
-		pipeline->DeclareFunction(fragmentShaderScope, u8"matrix4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpacePosition", {}, u8"return worldSpacePosition;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceWorldSpaceNormal", {}, u8"return worldSpaceNormal;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return viewSpacePosition;");
@@ -87,8 +87,6 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
 		pipeline->DeclareFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-		pipeline->DeclareFunction(vertexShaderScope, u8"matrix4f", u8"GetCameraViewMatrix", {}, u8"return pushConstantBlock.camera.view;");
-		pipeline->DeclareFunction(vertexShaderScope, u8"matrix4f", u8"GetCameraProjectionMatrix", {}, u8"return pushConstantBlock.camera.proj;");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetThreadIndex", {}, u8"return gl_LocalInvocationID;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetWorkGroupIndex", {}, u8"return gl_WorkGroupID;");
@@ -97,9 +95,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalExtent", {}, u8"return gl_WorkGroupSize * gl_NumWorkGroups;");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"vec3f", u8"GetNormalizedGlobalIndex", {}, u8"return (vec3f(GetGlobalIndex()) + vec3f(0.5f)) / vec3f(GetGlobalExtent());");
-
-		pipeline->DeclareFunction(rayGenShaderScope, u8"matrix4f", u8"GetInverseViewMatrix", {}, u8"return pushConstantBlock.camera.viewInverse;");
-		pipeline->DeclareFunction(rayGenShaderScope, u8"matrix4f", u8"GetInverseProjectionMatrix", {}, u8"return pushConstantBlock.camera.projInverse;");
+		
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
 

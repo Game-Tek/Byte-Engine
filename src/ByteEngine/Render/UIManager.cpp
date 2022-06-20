@@ -5,7 +5,7 @@
 
 UIManager::UIManager(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"UIManager"),
 colors(32, GetPersistentAllocator()), canvases(8, GetPersistentAllocator()), primitives(16, GetPersistentAllocator()), textPrimitives(8, GetPersistentAllocator()), curvePrimitives(8, GetPersistentAllocator()), queuedUpdates(8, GetPersistentAllocator()),
-UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElement"))
+UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElement")), fonts(4, GetPersistentAllocator())
 {
 	GetApplicationManager()->AddEvent(u8"UIManager", GetOnCreateUIElementEventHandle());
 }
@@ -34,6 +34,8 @@ void UIManager::ProcessUpdates() {
 	//if (result) {
 	//	GetApplicationManager()->AddStoredDynamicTask(getPrimitive(result.Get()).OnPress, UIElementHandle(result.Get()));
 	//}
+
+	//OnFontLoadTaskHandle = GetApplicationManager()->RegisterTask(this, u8"UIOnFontLoad", DependencyBlock(), &UIManager::OnFontLoad);
 }
 
 // -----------------------------------
@@ -134,6 +136,9 @@ UIManager::PrimitiveData& UIManager::updateBranch(decltype(primitives)::iterator
 					break;
 				}
 				}
+				break;
+			}
+			case ScalingPolicies::AUTO: {
 				break;
 			}
 		}

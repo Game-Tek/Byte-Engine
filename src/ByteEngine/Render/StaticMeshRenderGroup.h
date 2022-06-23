@@ -23,13 +23,8 @@ public:
 
 	StaticMeshHandle AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance);
 
-	static auto GetOnAddMeshEventHandle() {
-		return EventHandle<StaticMeshHandle, Id>(u8"OnAddMesh");
-	}
-
-	static auto GetOnUpdateMeshEventHandle() {
-		return EventHandle<StaticMeshHandle, GTSL::Matrix3x4>(u8"OnUpdateMesh");
-	}
+	DECLARE_BE_EVENT(OnAddMesh, StaticMeshHandle, Id);
+	DECLARE_BE_EVENT(OnUpdateMesh, StaticMeshHandle, GTSL::Matrix3x4);
 
 	void SetPosition(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);

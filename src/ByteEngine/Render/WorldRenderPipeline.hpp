@@ -27,10 +27,13 @@ public:
 private:
 	uint32 shaderGroupCount = 0;
 
-	DECLARE_BE_TASK(OnAddMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshRenderGroup*), StaticMeshRenderGroup::StaticMeshHandle, Id);
+	DECLARE_BE_TASK(OnAddRenderGroupMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshRenderGroup*), StaticMeshRenderGroup::StaticMeshHandle, Id);
+	DECLARE_BE_TASK(OnUpdateRenderGroupMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), StaticMeshRenderGroup::StaticMeshHandle, GTSL::Matrix3x4);
+
+	DECLARE_BE_TASK(OnAddMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*), InstanceHandle, Id);
 	DECLARE_BE_TASK(OnUpdateMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), InstanceHandle, GTSL::Matrix3x4);
 
-	ApplicationManager::ResourceHandle addInstanceResourceHandle;
+	//ApplicationManager::ResourceHandle addInstanceResourceHandle;
 
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
@@ -46,10 +49,7 @@ private:
 
 	GTSL::MultiVector<BE::PAR, false, float32, float32, float32, float32> spherePositionsAndRadius;
 	GTSL::StaticVector<AABB, 8> aabss;
-
-	GTSL::StaticVector<GTSL::Pair<Id, InstanceHandle>, 8> pendingAdditions;
-	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 8> pendingBuilds;
-
+	
 	bool rayTracing = false;
 	RenderSystem::AccelerationStructureHandle topLevelAccelerationStructure;
 	RenderOrchestrator::NodeHandle vertexBufferNodeHandle, indexBufferNodeHandle, meshDataNode;
@@ -79,7 +79,8 @@ private:
 		bool Interleaved = true;
 		//uint32 Index = 0;
 		RenderOrchestrator::NodeHandle nodeHandle;
-		GTSL::StaticVector<RenderModelHandle, 4> MMM;
+		RenderModelHandle RenderModelHandle;
+		//GTSL::StaticVector<RenderModelHandle, 4> MMM;
 	};
 	GTSL::HashMap<Id, Resource, BE::PAR> resources;
 
@@ -106,35 +107,40 @@ private:
 
 	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo);
 
-	void OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName);
+	void OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName);
 
-	void AddMeshInstance(RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, Id resource_name, uint32 ins) {
+	void OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, InstanceHandle instance_handle, Id resourceName) {
 		auto& instance = instances[instance_handle()];
-		auto& resource = resources[resource_name];
-
-		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-
-		instance.MaterialHandle = resource.MMM.front();
+		auto& resource = resources[resourceName];
 
 		render_orchestrator->AddInstance(meshDataNode, resource.nodeHandle, instance_handle);
 
-		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle); //todo: this
+		auto key = render_orchestrator->GetBufferWriteKey(render_system, meshDataBuffer);
+
+		instance.MaterialHandle = resource.RenderModelHandle;
+
+		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
+
+		BE_LOG_MESSAGE(u8"Mesh: ", instanceIndex, u8", material: ", instance_handle.EntityIndex);
 
 		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
-		render_orchestrator->SubscribeToUpdate(render_orchestrator->GetShaderGroupIndexUpdateKey(instance.MaterialHandle), key[instanceIndex][u8"shaderGroupIndex"]);
+		render_orchestrator->SubscribeToUpdate(render_orchestrator->GetShaderGroupIndexUpdateKey(instance.MaterialHandle), key[instanceIndex][u8"shaderGroupIndex"], meshDataBuffer);
+//		key[instanceIndex][u8"shaderGroupIndex"] = 1u;
 		key[instanceIndex][u8"transform"] = GTSL::Matrix3x4();
+	}
 
+	void AddMeshInstance(Id resource_name, InstanceHandle instance_handle) {		
+		GetApplicationManager()->EnqueueTask(OnAddMeshTaskHandle, GTSL::MoveRef(instance_handle), GTSL::MoveRef(resource_name)); //Signal can update
+	}
 
-		if (rayTracing) {
-			pendingAdditions.EmplaceBack(resource_name, instance_handle);
-		}
-
-		GetApplicationManager()->FulfillDependency(this, InstanceTypeIndentifier, InstanceHandle(InstanceTypeIndentifier, ins)); //Signal can update
+	void OnUpdateRenderGroupMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, GTSL::Matrix3x4 transform) {
+		auto instanceHandle = meshToInstanceMap.At(static_mesh_handle);
+		GetApplicationManager()->EnqueueTask(OnUpdateMeshTaskHandle, GTSL::MoveRef(instanceHandle), GTSL::MoveRef(transform));
 	}
 
 	void OnUpdateMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, InstanceHandle instance_handle, GTSL::Matrix3x4 transform) {
 		auto key = render_orchestrator->GetBufferWriteKey(renderSystem, meshDataBuffer);
-		
+
 		const auto& instance = instances[instance_handle()];
 
 		const auto instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
@@ -167,35 +173,35 @@ private:
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {
-		//GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
-		//projectSpheres({0}, spherePositionsAndRadius, results);
-
-		{ // Add BLAS instances to TLAS only if dependencies were fulfilled
-			auto i = 0;
-
-			while (i < pendingAdditions) {
-				const auto& addition = pendingAdditions[i];
-				auto e = addition.Second;
-				auto& mesh = instances[e()];
-
-				mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e(), mesh.InstanceHandle);
-
-				pendingAdditions.Pop(i);
-				++i;
-			}
-		}
-
-
+		////GTSL::Vector<float32, BE::TAR> results(GetTransientAllocator());
+		////projectSpheres({0}, spherePositionsAndRadius, results);
+		//
+		//{ // Add BLAS instances to TLAS only if dependencies were fulfilled
+		//	auto i = 0;
+		//
+		//	while (i < pendingAdditions) {
+		//		const auto& addition = pendingAdditions[i];
+		//		auto e = addition.Second;
+		//		auto& mesh = instances[e()];
+		//
+		//		mesh.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resources[addition.First].BLAS, e(), mesh.InstanceHandle);
+		//
+		//		pendingAdditions.Pop(i);
+		//		++i;
+		//	}
+		//}
+		//
+		//
 		auto workloadHandle = render_orchestrator->buildAccelerationStructuresWorkloadHandle[render_system->GetCurrentFrame()];
 		render_system->Wait(workloadHandle);
 		render_system->StartCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
-
+		
 		if (rayTracing) {
-			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingBuilds); //Update all BLASes
-			pendingBuilds.Resize(0);
-			render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
+			//render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], pendingBuilds); //Update all BLASes
+			//pendingBuilds.Resize(0);
+			//render_system->DispatchBuild(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()], { topLevelAccelerationStructure }); //Update TLAS
 		}
-
+		
 		render_system->EndCommandList(render_orchestrator->buildCommandList[render_system->GetCurrentFrame()]);
 		render_system->Submit(GAL::QueueTypes::COMPUTE, { { { render_orchestrator->buildCommandList[render_system->GetCurrentFrame()] }, {  }, { workloadHandle } } }, workloadHandle);
 	}

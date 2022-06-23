@@ -116,10 +116,6 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		}
 	}
 
-	for (uint8 f = 0; f < pipelinedFrames; ++f) {
-		initializeFrameResources(f);
-	}
-
 	bool pipelineCacheAvailable;
 	auto* pipelineCacheManager = initializeInfo.ApplicationManager->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 	pipelineCacheManager->DoesCacheExist(pipelineCacheAvailable);
@@ -151,10 +147,6 @@ class PresentKey {
 
 RenderSystem::~RenderSystem() {
 	renderDevice.Wait();
-
-	for (uint32 i = 0; i < pipelinedFrames; ++i) {
-		freeFrameResources(i);
-	}
 
 	if (renderContext.GetHandle())
 		renderContext.Destroy(&renderDevice);
@@ -377,10 +369,11 @@ RenderSystem::BufferHandle RenderSystem::CreateBuffer(uint32 size, GAL::BufferUs
 			}
 
 			if (willWriteFromHost && needsStagingBuffer) {
-				AllocateScratchBufferMemory(size, flags | GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE, &buffer.Buffer, &buffer.Allocation);
+				flags |= GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_SOURCE;
+				AllocateScratchBufferMemory(size, flags, &buffer.Buffer, &buffer.Allocation);
 			} else {
-				flags |= GAL::BufferUses::TRANSFER_DESTINATION;				
-				AllocateLocalBufferMemory(size, flags | GAL::BufferUses::ADDRESS, &buffer.Buffer, &buffer.Allocation);
+				flags |= GAL::BufferUses::ADDRESS | GAL::BufferUses::TRANSFER_DESTINATION;
+				AllocateLocalBufferMemory(size, flags, &buffer.Buffer, &buffer.Allocation);
 			}
 
 			buffer.Addresses = buffer.Buffer.GetAddress(GetRenderDevice());
@@ -474,11 +467,4 @@ void RenderSystem::deallocateApiMemory(void* data, void* allocation) {
 		GTSL::Lock lock(allocationsMutex);
 		apiAllocations.Remove(reinterpret_cast<uint64>(allocation));
 	}
-}
-
-void RenderSystem::initializeFrameResources(const uint8 frame_index) {
-	processedBufferCopies[frame_index] = 0;
-}
-
-void RenderSystem::freeFrameResources(const uint8 frameIndex) {
 }

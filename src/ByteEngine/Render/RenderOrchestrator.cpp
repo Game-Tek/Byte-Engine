@@ -381,7 +381,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 
-					PrintMember(layerData.DataKey, renderSystem);
+					if(debugRenderNodes) {
+						PrintMember(layerData.DataKey, renderSystem);
+					}
 				}
 
 				break;
@@ -460,7 +462,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 			case RTT::GetTypeIndex<MeshData>(): {
 				const MeshData& meshData = renderingTree.GetClass<MeshData>(key);
-				commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, counterStack[counterI - 1], meshData.IndexOffset, meshData.VertexOffset);
+				commandBuffer.DrawIndexed(renderSystem->GetRenderDevice(), meshData.IndexCount, meshData.InstanceCount, meshData.InstanceIndex, meshData.IndexOffset, meshData.VertexOffset);
 				counterStack[counterI - 1] += meshData.InstanceCount;
 
 				if(debugRenderNodes) {
@@ -644,6 +646,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		renderSystem->Present(GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem"), { graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
 	}
+
+	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]);
 
 	//TODO: wait on transfer work to start next frame, or else reads will be corrupted since, next frame may have started
 }
@@ -1409,7 +1413,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			if(!shaderGroupInstanceByName.Find(Id(i.Name))) { continue; }
 			auto& instance = shaderGroupInstances[shaderGroupInstanceByName[Id(i.Name)]];
 
-			WriteUpdateKey(instance.UpdateKey, uint32(ii)); // TODO: !! NO BUFFER NOTIFY WHEN UPDATE KEY WRITE; BECAUSE NOTIFICATIONS NO LONGER OCCUR ON WRITE BUT WHEN ASKING FOR BWK
+			WriteUpdateKey(renderSystem, instance.UpdateKey, uint32(ii));
 
 			CopyDataKey(instance.DataKey, sg.Buffer);
 

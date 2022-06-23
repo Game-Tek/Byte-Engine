@@ -557,7 +557,6 @@ private:
 	struct BufferCopyData {
 		BufferHandle SourceBufferHandle, DestinationBufferHandle; uint32 SourceOffset = 0, DestinationOffset = 0;
 	};
-	uint32 processedBufferCopies[MAX_CONCURRENT_FRAMES];
 	
 	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
 	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
@@ -687,9 +686,6 @@ private:
 		GTSL::Extent3D Extent;
 	};
 	GTSL::FixedVector<TextureComponent, BE::PersistentAllocatorReference> textures;
-
-	void initializeFrameResources(const uint8 frameIndex);
-	void freeFrameResources(const uint8 frameIndex);
 };
 
 class RenderManager : public BE::System

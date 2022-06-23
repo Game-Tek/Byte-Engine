@@ -32,11 +32,17 @@ ApplicationManager::~ApplicationManager() {
 }
 
 void ApplicationManager::OnUpdate(BE::Application* application) {
-	using TaskStackType = GTSL::Vector<TypeErasedTaskHandle, BE::TAR>;
-	TaskStackType freeTaskStack(64, GetTransientAllocator());
+	struct DDD {
+		TypeErasedTaskHandle TaskHandle;
+		uint8 RunAttempts = 0;
+	};
+
+	using TaskStackType = GTSL::Vector<DDD, BE::TAR>;
+
+	TaskStackType freeTaskStack(GetTransientAllocator());
 	GTSL::StaticVector<TaskStackType, 16> perStageTasks; // Holds all tasks which are to be executed
 
-	TaskStackType executedTasks(64, GetTransientAllocator());
+	GTSL::Vector<TypeErasedTaskHandle, BE::TAR> executedTasks(GetTransientAllocator());
 
 	GTSL::Vector<uint32, BE::TAR> perStageCounter(32, GetTransientAllocator()); // Maintains the count of how many tasks were executed for each stage. It's used to know when an stage can advance.
 
@@ -58,6 +64,9 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 		enqueuedTasks.Resize(0); // Clear enqueued tasks list after processing it
 	}
 
+	// Stores tasks which were not dispatched during this cycle, so must be added back into the enqued tasks list for them to have another shot at running the next cycle. Note, that when loading the free tasks stack the en-queued tasks list is cleared completely.
+	GTSL::Vector<TypeErasedTaskHandle, BE::TAR> nonDispatchedTasks(32, GetTransientAllocator());
+
 	// Mutex used to wait until resource availability changes.
 	GTSL::Mutex waitWhenNoChange;
 
@@ -68,7 +77,8 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 
 	auto tryDispatchTask = [&](TaskStackType& stack) -> bool {
 		const uint32 taskIndex = rr++ % stack.GetLength();
-		auto taskHandle = stack[taskIndex];
+		auto& ddd = stack[taskIndex];
+		auto taskHandle = ddd.TaskHandle;
 		auto& task = tasks[taskHandle()];
 
 		if(!task.Instances) { stack.Pop(taskIndex); return false; } //todo: instead cull queue and eliminate duplicate entries
@@ -77,25 +87,27 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			uint32 i = 0;
 
 			while (i < task.Instances) {
-				auto& instance = task.Instances[i];
+				auto& taskInstance = task.Instances[i];
 
-				if(instance.InstanceIndex != 0xFFFFFFFF) { // Is executable instance
-					auto& s = systemsData[instance.SystemId];
-					auto& t = s.RegisteredTypes[instance.TTID()];
-					auto& entt = t.Entities[instance.InstanceIndex];
+				if(taskInstance.Signals) {
+					auto& s = systemsData[taskInstance.SystemId];
+					auto& t = s.RegisteredTypes[taskInstance.TTID()];
+					auto& entt = t.Entities[taskInstance.InstanceIndex];
 
-					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || r.Get() != entt.ResourceCounter) { // If this task can, at this point, execute for this entity type
+					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || entt.FulfilledResources < r.Get()) { // If this task can, at this point, execute for this entity type
+						++ddd.RunAttempts;
 						++i; continue;
 					}
 				}
 
 				if(task.Pre != 0xFFFFFFFF) {
 					if(!executedTasks.Find(TypeErasedTaskHandle(task.Pre))) { // If task which which we depend on executing hasn't yet executed, don't schedule instance.
+						++ddd.RunAttempts;
 						++i; continue;
 					}
 				}
 
-				taskSorter.AddInstance(result.Get(), instance.TaskInfo); // Append task instance to the task sorter's task dispatch packet
+				taskSorter.AddInstance(result.Get(), taskInstance.TaskInfo); // Append task instance to the task sorter's task dispatch packet
 
 				if (!task.Scheduled) {
 					task.Instances.Pop(i); // Remove tasks instances which where successfully scheduled for execution.
@@ -105,7 +117,13 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			}
 
 			if (!taskSorter.GetValidInstances(result.Get())) {
-				taskSorter.ReleaseResources(result.Get()); return false;
+				taskSorter.ReleaseResources(result.Get());
+				if(ddd.RunAttempts > 3) {
+					BE_LOG_WARNING(u8"Task: ", task.Name, u8", has failed to run multiple times, removing from stack.");
+					nonDispatchedTasks.EmplaceBack(taskHandle);
+					stack.Pop(taskIndex); // Remove task from the stack for this cycle, since multiple fails to run can stall the whole pipeline
+				}
+				return false;
 			} // Don't schedule dispatcher execution if no instance was up for execution
 
 			application->GetThreadPool()->EnqueueTask(task.TaskDispatcher, this, GTSL::MoveRef(result.Get()), GTSL::MoveRef(taskHandle)); // Add task dispatcher to thread pool
@@ -127,6 +145,12 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			stack.Pop(taskIndex); // If task was executed remove from stack.
 
 			return true;
+		}
+
+		if(ddd.RunAttempts > 3) {
+			BE_LOG_WARNING(u8"Task: ", task.Name, u8", has failed to run multiple times, removing from stack.");
+			nonDispatchedTasks.EmplaceBack(taskHandle);
+			stack.Pop(taskIndex); // Remove task from the stack for this cycle, since multiple fails to run can stall the whole pipeline
 		}
 
 		return false;
@@ -156,6 +180,10 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			//resourcesUpdated.Wait(waitWhenNoChange);
 			resourcesUpdated.Wait();
 		}
+	}
+
+	for(auto e : nonDispatchedTasks) {
+		enqueuedTasks.EmplaceBack(e);
 	}
 
 	++frameNumber;

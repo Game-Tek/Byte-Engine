@@ -10,11 +10,18 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	onStaticMeshLoadHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnStaticMeshLoad", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onStaticMeshLoaded);
 
-	OnAddMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), &WorldRendererPipeline::OnAddMesh);
-	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnAddMeshEventHandle(), OnAddMeshTaskHandle);
+	OnAddMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem")), &WorldRendererPipeline::OnAddMesh);
 
 	OnUpdateMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
-	//GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnUpdateMeshEventHandle(), OnUpdateMeshTaskHandle);
+
+	OnAddRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddRenderGroupMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), &WorldRendererPipeline::OnAddRenderGroupMesh);
+
+	OnUpdateRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateRenderGroupMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateRenderGroupMesh);
+
+	GetApplicationManager()->SetTaskReceiveOnlyLast(OnUpdateRenderGroupMeshTaskHandle);
+
+	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnAddMeshEventHandle(), OnAddRenderGroupMeshTaskHandle);
+	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshRenderGroup::GetOnUpdateMeshEventHandle(), OnUpdateRenderGroupMeshTaskHandle);
 
 	initialize_info.ApplicationManager->EnqueueScheduledTask(initialize_info.ApplicationManager->RegisterTask(this, u8"renderSetup", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::preRender, u8"RenderSetup", u8"Render"));
 
@@ -22,19 +29,17 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"));
 	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnRemovePointLight"));
 
-	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnAddMeshTaskHandle, true);
-	addInstanceResourceHandle = GetApplicationManager()->AddResource(this, InstanceTypeIndentifier);
-	//GetApplicationManager()->CoupleTasks(GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetOnUpdateMeshEventHandle(), OnUpdateMeshTaskHandle);
-	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnUpdateMeshTaskHandle, false);
+	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnAddMeshTaskHandle, true);
+	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnUpdateMeshTaskHandle, false);
 
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onAddLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
 	auto updateLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
-	sourceVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, true, {});
+	sourceVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, {});
 	destinationVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});
-	sourceIndexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, true, {});
+	sourceIndexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX, true, {});
 	destinationIndexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::INDEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});
 
 	RenderOrchestrator::NodeHandle renderPassNodeHandle;
@@ -180,8 +185,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 	for (uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 		auto& sm = staticMeshInfo.GetSubMeshes().array[i];
 		auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
-
-		resource.MMM.EmplaceBack(shaderGroupHandle);
+		resource.RenderModelHandle = shaderGroupHandle;
 
 		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 			RenderOrchestrator::NodeHandle materialNodeHandle = render_orchestrator->AddMaterial(meshDataNode, shaderGroupHandle);
@@ -244,11 +248,10 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 
 	if (rayTracing) {
 		//res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
-		pendingBuilds.EmplaceBack(res.BLAS);
 	}
 
 	for (auto e : res.Instances) {
-		AddMeshInstance(render_system, render_orchestrator, e, staticMeshInfo.GetName(), 0);
+		AddMeshInstance(staticMeshInfo.GetName(), e);
 		*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 	}
 
@@ -261,18 +264,12 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 	}
 }
 
-void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName) {
-	const auto instanceIndex = instances.Emplace();
-	const auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(InstanceTypeIndentifier, instanceIndex, static_mesh_handle);
-	meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
+void WorldRendererPipeline::OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName) {
 	auto resource = resources.TryEmplace(resourceName);
 
-	spherePositionsAndRadius.EmplaceBack(0, 0, 0, 0);
-	auto& instance = instances[instanceIndex];
-
-	if (rayTracing) {
-		instance.InstanceHandle = render_system->AddBLASToTLAS(topLevelAccelerationStructure, resource.Get().BLAS, 0, instance.InstanceHandle); // Custom instance index will be set later
-	}
+	const auto instanceIndex = instances.Emplace();
+	auto instanceHandle = GetApplicationManager()->MakeHandle<InstanceHandle>(InstanceTypeIndentifier, instanceIndex);
+	meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
 
 	if (resource) { // If resource isn't already loaded 
 		//resource.Get().Index = prefixSum.EmplaceBack(0);
@@ -281,7 +278,7 @@ void WorldRendererPipeline::OnAddMesh(TaskInfo task_info, StaticMeshResourceMana
 	}
 	else {
 		if (resource.Get().Loaded) {
-			AddMeshInstance(render_system, render_orchestrator, instanceHandle, resourceName, 0);
+			AddMeshInstance(resourceName, instanceHandle);
 		}
 	}
 

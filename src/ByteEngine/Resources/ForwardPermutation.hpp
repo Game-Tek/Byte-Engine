@@ -39,8 +39,6 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
 		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
 
-		pipeline->DeclareFunction(forwardScopeHandle, u8"matrix4f", u8"GetInstancePosition", {}, u8"return matrix4f(pushConstantBlock.instances[gl_InstanceIndex].transform);");
-
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
 			auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
@@ -127,9 +125,10 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(shaderScope);
 
 				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
-				tokenizeCode(u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); worldSpacePosition = vec3f(GetInstancePosition() * GetVertexPosition()); worldSpaceNormal = vec3f(GetInstancePosition() * GetVertexNormal()); _instanceIndex = gl_InstanceIndex;", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"tbn = mat3f(normalize(vec3f(GetInstancePosition() * vec4f(TANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(BITANGENT, 0))), normalize(vec3f(GetInstancePosition() * vec4f(NORMAL, 0))));", main.Tokens, GetPersistentAllocator());
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_INSTANCE_MATRIX = matrix4f(pushConstantBlock.instances[gl_InstanceIndex].transform);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vertexTextureCoordinates = GetVertexTextureCoordinates(); worldSpacePosition = vec3f(BE_INSTANCE_MATRIX * GetVertexPosition()); worldSpaceNormal = vec3f(BE_INSTANCE_MATRIX * GetVertexNormal()); _instanceIndex = gl_InstanceIndex;");
+				pipeline->AddCodeToFunction(mainFunctionHandle, shader_json[u8"code"]);
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"tbn = mat3f(normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(TANGENT, 0))), normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(BITANGENT, 0))), normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(NORMAL, 0))));");
 
 				//todo: analyze if we need to emit compute shader
 				break;
@@ -146,11 +145,28 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
 				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_MATRIX = pushConstantBlock.camera.viewHistory[0].view;");
 				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const vec3f BE_CAMERA_POSITION = vec3f(BE_VIEW_MATRIX[0][3], BE_VIEW_MATRIX[1][3], BE_VIEW_MATRIX[2][3]);");
-				tokenizeCode(u8"float32 surfaceRoughness = 1.0f; vec4f surfaceNormal = vec4f(0, 0, -1, 0);", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"surfaceNormal = vec4f(normalize(tbn * surfaceNormal.xyz), 0);", main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); if(!bool(DEBUG)) { for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, BE_CAMERA_POSITION, GetSurfaceWorldSpacePosition(), surfaceNormal.xyz, l.color * l.intensity, normalize(BE_CAMERA_POSITION - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 1.0f); out_WorldPosition = vec4f(worldSpacePosition, 1); } } else { surfaceColor = vec4f(1.0f); }", main.Tokens, GetPersistentAllocator());
-				//tokenizeCode(u8"vec4f BE_COLOR_0 = surfaceColor; surfaceColor = vec4f(0); for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) { PointLightData l = pushConstantBlock.lightingData.pointLights[i]; surfaceColor += vec4f(light(l.position, GetCameraPosition(), GetSurfaceWorldSpacePosition(), GetSurfaceWorldSpaceNormal(), vec3f(1) * l.radius, normalize(GetCameraPosition() - GetSurfaceWorldSpacePosition()), vec3f(BE_COLOR_0), vec3f(0.04f), surfaceRoughness), 0.1); }", main.Tokens, GetPersistentAllocator());
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"out_WorldPosition = vec4f(worldSpacePosition, 1);");
+
+				// Declare class and domain variables
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 BE_SurfaceRoughness = 1.0f;");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec4f BE_SurfaceColor = vec4f(1.0f);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec4f BE_SurfaceNormal = vec4f(0.0f, 1.0f, 0.0f, 0.0f);");
+				// Declare class and domain variables
+
+				pipeline->AddCodeToFunction(mainFunctionHandle, shader_json[u8"code"]);
+
+				//pipeline->AddCodeToFunction(mainFunctionHandle, u8"normal = vec4f(normalize(tbn * surfaceNormal.xyz), 0);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f F0 = vec3f(0.04f);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f Lo = vec3f(0.0f);");
+
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) {");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"PointLightData light = pushConstantBlock.lightingData.pointLights[i];");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f worldSpaceFragmentNormal = normalize(tbn * vec3f(BE_SurfaceNormal));");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"Lo += DirectLighting(light.position, BE_CAMERA_POSITION, worldSpacePosition, worldSpaceFragmentNormal, light.color * light.intensity, vec3f(BE_SurfaceColor), F0, BE_SurfaceRoughness); }");
+
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"if(!bool(DEBUG)) {");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(Lo, 1.0f);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, u8"} else { surfaceColor = vec4f(1.0f); }");
 
 				break;
 			}

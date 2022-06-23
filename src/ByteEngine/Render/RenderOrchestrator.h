@@ -359,11 +359,11 @@ public:
 		auto typeIndex = renderingTree.GetNodeType(mesh_node_handle());
 		auto& dataNode = getPrivateNode<DataNode>(data_node_handle);
 
-		dataNode.Instances.Emplace(handle(), dataNode.Instance++);
+		dataNode.Instances.Emplace(handle(), dataNode.Instance);
 
 		if(typeIndex == RTT::GetTypeIndex<MeshData>()) {
 			auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
-			//meshNode.InstanceIndex = dataNode.Instance;
+			meshNode.InstanceIndex = dataNode.Instance;
 			meshNode.InstanceCount++;
 			SetNodeState(mesh_node_handle, meshNode.InstanceCount);
 		} else {
@@ -371,6 +371,8 @@ public:
 			meshNode.InstanceCount++;
 			SetNodeState(mesh_node_handle, meshNode.InstanceCount);
 		}
+
+		++dataNode.Instance;
 	}
 
 	struct BufferWriteKey {
@@ -417,6 +419,11 @@ public:
 				render_orchestrator->getLogger()->PrintObjectLog(render_orchestrator, BE::Logger::VerbosityLevel::FATAL, u8"Tried to access ", Path, u8" while writing, which doesn't exist.");
 				return BufferWriteKey{ 0xFFFFFFFF, Path, ElementHandle, *this };
 			}
+		}
+
+		BufferWriteKey operator()(const ElementDataHandle element_data_handle, const uint32 offset) const {
+			auto newPath = Path;
+			return BufferWriteKey{ offset, newPath, element_data_handle, *this };
 		}
 
 		template<typename T>
@@ -479,34 +486,27 @@ public:
 	}
 
 	UpdateKeyHandle GetShaderGroupIndexUpdateKey(RenderModelHandle shader_group_handle) {
-		auto index = updateKeys.GetLength();
-		auto& updateKey = updateKeys.EmplaceBack();
-
 		return shaderGroupInstances[shader_group_handle()].UpdateKey;
 	}
 
 	template<typename T>
-	void WriteUpdateKey(const UpdateKeyHandle update_key_handle, T val) {
+	void WriteUpdateKey(RenderSystem* render_system, const UpdateKeyHandle update_key_handle, T val) {
 		auto& updateKey = updateKeys[update_key_handle()];
 
 		for(auto& e : updateKey.BWKs) {
-			e = val;
+			auto bwk = GetBufferWriteKey(render_system, e.DKH);
+			bwk(e.EDH, e.Offset) = val;
+			PrintMember(e.DKH, render_system);
 		}
 
 		updateKey.Value = val;
 	}
 
-	void SubscribeToUpdate(const UpdateKeyHandle update_key_handle, const BufferWriteKey buffer_write_key) {
+	void SubscribeToUpdate(const UpdateKeyHandle update_key_handle, const BufferWriteKey buffer_write_key, const DataKeyHandle data_key_handle) {
 		auto& updateKey = updateKeys[update_key_handle()];
-		updateKey.BWKs.EmplaceBack(buffer_write_key);
+		updateKey.BWKs.EmplaceBack(GTSL::MoveRef(data_key_handle), GTSL::MoveRef(buffer_write_key.ElementHandle), GTSL::MoveRef(buffer_write_key.Offset));
 		buffer_write_key = updateKey.Value;
 	}
-
-	struct UpdateKeyData {
-		GTSL::StaticVector<BufferWriteKey, 8> BWKs;
-		uint32 Value;
-	};
-	GTSL::Vector<UpdateKeyData, BE::PAR> updateKeys;
 
 	// ------------ Update Keys ------------
 
@@ -623,7 +623,7 @@ public:
 		getNode(nodeHandle.Get()).Name = GTSL::ShortString<32>(u8"Render Mesh");
 		auto& node = getPrivateNode<MeshData>(nodeHandle.Get());
 		node.IndexCount = indexCount;
-		node.IndexOffset = indexOffset; node.VertexOffset = vertexOffset; node.InstanceIndex = meshId;
+		node.IndexOffset = indexOffset; node.VertexOffset = vertexOffset;
 		return nodeHandle.Get();
 	}
 	
@@ -1292,6 +1292,18 @@ private:
 	void onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceManager*, ShaderResourceManager::ShaderGroupInfo shaderInfos, ShaderLoadInfo shaderLoadInfo);
 
 	void onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem*, ShaderResourceManager::ShaderGroupInfo, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo);
+
+	struct UpdateKeyData {
+		struct ttt
+		{
+			DataKeyHandle DKH;
+			ElementDataHandle EDH;
+			uint32 Offset;
+		};
+		GTSL::StaticVector<ttt, 8> BWKs;
+		uint32 Value;
+	};
+	GTSL::Vector<UpdateKeyData, BE::PAR> updateKeys;
 
 	struct DrawData {
 		uint32 VertexCount = 0, InstanceCount = 0;

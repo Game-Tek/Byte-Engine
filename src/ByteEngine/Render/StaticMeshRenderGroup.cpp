@@ -10,13 +10,10 @@
 class RenderStaticMeshCollection;
 
 StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInfo): System(initializeInfo, u8"StaticMeshRenderGroup"),
-	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()), StaticMeshTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"StaticMesh")) {
+	transformations(16, GetPersistentAllocator()), meshes(16, GetPersistentAllocator()), StaticMeshTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"StaticMesh")), OnAddMeshEventHandle(GetApplicationManager()->RegisterEvent<StaticMeshHandle, Id>(this, u8"OnAddMesh")), OnUpdateMeshEventHandle(GetApplicationManager()->RegisterEvent<StaticMeshHandle, GTSL::Matrix3x4>(this, u8"OnUpdateMesh")) {
 
 	DeleteStaticMesh = GetApplicationManager()->RegisterTask(this, u8"deleteStaticMeshes", {}, &StaticMeshRenderGroup::deleteMesh);
 	GetApplicationManager()->BindDeletionTaskToType(StaticMeshTypeIndentifier, DeleteStaticMesh);
-
-	GetApplicationManager()->AddEvent(u8"SMRG", GetOnAddMeshEventHandle());
-	GetApplicationManager()->AddEvent(u8"SMRG", GetOnUpdateMeshEventHandle());
 }
 
 StaticMeshRenderGroup::StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance) {

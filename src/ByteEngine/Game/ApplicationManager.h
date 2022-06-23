@@ -116,10 +116,11 @@ namespace BE {
 	using name##Handle = BE::Handle<struct name##_tag>;
 }
 
+#define LSTR(x) u8 ## x
 #define BE_RESOURCES(...) __VA_ARGS__
 #define DECLARE_BE_TASK(name, res, ...) private: TaskHandle<__VA_ARGS__> name##TaskHandle; using name##Dependencies = DependencyBlock<res>; public: auto Get##name##TaskHandle() const { return name##TaskHandle; }
 #define DECLARE_BE_TYPE(name) MAKE_BE_HANDLE(name); private: BE::TypeIdentifier name##TypeIndentifier; public: BE::TypeIdentifier Get##name##TypeIdentifier() const { return name##TypeIndentifier; }
-#define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: auto Get##name##EventHandle() const { return name##EventHandle; }
+#define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: static auto Get##name##EventHandle() { return EventHandle<__VA_ARGS__>(LSTR(#name)); }
 
 template <class, template <class> class>
 struct is_instance : public std::false_type {};
@@ -220,11 +221,11 @@ public:
 		type.SetupSteps.EmplaceBack(TypeErasedTaskHandle(dynamic_task_handle()), is_required);
 		++type.Target;
 
-		auto& vs = s.RegisteredTypes[type_identifier()].VisitingSystems;
-
-		if (!vs.Find(system_pointer->GetSystemId())) { // If system is not already added
-			vs.EmplaceBack(system_pointer->GetSystemId()); // Add system requesting to listen as visiting system to the listened type's information, to know which system to update.
-		}
+		//auto& vs = s.RegisteredTypes[type_identifier()].VisitingSystems;
+		//
+		//if (!vs.Find(system_pointer->GetSystemId())) { // If system is not already added
+		//	vs.EmplaceBack(system_pointer->GetSystemId()); // Add system requesting to listen as visiting system to the listened type's information, to know which system to update.
+		//}
 	}
 
 	MAKE_HANDLE(uint32, Resource);
@@ -286,7 +287,7 @@ public:
 			BE::Application::Get()->GetLogger()->logFunction(task.Name, startTime, BE::Application::Get()->GetClock()->GetCurrentMicroseconds(), args);
 
 			if (task.EndStageIndex != 0xFFFF) { gameInstance->semaphores[task.EndStageIndex].Post(); }
-			if (info->InstanceIndex != 0xFFFFFFFF) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->TTID()].Entities[info->InstanceIndex].ResourceCounter; }
+			if (info->Signals) { ++gameInstance->systemsData[info->SystemId].RegisteredTypes[info->TTID()].Entities[info->InstanceIndex].FulfilledResources; }
 
 			++info->D_CallCount;
 
@@ -370,6 +371,12 @@ public:
 		} (delegate);
 	}
 
+	template<typename... ARGS>
+	void SetTaskReceiveOnlyLast(const TaskHandle<ARGS...> task_handle) {
+		TaskData& task = tasks[task_handle()];
+		task.OnlyLast = true;
+	}
+
 	/**
 	 * \brief Schedules a task to run on a periodic basis.
 	 * \tparam ARGS
@@ -384,7 +391,7 @@ public:
 		}
 
 		task.Scheduled = true;
-		allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
+		allocateTaskDispatchInfo(task, 0xFFFF, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 
 		stages[task.StartStageIndex].EmplaceBack(TypeErasedTaskHandle(task_handle()));
 	}
@@ -415,13 +422,16 @@ public:
 		if constexpr (sizeof...(ARGS)) {
 			if constexpr (is_instance<typename GTSL::TypeAt<0, ARGS...>::type, BE::Handle>{}) {
 				auto handle = get<0>(args...);
-				TaskDispatchInfo<ARGS...>* taskDispatchInfo = allocateTaskDispatchInfo(task, task.Access.front().First, handle.Identifier, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
-				//if(task.RequiresTranslation) {
-				//	auto targetInstanceIndex = systemsData[task.TargetType.SystemId].RegisteredTypes[task.TargetType.TypeId].TranslationMap[handle()]; //TODO: pull correct info
-				//	*taskDispatchInfo->GetPointer<0>() = typename GTSL::TypeAt<0, ARGS...>::type(task.TargetType, targetInstanceIndex);
-				//}
+				
+				auto& invokedSystem = systemsData[task.Access.front().First];
+
+				if(invokedSystem.RegisteredTypes.Find(handle.Identifier())) { // Check if entity identifier is associated with receiving task
+					allocateTaskDispatchInfo(task, task.Access.front().First, handle.Identifier, handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);					
+				} else {
+					allocateTaskDispatchInfo(task, 0xFFFF, BE::TypeIdentifier(0xFFFF, 0xFFFF), handle.EntityIndex, GTSL::ForwardRef<ARGS>(args)...);
+				}
 			} else {
-				allocateTaskDispatchInfo(task, 0, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
+				allocateTaskDispatchInfo(task, 0xFFFF, BE::TypeIdentifier(0xFFFF, 0xFFFF), 0xFFFFFFFF, GTSL::ForwardRef<ARGS>(args)...);
 			}
 		}
 
@@ -429,6 +439,19 @@ public:
 	}
 
 	void RemoveTask(Id taskName, Id startOn);
+
+	template<typename... ARGS>
+	EventHandle<ARGS...> RegisterEvent(const BE::System* caller, const Id event_name, bool priority = false) {
+		GTSL::WriteLock lock(eventsMutex);
+		if constexpr (BE_DEBUG) { if (events.Find(event_name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(event_name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return EventHandle<ARGS...>(u8""); } }
+		Event& eventData = events.Emplace(event_name, GetPersistentAllocator());
+
+		if (priority) {
+			eventData.priorityEntry = 0;
+		}
+
+		return EventHandle<ARGS...>(event_name);
+	}
 
 	template<typename... ARGS>
 	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
@@ -484,25 +507,9 @@ public:
 		auto& ent = s.RegisteredTypes[type_identifier()].Entities[index];
 		++ent.Uses;
 
-		for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
-			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
-		}
-
-		return T(type_identifier, index);
-	}
-
-	template<typename T, typename F>
-	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index, const BE::Handle<F> other) {
-		auto& s = systemsData[type_identifier.SystemId];
-		auto& rt = s.RegisteredTypes[type_identifier()];
-		auto& entt = s.RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
-		++entt.Uses;
-
-		rt.TranslationMap.Emplace(other(), index);
-
-		for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
-			systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
-		}
+		//for (auto& e : s.RegisteredTypes[type_identifier()].VisitingSystems) {
+		//	systemsData[e].RegisteredTypes[type_identifier()].Entities.EmplaceAt(index);
+		//}
 
 		return T(type_identifier, index);
 	}
@@ -557,7 +564,9 @@ private:
 		uint32 ResourceCount = 0;
 		uint16 SystemId;
 		BE::TypeIdentifier TTID;
-		uint32 InstanceIndex = 0xFFFFFFFF;
+
+		// Index of the entity to signal as being updated by the task.
+		uint32 InstanceIndex = 0xFFFFFFFF; bool Signals = false;
 		byte Arguments[sizeof(BE::System*) * 8 + GTSL::PackSize<ARGS...>()];
 
 		uint32 D_CallCount = 0;
@@ -634,11 +643,24 @@ private:
 		//BE::TypeIdentifier TargetType;
 
 		struct InstanceData {
+			// System index which the entity to update corresponds to.
 			uint16 SystemId;
-			BE::TypeIdentifier TTID; uint32 InstanceIndex = 0xFFFFFFFF;
+
+#if BE_DEBUG
+			Id SystemName;
+#endif
+
+			BE::TypeIdentifier TTID;
+
+			// Index of the entity to signal as being updated by the task.
+			uint32 InstanceIndex = 0xFFFFFFFF;
 			void* TaskInfo;
+
+			bool Signals = false;
 		};
 		GTSL::StaticVector<InstanceData, 8> Instances;
+
+		bool OnlyLast = false;
 
 		template<typename F>
 		void SetDelegate(F delegate) {
@@ -753,9 +775,37 @@ private:
 
 		dispatchTaskInfo->Callee = task.Callee;
 
-		task.Instances.EmplaceBack(system_id, type_identifier, instance_index, dispatchTaskInfo);
+		bool signals = false;
 
-		dispatchTaskInfo->SystemId = system_id; dispatchTaskInfo->TTID = type_identifier; dispatchTaskInfo->InstanceIndex = instance_index;
+		if(task.OnlyLast) {
+			//TODO: match system index, and everything
+			auto taskForSameInstanceExists = task.Instances.LookFor([&](const TaskData::InstanceData& instance_data){ return instance_data.InstanceIndex == instance_index; });
+			if(taskForSameInstanceExists) {
+				TaskData::InstanceData& instance = task.Instances[taskForSameInstanceExists.Get()];
+				instance.TaskInfo = dispatchTaskInfo;
+				//TODO: free previous dispatch task info
+				if(system_id == 0xFFFF) {
+				} else {
+					signals = true;					
+				}
+			} else {
+				if(system_id == 0xFFFF) {
+					task.Instances.EmplaceBack(system_id, Id(), type_identifier, instance_index, dispatchTaskInfo, signals);
+				} else {
+					signals = true;
+					task.Instances.EmplaceBack(system_id, systems[system_id]->instanceName, type_identifier, instance_index, dispatchTaskInfo, signals);
+				}
+			}
+		} else {
+			if(system_id == 0xFFFF) {
+				task.Instances.EmplaceBack(system_id, Id(), type_identifier, 0xFFFFFFFF, dispatchTaskInfo, signals);
+			} else {
+				signals = true;					
+				task.Instances.EmplaceBack(system_id, systems[system_id]->instanceName, type_identifier, instance_index, dispatchTaskInfo, signals);
+			}
+		}
+
+		dispatchTaskInfo->SystemId = system_id; dispatchTaskInfo->TTID = type_identifier; dispatchTaskInfo->InstanceIndex = instance_index; dispatchTaskInfo->Signals = signals;
 
 		return dispatchTaskInfo;
 	}
@@ -783,7 +833,7 @@ private:
 			TypeErasedTaskHandle DeletionTaskHandle;
 
 			bool IsOwn = true;
-			GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> TranslationMap;
+			//GTSL::HashMap<uint32, uint32, GTSL::DefaultAllocatorReference> TranslationMap;
 
 			struct DependencyData {
 				DependencyData(TypeErasedTaskHandle task_handle, bool is_required) : TaskHandle(task_handle), IsReq(is_required) {}
@@ -794,11 +844,11 @@ private:
 			GTSL::StaticVector<DependencyData, 4> SetupSteps;
 
 			struct EntityData {
-				uint32 Uses = 0, ResourceCounter = 0;
+				uint32 Uses = 0, FulfilledResources = 0;
 			};
 			GTSL::FixedVector<EntityData, BE::PAR> Entities;
 
-			GTSL::StaticVector<uint16, 8> VisitingSystems;
+			//GTSL::StaticVector<uint16, 8> VisitingSystems;
 
 
 			TypeData(const BE::PAR& allocator) : Entities(32, allocator) {}
@@ -806,6 +856,8 @@ private:
 		GTSL::HashMap<uint32, TypeData, BE::PAR> RegisteredTypes;
 
 		uint32 TypeCount = 0; // Owned types count
+
+		Id Name;
 	};
 	GTSL::Vector<SystemData, BE::PAR> systemsData;
 
@@ -839,7 +891,8 @@ public:
 			systemIndex = systemNames.Emplace(systemName);
 			initializeInfo.SystemId = systemIndex;
 			systemsIndirectionTable.Emplace(systemName, systemIndex);
-			systemsData.EmplaceBack(GetPersistentAllocator());
+			auto& systemData = systemsData.EmplaceBack(GetPersistentAllocator());
+			systemData.Name = systemName;
 
 			auto systemAllocation = GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo);
 			systemPointer = systemAllocation.GetData();

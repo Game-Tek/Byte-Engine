@@ -12,9 +12,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	OnAddMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem")), &WorldRendererPipeline::OnAddMesh);
 
-	OnUpdateMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
-
 	OnAddRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddRenderGroupMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), &WorldRendererPipeline::OnAddRenderGroupMesh);
+
+	OnUpdateMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
 
 	OnUpdateRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateRenderGroupMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateRenderGroupMesh);
 
@@ -31,6 +31,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnAddMeshTaskHandle, true);
 	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnUpdateMeshTaskHandle, false);
+
+	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnAddRenderGroupMeshTaskHandle, true);
+	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")->GetStaticMeshTypeIdentifier(), OnUpdateRenderGroupMeshTaskHandle, false);
 
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onAddLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
@@ -53,14 +56,14 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.Attachments.EmplaceBack(u8"Normal", GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(u8"Position", GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
-		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"ForwardRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass);
+		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}
 	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(u8"Visibility", GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
-		renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"VisibilityRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, geoRenderPass);
+		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"VisibilityRenderPass", renderSystem, geoRenderPass);
 
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"positionStream");
@@ -101,25 +104,25 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		RenderOrchestrator::PassData countPixelsRenderPassData;
 		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
 		countPixelsRenderPassData.Attachments.EmplaceBack(u8"Visibility", GAL::AccessTypes::READ);
-		renderOrchestrator->AddRenderPass(u8"CountPixels", renderOrchestrator->GetGlobalDataLayer(), renderSystem, countPixelsRenderPassData);
+		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"CountPixels", renderSystem, countPixelsRenderPassData);
 
 		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
 		//RenderOrchestrator::PassData prefixSumRenderPassData;
 		//prefixSumRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		//renderOrchestrator->AddRenderPass(u8"PrefixSum", renderOrchestrator->GetCameraDataLayer(), renderSystem, prefixSumRenderPassData, GetApplicationManager());
+		//renderOrchestrator->AddRenderPassNode(u8"PrefixSum", renderOrchestrator->GetCameraDataLayer(), renderSystem, prefixSumRenderPassData, GetApplicationManager());
 		//
 		////Scans the whole rendered image and stores which pixels every shader group occupies utilizing the information from the prefix sum pass
 		//RenderOrchestrator::PassData selectPixelsRenderPass;
 		//selectPixelsRenderPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 		//countPixelsRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
-		//renderOrchestrator->AddRenderPass(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectPixelsRenderPass, GetApplicationManager());
+		//renderOrchestrator->AddRenderPassNode(u8"SelectPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, selectPixelsRenderPass, GetApplicationManager());
 		//
 		////Every participating shader group is called to paint every pixel it occupies on screen
 		//RenderOrchestrator::PassData paintRenderPassData;
 		//paintRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
 		//paintRenderPassData.ReadAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Visibility" });
 		//paintRenderPassData.WriteAttachments.EmplaceBack(RenderOrchestrator::PassData::AttachmentReference{ u8"Color" });
-		//renderOrchestrator->AddRenderPass(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
+		//renderOrchestrator->AddRenderPassNode(u8"PaintPixels", renderOrchestrator->GetCameraDataLayer(), renderSystem, paintRenderPassData, GetApplicationManager());
 
 		//renderOrchestrator->SetShaderGroupParameter(renderSystem, ShaderGroupHandle{}, u8"materialCount", 0u);
 	}
@@ -127,13 +130,13 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 	gammaCorrectionPass.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE); //result attachment
-	renderOrchestrator->AddRenderPass(u8"GammaCorrection", renderOrchestrator->GetGlobalDataLayer(), renderSystem, gammaCorrectionPass);
+	renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
 
-	renderOrchestrator->CreateMember2(u8"global", u8"StaticMeshData", INSTANCE_DATA);
+	renderOrchestrator->RegisterType(u8"global", u8"StaticMeshData", INSTANCE_DATA);
 	meshDataBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
-	renderOrchestrator->CreateMember2(u8"global", u8"PointLightData", POINT_LIGHT_DATA);
-	renderOrchestrator->CreateMember2(u8"global", u8"LightingData", LIGHTING_DATA);
+	renderOrchestrator->RegisterType(u8"global", u8"PointLightData", POINT_LIGHT_DATA);
+	renderOrchestrator->RegisterType(u8"global", u8"LightingData", LIGHTING_DATA);
 
 	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 
@@ -166,7 +169,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	//pass_data.WriteAttachments.EmplaceBack(u8"Color");
 	//pass_data.ReadAttachments.EmplaceBack(u8"Normal");
 	//pass_data.ReadAttachments.EmplaceBack(u8"RenderDepth");
-	//auto renderPassLayerHandle = renderOrchestrator->AddRenderPass(u8"Lighting", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
+	//auto renderPassLayerHandle = renderOrchestrator->AddRenderPassNode(u8"Lighting", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
 }
 
 void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {
@@ -247,7 +250,7 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 	render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
 
 	if (rayTracing) {
-		//res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), vertexBuffer, indexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
+		res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), destinationVertexBuffer, destinationIndexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
 	}
 
 	for (auto e : res.Instances) {

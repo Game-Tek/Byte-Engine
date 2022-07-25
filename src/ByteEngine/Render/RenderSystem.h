@@ -133,22 +133,22 @@ public:
 
 		auto& commandListData = commandLists[command_list_handle()];
 
-		GTSL::StaticVector<GAL::AccelerationStructureBuildInfo, 8> build_datas;
+		GTSL::StaticVector<GAL::AccelerationStructureBuildInfo, 8> buildDatas;
 		GTSL::StaticVector<GAL::Geometry, 8> geometries;
 
 		for (auto handle : handles) {
-			auto& buildData = build_datas.EmplaceBack();
+			auto& buildData = buildDatas.EmplaceBack();
 
 			if (accelerationStructures[handle()].isTop) {
 				const auto& as = accelerationStructures[handle()];
 				auto& tlas = accelerationStructures[handle()].TopLevel;
 
-				buildData.DestinationAccelerationStructure = tlas.AccelerationStructures[GetCurrentFrame()];
+				buildData.DestinationAccelerationStructure = tlas.AccelerationStructures;
 				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 
-				//GTSL::Skim(tlas.PendingUpdates, [&](decltype(tlas.PendingUpdates)::value_type& e) { bool val; e.Second.Get(GetCurrentFrame(), val); if (val) { GTSL::MemCopy(64ull, GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()) + e.First * 64, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()) + e.First * 64); return true; } return false; });
-				//GTSL::MemCopy(64ull * as.PrimitiveCount, GetBufferPointer(tlas.InstancesBuffer, GetCurrentFrame()), GetBufferPointer(tlas.InstancesBuffer, uint8(GetCurrentFrame() - uint8(1)) % GetPipelinedFrames()));
-				//geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.InstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
+				commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffers[tlas.SourceInstancesBuffer()].Buffer, buffers[tlas.DestinationInstancesBuffer()].Buffer, GetBufferSize(tlas.DestinationInstancesBuffer));
+
+				geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.DestinationInstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
 
 				buildData.Geometries = geometries;
 			} else {
@@ -156,7 +156,7 @@ public:
 				const auto& blas = accelerationStructures[handle()].BottomLevel;
 
 				buildData.DestinationAccelerationStructure = blas.AccelerationStructure;
-				//buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
+				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 				
 				geometries.EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
 
@@ -168,7 +168,7 @@ public:
 		case GAL::Device::CPU: break;
 		case GAL::Device::GPU:
 		case GAL::Device::GPU_OR_CPU: {
-			commandListData.CommandList.BuildAccelerationStructure(GetRenderDevice(), build_datas, GetTransientAllocator());
+			commandListData.CommandList.BuildAccelerationStructure(GetRenderDevice(), buildDatas, GetTransientAllocator());
 			break;
 		}
 		default:;
@@ -359,13 +359,9 @@ public:
 		return buffers[bufferHandle()].Addresses;
 	}
 
-	//void UpdateBuffer(const CommandListHandle command_list_handle, const BufferHandle buffer_handle) {
-	//	auto& buffer = buffers[buffer_handle()];
-	//
-	//	++buffer.references;
-	//
-	//	AddBufferUpdate(command_list_handle, buffer_handle);
-	//}
+	uint32 GetBufferSize(const BufferHandle buffer_handle) const {
+		return buffers[buffer_handle()].Size;
+	}
 	
 	void DestroyBuffer(const BufferHandle handle) {
 		--buffers[handle()].references;
@@ -382,12 +378,12 @@ public:
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
 	uint32 GetShaderGroupHandleAlignment() const { return shaderGroupHandleAlignment; }
 
-	AccelerationStructure GetTopLevelAccelerationStructure(AccelerationStructureHandle topLevelAccelerationStructureIndex, uint8 frame) const {
-		return accelerationStructures[topLevelAccelerationStructureIndex()].TopLevel.AccelerationStructures[frame];
+	AccelerationStructure GetTopLevelAccelerationStructure(AccelerationStructureHandle topLevelAccelerationStructureIndex) const {
+		return accelerationStructures[topLevelAccelerationStructureIndex()].TopLevel.AccelerationStructures;
 	}
 
-	GAL::DeviceAddress GetTopLevelAccelerationStructureAddress(AccelerationStructureHandle topLevelAccelerationStructureIndex, uint8 frame) const {
-		return accelerationStructures[topLevelAccelerationStructureIndex()].TopLevel.AccelerationStructures[frame].GetAddress(GetRenderDevice());
+	GAL::DeviceAddress GetTopLevelAccelerationStructureAddress(AccelerationStructureHandle topLevelAccelerationStructureIndex) const {
+		return accelerationStructures[topLevelAccelerationStructureIndex()].TopLevel.AccelerationStructures.GetAddress(GetRenderDevice());
 	}
 
 	uint32 GetBufferSubDataAlignment() const { return renderDevice.GetStorageBufferBindingOffsetAlignment(); }
@@ -430,15 +426,14 @@ public:
 
 		uint32 size;
 
-		t.AccelerationStructures[0].GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), accelerationStructureBuildDevice, GAL::AccelerationStructureFlags::PREFER_FAST_TRACE, &size, &as.ScratchSize);
+		t.AccelerationStructures.GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), accelerationStructureBuildDevice, GAL::AccelerationStructureFlags::PREFER_FAST_TRACE, &size, &as.ScratchSize);
 
-		for (uint8 f = 0; f < pipelinedFrames; ++f) {
-			AllocateLocalBufferMemory(size, GAL::BufferUses::ACCELERATION_STRUCTURE, &t.AccelerationStructureBuffer[f], &t.AccelerationStructureAllocation[f]);
-			t.AccelerationStructures[f].Initialize(&renderDevice, true, t.AccelerationStructureBuffer[f], size, 0);
-		}
+		AllocateLocalBufferMemory(size, GAL::BufferUses::ACCELERATION_STRUCTURE, &t.AccelerationStructureBuffer, &t.AccelerationStructureAllocation);
+		t.AccelerationStructures.Initialize(&renderDevice, true, t.AccelerationStructureBuffer, size, 0);
 
-		//t.InstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, true, t.InstancesBuffer);
-		//as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, false, true, as.ScratchBuffer);
+		t.SourceInstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, true, t.SourceInstancesBuffer);
+		t.DestinationInstancesBuffer = CreateBuffer(64 * estimatedMaxInstances, GAL::BufferUses::BUILD_INPUT_READ, false, t.DestinationInstancesBuffer);
+		as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, false, as.ScratchBuffer);
 
 		return AccelerationStructureHandle{ tlasi };
 	}
@@ -512,12 +507,8 @@ public:
 
 		if (blash) {
 			const auto& blas = accelerationStructures[blash()].BottomLevel;
-			GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.InstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
+			GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.SourceInstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
 		}
-
-		auto& r = tlas.PendingUpdates.EmplaceBack(); //bug: only works if we update acc. str. every frame
-		r.First = instanceIndex;
-		r.Second.Set((GetCurrentFrame() + 1) % GetPipelinedFrames(), true);
 
 		return BLASInstanceHandle(instanceIndex);
 	}
@@ -526,16 +517,16 @@ public:
 
 	void SetInstancePosition(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const GTSL::Matrix3x4& matrix4) {
 		BE_LOG_IF(!static_cast<bool>(instance_handle), u8"TlAS instance handle is invalid.");
-		GAL::WriteInstanceMatrix(matrix4, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
+		GAL::WriteInstanceMatrix(matrix4, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.SourceInstancesBuffer), instance_handle());
 	}
 
 	void SetAccelerationStructureInstanceIndex(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, uint32 custom_index) {
-		GAL::WriteInstanceIndex(custom_index, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
+		GAL::WriteInstanceIndex(custom_index, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.SourceInstancesBuffer), instance_handle());
 	}
 
 	void SetInstanceBindingTableRecordOffset(AccelerationStructureHandle topLevel, BLASInstanceHandle instance_handle, const uint32 offset) {
 		BE_LOG_IF(instance_handle, u8"TlAS instance handle is invalid.");
-		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.InstancesBuffer), instance_handle());
+		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.SourceInstancesBuffer), instance_handle());
 	}
 
 private:	
@@ -583,12 +574,13 @@ private:
 		uint32 ScratchSize;
 
 		struct TopLevelAccelerationStructure {
-			AccelerationStructure AccelerationStructures[MAX_CONCURRENT_FRAMES];
-			RenderAllocation AccelerationStructureAllocation[MAX_CONCURRENT_FRAMES];
-			GPUBuffer AccelerationStructureBuffer[MAX_CONCURRENT_FRAMES];
-			BufferHandle InstancesBuffer;
+			AccelerationStructure AccelerationStructures;
+			RenderAllocation AccelerationStructureAllocation;
+			GPUBuffer AccelerationStructureBuffer;
+
+			BufferHandle SourceInstancesBuffer, DestinationInstancesBuffer;
+
 			GTSL::StaticVector<uint32, 8> freeSlots;
-			GTSL::StaticVector<GTSL::Pair<uint32, GTSL::Bitfield<MAX_CONCURRENT_FRAMES>>, 8> PendingUpdates;
 		};
 
 		struct BottomLevelAccelerationStructure {

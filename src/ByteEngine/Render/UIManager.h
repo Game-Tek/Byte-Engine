@@ -285,7 +285,7 @@ public:
 
 	UIElementHandle AddText(const UIElementHandle element_handle, const GTSL::StringView text) {
 		auto handle = add(element_handle, PrimitiveData::PrimitiveType::TEXT);
-		return UIElementHandle(UIElementTypeIndentifier, handle());
+		return GetApplicationManager()->MakeHandle<UIElementHandle>(UIElementTypeIndentifier, handle());
 	}
 
 	UIElementHandle AddCurve(const UIElementHandle element_handle) {
@@ -294,7 +294,7 @@ public:
 		auto& primitive = getPrimitive(handle);
 		primitive.DerivedTypeIndex = place;
 		auto& curve = curvePrimitives[place];
-		return UIElementHandle(UIElementTypeIndentifier, place);
+		return GetApplicationManager()->MakeHandle<UIElementHandle>(UIElementTypeIndentifier, place);
 	}
 
 	PrimitiveData& getPrimitive(const UIElementHandle element_handle) {

@@ -31,13 +31,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", POINT_LIGHT_DATA));
 		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", LIGHTING_DATA);
 
-		pushConstantBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lightingData" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"InstanceData*", u8"instances" });
-		shaderParametersHandle = pipeline->DeclareVariable(pushConstantBlockHandle, { u8"shaderParametersData*", u8"shaderParameters" });
+		AddPushConstantDeclaration(pipeline, forwardScopeHandle, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"CameraData*", u8"camera" }, { u8"LightingData*", u8"lightingData" }, { u8"InstanceData*", u8"instances" }, { u8"ShaderParametersData*", u8"shaderParameters" } });
 
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
@@ -86,11 +80,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 		auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
 
 		{ //add deduction guides for reaching shader parameters
-			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"shaderParametersData", shaderParameters);
-
-			//for (auto& e : shaderParameters) {
-			//	pipeline->AddMemberDeductionGuide(shaderScope, e.Name, { pushConstantBlockHandle, shaderParametersHandle, pipeline->GetElementHandle(/shaderParametersStructHandle, /e.Name) });
-			//}
+			auto shaderParametersStructHandle = pipeline->DeclareStruct(shaderScope, u8"ShaderParametersData", shaderParameters);
 		}
 
 		if (auto res = shader_json[u8"localSize"]) {

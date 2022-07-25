@@ -27,7 +27,7 @@ public:
 
 		window.window.SetWindowVisibility(true);
 
-		return WindowHandle(WindowTypeIndentifier, index);
+		return GetApplicationManager()->MakeHandle<WindowHandle>(WindowTypeIndentifier, index);
 	}
 
 	GTSL::Vector2 GetWindowPosition() const {
@@ -57,6 +57,7 @@ private:
 	struct WindowData {
 		GTSL::Window window;
 		GTSL::Vector2 position;
+		WindowHandle windowHandle;
 	};
 	GTSL::StaticVector<WindowData, 16> windows;
 
@@ -138,7 +139,7 @@ private:
 		case GTSL::Window::WindowEvents::CHAR: inputManager->RecordInputSource(app->keyboard, u8"Character", static_cast<char32_t>(*static_cast<GTSL::Window::CharEventData*> (eventData))); break;
 		case GTSL::Window::WindowEvents::SIZE: {
 			auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEventData*>(eventData);
-			app->GetApplicationManager()->DispatchEvent(this, GetOnWindowResizeEventHandle(), WindowHandle(WindowTypeIndentifier, 0), GTSL::MoveRef(*sizingEventData));
+			app->GetApplicationManager()->DispatchEvent(this, GetOnWindowResizeEventHandle(), GTSL::MoveRef(app->windows[0].windowHandle), GTSL::MoveRef(*sizingEventData));
 			break;
 		}
 		case GTSL::Window::WindowEvents::MOVING: {

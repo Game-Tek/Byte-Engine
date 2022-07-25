@@ -608,7 +608,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	{ //configure permutations
 		commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
 		//commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
-		//commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
+		commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
 		commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation");
 	} //todo: parametrize
 

@@ -115,9 +115,9 @@ namespace BE
 			return { static_cast<uint16>(jsonMember[optionName][0].GetUint()), static_cast<uint16>(jsonMember[optionName][1].GetUint()) };
 		}
 
-		//const GTSL::JSONMember& GetConfig() const {
-		//	return jsonMember;			
-		//}
+		GTSL::JSONMember GetConfig() const {
+			return jsonMember;
+		}
 		
 	protected:
 		inline static Application* applicationInstance{ nullptr };

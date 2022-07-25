@@ -19,3 +19,5 @@
 #define UI_DATA { { u8"matrix4f", u8"projection" }, { u8"FontData*[4]", u8"fontData" }, { u8"TextData[16]", u8"textData" } }
 
 #define INDIRECT_DISPATCH_COMMAND_DATA { { u8"uint32", u8"x" }, { u8"uint32", u8"y" }, { u8"uint32", u8"z" } }
+
+#define TRACE_RAY_PARAMETER_DATA { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} }

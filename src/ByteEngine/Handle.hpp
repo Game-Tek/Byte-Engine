@@ -1,5 +1,7 @@
 #pragma once
 
+#include <concepts>
+
 #include "ByteEngine/Core.h"
 
 template<typename C, typename TAG>
@@ -23,26 +25,25 @@ private:
 	friend Handle;
 };
 
-template<typename TAG>
-class Handle<uint32, TAG>
+template<std::integral C, typename TAG>
+class Handle<C, TAG>
 {
 public:
 	Handle() = default;
 	~Handle() = default;
 
-	explicit Handle(uint32 value) noexcept : handle(value) {}
+	explicit Handle(C value) noexcept : handle(value) {}
 
-	explicit operator uint32() const { return handle; }
-	explicit operator uint64() const { return handle; }
+	explicit operator C() const { return handle; }
 
-	uint32 operator()() const { return handle; }
+	C operator()() const { return handle; }
 
 	bool operator==(const Handle & other) const { return handle == other.handle; }
 	bool operator!=(const Handle & other) const { return handle != other.handle; }
 
-	explicit operator bool() const { return handle != 0xFFFFFFFF; }
+	explicit operator bool() const { return handle != static_cast<C>(~0); }
 private:
-	uint32 handle = 0xFFFFFFFF;
+	C handle = static_cast<C>(~0);
 };
 
 #define MAKE_HANDLE(type, name)\

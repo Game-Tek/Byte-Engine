@@ -11,7 +11,7 @@
 #include <GTSL/Semaphore.h>
 
 ApplicationManager::ApplicationManager() : Object(u8"ApplicationManager"), worlds(4, GetPersistentAllocator()), systems(8, GetPersistentAllocator()), systemNames(16, GetPersistentAllocator()),
-systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator()), enqueuedTasks(128, GetPersistentAllocator()), tasksInFlight(0u)
+systemsMap(16, GetPersistentAllocator()), systemsIndirectionTable(64, GetPersistentAllocator()), events(32, GetPersistentAllocator()), tasks(128, GetPersistentAllocator()), functionToTaskMap(128, GetPersistentAllocator()), enqueuedTasks(128, GetPersistentAllocator()), tasksInFlight(0u), stagesNames(8, GetPersistentAllocator()), taskSorter(128, GetPersistentAllocator()), systemsData(16, GetPersistentAllocator()), liveInstances(256, GetPersistentAllocator())
 {
 }
 
@@ -91,11 +91,30 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 
 				if(taskInstance.Signals) {
 					auto& s = systemsData[taskInstance.SystemId];
-					auto& t = s.RegisteredTypes[taskInstance.TTID()];
-					auto& entt = t.Entities[taskInstance.InstanceIndex];
 
-					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || entt.FulfilledResources < r.Get()) { // If this task can, at this point, execute for this entity type
+					uint8 val = 0;
+
+					uint32 l = 0;
+
+					{
+						GTSL::ReadLock lock{ liveInstancesMutex };
+						auto& e = liveInstances[taskInstance.InstanceHandle.InstanceIndex];
+						val = e.Counter;
+						l = e.SystemID;
+						l |= e.ComponentID << 16;
+					}
+
+					auto& t = s.Types[l];
+
+					if (auto r = t.SetupSteps.LookFor([&](const SystemData::TypeData::DependencyData& d) { return taskHandle == d.TaskHandle; }); !r || val < r.Get()) { // If this task can, at this point, execute for this entity type
 						++ddd.RunAttempts;
+						++taskInstance.DispatchAttempts;
+
+						if(taskInstance.DispatchAttempts > 3) {
+							BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber, u8". Requires level: ", r.Get(), u8", but has: ", val)
+							BE_LOG_WARNING(u8"Task: ", tasks[t.SetupSteps[val].TaskHandle()].Name, u8" is required")
+						}
+
 						++i; continue;
 					}
 				}
@@ -103,6 +122,12 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 				if(task.Pre != 0xFFFFFFFF) {
 					if(!executedTasks.Find(TypeErasedTaskHandle(task.Pre))) { // If task which which we depend on executing hasn't yet executed, don't schedule instance.
 						++ddd.RunAttempts;
+						++taskInstance.DispatchAttempts;
+
+						if(taskInstance.DispatchAttempts > 3) {
+							BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber)
+						}
+
 						++i; continue;
 					}
 				}
@@ -120,6 +145,7 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 				taskSorter.ReleaseResources(result.Get());
 				if(ddd.RunAttempts > 3) {
 					BE_LOG_WARNING(u8"Task: ", task.Name, u8", has failed to run multiple times, removing from stack.");
+
 					nonDispatchedTasks.EmplaceBack(taskHandle);
 					stack.Pop(taskIndex); // Remove task from the stack for this cycle, since multiple fails to run can stall the whole pipeline
 				}
@@ -201,7 +227,7 @@ BE::TypeIdentifier ApplicationManager::RegisterType(const BE::System* system, co
 	uint16 id = system->systemId;
 	uint16 typeId = systemsData[id].TypeCount++;
 
-	systemsData[id].RegisteredTypes.Emplace(BE::TypeIdentifier(id, typeId)(), GetPersistentAllocator());
+	systemsData[id].Types.Emplace(BE::TypeIdentifier(id, typeId)(), GetPersistentAllocator());
 
 	return { id, typeId };
 }

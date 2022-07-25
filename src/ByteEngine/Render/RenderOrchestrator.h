@@ -442,7 +442,7 @@ public:
 
 		const BufferWriteKey& operator=(const RenderSystem::AccelerationStructureHandle acceleration_structure_handle) const {
 			if (Offset == ~0u or !validateType<RenderSystem::AccelerationStructureHandle>()) { return *this; }
-			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle) + Offset) = render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, render_system->GetCurrentFrame());
+			*reinterpret_cast<GAL::DeviceAddress*>(render_system->GetBufferPointer(buffer_handle) + Offset) = render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle);
 			//render_orchestrator->addPendingWrite(render_system->GetTopLevelAccelerationStructureAddress(acceleration_structure_handle, NextFrame), buffer_handle, render_system->GetBufferPointer(buffer_handle, NextFrame), nullptr, Offset, Frame, NextFrame);
 			return *this;
 		}
@@ -525,7 +525,7 @@ public:
 
 		PassType PassType;
 	};
-	NodeHandle AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData);
+	NodeHandle AddRenderPassNode(NodeHandle parent_node_handle, GTSL::StringView render_pass_name, RenderSystem* renderSystem, PassData pass_data);
 
 	void OnResize(RenderSystem* renderSystem, const GTSL::Extent2D newSize);
 
@@ -545,14 +545,14 @@ public:
 		return tryAddElement(scope, name, ElementData::ElementType::SCOPE).Get();
 	}
 
-	MemberHandle CreateMember2(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const StructElement*> members) {
+	MemberHandle RegisterType(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<const StructElement*> members) {
 		GTSL::StaticVector<MemberInfo, 16> mem;
 
 		for(auto& e : members) {
 			mem.EmplaceBack(nullptr, e.Type, e.Name);
 		}
 
-		return  RegisterType(parents, structName, mem);
+		return RegisterType(parents, structName, mem);
 	}
 
 	MemberHandle RegisterType(GTSL::StringView parents, GTSL::StringView structName, const GTSL::Range<MemberInfo*> members) {
@@ -752,7 +752,7 @@ public:
 		SetLayoutHandle parentHandle;
 		uint32 level;
 
-		if (parentName()) {
+		if (parentName) {
 			auto& parentSetLayout = setLayoutDatas[parentName()];
 			parentHandle = parentName; level = parentSetLayout.Level + 1;
 		} else {
@@ -1054,6 +1054,15 @@ public:
 		return nodeHandle.Get();
 	}
 
+	NodeHandle AddRayTraceNode(const NodeHandle parent_node_handle, const RenderModelHandle material_instance_handle) {
+		auto handle = addInternalNode<RayTraceData>(222, parent_node_handle);
+
+		if(!handle) { return handle.Get(); }
+
+		getPrivateNode<RayTraceData>(handle.Get()).ShaderGroupIndex = material_instance_handle();
+		return handle.Get();
+	}
+
 private:
 	inline static const Id RENDER_TASK_NAME{ u8"RenderOrchestrator::Render" };
 	inline static const Id SETUP_TASK_NAME{ u8"RenderOrchestrator::Setup" };
@@ -1333,15 +1342,6 @@ private:
 
 	void setRenderTreeAsDirty(const NodeHandle dirty_node_handle) {
 		isRenderTreeDirty = true;
-	}
-
-	NodeHandle addRayTraceNode(const NodeHandle parent_node_handle, const RenderModelHandle material_instance_handle) {
-		auto handle = addInternalNode<RayTraceData>(222, parent_node_handle);
-
-		if(!handle) { return handle.Get(); }
-
-		getPrivateNode<RayTraceData>(handle.Get()).ShaderGroupIndex = material_instance_handle();
-		return handle.Get();
 	}
 
 	NodeHandle addPipelineBindNode(const NodeHandle parent_node_handle, const RenderModelHandle material_instance_handle) {
@@ -2055,24 +2055,24 @@ public:
 
 		renderOrchestrator->CreateScope(u8"global", u8"UI");
 
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"TextData", UI_TEXT_DATA);
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"LinearSegment", UI_LINEAR_SEGMENT);
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"QuadraticSegment", UI_QUADRATIC_SEGMENT);
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"GlyphContourData", UI_GLYPH_CONTOUR_DATA);
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"GlyphData", UI_GLYPH_DATA);
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"FontData", UI_FONT_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"TextData", UI_TEXT_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"LinearSegment", UI_LINEAR_SEGMENT);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"QuadraticSegment", UI_QUADRATIC_SEGMENT);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"GlyphContourData", UI_GLYPH_CONTOUR_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"GlyphData", UI_GLYPH_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"FontData", UI_FONT_DATA);
 
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIInstance", UI_INSTANCE_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"UIInstance", UI_INSTANCE_DATA);
 		uiInstancesDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIInstance[16]");
 
-		renderOrchestrator->CreateMember2(u8"global.UI", u8"UIData", UI_DATA);
+		renderOrchestrator->RegisterType(u8"global.UI", u8"UIData", UI_DATA);
 		uiDataDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global.UI", u8"UIData");
 
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
 			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
 			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
-			auto renderPassNodeHandle = renderOrchestrator->AddRenderPass(u8"UIRenderPass", renderOrchestrator->GetGlobalDataLayer(), renderSystem, uiRenderPassData);
+			auto renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"UIRenderPass", renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
 			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey, true);

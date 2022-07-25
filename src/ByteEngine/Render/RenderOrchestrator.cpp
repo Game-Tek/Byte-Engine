@@ -93,9 +93,9 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	tryAddDataType(u8"global", u8"ptr_t", 8);
 	tryAddDataType(u8"global", u8"ShaderHandle", 32);
 
-	CreateMember2(u8"global", u8"IndirectDispatchCommand", INDIRECT_DISPATCH_COMMAND_DATA);
-	CreateMember2(u8"global", u8"TextureReference", { { u8"uint32", u8"Instance" } });
-	CreateMember2(u8"global", u8"ImageReference", { { u8"uint32", u8"Instance" } });
+	RegisterType(u8"global", u8"IndirectDispatchCommand", INDIRECT_DISPATCH_COMMAND_DATA);
+	RegisterType(u8"global", u8"TextureReference", { { u8"uint32", u8"Instance" } });
+	RegisterType(u8"global", u8"ImageReference", { { u8"uint32", u8"Instance" } });
 
 	{
 		//uint64 allocatedSize;
@@ -133,14 +133,14 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 
 	{
 		tryAddElement(u8"global", u8"Common", ElementData::ElementType::SCOPE);
-		CreateMember2(u8"global.Common", u8"GlobalData", GLOBAL_DATA);
+		RegisterType(u8"global.Common", u8"GlobalData", GLOBAL_DATA);
 		globalDataDataKey = MakeDataKey(renderSystem, u8"global.Common", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
-		CreateMember2(u8"global.Common", u8"ViewData", VIEW_DATA);
-		cameraMatricesHandle = CreateMember2(u8"global.Common", u8"CameraData", CAMERA_DATA);
+		RegisterType(u8"global.Common", u8"ViewData", VIEW_DATA);
+		cameraMatricesHandle = RegisterType(u8"global.Common", u8"CameraData", CAMERA_DATA);
 		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global.Common", u8"CameraData");
 		//cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
@@ -169,10 +169,12 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 	}
 
-	renderPassesGuide.EmplaceBack(u8"ForwardRenderPass");
-	renderPassesGuide.EmplaceBack(u8"DirectionalShadow");
-	renderPassesGuide.EmplaceBack(u8"UIRenderPass");
-	renderPassesGuide.EmplaceBack(u8"GammaCorrection");
+	auto config = BE::Application::Get()->GetConfig();
+
+	for(auto rp : config[u8"renderPasses"]) {
+		renderPassesGuide.EmplaceBack(rp.GetStringView());
+		
+	}
 
 	randomB(); randomB(); randomB();
 }
@@ -714,10 +716,10 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	attachments.Emplace(attachmentName, attachment);
 }
 
-RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringView renderPassName, NodeHandle parent_node_handle, RenderSystem* renderSystem, PassData passData) {
+RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle parent_node_handle, GTSL::StringView render_pass_name, RenderSystem* renderSystem, PassData pass_data) {
 	GTSL::StaticVector<MemberInfo, 16> members;
 
-	for (auto& e : passData.Attachments) {
+	for (auto& e : pass_data.Attachments) {
 		if(!(e.Access & GAL::AccessTypes::WRITE)) {
 			members.EmplaceBack(nullptr, u8"TextureReference", GTSL::StringView(e.Name));
 		} else {
@@ -725,16 +727,16 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		}
 	}
 
-	CreateScope(u8"global", renderPassName);
+	CreateScope(u8"global", render_pass_name);
 
-	auto scope = GTSL::StaticString<64>(u8"global") + u8"." + renderPassName;
+	auto scope = GTSL::StaticString<64>(u8"global") + u8"." + render_pass_name;
 
 	auto member = RegisterType(scope, u8"RenderPassData", members);
 
 	NodeHandle leftNodeHandle(0xFFFFFFFF);
 
 	{ // Guarantee render pass order in render tree, TODO: check render pass level or else this will fail
-		auto pos = renderPassesGuide.Find(Id(renderPassName));
+		auto pos = renderPassesGuide.Find(Id(render_pass_name));
 
 		if(pos) {
 			if(pos.Get() > 0) {
@@ -751,7 +753,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 	auto ddd = MakeDataKey(renderSystem, scope, u8"RenderPassData");
 	//auto renderPassDataNode = AddDataNode(renderPassName, leftNodeHandle, parent_node_handle, scope, u8"RenderPassData");
 	auto renderPassDataNode = AddDataNode(leftNodeHandle, parent_node_handle, ddd);
-	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(Hash(renderPassName), renderPassDataNode);
+	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(Hash(render_pass_name), renderPassDataNode);
 
 	if(!renderPassNodeHandleResult) { return renderPassNodeHandleResult.Get(); }
 
@@ -759,31 +761,31 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 	RenderPassData& renderPass = getPrivateNode<RenderPassData>(renderPassNodeHandle);
 
-	renderPasses.Emplace(renderPassName, renderPassNodeHandle);
-	renderPasses2.Emplace(renderPassName, renderPassDataNode);
+	renderPasses.Emplace(render_pass_name, renderPassNodeHandle);
+	renderPasses2.Emplace(render_pass_name, renderPassDataNode);
 
 	auto renderPassIndex = renderPassesInOrder.GetLength();
 
 	renderPassesInOrder.EmplaceBack(renderPassNodeHandle);
 
-	renderPass.ResourceHandle = makeResource(renderPassName);
+	renderPass.ResourceHandle = makeResource(render_pass_name);
 	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
 
 	BindToNode(renderPassNodeHandle, renderPass.ResourceHandle);
 
-	getNode(renderPassNodeHandle).Name = GTSL::StringView(renderPassName);
+	getNode(renderPassNodeHandle).Name = GTSL::StringView(render_pass_name);
 
 	PassType renderPassType = PassType::RASTER;
 	GAL::PipelineStage pipelineStage;
 
 	NodeHandle resultHandle = renderPassNodeHandle;
 
-	switch (passData.PassType) {
+	switch (pass_data.PassType) {
 	case PassType::RASTER: {
 		renderPassType = PassType::RASTER;
 		pipelineStage = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 
-		for (const auto& e : passData.Attachments) {
+		for (const auto& e : pass_data.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
 
 			attachmentData.Name = e.Name;
@@ -811,7 +813,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		renderPassType = PassType::COMPUTE;
 		pipelineStage = GAL::PipelineStages::COMPUTE;
 
-		for (const auto& e : passData.Attachments) {
+		for (const auto& e : pass_data.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
 
 			attachmentData.Name = e.Name;
@@ -826,9 +828,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 		}
 
-		auto sgh = CreateShaderGroup(renderPassName);
+		auto sgh = CreateShaderGroup(render_pass_name);
 		auto pipelineBindNode = addPipelineBindNode(renderPassNodeHandle, sgh);
-		resultHandle = addInternalNode<DispatchData>(Hash(renderPassName), pipelineBindNode).Get();
+		resultHandle = addInternalNode<DispatchData>(Hash(render_pass_name), pipelineBindNode).Get();
 
 		break;
 	}
@@ -836,7 +838,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 		renderPassType = PassType::RAY_TRACING;
 		pipelineStage = GAL::PipelineStages::RAY_TRACING;
 
-		for (const auto& e : passData.Attachments) {
+		for (const auto& e : pass_data.Attachments) {
 			auto& attachmentData = renderPass.Attachments.EmplaceBack();
 
 			attachmentData.Name = e.Name;
@@ -862,8 +864,8 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPass(GTSL::StringVie
 
 	auto bwk = GetBufferWriteKey(renderSystem, renderPassDataNode);
 
-	for (auto i = 0u; i < passData.Attachments.GetLength(); ++i) {
-		bwk[GTSL::StringView(passData.Attachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
+	for (auto i = 0u; i < pass_data.Attachments.GetLength(); ++i) {
+		bwk[GTSL::StringView(pass_data.Attachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
 	}
 
 	return resultHandle;
@@ -921,41 +923,21 @@ void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable
 	}
 }
 
-void RenderOrchestrator::onRenderEnable(ApplicationManager* gameInstance, const GTSL::Range<const TaskDependency*> dependencies)
-{
+void RenderOrchestrator::onRenderEnable(ApplicationManager* gameInstance, const GTSL::Range<const TaskDependency*> dependencies) {
 	//gameInstance->AddTask(SETUP_TASK_NAME, &RenderOrchestrator::Setup, DependencyBlock(), u8"GameplayEnd", u8"RenderStart");
 	//gameInstance->AddTask(RENDER_TASK_NAME, &RenderOrchestrator::Render, DependencyBlock(), u8"RenderDo", u8"RenderFinished");
 }
 
-void RenderOrchestrator::onRenderDisable(ApplicationManager* gameInstance)
-{
+void RenderOrchestrator::onRenderDisable(ApplicationManager* gameInstance) {
 	//gameInstance->RemoveTask(SETUP_TASK_NAME, u8"GameplayEnd");
 	//gameInstance->RemoveTask(RENDER_TASK_NAME, u8"RenderDo");
 }
 
-void RenderOrchestrator::OnRenderEnable(TaskInfo taskInfo, bool oldFocus)
-{
-	//if (!oldFocus)
-	//{
-	//	GTSL::StaticVector<TaskDependency, 32> dependencies(systems.GetLength());
-	//
-	//	for (uint32 i = 0; i < dependencies.GetLength(); ++i)
-	//	{
-	//		dependencies[i].AccessedObject = systems[i];
-	//		dependencies[i].Access = AccessTypes::READ;
-	//	}
-	//
-	//	dependencies.EmplaceBack("RenderSystem", AccessTypes::READ);
-	//
-	//	onRenderEnable(taskInfo.ApplicationManager, dependencies);
-	//	BE_LOG_SUCCESS("Enabled rendering")
-	//}
-
+void RenderOrchestrator::OnRenderEnable(TaskInfo taskInfo, bool oldFocus) {
 	renderingEnabled = true;
 }
 
-void RenderOrchestrator::OnRenderDisable(TaskInfo taskInfo, bool oldFocus)
-{
+void RenderOrchestrator::OnRenderDisable(TaskInfo taskInfo, bool oldFocus) {
 	renderingEnabled = false;
 }
 

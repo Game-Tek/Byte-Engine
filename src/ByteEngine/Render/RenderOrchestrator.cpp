@@ -239,6 +239,10 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto viewMatrix = cameraSystem->GetCameraTransform();
 
+			auto cameraPosition = cameraSystem->GetCameraPosition(CameraSystem::CameraHandle{0});
+
+			viewMatrix[0][3] *= -1.0f; viewMatrix[1][3] *= -1.0f; viewMatrix[2][3] *= -1.0f; // "Invert" position to make view matrix
+
 			auto cameraData = GetBufferWriteKey(renderSystem, cameraDataKeyHandle);
 			//cameraData[u8"viewHistory"][2] = cameraData[u8"viewHistory"][1];
 			//cameraData[u8"viewHistory"][1] = cameraData[u8"viewHistory"][0];
@@ -251,6 +255,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			currentView[u8"projInverse"] = invertedProjectionMatrix;
 			currentView[u8"vp"] = projectionMatrix * viewMatrix;
 			currentView[u8"vpInverse"] = GTSL::Math::Inverse(viewMatrix) * invertedProjectionMatrix;
+			currentView[u8"position"] = GTSL::Vector4(cameraPosition, 1.0f);
 			currentView[u8"near"] = nearValue;
 			currentView[u8"far"] = farValue;
 			currentView[u8"extent"] = renderArea;
@@ -1250,7 +1255,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			{
 				auto& debugEntry = specializationEntries.EmplaceBack();
 				debugEntry.Size = 4; debugEntry.Offset = 0u; debugEntry.ID = 0u;
-				specializationData.AllocateStructure<uint32>(0u);
+				specializationData.AllocateStructure<uint32>(BE::Application::Get()->GetBoolOption(u8"debugShaders"));
 			}
 
 			specializations.Specialization.Entries = specializationEntries;

@@ -29,6 +29,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec3f", u8"p" }, { u8"vec3f", u8"a" }, { u8"vec3f", u8"b" }, { u8"vec3f", u8"c" } }, u8"vec3f v0 = b - a, v1 = c - a, v2 = p - a; float32 d00 = dot(v0, v0); float32 d01 = dot(v0, v1); float32 d11 = dot(v1, v1); float32 d20 = dot(v2, v0); float32 d21 = dot(v2, v1); float32 invDenom = 1.0f / (d00 * d11 - d01 * d01); v = (d11 * d20 - d01 * d21) * invDenom; w = (d00 * d21 - d01 * d20) * invDenom; return vec3f(1.0f - v - w, v, w);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"SampleNormal", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return normalize(texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord) * 2.0f - 1.0f);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" }, { u8"vec2f", u8"ddx" }, { u8"vec2f", u8"ddy" } }, u8"return textureGrad(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord, ddx, ddy);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4u", u8"SampleUint", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(usampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
@@ -57,7 +58,22 @@ struct CommonPermutation : PermutationManager {
 		anyHitShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"AnyHitShader");
 		missShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"MissShader");
 
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"DirectLighting", { {u8"vec3f", u8"light_position"}, {u8"vec3f", u8"camera_position"}, {u8"vec3f", u8"surface_world_position"}, {u8"vec3f", u8"surface_normal"}, {u8"vec3f", u8"light_color"}, {u8"vec3f", u8"albedo"}, {u8"vec3f", u8"F0"}, {u8"float32", u8"roughness"} }, u8"vec3f V = normalize(camera_position - surface_world_position); vec3f L = normalize(light_position - surface_world_position); vec3f H = normalize(V + L); float32 distance = length(light_position - surface_world_position); float32 attenuation = 1.0f / (distance * distance); vec3f radiance = light_color * attenuation; float32 NDF = DistributionGGX(surface_normal, H, roughness); float32 G = GeometrySmith(surface_normal, V, L, roughness); vec3f F = FresnelSchlick(max(dot(H, V), 0.0), F0); vec3f kS = F; vec3f kD = vec3f(1.0) - kS; kD *= 1.0 - 0; vec3f numerator = NDF * G * F; float32 denominator = 4.0f * max(dot(surface_normal, V), 0.0f) * max(dot(surface_normal, L), 0.0f) + 0.0001f; vec3f specular = numerator / denominator; float32 NdotL = max(dot(surface_normal, L), 0.0f); return (kD * albedo / PI() + specular) * radiance * NdotL;");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"DirectLighting", { {u8"vec3f", u8"light_position"}, {u8"vec3f", u8"camera_position"}, {u8"vec3f", u8"surface_world_position"}, {u8"vec3f", u8"surface_normal"}, {u8"vec3f", u8"light_color"}, {u8"vec3f", u8"albedo"}, {u8"vec3f", u8"F0"}, {u8"float32", u8"roughness"} }, u8R"(
+vec3f V = normalize(camera_position - surface_world_position);
+vec3f L = normalize(light_position - surface_world_position);
+vec3f H = normalize(V + L);
+float32 distance = length(light_position - surface_world_position);
+float32 attenuation = 1.0f / (distance * distance);
+vec3f radiance = light_color * attenuation;
+float32 NDF = DistributionGGX(surface_normal, H, roughness);
+float32 G = GeometrySmith(surface_normal, V, L, roughness);
+vec3f F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+vec3f numerator = NDF * G * F;
+float32 denominator = 4.0f * max(dot(surface_normal, V), 0.0f) * max(dot(surface_normal, L), 0.0f) + 0.0001f;
+vec3f specular = numerator / denominator;
+float32 NdotL = max(dot(surface_normal, L), 0.0f);
+vec3f kS = F; vec3f kD = vec3f(1.0) - kS; kD *= 1.0 - 0;
+return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec2f", u8"GetFragmentPosition", {}, u8"return gl_FragCoord.xy;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"float32", u8"GetFragmentDepth", {}, u8"return gl_FragCoord.z;");

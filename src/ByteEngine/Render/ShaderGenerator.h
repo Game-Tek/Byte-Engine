@@ -643,7 +643,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
-	headerBlock += u8"layout(constant_id = 0) const uint DEBUG = 1;\n";
+	headerBlock += u8"layout(constant_id = 0) const uint DEBUG = 0;\n";
 
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
 		GTSL::StaticString<64> result = name;

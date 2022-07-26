@@ -88,6 +88,12 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 					}
 					}
 				}
+
+				if(FindString(queryResult.Get(), u8"GLOSS")) { // If texture is a gloss texture, convert to roughness
+					for(uint32 i = 0; i < x * y * finalChannelCount; ++i) {
+						data[i] = static_cast<uint8>(GTSL::Math::InvertRange(static_cast<uint32>(data[i]), 255u));
+					}
+				}
 			}
 
 			TextureInfo texture_info;

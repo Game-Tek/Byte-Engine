@@ -42,12 +42,7 @@ public:
 	}
 
 	GTSL::Matrix4 GetCameraTransform() const {
-		auto pos = positionMatrices[0];
-		pos[0][3] *= -1;
-		pos[1][3] *= -1;
-		pos[2][3] *= -1;
-		
-		return rotationMatrices[0] * pos;
+		return rotationMatrices[0] * positionMatrices[0];
 	}
 	
 	void SetCameraPosition(const CameraHandle reference, const GTSL::Vector3 pos) {

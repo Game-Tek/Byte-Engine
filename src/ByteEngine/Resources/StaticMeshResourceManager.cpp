@@ -115,8 +115,7 @@ struct nEl {
 bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& static_mesh_data, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView file_extension)
 {
 	Assimp::Importer importer;
-	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_FlipUVs |
-		aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, reinterpret_cast<const char*>(file_extension.GetData()));
+	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, reinterpret_cast<const char*>(file_extension.GetData()));
 
 	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
 		BE_LOG_ERROR(reinterpret_cast<const char8_t*>(importer.GetErrorString()));

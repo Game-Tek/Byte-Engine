@@ -909,34 +909,26 @@ public:
 			initializeInfo.ScalingFactor = scalingFactor;
 			initializeInfo.InstanceName = systemName;
 
-			GTSL::Lock lock(systemsMutex);
+			{
+				GTSL::Lock lock(systemsMutex);
 
-			//if (!systemsMap.Find(systemName)) {
-			systemIndex = systemNames.Emplace(systemName);
-			initializeInfo.SystemId = systemIndex;
-			systemsIndirectionTable.Emplace(systemName, systemIndex);
-			auto& systemData = systemsData.EmplaceBack(GetPersistentAllocator());
-			systemData.Name = systemName;
+				systemIndex = systemNames.Emplace(systemName);
+				initializeInfo.SystemId = systemIndex;
+				systemsIndirectionTable.Emplace(systemName, systemIndex);
+				auto& systemData = systemsData.EmplaceBack(GetPersistentAllocator());
+				systemData.Name = systemName;
+			}
 
 			auto systemAllocation = GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo);
 			systemPointer = systemAllocation.GetData();
 
-			systems.Emplace(GTSL::MoveRef(systemAllocation));
-			taskSorter.AddSystem(systemName);
-			systemsMap.Emplace(systemName, systemPointer);
-			//} else {
-			//	if (!systemsMap[systemName]) {
-			//		initializeInfo.SystemId = systemIndex;
-			//
-			//		auto systemAllocation = GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo);
-			//		systemPointer = systemAllocation.GetData();
-			//
-			//		systems.Pop(systemsIndirectionTable[systemName]);
-			//		systems.EmplaceAt(systemsIndirectionTable[systemName], GTSL::MoveRef(systemAllocation));
-			//		systemsMap[systemName] = systemPointer;
-			//	}
-			//}
+			{
+				GTSL::Lock lock(systemsMutex);
 
+				systems.EmplaceAt(systemIndex, GTSL::MoveRef(systemAllocation));
+				taskSorter.AddSystem(systemName);
+				systemsMap.Emplace(systemName, systemPointer);
+			}
 		}
 
 		systemPointer->systemId = systemIndex;

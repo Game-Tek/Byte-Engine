@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Buffer.hpp>
 

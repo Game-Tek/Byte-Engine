@@ -2,7 +2,7 @@
 
 #include <GTSL/Buffer.hpp>
 
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 #include <GTSL/Filesystem.h>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -34,9 +34,9 @@ TextureResourceManager::TextureResourceManager(const InitializeInfo& initialize_
 
 	resource_files_.Start(GetResourcePath(u8"Textures"));
 
-	GTSL::FileQuery file_query;
+	GTSL::FileQuery file_query(GetUserResourcePath(u8"*"));
 
-	while (auto queryResult = file_query.DoQuery(GetUserResourcePath(u8"*"))) {
+	while (auto queryResult = file_query()) {
 		auto fileName = queryResult.Get(); RTrimLast(fileName, u8'.');
 		auto fileExtension = queryResult.Get(); LTrimFirst(fileExtension, u8'.');
 

@@ -41,12 +41,12 @@ AnimationResourceManager::AnimationResourceManager(const InitializeInfo& initial
 	switch (dic.Open(GetResourcePath(GTSL::StaticString<32>(u8"Animations"), GTSL::ShortString<32>(u8"beidx")), GTSL::File::READ | GTSL::File::WRITE, true)) {
 	case GTSL::File::OpenResult::OK: break;
 	case GTSL::File::OpenResult::CREATED: {
-		GTSL::FileQuery fileQuery;
+		GTSL::FileQuery fileQuery(aa);
 
 		GTSL::HashMap<Id, AnimationDataSerialize, BE::TAR> animationDataSerializes(8, GetTransientAllocator());
 		GTSL::HashMap<Id, SkeletonDataSerialize, BE::TAR> skeletonDataSerializes(8, GetTransientAllocator());
 		
-		while (auto query = fileQuery.DoQuery(aa)) {
+		while (auto query = fileQuery()) {
 			GTSL::File animationFile; animationFile.Open(GetResourcePath(query.Get()), GTSL::File::READ, false);
 			GTSL::Buffer buffer(animationFile.GetSize(), 16, GetTransientAllocator());
 			animationFile.Read(buffer);

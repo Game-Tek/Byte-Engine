@@ -21,14 +21,14 @@ public:
 	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }
 	GTSL::Vector3 GetMeshPosition(StaticMeshHandle staticMeshHandle) const { return GTSL::Math::GetTranslation(transformations[staticMeshHandle()]); }
 
-	StaticMeshHandle AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance);
+	StaticMeshHandle AddStaticMesh(Id MeshName);
 
 	DECLARE_BE_EVENT(OnAddMesh, StaticMeshHandle, Id);
 	DECLARE_BE_EVENT(OnUpdateMesh, StaticMeshHandle, GTSL::Matrix3x4);
 
-	void SetPosition(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
+	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
 		GTSL::Math::SetTranslation(transformations[staticMeshHandle()], vector3);
-		application_manager->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
+		GetApplicationManager()->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
 	}
 
 	void SetRotation(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {

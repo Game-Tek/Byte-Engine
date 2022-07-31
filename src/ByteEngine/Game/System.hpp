@@ -21,8 +21,6 @@ namespace BE {
 	 */
 	class System : public Object {
 	public:
-		System() = default;
-
 		struct InitializeInfo {
 			ApplicationManager* ApplicationManager{ nullptr };
 			/**

@@ -113,14 +113,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 				batch.Scopes.EmplaceBack(common_permutation->vertexShaderScope);
 				batch.Scopes.EmplaceBack(shaderScope);
 
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_INSTANCE_MATRIX = matrix4f(pushConstantBlock.instances[gl_InstanceIndex].transform);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vertexTextureCoordinates = GetVertexTextureCoordinates();");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"worldSpacePosition = vec3f(BE_INSTANCE_MATRIX * GetVertexPosition()); _instanceIndex = gl_InstanceIndex;");
-				pipeline->AddCodeToFunction(mainFunctionHandle, shader_json[u8"code"]);
-				//pipeline->AddCodeToFunction(mainFunctionHandle, u8"tbn = mat3f(normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(TANGENT, 0))), normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(BITANGENT, 0))), normalize(vec3f(BE_INSTANCE_MATRIX * vec4f(NORMAL, 0))));");
-				//pipeline->AddCodeToFunction(mainFunctionHandle, u8"tbn = mat3f(normalize(mat3f(BE_INSTANCE_MATRIX) * TANGENT), normalize(mat3f(BE_INSTANCE_MATRIX) * BITANGENT), normalize(mat3f(BE_INSTANCE_MATRIX) * NORMAL));");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"tbn = mat3f(BE_INSTANCE_MATRIX) * mat3f(TANGENT, BITANGENT, NORMAL);");
+				auto shaderCode = MakeShaderString(u8"ForwardPermutation.Vertex", shader_json[u8"code"]);
+				
+				pipeline->AddCodeToFunction(mainFunctionHandle, shaderCode);
 
 				//todo: analyze if we need to emit compute shader
 				break;
@@ -134,34 +129,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 					pipeline->AddCodeToFunction(mainFunctionHandle, (GTSL::StaticString<256>(e.Type) & e.Name)+ u8"=" + u8"pushConstantBlock.shaderParameters[pushConstantBlock.instances[_instanceIndex].shaderGroupIndex]." + e.Name + u8";");
 				}
 
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_PROJECTION_MATRIX = pushConstantBlock.camera.viewHistory[0].vp;");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const matrix4f BE_VIEW_MATRIX = pushConstantBlock.camera.viewHistory[0].view;");
-				//pipeline->AddCodeToFunction(mainFunctionHandle, u8"const vec3f BE_CAMERA_POSITION = vec3f(BE_VIEW_MATRIX[0][3], BE_VIEW_MATRIX[1][3], BE_VIEW_MATRIX[2][3]);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"const vec3f BE_CAMERA_POSITION = vec3f(pushConstantBlock.camera.viewHistory[0].position);");
-
-				// Declare class and domain variables
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 BE_SurfaceRoughness = 0.1f;");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec4f BE_SurfaceColor = vec4f(1.0f);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec4f BE_SurfaceNormal = vec4f(0.0f, 0.0f, 1.0f, 0.0f);");
-				// Declare class and domain variables
-
-				pipeline->AddCodeToFunction(mainFunctionHandle, shader_json[u8"code"]);
+				auto shaderCode = MakeShaderString(u8"ForwardPermutation.Surface", shader_json[u8"code"]);
 				
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f F0 = vec3f(0.04f);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f Lo = vec3f(0.0f);");
-
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"vec3f worldSpaceFragmentNormal = normalize(tbn * vec3f(BE_SurfaceNormal));");
-
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"for(uint32 i = 0; i < pushConstantBlock.lightingData.pointLightsLength; ++i) {");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"PointLightData light = pushConstantBlock.lightingData.pointLights[i];");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"Lo += DirectLighting(light.position, BE_CAMERA_POSITION, worldSpacePosition, worldSpaceFragmentNormal, light.color * light.intensity, vec3f(BE_SurfaceColor), F0, BE_SurfaceRoughness); }");
-
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"if(!bool(DEBUG)) {");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(Lo, 1.0f);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"} else { surfaceColor = vec4f(BE_CAMERA_POSITION, 1.0f); }");
-
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"out_WorldPosition = vec4f(worldSpacePosition, 1);");
-				pipeline->AddCodeToFunction(mainFunctionHandle, u8"out_Normal = vec4f(worldSpaceFragmentNormal, 1.0f);");
+				pipeline->AddCodeToFunction(mainFunctionHandle, shaderCode);
 
 				break;
 			}

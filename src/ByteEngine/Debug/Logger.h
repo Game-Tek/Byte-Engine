@@ -2,7 +2,7 @@
 
 #include <atomic>
 #include <GTSL/Mutex.h>
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 
 #include "ByteEngine/Core.h"
 #include <GTSL/String.hpp>

@@ -115,7 +115,7 @@ struct nEl {
 bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& static_mesh_data, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView file_extension)
 {
 	Assimp::Importer importer;
-	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder, reinterpret_cast<const char*>(file_extension.GetData()));
+	const auto* const ai_scene = importer.ReadFileFromMemory(sourceBuffer.GetData(), sourceBuffer.GetLength(), aiProcess_Triangulate | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder | aiProcess_FlipUVs, reinterpret_cast<const char*>(file_extension.GetData()));
 
 	if (!ai_scene || (ai_scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
 		BE_LOG_ERROR(reinterpret_cast<const char8_t*>(importer.GetErrorString()));
@@ -214,7 +214,8 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 		if(!visitNodeValidateAndAllocate(ai_scene->mRootNode, visitNodeValidateAndAllocate)) { return false; }
 
 		//meshDataBuffer.Resize(static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize() + static_mesh_data.GetIndexCount() * static_mesh_data.GetIndexSize());
-		meshDataBuffer.AddBytes(static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize() + static_mesh_data.GetIndexCount() * static_mesh_data.GetIndexSize());
+		meshDataBuffer.DeltaResize(static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize() + static_mesh_data.GetIndexCount() * static_mesh_data.GetIndexSize());
+		meshDataBuffer.PushBytes(static_mesh_data.GetVertexCount() * static_mesh_data.GetVertexSize() + static_mesh_data.GetIndexCount() * static_mesh_data.GetIndexSize());
 	}
 
 	{
@@ -390,6 +391,12 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 				}
 
 				static_mesh_data.GetBoundingBox() = GTSL::Math::Max(static_mesh_data.GetBoundingBox(), meshInfo.GetBoundingBox());
+
+				for(uint32 i = 0; i < inMesh->mNumVertices; ++i) {
+					if(*reinterpret_cast<GTSL::Vector2*>(meshDataBuffer.begin() + 48 * inMesh->mNumVertices + i * 8) != GTSL::Vector2(ToGTSL(inMesh->mTextureCoords[0][i]))) {
+						__debugbreak();
+					}
+				}
 
 				offset += meshInfo.GetVertexCount() * vertexSize + meshInfo.GetIndexCount() * static_mesh_data.GetIndexSize();
 			}

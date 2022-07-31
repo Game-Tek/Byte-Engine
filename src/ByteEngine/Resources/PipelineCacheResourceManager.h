@@ -2,7 +2,7 @@
 
 #include "ResourceManager.h"
 
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 #include <GTSL/Buffer.hpp>
 
 //TODO: support multiple APIs
@@ -16,7 +16,7 @@ public:
 	void GetCacheSize(uint32& size) const { size = static_cast<uint32>(cache.GetSize()); }
 	
 	template<class ALLOCTOR>
-	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { cache.Read(cache.GetSize(), buffer); }
+	void GetCache(GTSL::Buffer<ALLOCTOR>& buffer) { }
 	
 	template<class ALLOCTOR>
 	void WriteCache(GTSL::Buffer<ALLOCTOR>& buffer)

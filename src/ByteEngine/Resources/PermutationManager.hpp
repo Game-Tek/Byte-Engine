@@ -18,6 +18,38 @@ struct PermutationManager : Object {
 
 	}
 
+	static GTSL::StaticString<8192> MakeShaderString(GTSL::StringView path, GTSL::StringView user_shader_code = {}) {
+		GTSL::File file(ResourceManager::GetUserResourcePath(path, u8"txt"));
+
+		GTSL::StaticBuffer<8192> buffer;
+
+		GTSL::StaticString<8192> shaderCode;
+
+		file.Read(buffer);
+
+		uint32 i = 0;
+
+		while(true) {
+			auto s = i;
+
+			while(i != buffer.GetLength() && *(buffer.begin() + i) != u8'@') {
+				++i;
+			}
+
+			shaderCode += { i - s, i - s, reinterpret_cast<const utf8*>(buffer.begin()) + s };
+
+			if(i == buffer.GetLength()) {
+				break;
+			}
+
+			shaderCode += user_shader_code;
+
+			i += 3;
+		}
+
+		return shaderCode;
+	}
+
 	static void InitializePermutations(PermutationManager* start, GPipeline* pipeline) {
 		ShaderGenerationData shader_generation_data;
 

@@ -54,7 +54,7 @@ void PhysicsWorld::onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup* static_mes
 		e.position += e.velocity * deltaSeconds;
 		//semi implicit euler
 
-		static_mesh_render_group->SetPosition(taskInfo.ApplicationManager, e.Handle, GTSL::Vector3(e.position));
+		static_mesh_render_group->SetPosition(e.Handle, GTSL::Vector3(e.position));
 	}
 }
 

@@ -7,10 +7,9 @@
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
 #include <GTSL/String.hpp>
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Serialize.hpp>
-#include <GTSL/Math/Vectors.hpp>
 #include <GTSL/Filesystem.h>
 #include <GAL/Serialize.hpp>
 
@@ -21,7 +20,6 @@
 #include "PermutationManager.hpp"
 #include "CommonPermutation.hpp"
 #include "ForwardPermutation.hpp"
-#include "VisibilityPermutation.hpp"
 #include "UIPermutation.hpp"
 #include "RayTracePermutation.hpp"
 
@@ -413,7 +411,7 @@ public:
 	}
 
 private:
-	GTSL::File shaderGroupInfosFile, shaderInfosFile, shaderPackageFile;
+	GTSL::File shaderGroupInfosFile, shaderInfosFile, shaderPackageFile, changeCache;
 	GTSL::HashMap<Id, uint64, BE::PersistentAllocatorReference> shaderGroupInfoOffsets;
 	GTSL::HashMap<uint64, uint64, BE::PersistentAllocatorReference> shaderInfoOffsets, shaderOffsets;
 
@@ -544,7 +542,7 @@ private:
 
 		for (const auto& s : shader_group_info.Shaders) {
 			shaderPackageFile.SetPointer(shaderOffsets[s.Hash]);
-			shaderPackageFile.Read(s.Size, offset, buffer);
+			shaderPackageFile.ReadRaw(buffer.begin() + offset, s.Size);
 			offset += s.Size;
 		}
 
@@ -593,16 +591,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	case GTSL::File::OpenResult::ERROR: break;
 	}
 
-	if (!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize())) {
-		shaderPackageFile.Resize(0);
-		shaderGroupsTableFile.Resize(0);
-		shaderInfoTableFile.Resize(0);
-		shadersTableFile.Resize(0);
-		shaderInfosFile.Resize(0);
-		shaderGroupInfosFile.Resize(0);
-		created = true;
-	}
-
 	GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"Common");
 
 	{ //configure permutations
@@ -615,6 +603,51 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	GPipeline pipeline;
 
 	PermutationManager::InitializePermutations(commonPermutation, &pipeline);
+
+	{
+		changeCache.Open(GetResourcePath(u8"ShaderResourceManagerCache.bin"), GTSL::File::READ | GTSL::File::WRITE, true);
+
+		GTSL::Buffer<GTSL::StaticAllocator<4096>> cacheBuffer;
+
+		changeCache.Read(cacheBuffer);
+
+		uint32 cacheEntryCount = cacheBuffer.GetLength() / 8;
+		uint64* cacheEntries = reinterpret_cast<uint64*>(cacheBuffer.begin());
+
+		GTSL::KeyMap<uint64, BE::TAR> entriesMap(32, GetTransientAllocator());
+
+		for(uint32 i = 0; i < cacheEntryCount; ++i) {
+			entriesMap.Emplace(cacheEntries[i]);
+		}
+
+		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
+
+		while (auto fileRef = shaderGroupFileQuery()) {
+			if(!entriesMap.Find(shaderGroupFileQuery.GetFileHash())) {
+				changeCache << shaderGroupFileQuery.GetFileHash();
+				created = true;
+			}
+		}
+
+		GTSL::FileQuery shaderQuery(GetUserResourcePath(u8"*Shader", u8"json"));
+
+		while (auto fileRef = shaderQuery()) {
+			if(!entriesMap.Find(shaderQuery.GetFileHash())) {
+				changeCache << shaderQuery.GetFileHash();
+				created = true;
+			}
+		}
+	}
+
+	if (!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize()) or created) {
+		shaderPackageFile.Resize(0);
+		shaderGroupsTableFile.Resize(0);
+		shaderInfoTableFile.Resize(0);
+		shadersTableFile.Resize(0);
+		shaderInfosFile.Resize(0);
+		shaderGroupInfosFile.Resize(0);
+		created = true;
+	}
 
 	if (created) {
 		for(auto e : PermutationManager::GetDefaultShaderGroups(commonPermutation, &pipeline)) {
@@ -635,10 +668,10 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			makeShaderGroup(json, pipeline, commonPermutation, s, &shaderGroupDataSerialize);
 		}
 
-		GTSL::FileQuery shaderGroupFileQuery;
+		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
 
-		while (auto fileRef = shaderGroupFileQuery.DoQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"))) {
-			GTSL::File shaderGroupFile; shaderGroupFile.Open(GetUserResourcePath(fileRef.Get()), GTSL::File::READ, false);
+		while (auto fileRef = shaderGroupFileQuery()) {
+			GTSL::File shaderGroupFile(GetUserResourcePath(fileRef.Get()), GTSL::File::READ, false);
 
 			GTSL::Buffer buffer(shaderGroupFile.GetSize(), 16, GetTransientAllocator()); shaderGroupFile.Read(buffer);
 
@@ -648,7 +681,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			GTSL::StaticVector<GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>, 8> resultsPerShader;
 
 			for (auto s : json[u8"shaders"]) {
-				GTSL::File shaderFile; shaderFile.Open(GetUserResourcePath(s[u8"name"], u8"json"));
+				GTSL::File shaderFile(GetUserResourcePath(s[u8"name"], u8"json"));
 				GTSL::Buffer shaderFileBuffer(shaderFile.GetSize(), 16, GetTransientAllocator()); shaderFile.Read(shaderFileBuffer);
 
 				GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
@@ -672,10 +705,10 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			auto filePath = fileRef.Get();
 			RTrimLast(filePath, u8'.');
 
-			GTSL::FileQuery shaderGroupInstanceFileQuery;
+			GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(filePath+ u8"_*", u8"json"));
 
-			while (auto instanceFileRef = shaderGroupInstanceFileQuery.DoQuery(GetUserResourcePath(filePath+ u8"_*", u8"json"))) {
-				GTSL::File shaderGroupInstanceFile; shaderGroupInstanceFile.Open(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
+			while (auto instanceFileRef = shaderGroupInstanceFileQuery()) {
+				GTSL::File shaderGroupInstanceFile(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
 
 				GTSL::Buffer shaderGroupInstanceBuffer(shaderGroupInstanceFile.GetSize(), 16, GetTransientAllocator()); shaderGroupInstanceFile.Read(shaderGroupInstanceBuffer);
 

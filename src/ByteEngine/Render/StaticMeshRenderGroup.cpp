@@ -2,10 +2,7 @@
 
 #include "RenderOrchestrator.h"
 #include "RenderSystem.h"
-#include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Game/ApplicationManager.h"
-
-#include "ByteEngine/Render/WorldRenderPipeline.hpp"
 
 class RenderStaticMeshCollection;
 
@@ -16,14 +13,14 @@ StaticMeshRenderGroup::StaticMeshRenderGroup(const InitializeInfo& initializeInf
 	GetApplicationManager()->BindDeletionTaskToType(StaticMeshTypeIndentifier, DeleteStaticMesh);
 }
 
-StaticMeshRenderGroup::StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName, RenderSystem* RenderSystem, ApplicationManager* GameInstance) {
+StaticMeshRenderGroup::StaticMeshHandle StaticMeshRenderGroup::AddStaticMesh(Id MeshName) {
 	uint32 index = transformations.Emplace();
 
 	meshes.Emplace(Mesh{});
 
 	auto handle = GetApplicationManager()->MakeHandle<StaticMeshHandle>(StaticMeshTypeIndentifier, index);
 
-	GameInstance->DispatchEvent(this, GetOnAddMeshEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
+	GetApplicationManager()->DispatchEvent(this, GetOnAddMeshEventHandle(), GTSL::MoveRef(handle), GTSL::MoveRef(MeshName));
 
 	return handle;
 }

@@ -4,7 +4,7 @@
 
 #include <GTSL/Extent.h>
 #include <GAL/RenderCore.h>
-#include <GTSL/File.h>
+#include <GTSL/File.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/MappedFile.hpp>
 

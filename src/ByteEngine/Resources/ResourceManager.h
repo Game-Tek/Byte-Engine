@@ -19,9 +19,9 @@ public:
 	ResourceManager() = default;
 
 	ResourceManager(const InitializeInfo& info, const utf8* name) : System(info, name) {}
-	
-	GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
-	GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
+
+	static GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
+	static GTSL::StaticString<512> GetUserResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileName, const GTSL::Range<const utf8*> extension);
 	GTSL::StaticString<512> GetResourcePath(const GTSL::Range<const utf8*> fileWithExtension);
 
@@ -130,7 +130,7 @@ struct ResourceFiles {
 
 			while (true) {
 				GTSL::StaticBuffer<1024> buffer(1024, 16);
-				auto read = table.Read(1024, buffer);
+				auto read = table.Read(buffer, 1024);
 				if (!read) { break; }
 				for (uint32 i = 0; i < buffer.GetLength() / sizeof(TableEntry); ++i) {
 					TableEntry table_entry;
@@ -168,7 +168,7 @@ struct ResourceFiles {
 
 		auto indexDataOffset = tableMap.At(static_cast<uint64>(name));
 		index.SetPointer(indexDataOffset);
-		index.Read(sizeof(T), reinterpret_cast<byte*>(&entry));
+		index.ReadRaw(&entry);
 
 		return true;
 	}
@@ -179,19 +179,25 @@ struct ResourceFiles {
 
 	bool LoadData(auto& info, auto& buffer) {
 		data.SetPointer(info.Header.DataOffset);
-		data.Read(info.Header.DataSize, buffer);
+		data.Read(buffer, info.Header.DataSize);
+		return true;
+	}
+	
+	bool LoadData(auto& info, GTSL::Range<byte*> buffer) {
+		data.SetPointer(info.Header.DataOffset);
+		data.ReadRaw(buffer.begin(), info.Header.DataSize);
 		return true;
 	}
 
-	bool LoadData(auto& info, GTSL::Range<byte*> buffer) {
-		data.SetPointer(info.Header.DataOffset);
-		data.Read(info.Header.DataSize, buffer.begin());
-		return true;
-	}
+	//bool LoadData(auto& info, GTSL::Range<byte*> buffer) {
+	//	data.SetPointer(info.Header.DataOffset);
+	//	data.Read(info.Header.DataSize, buffer.begin());
+	//	return true;
+	//}
 
 	bool LoadData(auto& info, GTSL::Range<byte*> buffer, uint32 offset, uint32 size) {
 		data.SetPointer(info.Header.DataOffset + offset);
-		data.Read(size, buffer.begin());
+		data.ReadRaw(buffer.begin(), size);
 		return true;
 	}
 

@@ -8,7 +8,7 @@
 
 struct ScriptingEngine : public BE::System
 {
-	ScriptingEngine() : domain(mono_jit_init_version("myapp", "v4.0.30319")) {
+	ScriptingEngine(const InitializeInfo& initialize_info) : System(initialize_info, u8"ScriptingEngine"), domain(mono_jit_init_version("myapp", "v4.0.30319")) {
 		MonoAssembly* assembly = mono_domain_assembly_open(domain, "file.exe");
 		if (!assembly) {
 			BE_LOG_ERROR(u8"Failed to initialize C# script module.");

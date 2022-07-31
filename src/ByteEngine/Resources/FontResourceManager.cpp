@@ -15,9 +15,9 @@ FontResourceManager::FontResourceManager(const InitializeInfo& info) : ResourceM
 	resource_files_.Start(GetResourcePath(u8"Fonts"));
 
 	{
-		GTSL::FileQuery file_query;
+		GTSL::FileQuery file_query(GetUserResourcePath(u8"*.ttf"));
 
-		while(auto r = file_query.DoQuery(GetUserResourcePath(u8"*.ttf"))) {
+		while(auto r = file_query()) {
 			auto name = r.Get();
 
 			RTrimLast(name, U'.');

@@ -27,9 +27,9 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 	{
 		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, false);
 
-		GTSL::FileQuery file_query;
+		GTSL::FileQuery file_query(query_path);
 
-		while(auto queryResult = file_query.DoQuery(query_path)) {
+		while(auto queryResult = file_query()) {
 			auto file_path = resources_path;
 			file_path += queryResult.Get();
 			auto fileName = queryResult.Get(); RTrimLast(fileName, u8'.');

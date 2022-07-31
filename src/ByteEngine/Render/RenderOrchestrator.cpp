@@ -982,7 +982,7 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 	for (auto& s : shader_group_info.Shaders) { size += s.Size; }
 
 	shaderLoadInfo.Buffer.Allocate(size, 16);
-	shaderLoadInfo.Buffer.AddBytes(size);
+	shaderLoadInfo.Buffer.PushBytes(size);
 
 	auto shaderGroupWasEmplaced = shaderGroupsByName.TryEmplace(Id(shader_group_info.Name), ~0u);
 

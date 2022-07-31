@@ -120,35 +120,11 @@ public:
 			auto fontRenderingFragmentShader = pipeline->DeclareShader(uiScope, u8"fontRendering");
 			auto mainFunctionHandle = pipeline->DeclareFunction(fontRenderingFragmentShader, u8"void", u8"main");
 
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"const uint32 BE_INSTANCE_INDEX = instanceIndex; const vec2f BE_UV = vertexUV;");
-
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"FontData* font = pushConstantBlock.ui.fontData[pushConstantBlock.ui.textData[pushConstantBlock.uiInstances[BE_INSTANCE_INDEX].derivedTypeIndex[0]].fontIndex];");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"GlyphData* glyph = font.glyphs[pushConstantBlock.uiInstances[BE_INSTANCE_INDEX].derivedTypeIndex[1]];");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"float32 shortestDistance = 1000000.0f; vec2f point = BE_UV * 0.5f + 0.5f, a = point, b = point;");
-
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 c = 0; c < 2; ++c) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 c = 0; c < glyph.contourCount; ++c) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"GlyphContourData contour = glyph.contours[c];");
-			
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < 2; ++i) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < glyph.contours[c].linearSegmentCount; ++i) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"UIRes res = SolveLinearSegment(shortestDistance, glyph.contours[c].linearSegments[i], a, b, point);");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"shortestDistance = res.bestDistance; a = res.a; b = res.b;");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"}");
-			
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < 33; ++i) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"for (uint32 i = 0; i < glyph.contours[c].quadraticSegmentCount; ++i) {");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"UIRes res = SolveQuadraticSegment(shortestDistance, glyph.contours[c].quadraticSegments[i], a, b, point);");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"shortestDistance = res.bestDistance; a = res.a; b = res.b;");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"}");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"}");
-			
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(vec3f(TestPointToLineSide(a, b, point)), 1.0f);");
-			pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(TestPointToLineSide(a, b, point) >= 0.0f ? 1.0f : 0.0f);");
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(point, 0.0f, 0.9f);");
-			//pipeline->AddCodeToFunction(mainFunctionHandle, u8"surfaceColor = vec4f(glyph.contourCount / 255.f, glyph.contours[0].linearSegmentCount / 255.f, glyph.contours[0].quadraticSegmentCount / 255.f, 
-
 			AddSurfaceShaderOutDeclaration(pipeline, fontRenderingFragmentShader, { { u8"vec4f", u8"surfaceColor" } });
+
+			auto shaderCode = MakeShaderString(u8"UIPermutation.Surface");
+				
+			pipeline->AddCodeToFunction(mainFunctionHandle, shaderCode);
 
 			auto& textShaderGroup = results.EmplaceBack();
 			textShaderGroup.ShaderGroupJSON = u8"{ \"name\":\"UIText\", \"instances\":[{ \"name\":\"UIText\", \"parameters\":[] }], \"domain\":\"Screen\", \"tags\":[{ \"name\":\"RenderPass\", \"value\":\"UIRenderPass\" }, { \"name\":\"Transparency\", \"value\":\"true\" }] }";

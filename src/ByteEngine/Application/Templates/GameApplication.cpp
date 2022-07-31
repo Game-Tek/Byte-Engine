@@ -6,6 +6,7 @@
 #include "ByteEngine/Game/CameraSystem.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Physics/PhysicsWorld.h"
+#include "ByteEngine/Game/WorldSystem.hpp"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshRenderGroup.h"
@@ -72,12 +73,15 @@ void GameApplication::PostInitialize()
 	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	auto* smrg = applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
-	auto* smrm = applicationManager->AddSystem<WorldRendererPipeline>(u8"WorldRendererPipeline");
+	applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	applicationManager->AddSystem<WorldRendererPipeline>(u8"WorldRendererPipeline");
 
 	applicationManager->AddSystem<PhysicsWorld>(u8"PhysicsWorld");
-
 	applicationManager->AddSystem<AudioSystem>(u8"AudioSystem");
+
+	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
+
+	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
 
 	auto* windowSystem = applicationManager->AddSystem<WindowSystem>(u8"WindowSystem");
 	windowSystemHandle = applicationManager->GetSystemReference(u8"WindowSystem");
@@ -97,12 +101,12 @@ void GameApplication::PostInitialize()
 
 	windowSystem->keyboard = keyboard; windowSystem->mouse = mouse;
 
-	applicationManager->AddSystem<CameraSystem>(u8"CameraSystem");
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
 
 	applicationManager->AddSystem<UIRenderManager>(u8"UIRenderManager");
-	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
+
+	applicationManager->AddSystem<WorldSystem>(u8"WorldSystem");
 }	
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

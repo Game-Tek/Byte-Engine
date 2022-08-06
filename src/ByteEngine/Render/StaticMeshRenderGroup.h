@@ -31,9 +31,9 @@ public:
 		GetApplicationManager()->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
 	}
 
-	void SetRotation(ApplicationManager* application_manager, StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
+	void SetRotation(StaticMeshHandle staticMeshHandle, GTSL::Quaternion quaternion) {
 		GTSL::Math::SetRotation(transformations[staticMeshHandle()], quaternion);
-		application_manager->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
+		GetApplicationManager()->DispatchEvent(this, GetOnUpdateMeshEventHandle(), GTSL::MoveRef(staticMeshHandle), GTSL::Matrix3x4(transformations[staticMeshHandle()]));
 	}
 private:	
 	GTSL::FixedVector<GTSL::Matrix4, BE::PersistentAllocatorReference> transformations;

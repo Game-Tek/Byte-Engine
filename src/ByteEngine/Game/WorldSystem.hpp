@@ -13,6 +13,13 @@ class WorldSystem : public BE::System {
 		system->SetPosition(handle, pos);
 	}
 
+	static void SetRotation(const GTSL::JSONMember json, auto system, auto handle) {
+		auto jsonRotation = json[u8"rot"];
+		if(!jsonRotation) { return; }
+		auto rot = GTSL::Rotator(GTSL::Math::DegreesToRadians(jsonRotation[0].GetFloat()), GTSL::Math::DegreesToRadians(jsonRotation[1].GetFloat()), GTSL::Math::DegreesToRadians(jsonRotation[2].GetFloat()));
+		system->SetRotation(handle, GTSL::Quaternion(rot));
+	}
+
 	static void SetColor(const GTSL::JSONMember json, auto system, auto handle) {
 		auto jsonColor = json[u8"color"];
 		auto color = GTSL::RGBA(jsonColor[0].GetFloat(), jsonColor[1].GetFloat(), jsonColor[2].GetFloat(), jsonColor[3].GetFloat());
@@ -41,6 +48,7 @@ public:
 				auto staticMeshHandle = staticMeshSystem->AddStaticMesh(resourceName.GetStringView());
 
 				SetPosition(e, staticMeshSystem, staticMeshHandle);
+				SetRotation(e, staticMeshSystem, staticMeshHandle);
 			}
 
 			if(auto m = e[u8"type"]; m.GetStringView() == u8"Light") {

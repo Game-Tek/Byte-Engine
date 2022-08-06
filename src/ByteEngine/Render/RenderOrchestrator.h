@@ -363,7 +363,7 @@ public:
 
 		if(typeIndex == RTT::GetTypeIndex<MeshData>()) {
 			auto& meshNode = getPrivateNode<MeshData>(mesh_node_handle);
-			meshNode.InstanceIndex = dataNode.Instance;
+			meshNode.InstanceIndex = !meshNode.InstanceCount ? dataNode.Instance : meshNode.InstanceIndex;
 			meshNode.InstanceCount++;
 			SetNodeState(mesh_node_handle, meshNode.InstanceCount);
 		} else {

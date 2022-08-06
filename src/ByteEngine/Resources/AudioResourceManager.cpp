@@ -7,37 +7,26 @@
 
 #include "ByteEngine/Application/Application.h"
 
-AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator()), liveAudios(8, GetPersistentAllocator())
+AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"AudioResourceManager"), audioResourceInfos(8, 0.25, GetPersistentAllocator())
 {
-	GTSL::StaticString<512> query_path, package_path, resources_path, index_path;
-	query_path += BE::Application::Get()->GetPathToApplication(); query_path += u8"/resources/"; query_path += u8"*.wav";
-	resources_path += BE::Application::Get()->GetPathToApplication(); resources_path += u8"/resources/";
-	index_path += BE::Application::Get()->GetPathToApplication(); index_path += u8"/resources/Audio.beidx";
-	package_path += BE::Application::Get()->GetPathToApplication(); package_path += u8"/resources/Audio.bepkg";
-
-	indexFile.Open(index_path, GTSL::File::WRITE | GTSL::File::READ, true);
+	indexFile.Open(GetResourcePath(u8"Audio.beidx"), GTSL::File::WRITE | GTSL::File::READ, true);
 	
 	GTSL::Buffer file_buffer(2048 * 2048, 32, GetTransientAllocator());
 	
 	if(indexFile.Read(file_buffer))
 	{
 		Extract(audioResourceInfos, file_buffer);
-	}
-	else
-	{
-		GTSL::File packageFile; packageFile.Open(package_path, GTSL::File::WRITE, false);
+	} else {
+		GTSL::File packageFile(GetResourcePath(u8"Audio.bepkg"), GTSL::File::WRITE, true);
 
-		GTSL::FileQuery file_query(query_path);
+		GTSL::FileQuery file_query(GetUserResourcePath(u8"*.wav"));
 
 		while(auto queryResult = file_query()) {
-			auto file_path = resources_path;
-			file_path += queryResult.Get();
 			auto fileName = queryResult.Get(); RTrimLast(fileName, u8'.');
 			const auto hashed_name = GTSL::Id64(fileName);
 
 			if (!audioResourceInfos.Find(hashed_name)) {
-				GTSL::File query_file;
-				query_file.Open(file_path, GTSL::File::READ, false);
+				GTSL::File query_file(GetUserResourcePath(queryResult.Get()), GTSL::File::READ, false);
 
 				GTSL::Buffer wavBuffer(query_file.GetSize(), 8, GetTransientAllocator());
 
@@ -95,7 +84,7 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 		indexFile.Write(file_buffer);
 	}
 
-	initializePackageFiles(packageFiles, package_path);
+	initializePackageFiles(packageFiles, GetResourcePath(u8"Audio.bepkg"));
 }
 
 AudioResourceManager::~AudioResourceManager()

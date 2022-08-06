@@ -51,35 +51,19 @@ public:
 		}
 	};
 
-	void ReleaseAudioAsset(Id asset)
-	{
-	}
-	
-	byte* GetAssetPointer(const Id id) { return nullptr; }
-	uint32 GetFrameCount(Id id) const { return audioResourceInfos.At(id).Frames; }
-	uint8 GetChannelCount(Id channelName) const { return audioResourceInfos.At(channelName).ChannelCount; }
-
 	AudioResourceManager(const InitializeInfo&);
 
 	~AudioResourceManager();
 
 	template<typename... ARGS>
-	void LoadAudioInfo(ApplicationManager* gameInstance, Id audioName, TaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		//gameInstance->AddDynamicTask(u8"loadAudioInfo", &AudioResourceManager::loadAudioInfo<ARGS...>, {}, {}, {}, GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadAudioInfo(Id audioName, TaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		GetApplicationManager()->EnqueueTask(GetApplicationManager()->RegisterTask(this, u8"loadAudioInfo", {}, &AudioResourceManager::loadAudioInfo<ARGS...>, {}, {}), GTSL::MoveRef(audioName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	//Audio data is aligned to 16 bytes
 	template<typename... ARGS>
-	void LoadAudio(ApplicationManager* gameInstance, AudioInfo audioInfo, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		//gameInstance->AddDynamicTask(u8"loadAudio", &AudioResourceManager::loadAudio<ARGS...>, {}, {}, {}, GTSL::MoveRef(audioInfo), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
-	}
-
-	MAKE_HANDLE(uint32, AudioAsset);
-
-	AudioAssetHandle CreateAudioAsset() {
-		auto index = liveAudios.Emplace(GetPersistentAllocator());
-		auto& liveAudio = liveAudios[index];
-		liveAudio.Buffer.Allocate(100000, 32); //32 bytes is avx256 alignment requirement
+	void LoadAudio(AudioInfo audioInfo, GTSL::Range<byte*> buffer, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		GetApplicationManager()->EnqueueTask(GetApplicationManager()->RegisterTask(this, u8"loadAudio", {}, &AudioResourceManager::loadAudio<ARGS...>, {}, {}), GTSL::MoveRef(audioInfo), GTSL::MoveRef(buffer), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 private:
@@ -93,32 +77,17 @@ private:
 	}
 
 	template<typename... ARGS>
-	auto loadAudio(TaskInfo taskInfo, AudioInfo audioInfo, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		//uint32 bytes = audioInfo.GetAudioSize(); const byte* dataPointer = nullptr;
-		//
-		//auto searchResult = audioBytes.TryEmplace(audioInfo.Name, bytes, 32, GetPersistentAllocator());
-		//
-		//if (searchResult.State())
-		//{
-		//	packageFiles[getThread()].SetPointer(audioInfo.ByteOffset);
-		//	auto& buffer = searchResult.Get();
-		//	packageFiles[getThread()].Read(bytes, buffer);
-		//	dataPointer = buffer.GetData();
-		//} else {
-		//	dataPointer = searchResult.Get().GetData();
-		//}
-		//
-		//taskInfo.ApplicationManager->AddStoredDynamicTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::Range(bytes, dataPointer), GTSL::ForwardRef<ARGS>(args)...);
+	auto loadAudio(TaskInfo taskInfo, AudioInfo audioInfo, GTSL::Range<byte*> buffer, TaskHandle<AudioInfo, GTSL::Range<const byte*>, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		uint32 bytes = audioInfo.GetAudioSize();
+		
+		packageFiles[getThread()].SetPointer(audioInfo.ByteOffset);
+		packageFiles[getThread()].ReadRaw(buffer.begin(), bytes);
+		
+		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::Range(bytes, buffer.begin()), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	GTSL::File indexFile;
 	GTSL::HashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
 
 	GTSL::StaticVector<GTSL::File, MAX_THREADS> packageFiles;
-
-	struct LiveAudioAssetData {
-		LiveAudioAssetData(const BE::PAR& allocator) : Buffer(allocator) {}
-		GTSL::Buffer<BE::PAR> Buffer;
-	};
-	GTSL::FixedVector<LiveAudioAssetData, BE::PAR> liveAudios;
 };

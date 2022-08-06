@@ -441,6 +441,8 @@ public:
 
 	template<typename... ARGS>
 	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
+		if(!task_handle) { BE_LOG_ERROR(u8"Tried to dispatch task but handle was invalid."); return; }
+
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = false;
 

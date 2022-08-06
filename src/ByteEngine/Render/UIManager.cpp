@@ -10,6 +10,10 @@ UIElementTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"UIElemen
 	GetApplicationManager()->AddEvent(u8"UIManager", GetOnCreateUIElementEventHandle());
 }
 
+uint32 pixels(uint32 points_display_size, uint32 glyph_em_units, uint32 units_per_em, uint32 ppi) {
+	return glyph_em_units * (points_display_size * ppi / (ppi * units_per_em));
+}
+
 void UIManager::ProcessUpdates() {
 	auto screenExtent = GTSL::System::GetScreenExtent();
 	auto screenSize = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
